@@ -1,0 +1,20 @@
+[package]
+name = "alpheus"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Centre de contrôle TUI de Mae"
+
+[dependencies]
+ratatui = "0.30"
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+libc = "0.2"
+
+[dev-dependencies]
+insta = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
