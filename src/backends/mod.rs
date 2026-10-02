@@ -8,10 +8,14 @@ use std::fmt;
 pub mod sound;
 pub mod brightness;
 pub mod energy;
+pub mod network;
+pub mod bluetooth;
 
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 pub use brightness::{Brightness, BrightnessCtl};
 pub use energy::{Energy, PowerProfiles, Profiles};
+pub use network::{Connection, NetStatus, Network, NmCli};
+pub use bluetooth::{BtDevice, BtStatus, Bluetooth, BluetoothCtl};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]
