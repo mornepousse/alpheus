@@ -9,7 +9,7 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
 
 - Sous-projet 1 (centre de contrôle TUI, ratatui) : **spec v1 écrite**
   ([`docs/specs/2026-10-02-alpheus-v1-design.md`](docs/specs/2026-10-02-alpheus-v1-design.md)),
-  plan d'implémentation à écrire.
+  plan d'implémentation écrit ([`docs/plans/2026-10-02-alpheus-v1-plan.md`](docs/plans/2026-10-02-alpheus-v1-plan.md)), 16 tâches, à exécuter.
 - Sous-projets 2 (démon résident) et 3 (intégration NixOS complète) : à
   concevoir plus tard.
 
