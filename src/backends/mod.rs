@@ -4,18 +4,24 @@
 
 use crate::exec::{ExecError, Executor};
 use std::fmt;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 pub mod sound;
 pub mod brightness;
 pub mod energy;
 pub mod network;
 pub mod bluetooth;
+pub mod notifications;
+pub mod power;
 
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 pub use brightness::{Brightness, BrightnessCtl};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
 pub use bluetooth::{BtDevice, BtStatus, Bluetooth, BluetoothCtl};
+pub use notifications::{Notifications, ShellCtl};
+pub use power::{Power, PowerAction, SessionPower};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +81,33 @@ pub(crate) fn spawn_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResul
     exec.spawn(prog, args).map_err(|e| exec_error(prog, e))
 }
 
+/// Tous les backends, partagés entre la boucle et le fil de travail.
+#[derive(Clone)]
+pub struct Backends {
+    pub sound: Arc<dyn Sound>,
+    pub brightness: Arc<dyn Brightness>,
+    pub network: Arc<dyn Network>,
+    pub bluetooth: Arc<dyn Bluetooth>,
+    pub energy: Arc<dyn Energy>,
+    pub notifications: Arc<dyn Notifications>,
+    pub power: Arc<dyn Power>,
+}
+
+impl Backends {
+    /// Backends v1 (outils en ligne de commande). `runtime_dir` = $XDG_RUNTIME_DIR.
+    pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
+        Backends {
+            sound: Arc::new(WpctlSound::new(exec.clone())),
+            brightness: Arc::new(BrightnessCtl::new(exec.clone())),
+            network: Arc::new(NmCli::new(exec.clone())),
+            bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
+            energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir)),
+            notifications: Arc::new(ShellCtl::new(exec.clone())),
+            power: Arc::new(SessionPower::new(exec)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,5 +141,20 @@ mod tests {
         assert_eq!(run_ok(&f, "a", &["io"]), Err(BackendError::Failed { tool: "a".into(), code: None, stderr: "tube cassé".into() }));
         assert_eq!(run_ok(&f, "absent", &[]), Err(BackendError::Missing { tool: "absent".into() }));
         assert_eq!(spawn_ok(&f, "absent", &[]), Err(BackendError::Missing { tool: "absent".into() }));
+    }
+
+    #[test]
+    fn system_branche_chaque_domaine_sur_son_outil() {
+        let f = std::sync::Arc::new(FakeExecutor::new());
+        let b = Backends::system(f.clone(), std::env::temp_dir());
+        let _ = b.sound.volume();
+        let _ = b.brightness.get();
+        let _ = b.network.status();
+        let _ = b.bluetooth.status();
+        let _ = b.energy.profiles();
+        let _ = b.notifications.dnd();
+        let _ = b.power.perform(PowerAction::Suspend);
+        let progs: Vec<String> = f.calls().iter().map(|c| c.split(' ').next().unwrap().to_string()).collect();
+        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl"]);
     }
 }
