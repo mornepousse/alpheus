@@ -55,7 +55,7 @@ impl Config {
             Err(e) => (Config::default(), Some(format!("config.toml illisible : {e}"))),
             Ok(s) => match toml::from_str::<Config>(&s) {
                 Ok(c) => (c, None),
-                Err(e) => (Config::default(), Some(format!("config.toml invalide : {}", e.to_string().lines().next().unwrap_or("erreur inconnue")))),
+                Err(e) => (Config::default(), Some(format!("config.toml invalide : {}", e.message()))),
             },
         }
     }
@@ -98,12 +98,15 @@ mod tests {
     fn invalide_donne_les_defauts_et_un_message() {
         let (c, w) = Config::load(&file("invalide", "[commands\nmixer = 3"));
         assert_eq!(c, Config::default());
-        assert!(w.unwrap().starts_with("config.toml invalide"));
+        let w = w.unwrap();
+        assert!(w.starts_with("config.toml invalide"), "{w}");
+        assert!(w.contains("expected"), "{w}");
     }
 
     #[test]
     fn champ_inconnu_signale() {
         let (_, w) = Config::load(&file("inconnu", "[commandes]\nmixer = [\"x\"]\n"));
-        assert!(w.is_some());
+        let w = w.unwrap();
+        assert!(w.contains("commandes"), "{w}");
     }
 }

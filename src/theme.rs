@@ -74,7 +74,7 @@ impl Theme {
             Ok(s) => s,
         };
         match toml::from_str::<Raw>(&s) {
-            Err(e) => (Theme::default(), Some(format!("colors.toml invalide : {}", e.to_string().lines().next().unwrap_or("erreur inconnue")))),
+            Err(e) => (Theme::default(), Some(format!("colors.toml invalide : {}", e.message()))),
             Ok(raw) => match raw.to_theme() {
                 Some(t) => (t, None),
                 None => (Theme::default(), Some("colors.toml : couleur invalide (attendu #rrggbb)".into())),
