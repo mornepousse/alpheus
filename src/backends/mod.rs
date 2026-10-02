@@ -6,8 +6,12 @@ use crate::exec::{ExecError, Executor};
 use std::fmt;
 
 pub mod sound;
+pub mod brightness;
+pub mod energy;
 
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
+pub use brightness::{Brightness, BrightnessCtl};
+pub use energy::{Energy, PowerProfiles, Profiles};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]
