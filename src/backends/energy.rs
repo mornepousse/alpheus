@@ -112,16 +112,25 @@ mod tests {
     }
 
     #[test]
+    fn detail_sans_valeur_ignore() {
+        // Un détail vide (« PlatformDriver:\t ») se termine par « : » une fois rogné.
+        let p = parse_list("* balanced:\n    PlatformDriver:\t\n  power-saver:\n").unwrap();
+        assert_eq!(p.available, vec!["balanced", "power-saver"]);
+    }
+
+    #[test]
     fn commandes_exactes() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("powerprofilesctl list", LIST);
         f.ok("powerprofilesctl set power-saver", "");
         f.ok("tools-menu Garder éveillé", "");
-        let e = PowerProfiles::new(f.clone(), temp_dir("cmd"));
+        let dir = temp_dir("cmd");
+        let e = PowerProfiles::new(f.clone(), dir.clone());
         assert_eq!(e.profiles().unwrap().active, "balanced");
         e.set_profile("power-saver").unwrap();
         e.toggle_keep_awake().unwrap();
         assert_eq!(f.calls().last().unwrap(), "tools-menu Garder éveillé");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
