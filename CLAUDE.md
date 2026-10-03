@@ -13,9 +13,10 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   **exécuté** (16 tâches + corrections de la relecture finale, fusionné
   dans `main` le 2026-10-03) et branché dans nixos-config (`Mod+A`).
   Essai réel validé par Mae le 2026-10-03 (Hyprland et niri).
-- Prochaine étape demandée : onglets **Dispositions clavier** et **Écrans**
-  (hors v1) — spec à écrire, avec Mae ; écrans via `wm-set` uniquement,
-  jamais de `dpms`.
+- Sous-projet 1 bis, onglet **Écrans** (Hyprland d'abord) : **spec écrite**
+  ([`docs/specs/2026-10-03-alpheus-ecrans-design.md`](docs/specs/2026-10-03-alpheus-ecrans-design.md)),
+  en relecture par Mae ; plan à écrire ensuite. Dispositions clavier :
+  reportées.
 - Fixtures et instantanés **anonymisés** (Wi-Fi, VPN, MAC, machine) : ne
   jamais recommiter de relevé brut du poste, le dépôt est destiné à être
   public.
