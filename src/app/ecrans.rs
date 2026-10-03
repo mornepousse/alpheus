@@ -219,7 +219,39 @@ fn enable_plan(outs: &[Output], i: usize) -> Result<Plan, String> {
         None => Placement::Origin,
     };
     let pos = resolve(&screens).map_err(|e| e.to_string())?;
+    let pos = kept_in_place(outs, &screens, pos, i);
     Ok(Plan::between(outs, &targets(outs, pos, i, (mode, Scale::ONE, 0))))
+}
+
+/// `j` est-il placé, de proche en proche, contre l'écran `i` ?
+fn follows(screens: &[Screen], mut j: usize, i: usize) -> bool {
+    for _ in 0..screens.len() {
+        if j == i {
+            return true;
+        }
+        let Placement::Relative { reference, .. } = &screens[j].placement else { return false };
+        let Some(r) = screens.iter().position(|s| s.id == *reference) else { return false };
+        j = r;
+    }
+    false
+}
+
+/// `resolve` recale l'ensemble en (0, 0) ; sur un écran en direct, on
+/// retranslate pour que rien ne bouge sans raison : un écran activé non
+/// réglé, qui ne suit pas la sortie réglée `i`, garde sa position actuelle ;
+/// s'il n'y en a aucun, c'est la sortie réglée qui garde la sienne.
+fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, i32)>>, i: usize) -> Vec<Option<(i32, i32)>> {
+    let now_at = |j: usize| outs[j].active.as_ref().map(|a| (a.x, a.y)).zip(pos[j]);
+    let anchor = (0..outs.len())
+        .filter(|&j| j != i && !follows(screens, j, i))
+        .find_map(now_at)
+        .or_else(|| now_at(i));
+    if let Some(((cx, cy), (nx, ny))) = anchor {
+        for p in pos.iter_mut().flatten() {
+            *p = (p.0 + cx - nx, p.1 + cy - ny);
+        }
+    }
+    pos
 }
 
 /// Ligne du résumé d'un essai.
@@ -576,7 +608,8 @@ impl App {
                 })
                 .collect()
         };
-        let pos = if p.place == PlaceChoice::Origin {
+        let solve = |sc: Vec<Screen>| resolve(&sc).map(|pos| (sc, pos));
+        let (sc, pos) = if p.place == PlaceChoice::Origin {
             let mut placements = deduce(&current, Some(i), None);
             if outs[i].active.is_none() {
                 // Éteinte : l'ancienne origine garde sa place (0, 0).
@@ -586,15 +619,16 @@ impl App {
                     }
                 }
             }
-            resolve(&screens(placements))
+            solve(screens(placements))
         } else {
-            match resolve(&screens(deduce(&current, None, None))) {
+            match solve(screens(deduce(&current, None, None))) {
                 // Les autres dépendaient de cet écran : ils gardent leur place.
-                Err(GeoError::Cycle(_)) => resolve(&screens(deduce(&current, None, Some(i)))),
+                Err(GeoError::Cycle(_)) => solve(screens(deduce(&current, None, Some(i)))),
                 r => r,
             }
         }
         .map_err(|e| e.to_string())?;
+        let pos = kept_in_place(outs, &sc, pos, i);
         let plan = Plan::between(outs, &targets(outs, pos, i, (p.mode, p.scale, p.transform)));
         if plan.steps.is_empty() { Err("aucun changement".into()) } else { Ok(plan) }
     }
@@ -1312,6 +1346,53 @@ mod tests {
         assert_eq!((p.place, p.reference.as_deref()), (PlaceChoice::Rel(Relation::RightOf), Some(BRAVO)));
         let plan = a.panel_preview(&p).unwrap();
         assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y)), Some((4053, 0)));
+    }
+
+    /// Le poste, dalle interne éteinte : l'agencement commence en (213, 0).
+    fn sans_portable() -> Vec<Output> {
+        let mut outs = poste();
+        outs[0] = off("eDP-1", INTERNE);
+        outs
+    }
+
+    #[test]
+    fn espace_sur_un_ecran_eteint_les_autres_ne_bougent_pas() {
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(sans_portable());
+        a.toggle_output("eDP-1", Instant::now());
+        let (plan, _) = sent_trial(&mut a);
+        assert_eq!(plan.steps, vec![Step {
+            output: "eDP-1".into(),
+            active: Some(Active { mode: mode(1920, 1080, 60), x: 4053, y: 0, scale: Scale::ONE, transform: 0 }),
+        }], "Alpha et Bravo restent en 213 et 2133");
+    }
+
+    #[test]
+    fn agencement_hors_origine_panneau_sans_changement() {
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(sans_portable());
+        for name in ["HDMI-A-1", "DVI-I-1"] {
+            a.open_panel(name, Instant::now());
+            assert_eq!(a.panel_preview(&panel(&a)), Err("aucun changement".into()), "{name}");
+        }
+        // Un vrai réglage ne déplace que l'écran réglé.
+        a.open_panel("HDMI-A-1", Instant::now());
+        let mut p = panel(&a);
+        p.scale = Scale(1250);
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!(plan.steps.len(), 1, "seul Bravo change : {plan:?}");
+        assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y)), Some((2133, 0)));
+        // Alpha réglée, Bravo à sa droite : Bravo suit, Alpha reste en 213, 0.
+        a.open_panel("DVI-I-1", Instant::now());
+        let mut p = panel(&a);
+        p.scale = Scale(1250);
+        let plan = a.panel_preview(&p).unwrap();
+        let at = |o: &str| plan.steps.iter().find(|s| s.output == o).and_then(|s| s.active.as_ref().map(|a| (a.x, a.y)));
+        assert_eq!((at("DVI-I-1"), at("HDMI-A-1")), (Some((213, 0)), Some((1749, 0))));
+        // Dalle seule, en 0, 1080.
+        a.data.displays = Loadable::Ready(vec![poste()[0].clone()]);
+        a.open_panel("eDP-1", Instant::now());
+        assert_eq!(a.panel_preview(&panel(&a)), Err("aucun changement".into()));
     }
 
     // ── Enregistrer l'actuel ─────────────────────────────────────────
