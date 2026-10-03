@@ -3,6 +3,7 @@
 
 pub mod draw;
 pub mod hit;
+mod overlays;
 mod tabs;
 
 pub use hit::{HitMap, Target};
@@ -35,6 +36,7 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
     tabs::render(buf, body, app, &mut hits);
     status_line(buf, bar(area.bottom() - 2), app);
     shortcut_bar(buf, bar(area.bottom() - 1), app);
+    overlays::render(buf, area, app, &mut hits);
     hits
 }
 
@@ -138,7 +140,9 @@ mod tests {
     use super::*;
     use crate::app::testing::{app, node, ready_app};
     use crate::app::keymap::Keymap;
-    use crate::app::{Loadable, SliderId};
+    use crate::app::worker::{Op, Update};
+    use crate::app::{Confirm, Loadable, Overlay, Palette, SliderId};
+    use crate::backends::PowerAction;
     use crate::config::KeysConfig;
     use std::collections::BTreeMap;
     use std::time::Instant;
@@ -288,6 +292,75 @@ mod tests {
         for t in Tab::ALL {
             a.go_tab(t, Instant::now());
             insta::assert_snapshot!(format!("onglet_{}", t.index() + 1), draw(&a, 80, 24).0.join("\n"));
+        }
+    }
+
+    #[test]
+    fn aide() {
+        let mut a = ready_app();
+        a.overlay = Overlay::Help;
+        let (rows, hits) = draw(&a, 80, 30);
+        let all = rows.join("\n");
+        assert!(all.contains("Palette de commandes") && all.contains("Ctrl+P"));
+        assert!(all.contains("Aide — Échap pour fermer"));
+        assert_eq!(hits.at(40, 15).map(|h| h.1), Some(Target::Overlay));
+    }
+
+    #[test]
+    fn palette() {
+        let mut a = ready_app();
+        a.overlay = Overlay::Palette(Palette { query: "wifi".into(), selected: 0 });
+        let (rows, hits) = draw(&a, 80, 24);
+        let all = rows.join("\n");
+        assert!(all.contains("> wifi▏") && all.contains("Wi-Fi"));
+        assert!(hits.find(Target::PaletteEntry(0)).is_some());
+        a.overlay = Overlay::Palette(Palette { query: "zzz".into(), selected: 0 });
+        assert!(draw(&a, 80, 24).0.join("\n").contains("aucune commande"));
+    }
+
+    #[test]
+    fn palette_defile_jusqu_a_la_selection() {
+        let mut a = ready_app();
+        let n = a.palette_matches().len();
+        a.overlay = Overlay::Palette(Palette { query: String::new(), selected: n - 1 });
+        let (rows, hits) = draw(&a, 80, 24);
+        assert!(rows.join("\n").contains("Éteindre"), "dernière entrée visible");
+        assert!(hits.find(Target::PaletteEntry(n - 1)).is_some());
+        assert!(hits.find(Target::PaletteEntry(0)).is_none());
+    }
+
+    #[test]
+    fn confirmation() {
+        let mut a = ready_app();
+        a.overlay = Overlay::Confirm(Confirm { action: PowerAction::Poweroff, yes_focused: false });
+        let (rows, hits) = draw(&a, 80, 24);
+        let all = rows.join("\n");
+        assert!(all.contains("Éteindre l'ordinateur ?") && all.contains("[ Annuler ]") && all.contains("[ Confirmer ]"));
+        let no = hits.find(Target::ConfirmNo).unwrap();
+        let yes = hits.find(Target::ConfirmYes).unwrap();
+        assert!(no.x < yes.x && no.y == yes.y);
+    }
+
+    #[test]
+    fn messages_en_coin() {
+        let mut a = ready_app();
+        a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
+        let rows = draw(&a, 80, 24).0;
+        assert!(rows[1].trim_end().ends_with("✓ Wi-Fi : désactivé"), "{:?}", rows[1]);
+    }
+
+    #[test]
+    fn surcouches_sans_panique_en_petite_fenetre() {
+        let mut a = ready_app();
+        for o in [
+            Overlay::Help,
+            Overlay::Palette(Palette::default()),
+            Overlay::Confirm(Confirm { action: PowerAction::Reboot, yes_focused: true }),
+        ] {
+            a.overlay = o;
+            for (w, h) in [(30, 8), (31, 9), (40, 10)] {
+                draw(&a, w, h);
+            }
         }
     }
 }
