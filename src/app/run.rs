@@ -6,7 +6,7 @@
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
 use super::App;
-use crate::backends::{Backends, Displays, WmSetDisplays};
+use crate::backends::{BResult, Backends, Displays, WmSetDisplays};
 use crate::config::Config;
 use crate::displays::{profiles, Plan};
 use crate::exec::SystemExecutor;
@@ -16,7 +16,8 @@ use crate::ui;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
-use std::io;
+use std::ffi::OsString;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -70,12 +71,23 @@ fn record_undo(slot: &Mutex<ExitUndo>, plan: Option<Plan>) {
 /// lancent jamais deux fois ni en même temps — et celui qui arrive second
 /// attend la fin du retour avant de continuer (la garde n'appelle donc
 /// `exit` qu'après). Durée bornée : chaque étape `wm-set` est tuée au bout
-/// de `TOOL_TIMEOUT`.
-fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) {
+/// de `TOOL_TIMEOUT`. Renvoie l'échec du retour (rien à défaire : `Ok`).
+fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) -> BResult<()> {
     let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
     g.done = true;
-    if let Some(plan) = g.plan.take() {
-        let _ = displays.apply(&plan);
+    match g.plan.take() {
+        Some(plan) => displays.apply(&plan),
+        None => Ok(()),
+    }
+}
+
+/// Un retour de sortie raté laisse Mae avec les réglages rejetés : on le dit
+/// sur la sortie d'erreur (le terminal est déjà restauré). `writeln!` et non
+/// `eprintln!` : après un SIGHUP, stderr peut répondre EIO, et `eprintln!`
+/// paniquerait — dans `Drop`, pendant un déroulement, ce serait un abort.
+fn signaler_retour(r: BResult<()>, err: &mut dyn Write) {
+    if let Err(e) = r {
+        let _ = writeln!(err, "alpheus : retour des écrans impossible : {e}");
     }
 }
 
@@ -85,7 +97,7 @@ fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) {
 /// avec un exécuteur à part.
 fn fermer(kill_running: impl FnOnce(), slot: &Mutex<ExitUndo>, displays: &dyn Displays) {
     kill_running();
-    undo_on_exit(slot, displays);
+    signaler_retour(undo_on_exit(slot, displays), &mut io::stderr());
 }
 
 /// Lance le fil de garde. Fenêtre fermée (SIGHUP), crossterm peut tourner
@@ -145,6 +157,11 @@ fn surveiller(fin: &AtomicBool, finie: &AtomicBool, grace: Duration, pas: Durati
     }
     forcer();
     true
+}
+
+/// Session niri ? (D'après `NIRI_SOCKET`.)
+fn niri_actif(socket: Option<OsString>) -> bool {
+    socket.is_some()
 }
 
 /// La boucle doit-elle s'arrêter ? (« q » ou signal de fin reçu.)
@@ -212,7 +229,7 @@ pub fn run() -> io::Result<()> {
     installer_signaux()?;
     let mut app = build_app(&config_dir(), Instant::now());
     // Sous niri, l'onglet Écrans n'appelle rien (pas encore pris en charge).
-    app.ecrans.niri = std::env::var_os("NIRI_SOCKET").is_some();
+    app.ecrans.niri = niri_actif(std::env::var_os("NIRI_SOCKET"));
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
     // Exécuteur à part pour défaire un essai d'écrans à la fermeture : celui
@@ -298,11 +315,11 @@ mod tests {
         f.ok("wm-set monitor-disable HDMI-A-1", "");
         let d = WmSetDisplays::new(f.clone());
         let slot = slot_avec(Some(plan_retour()));
-        undo_on_exit(&slot, &d); // nettoyage de sortie
-        undo_on_exit(&slot, &d); // puis fil de garde : rien à refaire
+        let _ = undo_on_exit(&slot, &d); // nettoyage de sortie
+        let _ = undo_on_exit(&slot, &d); // puis fil de garde : rien à refaire
         assert_eq!(f.calls(), vec!["wm-set monitor-disable HDMI-A-1"]);
         assert_eq!(slot.lock().unwrap().plan, None);
-        undo_on_exit(&slot_avec(None), &d);
+        let _ = undo_on_exit(&slot_avec(None), &d);
         assert_eq!(f.calls().len(), 1, "aucun essai : aucun appel");
     }
 
@@ -316,9 +333,9 @@ mod tests {
         f.ok("wm-set monitor-disable HDMI-A-1", "");
         let d = WmSetDisplays::new(f.clone());
         let slot = slot_avec(Some(plan_retour()));
-        undo_on_exit(&slot, &d); // fil de garde
+        let _ = undo_on_exit(&slot, &d); // fil de garde
         record_undo(&slot, Some(plan_retour())); // la boucle repasse
-        undo_on_exit(&slot, &d); // nettoyage
+        let _ = undo_on_exit(&slot, &d); // nettoyage
         assert_eq!(f.calls().len(), 1, "un seul retour : {:?}", f.calls());
     }
 
@@ -328,7 +345,7 @@ mod tests {
         let d = WmSetDisplays::new(f.clone());
         let slot = slot_avec(Some(plan_retour()));
         record_undo(&slot, None); // Mae a gardé les réglages
-        undo_on_exit(&slot, &d);
+        let _ = undo_on_exit(&slot, &d);
         assert!(f.calls().is_empty(), "{:?}", f.calls());
     }
 
@@ -345,6 +362,29 @@ mod tests {
     }
 
     #[test]
+    fn retour_impossible_signale() {
+        // wm-set échoue (ici : réponse non programmée, « introuvable »).
+        let f = Arc::new(FakeExecutor::new());
+        let d = WmSetDisplays::new(f.clone());
+        let r = undo_on_exit(&slot_avec(Some(plan_retour())), &d);
+        assert!(r.is_err(), "l'échec du retour remonte : {r:?}");
+        let mut err = Vec::new();
+        signaler_retour(r, &mut err);
+        let msg = String::from_utf8(err).unwrap();
+        assert!(msg.starts_with("alpheus : retour des écrans impossible : "), "{msg:?}");
+        assert!(msg.ends_with('\n'));
+        let mut err = Vec::new();
+        signaler_retour(undo_on_exit(&slot_avec(None), &d), &mut err);
+        assert!(err.is_empty(), "rien à défaire : rien à dire");
+    }
+
+    #[test]
+    fn niri_detecte_par_son_socket() {
+        assert!(niri_actif(Some("/run/user/1000/niri.sock".into())));
+        assert!(!niri_actif(None));
+    }
+
+    #[test]
     fn la_garde_attend_le_retour_en_cours() {
         // Le nettoyage applique un retour lent ; la garde, déclenchée pendant,
         // attend sa fin au lieu de le doubler (ou de tuer alpheus au milieu).
@@ -353,14 +393,16 @@ mod tests {
         let d: Arc<dyn Displays> = Arc::new(WmSetDisplays::new(f.clone()));
         let slot: UndoSlot = Arc::new(slot_avec(Some(plan_retour())));
         let (s2, d2) = (slot.clone(), d.clone());
-        let h = std::thread::spawn(move || undo_on_exit(&s2, &*d2));
+        let h = std::thread::spawn(move || {
+            let _ = undo_on_exit(&s2, &*d2);
+        });
         let t0 = Instant::now();
         while f.calls().is_empty() {
             assert!(t0.elapsed() < Duration::from_secs(2), "le retour n'a pas démarré");
             std::thread::yield_now();
         }
         let t = Instant::now();
-        undo_on_exit(&slot, &*d);
+        let _ = undo_on_exit(&slot, &*d);
         assert!(t.elapsed() >= Duration::from_millis(100), "la garde a attendu ({:?})", t.elapsed());
         h.join().unwrap();
         assert_eq!(f.calls().len(), 1, "un seul retour");
