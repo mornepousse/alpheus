@@ -27,8 +27,16 @@ use worker::{domains, Domain, Op, Request, Update};
 pub const STEP: i32 = 5;
 /// Durée de vie d'un message éphémère.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
-/// Période de rafraîchissement de l'Accueil (seul onglet rafraîchi en continu).
-pub const HOME_REFRESH: Duration = Duration::from_secs(1);
+/// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
+/// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
+/// (rien à lire).
+pub fn refresh_period(tab: Tab) -> Option<Duration> {
+    match tab {
+        Tab::Accueil => Some(Duration::from_secs(1)),
+        Tab::Son | Tab::Reseau | Tab::Bluetooth => Some(Duration::from_secs(2)),
+        Tab::Alimentation => None,
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Loadable<T> {
@@ -375,7 +383,8 @@ impl App {
 
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
-        if self.tab == Tab::Accueil && now.duration_since(self.last_refresh) >= HOME_REFRESH {
+        let due = refresh_period(self.tab).is_some_and(|p| now.duration_since(self.last_refresh) >= p);
+        if due {
             // Un domaine en échec n'est plus sondé au tic : un outil cassé
             // (shell-ctl notifie chacun de ses échecs) ne doit pas être relancé
             // chaque seconde. Il est relu à l'entrée dans l'onglet ou après une action.
@@ -1071,11 +1080,28 @@ mod tests {
     }
 
     #[test]
-    fn tic_hors_accueil_ne_fait_rien() {
+    fn tic_rafraichit_son_reseau_bluetooth_toutes_les_deux_secondes() {
+        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth)] {
+            let mut a = ready_app();
+            let t0 = Instant::now();
+            a.go_tab(tab, t0);
+            a.take_requests();
+            a.on_tick(t0 + Duration::from_millis(1100));
+            assert!(a.take_requests().is_empty(), "{tab:?} : pas relu à 1 s");
+            a.on_tick(t0 + Duration::from_millis(2100));
+            assert_eq!(a.take_requests(), vec![Request::Refresh(vec![d])], "{tab:?} : relu à 2 s");
+            a.on_tick(t0 + Duration::from_millis(3000));
+            assert!(a.take_requests().is_empty(), "{tab:?} : période repartie de la relecture");
+        }
+    }
+
+    #[test]
+    fn tic_ne_relit_rien_sur_l_alimentation() {
         let mut a = ready_app();
-        a.go_tab(Tab::Son, Instant::now());
+        let t0 = Instant::now();
+        a.go_tab(Tab::Alimentation, t0);
         a.take_requests();
-        a.on_tick(later(5000));
+        a.on_tick(t0 + Duration::from_secs(60));
         assert!(a.take_requests().is_empty());
     }
 
