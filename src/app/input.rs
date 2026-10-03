@@ -413,6 +413,17 @@ mod tests {
         a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::ApplyDisplays { undo: None, .. })))
     }
 
+    /// Le fil répond au retour, puis une relecture fraîche arrive.
+    fn retour_applique_et_relu(a: &mut App) {
+        let r = a.take_requests();
+        let Some(Request::Do(op)) = r.into_iter().find(|q| matches!(q, Request::Do(Op::ApplyDisplays { undo: None, .. }))) else {
+            panic!("retour attendu")
+        };
+        a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.take_requests();
+    }
+
     #[test]
     fn profils_au_clavier() {
         let mut a = ecrans();
@@ -430,9 +441,8 @@ mod tests {
         c(&mut a, ' ');
         applique(&mut a);
         k(&mut a, KeyCode::Enter); // focus sur Annuler
-        assert!(retour_envoye(&mut a), "Entrée par réflexe : retour");
         assert_eq!(a.overlay, Overlay::None);
-        a.ecrans.undoing = None;
+        retour_applique_et_relu(&mut a); // « Entrée par réflexe : retour »
         c(&mut a, ' ');
         applique(&mut a);
         k(&mut a, KeyCode::Right);
@@ -440,6 +450,8 @@ mod tests {
         k(&mut a, KeyCode::Enter);
         assert_eq!(a.ecrans.trial, None);
         assert!(!retour_envoye(&mut a), "gardé");
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.take_requests();
         c(&mut a, ' ');
         applique(&mut a);
         k(&mut a, KeyCode::Esc);

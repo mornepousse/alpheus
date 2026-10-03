@@ -179,22 +179,33 @@ fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focus
 pub fn keep(buf: &mut Buffer, area: Rect, app: &App, k: &Keep, hits: &mut HitMap) {
     let th = &app.theme;
     let Some(t) = &app.ecrans.trial else { return };
-    let mut lines: Vec<(String, Style)> = vec![(t.title.clone(), Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD))];
     let text = Style::default().fg(th.fg).bg(th.surface);
-    lines.extend(t.summary.iter().map(|s| (s.clone(), text)));
-    lines.extend(t.notes.iter().map(|s| (s.clone(), Style::default().fg(th.muted).bg(th.surface))));
+    // Tête : titre, résumé, absents — coupée par le bas si la fenêtre est
+    // basse. Pied : avertissement DisplayLink, ligne vide (sacrifiée la
+    // première) et compte à rebours, toujours visibles.
+    let mut head: Vec<(String, Style)> = vec![(t.title.clone(), text.add_modifier(Modifier::BOLD))];
+    head.extend(t.summary.iter().map(|s| (s.clone(), text)));
+    head.extend(t.notes.iter().map(|s| (s.clone(), Style::default().fg(th.muted).bg(th.surface))));
+    let mut foot: Vec<(String, Style)> = Vec::new();
     if t.displaylink {
-        lines.push(("⚠ Sortie DisplayLink : risque de gel connu sur ce poste".into(), Style::default().fg(th.error).bg(th.surface)));
+        foot.push(("⚠ Sortie DisplayLink : risque de gel connu sur ce poste".into(), Style::default().fg(th.error).bg(th.surface)));
     }
-    lines.push((String::new(), text));
     let wait = match t.deadline {
         None => "Application en cours…".to_string(),
         Some(_) => format!("Retour automatique dans {} s", t.remaining),
     };
-    lines.push((wait, Style::default().fg(th.accent).bg(th.surface)));
-    let r = centered(area, 66, lines.len() as u16 + 3);
+    foot.push((String::new(), text));
+    foot.push((wait, Style::default().fg(th.accent).bg(th.surface)));
+    let r = centered(area, 66, (head.len() + foot.len()) as u16 + 3);
     let inner = frame(buf, r, " Garder ces réglages ? ", app, hits);
-    for (n, (l, style)) in lines.iter().enumerate().take(usize::from(inner.height.saturating_sub(1))) {
+    let room = usize::from(inner.height.saturating_sub(1));
+    if head.len() + foot.len() > room {
+        foot.remove(foot.len() - 2); // la ligne vide
+    }
+    head.truncate(room.saturating_sub(foot.len()));
+    let skip = foot.len().saturating_sub(room); // extrême : le compte à rebours d'abord
+    let lines: Vec<_> = head.iter().chain(foot.iter().skip(skip)).collect();
+    for (n, (l, style)) in lines.iter().enumerate() {
         put(buf, inner, inner.x + 1, inner.y + n as u16, &truncate(l, usize::from(inner.width.saturating_sub(2))), *style);
     }
     let y = inner.y + inner.height.saturating_sub(1);

@@ -396,6 +396,21 @@ mod tests {
     }
 
     #[test]
+    fn boite_garder_en_petite_hauteur_garde_le_compte_a_rebours() {
+        let mut a = ecrans();
+        a.apply_display_profile("Bureau", Instant::now());
+        let r = a.take_requests();
+        let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
+        a.on_update(Update::Done(op, Ok(())), Instant::now());
+        for h in [MIN_H, MIN_H + 1, 10] {
+            let all = draw(&a, 80, h).0.join("\n");
+            assert!(all.contains("Retour automatique dans 15 s"), "h={h}\n{all}");
+            assert!(all.contains("⚠ Sortie DisplayLink"), "h={h}\n{all}");
+            assert!(all.contains("[ Annuler ]"), "h={h}\n{all}");
+        }
+    }
+
+    #[test]
     fn ecrans_sans_panique_en_petite_fenetre() {
         let mut a = ecrans();
         a.toggle_output("DVI-I-1", Instant::now());

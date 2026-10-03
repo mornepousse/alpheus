@@ -29,6 +29,10 @@ pub struct Ecrans {
     pub undoing: Option<Plan>,
     /// Profil demandé par la palette : appliqué à la prochaine lecture.
     pub queued_profile: Option<String>,
+    /// Un plan a répondu et aucune lecture fraîche n'est encore arrivée :
+    /// les sorties connues peuvent être celles d'un essai rejeté, on ne
+    /// planifie rien dessus.
+    pub awaiting_read: bool,
     /// Session niri : l'onglet n'appelle rien.
     pub niri: bool,
 }
@@ -174,7 +178,7 @@ impl App {
 
     /// Un changement d'écran est-il en cours ? (Prévient par un message.)
     fn displays_busy(&mut self, now: Instant) -> bool {
-        let busy = self.ecrans.trial.is_some() || self.ecrans.undoing.is_some();
+        let busy = self.ecrans.trial.is_some() || self.ecrans.undoing.is_some() || self.ecrans.awaiting_read;
         if busy {
             self.toast("Écrans : un changement est déjà en cours".into(), true, now);
         }
@@ -196,6 +200,9 @@ impl App {
         if self.data.displays.ready().is_none() {
             return;
         }
+        // Lecture postérieure à toute réponse de plan (les lectures en vol
+        // pendant un plan sont écartées) : base fiable pour la suite.
+        self.ecrans.awaiting_read = false;
         if let Some(t) = &self.ecrans.trial {
             if t.deadline.is_some() && changed_elsewhere(&t.before, &t.plan, &outs) {
                 self.ecrans.trial = None;
@@ -213,6 +220,7 @@ impl App {
     /// Réponse du fil à un plan d'écrans.
     pub(crate) fn displays_done(&mut self, op: Op, r: BResult<()>, now: Instant) {
         let Op::ApplyDisplays { plan, undo } = op else { return };
+        self.ecrans.awaiting_read = true;
         match (undo, r) {
             (Some(_), Ok(())) => {
                 if let Some(t) = &mut self.ecrans.trial {
@@ -345,7 +353,7 @@ impl App {
 
     /// Espace sur une sortie : l'activer, ou la désactiver (jamais la dernière).
     pub(crate) fn toggle_output(&mut self, name: &str, now: Instant) {
-        if self.displays_busy(now) {
+        if self.ecrans.niri || self.displays_busy(now) {
             return;
         }
         let outs = self.outputs().to_vec();
@@ -432,6 +440,99 @@ mod tests {
         (a, plan, undo)
     }
 
+    /// Les sorties telles que `plan` les laisse (relecture conforme).
+    fn relu(plan: &Plan) -> Vec<Output> {
+        let mut outs = poste();
+        for s in &plan.steps {
+            let o = outs.iter_mut().find(|o| o.name == s.output).unwrap();
+            o.active = s.active.clone();
+        }
+        outs
+    }
+
+    fn sans_do(a: &mut App) -> bool {
+        !a.take_requests().iter().any(|r| matches!(r, Request::Do(_)))
+    }
+
+    #[test]
+    fn verrou_jusqu_a_une_relecture_fraiche() {
+        let t0 = Instant::now();
+        let (mut a, plan, undo) = applied(t0);
+        // Lecture prise pendant l'essai : elle montre les réglages essayés.
+        a.on_update(Update::Displays(Ok(relu(&plan))), t0);
+        a.keep_answer(false, t0);
+        assert_eq!(sent_undo(&mut a), undo);
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: undo.clone(), undo: None }, Ok(())), t0);
+        assert_eq!(a.ecrans.undoing, None);
+        // Les données sont encore celles de l'essai rejeté : rien ne doit partir.
+        a.toggle_output("HDMI-A-1", t0);
+        a.apply_display_profile("Laptop seul", t0);
+        assert!(sans_do(&mut a), "pas de réglage sur une lecture périmée");
+        assert_eq!(a.ecrans.trial, None);
+        assert!(a.toasts.iter().any(|t| t.text == "Écrans : un changement est déjà en cours"));
+        // Relecture fraîche : l'état rétabli sert de base, et de retour.
+        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.toggle_output("HDMI-A-1", t0);
+        let (p, u) = sent_trial(&mut a);
+        assert_eq!(u, Plan::undo(&poste(), &p));
+        assert_eq!(a.ecrans.trial.as_ref().unwrap().before, poste());
+
+        // Garder avant toute relecture : même verrou.
+        let (mut a, _, _) = applied(t0);
+        a.keep_answer(true, t0);
+        assert_eq!(a.ecrans.trial, None);
+        a.toggle_output("HDMI-A-1", t0);
+        assert!(sans_do(&mut a), "gardé mais pas encore relu");
+        a.on_update(Update::Displays(Ok(relu(&plan))), t0);
+        a.toggle_output("HDMI-A-1", t0);
+        let (_, u) = sent_trial(&mut a);
+        assert_eq!(u, Plan::undo(&relu(&plan), &Plan { steps: vec![Step { output: "HDMI-A-1".into(), active: None }] }));
+    }
+
+    #[test]
+    fn annuler_avant_la_reponse_puis_succes() {
+        let t0 = Instant::now();
+        let mut a = ecrans();
+        a.apply_display_profile("Bureau", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.keep_answer(false, t0);
+        assert_eq!(sent_undo(&mut a), undo, "Annuler pendant l'application : retour aussitôt");
+        a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo.clone()) }, Ok(())), t0);
+        assert_eq!((a.ecrans.trial.clone(), a.overlay.clone()), (None, Overlay::None), "l'essai ne renaît pas");
+        assert_eq!(a.exit_undo(), Some(undo.clone()), "le retour en vol reste à refaire");
+        a.on_tick(later(t0, 20_000));
+        assert!(sans_do(&mut a), "pas de second retour à l'échéance");
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: undo, undo: None }, Ok(())), t0);
+        assert_eq!(a.exit_undo(), None);
+        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.take_requests();
+        a.toggle_output("HDMI-A-1", t0);
+        sent_trial(&mut a);
+    }
+
+    #[test]
+    fn annuler_avant_la_reponse_puis_echec() {
+        let t0 = Instant::now();
+        let mut a = ecrans();
+        a.apply_display_profile("Bureau", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.keep_answer(false, t0);
+        assert_eq!(sent_undo(&mut a), undo);
+        let e = BackendError::Timeout { tool: "wm-set".into() };
+        a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo.clone()) }, Err(e)), t0);
+        assert_eq!(sent_undo(&mut a), undo, "second retour envoyé");
+        assert_eq!(a.ecrans.trial, None);
+        for _ in 0..2 {
+            a.on_update(Update::Done(Op::ApplyDisplays { plan: undo.clone(), undo: None }, Ok(())), t0);
+        }
+        assert_eq!(a.ecrans.undoing, None);
+        assert_eq!(a.exit_undo(), None);
+        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.take_requests();
+        a.toggle_output("HDMI-A-1", t0);
+        sent_trial(&mut a);
+    }
+
     #[test]
     fn elements_de_l_onglet() {
         let mut a = ready_app();
@@ -457,6 +558,10 @@ mod tests {
         assert!(!a.palette_matches().iter().any(|(l, _)| l.starts_with("Profil d'écran")));
         a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
         assert_eq!(a.ecrans.queued_profile, None);
+        a.take_requests();
+        a.toggle_output("HDMI-A-1", Instant::now());
+        assert!(a.take_requests().is_empty(), "ni la bascule d'une sortie");
+        assert_eq!(a.ecrans.trial, None);
     }
 
     #[test]
