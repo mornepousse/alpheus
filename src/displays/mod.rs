@@ -3,6 +3,8 @@
 //! (`backends::displays`) exécute les plans, la géométrie et les profils
 //! les calculent.
 
+pub mod geometry;
+
 use std::fmt;
 
 /// Mode d'affichage, fréquence arrondie à l'entier comme dans `wm-set
