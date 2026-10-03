@@ -27,12 +27,12 @@ use worker::{domains, Domain, Op, Request, Update};
 pub const STEP: i32 = 5;
 /// Durée de vie d'un message éphémère.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
-/// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
-/// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
-/// (rien à lire).
 /// Un domaine en échec est relu au plus une fois par cette période.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
+/// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
+/// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
+/// (rien à lire).
 pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
         Tab::Accueil => Some(Duration::from_secs(1)),
