@@ -239,7 +239,8 @@ fn follows(screens: &[Screen], mut j: usize, i: usize) -> bool {
 /// `resolve` recale l'ensemble en (0, 0) ; sur un écran en direct, on
 /// retranslate pour que rien ne bouge sans raison : un écran activé non
 /// réglé, qui ne suit pas la sortie réglée `i`, garde sa position actuelle ;
-/// s'il n'y en a aucun, c'est la sortie réglée qui garde la sienne.
+/// s'il n'y en a aucun, c'est la sortie réglée qui garde la sienne. Puis
+/// aucune coordonnée négative.
 fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, i32)>>, i: usize) -> Vec<Option<(i32, i32)>> {
     let now_at = |j: usize| outs[j].active.as_ref().map(|a| (a.x, a.y)).zip(pos[j]);
     let anchor = (0..outs.len())
@@ -250,6 +251,14 @@ fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, 
         for p in pos.iter_mut().flatten() {
             *p = (p.0 + cx - nx, p.1 + cy - ny);
         }
+    }
+    // Jamais de coordonnée négative : sur l'axe qui déborde seulement, tout
+    // l'ensemble glisse pour que le minimum soit 0 (un écran placé à gauche
+    // ou au-dessus de tout pousse légitimement les autres).
+    let min_x = pos.iter().flatten().map(|p| p.0).min().unwrap_or(0).min(0);
+    let min_y = pos.iter().flatten().map(|p| p.1).min().unwrap_or(0).min(0);
+    for p in pos.iter_mut().flatten() {
+        *p = (p.0 - min_x, p.1 - min_y);
     }
     pos
 }
@@ -1415,6 +1424,38 @@ mod tests {
         a.data.displays = Loadable::Ready(vec![poste()[0].clone()]);
         a.open_panel("eDP-1", Instant::now());
         assert_eq!(a.panel_preview(&panel(&a)), Err("aucun changement".into()));
+    }
+
+    #[test]
+    fn jamais_de_coordonnee_negative_apres_ancrage() {
+        let at = |plan: &Plan, o: &str| plan.steps.iter().find(|s| s.output == o).and_then(|s| s.active.as_ref().map(|a| (a.x, a.y)));
+        // Portable éteint, Bravo à gauche d'Alpha (213, 0) : tout glisse à droite.
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(sans_portable());
+        a.open_panel("HDMI-A-1", Instant::now());
+        let mut p = panel(&a);
+        p.place = PlaceChoice::Rel(Relation::LeftOf);
+        p.reference = Some(ALPHA.into());
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!((at(&plan, "HDMI-A-1"), at(&plan, "DVI-I-1")), (Some((0, 0)), Some((1920, 0))), "{plan:?}");
+        // Poste complet, Portable au-dessus d'Alpha : tout descend, x inchangés.
+        let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        let mut p = panel(&a);
+        p.place = PlaceChoice::Rel(Relation::Above);
+        p.reference = Some(ALPHA.into());
+        p.align = Align::Start;
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!(
+            (at(&plan, "eDP-1"), at(&plan, "DVI-I-1"), at(&plan, "HDMI-A-1")),
+            (Some((213, 0)), Some((213, 1600)), Some((2133, 1600))),
+            "{plan:?}"
+        );
+        // Tout reste positif : seul l'écran réglé bouge.
+        p.place = PlaceChoice::Rel(Relation::Below);
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!(plan.steps.len(), 1, "{plan:?}");
+        assert_eq!(at(&plan, "eDP-1"), Some((213, 1080)));
     }
 
     // ── Enregistrer l'actuel ─────────────────────────────────────────
