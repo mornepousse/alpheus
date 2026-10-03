@@ -24,6 +24,10 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   écrite** ([`docs/specs/2026-10-04-alpheus-demon-barre-design.md`](docs/specs/2026-10-04-alpheus-demon-barre-design.md)),
   en relecture par Mae. Vision : autant que DMS/Noctalia, dans le budget.
   Pile mesurée : smithay-client-toolkit + cosmic-text (≈ 4,5 Mo).
+- **Portabilité** (après la barre, accord de Mae 2026-10-04) : livrer ou
+  rendre configurables les dépendances aux scripts de nixos-config (`wm-set`,
+  `shell-ctl`, `tools-menu`, `alpheus-toggle`) avec repli neutre ; touches
+  Dvorak désactivées par défaut (activées chez Mae via son `config.toml`).
 - Sous-projet 3 (intégration NixOS complète) : à concevoir plus tard.
 
 ## Règles
