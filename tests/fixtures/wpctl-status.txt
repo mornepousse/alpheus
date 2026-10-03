@@ -1,0 +1,54 @@
+PipeWire 'pipewire-0' [1.6.6, usr@pc1, cookie:123456789]
+ └─ Clients:
+        34. .xdg-desktop-portal-wrapped         [1.6.6, usr@pc1, pid:3129]
+        35. WirePlumber                         [1.6.6, usr@pc1, pid:3221]
+        43. WirePlumber [export]                [1.6.6, usr@pc1, pid:3221]
+        44. .xdg-desktop-portal-hyprland-wrapped [1.6.6, usr@pc1, pid:3231]
+       100. pipewire                            [1.6.6, usr@pc1, pid:3342]
+       101. Firefox                             [1.6.6, usr@pc1, pid:3524]
+       108. WirePlumber                         [1.6.6, usr@pc1, pid:3221]
+       135. wpctl                               [1.6.6, usr@pc1, pid:639018]
+
+Audio
+ ├─ Devices:
+ │      75. CasqueBT                            [bluez5]
+ │      84. Dell Universal Dock D6000           [alsa]
+ │     124. GA107 High Definition Audio Controller [alsa]
+ │     125. 600 Series Chipset Family HD Audio  [alsa]
+ │
+ ├─ Sinks:
+ │      64. Dock D6000 Dell                     [vol: 0.75]
+ │     111. 600 Series Chipset Family HD Audio HDMI / DisplayPort 1 Output [vol: 1.00]
+ │  *  116. CasqueBT                            [vol: 0.62]
+ │     126. 600 Series Chipset Family HD Audio HDMI / DisplayPort 3 Output [vol: 1.00]
+ │     130. 600 Series Chipset Family HD Audio Speaker [vol: 0.94]
+ │     131. 600 Series Chipset Family HD Audio HDMI / DisplayPort 2 Output [vol: 1.00]
+ │
+ ├─ Sources:
+ │      63. Dell Universal Dock D6000 Digital Stereo (IEC958) [vol: 1.00]
+ │     113. 600 Series Chipset Family HD Audio Stereo Microphone [vol: 1.00]
+ │     121. 600 Series Chipset Family HD Audio Digital Microphone [vol: 0.35]
+ │
+ ├─ Filters:
+ │    - loopback-3221-23
+ │     110. bluez_capture_internal.AA:BB:CC:DD:EE:01                     [Stream/Input/Audio/Internal]
+ │  *  118. bluez_input.AA:BB:CC:DD:EE:01                                [Audio/Source]
+ │
+ └─ Streams:
+       102. Firefox
+            103. output_FL       > CasqueBT:playback_FL	[active]
+            104. output_FR       > CasqueBT:playback_FR	[active]
+
+Video
+ ├─ Devices:
+ │      54. Integrated RGB Camera               [v4l2]
+ │      60. Integrated RGB Camera: Integrat     [libcamera]
+ │
+ ├─ Sinks:
+ │
+ ├─ Sources:
+ │  *   94. Integrated RGB Camera (V4L2)
+ │      96. Integrated RGB Camera (V4L2)
+ │
+ ├─ Filters:
+ │

@@ -1,0 +1,5 @@
+Wired connection 1:802-3-ethernet:enp0s0u1u2i10
+MON_WIFI_1:802-11-wireless:wlp0s1f01
+lo:loopback:lo
+wg-vpn1:wireguard:wg-vpn1
+wg-vpn-2:wireguard:wg-vpn-2
