@@ -53,21 +53,34 @@ pub trait Executor: Send + Sync {
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError>;
 }
 
+/// PID des commandes `run` en cours, et verrou de fermeture : passé à
+/// `true` par `kill_running`, il interdit tout nouveau lancement — avant
+/// comme après l'appel, jamais de fenêtre où un outil pourrait démarrer
+/// sans qu'on le sache et donc sans qu'on puisse le tuer.
+#[derive(Default)]
+struct Running {
+    pids: HashSet<u32>,
+    closed: bool,
+}
+
 /// Exécuteur réel : `std::process`, délai maximal par commande.
 pub struct SystemExecutor {
     timeout: Duration,
-    /// PID des commandes `run` en cours, tuées par `kill_running` à la sortie.
-    running: Arc<Mutex<HashSet<u32>>>,
+    running: Arc<Mutex<Running>>,
 }
 
 impl SystemExecutor {
     pub fn new(timeout: Duration) -> Self {
-        SystemExecutor { timeout, running: Arc::new(Mutex::new(HashSet::new())) }
+        SystemExecutor { timeout, running: Arc::new(Mutex::new(Running::default())) }
     }
 
-    /// Tue les commandes encore en cours : alpheus ne laisse rien derrière lui.
+    /// Tue les commandes encore en cours et ferme la porte : alpheus ne
+    /// laisse rien derrière lui, et rien ne peut plus démarrer après.
     pub fn kill_running(&self) {
-        let pids: Vec<u32> = self.running.lock().unwrap().drain().collect();
+        let mut guard = self.running.lock().unwrap();
+        guard.closed = true;
+        let pids: Vec<u32> = guard.pids.drain().collect();
+        drop(guard);
         for pid in pids {
             // SAFETY : kill(2) sur un PID lancé par nous ; aucun pointeur en jeu.
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
@@ -97,6 +110,10 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<S
 
 impl Executor for SystemExecutor {
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError> {
+        // Alpheus se ferme (`kill_running` déjà appelé) : aucun lancement.
+        if self.running.lock().unwrap().closed {
+            return Err(ExecError::Io("alpheus se ferme".into()));
+        }
         let mut child = Command::new(prog)
             .args(args)
             // Sorties non traduites : les analyseurs attendent l'anglais.
@@ -107,7 +124,20 @@ impl Executor for SystemExecutor {
             .spawn()
             .map_err(io_err)?;
         let pid = child.id();
-        self.running.lock().unwrap().insert(pid);
+        {
+            let mut guard = self.running.lock().unwrap();
+            if guard.closed {
+                // Fermeture survenue entre la vérification et le spawn : le
+                // fils vient de naître sans qu'on ait pu l'annoncer à
+                // `kill_running`, qui ne le tuera donc jamais — on le tue
+                // nous-mêmes sur-le-champ.
+                drop(guard);
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ExecError::Io("alpheus se ferme".into()));
+            }
+            guard.pids.insert(pid);
+        }
         let out = drain(child.stdout.take());
         let err = drain(child.stderr.take());
         let start = Instant::now();
@@ -123,7 +153,7 @@ impl Executor for SystemExecutor {
                 Err(e) => break Err(ExecError::Io(e.to_string())),
             }
         };
-        self.running.lock().unwrap().remove(&pid);
+        self.running.lock().unwrap().pids.remove(&pid);
         let status = status?;
         Ok(Output {
             code: status.code(),
@@ -201,7 +231,7 @@ mod tests {
         let e2 = e.clone();
         let h = std::thread::spawn(move || e2.run("sleep", &["30"]));
         let t = Instant::now();
-        while e.running.lock().unwrap().is_empty() {
+        while e.running.lock().unwrap().pids.is_empty() {
             assert!(t.elapsed() < Duration::from_secs(2), "la commande n'a pas démarré");
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -209,6 +239,13 @@ mod tests {
         let out = h.join().unwrap().unwrap();
         assert_eq!(out.code, None, "tuée par un signal");
         assert!(t.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn aucun_lancement_apres_la_fermeture() {
+        let e = exec();
+        e.kill_running();
+        assert_eq!(e.run("sh", &["-c", "true"]), Err(ExecError::Io("alpheus se ferme".into())));
     }
 
     #[test]

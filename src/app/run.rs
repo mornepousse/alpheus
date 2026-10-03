@@ -52,17 +52,31 @@ pub fn build_app(dir: &Path, now: Instant) -> App {
     app
 }
 
+/// Garde de nettoyage : tant qu'elle vit, sa destruction (retour normal de
+/// `run`, `?` précoce comme celui d'`EnableMouseCapture`, ou panique qui
+/// déroule la pile) restaure le terminal et tue les outils encore en cours.
+/// `Drop` s'exécute dans tous ces cas, contrairement à du code placé après
+/// un point de sortie qu'un `?` ou une panique peut sauter.
+struct Nettoyage {
+    exec: Arc<SystemExecutor>,
+}
+
+impl Drop for Nettoyage {
+    fn drop(&mut self) {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        ratatui::restore();
+        self.exec.kill_running(); // aucun outil laissé derrière
+    }
+}
+
 pub fn run() -> io::Result<()> {
     let app = build_app(&config_dir(), Instant::now());
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
-    let mut terminal = ratatui::init(); // installe aussi la restauration en cas de panique
+    let mut terminal = ratatui::init(); // installe aussi la restauration du terminal en cas de panique
+    let _nettoyage = Nettoyage { exec };
     execute!(io::stdout(), EnableMouseCapture)?;
-    let res = event_loop(&mut terminal, app, &tx, &rx);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
-    ratatui::restore();
-    exec.kill_running(); // aucun outil laissé derrière
-    res
+    event_loop(&mut terminal, app, &tx, &rx)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, mut app: App, tx: &Sender<Request>, rx: &Receiver<Update>) -> io::Result<()> {

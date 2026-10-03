@@ -5,6 +5,7 @@
 
 use std::io;
 use std::process::Command;
+use std::sync::Mutex;
 
 pub trait Screen {
     /// Quitte l'écran alterné, le mode brut et la capture souris.
@@ -32,6 +33,16 @@ pub fn open(screen: &mut dyn Screen, launcher: &mut dyn Launcher, argv: &[String
 
 extern "C" fn ignore_signal(_: libc::c_int) {}
 
+/// Les gestionnaires SIGINT/SIGQUIT sont un état GLOBAL du processus (pas une
+/// donnée de `ProcessLauncher`) : deux appels à `run` en parallèle (seulement
+/// en test ; alpheus n'en lance jamais qu'un à la fois) se disputeraient le
+/// même gestionnaire. Sans ce verrou, l'un peut restaurer le gestionnaire
+/// d'origine pendant que le fils de l'autre envoie encore son SIGINT au
+/// groupe, tuant alors tout le binaire au lieu du seul outil visé. Le verrou
+/// est tenu pour tout l'appel (installer → attendre le fils → restaurer),
+/// ce qui sérialise aussi les deux tests qui s'en servaient en parallèle.
+static SIGNAUX: Mutex<()> = Mutex::new(());
+
 /// Lanceur réel.
 pub struct ProcessLauncher;
 
@@ -40,6 +51,10 @@ impl Launcher for ProcessLauncher {
         let Some((prog, args)) = argv.split_first() else {
             return Err("commande vide".into());
         };
+        // Un mutex empoisonné (un appel précédent a paniqué pendant qu'il
+        // tenait le verrou) ne doit pas bloquer les lancements suivants : la
+        // donnée protégée est `()`, un empoisonnement ne peut rien y corrompre.
+        let _garde = SIGNAUX.lock().unwrap_or_else(|e| e.into_inner());
         // Hors mode brut, Ctrl+C dans l'outil envoie SIGINT à tout le groupe
         // au premier plan, alpheus compris. Un gestionnaire VIDE protège
         // alpheus ; l'outil, lui, retrouve le comportement par défaut à son
