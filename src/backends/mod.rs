@@ -14,6 +14,7 @@ pub mod network;
 pub mod bluetooth;
 pub mod notifications;
 pub mod power;
+pub mod displays;
 
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 pub use brightness::{Brightness, BrightnessCtl};
@@ -22,6 +23,7 @@ pub use network::{Connection, NetStatus, Network, NmCli};
 pub use bluetooth::{BtDevice, BtStatus, Bluetooth, BluetoothCtl};
 pub use notifications::{Notifications, ShellCtl};
 pub use power::{Power, PowerAction, SessionPower};
+pub use displays::{Displays, WmSetDisplays};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]

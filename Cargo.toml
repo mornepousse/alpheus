@@ -9,6 +9,7 @@ description = "Centre de contrôle TUI de Mae"
 ratatui = "0.30"
 serde = { version = "1", features = ["derive"] }
 toml = "1"
+serde_json = "1"
 libc = "0.2"
 
 [dev-dependencies]
