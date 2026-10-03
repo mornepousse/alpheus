@@ -3,6 +3,7 @@
 
 use super::draw::{centered, clear, put, truncate};
 use super::hit::{HitMap, Target};
+use crate::app::action::Action;
 use crate::app::{App, Confirm, Overlay, Palette};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -53,17 +54,25 @@ fn toasts(buf: &mut Buffer, area: Rect, app: &App) {
 }
 
 fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
-    let mut lines: Vec<String> = app
-        .keymap
-        .all()
-        .iter()
-        .filter(|(_, keys)| !keys.is_empty())
-        .map(|(a, keys)| {
-            let k: Vec<String> = keys.iter().map(|c| c.label()).collect();
-            format!("{:<24}{}", a.label(), k.join(", "))
-        })
-        .collect();
-    lines.push(format!("{:<24}{}", "Souris", "clic, glisser, molette"));
+    let line = |label: &str, keys: &[String]| format!("{label:<24}{}", keys.join(", "));
+    let mut lines: Vec<String> = Vec::new();
+    // Les cinq « Onglet X » tiennent sur une ligne, à la place du premier :
+    // l'aide entière tient ainsi en 80×26.
+    let mut tab_keys: Vec<String> = Vec::new();
+    let mut tab_line: Option<usize> = None;
+    for (a, keys) in app.keymap.all() {
+        let k: Vec<String> = keys.iter().map(|c| c.label()).collect();
+        if matches!(a, Action::GoTab(_)) {
+            tab_line.get_or_insert(lines.len());
+            tab_keys.extend(k);
+        } else if !k.is_empty() {
+            lines.push(line(&a.label(), &k));
+        }
+    }
+    if let (Some(i), false) = (tab_line, tab_keys.is_empty()) {
+        lines.insert(i, line("Onglets 1 à 5", &tab_keys));
+    }
+    lines.push(line("Souris", &["clic, glisser, molette".to_string()]));
     let r = centered(area, 64, lines.len() as u16 + 2);
     let inner = frame(buf, r, " Aide — Échap pour fermer ", app, hits);
     for (n, l) in lines.iter().enumerate().take(usize::from(inner.height)) {

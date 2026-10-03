@@ -307,6 +307,18 @@ mod tests {
     }
 
     #[test]
+    fn aide_entiere_en_80x26() {
+        let mut a = ready_app();
+        a.overlay = Overlay::Help;
+        let (rows, _) = draw(&a, 80, 26);
+        let all = rows.join("\n");
+        assert!(all.contains("Aide — Échap pour fermer"), "{all}");
+        assert!(all.contains("Souris") && all.contains("clic, glisser, molette"), "dernière ligne coupée :\n{all}");
+        assert!(all.contains("Onglets 1 à 5") && all.contains("1, 2, 3, 4, 5"), "{all}");
+        assert!(!all.contains("Onglet Son"), "les cinq onglets tiennent sur une ligne");
+    }
+
+    #[test]
     fn palette() {
         let mut a = ready_app();
         a.overlay = Overlay::Palette(Palette { query: "wifi".into(), selected: 0 });
