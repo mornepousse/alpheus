@@ -5,6 +5,7 @@
 
 pub mod action;
 pub mod keymap;
+pub mod run;
 pub mod worker;
 mod input;
 mod mouse;
@@ -28,17 +29,12 @@ pub const TOAST_TTL: Duration = Duration::from_secs(3);
 /// Période de rafraîchissement de l'Accueil (seul onglet rafraîchi en continu).
 pub const HOME_REFRESH: Duration = Duration::from_secs(1);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Loadable<T> {
+    #[default]
     Loading,
     Ready(T),
     Failed(String),
-}
-
-impl<T> Default for Loadable<T> {
-    fn default() -> Self {
-        Loadable::Loading
-    }
 }
 
 impl<T> Loadable<T> {

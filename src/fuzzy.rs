@@ -46,7 +46,7 @@ pub fn rank<S: AsRef<str>>(query: &str, labels: &[S]) -> Vec<usize> {
         .enumerate()
         .filter_map(|(i, l)| score(query, l.as_ref()).map(|s| (i, s)))
         .collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1)); // tri stable : ordre d'origine à égalité
+    v.sort_by_key(|&(_, s)| std::cmp::Reverse(s)); // tri stable : ordre d'origine à égalité
     v.into_iter().map(|(i, _)| i).collect()
 }
 
