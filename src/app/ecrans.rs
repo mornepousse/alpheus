@@ -307,6 +307,8 @@ impl App {
     pub(crate) fn displays_read(&mut self, now: Instant) {
         let outs = self.outputs().to_vec();
         if self.data.displays.ready().is_none() {
+            // Lecture échouée : un profil en file ne s'appliquera pas bien plus tard.
+            self.ecrans.queued_profile = None;
             return;
         }
         // Lecture postérieure à toute réponse de plan (les lectures en vol
@@ -1170,6 +1172,19 @@ mod tests {
         let (plan, _) = sent_trial(&mut a);
         assert!(plan.touches("DVI-I-1"));
         assert_eq!(a.ecrans.queued_profile, None);
+    }
+
+    #[test]
+    fn profil_en_file_abandonne_si_la_lecture_echoue() {
+        let mut a = ready_app();
+        a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
+        a.take_requests();
+        a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
+        assert_eq!(a.ecrans.queued_profile, None);
+        // Une lecture réussie bien plus tard n'applique rien.
+        a.on_update(Update::Displays(Ok(poste())), Instant::now());
+        assert!(sans_do(&mut a), "profil abandonné avec la lecture échouée");
+        assert_eq!(a.ecrans.trial, None);
     }
 
     #[test]
