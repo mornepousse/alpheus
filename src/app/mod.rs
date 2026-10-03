@@ -19,6 +19,7 @@ use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
 use keymap::Keymap;
 use ratatui::layout::Rect;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use worker::{domains, Domain, Op, Request, Update};
 
@@ -160,10 +161,25 @@ fn op_label(op: &Op) -> String {
         Op::SetWifi(_) => "Wi-Fi".into(),
         Op::SetBluetooth(_) => "Bluetooth".into(),
         Op::SetDnd(_) => "Ne pas déranger".into(),
-        Op::ToggleKeepAwake => "Garder éveillé".into(),
+        Op::ToggleKeepAwake { .. } => "Garder éveillé".into(),
         Op::SetProfile(_) => "Profil d'énergie".into(),
         Op::Power(a) => a.label().into(),
     }
+}
+
+/// Domaine relu par une mise à jour (aucun pour une réponse d'action).
+fn update_domain(u: &Update) -> Option<Domain> {
+    Some(match u {
+        Update::Volume(_) => Domain::Volume,
+        Update::Brightness(_) => Domain::Brightness,
+        Update::Network(_) => Domain::Network,
+        Update::Bluetooth(_) => Domain::Bluetooth,
+        Update::Dnd(_) => Domain::Dnd,
+        Update::KeepAwake(_) => Domain::KeepAwake,
+        Update::Profiles(_) => Domain::Profiles,
+        Update::Audio(_) => Domain::Audio,
+        Update::Done(..) | Update::Superseded(_) => return None,
+    })
 }
 
 pub struct App {
@@ -183,6 +199,13 @@ pub struct App {
     last_refresh: Instant,
     requests: Vec<Request>,
     external: Option<External>,
+    /// Actions envoyées et encore sans réponse, par domaine touché. Tant
+    /// qu'un domaine en a, ses relectures sont ignorées : lancées avant
+    /// l'action, elles ramèneraient l'ancien état par-dessus l'affichage
+    /// optimiste (clignotement). Le fil répond à chaque `Request::Do` par
+    /// exactement un `Done` ou un `Superseded` (réglage fusionné dans une
+    /// rafale), donc le compte revient toujours à zéro.
+    pending: HashMap<Domain, u32>,
 }
 
 impl App {
@@ -203,6 +226,7 @@ impl App {
             last_refresh: now,
             requests: Vec::new(),
             external: None,
+            pending: HashMap::new(),
         };
         app.refresh_tab(now);
         app
@@ -243,7 +267,36 @@ impl App {
 
     // ── Réponses du worker ───────────────────────────────────────────
 
+    /// Envoie une action au fil et note les domaines qu'elle touche.
+    fn send_op(&mut self, op: Op) {
+        for d in op.domains() {
+            *self.pending.entry(*d).or_default() += 1;
+        }
+        self.requests.push(Request::Do(op));
+    }
+
+    /// L'action a reçu sa réponse (faite ou abandonnée par fusion).
+    fn op_answered(&mut self, op: &Op) {
+        for d in op.domains() {
+            if let Some(n) = self.pending.get_mut(d) {
+                *n = n.saturating_sub(1);
+                if *n == 0 {
+                    self.pending.remove(d);
+                }
+            }
+        }
+    }
+
+    fn is_pending(&self, d: Domain) -> bool {
+        self.pending.contains_key(&d)
+    }
+
     pub fn on_update(&mut self, u: Update, now: Instant) {
+        if let Some(d) = update_domain(&u) {
+            if self.is_pending(d) {
+                return; // relecture périmée : une action sur ce domaine est en cours
+            }
+        }
         match u {
             Update::Volume(r) => self.data.volume = r.into(),
             Update::Brightness(r) => self.data.brightness = r.into(),
@@ -253,7 +306,11 @@ impl App {
             Update::KeepAwake(r) => self.data.keep_awake = r.into(),
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
-            Update::Done(op, r) => self.op_done(op, r, now),
+            Update::Done(op, r) => {
+                self.op_answered(&op);
+                self.op_done(op, r, now);
+            }
+            Update::Superseded(op) => self.op_answered(&op),
         }
         self.clamp_focus();
     }
@@ -295,7 +352,7 @@ impl App {
             Op::SetWifi(b) => format!("Wi-Fi : {}", onoff(*b)),
             Op::SetBluetooth(b) => format!("Bluetooth : {}", onoff(*b)),
             Op::SetDnd(b) => format!("Ne pas déranger : {}", onoff(*b)),
-            Op::ToggleKeepAwake => format!("Garder éveillé : {}", onoff(*self.data.keep_awake.ready()?)),
+            Op::ToggleKeepAwake { now_on } => format!("Garder éveillé : {}", onoff(*now_on)),
             Op::SetProfile(p) => format!("Profil : {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
         })
@@ -425,12 +482,12 @@ impl App {
                 if let Loadable::Ready(p) = &mut self.data.profiles {
                     p.active = name.clone();
                 }
-                self.requests.push(Request::Do(Op::SetProfile(name)));
+                self.send_op(Op::SetProfile(name));
             }
             Command::Power(a) if a.needs_confirm() => {
                 self.overlay = Overlay::Confirm(Confirm { action: a, yes_focused: false });
             }
-            Command::Power(a) => self.requests.push(Request::Do(Op::Power(a))),
+            Command::Power(a) => self.send_op(Op::Power(a)),
             Command::Open(e) => self.external = Some(e),
             Command::GoTab(t) => self.go_tab(t, now),
         }
@@ -460,10 +517,10 @@ impl App {
             }
             ToggleId::KeepAwake => {
                 self.data.keep_awake = Loadable::Ready(!on);
-                Op::ToggleKeepAwake
+                Op::ToggleKeepAwake { now_on: !on }
             }
         };
-        self.requests.push(Request::Do(op));
+        self.send_op(op);
     }
 
     /// Entrée (ou clic) sur l'élément focalisé.
@@ -515,7 +572,7 @@ impl App {
                 Op::SetVolume(NodeRef::Id(n), v)
             }
         };
-        self.requests.push(Request::Do(op));
+        self.send_op(op);
     }
 
     pub fn nudge_slider(&mut self, id: SliderId, delta: i32) {
@@ -534,7 +591,7 @@ impl App {
                 }
             }
         }
-        self.requests.push(Request::Do(Op::SetDefault(id)));
+        self.send_op(Op::SetDefault(id));
     }
 
     fn cycle_profile(&mut self, dir: i32, now: Instant) {
@@ -551,7 +608,7 @@ impl App {
         if let Overlay::Confirm(c) = self.overlay {
             self.overlay = Overlay::None;
             if yes {
-                self.requests.push(Request::Do(Op::Power(c.action)));
+                self.send_op(Op::Power(c.action));
             }
         }
     }
@@ -742,7 +799,89 @@ mod tests {
         a.toggle(ToggleId::Wifi, Instant::now());
         assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false));
         a.toggle(ToggleId::KeepAwake, Instant::now());
-        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetWifi(false)), Request::Do(Op::ToggleKeepAwake)]);
+        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetWifi(false)), Request::Do(Op::ToggleKeepAwake { now_on: true })]);
+    }
+
+    fn net(wifi: bool) -> Update {
+        Update::Network(Ok(NetStatus { wifi_enabled: wifi, active: Vec::new() }))
+    }
+
+    #[test]
+    fn relecture_perimee_ignoree_pendant_une_bascule() {
+        let mut a = ready_app();
+        a.toggle(ToggleId::Wifi, Instant::now());
+        a.take_requests();
+        // Relecture lancée avant la bascule : elle porte l'ancien état.
+        a.on_update(net(true), Instant::now());
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "l'affichage reste optimiste");
+        a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
+        // Après la réponse, la relecture suivante fait foi.
+        a.on_update(net(true), Instant::now());
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
+    }
+
+    #[test]
+    fn les_autres_domaines_restent_relus_pendant_une_bascule() {
+        let mut a = ready_app();
+        a.toggle(ToggleId::Wifi, Instant::now());
+        a.on_update(Update::Dnd(Ok(true)), Instant::now());
+        assert_eq!(a.data.dnd, Loadable::Ready(true));
+    }
+
+    #[test]
+    fn deux_bascules_attendent_les_deux_reponses() {
+        let mut a = ready_app();
+        a.toggle(ToggleId::Wifi, Instant::now()); // → désactivé
+        a.toggle(ToggleId::Wifi, Instant::now()); // → activé
+        a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
+        a.on_update(net(false), Instant::now()); // lue entre les deux actions
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
+        a.on_update(Update::Done(Op::SetWifi(true), Ok(())), Instant::now());
+        a.on_update(net(true), Instant::now());
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
+        a.on_update(net(false), Instant::now());
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "plus rien en attente");
+    }
+
+    #[test]
+    fn rafale_de_curseur_fusionnee_ne_bloque_pas_le_domaine() {
+        let mut a = ready_app();
+        a.nudge_slider(SliderId::Brightness, STEP); // 25
+        a.nudge_slider(SliderId::Brightness, STEP); // 30
+        a.nudge_slider(SliderId::Brightness, STEP); // 35
+        a.on_update(Update::Brightness(Ok(20)), Instant::now());
+        assert_eq!(a.data.brightness, Loadable::Ready(35), "relecture périmée ignorée");
+        // Le fil a fusionné la rafale : deux réglages abandonnés, un seul fait.
+        a.on_update(Update::Superseded(Op::SetBrightness(25)), Instant::now());
+        a.on_update(Update::Superseded(Op::SetBrightness(30)), Instant::now());
+        a.on_update(Update::Done(Op::SetBrightness(35), Ok(())), Instant::now());
+        a.on_update(Update::Brightness(Ok(40)), Instant::now());
+        assert_eq!(a.data.brightness, Loadable::Ready(40), "le domaine n'est pas resté bloqué");
+    }
+
+    #[test]
+    fn volume_par_defaut_bloque_aussi_la_liste_audio() {
+        let mut a = ready_app();
+        a.nudge_slider(SliderId::Volume, STEP);
+        a.on_update(Update::Audio(Ok(AudioStatus { sinks: Vec::new(), sources: Vec::new() })), Instant::now());
+        assert_eq!(a.data.audio.ready().unwrap().sinks.len(), 2);
+        a.on_update(Update::Done(Op::SetVolume(NodeRef::DefaultSink, 67), Ok(())), Instant::now());
+        a.on_update(Update::Audio(Ok(AudioStatus { sinks: Vec::new(), sources: Vec::new() })), Instant::now());
+        assert!(a.data.audio.ready().unwrap().sinks.is_empty());
+    }
+
+    #[test]
+    fn message_garder_eveille_malgre_une_valeur_perimee() {
+        let mut a = ready_app(); // désactivé
+        a.toggle(ToggleId::KeepAwake, Instant::now());
+        assert_eq!(a.take_requests(), vec![Request::Do(Op::ToggleKeepAwake { now_on: true })]);
+        a.on_update(Update::KeepAwake(Ok(false)), Instant::now()); // lue avant la bascule
+        a.on_update(Update::Done(Op::ToggleKeepAwake { now_on: true }, Ok(())), Instant::now());
+        assert_eq!(a.toasts[0].text, "Garder éveillé : activé");
+        // Même si l'état affiché était périmé, le message suit l'état visé.
+        a.data.keep_awake = Loadable::Ready(false);
+        a.on_update(Update::Done(Op::ToggleKeepAwake { now_on: true }, Ok(())), Instant::now());
+        assert_eq!(a.toasts[1].text, "Garder éveillé : activé");
     }
 
     #[test]

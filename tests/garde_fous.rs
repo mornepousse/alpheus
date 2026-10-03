@@ -23,7 +23,7 @@ fn chaque_commande_lancee_est_dans_la_liste_blanche() {
     let ops = [
         Op::SetVolume(NodeRef::DefaultSink, 50), Op::SetVolume(NodeRef::Id(64), 50), Op::SetDefault(64),
         Op::SetBrightness(50), Op::SetWifi(true), Op::SetWifi(false), Op::SetBluetooth(true),
-        Op::SetBluetooth(false), Op::SetDnd(true), Op::SetDnd(false), Op::ToggleKeepAwake,
+        Op::SetBluetooth(false), Op::SetDnd(true), Op::SetDnd(false), Op::ToggleKeepAwake { now_on: true },
         Op::SetProfile("balanced".into()),
     ];
     for op in ops.into_iter().chain(PowerAction::ALL.map(Op::Power)) {
