@@ -3,6 +3,7 @@
 pub mod app;
 pub mod backends;
 pub mod config;
+pub mod displays;
 pub mod exec;
 pub mod externes;
 pub mod fuzzy;
