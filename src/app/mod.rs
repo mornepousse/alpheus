@@ -548,6 +548,10 @@ impl App {
         match self.slider_value(id) {
             None => return, // état inconnu : on n'envoie rien à l'aveugle
             Some(cur) if cur == v => return,
+            // Volume poussé au-delà de 100 % (wpctl le permet) : une hausse
+            // demandée serait bornée à 100 et baisserait le son. Rien n'est
+            // envoyé ; une baisse, elle, descend normalement (à 100 au plus).
+            Some(cur) if cur > 100 && value > i32::from(cur) => return,
             Some(_) => {}
         }
         let op = match id {
@@ -780,6 +784,26 @@ mod tests {
             Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),
             Request::Do(Op::SetBrightness(crate::backends::brightness::MIN_PERCENT)),
         ]);
+    }
+
+    #[test]
+    fn volume_au_dessus_de_100_jamais_baisse_par_plus() {
+        let mut a = ready_app();
+        a.data.volume = Loadable::Ready(Volume { percent: 120, muted: false });
+        a.nudge_slider(SliderId::Volume, STEP);
+        assert!(a.take_requests().is_empty(), "« + » ne ramène pas 120 % à 100 %");
+        assert_eq!(a.slider_value(SliderId::Volume), Some(120));
+        a.nudge_slider(SliderId::Volume, -STEP);
+        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100))], "« - » borne à 100");
+        assert_eq!(a.slider_value(SliderId::Volume), Some(100));
+        // Même règle pour un périphérique de l'onglet Son.
+        if let Loadable::Ready(st) = &mut a.data.audio {
+            st.sinks[0].volume.percent = 130;
+        }
+        a.nudge_slider(SliderId::Node(64), STEP);
+        assert!(a.take_requests().is_empty());
+        a.nudge_slider(SliderId::Node(64), -STEP);
+        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetVolume(NodeRef::Id(64), 100))]);
     }
 
     #[test]
