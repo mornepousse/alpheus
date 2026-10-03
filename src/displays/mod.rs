@@ -4,6 +4,7 @@
 //! les calculent.
 
 pub mod geometry;
+pub mod profiles;
 
 use std::fmt;
 
