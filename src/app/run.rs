@@ -1,6 +1,7 @@
 //! Boucle réelle : terminal, fil de travail, événements, outils externes.
-//! Seule partie sans test unitaire : couverte par tests/premier_rendu.rs et
-//! par l'essai réel de la tâche 16.
+//! La boucle elle-même n'a pas de test unitaire (couverte par
+//! tests/premier_rendu.rs et l'essai réel) ; sa décision de sortie et le
+//! gestionnaire de signaux en ont.
 
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
@@ -16,12 +17,49 @@ use ratatui::crossterm::execute;
 use ratatui::DefaultTerminal;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Délai maximal d'une commande système avant d'être tuée.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Levé par SIGTERM ou SIGHUP (fermeture de la fenêtre, fin de session) :
+/// la boucle sort normalement et la garde `Nettoyage` s'exécute.
+static FIN_DEMANDEE: AtomicBool = AtomicBool::new(false);
+
+/// Gestionnaire de signal : un seul store atomique, async-signal-safe.
+extern "C" fn sur_signal(_sig: libc::c_int) {
+    FIN_DEMANDEE.store(true, Ordering::SeqCst);
+}
+
+/// Installe le gestionnaire pour SIGTERM et SIGHUP. SA_RESTART : un appel
+/// système interrompu (lecture du terminal, attente d'un outil) reprend au
+/// lieu d'échouer ; la boucle voit le drapeau au tour suivant (≤ 100 ms).
+fn installer_signaux() -> io::Result<()> {
+    for sig in [libc::SIGTERM, libc::SIGHUP] {
+        // SAFETY : sigaction est une structure C simple, valide remplie de zéros.
+        let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+        sa.sa_sigaction = sur_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        // SAFETY : `sa` est valide pendant l'appel ; le gestionnaire ne fait
+        // qu'un store atomique (async-signal-safe).
+        let r = unsafe {
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut())
+        };
+        if r != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+/// La boucle doit-elle s'arrêter ? (« q » ou signal de fin reçu.)
+fn doit_sortir(app: &App, fin: &AtomicBool) -> bool {
+    app.should_quit || fin.load(Ordering::SeqCst)
+}
 
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -70,6 +108,7 @@ impl Drop for Nettoyage {
 }
 
 pub fn run() -> io::Result<()> {
+    installer_signaux()?;
     let app = build_app(&config_dir(), Instant::now());
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
@@ -81,6 +120,9 @@ pub fn run() -> io::Result<()> {
 
 fn event_loop(terminal: &mut DefaultTerminal, mut app: App, tx: &Sender<Request>, rx: &Receiver<Update>) -> io::Result<()> {
     loop {
+        if doit_sortir(&app, &FIN_DEMANDEE) {
+            return Ok(()); // la garde Nettoyage restaure le terminal et tue les outils
+        }
         for r in app.take_requests() {
             let _ = tx.send(r);
         }
@@ -107,5 +149,53 @@ fn event_loop(terminal: &mut DefaultTerminal, mut app: App, tx: &Sender<Request>
             app.on_update(u, Instant::now());
         }
         app.on_tick(Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::testing::ready_app;
+
+    #[test]
+    fn decision_de_sortie() {
+        let mut a = ready_app();
+        let fin = AtomicBool::new(false);
+        assert!(!doit_sortir(&a, &fin));
+        fin.store(true, Ordering::SeqCst);
+        assert!(doit_sortir(&a, &fin), "signal reçu : la boucle sort");
+        fin.store(false, Ordering::SeqCst);
+        a.should_quit = true;
+        assert!(doit_sortir(&a, &fin));
+    }
+
+    /// Disposition actuelle du signal `sig`.
+    fn gestionnaire(sig: libc::c_int) -> libc::sighandler_t {
+        // SAFETY : lecture seule de la disposition (nouvelle action nulle).
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            assert_eq!(libc::sigaction(sig, std::ptr::null(), &mut old), 0);
+            old.sa_sigaction
+        }
+    }
+
+    #[test]
+    fn sigterm_et_sighup_levent_le_drapeau() {
+        installer_signaux().unwrap();
+        let attendu = sur_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        for sig in [libc::SIGTERM, libc::SIGHUP] {
+            // Vérifié AVANT raise : sans gestionnaire, le signal tuerait les tests.
+            assert_eq!(gestionnaire(sig), attendu, "signal {sig} sans gestionnaire");
+            FIN_DEMANDEE.store(false, Ordering::SeqCst);
+            // SAFETY : raise(3) vers nous-mêmes, gestionnaire installé ci-dessus.
+            assert_eq!(unsafe { libc::raise(sig) }, 0);
+            assert!(FIN_DEMANDEE.load(Ordering::SeqCst), "signal {sig} : drapeau non levé");
+        }
+        FIN_DEMANDEE.store(false, Ordering::SeqCst);
+        // SAFETY : rétablit la disposition par défaut pour le reste des tests.
+        unsafe {
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGHUP, libc::SIG_DFL);
+        }
     }
 }
