@@ -7,6 +7,7 @@ pub mod action;
 pub mod keymap;
 pub mod worker;
 mod input;
+mod mouse;
 
 use crate::backends::{
     brightness, AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume,
