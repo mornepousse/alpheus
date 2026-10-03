@@ -6,8 +6,9 @@
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
 use super::App;
-use crate::backends::Backends;
+use crate::backends::{Backends, Displays, WmSetDisplays};
 use crate::config::Config;
+use crate::displays::{profiles, Plan};
 use crate::exec::SystemExecutor;
 use crate::externes::{self, CrosstermScreen, ProcessLauncher};
 use crate::theme::Theme;
@@ -19,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Délai maximal d'une commande système avant d'être tuée.
@@ -41,15 +42,62 @@ extern "C" fn sur_signal(sig: libc::c_int) {
     FIN_DEMANDEE.store(true, Ordering::SeqCst);
 }
 
+/// Essai d'écrans à défaire si alpheus se ferme avant que Mae l'ait gardé.
+#[derive(Debug, Default)]
+struct ExitUndo {
+    /// Plan qui rétablit l'état d'avant l'essai.
+    plan: Option<Plan>,
+    /// Le retour de sortie a eu lieu (ou rien n'était à défaire) : plus
+    /// rien ne peut le réarmer.
+    done: bool,
+}
+
+/// Tenu à jour par la boucle, lu par le nettoyage de sortie et le fil de garde.
+type UndoSlot = Arc<Mutex<ExitUndo>>;
+
+/// La boucle note, à chaque tour, ce que la fermeture devra défaire. Une
+/// fois le retour de sortie fait, ignoré : une boucle lente (pas coincée)
+/// qui repasse après la garde ne réarme pas un second retour.
+fn record_undo(slot: &Mutex<ExitUndo>, plan: Option<Plan>) {
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if !g.done {
+        g.plan = plan;
+    }
+}
+
+/// Défait l'essai d'écrans en cours, une seule fois : le verrou reste tenu
+/// pendant l'application, donc le nettoyage et le fil de garde ne la
+/// lancent jamais deux fois ni en même temps — et celui qui arrive second
+/// attend la fin du retour avant de continuer (la garde n'appelle donc
+/// `exit` qu'après). Durée bornée : chaque étape `wm-set` est tuée au bout
+/// de `TOOL_TIMEOUT`.
+fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) {
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    g.done = true;
+    if let Some(plan) = g.plan.take() {
+        let _ = displays.apply(&plan);
+    }
+}
+
+/// Ordre de fermeture, commun au nettoyage et au fil de garde : d'abord
+/// tuer les outils en cours (un `wm-set` de l'essai compris) et fermer leur
+/// exécuteur — rien ne peut plus réappliquer l'essai —, puis le défaire
+/// avec un exécuteur à part.
+fn fermer(kill_running: impl FnOnce(), slot: &Mutex<ExitUndo>, displays: &dyn Displays) {
+    kill_running();
+    undo_on_exit(slot, displays);
+}
+
 /// Lance le fil de garde. Fenêtre fermée (SIGHUP), crossterm peut tourner
 /// sans fin dans `event::poll` sur le terminal raccroché (lecture → 0/EIO,
 /// relancée en boucle) : la boucle ne revoit jamais le drapeau. Le fil de
 /// garde ne dépend pas de crossterm : passé le délai de grâce, il tue les
-/// outils en cours et termine le processus.
-fn lancer_garde(exec: Arc<SystemExecutor>) {
+/// outils en cours, défait un essai d'écrans (ou attend que le nettoyage
+/// ait fini de le faire) et termine le processus.
+fn lancer_garde(exec: Arc<SystemExecutor>, undo: UndoSlot, displays: Arc<dyn Displays>) {
     std::thread::spawn(move || {
         surveiller(&FIN_DEMANDEE, &BOUCLE_FINIE, GRACE, Duration::from_millis(50), || {
-            exec.kill_running(); // aucun outil laissé derrière
+            fermer(|| exec.kill_running(), &undo, &*displays); // aucun outil laissé derrière
             std::process::exit(128 + SIGNAL_RECU.load(Ordering::SeqCst));
         });
     });
@@ -126,8 +174,15 @@ pub fn build_app(dir: &Path, now: Instant) -> App {
         Ok(k) => (k, None),
         Err(e) => (Keymap::default(), Some(format!("touches : {e}"))),
     };
+    let ecrans_toml = dir.join("ecrans.toml");
+    let (display_profiles, w_ecrans) = profiles::load(&ecrans_toml);
     let mut app = App::new(config, theme, keymap, now);
-    for w in [w_config, w_theme, w_keys].into_iter().flatten() {
+    app.ecrans.profiles = display_profiles;
+    app.ecrans.profiles_path = Some(ecrans_toml);
+    // Fichier illisible ou invalide : l'enregistrement l'écraserait sans
+    // l'avoir lu, il est refusé tant que Mae ne l'a pas corrigé.
+    app.ecrans.profiles_invalid = w_ecrans.is_some();
+    for w in [w_config, w_theme, w_keys, w_ecrans].into_iter().flatten() {
         app.warn(w);
     }
     app
@@ -135,39 +190,58 @@ pub fn build_app(dir: &Path, now: Instant) -> App {
 
 /// Garde de nettoyage : tant qu'elle vit, sa destruction (retour normal de
 /// `run`, `?` précoce comme celui d'`EnableMouseCapture`, ou panique qui
-/// déroule la pile) restaure le terminal et tue les outils encore en cours.
-/// `Drop` s'exécute dans tous ces cas, contrairement à du code placé après
-/// un point de sortie qu'un `?` ou une panique peut sauter.
+/// déroule la pile) restaure le terminal, tue les outils encore en cours et
+/// défait un essai d'écrans non gardé. `Drop` s'exécute dans tous ces cas,
+/// contrairement à du code placé après un point de sortie qu'un `?` ou une
+/// panique peut sauter.
 struct Nettoyage {
     exec: Arc<SystemExecutor>,
+    undo: UndoSlot,
+    displays: Arc<dyn Displays>,
 }
 
 impl Drop for Nettoyage {
     fn drop(&mut self) {
         let _ = execute!(io::stdout(), DisableMouseCapture);
         ratatui::restore();
-        self.exec.kill_running(); // aucun outil laissé derrière
+        fermer(|| self.exec.kill_running(), &self.undo, &*self.displays);
     }
 }
 
 pub fn run() -> io::Result<()> {
     installer_signaux()?;
-    let app = build_app(&config_dir(), Instant::now());
+    let mut app = build_app(&config_dir(), Instant::now());
+    // Sous niri, l'onglet Écrans n'appelle rien (pas encore pris en charge).
+    app.ecrans.niri = std::env::var_os("NIRI_SOCKET").is_some();
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
-    lancer_garde(exec.clone());
+    // Exécuteur à part pour défaire un essai d'écrans à la fermeture : celui
+    // du fil de travail est fermé (kill_running) juste avant.
+    let exit_displays: Arc<dyn Displays> = Arc::new(WmSetDisplays::new(Arc::new(SystemExecutor::new(TOOL_TIMEOUT))));
+    let undo: UndoSlot = Arc::default();
+    lancer_garde(exec.clone(), undo.clone(), exit_displays.clone());
     let r = {
         let mut terminal = ratatui::init(); // installe aussi la restauration du terminal en cas de panique
-        let _nettoyage = Nettoyage { exec };
+        let _nettoyage = Nettoyage { exec, undo: undo.clone(), displays: exit_displays };
         execute!(io::stdout(), EnableMouseCapture)
-            .and_then(|_| event_loop(&mut terminal, app, &tx, &rx))
+            .and_then(|_| event_loop(&mut terminal, app, &tx, &rx, &undo))
     }; // Nettoyage s'exécute ici
     BOUCLE_FINIE.store(true, Ordering::SeqCst);
     r
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, mut app: App, tx: &Sender<Request>, rx: &Receiver<Update>) -> io::Result<()> {
+fn event_loop(
+    terminal: &mut DefaultTerminal,
+    mut app: App,
+    tx: &Sender<Request>,
+    rx: &Receiver<Update>,
+    undo: &Mutex<ExitUndo>,
+) -> io::Result<()> {
     loop {
+        // Essai d'écrans en cours : ce que la fermeture devra défaire. Noté
+        // avant l'envoi des requêtes du tour : un essai n'est jamais envoyé
+        // au fil de travail sans que son retour soit déjà noté ici.
+        record_undo(undo, app.exit_undo());
         if doit_sortir(&app, &FIN_DEMANDEE) {
             return Ok(()); // la garde Nettoyage restaure le terminal et tue les outils
         }
@@ -204,6 +278,144 @@ fn event_loop(terminal: &mut DefaultTerminal, mut app: App, tx: &Sender<Request>
 mod tests {
     use super::*;
     use crate::app::testing::ready_app;
+
+    use crate::displays::Step;
+    use crate::exec::fake::FakeExecutor;
+
+    fn plan_retour() -> Plan {
+        Plan { steps: vec![Step { output: "HDMI-A-1".into(), active: None }] }
+    }
+
+    fn slot_avec(plan: Option<Plan>) -> Mutex<ExitUndo> {
+        let s = Mutex::new(ExitUndo::default());
+        record_undo(&s, plan);
+        s
+    }
+
+    #[test]
+    fn retour_d_ecrans_a_la_fermeture_une_seule_fois() {
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let d = WmSetDisplays::new(f.clone());
+        let slot = slot_avec(Some(plan_retour()));
+        undo_on_exit(&slot, &d); // nettoyage de sortie
+        undo_on_exit(&slot, &d); // puis fil de garde : rien à refaire
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable HDMI-A-1"]);
+        assert_eq!(slot.lock().unwrap().plan, None);
+        undo_on_exit(&slot_avec(None), &d);
+        assert_eq!(f.calls().len(), 1, "aucun essai : aucun appel");
+    }
+
+    #[test]
+    fn la_boucle_ne_rearme_pas_un_retour_deja_fait() {
+        // Boucle lente mais pas coincée (outil externe fermé par le même
+        // SIGHUP) : la garde a déjà défait l'essai, la boucle repasse et
+        // réécrit l'essai encore présent dans l'App ; le nettoyage qui suit
+        // ne doit pas le défaire une seconde fois.
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let d = WmSetDisplays::new(f.clone());
+        let slot = slot_avec(Some(plan_retour()));
+        undo_on_exit(&slot, &d); // fil de garde
+        record_undo(&slot, Some(plan_retour())); // la boucle repasse
+        undo_on_exit(&slot, &d); // nettoyage
+        assert_eq!(f.calls().len(), 1, "un seul retour : {:?}", f.calls());
+    }
+
+    #[test]
+    fn essai_garde_ou_defait_rien_a_la_fermeture() {
+        let f = Arc::new(FakeExecutor::new());
+        let d = WmSetDisplays::new(f.clone());
+        let slot = slot_avec(Some(plan_retour()));
+        record_undo(&slot, None); // Mae a gardé les réglages
+        undo_on_exit(&slot, &d);
+        assert!(f.calls().is_empty(), "{:?}", f.calls());
+    }
+
+    #[test]
+    fn fermer_tue_les_outils_avant_le_retour() {
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let d = WmSetDisplays::new(f.clone());
+        let slot = slot_avec(Some(plan_retour()));
+        let mut appels_au_kill = None;
+        fermer(|| appels_au_kill = Some(f.calls().len()), &slot, &d);
+        assert_eq!(appels_au_kill, Some(0), "kill_running d'abord");
+        assert_eq!(f.calls().len(), 1, "puis le retour");
+    }
+
+    #[test]
+    fn la_garde_attend_le_retour_en_cours() {
+        // Le nettoyage applique un retour lent ; la garde, déclenchée pendant,
+        // attend sa fin au lieu de le doubler (ou de tuer alpheus au milieu).
+        let f = Arc::new(FakeExecutor::with_delay(Duration::from_millis(200)));
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let d: Arc<dyn Displays> = Arc::new(WmSetDisplays::new(f.clone()));
+        let slot: UndoSlot = Arc::new(slot_avec(Some(plan_retour())));
+        let (s2, d2) = (slot.clone(), d.clone());
+        let h = std::thread::spawn(move || undo_on_exit(&s2, &*d2));
+        let t0 = Instant::now();
+        while f.calls().is_empty() {
+            assert!(t0.elapsed() < Duration::from_secs(2), "le retour n'a pas démarré");
+            std::thread::yield_now();
+        }
+        let t = Instant::now();
+        undo_on_exit(&slot, &*d);
+        assert!(t.elapsed() >= Duration::from_millis(100), "la garde a attendu ({:?})", t.elapsed());
+        h.join().unwrap();
+        assert_eq!(f.calls().len(), 1, "un seul retour");
+    }
+
+    #[test]
+    fn sortie_forcee_seulement_apres_le_retour() {
+        // Signal reçu, nettoyage en plein retour lent (plus long que la
+        // grâce) : la sortie forcée de la garde (son `forcer`) ne passe
+        // qu'une fois le retour fini — `exit` ne le coupe jamais.
+        let f = Arc::new(FakeExecutor::with_delay(Duration::from_millis(250)));
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let d: Arc<dyn Displays> = Arc::new(WmSetDisplays::new(f.clone()));
+        let slot: UndoSlot = Arc::new(slot_avec(Some(plan_retour())));
+        let (s2, d2) = (slot.clone(), d.clone());
+        let h = std::thread::spawn(move || fermer(|| {}, &s2, &*d2)); // Nettoyage::drop
+        while f.calls().is_empty() {
+            std::thread::yield_now();
+        }
+        let debut_retour = Instant::now();
+        let (fin, finie) = (AtomicBool::new(true), AtomicBool::new(false));
+        let mut sortie_apres = None;
+        let force = surveiller(&fin, &finie, Duration::from_millis(20), PAS, || {
+            fermer(|| {}, &slot, &*d);
+            sortie_apres = Some(debut_retour.elapsed()); // ici : process::exit
+        });
+        assert!(force, "boucle coincée : sortie forcée");
+        let sortie_apres = sortie_apres.unwrap();
+        assert!(sortie_apres >= Duration::from_millis(200), "exit avant la fin du retour ({sortie_apres:?})");
+        h.join().unwrap();
+        assert_eq!(f.calls().len(), 1, "un seul retour");
+    }
+
+    #[test]
+    fn profils_d_ecran_charges_au_demarrage() {
+        let dir = std::env::temp_dir().join(format!("alpheus-{}-run-ecrans", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = build_app(&dir, Instant::now());
+        assert!(a.ecrans.profiles.is_empty());
+        assert_eq!(a.status.warning, None, "fichier absent : aucun message");
+        assert!(!a.ecrans.profiles_invalid, "absent : l'enregistrement le créera");
+        std::fs::write(dir.join("ecrans.toml"), "[[profil]]\nnom = \"Bureau\"\n").unwrap();
+        let a = build_app(&dir, Instant::now());
+        assert_eq!(a.ecrans.profiles.len(), 1);
+        assert_eq!(a.ecrans.profiles_path, Some(dir.join("ecrans.toml")));
+        assert_eq!(a.status.warning, None);
+        assert!(!a.ecrans.profiles_invalid);
+        std::fs::write(dir.join("ecrans.toml"), "[[profil]\n").unwrap();
+        let a = build_app(&dir, Instant::now());
+        assert!(a.ecrans.profiles.is_empty());
+        assert!(a.status.warning.as_deref().unwrap_or("").starts_with("ecrans.toml invalide"), "{:?}", a.status.warning);
+        assert!(a.ecrans.profiles_invalid, "fichier invalide : enregistrement refusé");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn decision_de_sortie() {
