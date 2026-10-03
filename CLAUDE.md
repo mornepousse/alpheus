@@ -12,7 +12,7 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   plan d'implémentation ([`docs/plans/2026-10-02-alpheus-v1-plan.md`](docs/plans/2026-10-02-alpheus-v1-plan.md))
   **exécuté** (16 tâches + corrections de la relecture finale, fusionné
   dans `main` le 2026-10-03) et branché dans nixos-config (`Mod+A`).
-  Reste : essai réel par Mae après `nh os switch`.
+  Essai réel validé par Mae le 2026-10-03 (Hyprland et niri).
 - Prochaine étape demandée : onglets **Dispositions clavier** et **Écrans**
   (hors v1) — spec à écrire, avec Mae ; écrans via `wm-set` uniquement,
   jamais de `dpms`.
