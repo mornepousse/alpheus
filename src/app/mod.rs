@@ -30,6 +30,9 @@ pub const TOAST_TTL: Duration = Duration::from_secs(3);
 /// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
 /// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
 /// (rien à lire).
+/// Un domaine en échec est relu au plus une fois par cette période.
+pub const FAILED_RETRY: Duration = Duration::from_secs(15);
+
 pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
         Tab::Accueil => Some(Duration::from_secs(1)),
@@ -217,6 +220,8 @@ pub struct App {
     /// exactement un `Done` ou un `Superseded` (réglage fusionné dans une
     /// rafale), donc le compte revient toujours à zéro.
     pending: HashMap<Domain, u32>,
+    /// Dernière demande de lecture, par domaine (relecture lente des pannes).
+    last_read: HashMap<Domain, Instant>,
 }
 
 impl App {
@@ -238,6 +243,7 @@ impl App {
             requests: Vec::new(),
             external: None,
             pending: HashMap::new(),
+            last_read: HashMap::new(),
         };
         app.refresh_tab(now);
         app
@@ -383,17 +389,38 @@ impl App {
 
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
-        let due = refresh_period(self.tab).is_some_and(|p| now.duration_since(self.last_refresh) >= p);
+        let Some(period) = refresh_period(self.tab) else { return };
+        let due = now.duration_since(self.last_refresh) >= period;
+        // Un domaine en échec n'est pas sondé au tic normal : un outil cassé
+        // (shell-ctl notifie chacun de ses échecs) ne doit pas être relancé
+        // chaque seconde. Il est relu au plus toutes les 15 s, et à l'entrée
+        // dans l'onglet ou après une action.
+        let ds: Vec<Domain> = domains(self.tab)
+            .iter()
+            .copied()
+            .filter(|d| {
+                if self.domain_failed(*d) {
+                    self.last_read.get(d).is_none_or(|t| now.duration_since(*t) >= FAILED_RETRY)
+                } else {
+                    due
+                }
+            })
+            .collect();
         if due {
-            // Un domaine en échec n'est plus sondé au tic : un outil cassé
-            // (shell-ctl notifie chacun de ses échecs) ne doit pas être relancé
-            // chaque seconde. Il est relu à l'entrée dans l'onglet ou après une action.
-            let ds: Vec<Domain> = domains(self.tab).iter().copied().filter(|d| !self.domain_failed(*d)).collect();
-            if !ds.is_empty() {
-                self.requests.push(Request::Refresh(ds));
-            }
             self.last_refresh = now;
         }
+        self.push_refresh(ds, now);
+    }
+
+    /// Demande la relecture de `ds` et note l'heure, domaine par domaine.
+    fn push_refresh(&mut self, ds: Vec<Domain>, now: Instant) {
+        if ds.is_empty() {
+            return;
+        }
+        for d in &ds {
+            self.last_read.insert(*d, now);
+        }
+        self.requests.push(Request::Refresh(ds));
     }
 
     fn domain_failed(&self, d: Domain) -> bool {
@@ -410,10 +437,7 @@ impl App {
     }
 
     fn refresh_tab(&mut self, now: Instant) {
-        let ds = domains(self.tab);
-        if !ds.is_empty() {
-            self.requests.push(Request::Refresh(ds.to_vec()));
-        }
+        self.push_refresh(domains(self.tab).to_vec(), now);
         self.last_refresh = now;
     }
 
@@ -1093,6 +1117,47 @@ mod tests {
             a.on_tick(t0 + Duration::from_millis(3000));
             assert!(a.take_requests().is_empty(), "{tab:?} : période repartie de la relecture");
         }
+    }
+
+    fn refreshed(r: &[Request]) -> Vec<Domain> {
+        r.iter().flat_map(|q| match q {
+            Request::Refresh(ds) => ds.clone(),
+            Request::Do(_) => Vec::new(),
+        }).collect()
+    }
+
+    #[test]
+    fn domaine_en_echec_relu_toutes_les_quinze_secondes() {
+        let mut a = ready_app();
+        let t0 = Instant::now();
+        a.go_tab(Tab::Accueil, t0); // lecture complète à t0
+        a.take_requests();
+        a.data.dnd = Loadable::Failed("shell-ctl a échoué (code 1)".into());
+        let at = |ms| t0 + Duration::from_millis(ms);
+        a.on_tick(at(1100));
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "pas relu à 1 s");
+        a.on_tick(at(14_900));
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "pas relu avant 15 s");
+        a.on_tick(at(15_100));
+        let r = refreshed(&a.take_requests());
+        assert_eq!(r, vec![Domain::Dnd], "relu à 15 s, sans attendre le tic normal");
+        a.on_tick(at(16_200));
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "la période de 15 s repart");
+        a.on_tick(at(30_200));
+        assert!(refreshed(&a.take_requests()).contains(&Domain::Dnd));
+    }
+
+    #[test]
+    fn onglet_en_echec_relu_a_quinze_secondes_seulement() {
+        let mut a = ready_app();
+        let t0 = Instant::now();
+        a.go_tab(Tab::Son, t0);
+        a.take_requests();
+        a.data.audio = Loadable::Failed("wpctl introuvable".into());
+        a.on_tick(t0 + Duration::from_millis(2100));
+        assert!(a.take_requests().is_empty(), "pas relu au tic de 2 s");
+        a.on_tick(t0 + Duration::from_millis(15_100));
+        assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Audio])]);
     }
 
     #[test]
