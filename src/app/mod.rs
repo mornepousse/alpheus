@@ -141,7 +141,10 @@ pub struct Toast {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Status {
     pub last: Option<String>,
+    /// Dernière erreur d'action ; effacée au succès suivant.
     pub error: Option<String>,
+    /// Avertissement de démarrage (config, thème, touches) : persistant.
+    pub warning: Option<String>,
 }
 
 pub fn toggle_label(id: ToggleId) -> &'static str {
@@ -244,7 +247,10 @@ impl App {
 
     /// Avertissement de démarrage (config, thème, touches) : ligne d'état.
     pub fn warn(&mut self, msg: String) {
-        self.status.error = Some(msg);
+        self.status.warning = Some(match self.status.warning.take() {
+            Some(prev) => format!("{prev} ; {msg}"), // plusieurs fichiers fautifs
+            None => msg,
+        });
     }
 
     pub fn external_argv(&self, e: External) -> Vec<String> {
@@ -1097,6 +1103,21 @@ mod tests {
     fn avertissement_de_demarrage() {
         let mut a = app();
         a.warn("config.toml invalide : x".into());
-        assert_eq!(a.status.error.as_deref(), Some("config.toml invalide : x"));
+        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x"));
+        assert_eq!(a.status.error, None);
+        a.warn("colors.toml invalide : y".into());
+        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x ; colors.toml invalide : y"), "aucun n'est perdu");
+    }
+
+    #[test]
+    fn l_avertissement_survit_aux_actions() {
+        let mut a = ready_app();
+        a.warn("config.toml invalide : x".into());
+        let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boum".into() };
+        a.on_update(Update::Done(Op::SetDnd(true), Err(e)), Instant::now());
+        assert!(a.status.error.is_some());
+        a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
+        assert_eq!(a.status.error, None, "la dernière erreur d'action s'efface au succès suivant");
+        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x"), "l'avertissement reste");
     }
 }

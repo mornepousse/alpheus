@@ -64,8 +64,9 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     let last = app.status.last.as_deref().unwrap_or("prêt");
     let mut x = r.x + 1;
     x += put(buf, r, x, r.y, &format!("{} · {last}", app.tab.title()), style);
-    if let Some(err) = &app.status.error {
-        put(buf, r, x, r.y, &format!(" · ✗ {err}"), Style::default().fg(th.error).bg(th.surface));
+    // Dernière erreur d'action, puis avertissement de démarrage (persistant).
+    for msg in [&app.status.error, &app.status.warning].into_iter().flatten() {
+        x = x.saturating_add(put(buf, r, x, r.y, &format!(" · ✗ {msg}"), Style::default().fg(th.error).bg(th.surface)));
     }
 }
 
@@ -236,6 +237,12 @@ mod tests {
         let mut a = ready_app();
         a.warn("config.toml invalide : x".into());
         assert!(draw(&a, 80, 24).0[22].contains("✗ config.toml invalide : x"));
+        // Une action réussie n'efface pas l'avertissement de démarrage.
+        a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
+        assert!(draw(&a, 80, 24).0[22].contains("✗ config.toml invalide : x"), "{:?}", draw(&a, 80, 24).0[22]);
+        a.status.error = Some("Wi-Fi : boum".into());
+        let line = &draw(&a, 100, 24).0[22];
+        assert!(line.contains("✗ Wi-Fi : boum") && line.contains("✗ config.toml invalide : x"), "{line:?}");
     }
 
     #[test]
