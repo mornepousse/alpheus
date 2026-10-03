@@ -22,6 +22,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         Overlay::Palette(p) => palette(buf, area, app, p, hits),
         Overlay::Confirm(c) => confirm(buf, area, app, c, hits),
         Overlay::Keep(k) => ecrans::keep(buf, area, app, k, hits),
+        Overlay::Panel(p) => ecrans::panel(buf, area, app, p, hits),
     }
 }
 

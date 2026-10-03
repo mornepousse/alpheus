@@ -2,7 +2,7 @@
 //! recherche, puis table de touches configurable.
 
 use super::action::{Action, Tab};
-use super::{App, Item, Overlay, Palette, Search};
+use super::{App, Item, Overlay, Palette, PanelField, Search};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Instant;
 
@@ -30,6 +30,7 @@ impl App {
             Overlay::Palette(_) => return self.key_palette(e, now),
             Overlay::Help => return self.key_help(e),
             Overlay::Keep(_) => return self.key_keep(e, now),
+            Overlay::Panel(_) => return self.key_panel(e, now),
             Overlay::None => {}
         }
         if self.search.editing {
@@ -83,6 +84,45 @@ impl App {
                     };
                 }
             }
+            _ => {}
+        }
+    }
+
+    /// Panneau de réglage : ↑/↓ champ, ←/→ valeur, « / » cherche un mode,
+    /// Entrée sur Appliquer envoie, Échap ferme.
+    fn key_panel(&mut self, e: KeyEvent, now: Instant) {
+        if matches!(&self.overlay, Overlay::Panel(p) if p.query.is_some()) {
+            match e.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    if let Overlay::Panel(p) = &mut self.overlay {
+                        p.query = None; // le mode choisi reste
+                    }
+                }
+                KeyCode::Backspace => self.panel_query(|q| {
+                    q.pop();
+                }),
+                KeyCode::Left => self.panel_step(-1),
+                KeyCode::Right => self.panel_step(1),
+                KeyCode::Char(ch) if plain(&e) => self.panel_query(|q| q.push(ch)),
+                _ => {}
+            }
+            return;
+        }
+        let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+        match action {
+            Some(Action::Back | Action::Quit) => self.overlay = Overlay::None,
+            Some(Action::Up | Action::PrevTab) => self.panel_move(-1),
+            Some(Action::Down | Action::NextTab) => self.panel_move(1),
+            Some(Action::Left | Action::Decrease) => self.panel_step(-1),
+            Some(Action::Right | Action::Increase) => self.panel_step(1),
+            Some(Action::Search) => {
+                if let Overlay::Panel(p) = &mut self.overlay {
+                    if p.field == PanelField::Mode {
+                        p.query = Some(String::new());
+                    }
+                }
+            }
+            Some(Action::Activate) => self.panel_enter(now),
             _ => {}
         }
     }
@@ -467,6 +507,47 @@ mod tests {
         c(&mut a, 'q');
         assert!(a.should_quit);
         assert!(a.exit_undo().is_some(), "le nettoyage de sortie défera l'essai");
+    }
+
+    #[test]
+    fn panneau_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down);
+        k(&mut a, KeyCode::Enter); // panneau de la dalle interne
+        let Overlay::Panel(p) = &a.overlay else { panic!("panneau attendu") };
+        assert_eq!(p.output, "eDP-1");
+        k(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Char('+'), KeyModifiers::SHIFT);
+        let Overlay::Panel(p) = &a.overlay else { panic!() };
+        assert_eq!((p.field, p.scale), (PanelField::Scale, crate::displays::Scale(1250)));
+        k(&mut a, KeyCode::Enter); // vers Appliquer
+        k(&mut a, KeyCode::Enter); // applique
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+        assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    }
+
+    #[test]
+    fn recherche_de_mode_au_clavier() {
+        let mut a = ecrans();
+        a.data.displays = super::super::Loadable::Ready(
+            crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap(),
+        );
+        k(&mut a, KeyCode::Down);
+        k(&mut a, KeyCode::Down); // Alpha
+        k(&mut a, KeyCode::Enter);
+        c(&mut a, '/');
+        typed(&mut a, "1280q"); // « q » s'écrit, ne ferme rien
+        let Overlay::Panel(p) = &a.overlay else { panic!("panneau fermé") };
+        assert_eq!(p.query.as_deref(), Some("1280q"));
+        k(&mut a, KeyCode::Backspace);
+        let Overlay::Panel(p) = &a.overlay else { panic!() };
+        assert_eq!(p.mode.to_string(), "1280x1024@75");
+        k(&mut a, KeyCode::Esc);
+        let Overlay::Panel(p) = &a.overlay else { panic!("Échap ferme d'abord la recherche") };
+        assert_eq!((p.query.clone(), p.mode.to_string()), (None, "1280x1024@75".to_string()));
+        k(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, Overlay::None);
+        assert!(a.take_requests().is_empty());
     }
 
     #[test]

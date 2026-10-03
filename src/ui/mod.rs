@@ -411,11 +411,34 @@ mod tests {
     }
 
     #[test]
+    fn panneau_de_reglage() {
+        let mut a = ecrans();
+        a.open_panel("HDMI-A-1", Instant::now());
+        let (rows, hits) = draw(&a, 80, 24);
+        let all = rows.join("\n");
+        for attendu in ["Réglage — Bravo (HDMI-A-1)", "Mode", "1920×1080@240  2/2", "Échelle", "Rotation", "0°",
+            "Placement", "à droite de", "Référence", "Alpha", "Alignement", "en haut", "✗ aucun changement",
+            "[ Annuler ]", "[ Appliquer ]"] {
+            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+        }
+        assert!(hits.find(Target::PanelStep { field: crate::app::PanelField::Align, dir: -1 }).is_some());
+        // Origine : plus de référence ni d'alignement.
+        if let Overlay::Panel(p) = &mut a.overlay {
+            p.place = crate::app::PlaceChoice::Origin;
+        }
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(!all.contains("Référence") && all.contains("origine"), "{all}");
+    }
+
+    #[test]
     fn ecrans_sans_panique_en_petite_fenetre() {
         let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        let panneau = a.overlay.clone();
+        a.overlay = Overlay::None;
         a.toggle_output("DVI-I-1", Instant::now());
         let garder = a.overlay.clone();
-        for o in [Overlay::None, garder] {
+        for o in [Overlay::None, panneau, garder] {
             a.overlay = o;
             for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
                 draw(&a, w, h);
@@ -428,6 +451,9 @@ mod tests {
         let mut a = ecrans();
         a.focus = 2;
         insta::assert_snapshot!("ecrans_liste", draw(&a, 100, 28).0.join("\n"));
+        a.open_panel("HDMI-A-1", Instant::now());
+        insta::assert_snapshot!("ecrans_panneau", draw(&a, 80, 24).0.join("\n"));
+        a.overlay = Overlay::None;
         a.apply_display_profile("Bureau", Instant::now());
         insta::assert_snapshot!("ecrans_garder", draw(&a, 80, 24).0.join("\n"));
     }
@@ -505,6 +531,28 @@ mod tests {
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
         let rows = draw(&a, 80, 24).0;
         assert!(rows[1].trim_end().ends_with("✓ Wi-Fi : désactivé"), "{:?}", rows[1]);
+    }
+
+    #[test]
+    fn appliquer_grise_si_refuse() {
+        let mut a = ready_app();
+        a.go_tab(Tab::Ecrans, Instant::now());
+        a.open_panel("HDMI-A-1", Instant::now());
+        // Couleur du texte de « [ Appliquer ] » après rendu.
+        let fg = |a: &crate::app::App| {
+            let r = draw(a, 80, 24).1.find(Target::PanelApply).unwrap();
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            t.draw(|f| {
+                render(f, a);
+            })
+            .unwrap();
+            t.backend().buffer()[(r.x + 2, r.y)].fg
+        };
+        assert_eq!(fg(&a), a.theme.muted, "aucun changement : grisé");
+        if let Overlay::Panel(p) = &mut a.overlay {
+            p.scale = crate::displays::Scale(1250);
+        }
+        assert_ne!(fg(&a), a.theme.muted, "réglage valide : actif");
     }
 
     #[test]

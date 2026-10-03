@@ -1,13 +1,13 @@
 //! Onglet Écrans : barre des profils, carte à l'échelle, ligne d'une sortie ;
-//! et la boîte « Garder ces réglages ? ».
+//! et ses surcouches (« Garder ces réglages ? », panneau de réglage).
 
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
-use crate::app::ecrans::placement_labels;
-use crate::app::{App, Item, Keep};
+use crate::app::ecrans::{panel_fields, place_label, placement_labels};
+use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice};
 use crate::displays::geometry::logical_size;
-use crate::displays::{active_count, short_names, Output};
+use crate::displays::{active_count, rotation_label, short_from_description, short_names, Output};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -210,6 +210,102 @@ pub fn keep(buf: &mut Buffer, area: Rect, app: &App, k: &Keep, hits: &mut HitMap
     }
     let y = inner.y + inner.height.saturating_sub(1);
     buttons(buf, inner, y, "Annuler", "Garder", k.keep_focused, t.deadline.is_some(), app, hits);
+}
+
+fn field_label(f: PanelField) -> &'static str {
+    match f {
+        PanelField::Mode => "Mode",
+        PanelField::Scale => "Échelle",
+        PanelField::Rotation => "Rotation",
+        PanelField::Place => "Placement",
+        PanelField::Reference => "Référence",
+        PanelField::Align => "Alignement",
+        PanelField::Cancel | PanelField::Apply => "",
+    }
+}
+
+/// Valeur affichée d'un champ du panneau.
+fn field_value(app: &App, p: &Panel, f: PanelField) -> String {
+    match f {
+        PanelField::Mode => {
+            let modes = app.panel_modes(p);
+            let k = modes.iter().position(|m| *m == p.mode).map_or(0, |k| k + 1);
+            format!("{}  {k}/{}", p.mode.label(), modes.len())
+        }
+        PanelField::Scale => p.scale.label(),
+        PanelField::Rotation => rotation_label(p.transform),
+        PanelField::Place => place_label(p.place).to_string(),
+        PanelField::Reference => {
+            let outs = app.outputs();
+            let labels = short_names(outs);
+            match &p.reference {
+                None => "—".into(),
+                Some(d) => outs.iter().position(|o| o.description == *d).map_or_else(|| short_from_description(d), |i| labels[i].clone()),
+            }
+        }
+        PanelField::Align => match p.place {
+            PlaceChoice::Rel(r) => p.align.label(r).to_string(),
+            _ => String::new(),
+        },
+        PanelField::Cancel | PanelField::Apply => String::new(),
+    }
+}
+
+/// Panneau de réglage : un champ par ligne (◀ valeur ▶), la raison d'un
+/// refus, puis Annuler et Appliquer (grisé si la géométrie refuse).
+pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitMap) {
+    let th = &app.theme;
+    let outs = app.outputs();
+    let labels = short_names(outs);
+    let title = match outs.iter().position(|o| o.name == p.output) {
+        Some(i) => format!(" Réglage — {} ({}) ", labels[i], p.output),
+        None => format!(" Réglage — {} ", p.output),
+    };
+    let fields: Vec<PanelField> = panel_fields(p).into_iter().filter(|f| !matches!(f, PanelField::Cancel | PanelField::Apply)).collect();
+    let preview = app.panel_preview(p);
+    let extra = u16::from(p.query.is_some()) + 1; // recherche, raison ou ligne vide
+    let r = centered(area, 60, fields.len() as u16 + extra + 4);
+    let inner = frame(buf, r, &title, app, hits);
+    let text = Style::default().fg(th.fg).bg(th.surface);
+    for (n, f) in fields.iter().enumerate() {
+        let y = inner.y + n as u16;
+        if y >= inner.bottom().saturating_sub(1) {
+            break;
+        }
+        let focused = p.field == *f;
+        let style = if focused { Style::default().fg(th.accent).bg(th.surface).add_modifier(Modifier::BOLD) } else { text };
+        hits.push(Rect::new(inner.x, y, inner.width, 1), Target::PanelField(*f));
+        put(buf, inner, inner.x + 1, y, if focused { "▶" } else { " " }, style);
+        put(buf, inner, inner.x + 3, y, field_label(*f), style);
+        let vx = inner.x + 16;
+        put(buf, inner, vx, y, "◀", Style::default().fg(th.accent).bg(th.surface));
+        hits.push(Rect::new(vx, y, 1, 1), Target::PanelStep { field: *f, dir: -1 });
+        let w = put(buf, inner, vx + 2, y, &field_value(app, p, *f), text);
+        put(buf, inner, vx + 3 + w, y, "▶", Style::default().fg(th.accent).bg(th.surface));
+        hits.push(Rect::new(vx + 3 + w, y, 1, 1), Target::PanelStep { field: *f, dir: 1 });
+    }
+    let mut y = inner.y + fields.len() as u16;
+    if let Some(q) = &p.query {
+        put(buf, inner, inner.x + 3, y, &format!("Recherche : {q}▏"), Style::default().fg(th.accent).bg(th.surface));
+        y += 1;
+    }
+    if let Err(e) = &preview {
+        put(buf, inner, inner.x + 3, y, &truncate(&format!("✗ {e}"), usize::from(inner.width.saturating_sub(4))), Style::default().fg(th.error).bg(th.surface));
+    }
+    let by = inner.y + inner.height.saturating_sub(1);
+    let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
+    let mut x = inner.x + 1;
+    let cancel_style = if p.field == PanelField::Cancel { on } else { text };
+    let w = put(buf, inner, x, by, "[ Annuler ]", cancel_style);
+    hits.push(Rect::new(x, by, w, 1), Target::PanelCancel);
+    x = x.saturating_add(w + 2);
+    let apply_style = match (preview.is_ok(), p.field == PanelField::Apply) {
+        (false, _) => Style::default().fg(th.muted).bg(th.surface),
+        (true, true) => on,
+        (true, false) => text,
+    };
+    let w = put(buf, inner, x, by, "[ Appliquer ]", apply_style);
+    hits.push(Rect::new(x, by, w, 1), Target::PanelApply);
 }
 
 /// La ligne `n` de la carte, dessinée à partir de `x`.

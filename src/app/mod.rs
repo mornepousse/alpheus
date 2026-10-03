@@ -19,7 +19,7 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
-pub use ecrans::{Ecrans, Keep, Trial, KEEP_DELAY};
+pub use ecrans::{Ecrans, Keep, Panel, PanelField, PlaceChoice, Trial, KEEP_DELAY};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
@@ -144,6 +144,8 @@ pub enum Overlay {
     Confirm(Confirm),
     /// « Garder ces réglages ? » (compte à rebours d'un essai d'écrans).
     Keep(Keep),
+    /// Panneau de réglage d'une sortie.
+    Panel(Panel),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -608,6 +610,7 @@ impl App {
             Some(Item::Button(c)) => self.run_command(c, now),
             Some(Item::Slider(SliderId::Node(id))) => self.set_default(id),
             Some(Item::DisplayProfiles) => self.profile_bar_activate(now),
+            Some(Item::Output(name)) => self.open_panel(&name, now),
             _ => {}
         }
     }

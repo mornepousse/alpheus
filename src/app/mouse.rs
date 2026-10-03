@@ -1,7 +1,7 @@
 //! Souris : clic, glissement, molette, sur les zones relevées au rendu.
 
 use super::action::Command;
-use super::{App, Item, Overlay, STEP};
+use super::{App, Item, Overlay, PanelField, STEP};
 use crate::ui::hit::{slider_pick, HitMap, Target};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -30,10 +30,17 @@ impl App {
                 Some(Target::ConfirmYes) => self.dialog_answer(true, now),
                 Some(Target::ConfirmNo) => self.dialog_answer(false, now),
                 Some(Target::PaletteEntry(i)) => self.palette_run(Some(i), now),
+                Some(Target::PanelField(f)) => self.panel_focus(f),
+                Some(Target::PanelStep { field, dir }) => {
+                    self.panel_focus(field);
+                    self.panel_step(dir);
+                }
+                Some(Target::PanelCancel) => self.overlay = Overlay::None,
+                Some(Target::PanelApply) => self.panel_apply(now),
                 Some(Target::Overlay) => {}
-                // Hors de la surcouche : ferme l'aide ou la palette ; une
-                // confirmation et « Garder ces réglages ? » exigent un choix
-                // explicite.
+                // Hors de la surcouche : ferme l'aide, la palette ou le
+                // panneau ; une confirmation et « Garder ces réglages ? »
+                // exigent un choix explicite.
                 _ => {
                     if !matches!(self.overlay, Overlay::Confirm(_) | Overlay::Keep(_)) {
                         self.overlay = Overlay::None;
@@ -93,6 +100,12 @@ impl App {
             Overlay::Confirm(_) => self.close_confirm(yes),
             Overlay::Keep(_) => self.keep_answer(yes, now),
             _ => {}
+        }
+    }
+
+    fn panel_focus(&mut self, f: PanelField) {
+        if let Overlay::Panel(p) = &mut self.overlay {
+            p.field = f;
         }
     }
 
@@ -273,6 +286,25 @@ mod tests {
         let (x, y) = center(&a, Target::ConfirmYes);
         click(&mut a, x, y);
         assert_eq!((a.overlay.clone(), a.ecrans.trial.clone()), (Overlay::None, None));
+    }
+
+    #[test]
+    fn panneau_a_la_souris() {
+        let mut a = ecrans();
+        let r = draw(&a, 80, 24).1.find(Target::Item(1)).unwrap();
+        click(&mut a, r.x + 3, r.y); // ligne de la dalle : ouvre le panneau
+        assert!(matches!(a.overlay, Overlay::Panel(_)));
+        let (x, y) = center(&a, Target::PanelStep { field: PanelField::Scale, dir: 1 });
+        click(&mut a, x, y);
+        let Overlay::Panel(p) = &a.overlay else { panic!() };
+        assert_eq!((p.field, p.scale), (PanelField::Scale, crate::displays::Scale(1250)));
+        let (x, y) = center(&a, Target::PanelApply);
+        click(&mut a, x, y);
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+        let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        click(&mut a, 0, 23); // dehors : le panneau se ferme
+        assert_eq!(a.overlay, Overlay::None);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 use super::worker::Op;
 use super::{App, Overlay};
 use crate::backends::BResult;
-use crate::displays::geometry::{deduce, logical_size, resolve, Align, Placement, Relation, Screen};
+use crate::displays::geometry::{deduce, logical_size, resolve, Align, GeoError, Placement, Relation, Screen};
 use crate::displays::profiles::{placed, plan_profile, Profile};
 use crate::displays::{
     active_count, changed_elsewhere, rotation_label, short_from_description, short_names, Active, Mode, Output, Plan,
@@ -60,6 +60,64 @@ pub struct Trial {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Keep {
     pub keep_focused: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PanelField {
+    Mode,
+    Scale,
+    Rotation,
+    Place,
+    Reference,
+    Align,
+    Cancel,
+    Apply,
+}
+
+/// Placement choisi dans le panneau. `Free` : position actuelle, non
+/// reproductible par une relation (proposée seulement dans ce cas).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceChoice {
+    Free,
+    Origin,
+    Rel(Relation),
+}
+
+/// Panneau de réglage d'une sortie : brouillon envoyé par « Appliquer ».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Panel {
+    /// Connecteur de la sortie réglée.
+    pub output: String,
+    pub field: PanelField,
+    pub mode: Mode,
+    pub scale: Scale,
+    pub transform: u8,
+    pub place: PlaceChoice,
+    /// Description de l'écran de référence.
+    pub reference: Option<String>,
+    pub align: Align,
+    /// Position actuelle (décalage par rapport à l'origine déduite).
+    pub free: Option<(i32, i32)>,
+    /// Recherche de mode en cours (« / »).
+    pub query: Option<String>,
+}
+
+pub fn place_label(p: PlaceChoice) -> &'static str {
+    match p {
+        PlaceChoice::Free => "position actuelle",
+        PlaceChoice::Origin => "origine",
+        PlaceChoice::Rel(r) => r.label(),
+    }
+}
+
+/// Champs visibles du panneau, dans l'ordre.
+pub fn panel_fields(p: &Panel) -> Vec<PanelField> {
+    let mut v = vec![PanelField::Mode, PanelField::Scale, PanelField::Rotation, PanelField::Place];
+    if matches!(p.place, PlaceChoice::Rel(_)) {
+        v.extend([PanelField::Reference, PanelField::Align]);
+    }
+    v.extend([PanelField::Cancel, PanelField::Apply]);
+    v
 }
 
 fn label_of(outs: &[Output], labels: &[String], desc: &str) -> String {
@@ -165,6 +223,10 @@ fn describe_step(s: &Step, outs: &[Output], labels: &[String]) -> String {
     }
 }
 
+fn wrap(idx: usize, dir: i32, len: usize) -> usize {
+    (idx as i32 + dir).rem_euclid(len.max(1) as i32) as usize
+}
+
 impl App {
     /// Sorties lues (vide tant que rien n'est lu).
     pub fn outputs(&self) -> &[Output] {
@@ -194,7 +256,7 @@ impl App {
     // ── Réponses et temps ────────────────────────────────────────────
 
     /// Après une lecture des sorties : changement extérieur pendant un essai,
-    /// profil demandé par la palette.
+    /// profil demandé par la palette, panneau d'une sortie débranchée.
     pub(crate) fn displays_read(&mut self, now: Instant) {
         let outs = self.outputs().to_vec();
         if self.data.displays.ready().is_none() {
@@ -209,6 +271,13 @@ impl App {
                 self.close_keep();
                 self.status.last = Some("Écrans modifiés ailleurs".into());
                 self.toast("Écrans modifiés ailleurs".into(), false, now);
+            }
+        }
+        if let Overlay::Panel(p) = &self.overlay {
+            if !outs.iter().any(|o| o.name == p.output) {
+                let msg = format!("Écrans : {} débranché, réglage abandonné", p.output);
+                self.overlay = Overlay::None;
+                self.toast(msg, true, now);
             }
         }
         self.ecrans.profile_sel = self.ecrans.profile_sel.min(self.ecrans.profiles.len());
@@ -387,6 +456,239 @@ impl App {
         }
     }
 
+    // ── Panneau de réglage ───────────────────────────────────────────
+
+    pub(crate) fn open_panel(&mut self, name: &str, now: Instant) {
+        if self.displays_busy(now) {
+            return;
+        }
+        let outs = self.outputs().to_vec();
+        let Some(i) = outs.iter().position(|o| o.name == name) else { return };
+        let o = &outs[i];
+        let (mode, scale, transform) = match (&o.active, o.modes.first()) {
+            (Some(a), _) => (a.mode, a.scale, a.transform),
+            (None, Some(m)) => (*m, Scale::ONE, 0),
+            (None, None) => {
+                let msg = format!("{} : aucun mode connu", short_names(&outs)[i]);
+                self.toast(msg, true, now);
+                return;
+            }
+        };
+        let mut p = Panel {
+            output: name.to_string(),
+            field: PanelField::Mode,
+            mode,
+            scale,
+            transform,
+            place: PlaceChoice::Origin,
+            reference: None,
+            align: Align::Start,
+            free: None,
+            query: None,
+        };
+        if o.active.is_some() {
+            match &deduce(&placed(&outs), None, None)[i] {
+                Placement::Origin => {}
+                Placement::Relative { relation, reference, align } => {
+                    p.place = PlaceChoice::Rel(*relation);
+                    p.reference = Some(reference.clone());
+                    p.align = *align;
+                }
+                Placement::Absolute { x, y } => {
+                    p.place = PlaceChoice::Free;
+                    p.free = Some((*x, *y));
+                }
+            }
+        } else if let Some(j) = rightmost(&outs, i) {
+            // Éteinte : proposée à droite de l'écran le plus à droite.
+            p.place = PlaceChoice::Rel(Relation::RightOf);
+            p.reference = Some(outs[j].description.clone());
+        }
+        self.overlay = Overlay::Panel(p);
+    }
+
+    /// Modes proposés : ceux de la sortie, filtrés par la recherche.
+    pub fn panel_modes(&self, p: &Panel) -> Vec<Mode> {
+        let Some(o) = self.outputs().iter().find(|o| o.name == p.output) else { return Vec::new() };
+        let mut modes = o.modes.clone();
+        if !modes.contains(&p.mode) {
+            modes.insert(0, p.mode);
+        }
+        // Sous-chaîne, pas recherche floue : « 1280 » ne doit pas trouver « 1920x1080 ».
+        let q = p.query.as_deref().unwrap_or("").trim().replace('×', "x");
+        modes.into_iter().filter(|m| m.to_string().contains(&q)).collect()
+    }
+
+    /// Références possibles : les autres écrans activés (descriptions).
+    pub fn panel_references(&self, p: &Panel) -> Vec<String> {
+        self.outputs()
+            .iter()
+            .filter(|o| o.name != p.output && o.active.is_some())
+            .map(|o| o.description.clone())
+            .collect()
+    }
+
+    /// Plan du brouillon, ou la raison du refus (Appliquer grisé).
+    pub fn panel_preview(&self, p: &Panel) -> Result<Plan, String> {
+        let outs = self.outputs();
+        let i = outs.iter().position(|o| o.name == p.output).ok_or("sortie débranchée")?;
+        let labels = short_names(outs);
+        let current = placed(outs);
+        let own = match p.place {
+            PlaceChoice::Origin => Placement::Origin,
+            PlaceChoice::Free => {
+                let (x, y) = p.free.ok_or("position inconnue")?;
+                Placement::Absolute { x, y }
+            }
+            PlaceChoice::Rel(relation) => Placement::Relative {
+                relation,
+                reference: p.reference.clone().ok_or("choisir un écran de référence")?,
+                align: p.align,
+            },
+        };
+        let size = logical_size(p.mode, p.scale, p.transform);
+        let screens = |placements: Vec<Placement>| -> Vec<Screen> {
+            outs.iter()
+                .enumerate()
+                .zip(placements)
+                .map(|((j, o), pl)| Screen {
+                    id: o.description.clone(),
+                    label: labels[j].clone(),
+                    enabled: j == i || o.active.is_some(),
+                    size: if j == i { size } else { current[j].size },
+                    placement: if j == i { own.clone() } else { pl },
+                })
+                .collect()
+        };
+        let pos = if p.place == PlaceChoice::Origin {
+            let mut placements = deduce(&current, Some(i), None);
+            if outs[i].active.is_none() {
+                // Éteinte : l'ancienne origine garde sa place (0, 0).
+                for (j, pl) in placements.iter_mut().enumerate() {
+                    if j != i && *pl == Placement::Origin {
+                        *pl = Placement::Absolute { x: 0, y: 0 };
+                    }
+                }
+            }
+            resolve(&screens(placements))
+        } else {
+            match resolve(&screens(deduce(&current, None, None))) {
+                // Les autres dépendaient de cet écran : ils gardent leur place.
+                Err(GeoError::Cycle(_)) => resolve(&screens(deduce(&current, None, Some(i)))),
+                r => r,
+            }
+        }
+        .map_err(|e| e.to_string())?;
+        let plan = Plan::between(outs, &targets(outs, pos, i, (p.mode, p.scale, p.transform)));
+        if plan.steps.is_empty() { Err("aucun changement".into()) } else { Ok(plan) }
+    }
+
+    fn panel_mut(&mut self) -> Option<&mut Panel> {
+        match &mut self.overlay {
+            Overlay::Panel(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    /// Champ précédent (`dir` < 0) ou suivant.
+    pub(crate) fn panel_move(&mut self, dir: i32) {
+        if let Some(p) = self.panel_mut() {
+            let fields = panel_fields(p);
+            let k = fields.iter().position(|f| *f == p.field).unwrap_or(0) as i32;
+            p.field = fields[(k + dir).clamp(0, fields.len() as i32 - 1) as usize];
+        }
+    }
+
+    /// Change la valeur du champ focalisé (←/→, -/+).
+    pub(crate) fn panel_step(&mut self, dir: i32) {
+        let Overlay::Panel(p) = &self.overlay else { return };
+        let mut p = p.clone();
+        match p.field {
+            PanelField::Mode => {
+                let modes = self.panel_modes(&p);
+                let k = match modes.iter().position(|m| *m == p.mode) {
+                    Some(k) => (k as i32 + dir).clamp(0, modes.len() as i32 - 1) as usize,
+                    None => 0,
+                };
+                if let Some(m) = modes.get(k) {
+                    p.mode = *m;
+                }
+            }
+            PanelField::Scale => p.scale = p.scale.step(dir),
+            PanelField::Rotation => p.transform = wrap(usize::from(p.transform % 4), dir, 4) as u8,
+            PanelField::Place => {
+                let mut choices: Vec<PlaceChoice> = p.free.map(|_| PlaceChoice::Free).into_iter().collect();
+                choices.push(PlaceChoice::Origin);
+                choices.extend(Relation::ALL.map(PlaceChoice::Rel));
+                let k = choices.iter().position(|c| *c == p.place).unwrap_or(0);
+                p.place = choices[wrap(k, dir, choices.len())];
+                if matches!(p.place, PlaceChoice::Rel(_)) && p.reference.is_none() {
+                    p.reference = self.panel_references(&p).first().cloned();
+                }
+            }
+            PanelField::Reference => {
+                let refs = self.panel_references(&p);
+                if !refs.is_empty() {
+                    let k = p.reference.as_ref().and_then(|r| refs.iter().position(|x| x == r)).unwrap_or(0);
+                    p.reference = Some(refs[wrap(k, dir, refs.len())].clone());
+                }
+            }
+            PanelField::Align => {
+                let k = Align::ALL.iter().position(|a| *a == p.align).unwrap_or(0);
+                p.align = Align::ALL[wrap(k, dir, 3)];
+            }
+            PanelField::Cancel | PanelField::Apply => {
+                p.field = if dir < 0 { PanelField::Cancel } else { PanelField::Apply };
+            }
+        }
+        self.overlay = Overlay::Panel(p);
+    }
+
+    /// Recherche de mode : le texte change, le mode suit la première correspondance.
+    pub(crate) fn panel_query(&mut self, edit: impl FnOnce(&mut String)) {
+        let Overlay::Panel(p) = &self.overlay else { return };
+        let mut p = p.clone();
+        let mut q = p.query.take().unwrap_or_default();
+        edit(&mut q);
+        p.query = Some(q);
+        let modes = self.panel_modes(&p);
+        if !modes.contains(&p.mode) {
+            if let Some(m) = modes.first() {
+                p.mode = *m;
+            }
+        }
+        self.overlay = Overlay::Panel(p);
+    }
+
+    /// Entrée dans le panneau : Annuler ferme, Appliquer envoie, un champ
+    /// mène à Appliquer.
+    pub(crate) fn panel_enter(&mut self, now: Instant) {
+        let Overlay::Panel(p) = &self.overlay else { return };
+        match p.field {
+            PanelField::Cancel => self.overlay = Overlay::None,
+            PanelField::Apply => self.panel_apply(now),
+            _ => {
+                if let Some(p) = self.panel_mut() {
+                    p.field = PanelField::Apply;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn panel_apply(&mut self, now: Instant) {
+        let Overlay::Panel(p) = &self.overlay else { return };
+        let p = p.clone();
+        match self.panel_preview(&p) {
+            Ok(plan) => {
+                self.overlay = Overlay::None;
+                let outs = self.outputs();
+                let labels = short_names(outs);
+                let label = outs.iter().position(|o| o.name == p.output).map_or(p.output.clone(), |i| labels[i].clone());
+                self.start_trial(format!("Réglage de {label}"), plan, Vec::new(), now);
+            }
+            Err(e) => self.toast(format!("Écrans : {e}"), true, now),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -680,6 +982,7 @@ mod tests {
         let (mut a, _, _) = applied(t0);
         a.toggle_output("eDP-1", t0);
         a.apply_display_profile("Laptop seul", t0);
+        a.open_panel("eDP-1", t0);
         assert!(!a.take_requests().iter().any(|r| matches!(r, Request::Do(_))));
         assert_eq!(a.overlay, Overlay::Keep(Keep::default()));
         assert!(a.toasts.iter().any(|t| t.text == "Écrans : un changement est déjà en cours"));
@@ -769,6 +1072,151 @@ mod tests {
         a.adjust(-1, Instant::now());
         assert_eq!(a.ecrans.profile_sel, 1);
         assert!(a.take_requests().iter().all(|r| matches!(r, Request::Refresh(_))), "choisir n'applique rien");
+    }
+
+    // ── Panneau ──────────────────────────────────────────────────────
+
+    fn panel(a: &App) -> Panel {
+        match &a.overlay {
+            Overlay::Panel(p) => p.clone(),
+            o => panic!("panneau attendu : {o:?}"),
+        }
+    }
+
+    #[test]
+    fn panneau_ouvert_sur_l_etat_courant() {
+        let mut a = ecrans();
+        a.open_panel("HDMI-A-1", Instant::now());
+        let p = panel(&a);
+        assert_eq!((p.mode, p.scale, p.transform), (mode(1920, 1080, 240), Scale::ONE, 0));
+        assert_eq!((p.place, p.reference.as_deref(), p.align), (PlaceChoice::Rel(Relation::RightOf), Some(ALPHA), Align::Start));
+        assert_eq!(a.panel_preview(&p), Err("aucun changement".into()));
+        a.open_panel("eDP-1", Instant::now());
+        let p = panel(&a);
+        assert_eq!((p.place, p.free), (PlaceChoice::Free, Some((-213, 1080))), "position non reproductible : libre");
+        assert_eq!(panel_fields(&p), vec![PanelField::Mode, PanelField::Scale, PanelField::Rotation, PanelField::Place, PanelField::Cancel, PanelField::Apply]);
+    }
+
+    #[test]
+    fn echelle_de_l_origine_les_voisins_suivent() {
+        let mut a = ecrans();
+        a.open_panel("DVI-I-1", Instant::now());
+        a.panel_move(1); // Échelle
+        a.panel_step(1); // 1,25 : Alpha passe à 1536×864
+        let plan = a.panel_preview(&panel(&a)).unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].output, "DVI-I-1");
+        assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y, a.scale)), Some((213, 0, Scale(1250))));
+        assert_eq!(plan.steps[1].output, "HDMI-A-1");
+        assert_eq!(plan.steps[1].active.as_ref().map(|a| (a.x, a.y)), Some((1749, 0)), "Bravo suit Alpha");
+        a.panel_apply(Instant::now());
+        assert_eq!(a.ecrans.trial.as_ref().unwrap().title, "Réglage de Alpha");
+        assert_eq!(sent_trial(&mut a).0, plan);
+    }
+
+    #[test]
+    fn cycle_evite_les_autres_gardent_leur_place() {
+        // Alpha à droite de Bravo, alors que Bravo est à droite d'Alpha.
+        let mut a = ecrans();
+        a.open_panel("DVI-I-1", Instant::now());
+        let mut p = panel(&a);
+        p.place = PlaceChoice::Rel(Relation::RightOf);
+        p.reference = Some(BRAVO.into());
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!(plan.steps.len(), 1, "seul Alpha bouge : {plan:?}");
+        assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y)), Some((4053, 0)));
+    }
+
+    #[test]
+    fn placement_refuse_avec_raison() {
+        let mut a = ecrans();
+        a.open_panel("HDMI-A-1", Instant::now());
+        let mut p = panel(&a);
+        p.place = PlaceChoice::Rel(Relation::Below);
+        a.overlay = Overlay::Panel(p.clone());
+        assert_eq!(a.panel_preview(&p), Err("Portable et Bravo se chevauchent".into()));
+        a.panel_apply(Instant::now());
+        assert!(a.take_requests().is_empty(), "Appliquer grisé : rien n'est envoyé");
+        assert!(matches!(a.overlay, Overlay::Panel(_)));
+    }
+
+    #[test]
+    fn choix_du_placement_et_de_la_reference() {
+        let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        a.panel_move(3); // Placement
+        assert_eq!(panel(&a).field, PanelField::Place);
+        a.panel_step(1); // libre → origine
+        assert_eq!(panel(&a).place, PlaceChoice::Origin);
+        a.panel_step(1); // → à droite de
+        let p = panel(&a);
+        assert_eq!((p.place, p.reference.as_deref()), (PlaceChoice::Rel(Relation::RightOf), Some(ALPHA)), "référence proposée");
+        assert!(panel_fields(&p).contains(&PanelField::Reference));
+        a.panel_move(1);
+        a.panel_step(1);
+        assert_eq!(panel(&a).reference.as_deref(), Some(BRAVO));
+        a.panel_move(1);
+        a.panel_step(-1);
+        assert_eq!(panel(&a).align, Align::End, "cyclique");
+        a.panel_step(1);
+        a.panel_step(-1);
+        a.panel_move(5);
+        assert_eq!(panel(&a).field, PanelField::Apply, "borné au dernier champ");
+    }
+
+    #[test]
+    fn rotation_et_echelle() {
+        let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        a.panel_move(2);
+        a.panel_step(-1);
+        assert_eq!(panel(&a).transform, 3, "0° ← : 270°");
+        a.panel_move(-1);
+        for _ in 0..20 {
+            a.panel_step(1);
+        }
+        assert_eq!(panel(&a).scale, Scale::MAX);
+    }
+
+    #[test]
+    fn recherche_de_mode() {
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap());
+        a.open_panel("DVI-I-1", Instant::now());
+        assert_eq!(a.panel_modes(&panel(&a)).len(), 26);
+        a.panel_query(|q| q.push_str("1280"));
+        let p = panel(&a);
+        assert_eq!(p.mode, mode(1280, 1024, 75), "première correspondance");
+        assert!(a.panel_modes(&p).iter().all(|m| m.to_string().contains("1280")));
+        assert_eq!(a.panel_modes(&p).len(), 5, "« 1280 » ne trouve pas « 1920x1080 »");
+        a.panel_step(1);
+        assert_eq!(panel(&a).mode, mode(1280, 1024, 70));
+    }
+
+    #[test]
+    fn panneau_d_une_sortie_debranchee() {
+        let mut a = ecrans();
+        a.open_panel("HDMI-A-1", Instant::now());
+        let p = panel(&a);
+        let sans: Vec<Output> = poste().into_iter().filter(|o| o.name != "HDMI-A-1").collect();
+        a.data.displays = Loadable::Ready(sans.clone());
+        assert_eq!(a.panel_preview(&p), Err("sortie débranchée".into()));
+        a.on_update(Update::Displays(Ok(sans)), Instant::now());
+        assert_eq!(a.overlay, Overlay::None);
+        assert!(a.toasts.iter().any(|t| t.text == "Écrans : HDMI-A-1 débranché, réglage abandonné"));
+    }
+
+    #[test]
+    fn sortie_eteinte_reglee_puis_allumee() {
+        let mut a = ecrans();
+        let mut outs = poste();
+        outs.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
+        a.data.displays = Loadable::Ready(outs);
+        a.open_panel("DP-3", Instant::now());
+        let p = panel(&a);
+        assert_eq!((p.place, p.reference.as_deref()), (PlaceChoice::Rel(Relation::RightOf), Some(BRAVO)));
+        let plan = a.panel_preview(&p).unwrap();
+        assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y)), Some((4053, 0)));
     }
 
     #[test]

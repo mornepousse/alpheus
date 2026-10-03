@@ -1,6 +1,7 @@
 //! Zones cliquables relevées au rendu, consultées par la souris.
 
 use crate::app::action::Tab;
+use crate::app::PanelField;
 use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,12 @@ pub enum Target {
     DisplayProfile(usize),
     /// Interrupteur d'une sortie (index dans App::items()).
     OutputToggle(usize),
+    /// Ligne d'un champ du panneau de réglage.
+    PanelField(PanelField),
+    /// Flèche ◀ (-1) ou ▶ (+1) d'un champ du panneau.
+    PanelStep { field: PanelField, dir: i32 },
+    PanelCancel,
+    PanelApply,
     /// Intérieur d'une surcouche : absorbe le clic.
     Overlay,
 }
