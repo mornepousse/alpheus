@@ -19,7 +19,7 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
-pub use ecrans::{Ecrans, Keep, Panel, PanelField, PlaceChoice, Trial, KEEP_DELAY};
+pub use ecrans::{Ecrans, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial, KEEP_DELAY};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
@@ -146,6 +146,8 @@ pub enum Overlay {
     Keep(Keep),
     /// Panneau de réglage d'une sortie.
     Panel(Panel),
+    /// « Enregistrer l'actuel » : nom du profil d'écran.
+    SaveProfile(SaveDialog),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

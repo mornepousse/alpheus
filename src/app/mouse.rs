@@ -38,8 +38,8 @@ impl App {
                 Some(Target::PanelCancel) => self.overlay = Overlay::None,
                 Some(Target::PanelApply) => self.panel_apply(now),
                 Some(Target::Overlay) => {}
-                // Hors de la surcouche : ferme l'aide, la palette ou le
-                // panneau ; une confirmation et « Garder ces réglages ? »
+                // Hors de la surcouche : ferme l'aide, la palette, le panneau
+                // ou la saisie ; une confirmation et « Garder ces réglages ? »
                 // exigent un choix explicite.
                 _ => {
                     if !matches!(self.overlay, Overlay::Confirm(_) | Overlay::Keep(_)) {
@@ -99,6 +99,7 @@ impl App {
         match self.overlay {
             Overlay::Confirm(_) => self.close_confirm(yes),
             Overlay::Keep(_) => self.keep_answer(yes, now),
+            Overlay::SaveProfile(_) => self.save_answer(yes, now),
             _ => {}
         }
     }

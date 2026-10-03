@@ -31,6 +31,7 @@ impl App {
             Overlay::Help => return self.key_help(e),
             Overlay::Keep(_) => return self.key_keep(e, now),
             Overlay::Panel(_) => return self.key_panel(e, now),
+            Overlay::SaveProfile(_) => return self.key_save(e, now),
             Overlay::None => {}
         }
         if self.search.editing {
@@ -123,6 +124,44 @@ impl App {
                 }
             }
             Some(Action::Activate) => self.panel_enter(now),
+            _ => {}
+        }
+    }
+
+    /// Nom du profil à enregistrer, puis confirmation s'il existe déjà.
+    fn key_save(&mut self, e: KeyEvent, now: Instant) {
+        let replace = matches!(&self.overlay, Overlay::SaveProfile(d) if d.replace);
+        if replace {
+            let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+            match action {
+                Some(Action::Back | Action::Quit) => self.overlay = Overlay::None,
+                Some(Action::Activate) => self.save_enter(now),
+                Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
+                    if let Overlay::SaveProfile(d) = &mut self.overlay {
+                        d.yes_focused = match a {
+                            Action::Left => false,
+                            Action::Right => true,
+                            _ => !d.yes_focused,
+                        };
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match e.code {
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Enter => self.save_enter(now),
+            KeyCode::Backspace => {
+                if let Overlay::SaveProfile(d) = &mut self.overlay {
+                    d.name.pop();
+                }
+            }
+            KeyCode::Char(ch) if plain(&e) => {
+                if let Overlay::SaveProfile(d) = &mut self.overlay {
+                    d.name.push(ch);
+                }
+            }
             _ => {}
         }
     }
@@ -432,7 +471,7 @@ mod tests {
 
     // ── Onglet Écrans ────────────────────────────────────────────────
 
-    use super::super::Keep;
+    use super::super::{Keep, SaveDialog};
 
     fn ecrans() -> App {
         let mut a = ready_app();
@@ -548,6 +587,22 @@ mod tests {
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.overlay, Overlay::None);
         assert!(a.take_requests().is_empty());
+    }
+
+    #[test]
+    fn enregistrer_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Right); // « + Enregistrer l'actuel »
+        k(&mut a, KeyCode::Enter);
+        typed(&mut a, "Bureaux");
+        k(&mut a, KeyCode::Backspace);
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), ..SaveDialog::default() }));
+        k(&mut a, KeyCode::Enter);
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false }));
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, Overlay::None);
     }
 
     #[test]

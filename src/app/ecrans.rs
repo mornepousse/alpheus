@@ -1,17 +1,18 @@
-//! Onglet Écrans : profils, bascule d'une sortie, et l'essai « Garder ces
-//! réglages ? » avec retour automatique. Tout réglage passe par un essai :
-//! plan envoyé au fil avec son plan inverse, compte à rebours de 15 s une
-//! fois appliqué.
+//! Onglet Écrans : profils, bascule d'une sortie, panneau de réglage,
+//! enregistrement de l'état courant, et l'essai « Garder ces réglages ? »
+//! avec retour automatique. Tout réglage passe par un essai : plan envoyé
+//! au fil avec son plan inverse, compte à rebours de 15 s une fois appliqué.
 
 use super::worker::Op;
 use super::{App, Overlay};
 use crate::backends::BResult;
 use crate::displays::geometry::{deduce, logical_size, resolve, Align, GeoError, Placement, Relation, Screen};
-use crate::displays::profiles::{placed, plan_profile, Profile};
+use crate::displays::profiles::{self, from_outputs, placed, plan_profile, Profile};
 use crate::displays::{
     active_count, changed_elsewhere, rotation_label, short_from_description, short_names, Active, Mode, Output, Plan,
     Scale, Step,
 };
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 /// Délai avant le retour automatique aux réglages précédents.
@@ -21,6 +22,12 @@ pub const KEEP_DELAY: Duration = Duration::from_secs(15);
 #[derive(Debug, Default)]
 pub struct Ecrans {
     pub profiles: Vec<Profile>,
+    /// ecrans.toml ; `None` : enregistrement impossible (tests).
+    pub profiles_path: Option<PathBuf>,
+    /// Le fichier chargé au démarrage était invalide (avertissement
+    /// conservé) : enregistrer l'écraserait sans l'avoir su lire, refusé
+    /// tant que Mae ne l'a pas corrigé (posé par `build_app`, tâche 11).
+    pub profiles_invalid: bool,
     /// Puce choisie dans la barre des profils ; `profiles.len()` désigne
     /// « + Enregistrer l'actuel ».
     pub profile_sel: usize,
@@ -100,6 +107,14 @@ pub struct Panel {
     pub free: Option<(i32, i32)>,
     /// Recherche de mode en cours (« / »).
     pub query: Option<String>,
+}
+
+/// « Enregistrer l'actuel » : saisie du nom, puis confirmation s'il existe.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SaveDialog {
+    pub name: String,
+    pub replace: bool,
+    pub yes_focused: bool,
 }
 
 pub fn place_label(p: PlaceChoice) -> &'static str {
@@ -449,10 +464,11 @@ impl App {
         self.ecrans.profile_sel = (self.ecrans.profile_sel as i32 + dir).clamp(0, n) as usize;
     }
 
-    /// Entrée sur la barre des profils : appliquer le profil choisi.
+    /// Entrée sur la barre des profils : appliquer, ou « + Enregistrer l'actuel ».
     pub(crate) fn profile_bar_activate(&mut self, now: Instant) {
-        if let Some(name) = self.ecrans.profiles.get(self.ecrans.profile_sel).map(|p| p.name.clone()) {
-            self.apply_display_profile(&name, now);
+        match self.ecrans.profiles.get(self.ecrans.profile_sel).map(|p| p.name.clone()) {
+            Some(name) => self.apply_display_profile(&name, now),
+            None => self.open_save(now),
         }
     }
 
@@ -687,6 +703,85 @@ impl App {
                 self.start_trial(format!("Réglage de {label}"), plan, Vec::new(), now);
             }
             Err(e) => self.toast(format!("Écrans : {e}"), true, now),
+        }
+    }
+
+    // ── Enregistrer l'actuel ─────────────────────────────────────────
+
+    pub(crate) fn open_save(&mut self, now: Instant) {
+        if self.data.displays.ready().is_none() {
+            self.toast("Écrans : état inconnu".into(), true, now);
+            return;
+        }
+        self.overlay = Overlay::SaveProfile(SaveDialog::default());
+    }
+
+    /// Entrée dans la saisie du nom : demande confirmation si le profil
+    /// existe, sinon enregistre.
+    pub(crate) fn save_enter(&mut self, now: Instant) {
+        let Overlay::SaveProfile(d) = &self.overlay else { return };
+        let name = d.name.trim().to_string();
+        if d.replace {
+            let yes = d.yes_focused;
+            return self.save_answer(yes, now);
+        }
+        if name.is_empty() {
+            return;
+        }
+        if self.ecrans.profiles.iter().any(|p| p.name == name) {
+            self.overlay = Overlay::SaveProfile(SaveDialog { name, replace: true, yes_focused: false });
+        } else {
+            self.save_current(&name, now);
+        }
+    }
+
+    /// Réponse à « Remplacer le profil ? » : oui enregistre, non ferme.
+    pub(crate) fn save_answer(&mut self, yes: bool, now: Instant) {
+        let Overlay::SaveProfile(d) = &self.overlay else { return };
+        let name = d.name.trim().to_string();
+        if yes {
+            self.save_current(&name, now);
+        } else {
+            self.overlay = Overlay::None;
+        }
+    }
+
+    fn save_current(&mut self, name: &str, now: Instant) {
+        self.overlay = Overlay::None;
+        if self.ecrans.profiles_invalid {
+            // Relecture contrôleur (tâche 5) : le fichier chargé était
+            // invalide — jamais écraser ce qu'on n'a pas su lire.
+            let msg = "ecrans.toml invalide : corrige-le avant d'enregistrer".to_string();
+            self.status.error = Some(msg.clone());
+            self.toast(msg, true, now);
+            return;
+        }
+        let Some(outs) = self.data.displays.ready() else {
+            self.toast("Écrans : état inconnu".into(), true, now);
+            return;
+        };
+        let p = from_outputs(name, outs);
+        let mut list = self.ecrans.profiles.clone();
+        match list.iter().position(|x| x.name == name) {
+            Some(k) => list[k] = p,
+            None => list.push(p),
+        }
+        let r = match &self.ecrans.profiles_path {
+            Some(path) => profiles::save(path, &list),
+            None => Err("aucun dossier de configuration".into()),
+        };
+        match r {
+            Ok(()) => {
+                self.ecrans.profiles = list;
+                let msg = format!("Profil « {name} » enregistré");
+                self.status.last = Some(msg.clone());
+                self.toast(msg, false, now);
+            }
+            Err(e) => {
+                let msg = format!("Profil « {name} » non enregistré : {e}");
+                self.status.error = Some(msg.clone());
+                self.toast(msg, true, now);
+            }
         }
     }
 }
@@ -1217,6 +1312,76 @@ mod tests {
         assert_eq!((p.place, p.reference.as_deref()), (PlaceChoice::Rel(Relation::RightOf), Some(BRAVO)));
         let plan = a.panel_preview(&p).unwrap();
         assert_eq!(plan.steps[0].active.as_ref().map(|a| (a.x, a.y)), Some((4053, 0)));
+    }
+
+    // ── Enregistrer l'actuel ─────────────────────────────────────────
+
+    fn tmp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("alpheus-{}-app-ecrans-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d.join("ecrans.toml")
+    }
+
+    #[test]
+    fn enregistrer_un_nouveau_profil() {
+        let mut a = ecrans();
+        let path = tmp("nouveau");
+        a.ecrans.profiles_path = Some(path.clone());
+        a.ecrans.profile_sel = 2; // « + Enregistrer l'actuel »
+        a.profile_bar_activate(Instant::now());
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog::default()));
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: " Maison ".into(), ..SaveDialog::default() });
+        a.save_enter(Instant::now());
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.ecrans.profiles.len(), 3);
+        assert_eq!(a.ecrans.profiles[2], from_outputs("Maison", &poste()));
+        assert_eq!(profiles::load(&path), (a.ecrans.profiles.clone(), None), "écrit sur le disque");
+        assert!(a.toasts.iter().any(|t| t.text == "Profil « Maison » enregistré"));
+    }
+
+    #[test]
+    fn remplacer_apres_confirmation() {
+        let mut a = ecrans();
+        a.ecrans.profiles_path = Some(tmp("remplacer"));
+        let avant = a.ecrans.profiles.clone();
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), ..SaveDialog::default() });
+        a.save_enter(Instant::now());
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false }));
+        a.save_enter(Instant::now()); // focus sur Annuler
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.ecrans.profiles, avant, "rien de remplacé");
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: true });
+        a.save_enter(Instant::now());
+        assert_eq!(a.ecrans.profiles.len(), 2);
+        assert_eq!(a.ecrans.profiles[1], from_outputs("Bureau", &poste()));
+    }
+
+    #[test]
+    fn enregistrement_impossible_signale() {
+        let mut a = ecrans();
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "X".into(), ..SaveDialog::default() });
+        a.save_enter(Instant::now());
+        assert_eq!(a.status.error.as_deref(), Some("Profil « X » non enregistré : aucun dossier de configuration"));
+        assert_eq!(a.ecrans.profiles.len(), 2);
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "   ".into(), ..SaveDialog::default() });
+        a.save_enter(Instant::now());
+        assert!(matches!(a.overlay, Overlay::SaveProfile(_)), "nom vide : rien");
+    }
+
+    #[test]
+    fn enregistrement_refuse_si_fichier_invalide() {
+        // Tâche 5 (relecture contrôleur) : le fichier chargé était invalide
+        // (avertissement conservé) → jamais écraser ce qu'on n'a pas su lire.
+        let mut a = ecrans();
+        let path = tmp("invalide");
+        a.ecrans.profiles_path = Some(path.clone());
+        a.ecrans.profiles_invalid = true;
+        let avant = a.ecrans.profiles.clone();
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Maison".into(), ..SaveDialog::default() });
+        a.save_enter(Instant::now());
+        assert_eq!(a.status.error.as_deref(), Some("ecrans.toml invalide : corrige-le avant d'enregistrer"));
+        assert_eq!(a.ecrans.profiles, avant, "rien de remplacé");
+        assert!(!path.exists(), "rien écrit");
     }
 
     #[test]

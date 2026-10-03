@@ -1,11 +1,12 @@
 //! Onglet Écrans : barre des profils, carte à l'échelle, ligne d'une sortie ;
-//! et ses surcouches (« Garder ces réglages ? », panneau de réglage).
+//! et ses surcouches (panneau de réglage, « Garder ces réglages ? »,
+//! enregistrement d'un profil).
 
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
 use crate::app::ecrans::{panel_fields, place_label, placement_labels};
-use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice};
+use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
 use crate::displays::{active_count, rotation_label, short_from_description, short_names, Output};
 use ratatui::buffer::Buffer;
@@ -306,6 +307,24 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
     };
     let w = put(buf, inner, x, by, "[ Appliquer ]", apply_style);
     hits.push(Rect::new(x, by, w, 1), Target::PanelApply);
+}
+
+/// « Enregistrer l'actuel » : nom, puis « Remplacer le profil ? » s'il existe.
+pub fn save(buf: &mut Buffer, area: Rect, app: &App, d: &SaveDialog, hits: &mut HitMap) {
+    let th = &app.theme;
+    let r = centered(area, 52, 7);
+    let inner = frame(buf, r, " Enregistrer l'actuel ", app, hits);
+    let text = Style::default().fg(th.fg).bg(th.surface);
+    if d.replace {
+        put(buf, inner, inner.x + 1, inner.y, &format!("Remplacer le profil « {} » ?", d.name), text.add_modifier(Modifier::BOLD));
+        let y = inner.y + inner.height.saturating_sub(1);
+        buttons(buf, inner, y, "Annuler", "Remplacer", d.yes_focused, true, app, hits);
+        return;
+    }
+    put(buf, inner, inner.x + 1, inner.y, "Nom du profil :", text);
+    put(buf, inner, inner.x + 1, inner.y + 1, &format!("> {}▏", d.name), Style::default().fg(th.accent).bg(th.surface));
+    let y = inner.y + inner.height.saturating_sub(1);
+    put(buf, inner, inner.x + 1, y, "Entrée Enregistrer · Échap Annuler", Style::default().fg(th.muted).bg(th.surface));
 }
 
 /// La ligne `n` de la carte, dessinée à partir de `x`.

@@ -309,6 +309,8 @@ mod tests {
 
     // ── Onglet Écrans ────────────────────────────────────────────────
 
+    use crate::app::SaveDialog;
+
     fn ecrans() -> crate::app::App {
         let mut a = ready_app();
         a.go_tab(Tab::Ecrans, Instant::now());
@@ -431,6 +433,17 @@ mod tests {
     }
 
     #[test]
+    fn saisie_du_nom_de_profil() {
+        let mut a = ecrans();
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Maison".into(), ..SaveDialog::default() });
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Enregistrer l'actuel") && all.contains("> Maison▏"), "{all}");
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false });
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Remplacer le profil « Bureau » ?") && all.contains("[ Remplacer ]"), "{all}");
+    }
+
+    #[test]
     fn ecrans_sans_panique_en_petite_fenetre() {
         let mut a = ecrans();
         a.open_panel("eDP-1", Instant::now());
@@ -438,7 +451,7 @@ mod tests {
         a.overlay = Overlay::None;
         a.toggle_output("DVI-I-1", Instant::now());
         let garder = a.overlay.clone();
-        for o in [Overlay::None, panneau, garder] {
+        for o in [Overlay::None, panneau, garder, Overlay::SaveProfile(SaveDialog::default())] {
             a.overlay = o;
             for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
                 draw(&a, w, h);
