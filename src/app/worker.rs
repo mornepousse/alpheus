@@ -5,6 +5,7 @@
 
 use super::action::Tab;
 use crate::backends::{AudioStatus, BResult, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
+use crate::displays::{Output, Plan};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,12 +18,13 @@ pub enum Domain {
     Network,
     Bluetooth,
     Audio,
+    Displays,
 }
 
 impl Domain {
-    pub const ALL: [Domain; 8] = [
+    pub const ALL: [Domain; 9] = [
         Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake,
-        Domain::Profiles, Domain::Network, Domain::Bluetooth, Domain::Audio,
+        Domain::Profiles, Domain::Network, Domain::Bluetooth, Domain::Audio, Domain::Displays,
     ];
 }
 
@@ -54,6 +56,9 @@ pub enum Op {
     ToggleKeepAwake { now_on: bool },
     SetProfile(String),
     Power(PowerAction),
+    /// Réglage d'écrans. `undo` : plan inverse d'un essai (réappliqué si le
+    /// plan échoue, ou à l'annulation) ; `None` : c'est lui-même un retour.
+    ApplyDisplays { plan: Plan, undo: Option<Plan> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +77,7 @@ pub enum Update {
     KeepAwake(BResult<bool>),
     Profiles(BResult<Profiles>),
     Audio(BResult<AudioStatus>),
+    Displays(BResult<Vec<Output>>),
     Done(Op, BResult<()>),
     /// Réglage abandonné par la fusion d'une rafale (un réglage plus récent
     /// du même curseur l'a remplacé) : chaque `Request::Do` reçoit ainsi
@@ -93,6 +99,7 @@ impl Op {
             Op::ToggleKeepAwake { .. } => &[Domain::KeepAwake],
             Op::SetProfile(_) => &[Domain::Profiles],
             Op::Power(_) => &[],
+            Op::ApplyDisplays { .. } => &[Domain::Displays],
         }
     }
 }
@@ -107,6 +114,7 @@ pub fn fetch(b: &Backends, d: Domain) -> Update {
         Domain::Network => Update::Network(b.network.status()),
         Domain::Bluetooth => Update::Bluetooth(b.bluetooth.status()),
         Domain::Audio => Update::Audio(b.sound.status()),
+        Domain::Displays => Update::Displays(b.displays.outputs()),
     }
 }
 
@@ -121,6 +129,7 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::ToggleKeepAwake { .. } => b.energy.toggle_keep_awake(),
         Op::SetProfile(p) => b.energy.set_profile(p),
         Op::Power(a) => b.power.perform(*a),
+        Op::ApplyDisplays { plan, .. } => b.displays.apply(plan),
     }
 }
 
@@ -245,6 +254,29 @@ mod tests {
     }
 
     #[test]
+    fn ecrans_lus_et_appliques_par_wm_set() {
+        use crate::displays::Step;
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set outputs", "[]");
+        f.ok("wm-set monitor-disable eDP-1", "");
+        let b = backends(&f);
+        assert_eq!(fetch(&b, Domain::Displays), Update::Displays(Ok(Vec::new())));
+        let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] };
+        assert_eq!(perform(&b, &Op::ApplyDisplays { plan, undo: None }), Ok(()));
+        assert_eq!(f.calls(), vec!["wm-set outputs", "wm-set monitor-disable eDP-1"]);
+    }
+
+    #[test]
+    fn les_reglages_d_ecran_ne_sont_jamais_fusionnes() {
+        // Un essai puis son retour : les deux passent, dans l'ordre.
+        let essai = Op::ApplyDisplays { plan: Plan::default(), undo: Some(Plan::default()) };
+        let retour = Op::ApplyDisplays { plan: Plan::default(), undo: None };
+        let (r, abandonnes) = coalesce(vec![Request::Do(essai.clone()), Request::Do(retour.clone())]);
+        assert_eq!(r, vec![Request::Do(essai), Request::Do(retour)]);
+        assert!(abandonnes.is_empty());
+    }
+
+    #[test]
     fn les_bascules_ne_sont_jamais_fusionnees() {
         let (r, abandonnes) = coalesce(vec![Request::Do(Op::SetWifi(false)), Request::Do(Op::SetWifi(true))]);
         assert_eq!(r.len(), 2);
@@ -300,6 +332,7 @@ mod tests {
         assert!(Op::SetVolume(NodeRef::DefaultSink, 5).domains().contains(&Domain::Audio));
         assert!(Op::SetDefault(64).domains().contains(&Domain::Volume));
         assert!(Op::Power(crate::backends::PowerAction::Lock).domains().is_empty());
+        assert_eq!(Op::ApplyDisplays { plan: Plan::default(), undo: None }.domains(), &[Domain::Displays]);
     }
 
     #[test]

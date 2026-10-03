@@ -93,6 +93,7 @@ pub struct Backends {
     pub energy: Arc<dyn Energy>,
     pub notifications: Arc<dyn Notifications>,
     pub power: Arc<dyn Power>,
+    pub displays: Arc<dyn Displays>,
 }
 
 impl Backends {
@@ -105,7 +106,8 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir)),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec)),
+            power: Arc::new(SessionPower::new(exec.clone())),
+            displays: Arc::new(WmSetDisplays::new(exec)),
         }
     }
 }
@@ -156,7 +158,8 @@ mod tests {
         let _ = b.energy.profiles();
         let _ = b.notifications.dnd();
         let _ = b.power.perform(PowerAction::Suspend);
+        let _ = b.displays.outputs();
         let progs: Vec<String> = f.calls().iter().map(|c| c.split(' ').next().unwrap().to_string()).collect();
-        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl"]);
+        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl", "wm-set"]);
     }
 }

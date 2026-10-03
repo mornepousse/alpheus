@@ -14,6 +14,7 @@ use crate::backends::{
     brightness, AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume,
 };
 use crate::config::Config;
+use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
@@ -89,6 +90,7 @@ pub struct Data {
     pub keep_awake: Loadable<bool>,
     pub profiles: Loadable<Profiles>,
     pub audio: Loadable<AudioStatus>,
+    pub displays: Loadable<Vec<Output>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -178,6 +180,7 @@ fn op_label(op: &Op) -> String {
         Op::ToggleKeepAwake { .. } => "Garder éveillé".into(),
         Op::SetProfile(_) => "Profil d'énergie".into(),
         Op::Power(a) => a.label().into(),
+        Op::ApplyDisplays { .. } => "Écrans".into(),
     }
 }
 
@@ -192,6 +195,7 @@ fn update_domain(u: &Update) -> Option<Domain> {
         Update::KeepAwake(_) => Domain::KeepAwake,
         Update::Profiles(_) => Domain::Profiles,
         Update::Audio(_) => Domain::Audio,
+        Update::Displays(_) => Domain::Displays,
         Update::Done(..) | Update::Superseded(_) => return None,
     })
 }
@@ -326,6 +330,7 @@ impl App {
             Update::KeepAwake(r) => self.data.keep_awake = r.into(),
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
+            Update::Displays(r) => self.data.displays = r.into(),
             Update::Done(op, r) => {
                 self.op_answered(&op);
                 self.op_done(op, r, now);
@@ -375,6 +380,7 @@ impl App {
             Op::ToggleKeepAwake { now_on } => format!("Garder éveillé : {}", onoff(*now_on)),
             Op::SetProfile(p) => format!("Profil : {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
+            Op::ApplyDisplays { .. } => return None,
         })
     }
 
@@ -433,6 +439,7 @@ impl App {
             Domain::Network => self.data.network.is_failed(),
             Domain::Bluetooth => self.data.bluetooth.is_failed(),
             Domain::Audio => self.data.audio.is_failed(),
+            Domain::Displays => self.data.displays.is_failed(),
         }
     }
 
@@ -771,6 +778,7 @@ pub(crate) mod testing {
                 sinks: vec![node(64, "Dock D6000 Dell", 75, false), node(116, "CasqueBT", 62, true)],
                 sources: vec![node(113, "Stereo Microphone", 100, true)],
             }),
+            displays: Loadable::Ready(crate::displays::testing::poste()),
         };
         a
     }
@@ -801,6 +809,18 @@ mod tests {
         a.on_update(Update::Brightness(Err(BackendError::Missing { tool: "brightnessctl".into() })), Instant::now());
         assert_eq!(a.data.volume, Loadable::Ready(Volume { percent: 40, muted: true }));
         assert_eq!(a.data.brightness, Loadable::Failed("brightnessctl introuvable".into()));
+    }
+
+    #[test]
+    fn lecture_des_ecrans_ignoree_pendant_un_reglage() {
+        let mut a = ready_app();
+        a.on_update(Update::Displays(Ok(Vec::new())), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
+        a.send_op(Op::ApplyDisplays { plan: crate::displays::Plan::default(), undo: None });
+        a.on_update(Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "relecture périmée ignorée");
+        a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
     }
 
     #[test]
