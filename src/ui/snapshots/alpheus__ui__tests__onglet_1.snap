@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&a, 80, 24).0.join(\"\\n\")"
+---
+ alpheus   1 Accueil   2 Son   3 Réseau   4 Bluetooth   5 Alimentation          
+                                                                                
+ ▶ Volume              ███████████████░░░░░░░░░  62 %                           
+                                                                                
+   Luminosité          █████░░░░░░░░░░░░░░░░░░░  20 %                           
+                                                                                
+   Wi-Fi               [■] activé                                               
+                                                                                
+   Bluetooth           [■] activé                                               
+                                                                                
+   Ne pas déranger     [ ] désactivé                                            
+                                                                                
+   Garder éveillé      [ ] désactivé                                            
+                                                                                
+   Profil d'énergie     Performance   Équilibré   Économie                      
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Accueil · prêt                                                                 
+ F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Espace Basculer  -/+ Régler

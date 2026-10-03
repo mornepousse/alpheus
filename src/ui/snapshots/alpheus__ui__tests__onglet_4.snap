@@ -1,0 +1,28 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&a, 80, 24).0.join(\"\\n\")"
+---
+ alpheus   1 Accueil   2 Son   3 Réseau   4 Bluetooth   5 Alimentation          
+                                                                                
+ ▶ Bluetooth           [■] activé                                               
+                                                                                
+ Appareils connectés                                                            
+   CasqueBT  (AA:BB:CC:DD:EE:01)                                                
+                                                                                
+   [ Appairer un appareil ]                                                     
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Bluetooth · prêt                                                               
+ F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Espace Basculer  Entrée Ouvri
