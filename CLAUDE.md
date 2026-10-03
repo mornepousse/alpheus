@@ -38,6 +38,11 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   `dpms` ; aucune écriture au compositeur hors `wm-set` ; rien de résident.
 - **Budget** : résident total ≤ 120 Mo (sous-projet 2) ; TUI < 100 ms au
   premier rendu.
+- **Produit partageable, légèreté d'abord** (Mae, 2026-10-04) : alpheus sera
+  public. Prévoir la personnalisation, mais jamais au détriment des perfs :
+  une option inutilisée ne coûte rien, aucune dépendance lourde « pour la
+  config ». Ne pas coder en dur ce qui est propre au poste de Mae (scripts de
+  nixos-config, Dvorak, chemins) sans défaut neutre ou voie configurable.
 - Le poste est NixOS, configuré dans `~/nixos-config` (flake) : alpheus y
   sera branché comme input `git+file://` — ce qui n'est pas commité ici
   n'est pas vu par le build.
