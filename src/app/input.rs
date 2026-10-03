@@ -47,9 +47,15 @@ impl App {
                 let yes = matches!(self.overlay, Overlay::Confirm(c) if c.yes_focused);
                 self.close_confirm(yes);
             }
-            Some(Action::Left | Action::Right | Action::NextTab | Action::PrevTab) => {
+            // Flèches directionnelles : « Annuler » est à gauche, « Confirmer »
+            // à droite ; Tab et Maj+Tab basculent.
+            Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
                 if let Overlay::Confirm(c) = &mut self.overlay {
-                    c.yes_focused = !c.yes_focused;
+                    c.yes_focused = match a {
+                        Action::Left => false,
+                        Action::Right => true,
+                        _ => !c.yes_focused,
+                    };
                 }
             }
             _ => {}
@@ -260,6 +266,35 @@ mod tests {
         k(&mut a, KeyCode::Enter);
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.overlay, Overlay::None);
+    }
+
+    #[test]
+    fn fleches_directionnelles_dans_la_confirmation() {
+        let mut a = ready_app();
+        a.run_command(crate::app::action::Command::Power(PowerAction::Poweroff), Instant::now());
+        let focus = |a: &App| match a.overlay {
+            Overlay::Confirm(c) => c.yes_focused,
+            _ => panic!("confirmation fermée"),
+        };
+        k(&mut a, KeyCode::Left);
+        assert!(!focus(&a), "← depuis Annuler reste sur Annuler");
+        k(&mut a, KeyCode::Right);
+        assert!(focus(&a));
+        k(&mut a, KeyCode::Right);
+        assert!(focus(&a), "→ depuis Confirmer reste sur Confirmer");
+        k(&mut a, KeyCode::Left);
+        assert!(!focus(&a));
+        c(&mut a, 'n'); // Dvorak : droite
+        assert!(focus(&a));
+        c(&mut a, 'd'); // Dvorak : gauche
+        assert!(!focus(&a));
+        k(&mut a, KeyCode::Tab);
+        assert!(focus(&a), "Tab bascule");
+        k(&mut a, KeyCode::Tab);
+        assert!(!focus(&a));
+        press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert!(focus(&a), "Maj+Tab bascule");
+        assert!(a.take_requests().is_empty(), "rien n'est lancé sans Entrée");
     }
 
     #[test]
