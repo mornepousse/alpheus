@@ -20,8 +20,11 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
 - Fixtures et instantanés **anonymisés** (Wi-Fi, VPN, MAC, machine) : ne
   jamais recommiter de relevé brut du poste, le dépôt est destiné à être
   public.
-- Sous-projets 2 (démon résident) et 3 (intégration NixOS complète) : à
-  concevoir plus tard.
+- Sous-projet 2 (démon résident), première livraison **la barre** : **spec
+  écrite** ([`docs/specs/2026-10-04-alpheus-demon-barre-design.md`](docs/specs/2026-10-04-alpheus-demon-barre-design.md)),
+  en relecture par Mae. Vision : autant que DMS/Noctalia, dans le budget.
+  Pile mesurée : smithay-client-toolkit + cosmic-text (≈ 4,5 Mo).
+- Sous-projet 3 (intégration NixOS complète) : à concevoir plus tard.
 
 ## Règles
 
