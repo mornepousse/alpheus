@@ -287,11 +287,15 @@ impl App {
 
     /// Un changement d'écran est-il en cours ? (Prévient par un message.)
     fn displays_busy(&mut self, now: Instant) -> bool {
-        let busy = self.ecrans.trial.is_some() || self.ecrans.undoing.is_some() || self.ecrans.awaiting_read;
-        if busy {
-            self.toast("Écrans : un changement est déjà en cours".into(), true, now);
-        }
-        busy
+        let msg = if self.ecrans.trial.is_some() || self.ecrans.undoing.is_some() {
+            "Écrans : un changement est déjà en cours"
+        } else if self.ecrans.awaiting_read {
+            "Écrans : en attente d'une relecture"
+        } else {
+            return false;
+        };
+        self.toast(msg.into(), true, now);
+        true
     }
 
     fn close_keep(&mut self) {
@@ -902,7 +906,9 @@ mod tests {
         a.apply_display_profile("Laptop seul", t0);
         assert!(sans_do(&mut a), "pas de réglage sur une lecture périmée");
         assert_eq!(a.ecrans.trial, None);
-        assert!(a.toasts.iter().any(|t| t.text == "Écrans : un changement est déjà en cours"));
+        // Seule la relecture manque : le message le dit.
+        assert!(a.toasts.iter().any(|t| t.text == "Écrans : en attente d'une relecture"));
+        assert!(!a.toasts.iter().any(|t| t.text == "Écrans : un changement est déjà en cours"));
         // Relecture fraîche : l'état rétabli sert de base, et de retour.
         a.on_update(Update::Displays(Ok(poste())), t0);
         a.toggle_output("HDMI-A-1", t0);
@@ -916,6 +922,7 @@ mod tests {
         assert_eq!(a.ecrans.trial, None);
         a.toggle_output("HDMI-A-1", t0);
         assert!(sans_do(&mut a), "gardé mais pas encore relu");
+        assert_eq!(a.toasts.last().map(|t| t.text.as_str()), Some("Écrans : en attente d'une relecture"));
         a.on_update(Update::Displays(Ok(relu(&plan))), t0);
         a.toggle_output("HDMI-A-1", t0);
         let (_, u) = sent_trial(&mut a);
