@@ -39,6 +39,7 @@ pub fn domains(tab: Tab) -> &'static [Domain] {
         Tab::Reseau => &[Domain::Network],
         Tab::Bluetooth => &[Domain::Bluetooth],
         Tab::Alimentation => &[],
+        Tab::Ecrans => &[Domain::Displays],
     }
 }
 
@@ -219,6 +220,7 @@ mod tests {
     fn domaines_par_onglet() {
         assert_eq!(domains(Tab::Accueil).len(), 7);
         assert_eq!(domains(Tab::Son), &[Domain::Audio]);
+        assert_eq!(domains(Tab::Ecrans), &[Domain::Displays]);
         assert!(domains(Tab::Alimentation).is_empty());
     }
 

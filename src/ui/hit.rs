@@ -15,6 +15,11 @@ pub enum Target {
     ConfirmYes,
     ConfirmNo,
     PaletteEntry(usize),
+    /// Puce de la barre des profils d'écran (= nombre de profils :
+    /// « + Enregistrer l'actuel »).
+    DisplayProfile(usize),
+    /// Interrupteur d'une sortie (index dans App::items()).
+    OutputToggle(usize),
     /// Intérieur d'une surcouche : absorbe le clic.
     Overlay,
 }

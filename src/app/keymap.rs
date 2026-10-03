@@ -138,7 +138,7 @@ fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
         Action::Search => vec!["/", "ctrl+f"],
         Action::NextTab => vec!["tab"],
         Action::PrevTab => vec!["shift+tab"],
-        Action::GoTab(t) => vec![["1", "2", "3", "4", "5"][t.index()]],
+        Action::GoTab(t) => vec![["1", "2", "3", "4", "5", "6"][t.index()]],
         Action::Left => vec!["left"],
         Action::Right => vec!["right"],
         Action::Up => vec!["up"],
@@ -251,6 +251,7 @@ mod tests {
         assert_eq!(k.lookup(&ev(KeyCode::F(1), KeyModifiers::NONE)), Some(Action::Help));
         assert_eq!(k.lookup(&ev(KeyCode::Char('p'), KeyModifiers::CONTROL)), Some(Action::Palette));
         assert_eq!(k.lookup(&ch('3')), Some(Action::GoTab(Tab::Reseau)));
+        assert_eq!(k.lookup(&ch('6')), Some(Action::GoTab(Tab::Ecrans)));
         assert_eq!(k.lookup(&ch(' ')), Some(Action::Toggle));
         assert_eq!(k.lookup(&ev(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Activate));
         assert_eq!(k.lookup(&ch('-')), Some(Action::Decrease));

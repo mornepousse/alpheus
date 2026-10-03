@@ -2,6 +2,7 @@
 //! et listes autour ; défilement pour garder le focus visible.
 
 use super::draw::{put, truncate};
+use super::ecrans::{self, MapCell};
 use super::hit::{HitMap, Target};
 use crate::app::action::{profile_label, Tab};
 use crate::app::{toggle_label, App, Item, Loadable};
@@ -19,10 +20,18 @@ enum Row {
     Text(String),
     Error(String),
     Item(usize),
+    /// Ligne de la carte des écrans.
+    Map(usize),
 }
 
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
-    let rows = rows(app);
+    let map: Vec<Vec<MapCell>> = if app.tab == Tab::Ecrans {
+        let focused = ecrans::focused_output(app);
+        ecrans::map_canvas(app.outputs(), focused.as_deref(), body.width.saturating_sub(4))
+    } else {
+        Vec::new()
+    };
+    let rows = rows(app, map.len());
     let label_w: u16 = if app.tab == Tab::Son { 34 } else { 20 };
     let focus_row = rows.iter().position(|r| matches!(r, Row::Item(i) if *i == app.focus)).unwrap_or(0);
     let h = usize::from(body.height);
@@ -47,11 +56,17 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
                     draw_item(buf, body, y, *i, item, app, label_w, hits);
                 }
             }
+            Row::Map(k) => {
+                if let Some(line) = map.get(*k) {
+                    ecrans::draw_map_row(buf, body, body.x + 2, y, line, app);
+                }
+            }
         }
     }
 }
 
-fn rows(app: &App) -> Vec<Row> {
+/// Lignes de l'onglet ; `map_rows` : hauteur de la carte des écrans.
+fn rows(app: &App, map_rows: usize) -> Vec<Row> {
     let mut rows = Vec::new();
     if app.search.editing || !app.search.text.is_empty() {
         let cursor = if app.search.editing { "▏" } else { "" };
@@ -110,6 +125,28 @@ fn rows(app: &App) -> Vec<Row> {
             }
             rows.push(Row::Blank);
             rows.push(Row::Item(1));
+        }
+        Tab::Ecrans => {
+            if app.ecrans.niri {
+                rows.push(Row::Text("Écrans : pas encore disponible sous niri".into()));
+                return rows;
+            }
+            rows.push(Row::Item(0));
+            rows.push(Row::Blank);
+            match &app.data.displays {
+                Loadable::Loading => rows.push(Row::Text("…".into())),
+                Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
+                Loadable::Ready(outs) => {
+                    rows.push(Row::Heading("Carte"));
+                    rows.extend((0..map_rows).map(Row::Map));
+                    rows.push(Row::Blank);
+                    rows.push(Row::Heading("Écrans"));
+                    if outs.is_empty() {
+                        rows.push(Row::Text("aucune sortie".into()));
+                    }
+                    rows.extend((1..=outs.len()).map(Row::Item));
+                }
+            }
         }
         Tab::Bluetooth => {
             rows.push(Row::Item(0));
@@ -188,6 +225,8 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 }
             }
         }
+        Item::DisplayProfiles => ecrans::draw_profiles(buf, body, y, focused, app, hits),
+        Item::Output(name) => ecrans::draw_output(buf, body, y, i, name, focused, app, hits),
         Item::Button(c) => {
             let style = if focused {
                 Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)

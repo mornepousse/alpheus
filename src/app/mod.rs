@@ -4,6 +4,7 @@
 //! boucle réelle (run.rs) vide. Tout se teste en appelant des méthodes.
 
 pub mod action;
+pub mod ecrans;
 pub mod keymap;
 pub mod run;
 pub mod worker;
@@ -18,6 +19,7 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
+pub use ecrans::Ecrans;
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
@@ -32,12 +34,12 @@ pub const TOAST_TTL: Duration = Duration::from_secs(3);
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
 /// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
-/// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
-/// (rien à lire).
+/// seconde, Son/Réseau/Bluetooth/Écrans toutes les 2 s, l'Alimentation
+/// jamais (rien à lire).
 pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
         Tab::Accueil => Some(Duration::from_secs(1)),
-        Tab::Son | Tab::Reseau | Tab::Bluetooth => Some(Duration::from_secs(2)),
+        Tab::Son | Tab::Reseau | Tab::Bluetooth | Tab::Ecrans => Some(Duration::from_secs(2)),
         Tab::Alimentation => None,
     }
 }
@@ -115,6 +117,10 @@ pub enum Item {
     Toggle(ToggleId),
     Profile,
     Button(Command),
+    /// Barre des profils d'écran (←/→ choisit, Entrée applique).
+    DisplayProfiles,
+    /// Une sortie d'écran, par connecteur.
+    Output(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -212,6 +218,7 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub should_quit: bool,
+    pub ecrans: Ecrans,
     /// Curseur en cours de glissement à la souris, et sa barre.
     pub(crate) dragging: Option<(SliderId, Rect)>,
     last_refresh: Instant,
@@ -242,6 +249,7 @@ impl App {
             config,
             theme,
             should_quit: false,
+            ecrans: Ecrans::default(),
             dragging: None,
             last_refresh: now,
             requests: Vec::new(),
@@ -419,7 +427,10 @@ impl App {
     }
 
     /// Demande la relecture de `ds` et note l'heure, domaine par domaine.
-    fn push_refresh(&mut self, ds: Vec<Domain>, now: Instant) {
+    fn push_refresh(&mut self, mut ds: Vec<Domain>, now: Instant) {
+        if self.ecrans.niri {
+            ds.retain(|d| *d != Domain::Displays); // sous niri, l'onglet n'appelle rien
+        }
         if ds.is_empty() {
             return;
         }
@@ -482,6 +493,10 @@ impl App {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
             Tab::Alimentation => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
+            Tab::Ecrans if self.ecrans.niri => Vec::new(),
+            Tab::Ecrans => std::iter::once(Item::DisplayProfiles)
+                .chain(self.outputs().iter().map(|o| Item::Output(o.name.clone())))
+                .collect(),
         }
     }
 
@@ -584,6 +599,7 @@ impl App {
         match self.focused() {
             Some(Item::Slider(id)) => self.nudge_slider(id, dir * STEP),
             Some(Item::Profile) => self.cycle_profile(dir, now),
+            Some(Item::DisplayProfiles) => self.profile_bar_move(dir),
             _ => {}
         }
     }
@@ -780,8 +796,37 @@ pub(crate) mod testing {
             }),
             displays: Loadable::Ready(crate::displays::testing::poste()),
         };
+        a.ecrans.profiles = crate::displays::profiles::parse(PROFILS).unwrap();
         a
     }
+
+    /// Profils d'écran des tests (descriptions anonymisées du poste).
+    pub const PROFILS: &str = r#"
+[[profil]]
+nom = "Laptop seul"
+[[profil.ecran]]
+description = "Interne Dalle 0x0001"
+mode = "2560x1600@60"
+[[profil.ecran]]
+description = "Alpha Modèle 1 SERIE0001"
+actif = false
+[[profil.ecran]]
+description = "Bravo Modèle 2 SERIE0002"
+actif = false
+
+[[profil]]
+nom = "Bureau"
+[[profil.ecran]]
+description = "Alpha Modèle 1 SERIE0001"
+mode = "1920x1080@60"
+[[profil.ecran]]
+description = "Bravo Modèle 2 SERIE0002"
+mode = "1920x1080@60"
+place = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001" }
+[[profil.ecran]]
+description = "Interne Dalle 0x0001"
+actif = false
+"#;
 }
 
 #[cfg(test)]
@@ -1125,7 +1170,7 @@ mod tests {
 
     #[test]
     fn tic_rafraichit_son_reseau_bluetooth_toutes_les_deux_secondes() {
-        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth)] {
+        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth), (Tab::Ecrans, Domain::Displays)] {
             let mut a = ready_app();
             let t0 = Instant::now();
             a.go_tab(tab, t0);

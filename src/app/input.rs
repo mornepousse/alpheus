@@ -197,7 +197,11 @@ mod tests {
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.tab, Tab::Ecrans, "Maj+Tab depuis l'Accueil : le dernier onglet");
+        press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(a.tab, Tab::Alimentation);
+        c(&mut a, '6');
+        assert_eq!(a.tab, Tab::Ecrans);
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.tab, Tab::Accueil);
         k(&mut a, KeyCode::Esc);

@@ -2,6 +2,7 @@
 //! cliquables : chaque composant connaît sa zone pour le test de clic.
 
 pub mod draw;
+mod ecrans;
 pub mod hit;
 mod overlays;
 mod tabs;
@@ -53,7 +54,9 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         };
         let w = put(buf, r, x, r.y, &label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
-        x = x.saturating_add(w + 1);
+        // Collés : chaque libellé porte déjà ses espaces, et les six
+        // onglets tiennent ainsi en 80 colonnes.
+        x = x.saturating_add(w);
     }
 }
 
@@ -99,6 +102,16 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 pairs.push((km.label(Action::Search), "Chercher"));
             }
             Tab::Alimentation => pairs.push((km.label(Action::Activate), "Activer")),
+            Tab::Ecrans => match app.focused() {
+                Some(crate::app::Item::DisplayProfiles) => {
+                    pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choisir"));
+                    pairs.push((km.label(Action::Activate), "Appliquer"));
+                }
+                _ => {
+                    pairs.push((km.label(Action::Toggle), "Basculer"));
+                    pairs.push((km.label(Action::Activate), "Régler"));
+                }
+            },
         }
     }
     let mut x = r.x + 1;
@@ -152,6 +165,7 @@ mod tests {
     fn cadre_de_l_accueil() {
         let (rows, _) = draw(&ready_app(), 80, 24);
         assert!(rows[0].contains("alpheus") && rows[0].contains(" 1 Accueil ") && rows[0].contains(" 5 Alimentation "));
+        assert!(rows[0].contains(" 6 Écrans "), "six onglets en 80 colonnes : {:?}", rows[0]);
         assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
         assert!(rows[2].contains("  62 %"));
         assert!(rows[4].contains("Luminosité") && rows[4].contains("  20 %"));
@@ -293,6 +307,92 @@ mod tests {
         assert_eq!(a.items()[29], crate::app::Item::Slider(SliderId::Node(29)));
     }
 
+    // ── Onglet Écrans ────────────────────────────────────────────────
+
+    fn ecrans() -> crate::app::App {
+        let mut a = ready_app();
+        a.go_tab(Tab::Ecrans, Instant::now());
+        a.take_requests();
+        a
+    }
+
+    #[test]
+    fn onglet_ecrans() {
+        let mut a = ecrans();
+        a.focus = 2; // Alpha
+        let (rows, hits) = draw(&a, 100, 28);
+        let all = rows.join("\n");
+        for attendu in ["Profils", "[ Laptop seul ]", "[ Bureau ]", "[ + Enregistrer l'actuel ]", "Carte", "Écrans",
+            "1 Portable", "2 Alpha", "DVI-I-1 ⚠", "3 Bravo", "1920×1080@240", "échelle 1.0",
+            "position 0, 1080", "origine", "à droite de Alpha"] {
+            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+        }
+        assert!(all.contains('●'), "la carte marque l'écran focalisé :\n{all}");
+        assert!(hits.find(Target::DisplayProfile(2)).is_some());
+        assert!(hits.find(Target::OutputToggle(3)).is_some());
+        assert!(rows[27].contains("Espace Basculer") && rows[27].contains("Entrée Régler"), "{:?}", rows[27]);
+        a.focus = 0;
+        assert!(draw(&a, 100, 28).0[27].contains("Entrée Appliquer"));
+    }
+
+    #[test]
+    fn dernier_ecran_grise() {
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(vec![crate::displays::testing::poste()[0].clone()]);
+        assert!(draw(&a, 100, 28).0.join("\n").contains("[■] seul actif"));
+    }
+
+    #[test]
+    fn ecrans_sous_niri_en_echec_ou_en_attente() {
+        let mut a = ecrans();
+        a.ecrans.niri = true;
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Écrans : pas encore disponible sous niri"));
+        let mut a = ecrans();
+        a.data.displays = Loadable::Failed("wm-set a échoué (code 1) : sous-commande inconnue : outputs".into());
+        let all = draw(&a, 100, 24).0.join("\n");
+        assert!(all.contains("✗ wm-set a échoué (code 1) : sous-commande inconnue : outputs"), "{all}");
+        assert!(all.contains("[ Bureau ]"), "les profils restent visibles");
+        a.data.displays = Loadable::Loading;
+        assert!(draw(&a, 80, 24).0.join("\n").contains('…'));
+    }
+
+    #[test]
+    fn carte_a_l_echelle() {
+        use super::ecrans::{map_canvas, MAP_ROWS};
+        use crate::displays::testing::{on, poste, ALPHA, BRAVO};
+        let text = |g: &Vec<Vec<Option<(char, bool)>>>| -> Vec<String> {
+            g.iter().map(|r| r.iter().map(|c| c.map_or(' ', |(ch, _)| ch)).collect()).collect()
+        };
+        let g = map_canvas(&poste(), Some("HDMI-A-1"), 76);
+        let lines = text(&g);
+        assert!(lines.len() <= usize::from(MAP_ROWS));
+        let all = lines.join("\n");
+        assert!(all.contains("Alpha") && all.contains("Bravo") && all.contains("Portable"), "{all}");
+        for n in ["1", "2", "3"] {
+            assert!(all.contains(n), "numéro {n} :\n{all}");
+        }
+        assert!(g.iter().flatten().flatten().any(|(ch, foc)| *ch == '●' && *foc), "● sur Bravo");
+        let g = map_canvas(&[on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 1920, 1080, 1920, 0)], None, 20);
+        assert!(!g.is_empty() && g.iter().all(|r| r.len() <= 20), "bornée par la largeur");
+        assert!(map_canvas(&[], None, 76).is_empty());
+        assert!(map_canvas(&poste(), None, 2).is_empty(), "trop étroit : rien");
+    }
+
+    #[test]
+    fn ecrans_sans_panique_en_petite_fenetre() {
+        let a = ecrans();
+        for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
+            draw(&a, w, h);
+        }
+    }
+
+    #[test]
+    fn instantanes_ecrans() {
+        let mut a = ecrans();
+        a.focus = 2;
+        insta::assert_snapshot!("ecrans_liste", draw(&a, 100, 28).0.join("\n"));
+    }
+
     #[test]
     fn instantanes() {
         let mut a = ready_app();
@@ -321,8 +421,8 @@ mod tests {
         let all = rows.join("\n");
         assert!(all.contains("Aide — Échap pour fermer"), "{all}");
         assert!(all.contains("Souris") && all.contains("clic, glisser, molette"), "dernière ligne coupée :\n{all}");
-        assert!(all.contains("Onglets 1 à 5") && all.contains("1, 2, 3, 4, 5"), "{all}");
-        assert!(!all.contains("Onglet Son"), "les cinq onglets tiennent sur une ligne");
+        assert!(all.contains("Onglets 1 à 6") && all.contains("1, 2, 3, 4, 5, 6"), "{all}");
+        assert!(!all.contains("Onglet Son"), "les six onglets tiennent sur une ligne");
     }
 
     #[test]

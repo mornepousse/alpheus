@@ -3,7 +3,7 @@
 
 use super::draw::{centered, clear, put, truncate};
 use super::hit::{HitMap, Target};
-use crate::app::action::Action;
+use crate::app::action::{Action, Tab};
 use crate::app::{App, Confirm, Overlay, Palette};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -56,7 +56,7 @@ fn toasts(buf: &mut Buffer, area: Rect, app: &App) {
 fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
     let line = |label: &str, keys: &[String]| format!("{label:<24}{}", keys.join(", "));
     let mut lines: Vec<String> = Vec::new();
-    // Les cinq « Onglet X » tiennent sur une ligne, à la place du premier :
+    // Les six « Onglet X » tiennent sur une ligne, à la place du premier :
     // l'aide entière tient ainsi en 80×26.
     let mut tab_keys: Vec<String> = Vec::new();
     let mut tab_line: Option<usize> = None;
@@ -70,7 +70,7 @@ fn help(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         }
     }
     if let (Some(i), false) = (tab_line, tab_keys.is_empty()) {
-        lines.insert(i, line("Onglets 1 à 5", &tab_keys));
+        lines.insert(i, line(&format!("Onglets 1 à {}", Tab::ALL.len()), &tab_keys));
     }
     lines.push(line("Souris", &["clic, glisser, molette".to_string()]));
     let r = centered(area, 64, lines.len() as u16 + 2);

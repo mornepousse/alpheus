@@ -10,10 +10,11 @@ pub enum Tab {
     Reseau,
     Bluetooth,
     Alimentation,
+    Ecrans,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Accueil, Tab::Son, Tab::Reseau, Tab::Bluetooth, Tab::Alimentation];
+    pub const ALL: [Tab; 6] = [Tab::Accueil, Tab::Son, Tab::Reseau, Tab::Bluetooth, Tab::Alimentation, Tab::Ecrans];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -22,6 +23,7 @@ impl Tab {
             Tab::Reseau => "Réseau",
             Tab::Bluetooth => "Bluetooth",
             Tab::Alimentation => "Alimentation",
+            Tab::Ecrans => "Écrans",
         }
     }
 
@@ -115,11 +117,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 24] = [
+    pub const ALL: [Action; 25] = [
         Action::Quit, Action::Back, Action::Help, Action::Palette, Action::Search,
         Action::NextTab, Action::PrevTab,
         Action::GoTab(Tab::Accueil), Action::GoTab(Tab::Son), Action::GoTab(Tab::Reseau),
-        Action::GoTab(Tab::Bluetooth), Action::GoTab(Tab::Alimentation),
+        Action::GoTab(Tab::Bluetooth), Action::GoTab(Tab::Alimentation), Action::GoTab(Tab::Ecrans),
         Action::Left, Action::Right, Action::Up, Action::Down,
         Action::PageUp, Action::PageDown, Action::Home, Action::End,
         Action::Toggle, Action::Activate, Action::Decrease, Action::Increase,
@@ -207,8 +209,10 @@ mod tests {
 
     #[test]
     fn onglets_circulaires() {
-        assert_eq!(Tab::Accueil.prev(), Tab::Alimentation);
-        assert_eq!(Tab::Alimentation.next(), Tab::Accueil);
+        assert_eq!(Tab::Accueil.prev(), Tab::Ecrans);
+        assert_eq!(Tab::Alimentation.next(), Tab::Ecrans);
+        assert_eq!(Tab::Ecrans.next(), Tab::Accueil);
+        assert_eq!(Tab::Ecrans.title(), "Écrans");
         assert_eq!(Tab::Reseau.index(), 2);
     }
 
