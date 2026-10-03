@@ -159,9 +159,11 @@ fn surveiller(fin: &AtomicBool, finie: &AtomicBool, grace: Duration, pas: Durati
     true
 }
 
-/// Session niri ? (D'après `NIRI_SOCKET`.)
-fn niri_actif(socket: Option<OsString>) -> bool {
-    socket.is_some()
+/// Session niri ? (D'après `NIRI_SOCKET` ; une session Hyprland, signalée
+/// par `HYPRLAND_INSTANCE_SIGNATURE`, l'emporte sur un socket niri resté
+/// dans l'environnement.)
+fn niri_actif(socket: Option<OsString>, hyprland: Option<OsString>) -> bool {
+    socket.is_some() && hyprland.is_none()
 }
 
 /// La boucle doit-elle s'arrêter ? (« q » ou signal de fin reçu.)
@@ -229,7 +231,7 @@ pub fn run() -> io::Result<()> {
     installer_signaux()?;
     let mut app = build_app(&config_dir(), Instant::now());
     // Sous niri, l'onglet Écrans n'appelle rien (pas encore pris en charge).
-    app.ecrans.niri = niri_actif(std::env::var_os("NIRI_SOCKET"));
+    app.ecrans.niri = niri_actif(std::env::var_os("NIRI_SOCKET"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"));
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
     // Exécuteur à part pour défaire un essai d'écrans à la fermeture : celui
@@ -380,8 +382,11 @@ mod tests {
 
     #[test]
     fn niri_detecte_par_son_socket() {
-        assert!(niri_actif(Some("/run/user/1000/niri.sock".into())));
-        assert!(!niri_actif(None));
+        assert!(niri_actif(Some("/run/user/1000/niri.sock".into()), None));
+        assert!(!niri_actif(None, None));
+        // Socket niri resté dans l'environnement d'une session Hyprland.
+        assert!(!niri_actif(Some("/run/user/1000/niri.sock".into()), Some("abc_123".into())));
+        assert!(!niri_actif(None, Some("abc_123".into())));
     }
 
     #[test]
