@@ -2,6 +2,7 @@
 //! éphémères en coin. Dessinées en dernier : leurs zones priment au clic.
 
 use super::draw::{centered, clear, put, truncate};
+use super::ecrans;
 use super::hit::{HitMap, Target};
 use crate::app::action::{Action, Tab};
 use crate::app::{App, Confirm, Overlay, Palette};
@@ -20,11 +21,12 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) {
         Overlay::Help => help(buf, area, app, hits),
         Overlay::Palette(p) => palette(buf, area, app, p, hits),
         Overlay::Confirm(c) => confirm(buf, area, app, c, hits),
+        Overlay::Keep(k) => ecrans::keep(buf, area, app, k, hits),
     }
 }
 
 /// Cadre de surcouche : fond effacé, bordure, titre ; renvoie l'intérieur.
-fn frame(buf: &mut Buffer, r: Rect, title: &str, app: &App, hits: &mut HitMap) -> Rect {
+pub(super) fn frame(buf: &mut Buffer, r: Rect, title: &str, app: &App, hits: &mut HitMap) -> Rect {
     let th = &app.theme;
     let style = Style::default().fg(th.fg).bg(th.surface);
     clear(buf, r, style);

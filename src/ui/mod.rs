@@ -379,10 +379,32 @@ mod tests {
     }
 
     #[test]
+    fn boite_garder_ces_reglages() {
+        let mut a = ecrans();
+        a.toggle_output("DVI-I-1", Instant::now());
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Garder ces réglages ?") && all.contains("Alpha désactivé") && all.contains("Alpha : désactivé"), "{all}");
+        assert!(all.contains("⚠ Sortie DisplayLink : risque de gel connu sur ce poste"), "{all}");
+        assert!(all.contains("Application en cours…") && all.contains("[ Annuler ]") && all.contains("[ Garder ]"), "{all}");
+        let r = a.take_requests();
+        let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
+        a.on_update(Update::Done(op, Ok(())), Instant::now());
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Retour automatique dans 15 s"));
+        let (_, hits) = draw(&a, 80, 24);
+        let (no, yes) = (hits.find(Target::ConfirmNo).unwrap(), hits.find(Target::ConfirmYes).unwrap());
+        assert!(no.x < yes.x && no.y == yes.y, "Annuler à gauche");
+    }
+
+    #[test]
     fn ecrans_sans_panique_en_petite_fenetre() {
-        let a = ecrans();
-        for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
-            draw(&a, w, h);
+        let mut a = ecrans();
+        a.toggle_output("DVI-I-1", Instant::now());
+        let garder = a.overlay.clone();
+        for o in [Overlay::None, garder] {
+            a.overlay = o;
+            for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
+                draw(&a, w, h);
+            }
         }
     }
 
@@ -391,6 +413,8 @@ mod tests {
         let mut a = ecrans();
         a.focus = 2;
         insta::assert_snapshot!("ecrans_liste", draw(&a, 100, 28).0.join("\n"));
+        a.apply_display_profile("Bureau", Instant::now());
+        insta::assert_snapshot!("ecrans_garder", draw(&a, 80, 24).0.join("\n"));
     }
 
     #[test]

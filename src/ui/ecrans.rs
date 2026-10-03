@@ -1,9 +1,11 @@
-//! Onglet Écrans : barre des profils, carte à l'échelle, ligne d'une sortie.
+//! Onglet Écrans : barre des profils, carte à l'échelle, ligne d'une sortie ;
+//! et la boîte « Garder ces réglages ? ».
 
-use super::draw::{put, truncate};
+use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
+use super::overlays::frame;
 use crate::app::ecrans::placement_labels;
-use crate::app::{App, Item};
+use crate::app::{App, Item, Keep};
 use crate::displays::geometry::logical_size;
 use crate::displays::{active_count, short_names, Output};
 use ratatui::buffer::Buffer;
@@ -149,6 +151,54 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     let px = lx + 64;
     let avail = usize::from(body.right().saturating_sub(px));
     put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(th.muted));
+}
+
+// ── Surcouches ───────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focused: bool, yes_enabled: bool, app: &App, hits: &mut HitMap) {
+    let th = &app.theme;
+    let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
+    let off = Style::default().fg(th.fg).bg(th.surface);
+    let disabled = Style::default().fg(th.muted).bg(th.surface);
+    let mut x = inner.x + 1;
+    let w = put(buf, inner, x, y, &format!("[ {no} ]"), if yes_focused { off } else { on });
+    hits.push(Rect::new(x, y, w, 1), Target::ConfirmNo);
+    x = x.saturating_add(w + 2);
+    let style = match (yes_enabled, yes_focused) {
+        (false, _) => disabled,
+        (true, true) => on,
+        (true, false) => off,
+    };
+    let w = put(buf, inner, x, y, &format!("[ {yes} ]"), style);
+    hits.push(Rect::new(x, y, w, 1), Target::ConfirmYes);
+}
+
+/// « Garder ces réglages ? » : résumé, absents, avertissement DisplayLink,
+/// compte à rebours ; le focus démarre sur Annuler.
+pub fn keep(buf: &mut Buffer, area: Rect, app: &App, k: &Keep, hits: &mut HitMap) {
+    let th = &app.theme;
+    let Some(t) = &app.ecrans.trial else { return };
+    let mut lines: Vec<(String, Style)> = vec![(t.title.clone(), Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD))];
+    let text = Style::default().fg(th.fg).bg(th.surface);
+    lines.extend(t.summary.iter().map(|s| (s.clone(), text)));
+    lines.extend(t.notes.iter().map(|s| (s.clone(), Style::default().fg(th.muted).bg(th.surface))));
+    if t.displaylink {
+        lines.push(("⚠ Sortie DisplayLink : risque de gel connu sur ce poste".into(), Style::default().fg(th.error).bg(th.surface)));
+    }
+    lines.push((String::new(), text));
+    let wait = match t.deadline {
+        None => "Application en cours…".to_string(),
+        Some(_) => format!("Retour automatique dans {} s", t.remaining),
+    };
+    lines.push((wait, Style::default().fg(th.accent).bg(th.surface)));
+    let r = centered(area, 66, lines.len() as u16 + 3);
+    let inner = frame(buf, r, " Garder ces réglages ? ", app, hits);
+    for (n, (l, style)) in lines.iter().enumerate().take(usize::from(inner.height.saturating_sub(1))) {
+        put(buf, inner, inner.x + 1, inner.y + n as u16, &truncate(l, usize::from(inner.width.saturating_sub(2))), *style);
+    }
+    let y = inner.y + inner.height.saturating_sub(1);
+    buttons(buf, inner, y, "Annuler", "Garder", k.keep_focused, t.deadline.is_some(), app, hits);
 }
 
 /// La ligne `n` de la carte, dessinée à partir de `x`.

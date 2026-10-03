@@ -19,7 +19,7 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
-pub use ecrans::Ecrans;
+pub use ecrans::{Ecrans, Keep, Trial, KEEP_DELAY};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
@@ -142,6 +142,8 @@ pub enum Overlay {
     Help,
     Palette(Palette),
     Confirm(Confirm),
+    /// « Garder ces réglages ? » (compte à rebours d'un essai d'écrans).
+    Keep(Keep),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -338,7 +340,14 @@ impl App {
             Update::KeepAwake(r) => self.data.keep_awake = r.into(),
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
-            Update::Displays(r) => self.data.displays = r.into(),
+            Update::Displays(r) => {
+                self.data.displays = r.into();
+                self.displays_read(now);
+            }
+            Update::Done(op @ Op::ApplyDisplays { .. }, r) => {
+                self.op_answered(&op);
+                self.displays_done(op, r, now);
+            }
             Update::Done(op, r) => {
                 self.op_answered(&op);
                 self.op_done(op, r, now);
@@ -403,6 +412,7 @@ impl App {
 
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
+        self.displays_tick(now);
         let Some(period) = refresh_period(self.tab) else { return };
         let due = now.duration_since(self.last_refresh) >= period;
         // Un domaine en échec n'est pas sondé au tic normal : un outil cassé
@@ -551,6 +561,13 @@ impl App {
             Command::Power(a) => self.send_op(Op::Power(a)),
             Command::Open(e) => self.external = Some(e),
             Command::GoTab(t) => self.go_tab(t, now),
+            Command::ApplyDisplayProfile(name) => {
+                // Appliqué à la prochaine lecture : jamais sur un état périmé.
+                self.go_tab(Tab::Ecrans, now);
+                if !self.ecrans.niri {
+                    self.ecrans.queued_profile = Some(name);
+                }
+            }
         }
     }
 
@@ -590,6 +607,7 @@ impl App {
             Some(Item::Toggle(id)) => self.toggle(id, now),
             Some(Item::Button(c)) => self.run_command(c, now),
             Some(Item::Slider(SliderId::Node(id))) => self.set_default(id),
+            Some(Item::DisplayProfiles) => self.profile_bar_activate(now),
             _ => {}
         }
     }
@@ -685,7 +703,9 @@ impl App {
             _ => "",
         };
         let profiles = self.data.profiles.ready().map(|p| p.available.clone()).unwrap_or_default();
-        let entries = palette_entries(&profiles);
+        let display_profiles: Vec<String> =
+            if self.ecrans.niri { Vec::new() } else { self.ecrans.profiles.iter().map(|p| p.name.clone()).collect() };
+        let entries = palette_entries(&profiles, &display_profiles);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
         fuzzy::rank(query, &labels).into_iter().map(|i| entries[i].clone()).collect()
     }

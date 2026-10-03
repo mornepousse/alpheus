@@ -29,6 +29,7 @@ impl App {
             Overlay::Confirm(_) => return self.key_confirm(e),
             Overlay::Palette(_) => return self.key_palette(e, now),
             Overlay::Help => return self.key_help(e),
+            Overlay::Keep(_) => return self.key_keep(e, now),
             Overlay::None => {}
         }
         if self.search.editing {
@@ -55,6 +56,30 @@ impl App {
                         Action::Left => false,
                         Action::Right => true,
                         _ => !c.yes_focused,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// « Garder ces réglages ? » : ← Annuler, → Garder, Échap annule ;
+    /// « q » ferme alpheus, et le nettoyage de sortie défait l'essai.
+    fn key_keep(&mut self, e: KeyEvent, now: Instant) {
+        let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+        match action {
+            Some(Action::Quit) => self.should_quit = true,
+            Some(Action::Back) => self.keep_answer(false, now),
+            Some(Action::Activate) => {
+                let keep = matches!(self.overlay, Overlay::Keep(k) if k.keep_focused);
+                self.keep_answer(keep, now);
+            }
+            Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
+                if let Overlay::Keep(k) = &mut self.overlay {
+                    k.keep_focused = match a {
+                        Action::Left => false,
+                        Action::Right => true,
+                        _ => !k.keep_focused,
                     };
                 }
             }
@@ -148,11 +173,11 @@ impl App {
             Action::End => self.focus = self.items().len().saturating_sub(1),
             Action::Left | Action::Decrease => self.adjust(-1, now),
             Action::Right | Action::Increase => self.adjust(1, now),
-            Action::Toggle => {
-                if let Some(Item::Toggle(id)) = self.focused() {
-                    self.toggle(id, now);
-                }
-            }
+            Action::Toggle => match self.focused() {
+                Some(Item::Toggle(id)) => self.toggle(id, now),
+                Some(Item::Output(name)) => self.toggle_output(&name, now),
+                _ => {}
+            },
             Action::Activate => self.activate(now),
         }
     }
@@ -363,6 +388,73 @@ mod tests {
         k(&mut a, KeyCode::Enter);
         assert_eq!(a.take_requests(), vec![Request::Do(Op::SetDefault(64))]);
         assert_eq!(a.focused(), Some(Item::Slider(SliderId::Node(64))));
+    }
+
+    // ── Onglet Écrans ────────────────────────────────────────────────
+
+    use super::super::Keep;
+
+    fn ecrans() -> App {
+        let mut a = ready_app();
+        c(&mut a, '6');
+        a.take_requests();
+        a
+    }
+
+    /// Répond au fil : l'essai envoyé est appliqué.
+    fn applique(a: &mut App) {
+        let r = a.take_requests();
+        let Some(Request::Do(op)) = r.into_iter().next() else { panic!("essai attendu") };
+        a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
+        a.take_requests();
+    }
+
+    fn retour_envoye(a: &mut App) -> bool {
+        a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::ApplyDisplays { undo: None, .. })))
+    }
+
+    #[test]
+    fn profils_au_clavier() {
+        let mut a = ecrans();
+        assert_eq!(a.focused(), Some(Item::DisplayProfiles));
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Enter); // Bureau
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+        assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    }
+
+    #[test]
+    fn garder_ces_reglages_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down); // Portable
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Enter); // focus sur Annuler
+        assert!(retour_envoye(&mut a), "Entrée par réflexe : retour");
+        assert_eq!(a.overlay, Overlay::None);
+        a.ecrans.undoing = None;
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Right);
+        assert_eq!(a.overlay, Overlay::Keep(Keep { keep_focused: true }));
+        k(&mut a, KeyCode::Enter);
+        assert_eq!(a.ecrans.trial, None);
+        assert!(!retour_envoye(&mut a), "gardé");
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Esc);
+        assert!(retour_envoye(&mut a), "Échap annule");
+    }
+
+    #[test]
+    fn q_pendant_l_essai_ferme_et_laisse_le_retour_a_la_sortie() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down);
+        c(&mut a, ' ');
+        applique(&mut a);
+        c(&mut a, 'q');
+        assert!(a.should_quit);
+        assert!(a.exit_undo().is_some(), "le nettoyage de sortie défera l'essai");
     }
 
     #[test]

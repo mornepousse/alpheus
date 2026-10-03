@@ -27,14 +27,15 @@ impl App {
     fn click(&mut self, hit: Option<(Rect, Target)>, x: u16, now: Instant) {
         if self.overlay != Overlay::None {
             match hit.map(|(_, t)| t) {
-                Some(Target::ConfirmYes) => self.close_confirm(true),
-                Some(Target::ConfirmNo) => self.close_confirm(false),
+                Some(Target::ConfirmYes) => self.dialog_answer(true, now),
+                Some(Target::ConfirmNo) => self.dialog_answer(false, now),
                 Some(Target::PaletteEntry(i)) => self.palette_run(Some(i), now),
                 Some(Target::Overlay) => {}
                 // Hors de la surcouche : ferme l'aide ou la palette ; une
-                // confirmation exige un choix explicite.
+                // confirmation et « Garder ces réglages ? » exigent un choix
+                // explicite.
                 _ => {
-                    if !matches!(self.overlay, Overlay::Confirm(_)) {
+                    if !matches!(self.overlay, Overlay::Confirm(_) | Overlay::Keep(_)) {
                         self.overlay = Overlay::None;
                     }
                 }
@@ -69,6 +70,28 @@ impl App {
                     self.run_command(Command::SetProfile(name), now);
                 }
             }
+            Target::DisplayProfile(j) => {
+                if let Some(i) = self.items().iter().position(|it| *it == Item::DisplayProfiles) {
+                    self.focus = i;
+                }
+                self.ecrans.profile_sel = j;
+                self.profile_bar_activate(now);
+            }
+            Target::OutputToggle(i) => {
+                self.focus = i;
+                if let Some(Item::Output(name)) = self.focused() {
+                    self.toggle_output(&name, now);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Oui/non d'une boîte de dialogue, selon la surcouche ouverte.
+    fn dialog_answer(&mut self, yes: bool, now: Instant) {
+        match self.overlay {
+            Overlay::Confirm(_) => self.close_confirm(yes),
+            Overlay::Keep(_) => self.keep_answer(yes, now),
             _ => {}
         }
     }
@@ -207,6 +230,49 @@ mod tests {
         click(&mut a, x, y);
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.take_requests(), vec![Request::Do(Op::Power(PowerAction::Reboot))]);
+    }
+
+    // ── Onglet Écrans ────────────────────────────────────────────────
+
+    use crate::app::worker::Update;
+    use crate::app::{Item, Keep};
+
+    fn ecrans() -> App {
+        let mut a = ready_app();
+        a.go_tab(Tab::Ecrans, Instant::now());
+        a.take_requests();
+        a
+    }
+
+    #[test]
+    fn clic_sur_un_profil_d_ecran() {
+        let mut a = ecrans();
+        let (x, y) = center(&a, Target::DisplayProfile(1));
+        click(&mut a, x, y);
+        assert_eq!(a.ecrans.trial.as_ref().map(|t| t.title.as_str()), Some("Profil « Bureau »"));
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+    }
+
+    #[test]
+    fn clic_sur_l_interrupteur_d_une_sortie() {
+        let mut a = ecrans();
+        let (x, y) = center(&a, Target::OutputToggle(3)); // Bravo
+        click(&mut a, x, y);
+        assert_eq!(a.focused(), Some(Item::Output("HDMI-A-1".into())));
+        assert_eq!(a.ecrans.trial.as_ref().unwrap().title, "Bravo désactivé");
+    }
+
+    #[test]
+    fn garder_a_la_souris() {
+        let mut a = ecrans();
+        a.toggle_output("HDMI-A-1", Instant::now());
+        let Some(Request::Do(op)) = a.take_requests().into_iter().next() else { panic!() };
+        a.on_update(Update::Done(op, Ok(())), Instant::now());
+        click(&mut a, 0, 23); // dehors : la boîte reste
+        assert_eq!(a.overlay, Overlay::Keep(Keep::default()));
+        let (x, y) = center(&a, Target::ConfirmYes);
+        click(&mut a, x, y);
+        assert_eq!((a.overlay.clone(), a.ecrans.trial.clone()), (Overlay::None, None));
     }
 
     #[test]
