@@ -103,6 +103,13 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
         if key.is_empty() {
             continue; // action sans touche (désaffectée dans config.toml)
         }
+        // Largeur de la paire « clé étiquette », sans le rembourrage final :
+        // si elle ne tient pas entière avant le bord droit, on s'arrête plutôt
+        // que de couper un libellé au milieu d'un mot.
+        let w = key.chars().count() as u16 + 1 + what.chars().count() as u16;
+        if x.saturating_add(w) > r.right() {
+            break;
+        }
         x = x.saturating_add(put(buf, r, x, r.y, &key, Style::default().fg(th.accent).add_modifier(Modifier::BOLD)));
         x = x.saturating_add(put(buf, r, x, r.y, &format!(" {what}  "), Style::default().fg(th.fg)));
     }
@@ -234,6 +241,16 @@ mod tests {
         let mut a = ready_app();
         a.keymap = Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).unwrap();
         assert!(draw(&a, 80, 24).0[23].contains("Ctrl+K Palette"));
+    }
+
+    #[test]
+    fn barre_de_raccourcis_sans_coupure() {
+        let mut a = ready_app();
+        a.go_tab(Tab::Reseau, Instant::now());
+        let (rows, _) = draw(&a, 80, 24);
+        let bar = &rows[23];
+        // « Ouvrir » ne doit jamais apparaître tronqué en « Ouvri ».
+        assert!(!bar.contains("Entrée Ouvri") || bar.contains("Entrée Ouvrir"), "{bar:?}");
     }
 
     #[test]

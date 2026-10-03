@@ -86,7 +86,10 @@ fn rows(app: &App) -> Vec<Row> {
                 }
                 rows.push(Row::Blank);
             }
-            rows.push(Row::Item(items.len() - 1)); // « Mixage par appli »
+            // Le bouton « Mixage par appli » est toujours le dernier élément
+            // de l'onglet Son (App::items()) ; soustraction protégée pour que
+            // le rendu ne panique jamais même si l'invariant venait à changer.
+            rows.push(Row::Item(items.len().saturating_sub(1)));
         }
         Tab::Reseau => {
             rows.push(Row::Item(0));
@@ -192,6 +195,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 Style::default().fg(th.accent)
             };
             let w = put(buf, body, lx, y, &format!("[ {} ]", c.label()), style);
+            // Zone cliquable volontairement limitée au bouton dessiné (pas toute la ligne).
             hits.push(Rect::new(body.x, y, w + 2, 1), Target::Item(i));
         }
     }
