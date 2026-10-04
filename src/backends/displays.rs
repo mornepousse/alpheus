@@ -1,8 +1,8 @@
 //! Écrans : lecture par `wm-set outputs` (JSON normalisé), écriture par
 //! `wm-set monitor` / `monitor-disable`. Jamais le compositeur en direct.
 
-use super::{run_ok, unparsable, BResult};
-use crate::displays::{Active, Mode, Output, Plan, Scale};
+use super::{run_ok, unparsable, BResult, BackendError};
+use crate::displays::{Active, Mode, Output, Plan, Scale, Step};
 use crate::exec::Executor;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -12,8 +12,13 @@ const TOOL: &str = "wm-set";
 pub trait Displays: Send + Sync {
     /// Sorties connues du compositeur, activées ou non.
     fn outputs(&self) -> BResult<Vec<Output>>;
-    /// Exécute le plan dans l'ordre ; s'arrête au premier échec.
+    /// Exécute le plan dans l'ordre ; s'arrête au premier échec (essai :
+    /// jamais à moitié, l'échec déclenche aussitôt le retour).
     fn apply(&self, plan: &Plan) -> BResult<()>;
+    /// Exécute le plan dans l'ordre, chaque étape même si une précédente a
+    /// échoué (retour : rallumer tout ce qui peut l'être) ; l'erreur
+    /// `Incomplete` résume les sorties en échec.
+    fn apply_best_effort(&self, plan: &Plan) -> BResult<()>;
 }
 
 pub struct WmSetDisplays {
@@ -32,12 +37,24 @@ impl Displays for WmSetDisplays {
     }
 
     fn apply(&self, plan: &Plan) -> BResult<()> {
-        for step in &plan.steps {
-            let args = step.args();
-            let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            run_ok(&*self.exec, TOOL, &args)?;
-        }
-        Ok(())
+        plan.steps.iter().try_for_each(|s| self.run_step(s))
+    }
+
+    fn apply_best_effort(&self, plan: &Plan) -> BResult<()> {
+        let failures: Vec<(String, BackendError)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| self.run_step(s).err().map(|e| (s.output.clone(), e)))
+            .collect();
+        if failures.is_empty() { Ok(()) } else { Err(BackendError::Incomplete { failures }) }
+    }
+}
+
+impl WmSetDisplays {
+    fn run_step(&self, step: &Step) -> BResult<()> {
+        let args = step.args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        run_ok(&*self.exec, TOOL, &args).map(drop)
     }
 }
 
@@ -87,9 +104,7 @@ pub fn parse_outputs(json: &str) -> BResult<Vec<Output>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backends::BackendError;
     use crate::displays::testing::*;
-    use crate::displays::Step;
     use crate::exec::fake::FakeExecutor;
     use crate::exec::Output as ExecOutput;
 
@@ -180,5 +195,40 @@ mod tests {
         let e = WmSetDisplays::new(f.clone()).apply(&plan3()).unwrap_err();
         assert_eq!(e.to_string(), "wm-set a échoué (code 1) : Hyprland a refusé « eval … » : erreur");
         assert_eq!(f.calls().len(), 2, "la désactivation n'est jamais lancée : {:?}", f.calls());
+    }
+
+    #[test]
+    fn retour_au_mieux_dalle_interne_d_abord() {
+        // Décision D2 : un retour applique chaque étape même si une autre
+        // échoue, la dalle interne en premier, la DisplayLink en dernier.
+        let retour = Plan::undo(&poste(), &plan3());
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor eDP-1 2560x1600@60 0x1080 1 0", "");
+        f.ok("wm-set monitor HDMI-A-1 1920x1080@240 2133x0 1 0", "");
+        f.respond("wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0", Ok(ExecOutput::fail(1, "gel du dock\n")));
+        let e = WmSetDisplays::new(f.clone()).apply_best_effort(&retour).unwrap_err();
+        assert_eq!(f.calls(), vec![
+            "wm-set monitor eDP-1 2560x1600@60 0x1080 1 0",
+            "wm-set monitor HDMI-A-1 1920x1080@240 2133x0 1 0",
+            "wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0",
+        ]);
+        assert_eq!(e.to_string(), "retour incomplet : DVI-I-1 (wm-set a échoué (code 1) : gel du dock)");
+
+        // Les premières étapes en échec n'arrêtent pas les suivantes.
+        let f = Arc::new(FakeExecutor::new());
+        f.respond("wm-set monitor eDP-1 2560x1600@60 0x1080 1 0", Ok(ExecOutput::fail(1, "refusé\n")));
+        f.ok("wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0", "");
+        // HDMI-A-1 non programmé : « wm-set introuvable ».
+        let e = WmSetDisplays::new(f.clone()).apply_best_effort(&retour).unwrap_err();
+        assert_eq!(f.calls().len(), 3, "toutes les étapes tentées : {:?}", f.calls());
+        assert_eq!(e.to_string(), "retour incomplet : eDP-1 (wm-set a échoué (code 1) : refusé), HDMI-A-1 (wm-set introuvable)");
+
+        // Tout passe : Ok.
+        let f = Arc::new(FakeExecutor::new());
+        for c in ["eDP-1 2560x1600@60 0x1080", "HDMI-A-1 1920x1080@240 2133x0", "DVI-I-1 1920x1080@60 213x0"] {
+            f.ok(&format!("wm-set monitor {c} 1 0"), "");
+        }
+        assert_eq!(WmSetDisplays::new(f.clone()).apply_best_effort(&retour), Ok(()));
+        assert_eq!(f.calls().len(), 3);
     }
 }

@@ -183,7 +183,8 @@ impl Step {
     }
 }
 
-/// Suite d'appels `wm-set`, exécutée dans l'ordre et arrêtée au premier échec.
+/// Suite d'appels `wm-set`, exécutée dans l'ordre : arrêtée au premier échec
+/// pour un essai, au mieux pour un retour.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Plan {
     pub steps: Vec<Step>,
@@ -193,6 +194,17 @@ pub struct Plan {
 fn ordered(mut steps: Vec<Step>) -> Plan {
     steps.sort_by_key(|s| s.active.is_none()); // tri stable : l'ordre est gardé
     Plan { steps }
+}
+
+/// Rang d'une sortie dans un retour : dalle interne, ordinaire, DisplayLink.
+fn undo_rank(o: &Output) -> u8 {
+    if o.name.starts_with("eDP") {
+        0
+    } else if o.displaylink {
+        2
+    } else {
+        1
+    }
 }
 
 impl Plan {
@@ -209,14 +221,13 @@ impl Plan {
     }
 
     /// Plan qui rend aux sorties touchées par `plan` leur réglage de `before`.
+    /// Ordre (décision D2) : activations d'abord, désactivations ensuite ;
+    /// dans chacune, la dalle interne (eDP-*), puis les sorties ordinaires,
+    /// puis les DisplayLink — la sortie la plus sûre est rallumée la première.
     pub fn undo(before: &[Output], plan: &Plan) -> Plan {
-        let steps = plan
-            .steps
-            .iter()
-            .filter_map(|s| before.iter().find(|o| o.name == s.output))
-            .map(|o| Step { output: o.name.clone(), active: o.active.clone() })
-            .collect();
-        ordered(steps)
+        let mut outs: Vec<&Output> = plan.steps.iter().filter_map(|s| before.iter().find(|o| o.name == s.output)).collect();
+        outs.sort_by_key(|o| (o.active.is_none(), undo_rank(o))); // tri stable
+        Plan { steps: outs.into_iter().map(|o| Step { output: o.name.clone(), active: o.active.clone() }).collect() }
     }
 
     pub fn touches(&self, output: &str) -> bool {
@@ -375,9 +386,9 @@ mod tests {
         ] };
         let u = Plan::undo(&before, &p);
         assert_eq!(u.steps, vec![
-            Step { output: "HDMI-A-1".into(), active: before[2].active.clone() },
             Step { output: "eDP-1".into(), active: before[0].active.clone() },
-        ]);
+            Step { output: "HDMI-A-1".into(), active: before[2].active.clone() },
+        ], "dalle interne d'abord");
         // Une sortie éteinte avant l'essai est rééteinte, après les activations.
         let before = vec![off("DP-3", ALPHA), on("eDP-1", INTERNE, 2560, 1600, 0, 0)];
         let p = Plan { steps: vec![
@@ -387,6 +398,31 @@ mod tests {
         let u = Plan::undo(&before, &p);
         assert_eq!(u.steps[0].output, "eDP-1");
         assert_eq!(u.steps[1], Step { output: "DP-3".into(), active: None });
+    }
+
+    #[test]
+    fn plan_inverse_dalle_interne_puis_autres_puis_displaylink() {
+        // Décision D2 : le retour rallume d'abord la dalle interne (la plus
+        // sûre), puis les sorties ordinaires, puis les DisplayLink.
+        let before = poste(); // eDP-1, DVI-I-1 (DisplayLink), HDMI-A-1
+        let eteint = |n: &str| Step { output: n.into(), active: None };
+        let p = Plan { steps: vec![eteint("DVI-I-1"), eteint("HDMI-A-1"), eteint("eDP-1")] };
+        let u = Plan::undo(&before, &p);
+        assert_eq!(u.steps.iter().map(|s| s.output.as_str()).collect::<Vec<_>>(), vec!["eDP-1", "HDMI-A-1", "DVI-I-1"]);
+        // Une désactivation reste après toutes les activations, même celle
+        // de la dalle interne : jamais d'instant sans écran.
+        let mut dl = on("DVI-I-1", ALPHA, 1920, 1080, 0, 0);
+        dl.displaylink = true;
+        let before = vec![dl, off("eDP-1", INTERNE)];
+        let p = Plan { steps: vec![
+            Step { output: "eDP-1".into(), active: before[0].active.clone() },
+            eteint("DVI-I-1"),
+        ] };
+        let u = Plan::undo(&before, &p);
+        assert_eq!(u.steps, vec![
+            Step { output: "DVI-I-1".into(), active: before[0].active.clone() },
+            eteint("eDP-1"),
+        ]);
     }
 
     #[test]

@@ -32,6 +32,9 @@ pub enum BackendError {
     Failed { tool: String, code: Option<i32>, stderr: String },
     Unparsable { tool: String, detail: String },
     Timeout { tool: String },
+    /// Retour d'écrans appliqué au mieux : sorties dont l'étape a échoué,
+    /// avec leur erreur (les autres étapes ont été appliquées).
+    Incomplete { failures: Vec<(String, BackendError)> },
 }
 
 impl fmt::Display for BackendError {
@@ -40,6 +43,10 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} introuvable"),
             BackendError::Timeout { tool } => write!(f, "{tool} ne répond pas"),
             BackendError::Unparsable { tool, detail } => write!(f, "sortie de {tool} illisible : {detail}"),
+            BackendError::Incomplete { failures } => {
+                let list: Vec<String> = failures.iter().map(|(out, e)| format!("{out} ({e})")).collect();
+                write!(f, "retour incomplet : {}", list.join(", "))
+            }
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {

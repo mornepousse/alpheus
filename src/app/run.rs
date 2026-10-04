@@ -70,13 +70,14 @@ fn record_undo(slot: &Mutex<ExitUndo>, plan: Option<Plan>) {
 /// pendant l'application, donc le nettoyage et le fil de garde ne la
 /// lancent jamais deux fois ni en même temps — et celui qui arrive second
 /// attend la fin du retour avant de continuer (la garde n'appelle donc
-/// `exit` qu'après). Durée bornée : chaque étape `wm-set` est tuée au bout
-/// de `TOOL_TIMEOUT`. Renvoie l'échec du retour (rien à défaire : `Ok`).
+/// `exit` qu'après). Au mieux : chaque étape est tentée même si une autre
+/// échoue. Durée bornée : chaque étape `wm-set` est tuée au bout de
+/// `TOOL_TIMEOUT`. Renvoie l'échec du retour (rien à défaire : `Ok`).
 fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) -> BResult<()> {
     let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
     g.done = true;
     match g.plan.take() {
-        Some(plan) => displays.apply(&plan),
+        Some(plan) => displays.apply_best_effort(&plan),
         None => Ok(()),
     }
 }
@@ -378,6 +379,26 @@ mod tests {
         let mut err = Vec::new();
         signaler_retour(undo_on_exit(&slot_avec(None), &d), &mut err);
         assert!(err.is_empty(), "rien à défaire : rien à dire");
+    }
+
+    #[test]
+    fn retour_de_fermeture_au_mieux() {
+        // Décision D2 : une étape du retour en échec n'empêche pas les autres.
+        let plan = Plan { steps: vec![
+            Step { output: "DVI-I-1".into(), active: None },
+            Step { output: "HDMI-A-1".into(), active: None },
+        ] };
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", ""); // DVI-I-1 non programmé : échec
+        let d = WmSetDisplays::new(f.clone());
+        let r = undo_on_exit(&slot_avec(Some(plan)), &d);
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable DVI-I-1", "wm-set monitor-disable HDMI-A-1"]);
+        let mut err = Vec::new();
+        signaler_retour(r, &mut err);
+        assert_eq!(
+            String::from_utf8(err).unwrap(),
+            "alpheus : retour des écrans impossible : retour incomplet : DVI-I-1 (wm-set introuvable)\n"
+        );
     }
 
     #[test]

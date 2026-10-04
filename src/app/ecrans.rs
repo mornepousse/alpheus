@@ -5,7 +5,7 @@
 
 use super::worker::Op;
 use super::{App, Overlay};
-use crate::backends::BResult;
+use crate::backends::{BResult, BackendError};
 use crate::displays::geometry::{deduce, logical_size, resolve, Align, GeoError, Placement, Relation, Screen};
 use crate::displays::profiles::{self, from_outputs, placed, plan_profile, Profile};
 use crate::displays::{
@@ -381,7 +381,10 @@ impl App {
             }
             (None, Err(e)) => {
                 self.ecrans.undoing = None;
-                let msg = format!("Écrans : retour impossible : {e}");
+                let msg = match e {
+                    BackendError::Incomplete { .. } => format!("Écrans : {e}"),
+                    e => format!("Écrans : retour impossible : {e}"),
+                };
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
                 self.refresh_tab(now);
@@ -1099,6 +1102,16 @@ mod tests {
         a.ecrans.undoing = Some(Plan::default());
         a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
         assert_eq!(a.status.error.as_deref(), Some("Écrans : retour impossible : wm-set ne répond pas"));
+        assert_eq!(a.ecrans.undoing, None);
+    }
+
+    #[test]
+    fn retour_incomplet_signale() {
+        let mut a = ecrans();
+        let e = BackendError::Incomplete { failures: vec![("DVI-I-1".into(), BackendError::Timeout { tool: "wm-set".into() })] };
+        a.ecrans.undoing = Some(Plan::default());
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
+        assert_eq!(a.status.error.as_deref(), Some("Écrans : retour incomplet : DVI-I-1 (wm-set ne répond pas)"));
         assert_eq!(a.ecrans.undoing, None);
     }
 

@@ -58,7 +58,8 @@ pub enum Op {
     SetProfile(String),
     Power(PowerAction),
     /// Réglage d'écrans. `undo` : plan inverse d'un essai (réappliqué si le
-    /// plan échoue, ou à l'annulation) ; `None` : c'est lui-même un retour.
+    /// plan échoue, ou à l'annulation) ; `None` : c'est lui-même un retour,
+    /// appliqué au mieux (chaque étape, même après un échec).
     ApplyDisplays { plan: Plan, undo: Option<Plan> },
 }
 
@@ -130,7 +131,10 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::ToggleKeepAwake { .. } => b.energy.toggle_keep_awake(),
         Op::SetProfile(p) => b.energy.set_profile(p),
         Op::Power(a) => b.power.perform(*a),
-        Op::ApplyDisplays { plan, .. } => b.displays.apply(plan),
+        // Un essai s'arrête au premier échec ; un retour (sans plan
+        // inverse) tente chaque étape (décision D2).
+        Op::ApplyDisplays { plan, undo: Some(_) } => b.displays.apply(plan),
+        Op::ApplyDisplays { plan, undo: None } => b.displays.apply_best_effort(plan),
     }
 }
 
@@ -266,6 +270,28 @@ mod tests {
         let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] };
         assert_eq!(perform(&b, &Op::ApplyDisplays { plan, undo: None }), Ok(()));
         assert_eq!(f.calls(), vec!["wm-set outputs", "wm-set monitor-disable eDP-1"]);
+    }
+
+    #[test]
+    fn essai_arrete_au_premier_echec_retour_au_mieux() {
+        // Décision D2 : l'essai (avec plan inverse) s'arrête au premier
+        // échec ; le retour (sans plan inverse) tente toutes ses étapes.
+        use crate::displays::Step;
+        let plan = Plan { steps: vec![
+            Step { output: "eDP-1".into(), active: None },
+            Step { output: "HDMI-A-1".into(), active: None },
+        ] };
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", ""); // eDP-1 non programmé : échec
+        let b = backends(&f);
+        assert!(perform(&b, &Op::ApplyDisplays { plan: plan.clone(), undo: Some(Plan::default()) }).is_err());
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1"], "essai : arrêt au premier échec");
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable HDMI-A-1", "");
+        let b = backends(&f);
+        let e = perform(&b, &Op::ApplyDisplays { plan, undo: None }).unwrap_err();
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1", "wm-set monitor-disable HDMI-A-1"], "retour : au mieux");
+        assert_eq!(e.to_string(), "retour incomplet : eDP-1 (wm-set introuvable)");
     }
 
     #[test]
