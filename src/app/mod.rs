@@ -4,6 +4,7 @@
 //! boucle réelle (run.rs) vide. Tout se teste en appelant des méthodes.
 
 pub mod action;
+pub mod ecrans;
 pub mod keymap;
 pub mod run;
 pub mod worker;
@@ -14,9 +15,11 @@ use crate::backends::{
     brightness, AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume,
 };
 use crate::config::Config;
+use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{palette_entries, profile_label, Command, External, Tab};
+pub use ecrans::{Ecrans, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial, KEEP_DELAY};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
@@ -31,12 +34,12 @@ pub const TOAST_TTL: Duration = Duration::from_secs(3);
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
 /// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
-/// seconde, Son/Réseau/Bluetooth toutes les 2 s, l'Alimentation jamais
-/// (rien à lire).
+/// seconde, Son/Réseau/Bluetooth/Écrans toutes les 2 s, l'Alimentation
+/// jamais (rien à lire).
 pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
         Tab::Accueil => Some(Duration::from_secs(1)),
-        Tab::Son | Tab::Reseau | Tab::Bluetooth => Some(Duration::from_secs(2)),
+        Tab::Son | Tab::Reseau | Tab::Bluetooth | Tab::Ecrans => Some(Duration::from_secs(2)),
         Tab::Alimentation => None,
     }
 }
@@ -89,6 +92,7 @@ pub struct Data {
     pub keep_awake: Loadable<bool>,
     pub profiles: Loadable<Profiles>,
     pub audio: Loadable<AudioStatus>,
+    pub displays: Loadable<Vec<Output>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -113,6 +117,10 @@ pub enum Item {
     Toggle(ToggleId),
     Profile,
     Button(Command),
+    /// Barre des profils d'écran (←/→ choisit, Entrée applique).
+    DisplayProfiles,
+    /// Une sortie d'écran, par connecteur.
+    Output(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -134,6 +142,12 @@ pub enum Overlay {
     Help,
     Palette(Palette),
     Confirm(Confirm),
+    /// « Garder ces réglages ? » (compte à rebours d'un essai d'écrans).
+    Keep(Keep),
+    /// Panneau de réglage d'une sortie.
+    Panel(Panel),
+    /// « Enregistrer l'actuel » : nom du profil d'écran.
+    SaveProfile(SaveDialog),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -178,6 +192,7 @@ fn op_label(op: &Op) -> String {
         Op::ToggleKeepAwake { .. } => "Garder éveillé".into(),
         Op::SetProfile(_) => "Profil d'énergie".into(),
         Op::Power(a) => a.label().into(),
+        Op::ApplyDisplays { .. } => "Écrans".into(),
     }
 }
 
@@ -192,6 +207,7 @@ fn update_domain(u: &Update) -> Option<Domain> {
         Update::KeepAwake(_) => Domain::KeepAwake,
         Update::Profiles(_) => Domain::Profiles,
         Update::Audio(_) => Domain::Audio,
+        Update::Displays(_) => Domain::Displays,
         Update::Done(..) | Update::Superseded(_) => return None,
     })
 }
@@ -208,6 +224,7 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub should_quit: bool,
+    pub ecrans: Ecrans,
     /// Curseur en cours de glissement à la souris, et sa barre.
     pub(crate) dragging: Option<(SliderId, Rect)>,
     last_refresh: Instant,
@@ -238,6 +255,7 @@ impl App {
             config,
             theme,
             should_quit: false,
+            ecrans: Ecrans::default(),
             dragging: None,
             last_refresh: now,
             requests: Vec::new(),
@@ -326,6 +344,14 @@ impl App {
             Update::KeepAwake(r) => self.data.keep_awake = r.into(),
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
+            Update::Displays(r) => {
+                self.data.displays = r.into();
+                self.displays_read(now);
+            }
+            Update::Done(op @ Op::ApplyDisplays { .. }, r) => {
+                self.op_answered(&op);
+                self.displays_done(op, r, now);
+            }
             Update::Done(op, r) => {
                 self.op_answered(&op);
                 self.op_done(op, r, now);
@@ -375,6 +401,7 @@ impl App {
             Op::ToggleKeepAwake { now_on } => format!("Garder éveillé : {}", onoff(*now_on)),
             Op::SetProfile(p) => format!("Profil : {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
+            Op::ApplyDisplays { .. } => return None,
         })
     }
 
@@ -389,6 +416,7 @@ impl App {
 
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
+        self.displays_tick(now);
         let Some(period) = refresh_period(self.tab) else { return };
         let due = now.duration_since(self.last_refresh) >= period;
         // Un domaine en échec n'est pas sondé au tic normal : un outil cassé
@@ -413,7 +441,10 @@ impl App {
     }
 
     /// Demande la relecture de `ds` et note l'heure, domaine par domaine.
-    fn push_refresh(&mut self, ds: Vec<Domain>, now: Instant) {
+    fn push_refresh(&mut self, mut ds: Vec<Domain>, now: Instant) {
+        if self.ecrans.niri {
+            ds.retain(|d| *d != Domain::Displays); // sous niri, l'onglet n'appelle rien
+        }
         if ds.is_empty() {
             return;
         }
@@ -433,6 +464,7 @@ impl App {
             Domain::Network => self.data.network.is_failed(),
             Domain::Bluetooth => self.data.bluetooth.is_failed(),
             Domain::Audio => self.data.audio.is_failed(),
+            Domain::Displays => self.data.displays.is_failed(),
         }
     }
 
@@ -475,6 +507,10 @@ impl App {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
             Tab::Alimentation => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
+            Tab::Ecrans if self.ecrans.niri => Vec::new(),
+            Tab::Ecrans => std::iter::once(Item::DisplayProfiles)
+                .chain(self.outputs().iter().map(|o| Item::Output(o.name.clone())))
+                .collect(),
         }
     }
 
@@ -529,6 +565,13 @@ impl App {
             Command::Power(a) => self.send_op(Op::Power(a)),
             Command::Open(e) => self.external = Some(e),
             Command::GoTab(t) => self.go_tab(t, now),
+            Command::ApplyDisplayProfile(name) => {
+                // Appliqué à la prochaine lecture : jamais sur un état périmé.
+                self.go_tab(Tab::Ecrans, now);
+                if !self.ecrans.niri {
+                    self.ecrans.queued_profile = Some(name);
+                }
+            }
         }
     }
 
@@ -568,6 +611,8 @@ impl App {
             Some(Item::Toggle(id)) => self.toggle(id, now),
             Some(Item::Button(c)) => self.run_command(c, now),
             Some(Item::Slider(SliderId::Node(id))) => self.set_default(id),
+            Some(Item::DisplayProfiles) => self.profile_bar_activate(now),
+            Some(Item::Output(name)) => self.open_panel(&name, now),
             _ => {}
         }
     }
@@ -577,6 +622,7 @@ impl App {
         match self.focused() {
             Some(Item::Slider(id)) => self.nudge_slider(id, dir * STEP),
             Some(Item::Profile) => self.cycle_profile(dir, now),
+            Some(Item::DisplayProfiles) => self.profile_bar_move(dir),
             _ => {}
         }
     }
@@ -662,7 +708,9 @@ impl App {
             _ => "",
         };
         let profiles = self.data.profiles.ready().map(|p| p.available.clone()).unwrap_or_default();
-        let entries = palette_entries(&profiles);
+        let display_profiles: Vec<String> =
+            if self.ecrans.niri { Vec::new() } else { self.ecrans.profiles.iter().map(|p| p.name.clone()).collect() };
+        let entries = palette_entries(&profiles, &display_profiles);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
         fuzzy::rank(query, &labels).into_iter().map(|i| entries[i].clone()).collect()
     }
@@ -771,9 +819,39 @@ pub(crate) mod testing {
                 sinks: vec![node(64, "Dock D6000 Dell", 75, false), node(116, "CasqueBT", 62, true)],
                 sources: vec![node(113, "Stereo Microphone", 100, true)],
             }),
+            displays: Loadable::Ready(crate::displays::testing::poste()),
         };
+        a.ecrans.profiles = crate::displays::profiles::parse(PROFILS).unwrap();
         a
     }
+
+    /// Profils d'écran des tests (descriptions anonymisées du poste).
+    pub const PROFILS: &str = r#"
+[[profil]]
+nom = "Laptop seul"
+[[profil.ecran]]
+description = "Interne Dalle 0x0001"
+mode = "2560x1600@60"
+[[profil.ecran]]
+description = "Alpha Modèle 1 SERIE0001"
+actif = false
+[[profil.ecran]]
+description = "Bravo Modèle 2 SERIE0002"
+actif = false
+
+[[profil]]
+nom = "Bureau"
+[[profil.ecran]]
+description = "Alpha Modèle 1 SERIE0001"
+mode = "1920x1080@60"
+[[profil.ecran]]
+description = "Bravo Modèle 2 SERIE0002"
+mode = "1920x1080@60"
+place = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001" }
+[[profil.ecran]]
+description = "Interne Dalle 0x0001"
+actif = false
+"#;
 }
 
 #[cfg(test)]
@@ -801,6 +879,18 @@ mod tests {
         a.on_update(Update::Brightness(Err(BackendError::Missing { tool: "brightnessctl".into() })), Instant::now());
         assert_eq!(a.data.volume, Loadable::Ready(Volume { percent: 40, muted: true }));
         assert_eq!(a.data.brightness, Loadable::Failed("brightnessctl introuvable".into()));
+    }
+
+    #[test]
+    fn lecture_des_ecrans_ignoree_pendant_un_reglage() {
+        let mut a = ready_app();
+        a.on_update(Update::Displays(Ok(Vec::new())), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
+        a.send_op(Op::ApplyDisplays { plan: crate::displays::Plan::default(), undo: None });
+        a.on_update(Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "relecture périmée ignorée");
+        a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
     }
 
     #[test]
@@ -1105,7 +1195,7 @@ mod tests {
 
     #[test]
     fn tic_rafraichit_son_reseau_bluetooth_toutes_les_deux_secondes() {
-        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth)] {
+        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth), (Tab::Ecrans, Domain::Displays)] {
             let mut a = ready_app();
             let t0 = Instant::now();
             a.go_tab(tab, t0);

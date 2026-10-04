@@ -4,6 +4,7 @@
 
 use alpheus::app::worker::{fetch, perform, Domain, Op};
 use alpheus::backends::{Backends, NodeRef, PowerAction};
+use alpheus::displays::{Active, Mode, Plan, Scale, Step};
 use alpheus::exec::fake::FakeExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -25,6 +26,16 @@ fn chaque_commande_lancee_est_dans_la_liste_blanche() {
         Op::SetBrightness(50), Op::SetWifi(true), Op::SetWifi(false), Op::SetBluetooth(true),
         Op::SetBluetooth(false), Op::SetDnd(true), Op::SetDnd(false), Op::ToggleKeepAwake { now_on: true },
         Op::SetProfile("balanced".into()),
+        // Un plan s'arrête au premier échec (ici, chaque appel échoue) : une
+        // étape par plan, pour que chaque ligne de commande soit vérifiée.
+        Op::ApplyDisplays {
+            plan: Plan { steps: vec![Step {
+                output: "HDMI-A-1".into(),
+                active: Some(Active { mode: Mode { width: 1920, height: 1080, refresh: 60 }, x: 0, y: 0, scale: Scale::ONE, transform: 0 }),
+            }] },
+            undo: None,
+        },
+        Op::ApplyDisplays { plan: Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] }, undo: None },
     ];
     for op in ops.into_iter().chain(PowerAction::ALL.map(Op::Power)) {
         let _ = perform(&b, &op);
@@ -39,7 +50,12 @@ fn chaque_commande_lancee_est_dans_la_liste_blanche() {
             assert!(["systemctl suspend", "systemctl reboot", "systemctl poweroff"].contains(&c.as_str()), "{c}");
         }
         if prog == "wm-set" {
-            assert_eq!(c, "wm-set exit");
+            // Quitter la session, lire et régler les écrans : rien d'autre.
+            let ok = c == "wm-set exit"
+                || c == "wm-set outputs"
+                || c.starts_with("wm-set monitor ")
+                || c.starts_with("wm-set monitor-disable ");
+            assert!(ok, "sous-commande wm-set hors liste : {c}");
         }
     }
 }

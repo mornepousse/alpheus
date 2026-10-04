@@ -2,6 +2,7 @@
 //! cliquables : chaque composant connaît sa zone pour le test de clic.
 
 pub mod draw;
+mod ecrans;
 pub mod hit;
 mod overlays;
 mod tabs;
@@ -53,7 +54,9 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         };
         let w = put(buf, r, x, r.y, &label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
-        x = x.saturating_add(w + 1);
+        // Collés : chaque libellé porte déjà ses espaces, et les six
+        // onglets tiennent ainsi en 80 colonnes.
+        x = x.saturating_add(w);
     }
 }
 
@@ -99,6 +102,16 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 pairs.push((km.label(Action::Search), "Chercher"));
             }
             Tab::Alimentation => pairs.push((km.label(Action::Activate), "Activer")),
+            Tab::Ecrans => match app.focused() {
+                Some(crate::app::Item::DisplayProfiles) => {
+                    pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choisir"));
+                    pairs.push((km.label(Action::Activate), "Appliquer"));
+                }
+                _ => {
+                    pairs.push((km.label(Action::Toggle), "Basculer"));
+                    pairs.push((km.label(Action::Activate), "Régler"));
+                }
+            },
         }
     }
     let mut x = r.x + 1;
@@ -152,6 +165,7 @@ mod tests {
     fn cadre_de_l_accueil() {
         let (rows, _) = draw(&ready_app(), 80, 24);
         assert!(rows[0].contains("alpheus") && rows[0].contains(" 1 Accueil ") && rows[0].contains(" 5 Alimentation "));
+        assert!(rows[0].contains(" 6 Écrans "), "six onglets en 80 colonnes : {:?}", rows[0]);
         assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
         assert!(rows[2].contains("  62 %"));
         assert!(rows[4].contains("Luminosité") && rows[4].contains("  20 %"));
@@ -293,6 +307,170 @@ mod tests {
         assert_eq!(a.items()[29], crate::app::Item::Slider(SliderId::Node(29)));
     }
 
+    // ── Onglet Écrans ────────────────────────────────────────────────
+
+    use crate::app::SaveDialog;
+
+    fn ecrans() -> crate::app::App {
+        let mut a = ready_app();
+        a.go_tab(Tab::Ecrans, Instant::now());
+        a.take_requests();
+        a
+    }
+
+    #[test]
+    fn onglet_ecrans() {
+        let mut a = ecrans();
+        a.focus = 2; // Alpha
+        let (rows, hits) = draw(&a, 100, 28);
+        let all = rows.join("\n");
+        for attendu in ["Profils", "[ Laptop seul ]", "[ Bureau ]", "[ + Enregistrer l'actuel ]", "Carte", "Écrans",
+            "1 Portable", "2 Alpha", "DVI-I-1 ⚠", "3 Bravo", "1920×1080@240", "échelle 1.0",
+            "position 0, 1080", "origine", "à droite de Alpha"] {
+            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+        }
+        assert!(all.contains('●'), "la carte marque l'écran focalisé :\n{all}");
+        assert!(hits.find(Target::DisplayProfile(2)).is_some());
+        assert!(hits.find(Target::OutputToggle(3)).is_some());
+        assert!(rows[27].contains("Espace Basculer") && rows[27].contains("Entrée Régler"), "{:?}", rows[27]);
+        a.focus = 0;
+        assert!(draw(&a, 100, 28).0[27].contains("Entrée Appliquer"));
+    }
+
+    #[test]
+    fn dernier_ecran_grise() {
+        let mut a = ecrans();
+        a.data.displays = Loadable::Ready(vec![crate::displays::testing::poste()[0].clone()]);
+        assert!(draw(&a, 100, 28).0.join("\n").contains("[■] seul actif"));
+    }
+
+    #[test]
+    fn ecrans_sous_niri_en_echec_ou_en_attente() {
+        let mut a = ecrans();
+        a.ecrans.niri = true;
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Écrans : pas encore disponible sous niri"));
+        let mut a = ecrans();
+        a.data.displays = Loadable::Failed("wm-set a échoué (code 1) : sous-commande inconnue : outputs".into());
+        let all = draw(&a, 100, 24).0.join("\n");
+        assert!(all.contains("✗ wm-set a échoué (code 1) : sous-commande inconnue : outputs"), "{all}");
+        assert!(all.contains("[ Bureau ]"), "les profils restent visibles");
+        a.data.displays = Loadable::Loading;
+        assert!(draw(&a, 80, 24).0.join("\n").contains('…'));
+    }
+
+    #[test]
+    fn carte_a_l_echelle() {
+        use super::ecrans::{map_canvas, MAP_ROWS};
+        use crate::displays::testing::{on, poste, ALPHA, BRAVO};
+        let text = |g: &Vec<Vec<Option<(char, bool)>>>| -> Vec<String> {
+            g.iter().map(|r| r.iter().map(|c| c.map_or(' ', |(ch, _)| ch)).collect()).collect()
+        };
+        let g = map_canvas(&poste(), Some("HDMI-A-1"), 76);
+        let lines = text(&g);
+        assert!(lines.len() <= usize::from(MAP_ROWS));
+        let all = lines.join("\n");
+        assert!(all.contains("Alpha") && all.contains("Bravo") && all.contains("Portable"), "{all}");
+        for n in ["1", "2", "3"] {
+            assert!(all.contains(n), "numéro {n} :\n{all}");
+        }
+        assert!(g.iter().flatten().flatten().any(|(ch, foc)| *ch == '●' && *foc), "● sur Bravo");
+        let g = map_canvas(&[on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 1920, 1080, 1920, 0)], None, 20);
+        assert!(!g.is_empty() && g.iter().all(|r| r.len() <= 20), "bornée par la largeur");
+        assert!(map_canvas(&[], None, 76).is_empty());
+        assert!(map_canvas(&poste(), None, 2).is_empty(), "trop étroit : rien");
+    }
+
+    #[test]
+    fn boite_garder_ces_reglages() {
+        let mut a = ecrans();
+        a.toggle_output("DVI-I-1", Instant::now());
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Garder ces réglages ?") && all.contains("Alpha désactivé") && all.contains("Alpha : désactivé"), "{all}");
+        assert!(all.contains("⚠ Sortie DisplayLink : risque de gel connu sur ce poste"), "{all}");
+        assert!(all.contains("Application en cours…") && all.contains("[ Annuler ]") && all.contains("[ Garder ]"), "{all}");
+        let r = a.take_requests();
+        let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
+        a.on_update(Update::Done(op, Ok(())), Instant::now());
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Retour automatique dans 15 s"));
+        let (_, hits) = draw(&a, 80, 24);
+        let (no, yes) = (hits.find(Target::ConfirmNo).unwrap(), hits.find(Target::ConfirmYes).unwrap());
+        assert!(no.x < yes.x && no.y == yes.y, "Annuler à gauche");
+    }
+
+    #[test]
+    fn boite_garder_en_petite_hauteur_garde_le_compte_a_rebours() {
+        let mut a = ecrans();
+        a.apply_display_profile("Bureau", Instant::now());
+        let r = a.take_requests();
+        let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
+        a.on_update(Update::Done(op, Ok(())), Instant::now());
+        for h in [MIN_H, MIN_H + 1, 10] {
+            let all = draw(&a, 80, h).0.join("\n");
+            assert!(all.contains("Retour automatique dans 15 s"), "h={h}\n{all}");
+            assert!(all.contains("⚠ Sortie DisplayLink"), "h={h}\n{all}");
+            assert!(all.contains("[ Annuler ]"), "h={h}\n{all}");
+        }
+    }
+
+    #[test]
+    fn panneau_de_reglage() {
+        let mut a = ecrans();
+        a.open_panel("HDMI-A-1", Instant::now());
+        let (rows, hits) = draw(&a, 80, 24);
+        let all = rows.join("\n");
+        for attendu in ["Réglage — Bravo (HDMI-A-1)", "Mode", "1920×1080@240  2/2", "Échelle", "Rotation", "0°",
+            "Placement", "à droite de", "Référence", "Alpha", "Alignement", "en haut", "✗ aucun changement",
+            "[ Annuler ]", "[ Appliquer ]"] {
+            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+        }
+        assert!(hits.find(Target::PanelStep { field: crate::app::PanelField::Align, dir: -1 }).is_some());
+        // Origine : plus de référence ni d'alignement.
+        if let Overlay::Panel(p) = &mut a.overlay {
+            p.place = crate::app::PlaceChoice::Origin;
+        }
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(!all.contains("Référence") && all.contains("origine"), "{all}");
+    }
+
+    #[test]
+    fn saisie_du_nom_de_profil() {
+        let mut a = ecrans();
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Maison".into(), ..SaveDialog::default() });
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Enregistrer l'actuel") && all.contains("> Maison▏"), "{all}");
+        a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false });
+        let all = draw(&a, 80, 24).0.join("\n");
+        assert!(all.contains("Remplacer le profil « Bureau » ?") && all.contains("[ Remplacer ]"), "{all}");
+    }
+
+    #[test]
+    fn ecrans_sans_panique_en_petite_fenetre() {
+        let mut a = ecrans();
+        a.open_panel("eDP-1", Instant::now());
+        let panneau = a.overlay.clone();
+        a.overlay = Overlay::None;
+        a.toggle_output("DVI-I-1", Instant::now());
+        let garder = a.overlay.clone();
+        for o in [Overlay::None, panneau, garder, Overlay::SaveProfile(SaveDialog::default())] {
+            a.overlay = o;
+            for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
+                draw(&a, w, h);
+            }
+        }
+    }
+
+    #[test]
+    fn instantanes_ecrans() {
+        let mut a = ecrans();
+        a.focus = 2;
+        insta::assert_snapshot!("ecrans_liste", draw(&a, 100, 28).0.join("\n"));
+        a.open_panel("HDMI-A-1", Instant::now());
+        insta::assert_snapshot!("ecrans_panneau", draw(&a, 80, 24).0.join("\n"));
+        a.overlay = Overlay::None;
+        a.apply_display_profile("Bureau", Instant::now());
+        insta::assert_snapshot!("ecrans_garder", draw(&a, 80, 24).0.join("\n"));
+    }
+
     #[test]
     fn instantanes() {
         let mut a = ready_app();
@@ -321,8 +499,8 @@ mod tests {
         let all = rows.join("\n");
         assert!(all.contains("Aide — Échap pour fermer"), "{all}");
         assert!(all.contains("Souris") && all.contains("clic, glisser, molette"), "dernière ligne coupée :\n{all}");
-        assert!(all.contains("Onglets 1 à 5") && all.contains("1, 2, 3, 4, 5"), "{all}");
-        assert!(!all.contains("Onglet Son"), "les cinq onglets tiennent sur une ligne");
+        assert!(all.contains("Onglets 1 à 6") && all.contains("1, 2, 3, 4, 5, 6"), "{all}");
+        assert!(!all.contains("Onglet Son"), "les six onglets tiennent sur une ligne");
     }
 
     #[test]
@@ -366,6 +544,28 @@ mod tests {
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
         let rows = draw(&a, 80, 24).0;
         assert!(rows[1].trim_end().ends_with("✓ Wi-Fi : désactivé"), "{:?}", rows[1]);
+    }
+
+    #[test]
+    fn appliquer_grise_si_refuse() {
+        let mut a = ready_app();
+        a.go_tab(Tab::Ecrans, Instant::now());
+        a.open_panel("HDMI-A-1", Instant::now());
+        // Couleur du texte de « [ Appliquer ] » après rendu.
+        let fg = |a: &crate::app::App| {
+            let r = draw(a, 80, 24).1.find(Target::PanelApply).unwrap();
+            let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+            t.draw(|f| {
+                render(f, a);
+            })
+            .unwrap();
+            t.backend().buffer()[(r.x + 2, r.y)].fg
+        };
+        assert_eq!(fg(&a), a.theme.muted, "aucun changement : grisé");
+        if let Overlay::Panel(p) = &mut a.overlay {
+            p.scale = crate::displays::Scale(1250);
+        }
+        assert_ne!(fg(&a), a.theme.muted, "réglage valide : actif");
     }
 
     #[test]

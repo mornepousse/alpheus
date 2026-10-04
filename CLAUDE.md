@@ -24,6 +24,10 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   écrite** ([`docs/specs/2026-10-04-alpheus-demon-barre-design.md`](docs/specs/2026-10-04-alpheus-demon-barre-design.md)),
   en relecture par Mae. Vision : autant que DMS/Noctalia, dans le budget.
   Pile mesurée : smithay-client-toolkit + cosmic-text (≈ 4,5 Mo).
+- **Portabilité** (après la barre, accord de Mae 2026-10-04) : livrer ou
+  rendre configurables les dépendances aux scripts de nixos-config (`wm-set`,
+  `shell-ctl`, `tools-menu`, `alpheus-toggle`) avec repli neutre ; touches
+  Dvorak désactivées par défaut (activées chez Mae via son `config.toml`).
 - Sous-projet 3 (intégration NixOS complète) : à concevoir plus tard.
 
 ## Règles
@@ -38,6 +42,11 @@ garde-fous, découpage), puis la spec du sous-projet en cours dans
   `dpms` ; aucune écriture au compositeur hors `wm-set` ; rien de résident.
 - **Budget** : résident total ≤ 120 Mo (sous-projet 2) ; TUI < 100 ms au
   premier rendu.
+- **Produit partageable, légèreté d'abord** (Mae, 2026-10-04) : alpheus sera
+  public. Prévoir la personnalisation, mais jamais au détriment des perfs :
+  une option inutilisée ne coûte rien, aucune dépendance lourde « pour la
+  config ». Ne pas coder en dur ce qui est propre au poste de Mae (scripts de
+  nixos-config, Dvorak, chemins) sans défaut neutre ou voie configurable.
 - Le poste est NixOS, configuré dans `~/nixos-config` (flake) : alpheus y
   sera branché comme input `git+file://` — ce qui n'est pas commité ici
   n'est pas vu par le build.

@@ -2,7 +2,7 @@
 source: src/ui/mod.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Accueil   2 Son   3 Réseau   4 Bluetooth   5 Alimentation          
+ alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
                                                                                 
  ▶ Bluetooth           [■] activé                                               
                                                                                 

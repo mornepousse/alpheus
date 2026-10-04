@@ -14,6 +14,7 @@ pub mod network;
 pub mod bluetooth;
 pub mod notifications;
 pub mod power;
+pub mod displays;
 
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 pub use brightness::{Brightness, BrightnessCtl};
@@ -22,6 +23,7 @@ pub use network::{Connection, NetStatus, Network, NmCli};
 pub use bluetooth::{BtDevice, BtStatus, Bluetooth, BluetoothCtl};
 pub use notifications::{Notifications, ShellCtl};
 pub use power::{Power, PowerAction, SessionPower};
+pub use displays::{Displays, WmSetDisplays};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +32,10 @@ pub enum BackendError {
     Failed { tool: String, code: Option<i32>, stderr: String },
     Unparsable { tool: String, detail: String },
     Timeout { tool: String },
+    /// Retour d'écrans appliqué au mieux : sorties dont l'étape a échoué,
+    /// avec leur erreur, et sorties laissées allumées faute d'avoir pu
+    /// rallumer les autres (leur désactivation n'a pas été tentée).
+    Incomplete { failures: Vec<(String, BackendError)>, kept: Vec<String> },
 }
 
 impl fmt::Display for BackendError {
@@ -38,6 +44,14 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} introuvable"),
             BackendError::Timeout { tool } => write!(f, "{tool} ne répond pas"),
             BackendError::Unparsable { tool, detail } => write!(f, "sortie de {tool} illisible : {detail}"),
+            BackendError::Incomplete { failures, kept } => {
+                let list: Vec<String> = failures
+                    .iter()
+                    .map(|(out, e)| format!("{out} ({e})"))
+                    .chain(kept.iter().map(|out| format!("{out} (gardé allumé : retour incomplet)")))
+                    .collect();
+                write!(f, "retour incomplet : {}", list.join(", "))
+            }
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {
@@ -91,6 +105,7 @@ pub struct Backends {
     pub energy: Arc<dyn Energy>,
     pub notifications: Arc<dyn Notifications>,
     pub power: Arc<dyn Power>,
+    pub displays: Arc<dyn Displays>,
 }
 
 impl Backends {
@@ -103,7 +118,8 @@ impl Backends {
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
             energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir)),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec)),
+            power: Arc::new(SessionPower::new(exec.clone())),
+            displays: Arc::new(WmSetDisplays::new(exec)),
         }
     }
 }
@@ -154,7 +170,8 @@ mod tests {
         let _ = b.energy.profiles();
         let _ = b.notifications.dnd();
         let _ = b.power.perform(PowerAction::Suspend);
+        let _ = b.displays.outputs();
         let progs: Vec<String> = f.calls().iter().map(|c| c.split(' ').next().unwrap().to_string()).collect();
-        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl"]);
+        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl", "wm-set"]);
     }
 }

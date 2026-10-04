@@ -1,0 +1,32 @@
+---
+source: src/ui/mod.rs
+expression: "draw(&a, 100, 28).0.join(\"\\n\")"
+---
+ alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans                        
+                                                                                                    
+   Profils    [ Laptop seul ]  [ Bureau ]  [ + Enregistrer l'actuel ]                               
+                                                                                                    
+ Carte                                                                                              
+    ┌──Alpha───┐┌──Bravo──┐                                                                         
+    │    2   ● ││    3    │                                                                         
+    └──────────┘└─────────┘                                                                         
+   ┌──Portable───┐                                                                                  
+   │             │                                                                                  
+   │      1      │                                                                                  
+   │             │                                                                                  
+   └─────────────┘                                                                                  
+                                                                                                    
+ Écrans                                                                                             
+   1 Portable   eDP-1     [■] activé    2560×1600@60  échelle 1.0  position 0, 1080                 
+ ▶ 2 Alpha      DVI-I-1 ⚠ [■] activé    1920×1080@60  échelle 1.0  origine                          
+   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  à droite de Alpha                
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ Écrans · prêt                                                                                      
+ F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Espace Basculer  Entrée Régler

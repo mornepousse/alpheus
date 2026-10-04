@@ -10,10 +10,11 @@ pub enum Tab {
     Reseau,
     Bluetooth,
     Alimentation,
+    Ecrans,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [Tab::Accueil, Tab::Son, Tab::Reseau, Tab::Bluetooth, Tab::Alimentation];
+    pub const ALL: [Tab; 6] = [Tab::Accueil, Tab::Son, Tab::Reseau, Tab::Bluetooth, Tab::Alimentation, Tab::Ecrans];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -22,6 +23,7 @@ impl Tab {
             Tab::Reseau => "Réseau",
             Tab::Bluetooth => "Bluetooth",
             Tab::Alimentation => "Alimentation",
+            Tab::Ecrans => "Écrans",
         }
     }
 
@@ -72,6 +74,8 @@ pub enum Command {
     Power(PowerAction),
     Open(External),
     GoTab(Tab),
+    /// Applique un profil d'écran (palette « Profil d'écran : … »).
+    ApplyDisplayProfile(String),
 }
 
 impl Command {
@@ -85,6 +89,7 @@ impl Command {
             Command::Power(a) => a.label().into(),
             Command::Open(e) => e.label().into(),
             Command::GoTab(t) => format!("Aller à : {}", t.title()),
+            Command::ApplyDisplayProfile(p) => format!("Profil d'écran : {p}"),
         }
     }
 }
@@ -115,11 +120,11 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 24] = [
+    pub const ALL: [Action; 25] = [
         Action::Quit, Action::Back, Action::Help, Action::Palette, Action::Search,
         Action::NextTab, Action::PrevTab,
         Action::GoTab(Tab::Accueil), Action::GoTab(Tab::Son), Action::GoTab(Tab::Reseau),
-        Action::GoTab(Tab::Bluetooth), Action::GoTab(Tab::Alimentation),
+        Action::GoTab(Tab::Bluetooth), Action::GoTab(Tab::Alimentation), Action::GoTab(Tab::Ecrans),
         Action::Left, Action::Right, Action::Up, Action::Down,
         Action::PageUp, Action::PageDown, Action::Home, Action::End,
         Action::Toggle, Action::Activate, Action::Decrease, Action::Increase,
@@ -191,12 +196,14 @@ pub fn profile_label(p: &str) -> String {
     .to_string()
 }
 
-/// Toutes les commandes de la palette ; les profils dépendent du poste.
-pub fn palette_entries(profiles: &[String]) -> Vec<(String, Command)> {
+/// Toutes les commandes de la palette ; les profils (énergie, écrans)
+/// dépendent du poste.
+pub fn palette_entries(profiles: &[String], display_profiles: &[String]) -> Vec<(String, Command)> {
     let mut v: Vec<Command> = vec![Command::ToggleDnd, Command::ToggleWifi, Command::ToggleBluetooth, Command::ToggleKeepAwake];
     v.extend(Tab::ALL.map(Command::GoTab));
     v.extend([External::Mixer, External::Network, External::Bluetooth].map(Command::Open));
     v.extend(profiles.iter().cloned().map(Command::SetProfile));
+    v.extend(display_profiles.iter().cloned().map(Command::ApplyDisplayProfile));
     v.extend(PowerAction::ALL.map(Command::Power));
     v.into_iter().map(|c| (c.label(), c)).collect()
 }
@@ -207,8 +214,10 @@ mod tests {
 
     #[test]
     fn onglets_circulaires() {
-        assert_eq!(Tab::Accueil.prev(), Tab::Alimentation);
-        assert_eq!(Tab::Alimentation.next(), Tab::Accueil);
+        assert_eq!(Tab::Accueil.prev(), Tab::Ecrans);
+        assert_eq!(Tab::Alimentation.next(), Tab::Ecrans);
+        assert_eq!(Tab::Ecrans.next(), Tab::Accueil);
+        assert_eq!(Tab::Ecrans.title(), "Écrans");
         assert_eq!(Tab::Reseau.index(), 2);
     }
 
@@ -230,12 +239,14 @@ mod tests {
 
     #[test]
     fn palette_complete() {
-        let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()]);
+        let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()], &["Bureau".into()]);
         let labels: Vec<&str> = p.iter().map(|(l, _)| l.as_str()).collect();
         for attendu in ["Ne pas déranger", "Wi-Fi", "Bluetooth", "Garder éveillé", "Verrouiller", "Éteindre",
-            "Mixage par appli", "Choisir un réseau", "Appairer un appareil", "Aller à : Son", "Profil : Équilibré"] {
+            "Mixage par appli", "Choisir un réseau", "Appairer un appareil", "Aller à : Son", "Profil : Équilibré",
+            "Aller à : Écrans", "Profil d'écran : Bureau"] {
             assert!(labels.contains(&attendu), "{attendu} manque");
         }
         assert!(p.contains(&("Éteindre".to_string(), Command::Power(PowerAction::Poweroff))));
+        assert!(p.contains(&("Profil d'écran : Bureau".to_string(), Command::ApplyDisplayProfile("Bureau".into()))));
     }
 }

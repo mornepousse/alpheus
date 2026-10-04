@@ -2,7 +2,7 @@
 //! recherche, puis table de touches configurable.
 
 use super::action::{Action, Tab};
-use super::{App, Item, Overlay, Palette, Search};
+use super::{App, Item, Overlay, Palette, PanelField, Search};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::time::Instant;
 
@@ -29,6 +29,9 @@ impl App {
             Overlay::Confirm(_) => return self.key_confirm(e),
             Overlay::Palette(_) => return self.key_palette(e, now),
             Overlay::Help => return self.key_help(e),
+            Overlay::Keep(_) => return self.key_keep(e, now),
+            Overlay::Panel(_) => return self.key_panel(e, now),
+            Overlay::SaveProfile(_) => return self.key_save(e, now),
             Overlay::None => {}
         }
         if self.search.editing {
@@ -56,6 +59,107 @@ impl App {
                         Action::Right => true,
                         _ => !c.yes_focused,
                     };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// « Garder ces réglages ? » : ← Annuler, → Garder, Échap annule ;
+    /// « q » ferme alpheus, et le nettoyage de sortie défait l'essai.
+    fn key_keep(&mut self, e: KeyEvent, now: Instant) {
+        let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+        match action {
+            Some(Action::Quit) => self.should_quit = true,
+            Some(Action::Back) => self.keep_answer(false, now),
+            Some(Action::Activate) => {
+                let keep = matches!(self.overlay, Overlay::Keep(k) if k.keep_focused);
+                self.keep_answer(keep, now);
+            }
+            Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
+                if let Overlay::Keep(k) = &mut self.overlay {
+                    k.keep_focused = match a {
+                        Action::Left => false,
+                        Action::Right => true,
+                        _ => !k.keep_focused,
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Panneau de réglage : ↑/↓ champ, ←/→ valeur, « / » cherche un mode,
+    /// Entrée sur Appliquer envoie, Échap ferme.
+    fn key_panel(&mut self, e: KeyEvent, now: Instant) {
+        if matches!(&self.overlay, Overlay::Panel(p) if p.query.is_some()) {
+            match e.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    if let Overlay::Panel(p) = &mut self.overlay {
+                        p.query = None; // le mode choisi reste
+                    }
+                }
+                KeyCode::Backspace => self.panel_query(|q| {
+                    q.pop();
+                }),
+                KeyCode::Left => self.panel_step(-1),
+                KeyCode::Right => self.panel_step(1),
+                KeyCode::Char(ch) if plain(&e) => self.panel_query(|q| q.push(ch)),
+                _ => {}
+            }
+            return;
+        }
+        let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+        match action {
+            Some(Action::Back | Action::Quit) => self.overlay = Overlay::None,
+            Some(Action::Up | Action::PrevTab) => self.panel_move(-1),
+            Some(Action::Down | Action::NextTab) => self.panel_move(1),
+            Some(Action::Left | Action::Decrease) => self.panel_step(-1),
+            Some(Action::Right | Action::Increase) => self.panel_step(1),
+            Some(Action::Search) => {
+                if let Overlay::Panel(p) = &mut self.overlay {
+                    if p.field == PanelField::Mode {
+                        p.query = Some(String::new());
+                    }
+                }
+            }
+            Some(Action::Activate) => self.panel_enter(now),
+            _ => {}
+        }
+    }
+
+    /// Nom du profil à enregistrer, puis confirmation s'il existe déjà.
+    fn key_save(&mut self, e: KeyEvent, now: Instant) {
+        let replace = matches!(&self.overlay, Overlay::SaveProfile(d) if d.replace);
+        if replace {
+            let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
+            match action {
+                Some(Action::Back | Action::Quit) => self.overlay = Overlay::None,
+                Some(Action::Activate) => self.save_enter(now),
+                Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
+                    if let Overlay::SaveProfile(d) = &mut self.overlay {
+                        d.yes_focused = match a {
+                            Action::Left => false,
+                            Action::Right => true,
+                            _ => !d.yes_focused,
+                        };
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+        match e.code {
+            KeyCode::Esc => self.overlay = Overlay::None,
+            KeyCode::Enter => self.save_enter(now),
+            KeyCode::Backspace => {
+                if let Overlay::SaveProfile(d) = &mut self.overlay {
+                    d.name.pop();
+                }
+            }
+            KeyCode::Char(ch) if plain(&e) => {
+                if let Overlay::SaveProfile(d) = &mut self.overlay {
+                    d.name.push(ch);
                 }
             }
             _ => {}
@@ -148,11 +252,11 @@ impl App {
             Action::End => self.focus = self.items().len().saturating_sub(1),
             Action::Left | Action::Decrease => self.adjust(-1, now),
             Action::Right | Action::Increase => self.adjust(1, now),
-            Action::Toggle => {
-                if let Some(Item::Toggle(id)) = self.focused() {
-                    self.toggle(id, now);
-                }
-            }
+            Action::Toggle => match self.focused() {
+                Some(Item::Toggle(id)) => self.toggle(id, now),
+                Some(Item::Output(name)) => self.toggle_output(&name, now),
+                _ => {}
+            },
             Action::Activate => self.activate(now),
         }
     }
@@ -197,7 +301,11 @@ mod tests {
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.tab, Tab::Ecrans, "Maj+Tab depuis l'Accueil : le dernier onglet");
+        press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(a.tab, Tab::Alimentation);
+        c(&mut a, '6');
+        assert_eq!(a.tab, Tab::Ecrans);
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.tab, Tab::Accueil);
         k(&mut a, KeyCode::Esc);
@@ -359,6 +467,142 @@ mod tests {
         k(&mut a, KeyCode::Enter);
         assert_eq!(a.take_requests(), vec![Request::Do(Op::SetDefault(64))]);
         assert_eq!(a.focused(), Some(Item::Slider(SliderId::Node(64))));
+    }
+
+    // ── Onglet Écrans ────────────────────────────────────────────────
+
+    use super::super::{Keep, SaveDialog};
+
+    fn ecrans() -> App {
+        let mut a = ready_app();
+        c(&mut a, '6');
+        a.take_requests();
+        a
+    }
+
+    /// Répond au fil : l'essai envoyé est appliqué.
+    fn applique(a: &mut App) {
+        let r = a.take_requests();
+        let Some(Request::Do(op)) = r.into_iter().next() else { panic!("essai attendu") };
+        a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
+        a.take_requests();
+    }
+
+    fn retour_envoye(a: &mut App) -> bool {
+        a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::ApplyDisplays { undo: None, .. })))
+    }
+
+    /// Le fil répond au retour, puis une relecture fraîche arrive.
+    fn retour_applique_et_relu(a: &mut App) {
+        let r = a.take_requests();
+        let Some(Request::Do(op)) = r.into_iter().find(|q| matches!(q, Request::Do(Op::ApplyDisplays { undo: None, .. }))) else {
+            panic!("retour attendu")
+        };
+        a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.take_requests();
+    }
+
+    #[test]
+    fn profils_au_clavier() {
+        let mut a = ecrans();
+        assert_eq!(a.focused(), Some(Item::DisplayProfiles));
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Enter); // Bureau
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+        assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    }
+
+    #[test]
+    fn garder_ces_reglages_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down); // Portable
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Enter); // focus sur Annuler
+        assert_eq!(a.overlay, Overlay::None);
+        retour_applique_et_relu(&mut a); // « Entrée par réflexe : retour »
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Right);
+        assert_eq!(a.overlay, Overlay::Keep(Keep { keep_focused: true }));
+        k(&mut a, KeyCode::Enter);
+        assert_eq!(a.ecrans.trial, None);
+        assert!(!retour_envoye(&mut a), "gardé");
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.take_requests();
+        c(&mut a, ' ');
+        applique(&mut a);
+        k(&mut a, KeyCode::Esc);
+        assert!(retour_envoye(&mut a), "Échap annule");
+    }
+
+    #[test]
+    fn q_pendant_l_essai_ferme_et_laisse_le_retour_a_la_sortie() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down);
+        c(&mut a, ' ');
+        applique(&mut a);
+        c(&mut a, 'q');
+        assert!(a.should_quit);
+        assert!(a.exit_undo().is_some(), "le nettoyage de sortie défera l'essai");
+    }
+
+    #[test]
+    fn panneau_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Down);
+        k(&mut a, KeyCode::Enter); // panneau de la dalle interne
+        let Overlay::Panel(p) = &a.overlay else { panic!("panneau attendu") };
+        assert_eq!(p.output, "eDP-1");
+        k(&mut a, KeyCode::Down);
+        press(&mut a, KeyCode::Char('+'), KeyModifiers::SHIFT);
+        let Overlay::Panel(p) = &a.overlay else { panic!() };
+        assert_eq!((p.field, p.scale), (PanelField::Scale, crate::displays::Scale(1250)));
+        k(&mut a, KeyCode::Enter); // vers Appliquer
+        k(&mut a, KeyCode::Enter); // applique
+        assert!(matches!(a.overlay, Overlay::Keep(_)));
+        assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    }
+
+    #[test]
+    fn recherche_de_mode_au_clavier() {
+        let mut a = ecrans();
+        a.data.displays = super::super::Loadable::Ready(
+            crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap(),
+        );
+        k(&mut a, KeyCode::Down);
+        k(&mut a, KeyCode::Down); // Alpha
+        k(&mut a, KeyCode::Enter);
+        c(&mut a, '/');
+        typed(&mut a, "1280q"); // « q » s'écrit, ne ferme rien
+        let Overlay::Panel(p) = &a.overlay else { panic!("panneau fermé") };
+        assert_eq!(p.query.as_deref(), Some("1280q"));
+        k(&mut a, KeyCode::Backspace);
+        let Overlay::Panel(p) = &a.overlay else { panic!() };
+        assert_eq!(p.mode.to_string(), "1280x1024@75");
+        k(&mut a, KeyCode::Esc);
+        let Overlay::Panel(p) = &a.overlay else { panic!("Échap ferme d'abord la recherche") };
+        assert_eq!((p.query.clone(), p.mode.to_string()), (None, "1280x1024@75".to_string()));
+        k(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, Overlay::None);
+        assert!(a.take_requests().is_empty());
+    }
+
+    #[test]
+    fn enregistrer_au_clavier() {
+        let mut a = ecrans();
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Right); // « + Enregistrer l'actuel »
+        k(&mut a, KeyCode::Enter);
+        typed(&mut a, "Bureaux");
+        k(&mut a, KeyCode::Backspace);
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), ..SaveDialog::default() }));
+        k(&mut a, KeyCode::Enter);
+        assert_eq!(a.overlay, Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false }));
+        k(&mut a, KeyCode::Right);
+        k(&mut a, KeyCode::Esc);
+        assert_eq!(a.overlay, Overlay::None);
     }
 
     #[test]
