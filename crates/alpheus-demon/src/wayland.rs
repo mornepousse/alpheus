@@ -26,7 +26,14 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
 };
+use std::io::{self, Write};
 use std::sync::Arc;
+
+/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
+/// (EPIPE) : un démon résident ne doit jamais mourir pour si peu.
+fn journal(m: &str) {
+    let _ = writeln!(io::stderr(), "alpheus-demon : {m}");
+}
 
 /// Taille de départ du pool (`Etat::new`) : jamais redescendu en dessous,
 /// pour ne pas recréer le pool sans cesse autour d'un écran minuscule ou
@@ -82,6 +89,18 @@ fn texte_journal(nom: &str, id: u32) -> String {
 
 fn nom_journal(nom: &str, sortie: &wl_output::WlOutput) -> String {
     texte_journal(nom, sortie.id().protocol_id())
+}
+
+/// Faut-il reposer la barre sur `sortie` après que le compositeur a fermé
+/// sa surface (`LayerShellHandler::closed`) ? Oui si cette sortie figure
+/// encore parmi `connues` : certains compositeurs ferment la SURFACE sans
+/// jamais détruire la SORTIE (`output_destroyed`), en s'attendant qu'on la
+/// repose — contrairement à un vrai débranchement, où les deux arrivent.
+/// Générique sur `T: PartialEq` plutôt que sur `wl_output::WlOutput`
+/// directement : un `wl_output::WlOutput` ne s'instancie pas hors d'une
+/// vraie connexion, cette forme reste donc testable sans Wayland.
+fn faut_reposer<T: PartialEq>(sortie: &T, connues: impl Iterator<Item = T>) -> bool {
+    connues.into_iter().any(|s| s == *sortie)
 }
 
 struct Surface {
@@ -158,14 +177,18 @@ impl Etat {
         couche.set_exclusive_zone(hauteur as i32);
         couche.set_keyboard_interactivity(KeyboardInteractivity::None);
         couche.commit();
-        eprintln!("alpheus-demon : barre posée sur {}", nom_journal(&nom, &sortie));
+        journal(&format!("barre posée sur {}", nom_journal(&nom, &sortie)));
         self.surfaces.push(Surface { sortie, nom, couche, largeur: 0, echelle, configuree: false, derniere: None });
     }
 
-    fn retirer(&mut self, i: usize) {
+    /// Rend la sortie de la surface retirée, pour que l'appelant puisse
+    /// décider de reposer la barre dessus (voir `closed`) si elle existe
+    /// encore.
+    fn retirer(&mut self, i: usize) -> wl_output::WlOutput {
         let s = self.surfaces.remove(i); // la surface est détruite avec `s`
-        eprintln!("alpheus-demon : barre retirée de {}", nom_journal(&s.nom, &s.sortie));
+        journal(&format!("barre retirée de {}", nom_journal(&s.nom, &s.sortie)));
         self.retrecir_pool_si_besoin();
+        s.sortie
     }
 
     /// Recrée le pool à une taille ajustée aux surfaces restantes, si
@@ -178,7 +201,7 @@ impl Etat {
         if let Some(taille) = pool_cible(self.pool.len(), &besoins) {
             match SlotPool::new(taille, &self.shm) {
                 Ok(p) => self.pool = p,
-                Err(e) => eprintln!("alpheus-demon : pool {taille} : {e}"),
+                Err(e) => journal(&format!("pool {taille} : {e}")),
             }
         }
     }
@@ -208,7 +231,7 @@ impl Etat {
         let (tampon, pixels) = match pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) {
             Ok(t) => t,
             Err(err) => {
-                eprintln!("alpheus-demon : tampon {w}×{h} : {err}");
+                journal(&format!("tampon {w}×{h} : {err}"));
                 return;
             }
         };
@@ -279,11 +302,18 @@ impl OutputHandler for Etat {
 }
 
 impl LayerShellHandler for Etat {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, couche: &LayerSurface) {
-        // Le compositeur a retiré la surface (écran débranché) : on oublie
-        // cette barre, les autres continuent. Jamais d'arrêt ici.
+    fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, couche: &LayerSurface) {
+        // Le compositeur a fermé la surface. D'ordinaire (écran débranché),
+        // `output_destroyed` suit : on oublie cette barre, les autres
+        // continuent, jamais d'arrêt ici. Mais si la sortie existe encore
+        // (voir `faut_reposer`), le compositeur attend qu'on la repose —
+        // sans ça, cet écran resterait sans barre jusqu'au prochain
+        // changement de sortie.
         if let Some(i) = self.indice(couche.wl_surface()) {
-            self.retirer(i);
+            let sortie = self.retirer(i);
+            if faut_reposer(&sortie, self.sorties.outputs()) {
+                self.poser(qh, sortie);
+            }
         }
     }
 
@@ -311,7 +341,7 @@ impl SeatHandler for Etat {
             let surface = self.compositeur.create_surface(qh);
             match self.sieges.get_pointer_with_theme(qh, &siege, self.shm.wl_shm(), surface, ThemeSpec::default()) {
                 Ok(p) => self.pointeur = Some(p),
-                Err(e) => eprintln!("alpheus-demon : pointeur indisponible : {e}"),
+                Err(e) => journal(&format!("pointeur indisponible : {e}")),
             }
         }
     }
@@ -443,5 +473,16 @@ mod tests {
     fn texte_journal_repli_lisible_sur_sortie_sans_nom() {
         assert_eq!(texte_journal("HDMI-A-1", 7), "HDMI-A-1");
         assert_eq!(texte_journal("", 7), "une sortie sans nom (id 7)");
+    }
+
+    #[test]
+    fn faut_reposer_si_la_sortie_est_encore_connue() {
+        // wl_output::WlOutput ne s'instancie pas hors d'une vraie connexion
+        // Wayland (voir le commentaire de `faut_reposer`) : des entiers
+        // tiennent lieu d'identifiants de sortie dans ce test, la fonction
+        // étant générique sur `PartialEq`.
+        assert!(faut_reposer(&2, [1, 2, 3].into_iter()), "encore dans la liste : à reposer");
+        assert!(!faut_reposer(&5, [1, 2, 3].into_iter()), "plus dans la liste : vraiment débranchée");
+        assert!(!faut_reposer(&1, std::iter::empty::<i32>()), "plus aucune sortie connue");
     }
 }
