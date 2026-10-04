@@ -14,6 +14,13 @@
 //! date = "%a %e %b"                             # "": no date
 //! [workspaces]
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
+//! [actions]                                     # clicks on the system modules
+//! open_tab = ["alpheus-toggle", "{tab}"]        # {tab}: home, sound, network, bluetooth
+//! resources = ["alacritty", "-e", "btop"]
+//! [resources]
+//! interval = 2                                  # seconds between readings, 1 to 60
+//! graph = 20                                    # cells of CPU history, 0 to 60 (0: no graph)
+//! sensor = ""                                   # hwmon name or thermal zone type; "": automatic
 //! ```
 
 use crate::clock;
@@ -122,6 +129,50 @@ impl Default for WorkspacesConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActionsConfig {
+    /// Opens alpheus on a tab (left click on volume, network, Bluetooth,
+    /// battery); `{tab}` becomes home, sound, network or bluetooth (the
+    /// TUI's `--tab`). Default: `alpheus-toggle` (Mae's nixos-config), which
+    /// opens the TUI in a floating terminal, or closes it if already open —
+    /// not a neutral default yet: see the portability step (CLAUDE.md).
+    pub open_tab: Vec<String>,
+    /// Left click on the resources: a system monitor. Default: btop in
+    /// alacritty (Mae's terminal; portability step, as above).
+    pub resources: Vec<String>,
+}
+
+impl Default for ActionsConfig {
+    fn default() -> Self {
+        ActionsConfig {
+            open_tab: ["alpheus-toggle", "{tab}"].map(String::from).to_vec(),
+            resources: ["alacritty", "-e", "btop"].map(String::from).to_vec(),
+        }
+    }
+}
+
+/// Most points of CPU history (spec § 3: graph histories capped at 60).
+pub const GRAPH_MAX: u16 = 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourcesConfig {
+    /// Seconds between two readings of /proc (1 to 60).
+    pub interval: u64,
+    /// Cells of CPU history shown, one point per cell (0 to 60; 0 = no graph).
+    pub graph: u16,
+    /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
+    /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).
+    pub sensor: String,
+}
+
+impl Default for ResourcesConfig {
+    fn default() -> Self {
+        ResourcesConfig { interval: 2, graph: 20, sensor: String::new() }
+    }
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +183,8 @@ pub struct BarConfig {
     pub font: FontConfig,
     pub clock: ClockConfig,
     pub workspaces: WorkspacesConfig,
+    pub actions: ActionsConfig,
+    pub resources: ResourcesConfig,
 }
 
 impl Default for BarConfig {
@@ -142,6 +195,8 @@ impl Default for BarConfig {
             font: FontConfig::default(),
             clock: ClockConfig::default(),
             workspaces: WorkspacesConfig::default(),
+            actions: ActionsConfig::default(),
+            resources: ResourcesConfig::default(),
         }
     }
 }
@@ -163,6 +218,10 @@ struct Raw {
     clock: ClockConfig,
     #[serde(default)]
     workspaces: WorkspacesConfig,
+    #[serde(default)]
+    actions: ActionsConfig,
+    #[serde(default)]
+    resources: ResourcesConfig,
 }
 
 impl BarConfig {
@@ -203,7 +262,26 @@ impl BarConfig {
         if b.workspaces.command.first().is_none_or(|p| p.trim().is_empty()) {
             return Err("workspaces.command empty (expected: [\"program\", \"argument\", …])".into());
         }
-        Ok(BarConfig { modules, height: b.height, font: b.font, clock: b.clock, workspaces: b.workspaces })
+        if !(1..=60).contains(&b.resources.interval) {
+            return Err(format!("resources.interval {} out of range 1 to 60 s", b.resources.interval));
+        }
+        if b.resources.graph > GRAPH_MAX {
+            return Err(format!("resources.graph {} out of range 0 to {GRAPH_MAX} cells", b.resources.graph));
+        }
+        for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
+            if command.first().is_none_or(|p| p.trim().is_empty()) {
+                return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
+            }
+        }
+        Ok(BarConfig {
+            modules,
+            height: b.height,
+            font: b.font,
+            clock: b.clock,
+            workspaces: b.workspaces,
+            actions: b.actions,
+            resources: b.resources,
+        })
     }
 }
 
@@ -263,5 +341,31 @@ mod tests {
         assert!(err("[workspaces]\ncommand = []").contains("workspaces.command"));
         assert!(BarConfig::from_text("size = 3").is_err(), "unknown key refused");
         assert_eq!(BarConfig::from_text("modules = []").unwrap().modules, vec![]);
+    }
+
+    #[test]
+    fn actions_and_resources_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert_eq!(d.actions.open_tab, ["alpheus-toggle", "{tab}"]);
+        assert_eq!(d.actions.resources, ["alacritty", "-e", "btop"]);
+        assert_eq!((d.resources.interval, d.resources.graph, d.resources.sensor.as_str()), (2, 20, ""));
+        let text = "[actions]\nopen_tab = [\"my-panel\", \"--tab\", \"{tab}\"]\nresources = [\"foot\", \"htop\"]\n[resources]\ninterval = 5\ngraph = 0\nsensor = \"k10temp\"\n";
+        let c = BarConfig::from_text(text).unwrap();
+        assert_eq!(c.actions.open_tab, ["my-panel", "--tab", "{tab}"]);
+        assert_eq!(c.actions.resources, ["foot", "htop"]);
+        assert_eq!((c.resources.interval, c.resources.graph, c.resources.sensor.as_str()), (5, 0, "k10temp"));
+    }
+
+    #[test]
+    fn actions_and_resources_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("[resources]\ninterval = 0").contains("resources.interval"));
+        assert!(err("[resources]\ninterval = 61").contains("resources.interval"));
+        assert!(err("[resources]\ngraph = 61").contains("resources.graph"));
+        assert!(err("[actions]\nopen_tab = []").contains("actions.open_tab"));
+        assert!(err("[actions]\nresources = [\" \"]").contains("actions.resources"));
+        assert!(err("[resources]\nperiod = 2").contains("period"), "unknown key refused");
+        let c = BarConfig::from_text("[resources]\ninterval = 60\ngraph = 60").unwrap();
+        assert_eq!((c.resources.interval, c.resources.graph), (60, GRAPH_MAX), "bounds included");
     }
 }
