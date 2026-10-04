@@ -968,6 +968,15 @@ mod tests {
         assert!(wanted(&DOMAINS));
     }
 
+    /// A smoke test, not a bite-proof (re-review, follow-up 4): `start`'s
+    /// own `if !wanted(&domains) { return; }` guard sits first, synchronously,
+    /// in its body, so removing it here wouldn't reliably turn this test red
+    /// (the thread it would then spawn runs asynchronously, and its real
+    /// guard calls `ZbusBus::system`, a real system bus connection — forbidden
+    /// in a test regardless of how briefly, which is why that mutation was
+    /// never run on the real `start`). `wanted_is_false_only_when_no_domain_is_shown`
+    /// above is the actual proof; this just confirms `start` is wired to call
+    /// it and return before publishing anything, cheaply and without a bus.
     #[test]
     fn start_with_no_domains_connects_nothing() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
