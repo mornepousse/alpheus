@@ -13,8 +13,11 @@ des fonctionnalités modernes.
 | **Barre alpheus, 3 écrans** | **≈ 13 Mo** (mesuré, stable) |
 | Budget total d'alpheus (barre, notifications, OSD, fond) | ≤ 120 Mo |
 
-Hyprland et niri. Souris et clavier partout. Aucune gestion de la veille ni
-de l'extinction des écrans, par principe.
+Hyprland et niri. Souris et clavier partout.
+
+La veille et l'extinction des écrans restent l'affaire d'outils dédiés
+(hypridle, swayidle…) : alpheus n'y touche jamais. Sur certaines sorties
+(DisplayLink notamment), une extinction mal placée peut geler la machine.
 
 > **État** : projet personnel en cours, utilisé quotidiennement par son
 > autrice sur NixOS. Il dépend encore de quelques scripts de sa
