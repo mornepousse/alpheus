@@ -3,7 +3,9 @@
 //! backends, écrans. Aucune dépendance d'affichage (ni ratatui, ni
 //! Wayland) : vérifié par tests/frontieres.rs.
 
+pub mod arret;
 pub mod backends;
+pub mod chemins;
 pub mod config;
 pub mod displays;
 pub mod exec;
