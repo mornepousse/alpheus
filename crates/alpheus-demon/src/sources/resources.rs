@@ -11,6 +11,7 @@
 //! have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
 
+use crate::log::write as log;
 use crate::system::Sample;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -130,33 +131,110 @@ pub fn pick_sensor(root: &Path, hint: &str) -> Vec<PathBuf> {
     Vec::new()
 }
 
+/// While the sensor list is empty (nothing matched `hint` yet, or no sensor
+/// at all), how many ticks to wait before scanning hwmon/thermal again:
+/// re-running `pick_sensor` walks both directories and reads a `name`/`type`
+/// file per entry, real work compared to the few `canonicalize` calls a
+/// non-empty list costs every tick — cheap enough to afford once a tick, but
+/// pointless to repeat that often for a sensor that may never appear (a
+/// wrong `hint`, hardware without one).
+const RETRY_EMPTY_EVERY_TICKS: u32 = 30;
+
 pub struct Reader {
     root: PathBuf,
     hint: String,
-    sensors: Vec<PathBuf>,
+    /// Each match, alongside the canonicalised `/sys/devices/...` path it
+    /// resolved to at the time: hwmon numbers are not stable across a
+    /// reboot or a hot-(re)plug, so a bare `hwmonN` can silently start
+    /// naming a different device (freed, then reused by something else)
+    /// without ever disappearing — `exists()` alone would miss that.
+    sensors: Vec<(PathBuf, PathBuf)>,
     previous: Option<CpuTimes>,
+    /// Ticks left before retrying `pick_sensor` while `sensors` is empty;
+    /// re-resolution driven by a stale path (see `still_resolves`) is not
+    /// throttled.
+    retry_in: u32,
+    /// Whether "nothing matches" is worth a log line this time: once per
+    /// such stretch, not once per tick.
+    no_match_log: NoMatchLog,
+}
+
+/// Does `path` still canonicalise to the device `was` named when resolved?
+/// False both when `path` is gone (reboot, hot-unplug) and when it now
+/// points elsewhere (hwmon renumbering reusing that number for a different
+/// device): either way, the cached path can no longer be trusted.
+fn still_resolves(path: &Path, was: &Path) -> bool {
+    std::fs::canonicalize(path).is_ok_and(|now| now == was)
+}
+
+/// Whether an empty sensor list is worth a log line: the first time, or the
+/// first time again since a match was last found. Mirrors `DomainLog`'s
+/// first-failure-only rate limiting (sources/dbus/mod.rs).
+#[derive(Debug, Default)]
+struct NoMatchLog(bool);
+
+impl NoMatchLog {
+    /// Records this resolution's result; `true` only the first time `empty`
+    /// holds in a row.
+    fn note(&mut self, empty: bool) -> bool {
+        if !empty {
+            self.0 = false;
+            return false;
+        }
+        let first = !self.0;
+        self.0 = true;
+        first
+    }
 }
 
 impl Reader {
     /// Resolves the sensors once, by name, at startup.
     pub fn new(root: &Path, hint: &str) -> Reader {
-        Reader { root: root.to_path_buf(), hint: hint.to_string(), sensors: pick_sensor(root, hint), previous: None }
+        let mut r = Reader {
+            root: root.to_path_buf(),
+            hint: hint.to_string(),
+            sensors: Vec::new(),
+            previous: None,
+            retry_in: 0,
+            no_match_log: NoMatchLog::default(),
+        };
+        r.resolve();
+        r
+    }
+
+    /// Re-runs `pick_sensor` and canonicalises every match; logs once if the
+    /// result is empty, and arms the throttled empty-list retry.
+    fn resolve(&mut self) {
+        self.sensors =
+            pick_sensor(&self.root, &self.hint).into_iter().filter_map(|p| std::fs::canonicalize(&p).ok().map(|c| (p, c))).collect();
+        if self.sensors.is_empty() {
+            self.retry_in = RETRY_EMPTY_EVERY_TICKS;
+        }
+        if self.no_match_log.note(self.sensors.is_empty()) {
+            log(&format!("resources: no temperature sensor matches {:?}", self.hint));
+        }
     }
 
     /// The first match, diagnostics only: `sample` reads every match and
     /// keeps the max.
     pub fn sensor(&self) -> Option<&Path> {
-        self.sensors.first().map(PathBuf::as_path)
+        self.sensors.first().map(|(p, _)| p.as_path())
     }
 
     /// The max reading across every match; re-resolves by name first when a
-    /// cached path no longer exists (hwmon is not stable across a reboot or
-    /// a hot-(re)plug — never addressed as a bare `hwmonN`).
+    /// cached path no longer resolves to the same device (hwmon is not
+    /// stable across a reboot or a hot-(re)plug — never addressed as a bare
+    /// `hwmonN`), or, throttled, when nothing has matched so far.
     fn temperature(&mut self) -> Option<i16> {
-        if self.sensors.iter().any(|p| !p.exists()) {
-            self.sensors = pick_sensor(&self.root, &self.hint);
+        if self.sensors.iter().any(|(p, was)| !still_resolves(p, was)) {
+            self.resolve();
+        } else if self.sensors.is_empty() {
+            match self.retry_in.checked_sub(1) {
+                Some(n) => self.retry_in = n,
+                None => self.resolve(),
+            }
         }
-        self.sensors.iter().filter_map(|p| read_temperature(p)).max()
+        self.sensors.iter().filter_map(|(p, _)| read_temperature(p)).max()
     }
 
     pub fn sample(&mut self) -> Sample {
@@ -336,5 +414,66 @@ mod tests {
         let mut r = Reader::new(Path::new("/nonexistent"), "");
         assert_eq!(r.sensor(), None);
         assert_eq!(r.sample(), Sample::default());
+    }
+
+    /// `/sys/class/hwmon/hwmonN` is really a symlink into
+    /// `/sys/devices/.../hwmonN`; the kernel can repoint that symlink at a
+    /// different device when it reuses the number, without the class path
+    /// ever disappearing in between — `.exists()` alone would see nothing
+    /// wrong and keep reading the new (unrelated) device's file under the
+    /// old name. Canonicalising and comparing against the device path
+    /// recorded at resolution time catches it.
+    #[test]
+    fn hwmon_number_reused_by_a_different_device_without_ever_disappearing() {
+        let r = std::env::temp_dir().join(format!("alpheus-resources-{}-reused", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        put(&r, "sys/devices/deviceA/hwmon9/name", "coretemp\n");
+        put(&r, "sys/devices/deviceA/hwmon9/temp1_input", "66000\n");
+        // Device B is not one `pick_sensor` would ever choose by name: once
+        // hwmon9 names it instead, re-resolving finds nothing coretemp-like.
+        put(&r, "sys/devices/deviceB/hwmon9/name", "nvme\n");
+        put(&r, "sys/devices/deviceB/hwmon9/temp1_input", "40850\n");
+        std::fs::create_dir_all(r.join("sys/class/hwmon")).unwrap();
+        std::os::unix::fs::symlink(r.join("sys/devices/deviceA/hwmon9"), r.join("sys/class/hwmon/hwmon9")).unwrap();
+        put(&r, "proc/stat", STAT_A);
+        put(&r, "proc/meminfo", MEMINFO);
+        let t = Tree(r);
+        let mut reader = Reader::new(&t.0, "");
+        assert_eq!(reader.sample().temperature, Some(66), "device A, coretemp");
+        // hwmon9 repointed to device B: the class symlink itself is never
+        // absent at any point an outside observer could check `.exists()`.
+        std::fs::remove_file(t.0.join("sys/class/hwmon/hwmon9")).unwrap();
+        std::os::unix::fs::symlink(t.0.join("sys/devices/deviceB/hwmon9"), t.0.join("sys/class/hwmon/hwmon9")).unwrap();
+        assert_eq!(reader.sample().temperature, None, "re-resolved: hwmon9 now names an nvme, not coretemp");
+    }
+
+    #[test]
+    fn empty_sensor_list_is_retried_but_throttled() {
+        let r = std::env::temp_dir().join(format!("alpheus-resources-{}-retry", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        put(&r, "proc/stat", STAT_A);
+        put(&r, "proc/meminfo", MEMINFO);
+        let t = Tree(r);
+        let mut reader = Reader::new(&t.0, "coretemp"); // nothing matches yet
+        assert_eq!(reader.sample().temperature, None);
+        // The sensor appears later (driver module loaded, device
+        // hot-plugged): picked up eventually, but not re-scanned on every
+        // following tick — that would mean walking hwmon and thermal every
+        // tick forever for a sensor that may never exist.
+        put(&t.0, "sys/class/hwmon/hwmon9/name", "coretemp\n");
+        put(&t.0, "sys/class/hwmon/hwmon9/temp1_input", "66000\n");
+        let found_at = (0..RETRY_EMPTY_EVERY_TICKS).find(|_| reader.sample().temperature.is_some());
+        assert!(found_at.is_some(), "never retried within {RETRY_EMPTY_EVERY_TICKS} ticks of the sensor appearing");
+        assert_ne!(found_at, Some(0), "retried on the very next tick: not throttled at all");
+    }
+
+    #[test]
+    fn no_match_log_fires_once_per_stretch() {
+        let mut log = NoMatchLog::default();
+        assert!(log.note(true), "the first empty resolution is worth a line");
+        assert!(!log.note(true), "still empty: not worth a line again");
+        assert!(!log.note(true), "and again: still quiet");
+        assert!(!log.note(false), "a match: nothing to log, and this resets the state");
+        assert!(log.note(true), "empty again after a match: worth a line again");
     }
 }
