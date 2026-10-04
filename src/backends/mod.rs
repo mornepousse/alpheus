@@ -33,8 +33,9 @@ pub enum BackendError {
     Unparsable { tool: String, detail: String },
     Timeout { tool: String },
     /// Retour d'écrans appliqué au mieux : sorties dont l'étape a échoué,
-    /// avec leur erreur (les autres étapes ont été appliquées).
-    Incomplete { failures: Vec<(String, BackendError)> },
+    /// avec leur erreur, et sorties laissées allumées faute d'avoir pu
+    /// rallumer les autres (leur désactivation n'a pas été tentée).
+    Incomplete { failures: Vec<(String, BackendError)>, kept: Vec<String> },
 }
 
 impl fmt::Display for BackendError {
@@ -43,8 +44,12 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} introuvable"),
             BackendError::Timeout { tool } => write!(f, "{tool} ne répond pas"),
             BackendError::Unparsable { tool, detail } => write!(f, "sortie de {tool} illisible : {detail}"),
-            BackendError::Incomplete { failures } => {
-                let list: Vec<String> = failures.iter().map(|(out, e)| format!("{out} ({e})")).collect();
+            BackendError::Incomplete { failures, kept } => {
+                let list: Vec<String> = failures
+                    .iter()
+                    .map(|(out, e)| format!("{out} ({e})"))
+                    .chain(kept.iter().map(|out| format!("{out} (gardé allumé : retour incomplet)")))
+                    .collect();
                 write!(f, "retour incomplet : {}", list.join(", "))
             }
             BackendError::Failed { tool, code, stderr } => {

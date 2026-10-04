@@ -6,7 +6,7 @@
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
 use super::App;
-use crate::backends::{BResult, Backends, Displays, WmSetDisplays};
+use crate::backends::{BResult, BackendError, Backends, Displays, WmSetDisplays};
 use crate::config::Config;
 use crate::displays::{profiles, Plan};
 use crate::exec::SystemExecutor;
@@ -87,9 +87,12 @@ fn undo_on_exit(slot: &Mutex<ExitUndo>, displays: &dyn Displays) -> BResult<()> 
 /// `eprintln!` : après un SIGHUP, stderr peut répondre EIO, et `eprintln!`
 /// paniquerait — dans `Drop`, pendant un déroulement, ce serait un abort.
 fn signaler_retour(r: BResult<()>, err: &mut dyn Write) {
-    if let Err(e) = r {
-        let _ = writeln!(err, "alpheus : retour des écrans impossible : {e}");
-    }
+    let msg = match r {
+        Ok(()) => return,
+        Err(e @ BackendError::Incomplete { .. }) => format!("alpheus : écrans : {e}"),
+        Err(e) => format!("alpheus : retour des écrans impossible : {e}"),
+    };
+    let _ = writeln!(err, "{msg}");
 }
 
 /// Ordre de fermeture, commun au nettoyage et au fil de garde : d'abord
@@ -374,8 +377,10 @@ mod tests {
         let mut err = Vec::new();
         signaler_retour(r, &mut err);
         let msg = String::from_utf8(err).unwrap();
-        assert!(msg.starts_with("alpheus : retour des écrans impossible : "), "{msg:?}");
-        assert!(msg.ends_with('\n'));
+        assert_eq!(msg, "alpheus : écrans : retour incomplet : HDMI-A-1 (wm-set introuvable)\n");
+        let mut err = Vec::new();
+        signaler_retour(Err(BackendError::Timeout { tool: "wm-set".into() }), &mut err);
+        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : retour des écrans impossible : wm-set ne répond pas\n");
         let mut err = Vec::new();
         signaler_retour(undo_on_exit(&slot_avec(None), &d), &mut err);
         assert!(err.is_empty(), "rien à défaire : rien à dire");
@@ -397,7 +402,7 @@ mod tests {
         signaler_retour(r, &mut err);
         assert_eq!(
             String::from_utf8(err).unwrap(),
-            "alpheus : retour des écrans impossible : retour incomplet : DVI-I-1 (wm-set introuvable)\n"
+            "alpheus : écrans : retour incomplet : DVI-I-1 (wm-set introuvable)\n"
         );
     }
 

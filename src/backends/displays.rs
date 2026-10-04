@@ -15,9 +15,10 @@ pub trait Displays: Send + Sync {
     /// Exécute le plan dans l'ordre ; s'arrête au premier échec (essai :
     /// jamais à moitié, l'échec déclenche aussitôt le retour).
     fn apply(&self, plan: &Plan) -> BResult<()>;
-    /// Exécute le plan dans l'ordre, chaque étape même si une précédente a
-    /// échoué (retour : rallumer tout ce qui peut l'être) ; l'erreur
-    /// `Incomplete` résume les sorties en échec.
+    /// Retour : chaque activation, dans l'ordre, même si une précédente a
+    /// échoué (rallumer tout ce qui peut l'être) ; puis les désactivations,
+    /// seulement si toutes les activations ont réussi. L'erreur
+    /// `Incomplete` résume les sorties en échec et celles gardées allumées.
     fn apply_best_effort(&self, plan: &Plan) -> BResult<()>;
 }
 
@@ -41,12 +42,18 @@ impl Displays for WmSetDisplays {
     }
 
     fn apply_best_effort(&self, plan: &Plan) -> BResult<()> {
-        let failures: Vec<(String, BackendError)> = plan
-            .steps
-            .iter()
-            .filter_map(|s| self.run_step(s).err().map(|e| (s.output.clone(), e)))
-            .collect();
-        if failures.is_empty() { Ok(()) } else { Err(BackendError::Incomplete { failures }) }
+        let (enables, disables): (Vec<&Step>, Vec<&Step>) = plan.steps.iter().partition(|s| s.active.is_some());
+        let mut failures: Vec<(String, BackendError)> =
+            enables.iter().filter_map(|s| self.run_step(s).err().map(|e| (s.output.clone(), e))).collect();
+        let mut kept = Vec::new();
+        if failures.is_empty() {
+            failures.extend(disables.iter().filter_map(|s| self.run_step(s).err().map(|e| (s.output.clone(), e))));
+        } else {
+            // Un rallumage a échoué : rien n'est éteint, ce qui est allumé
+            // le reste (décision de Mae : jamais tout noir).
+            kept = disables.iter().map(|s| s.output.clone()).collect();
+        }
+        if failures.is_empty() { Ok(()) } else { Err(BackendError::Incomplete { failures, kept }) }
     }
 }
 
@@ -195,6 +202,44 @@ mod tests {
         let e = WmSetDisplays::new(f.clone()).apply(&plan3()).unwrap_err();
         assert_eq!(e.to_string(), "wm-set a échoué (code 1) : Hyprland a refusé « eval … » : erreur");
         assert_eq!(f.calls().len(), 2, "la désactivation n'est jamais lancée : {:?}", f.calls());
+    }
+
+    #[test]
+    fn retour_n_eteint_rien_si_un_rallumage_a_echoue() {
+        // Avant : Alpha (DisplayLink) allumé, dalle éteinte ; l'essai les a
+        // permutés. Retour : rallumer Alpha, puis éteindre la dalle. Si Alpha
+        // ne se rallume pas, la dalle reste allumée (jamais tout noir).
+        let mut alpha = on("DVI-I-1", ALPHA, 1920, 1080, 0, 0);
+        alpha.displaylink = true;
+        let before = vec![alpha, off("eDP-1", INTERNE)];
+        let essai = Plan { steps: vec![
+            Step { output: "eDP-1".into(), active: before[0].active.clone() },
+            Step { output: "DVI-I-1".into(), active: None },
+        ] };
+        let retour = Plan::undo(&before, &essai);
+        let f = Arc::new(FakeExecutor::new());
+        f.respond("wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0", Ok(ExecOutput::fail(1, "gel du dock\n")));
+        f.ok("wm-set monitor-disable eDP-1", "");
+        let e = WmSetDisplays::new(f.clone()).apply_best_effort(&retour).unwrap_err();
+        assert_eq!(f.calls(), vec!["wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0"], "monitor-disable jamais lancé");
+        assert_eq!(
+            e.to_string(),
+            "retour incomplet : DVI-I-1 (wm-set a échoué (code 1) : gel du dock), eDP-1 (gardé allumé : retour incomplet)"
+        );
+
+        // Même plan donné dans le désordre : la désactivation attend quand même.
+        let desordre = Plan { steps: vec![retour.steps[1].clone(), retour.steps[0].clone()] };
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor-disable eDP-1", "");
+        assert!(WmSetDisplays::new(f.clone()).apply_best_effort(&desordre).is_err());
+        assert_eq!(f.calls(), vec!["wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0"]);
+
+        // Rallumage réussi : la désactivation suit comme avant.
+        let f = Arc::new(FakeExecutor::new());
+        f.ok("wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0", "");
+        f.ok("wm-set monitor-disable eDP-1", "");
+        assert_eq!(WmSetDisplays::new(f.clone()).apply_best_effort(&retour), Ok(()));
+        assert_eq!(f.calls(), vec!["wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0", "wm-set monitor-disable eDP-1"]);
     }
 
     #[test]

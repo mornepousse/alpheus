@@ -279,6 +279,24 @@ fn describe_step(s: &Step, outs: &[Output], labels: &[String]) -> String {
     }
 }
 
+/// Retour après un écran perdu : le plan inverse restreint aux sorties
+/// présentes, sans aucune désactivation si le résultat ne laisserait plus
+/// rien d'allumé.
+fn lost_undo(undo: &Plan, now: &[Output]) -> Plan {
+    let mut plan = undo.restricted_to(now);
+    let lit_after = now
+        .iter()
+        .filter(|o| match plan.steps.iter().find(|s| s.output == o.name) {
+            Some(s) => s.active.is_some(),
+            None => o.active.is_some(),
+        })
+        .count();
+    if lit_after == 0 {
+        plan.steps.retain(|s| s.active.is_some());
+    }
+    plan
+}
+
 fn wrap(idx: usize, dir: i32, len: usize) -> usize {
     (idx as i32 + dir).rem_euclid(len.max(1) as i32) as usize
 }
@@ -332,12 +350,16 @@ impl App {
             if t.deadline.is_some() && screen_lost(&t.plan, &outs) {
                 // Décision D1 : un écran de l'essai a disparu, ou plus rien
                 // n'est allumé : retour sur les sorties encore présentes.
-                let undo = t.undo.restricted_to(&outs);
+                let undo = lost_undo(&t.undo, &outs);
                 self.ecrans.trial = None;
                 self.close_keep();
-                let msg = "Écran perdu pendant l'essai : retour à l'état précédent".to_string();
-                self.status.error = Some(msg.clone());
-                self.toast(msg, true, now);
+                let msg = if undo.steps.is_empty() {
+                    "Écran perdu pendant l'essai : rien à rétablir"
+                } else {
+                    "Écran perdu pendant l'essai : retour à l'état précédent"
+                };
+                self.status.error = Some(msg.to_string());
+                self.toast(msg.to_string(), true, now);
                 if !undo.steps.is_empty() {
                     self.start_undo(undo);
                 }
@@ -1121,7 +1143,10 @@ mod tests {
     #[test]
     fn retour_incomplet_signale() {
         let mut a = ecrans();
-        let e = BackendError::Incomplete { failures: vec![("DVI-I-1".into(), BackendError::Timeout { tool: "wm-set".into() })] };
+        let e = BackendError::Incomplete {
+            failures: vec![("DVI-I-1".into(), BackendError::Timeout { tool: "wm-set".into() })],
+            kept: Vec::new(),
+        };
         a.ecrans.undoing = Some(Plan::default());
         a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
         assert_eq!(a.status.error.as_deref(), Some("Écrans : retour incomplet : DVI-I-1 (wm-set ne répond pas)"));
@@ -1210,6 +1235,69 @@ mod tests {
         assert_eq!(undo.steps, vec![Step { output: "HDMI-A-1".into(), active: poste()[2].active.clone() }]);
     }
 
+    const RIEN_A_RETABLIR: &str = "Écran perdu pendant l'essai : rien à rétablir";
+
+    #[test]
+    fn ecran_touche_renomme_dans_une_meme_lecture() {
+        // Alpha réapparaît aussitôt sous un autre connecteur (DVI-I-1 →
+        // DVI-I-2) : la sortie touchée a disparu, retour sur ce qui reste.
+        let t0 = Instant::now();
+        let (mut a, plan, undo) = applied(t0);
+        let mut lu = relu(&plan);
+        lu[1].name = "DVI-I-2".into();
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        let retour = sent_undo(&mut a);
+        let attendu: Vec<Step> = undo.steps.iter().filter(|s| s.output != "DVI-I-1").cloned().collect();
+        assert_eq!(retour.steps, attendu);
+        assert!(!retour.touches("DVI-I-2"), "le nouveau connecteur n'est pas touché");
+        assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
+    }
+
+    #[test]
+    fn ecran_perdu_jamais_d_extinction_inutile_ou_du_dernier() {
+        let t0 = Instant::now();
+        // Bravo éteint, l'essai l'allume ; puis tout s'éteint ailleurs : le
+        // retour ne contiendrait que « éteindre Bravo », déjà éteint.
+        let mut a = ecrans();
+        let mut outs = poste();
+        outs[2].active = None;
+        a.data.displays = Loadable::Ready(outs);
+        a.toggle_output("HDMI-A-1", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        assert!(undo.steps.iter().all(|s| s.active.is_none()));
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+        a.take_requests();
+        let mut lu = relu(&plan);
+        for o in &mut lu {
+            o.active = None;
+        }
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert!(sans_do(&mut a), "aucune extinction inutile");
+        assert_eq!((a.ecrans.trial.clone(), a.ecrans.undoing.clone()), (None, None));
+        assert_eq!(a.status.error.as_deref(), Some(RIEN_A_RETABLIR));
+
+        // Dalle éteinte et Alpha allumé ; l'essai les permute, puis Alpha
+        // disparaît : éteindre la dalle laisserait tout noir, rien n'est envoyé.
+        let mut a = ecrans();
+        let mut outs = poste();
+        outs.truncate(2);
+        let ancienne = outs[0].active.take();
+        a.data.displays = Loadable::Ready(outs);
+        let plan = Plan { steps: vec![
+            Step { output: "eDP-1".into(), active: ancienne },
+            Step { output: "DVI-I-1".into(), active: None },
+        ] };
+        a.start_trial("permutation".into(), plan.clone(), Vec::new(), t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+        a.take_requests();
+        let mut lu = relu(&plan);
+        lu.truncate(1); // seule la dalle reste, allumée
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert!(sans_do(&mut a), "la dernière sortie allumée n'est jamais éteinte");
+        assert_eq!(a.status.error.as_deref(), Some(RIEN_A_RETABLIR));
+    }
+
     #[test]
     fn ecran_touche_perdu_sans_rien_a_retablir() {
         // L'essai n'éteint qu'Alpha, qui disparaît : les autres sorties
@@ -1226,7 +1314,7 @@ mod tests {
         assert!(sans_do(&mut a), "aucun plan vide envoyé");
         assert_eq!((a.ecrans.trial.clone(), a.ecrans.undoing.clone()), (None, None));
         assert_eq!(a.overlay, Overlay::None);
-        assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
+        assert_eq!(a.status.error.as_deref(), Some(RIEN_A_RETABLIR));
     }
 
     #[test]
