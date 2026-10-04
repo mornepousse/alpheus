@@ -170,6 +170,11 @@ const BATTERY_CHARGING: [char; 11] = [
     '\u{f008b}', // md-battery_charging_90
     '\u{f0085}', // md-battery_charging_100
 ];
+/// A peripheral of a kind we have no specific icon for: a generic device,
+/// distinct from the laptop battery's full icon (checked in the font's post
+/// table like the others: advance 600, same as the other Material glyphs
+/// here — one cell wide).
+const DEVICE: char = '\u{f0fb0}'; // md-devices
 pub const MEMORY: char = '\u{f035b}'; // md-memory
 pub const THERMOMETER: char = '\u{f050f}'; // md-thermometer
 /// CPU graph, one block per point (no braille in the bar's font, Q4).
@@ -188,7 +193,7 @@ fn peripheral_icon(k: PeripheralKind) -> char {
         PeripheralKind::Keyboard => '\u{f030c}', // md-keyboard
         PeripheralKind::Headset => '\u{f02ce}',  // md-headset
         PeripheralKind::Gamepad => '\u{f0296}',  // md-gamepad
-        PeripheralKind::Other => BATTERY_FULL,
+        PeripheralKind::Other => DEVICE,
     }
 }
 
@@ -243,8 +248,9 @@ pub(crate) fn resources(r: &Resources, c: &ResourcesConfig) -> Option<Segment> {
         Style::NORMAL,
     ));
     if let Some(m) = s.memory {
-        // Tenths of GiB, one decimal; the number padded to 4 (Q5).
-        pieces.push(piece(format!(" {MEMORY} {:>4}G", format!("{}.{}", m / 10, m % 10)), Style::NORMAL));
+        // Tenths of GiB, one decimal; the whole part padded to 2 so the
+        // total stays 4 wide (the decimal part is always ".D", Q5).
+        pieces.push(piece(format!(" {MEMORY} {:>2}.{}G", m / 10, m % 10), Style::NORMAL));
     }
     if let Some(t) = s.temperature {
         pieces.push(piece(format!(" {THERMOMETER} {t:>2}°"), if t >= HOT { Style::ERROR } else { Style::NORMAL }));
@@ -448,6 +454,33 @@ mod tests {
     }
 
     #[test]
+    fn battery_tint_boundary_at_19_and_20() {
+        // Error tint strictly below LOW (20): 19 % is low, 20 % is not (Mae,
+        // 2026-10-04); see the `b.percent < LOW` comparison in `battery`.
+        let laptop =
+            |percent| Feed::Ready(PowerState { laptop: Some(Battery { percent, charge: Charge::Discharging }), peripherals: vec![] });
+        assert_eq!(draw(&battery(&laptop(19)).unwrap()).1, "eeeee", "19%: error");
+        assert_eq!(draw(&battery(&laptop(20)).unwrap()).1, ".....", "20%: normal");
+    }
+
+    #[test]
+    fn peripheral_tint_boundary_at_19_and_20() {
+        // Same threshold as the laptop battery (Q7), on each peripheral
+        // independently: the first (19 %) errs, the second (20 %) doesn't.
+        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent };
+        let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(19), mouse(20)] });
+        assert_eq!(draw(&battery(&s).unwrap()).1, "eeeee......");
+    }
+
+    #[test]
+    fn peripheral_icon_other_is_a_generic_device_not_the_laptop_battery() {
+        // Distinct from BATTERY_FULL (md-battery): a bare "Other" peripheral
+        // should not look like a laptop at 100 %.
+        assert_eq!(peripheral_icon(PeripheralKind::Other), DEVICE);
+        assert_ne!(DEVICE, BATTERY_FULL);
+    }
+
+    #[test]
     fn peripherals_after_the_battery_hidden_without_anything_to_show() {
         let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent };
         let s = |laptop, peripherals| Feed::Ready(PowerState { laptop, peripherals });
@@ -498,6 +531,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn resources_temperature_tint_boundary_at_84_and_85() {
+        // The error tint from HOT (85 °C, waybar's own critical threshold,
+        // Mae 2026-10-04): 84° is still normal, 85° already errs.
+        let c = ResourcesConfig { graph: 0, ..ResourcesConfig::default() };
+        let normal = Sample { cpu: Some(50), memory: None, temperature: Some(84) };
+        let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
+        assert_eq!(
+            draw(&resources(&resources_with(&[], normal), &c).unwrap()),
+            (" 50% \u{f050f} 84°".into(), "..........".into()),
+            "84°: normal"
+        );
+        assert_eq!(
+            draw(&resources(&resources_with(&[], hot), &c).unwrap()),
+            (" 50% \u{f050f} 85°".into(), "....eeeeee".into()),
+            "85°: error"
+        );
+    }
+
     fn full_bar() -> Bar {
         let mut b = Bar::new(BarConfig::default());
         b.apply(Msg::Compositor(Some(example())));
@@ -532,9 +584,15 @@ mod tests {
         };
         assert_eq!(shown(160), [window, volume, network, bluetooth, battery, resources]);
         assert_eq!(shown(120), [window, volume, network, bluetooth, battery], "resources leave first");
-        assert_eq!(shown(60), [volume, battery], "then the title, Bluetooth, network");
-        assert_eq!(shown(40), Vec::<ModuleId>::new(), "then volume and battery");
-        for w in [160u16, 120, 60, 40] {
+        // Each width pins one more step of REMOVAL's order; a swap inside it
+        // (title/Bluetooth, Bluetooth/network or volume/battery) turns one
+        // of these red (see the "prove it bites" mutations).
+        assert_eq!(shown(90), [volume, network, bluetooth, battery], "then the title");
+        assert_eq!(shown(70), [volume, network, battery], "then Bluetooth");
+        assert_eq!(shown(60), [volume, battery], "then network");
+        assert_eq!(shown(50), [battery], "then volume");
+        assert_eq!(shown(40), Vec::<ModuleId>::new(), "then battery");
+        for w in [160u16, 120, 90, 70, 60, 50, 40] {
             let g = b.grid("HDMI-A-1", w);
             assert_eq!(g.width(), w);
             assert!(g.text().ends_with(" 14:05 ") && g.text().contains(" 4!····+ "), "workspaces and clock whole at {w}: {}", g.text());
