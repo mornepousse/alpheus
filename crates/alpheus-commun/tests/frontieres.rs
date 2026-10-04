@@ -54,3 +54,12 @@ fn la_tui_n_embarque_pas_wayland() {
         assert!(!f.contains(interdit), "la TUI tire {interdit}");
     }
 }
+
+#[test]
+fn le_demon_n_embarque_pas_ratatui() {
+    let f = fermeture(&graphe(), "alpheus-demon");
+    assert!(f.contains("alpheus-commun"), "{f:?}");
+    for interdit in ["ratatui", "crossterm"] {
+        assert!(!f.contains(interdit), "le démon tire {interdit}");
+    }
+}

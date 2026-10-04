@@ -38,6 +38,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "alpheus-demon"
+version = "0.1.0"
+dependencies = [
+ "alpheus-commun",
+ "libc",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
