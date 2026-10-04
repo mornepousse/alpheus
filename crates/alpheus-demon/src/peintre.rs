@@ -402,11 +402,28 @@ mod tests {
         p.peindre(&g, &Palette::default(), &mut px, 100, 22, 1);
     }
 
-    /// Dossier de test, jeté après (nom unique par pid, comme `config.rs`).
-    fn dossier_de_test(nom: &str) -> PathBuf {
+    /// Dossier de test (nom unique par pid, comme `config.rs`), jeté tout
+    /// seul à la fin du test (`Drop`) : un nettoyage manuel oublié dans un
+    /// test laisserait le dossier derrière lui pour toujours.
+    struct DossierJete(PathBuf);
+
+    impl std::ops::Deref for DossierJete {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for DossierJete {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn dossier_de_test(nom: &str) -> DossierJete {
         let d = std::env::temp_dir().join(format!("alpheus-{}-peintre-{nom}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        d
+        DossierJete(d)
     }
 
     fn racine_polices() -> PathBuf {
@@ -471,13 +488,34 @@ mod tests {
     #[test]
     fn collection_ttc_une_seule_face_par_poids_choisi() {
         let dossier = dossier_de_test("ttc");
-        fabriquer_ttc(&dossier, &["JetBrainsMonoNerdFontMono-Regular.ttf", "JetBrainsMonoNerdFontMono-Bold.ttf"]);
+        let chemin = fabriquer_ttc(&dossier, &["JetBrainsMonoNerdFontMono-Regular.ttf", "JetBrainsMonoNerdFontMono-Bold.ttf"]);
         let (p, w) = Polices::depuis(Some(&dossier), &PoliceConfig::default(), HAUTEUR_DEFAUT)
             .expect("la collection fabriquée contient une police à chasse fixe");
         assert_eq!(w, None, "{w:?}");
         // Régulière + grasse, une fois chacune : pas 4 (la collection
         // chargée deux fois par `load_font_source`, une par poids choisi).
         assert_eq!(p.faces_chargees(), 2, "faces chargées depuis la collection : {}", p.faces_chargees());
+        // Pas assez : « 2 faces » pourrait aussi venir d'une police système
+        // homonyme (JetBrainsMono Nerd Font Mono est installée sur ce
+        // poste) si la collection fabriquée n'était en fait pas lue.
+        // Vérifie que c'est bien ELLE : chaque face chargée a `chemin` pour
+        // source, et les deux index de la collection (0 et 1) y sont, sans
+        // doublon ni face en trop.
+        let mut index: Vec<u32> = Vec::new();
+        for f in p.fs.db().faces() {
+            let source = match &f.source {
+                fontdb::Source::File(c) => c,
+                // `fontdb` mappe les fichiers en mémoire (fonctionnalité
+                // « memmap ») : le chemin reste accessible, juste à côté
+                // des octets mappés.
+                fontdb::Source::SharedFile(c, _) => c,
+                autre => panic!("source inattendue (pas un fichier) : {autre:?}"),
+            };
+            assert_eq!(source, &chemin, "source inattendue (pas la collection fabriquée) : {}", source.display());
+            index.push(f.index);
+        }
+        index.sort_unstable();
+        assert_eq!(index, vec![0, 1], "index des faces chargées depuis la collection");
     }
 
     /// Face fictive (pas de fichier réel : `push_face_info` ne lit pas la
