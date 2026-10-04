@@ -43,6 +43,8 @@ version = "0.1.0"
 dependencies = [
  "alpheus-commun",
  "libc",
+ "serde",
+ "toml",
 ]
 
 [[package]]
