@@ -10,6 +10,7 @@ use crate::compositor::CompositorState;
 use crate::log::write as log;
 use std::ffi::OsString;
 use std::io;
+use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -82,13 +83,12 @@ impl Backoff {
 /// with no event after the initial state.
 pub const STABLE_DURATION: Duration = Duration::from_secs(10);
 
-/// Runs `session` (blocking, returns Err when the source goes down) as long
-/// as `send` accepts it: publishes each state, publishes `None` ("–") on
-/// every outage, then waits the backoff delay. `sleep`, `now` and `log` are
-/// injected: tests count delays and log lines in simulated time.
-pub fn supervise(
-    mut session: impl FnMut(&mut dyn FnMut(CompositorState) -> bool) -> io::Result<()>,
-    send: impl Fn(Option<CompositorState>) -> bool,
+/// Runs `session` (blocking, returns Err when the source goes down) as long as `send` accepts it, whatever it publishes
+/// (compositor state, volume, system state…): publishes each state, publishes `None` ("–") on every outage, then waits
+/// the backoff delay. `sleep`, `now` and `log` are injected: tests count delays and log lines in simulated time.
+pub fn supervise<T>(
+    mut session: impl FnMut(&mut dyn FnMut(T) -> bool) -> io::Result<()>,
+    send: impl Fn(Option<T>) -> bool,
     mut sleep: impl FnMut(Duration),
     mut now: impl FnMut() -> Instant,
     mut log: impl FnMut(&str),
@@ -142,7 +142,7 @@ pub fn supervise(
             // `run`, further below); the tests pass a closure that doesn't
             // need it.
             if first || succeeded {
-                log(&format!("compositor source down: {e}"));
+                log(&format!("source down: {e}"));
             }
         }
         first = false;
@@ -160,38 +160,52 @@ pub fn supervise(
 /// held by the main thread and the guard thread, stays alive as long as the
 /// daemon runs; without this guard, the bar would stay frozen on its last
 /// state instead of showing the outage.
-struct SourceGuard<'a, F: Fn(Option<CompositorState>) -> bool> {
+struct SourceGuard<'a, T, F: Fn(Option<T>) -> bool> {
+    name: &'static str,
     send: &'a F,
+    value: PhantomData<fn(T)>,
 }
 
-impl<F: Fn(Option<CompositorState>) -> bool> Drop for SourceGuard<'_, F> {
+impl<T, F: Fn(Option<T>) -> bool> Drop for SourceGuard<'_, T, F> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            log("compositor thread: panic, bar set to \"–\"");
+            log(&format!("{} thread: panic, bar set to \"–\"", self.name));
             (self.send)(None);
         }
     }
 }
 
-/// Starts the source in its thread. No compositor recognized: "–" once, with
+/// Starts a supervised source in its own thread, named `name`: its log lines
+/// read "<name> source down: …", a panic anywhere in it publishes "–".
+pub fn spawn_source<T: Send + 'static>(
+    name: &'static str,
+    session: impl FnMut(&mut dyn FnMut(T) -> bool) -> io::Result<()> + Send + 'static,
+    send: impl Fn(Option<T>) -> bool + Send + 'static,
+) -> io::Result<()> {
+    std::thread::Builder::new()
+        .name(name.into())
+        .spawn(move || {
+            let _guard = SourceGuard { name, send: &send, value: PhantomData };
+            supervise(session, &send, std::thread::sleep, Instant::now, |m| log(&format!("{name} {m}")));
+        })
+        .map(|_| ())
+}
+
+/// Starts the compositor source. No compositor recognized: "–" once, with
 /// no backoff (nothing will change in this session).
 pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bool + Send + 'static) {
-    std::thread::Builder::new()
-        .name("compositor".into())
-        .spawn(move || {
-            let _guard = SourceGuard { send: &send };
-            match c {
-                None => {
-                    log("neither niri nor Hyprland detected (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
-                    send(None);
-                }
-                Some(Compositor::Hyprland { directory }) => {
-                    supervise(|p| hypr::session(&directory, p), &send, std::thread::sleep, Instant::now, log)
-                }
-                Some(Compositor::Niri { socket }) => supervise(|p| niri::session(&socket, p), &send, std::thread::sleep, Instant::now, log),
-            }
-        })
-        .expect("compositor thread");
+    let r = match c {
+        None => {
+            log("neither niri nor Hyprland detected (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
+            send(None);
+            return;
+        }
+        Some(Compositor::Hyprland { directory }) => spawn_source("compositor", move |p| hypr::session(&directory, p), send),
+        Some(Compositor::Niri { socket }) => spawn_source("compositor", move |p| niri::session(&socket, p), send),
+    };
+    if let Err(e) = r {
+        log(&format!("compositor thread: {e}"));
+    }
 }
 
 #[cfg(test)]
@@ -220,6 +234,47 @@ mod tests {
         );
         assert_eq!(detect(env(&[("NIRI_SOCKET", ""), ("HYPRLAND_INSTANCE_SIGNATURE", "")])), None);
         assert_eq!(detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc")])), None, "no XDG_RUNTIME_DIR");
+    }
+
+    #[test]
+    fn supervise_is_generic_over_the_published_value() {
+        let sends = RefCell::new(Vec::new());
+        let mut round = 0;
+        supervise(
+            |publish: &mut dyn FnMut(u8) -> bool| {
+                round += 1;
+                publish(round);
+                publish(round + 10);
+                Err(io::Error::other("fell"))
+            },
+            |v: Option<u8>| {
+                let mut s = sends.borrow_mut();
+                s.push(v);
+                s.len() < 6
+            },
+            |_| {},
+            clock(Duration::ZERO),
+            |_| {},
+        );
+        assert_eq!(*sends.borrow(), [Some(1), Some(11), None, Some(2), Some(12), None]);
+    }
+
+    #[test]
+    fn spawn_source_names_its_thread_and_prefixes_its_log() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        spawn_source(
+            "sound",
+            |publish: &mut dyn FnMut(String) -> bool| {
+                publish(std::thread::current().name().unwrap_or("").to_string());
+                Ok(())
+            },
+            move |v: Option<String>| {
+                let _ = tx.send(v);
+                false // stop after the first publication
+            },
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(2)).unwrap(), Some("sound".to_string()));
     }
 
     #[test]
@@ -334,7 +389,7 @@ mod tests {
             true
         };
         let h = std::thread::spawn(move || {
-            let _guard = SourceGuard { send: &send };
+            let _guard = SourceGuard { name: "compositor", send: &send, value: std::marker::PhantomData };
             panic!("simulation: panic outside the watched session");
         });
         assert!(h.join().is_err(), "the thread must really panic, otherwise this test proves nothing");
