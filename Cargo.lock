@@ -42,6 +42,7 @@ name = "alpheus-demon"
 version = "0.1.0"
 dependencies = [
  "alpheus-commun",
+ "insta",
  "libc",
  "serde",
  "serde_json",

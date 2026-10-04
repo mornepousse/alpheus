@@ -6,7 +6,9 @@
 
 pub mod compositeur;
 pub mod config;
+pub mod disposition;
 pub mod etat;
 pub mod grille;
 pub mod heure;
+pub mod icones;
 pub mod sources;
