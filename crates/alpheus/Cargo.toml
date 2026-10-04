@@ -1,0 +1,15 @@
+[package]
+name = "alpheus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Centre de contrôle TUI de Mae"
+
+[dependencies]
+alpheus-commun.workspace = true
+ratatui.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+alpheus-commun = { workspace = true, features = ["testing"] }
+insta.workspace = true

@@ -1,18 +1,19 @@
-[package]
-name = "alpheus"
+[workspace]
+resolver = "3"
+members = ["crates/alpheus-commun", "crates/alpheus"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Centre de contrôle TUI de Mae"
 
-[dependencies]
-ratatui = "0.30"
+[workspace.dependencies]
+alpheus-commun = { path = "crates/alpheus-commun" }
 serde = { version = "1", features = ["derive"] }
-toml = "1"
 serde_json = "1"
+toml = "1"
 libc = "0.2"
-
-[dev-dependencies]
+ratatui = "0.30"
 insta = "1"
 
 [profile.release]

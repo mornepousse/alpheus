@@ -73,8 +73,11 @@ fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 #[test]
 fn le_source_ne_parle_jamais_au_compositeur_ni_aux_ecrans() {
+    // Tous les crates du workspace : crates/*/src (pas leurs tests).
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
     let mut files = Vec::new();
-    rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    rs_files(&crates, &mut files);
+    files.retain(|f| f.components().any(|c| c.as_os_str() == "src"));
     assert!(files.len() > 10);
     for f in files {
         let t = std::fs::read_to_string(&f).unwrap().to_lowercase();

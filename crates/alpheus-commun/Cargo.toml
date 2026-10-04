@@ -1,0 +1,17 @@
+[package]
+name = "alpheus-commun"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Socle commun d'alpheus : exécuteur, configuration, thème, backends, écrans (sans affichage)"
+
+[features]
+# Aides de test (displays::testing…) pour les tests de la TUI ; jamais dans
+# un binaire.
+testing = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+libc.workspace = true

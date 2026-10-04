@@ -267,8 +267,10 @@ pub fn changed_elsewhere(before: &[Output], plan: &Plan, now: &[Output]) -> bool
         .any(|o| before.iter().any(|b| b.name == o.name && b.active != o.active))
 }
 
-#[cfg(test)]
-pub(crate) mod testing {
+/// Aides de test, partagées avec les tests de la TUI (fonctionnalité
+/// `testing`, activée seulement dans ses dev-dependencies).
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
     use super::*;
 
     pub fn mode(w: u32, h: u32, r: u32) -> Mode {

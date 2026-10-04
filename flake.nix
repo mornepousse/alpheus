@@ -17,11 +17,14 @@
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          # Workspace : ne construire que la TUI ; tester la TUI et le socle.
+          cargoBuildFlags = [ "-p" "alpheus" ];
+          cargoTestFlags = [ "-p" "alpheus" "-p" "alpheus-commun" ];
           # Les outils de session (wpctl, nmcli…) sont appelés par NOM dans
           # le PATH de la session : pas de wrapProgram, ce sont ceux du poste.
           # Les tests du build n'en lancent aucun (faux exécuteur).
           meta = {
-            description = "Centre de contrôle TUI (son, réseau, Bluetooth, énergie, alimentation)";
+            description = "Centre de contrôle TUI (son, réseau, Bluetooth, énergie, alimentation, écrans)";
             mainProgram = "alpheus";
             platforms = pkgs.lib.platforms.linux;
           };
