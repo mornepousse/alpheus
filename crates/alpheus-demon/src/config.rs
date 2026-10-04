@@ -1,210 +1,209 @@
-//! ~/.config/alpheus/barre.toml, facultatif. Absent : défauts, sans
-//! message. Invalide : défauts et avertissement (journal du démon). Jamais
-//! d'arrêt. Chaque réglage est lu une fois au démarrage et ne coûte rien
-//! s'il n'est pas utilisé.
+//! ~/.config/alpheus/bar.toml, optional. Absent: defaults, no message.
+//! Invalid: defaults and a warning (daemon log). Never an abort. Each
+//! setting is read once at startup and costs nothing if unused.
 //!
 //! ```toml
-//! modules = ["bureaux", "fenetre", "heure"]   # ordre et présence, de gauche à droite
-//! hauteur = 22                                # px logiques
-//! [police]
-//! famille = "JetBrainsMono Nerd Font Mono"    # absente : une police à chasse fixe du système
-//! taille = 14.0
-//! repli = []                                  # ex. ["Noto Color Emoji"] : chargées en plus, à la demande
-//! [heure]
+//! modules = ["workspaces", "window", "clock"]   # order and presence, left to right
+//! height = 22                                   # logical px
+//! [font]
+//! family = "JetBrainsMono Nerd Font Mono"       # absent: a monospace font from the system
+//! size = 14.0
+//! fallback = []                                 # e.g. ["Noto Color Emoji"]: loaded in addition, on demand
+//! [clock]
 //! format = "%H:%M"
-//! date = "%a %e %b"                           # "" : pas de date
-//! [bureaux]
-//! commande = ["wm-set", "workspace", "{bureau}", "{sortie}"]
+//! date = "%a %e %b"                             # "": no date
+//! [workspaces]
+//! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! ```
 
-use crate::heure;
+use crate::clock;
 use serde::Deserialize;
 use std::path::Path;
 
-/// Les modules de la barre (spec, § 2), de gauche à droite par défaut. Tous
-/// sont acceptés dès maintenant : un barre.toml écrit aujourd'hui reste
-/// valable quand les livraisons 3 à 5 arriveront. Ceux qui ne sont pas
-/// encore livrés ne s'affichent pas.
+/// The bar's modules (spec, § 2), left to right by default. All are
+/// accepted from the start: a bar.toml written today stays valid once
+/// deliveries 3 to 5 arrive. Those not yet delivered simply do not show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModuleId {
-    Bureaux,
-    Fenetre,
-    Lecture,
+    Workspaces,
+    Window,
+    Media,
     Volume,
-    Reseau,
+    Network,
     Bluetooth,
-    Batterie,
-    Ressources,
-    Plateau,
+    Battery,
+    Resources,
+    Tray,
     Notifications,
-    Heure,
+    Clock,
 }
 
 impl ModuleId {
-    pub const TOUS: [ModuleId; 11] = [
-        ModuleId::Bureaux,
-        ModuleId::Fenetre,
-        ModuleId::Lecture,
+    pub const ALL: [ModuleId; 11] = [
+        ModuleId::Workspaces,
+        ModuleId::Window,
+        ModuleId::Media,
         ModuleId::Volume,
-        ModuleId::Reseau,
+        ModuleId::Network,
         ModuleId::Bluetooth,
-        ModuleId::Batterie,
-        ModuleId::Ressources,
-        ModuleId::Plateau,
+        ModuleId::Battery,
+        ModuleId::Resources,
+        ModuleId::Tray,
         ModuleId::Notifications,
-        ModuleId::Heure,
+        ModuleId::Clock,
     ];
 
-    /// Nom dans barre.toml.
-    pub fn nom(self) -> &'static str {
+    /// Name in bar.toml.
+    pub fn name(self) -> &'static str {
         match self {
-            ModuleId::Bureaux => "bureaux",
-            ModuleId::Fenetre => "fenetre",
-            ModuleId::Lecture => "lecture",
+            ModuleId::Workspaces => "workspaces",
+            ModuleId::Window => "window",
+            ModuleId::Media => "media",
             ModuleId::Volume => "volume",
-            ModuleId::Reseau => "reseau",
+            ModuleId::Network => "network",
             ModuleId::Bluetooth => "bluetooth",
-            ModuleId::Batterie => "batterie",
-            ModuleId::Ressources => "ressources",
-            ModuleId::Plateau => "plateau",
+            ModuleId::Battery => "battery",
+            ModuleId::Resources => "resources",
+            ModuleId::Tray => "tray",
             ModuleId::Notifications => "notifications",
-            ModuleId::Heure => "heure",
+            ModuleId::Clock => "clock",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct PoliceConfig {
-    /// Famille à chasse fixe ; absente du système : une autre à chasse fixe.
-    pub famille: String,
-    /// Taille en px logiques.
-    pub taille: f32,
-    /// Familles de repli pour les caractères absents (emoji, CJK…). Vide par
-    /// défaut : seules la régulière et la grasse de `famille` sont chargées
-    /// (≈ 2 Mo) ; chaque famille ajoutée coûte sa mémoire (Q11).
-    pub repli: Vec<String>,
+pub struct FontConfig {
+    /// Monospace family; absent from the system: another monospace one.
+    pub family: String,
+    /// Size in logical px.
+    pub size: f32,
+    /// Fallback families for missing characters (emoji, CJK…). Empty by
+    /// default: only the regular and bold faces of `family` are loaded
+    /// (≈ 2 MB); each added family costs its own memory (Q11).
+    pub fallback: Vec<String>,
 }
 
-impl Default for PoliceConfig {
+impl Default for FontConfig {
     fn default() -> Self {
-        PoliceConfig { famille: "JetBrainsMono Nerd Font Mono".into(), taille: 14.0, repli: Vec::new() }
+        FontConfig { family: "JetBrainsMono Nerd Font Mono".into(), size: 14.0, fallback: Vec::new() }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct HeureConfig {
-    /// L'heure, en gras d'accent.
+pub struct ClockConfig {
+    /// The time, in bold accent.
     pub format: String,
-    /// La date, estompée, avant l'heure ; vide = pas de date.
+    /// The date, muted, before the time; empty = no date.
     pub date: String,
 }
 
-impl Default for HeureConfig {
+impl Default for ClockConfig {
     fn default() -> Self {
-        HeureConfig { format: "%H:%M".into(), date: "%a %e %b".into() }
+        ClockConfig { format: "%H:%M".into(), date: "%a %e %b".into() }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct BureauxConfig {
-    /// Commande lancée pour aller à un bureau (clic, molette) ; `{bureau}`
-    /// et `{sortie}` y sont remplacés. Défaut : `wm-set` (nixos-config de
-    /// Mae), seule voie vers le compositeur autorisée par le cadrage.
-    pub commande: Vec<String>,
+pub struct WorkspacesConfig {
+    /// Command run to go to a workspace (click, wheel); `{workspace}` and
+    /// `{output}` are replaced in it. Default: `wm-set` (Mae's
+    /// nixos-config), the only path to the compositor allowed by the
+    /// framing document.
+    pub command: Vec<String>,
 }
 
-impl Default for BureauxConfig {
+impl Default for WorkspacesConfig {
     fn default() -> Self {
-        BureauxConfig { commande: ["wm-set", "workspace", "{bureau}", "{sortie}"].map(String::from).to_vec() }
+        WorkspacesConfig { command: ["wm-set", "workspace", "{workspace}", "{output}"].map(String::from).to_vec() }
     }
 }
 
-pub const HAUTEUR_DEFAUT: u32 = 22;
+pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct BarreConfig {
+pub struct BarConfig {
     pub modules: Vec<ModuleId>,
-    /// Hauteur de la barre, en px logiques.
-    pub hauteur: u32,
-    pub police: PoliceConfig,
-    pub heure: HeureConfig,
-    pub bureaux: BureauxConfig,
+    /// Height of the bar, in logical px.
+    pub height: u32,
+    pub font: FontConfig,
+    pub clock: ClockConfig,
+    pub workspaces: WorkspacesConfig,
 }
 
-impl Default for BarreConfig {
+impl Default for BarConfig {
     fn default() -> Self {
-        BarreConfig {
-            modules: ModuleId::TOUS.to_vec(),
-            hauteur: HAUTEUR_DEFAUT,
-            police: PoliceConfig::default(),
-            heure: HeureConfig::default(),
-            bureaux: BureauxConfig::default(),
+        BarConfig {
+            modules: ModuleId::ALL.to_vec(),
+            height: DEFAULT_HEIGHT,
+            font: FontConfig::default(),
+            clock: ClockConfig::default(),
+            workspaces: WorkspacesConfig::default(),
         }
     }
 }
 
-fn hauteur_defaut() -> u32 {
-    HAUTEUR_DEFAUT
+fn default_height() -> u32 {
+    DEFAULT_HEIGHT
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Brut {
+struct Raw {
     #[serde(default)]
     modules: Option<Vec<ModuleId>>,
-    #[serde(default = "hauteur_defaut")]
-    hauteur: u32,
+    #[serde(default = "default_height")]
+    height: u32,
     #[serde(default)]
-    police: PoliceConfig,
+    font: FontConfig,
     #[serde(default)]
-    heure: HeureConfig,
+    clock: ClockConfig,
     #[serde(default)]
-    bureaux: BureauxConfig,
+    workspaces: WorkspacesConfig,
 }
 
-impl BarreConfig {
-    /// Absent → défauts sans message ; illisible ou invalide → défauts + message.
-    pub fn load(path: &Path) -> (BarreConfig, Option<String>) {
+impl BarConfig {
+    /// Absent → defaults with no message; unreadable or invalid → defaults + message.
+    pub fn load(path: &Path) -> (BarConfig, Option<String>) {
         match std::fs::read_to_string(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BarreConfig::default(), None),
-            Err(e) => (BarreConfig::default(), Some(format!("barre.toml illisible : {e}"))),
-            Ok(s) => match Self::depuis_texte(&s) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (BarConfig::default(), None),
+            Err(e) => (BarConfig::default(), Some(format!("bar.toml unreadable: {e}"))),
+            Ok(s) => match Self::from_text(&s) {
                 Ok(c) => (c, None),
-                Err(m) => (BarreConfig::default(), Some(format!("barre.toml invalide : {m}"))),
+                Err(m) => (BarConfig::default(), Some(format!("bar.toml invalid: {m}"))),
             },
         }
     }
 
-    pub fn depuis_texte(s: &str) -> Result<BarreConfig, String> {
-        let b: Brut = toml::from_str(s).map_err(|e| e.message().to_string())?;
-        let modules = b.modules.unwrap_or_else(|| ModuleId::TOUS.to_vec());
+    pub fn from_text(s: &str) -> Result<BarConfig, String> {
+        let b: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
+        let modules = b.modules.unwrap_or_else(|| ModuleId::ALL.to_vec());
         for (i, m) in modules.iter().enumerate() {
             if modules[..i].contains(m) {
-                return Err(format!("module « {} » en double", m.nom()));
+                return Err(format!("duplicate module \"{}\"", m.name()));
             }
         }
-        if !(12..=64).contains(&b.hauteur) {
-            return Err(format!("hauteur {} hors de 12 à 64 px", b.hauteur));
+        if !(12..=64).contains(&b.height) {
+            return Err(format!("height {} out of range 12 to 64 px", b.height));
         }
-        if !(6.0..=48.0).contains(&b.police.taille) {
-            return Err(format!("police.taille {} hors de 6 à 48 px", b.police.taille));
+        if !(6.0..=48.0).contains(&b.font.size) {
+            return Err(format!("font.size {} out of range 6 to 48 px", b.font.size));
         }
-        if b.police.famille.trim().is_empty() {
-            return Err("police.famille vide".into());
+        if b.font.family.trim().is_empty() {
+            return Err("font.family empty".into());
         }
-        if b.heure.format.trim().is_empty() {
-            return Err("heure.format vide".into());
+        if b.clock.format.trim().is_empty() {
+            return Err("clock.format empty".into());
         }
-        heure::valider(&b.heure.format).map_err(|m| format!("heure.format : {m}"))?;
-        heure::valider(&b.heure.date).map_err(|m| format!("heure.date : {m}"))?;
-        if b.bureaux.commande.first().is_none_or(|p| p.trim().is_empty()) {
-            return Err("bureaux.commande vide (attendu : [\"programme\", \"argument\", …])".into());
+        clock::validate(&b.clock.format).map_err(|m| format!("clock.format: {m}"))?;
+        clock::validate(&b.clock.date).map_err(|m| format!("clock.date: {m}"))?;
+        if b.workspaces.command.first().is_none_or(|p| p.trim().is_empty()) {
+            return Err("workspaces.command empty (expected: [\"program\", \"argument\", …])".into());
         }
-        Ok(BarreConfig { modules, hauteur: b.hauteur, police: b.police, heure: b.heure, bureaux: b.bureaux })
+        Ok(BarConfig { modules, height: b.height, font: b.font, clock: b.clock, workspaces: b.workspaces })
     }
 }
 
@@ -213,56 +212,56 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    fn fichier(nom: &str, contenu: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-barre-{nom}", std::process::id()));
+    fn file(name: &str, content: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("alpheus-{}-bar-{name}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("barre.toml");
-        std::fs::write(&p, contenu).unwrap();
+        let p = d.join("bar.toml");
+        std::fs::write(&p, content).unwrap();
         p
     }
 
     #[test]
-    fn absent_defauts_sans_message() {
-        let (c, w) = BarreConfig::load(Path::new("/nonexistent/barre.toml"));
-        assert_eq!((c, w), (BarreConfig::default(), None));
-        let d = BarreConfig::default();
-        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Bureaux), Some(&ModuleId::Heure)));
-        assert_eq!((d.hauteur, d.police.taille, d.police.repli.len()), (22, 14.0, 0));
-        assert_eq!(d.bureaux.commande, ["wm-set", "workspace", "{bureau}", "{sortie}"]);
+    fn absent_defaults_without_message() {
+        let (c, w) = BarConfig::load(Path::new("/nonexistent/bar.toml"));
+        assert_eq!((c, w), (BarConfig::default(), None));
+        let d = BarConfig::default();
+        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Workspaces), Some(&ModuleId::Clock)));
+        assert_eq!((d.height, d.font.size, d.font.fallback.len()), (22, 14.0, 0));
+        assert_eq!(d.workspaces.command, ["wm-set", "workspace", "{workspace}", "{output}"]);
     }
 
     #[test]
-    fn reglages_lus() {
-        let texte = "modules = [\"heure\", \"bureaux\"]\nhauteur = 28\n[police]\nfamille = \"Fira Code\"\nrepli = [\"Noto Color Emoji\"]\n[heure]\nformat = \"%H:%M:%S\"\n[bureaux]\ncommande = [\"mon-outil\", \"{bureau}\"]\n";
-        let (c, w) = BarreConfig::load(&fichier("ok", texte));
+    fn settings_read() {
+        let text = "modules = [\"clock\", \"workspaces\"]\nheight = 28\n[font]\nfamily = \"Fira Code\"\nfallback = [\"Noto Color Emoji\"]\n[clock]\nformat = \"%H:%M:%S\"\n[workspaces]\ncommand = [\"my-tool\", \"{workspace}\"]\n";
+        let (c, w) = BarConfig::load(&file("ok", text));
         assert_eq!(w, None);
-        assert_eq!(c.modules, vec![ModuleId::Heure, ModuleId::Bureaux]);
-        assert_eq!((c.hauteur, c.police.famille.as_str(), c.police.taille), (28, "Fira Code", 14.0));
-        assert_eq!((c.heure.format.as_str(), c.heure.date.as_str()), ("%H:%M:%S", "%a %e %b"));
-        assert_eq!(c.police.repli, ["Noto Color Emoji"]);
-        assert_eq!(c.bureaux.commande, ["mon-outil", "{bureau}"]);
+        assert_eq!(c.modules, vec![ModuleId::Clock, ModuleId::Workspaces]);
+        assert_eq!((c.height, c.font.family.as_str(), c.font.size), (28, "Fira Code", 14.0));
+        assert_eq!((c.clock.format.as_str(), c.clock.date.as_str()), ("%H:%M:%S", "%a %e %b"));
+        assert_eq!(c.font.fallback, ["Noto Color Emoji"]);
+        assert_eq!(c.workspaces.command, ["my-tool", "{workspace}"]);
     }
 
     #[test]
-    fn module_inconnu_defauts_et_message() {
-        let (c, w) = BarreConfig::load(&fichier("inconnu", "modules = [\"bureaux\", \"meteo\"]\n"));
-        assert_eq!(c, BarreConfig::default());
+    fn unknown_module_defaults_and_message() {
+        let (c, w) = BarConfig::load(&file("unknown", "modules = [\"workspaces\", \"weather\"]\n"));
+        assert_eq!(c, BarConfig::default());
         let w = w.unwrap();
-        assert!(w.contains("barre.toml invalide") && w.contains("meteo"), "{w}");
+        assert!(w.contains("bar.toml invalid") && w.contains("weather"), "{w}");
     }
 
     #[test]
-    fn refus_avec_raison() {
-        let err = |t: &str| BarreConfig::depuis_texte(t).unwrap_err();
-        assert!(err("modules = [\"heure\", \"heure\"]").contains("double"));
-        assert!(err("[heure]\nformat = \"%Q\"").contains("heure.format"));
-        assert!(err("[heure]\ndate = \"%\"").contains("heure.date"));
-        assert!(err("[heure]\nformat = \"\"").contains("vide"));
-        assert!(err("hauteur = 4").contains("hauteur"));
-        assert!(err("[police]\ntaille = 200.0").contains("police.taille"));
-        assert!(err("[police]\nfamille = \" \"").contains("police.famille"));
-        assert!(err("[bureaux]\ncommande = []").contains("bureaux.commande"));
-        assert!(BarreConfig::depuis_texte("taille = 3").is_err(), "clé inconnue refusée");
-        assert_eq!(BarreConfig::depuis_texte("modules = []").unwrap().modules, vec![]);
+    fn refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("modules = [\"clock\", \"clock\"]").contains("duplicate"));
+        assert!(err("[clock]\nformat = \"%Q\"").contains("clock.format"));
+        assert!(err("[clock]\ndate = \"%\"").contains("clock.date"));
+        assert!(err("[clock]\nformat = \"\"").contains("empty"));
+        assert!(err("height = 4").contains("height"));
+        assert!(err("[font]\nsize = 200.0").contains("font.size"));
+        assert!(err("[font]\nfamily = \" \"").contains("font.family"));
+        assert!(err("[workspaces]\ncommand = []").contains("workspaces.command"));
+        assert!(BarConfig::from_text("size = 3").is_err(), "unknown key refused");
+        assert_eq!(BarConfig::from_text("modules = []").unwrap().modules, vec![]);
     }
 }

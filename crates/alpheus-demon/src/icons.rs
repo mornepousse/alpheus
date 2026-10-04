@@ -1,9 +1,9 @@
-//! Icône d'une application d'après sa classe (Hyprland) ou son app_id
-//! (niri) : un glyphe Nerd Font, d'une case comme le texte (Q5). Les vraies
-//! icônes du thème arriveront avec le plateau (livraison 4). Codes vérifiés
-//! dans JetBrainsMonoNerdFontMono-Regular.ttf.
+//! Icon for an application from its class (Hyprland) or app_id (niri): a
+//! Nerd Font glyph, one cell wide like text (Q5). The real icons from the
+//! theme will arrive with the tray (delivery 4). Codes checked in
+//! JetBrainsMonoNerdFontMono-Regular.ttf.
 
-/// (motif cherché dans la classe en minuscules, glyphe), premier trouvé.
+/// (pattern looked up in the lowercased class, glyph), first match wins.
 const TABLE: [(&str, char); 32] = [
     ("firefox", '\u{f0239}'),   // md-firefox
     ("chrom", '\u{f02af}'),     // md-google_chrome
@@ -39,35 +39,35 @@ const TABLE: [(&str, char); 32] = [
     ("github", '\u{f02a4}'),      // md-github
 ];
 
-/// Applications inconnues : md-application.
-pub const GENERIQUE: char = '\u{f08c6}';
+/// Unknown applications: md-application.
+pub const GENERIC: char = '\u{f08c6}';
 
-pub fn glyphe(classe: &str) -> char {
-    let c = classe.to_lowercase();
-    TABLE.iter().find(|(m, _)| c.contains(m)).map(|(_, g)| *g).unwrap_or(GENERIQUE)
+pub fn glyph(class: &str) -> char {
+    let c = class.to_lowercase();
+    TABLE.iter().find(|(m, _)| c.contains(m)).map(|(_, g)| *g).unwrap_or(GENERIC)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grille::largeur_texte;
+    use crate::grid::text_width;
 
     #[test]
-    fn glyphes_par_classe() {
-        assert_eq!(glyphe("firefox"), '\u{f0239}');
-        assert_eq!(glyphe("com.mitchellh.ghostty"), '\u{f018d}');
-        assert_eq!(glyphe("Alacritty"), '\u{f018d}');
-        assert_eq!(glyphe("org.gnome.Nautilus"), '\u{f024b}');
-        assert_eq!(glyphe("VSCodium"), '\u{f0a1e}');
-        assert_eq!(glyphe(""), GENERIQUE);
-        assert_eq!(glyphe("appli-inconnue"), GENERIQUE);
+    fn glyphs_by_class() {
+        assert_eq!(glyph("firefox"), '\u{f0239}');
+        assert_eq!(glyph("com.mitchellh.ghostty"), '\u{f018d}');
+        assert_eq!(glyph("Alacritty"), '\u{f018d}');
+        assert_eq!(glyph("org.gnome.Nautilus"), '\u{f024b}');
+        assert_eq!(glyph("VSCodium"), '\u{f0a1e}');
+        assert_eq!(glyph(""), GENERIC);
+        assert_eq!(glyph("unknown-app"), GENERIC);
     }
 
     #[test]
-    fn chaque_glyphe_tient_dans_une_case() {
+    fn each_glyph_fits_in_one_cell() {
         for (_, g) in TABLE {
-            assert_eq!(largeur_texte(&g.to_string()), 1, "{g:?}");
+            assert_eq!(text_width(&g.to_string()), 1, "{g:?}");
         }
-        assert_eq!(largeur_texte(&GENERIQUE.to_string()), 1);
+        assert_eq!(text_width(&GENERIC.to_string()), 1);
     }
 }

@@ -1,118 +1,118 @@
-//! Hyprland en LECTURE seule. Deux sockets dans
-//! `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/` :
-//! - `.socket2.sock` : le flux d'événements, lu en continu ;
-//! - `.socket.sock` : quatre requêtes de lecture (`Requete`), au démarrage
-//!   et après un événement de structure. Le flux ne redonne pas l'état
-//!   initial, d'où ces lectures (Q1 du plan). La seule fonction qui écrit
-//!   sur ce socket prend une `Requete`, dont les quatre textes sont fixes et
-//!   vérifiés par tests/garde_fous.rs : aucune action, aucun réglage.
+//! Hyprland, READ ONLY. Two sockets in
+//! `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`:
+//! - `.socket2.sock`: the event stream, read continuously;
+//! - `.socket.sock`: four read requests (`Request`), at startup and after a
+//!   structure event. The stream never gives back the initial state, hence
+//!   these reads (Q1 of the plan). The only function that writes to this
+//!   socket takes a `Request`, whose four texts are fixed and checked by
+//!   tests/guardrails.rs: no action, no setting.
 
-use crate::compositeur::EtatCompositeur;
-use crate::compositeur::hypr::{Effet, Instantane, Modele, Reponses, analyser_ligne};
+use crate::compositor::CompositorState;
+use crate::compositor::hypr::{Effect, Model, Responses, Snapshot, parse_line};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Requete {
-    Moniteurs,
-    Bureaux,
+pub enum Request {
+    Monitors,
+    Workspaces,
     Clients,
-    FenetreActive,
+    ActiveWindow,
 }
 
-impl Requete {
-    pub const TOUTES: [Requete; 4] = [Requete::Moniteurs, Requete::Bureaux, Requete::Clients, Requete::FenetreActive];
+impl Request {
+    pub const ALL: [Request; 4] = [Request::Monitors, Request::Workspaces, Request::Clients, Request::ActiveWindow];
 
-    pub fn texte(self) -> &'static str {
+    pub fn text(self) -> &'static str {
         match self {
-            Requete::Moniteurs => "j/monitors",
-            Requete::Bureaux => "j/workspaces",
-            Requete::Clients => "j/clients",
-            Requete::FenetreActive => "j/activewindow",
+            Request::Monitors => "j/monitors",
+            Request::Workspaces => "j/workspaces",
+            Request::Clients => "j/clients",
+            Request::ActiveWindow => "j/activewindow",
         }
     }
 }
 
-/// Calme attendu après un événement de structure avant de relire l'état :
-/// une rafale (dix fenêtres fermées d'un coup) ne coûte qu'une relecture.
-pub const CALME: Duration = Duration::from_millis(40);
-/// Relecture forcée si le flux ne se calme jamais (titre d'un terminal mis
-/// à jour en continu).
-pub const ATTENTE_MAX: Duration = Duration::from_millis(250);
-const DELAI_REQUETE: Duration = Duration::from_secs(2);
+/// Calm expected after a structure event before rereading the state: a burst
+/// (ten windows closed at once) only costs one reread.
+pub const CALM: Duration = Duration::from_millis(40);
+/// Forced reread if the stream never calms down (a terminal's title updated
+/// continuously).
+pub const MAX_WAIT: Duration = Duration::from_millis(250);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Délai de lecture du flux : aucun tant que rien n'attend (le fil dort
-/// sans jamais se réveiller), `CALME` quand une relecture est due.
-pub fn delai_lecture(a_relire: bool) -> Option<Duration> {
-    a_relire.then_some(CALME)
+/// Stream read delay: none as long as nothing is pending (the thread sleeps
+/// without ever waking), `CALM` when a reread is due.
+pub fn read_delay(due: bool) -> Option<Duration> {
+    due.then_some(CALM)
 }
 
-fn demander(dossier: &Path, r: Requete) -> io::Result<String> {
-    let mut s = UnixStream::connect(dossier.join(".socket.sock"))?;
-    s.set_read_timeout(Some(DELAI_REQUETE))?;
-    s.set_write_timeout(Some(DELAI_REQUETE))?;
-    s.write_all(r.texte().as_bytes())?;
-    // Octets bruts puis conversion tolérante : un titre de fenêtre mal
-    // encodé ne doit pas rendre tout l'état illisible.
+fn request(directory: &Path, r: Request) -> io::Result<String> {
+    let mut s = UnixStream::connect(directory.join(".socket.sock"))?;
+    s.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    s.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    s.write_all(r.text().as_bytes())?;
+    // Raw bytes then a tolerant conversion: a badly encoded window title
+    // must not make the whole state unreadable.
     let mut rep = Vec::new();
     s.read_to_end(&mut rep)?;
     Ok(String::from_utf8_lossy(&rep).into_owned())
 }
 
-fn instantane(dossier: &Path) -> io::Result<Instantane> {
-    let m = demander(dossier, Requete::Moniteurs)?;
-    let b = demander(dossier, Requete::Bureaux)?;
-    let c = demander(dossier, Requete::Clients)?;
-    let a = demander(dossier, Requete::FenetreActive)?;
-    Instantane::analyser(&Reponses { moniteurs: &m, bureaux: &b, clients: &c, active: &a }).map_err(io::Error::other)
+fn snapshot(directory: &Path) -> io::Result<Snapshot> {
+    let m = request(directory, Request::Monitors)?;
+    let w = request(directory, Request::Workspaces)?;
+    let c = request(directory, Request::Clients)?;
+    let a = request(directory, Request::ActiveWindow)?;
+    Snapshot::parse(&Responses { monitors: &m, workspaces: &w, clients: &c, active: &a }).map_err(io::Error::other)
 }
 
-pub fn session(dossier: &Path, publier: &mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()> {
-    // Le flux d'abord : un événement survenu pendant la lecture de l'état
-    // attend dans le socket au lieu d'être perdu.
-    let flux = UnixStream::connect(dossier.join(".socket2.sock"))?;
-    let mut modele = Modele::default();
-    modele.instantane(instantane(dossier)?);
-    if !publier(modele.etat()) {
+pub fn session(directory: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
+    // The stream first: an event that occurs while the state is being read
+    // waits in the socket instead of being lost.
+    let stream = UnixStream::connect(directory.join(".socket2.sock"))?;
+    let mut model = Model::default();
+    model.set_snapshot(snapshot(directory)?);
+    if !publish(model.state()) {
         return Ok(());
     }
-    let mut lecteur = BufReader::new(flux);
-    let mut ligne = Vec::new();
-    let mut due: Option<Instant> = None; // relecture due depuis
+    let mut reader = BufReader::new(stream);
+    let mut line = Vec::new();
+    let mut due: Option<Instant> = None; // reread due since
     loop {
-        lecteur.get_ref().set_read_timeout(delai_lecture(due.is_some()))?;
-        let relire = match lecteur.read_until(b'\n', &mut ligne) {
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "flux d'événements Hyprland fermé")),
-            Ok(_) if ligne.ends_with(b"\n") => {
-                let texte = String::from_utf8_lossy(&ligne);
-                let effet = modele.appliquer(&analyser_ligne(texte.trim_end()));
-                ligne.clear();
-                match effet {
-                    Effet::Rien => {}
-                    Effet::Changement => {
-                        if !publier(modele.etat()) {
+        reader.get_ref().set_read_timeout(read_delay(due.is_some()))?;
+        let reread = match reader.read_until(b'\n', &mut line) {
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Hyprland event stream closed")),
+            Ok(_) if line.ends_with(b"\n") => {
+                let text = String::from_utf8_lossy(&line);
+                let effect = model.apply(&parse_line(text.trim_end()));
+                line.clear();
+                match effect {
+                    Effect::Nothing => {}
+                    Effect::Changed => {
+                        if !publish(model.state()) {
                             return Ok(());
                         }
                     }
-                    Effet::Relire => {
+                    Effect::Reread => {
                         due.get_or_insert_with(Instant::now);
                     }
                 }
-                due.is_some_and(|t| t.elapsed() >= ATTENTE_MAX)
+                due.is_some_and(|t| t.elapsed() >= MAX_WAIT)
             }
-            Ok(_) => false, // ligne incomplète : la fin du flux suit
+            Ok(_) => false, // incomplete line: the rest of the stream follows
             Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => due.is_some(),
             Err(e) if e.kind() == io::ErrorKind::Interrupted => false,
             Err(e) => return Err(e),
         };
-        if relire {
-            // Une ligne à moitié lue reste dans `ligne` (read_until garde les
-            // octets reçus) : rien n'est perdu.
-            modele.instantane(instantane(dossier)?);
+        if reread {
+            // A half-read line stays in `line` (read_until keeps the bytes
+            // received): nothing is lost.
+            model.set_snapshot(snapshot(directory)?);
             due = None;
-            if !publier(modele.etat()) {
+            if !publish(model.state()) {
                 return Ok(());
             }
         }
@@ -120,42 +120,42 @@ pub fn session(dossier: &Path, publier: &mut dyn FnMut(EtatCompositeur) -> bool)
 }
 
 #[cfg(test)]
-pub(crate) mod faux {
-    //! Faux Hyprland : les deux sockets dans un dossier temporaire, l'état
-    //! servi depuis les fixtures, les requêtes reçues journalisées.
+pub(crate) mod fake {
+    //! Fake Hyprland: both sockets in a temporary directory, state served
+    //! from the fixtures, requests received logged.
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    pub const MONITEURS: &str = include_str!("../../tests/fixtures/hypr-monitors.json");
-    pub const BUREAUX: &str = include_str!("../../tests/fixtures/hypr-workspaces.json");
+    pub const MONITORS: &str = include_str!("../../tests/fixtures/hypr-monitors.json");
+    pub const WORKSPACES: &str = include_str!("../../tests/fixtures/hypr-workspaces.json");
     pub const CLIENTS: &str = include_str!("../../tests/fixtures/hypr-clients.json");
     pub const ACTIVE: &str = include_str!("../../tests/fixtures/hypr-activewindow.json");
 
-    pub struct FauxHyprland {
-        pub dossier: PathBuf,
-        requetes: Arc<Mutex<Vec<String>>>,
-        flux: Arc<Mutex<Option<UnixStream>>>,
+    pub struct FakeHyprland {
+        pub directory: PathBuf,
+        requests: Arc<Mutex<Vec<String>>>,
+        stream: Arc<Mutex<Option<UnixStream>>>,
     }
 
-    impl FauxHyprland {
-        pub fn demarrer(nom: &str) -> FauxHyprland {
-            FauxHyprland::demarrer_avec(nom, CLIENTS.as_bytes(), false)
+    impl FakeHyprland {
+        pub fn start(name: &str) -> FakeHyprland {
+            FakeHyprland::start_with(name, CLIENTS.as_bytes(), false)
         }
 
-        /// `clients` : réponse servie à `j/clients` (octets bruts) ;
-        /// `bagoteur` : le flux accepte chaque connexion puis la ferme aussitôt.
-        pub fn demarrer_avec(nom: &str, clients: &[u8], bagoteur: bool) -> FauxHyprland {
+        /// `clients`: response served to `j/clients` (raw bytes); `flapper`:
+        /// the stream accepts each connection then closes it right away.
+        pub fn start_with(name: &str, clients: &[u8], flapper: bool) -> FakeHyprland {
             let clients = clients.to_vec();
-            let dossier = std::env::temp_dir().join(format!("alpheus-hypr-{}-{nom}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dossier);
-            std::fs::create_dir_all(&dossier).unwrap();
-            let requetes = Arc::new(Mutex::new(Vec::new()));
-            let flux = Arc::new(Mutex::new(None));
-            let l1 = UnixListener::bind(dossier.join(".socket.sock")).unwrap();
-            let r = requetes.clone();
+            let directory = std::env::temp_dir().join(format!("alpheus-hypr-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&directory);
+            std::fs::create_dir_all(&directory).unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stream = Arc::new(Mutex::new(None));
+            let l1 = UnixListener::bind(directory.join(".socket.sock")).unwrap();
+            let r = requests.clone();
             std::thread::spawn(move || {
                 for c in l1.incoming() {
                     let Ok(mut c) = c else { return };
@@ -163,8 +163,8 @@ pub(crate) mod faux {
                     let n = c.read(&mut buf).unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
                     let rep: &[u8] = match req.as_str() {
-                        "j/monitors" => MONITEURS.as_bytes(),
-                        "j/workspaces" => BUREAUX.as_bytes(),
+                        "j/monitors" => MONITORS.as_bytes(),
+                        "j/workspaces" => WORKSPACES.as_bytes(),
                         "j/clients" => &clients,
                         "j/activewindow" => ACTIVE.as_bytes(),
                         _ => b"unknown request",
@@ -173,11 +173,11 @@ pub(crate) mod faux {
                     let _ = c.write_all(rep);
                 }
             });
-            let l2 = UnixListener::bind(dossier.join(".socket2.sock")).unwrap();
-            let f = flux.clone();
+            let l2 = UnixListener::bind(directory.join(".socket2.sock")).unwrap();
+            let f = stream.clone();
             std::thread::spawn(move || {
-                if bagoteur {
-                    // Chaque connexion fermée dès l'acceptation.
+                if flapper {
+                    // Each connection closed as soon as it's accepted.
                     for c in l2.incoming() {
                         drop(c);
                     }
@@ -185,114 +185,114 @@ pub(crate) mod faux {
                     *f.lock().unwrap() = Some(c);
                 }
             });
-            FauxHyprland { dossier, requetes, flux }
+            FakeHyprland { directory, requests, stream }
         }
 
-        pub fn requetes(&self) -> Vec<String> {
-            self.requetes.lock().unwrap().clone()
+        pub fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
         }
 
-        /// Écrit sur le flux (attend la connexion, 5 s au plus).
-        pub fn ecrire(&self, lignes: &str) {
+        /// Writes to the stream (waits for the connection, 5 s at most).
+        pub fn write(&self, lines: &str) {
             let t = Instant::now();
             loop {
-                if let Some(c) = self.flux.lock().unwrap().as_mut() {
-                    c.write_all(lignes.as_bytes()).unwrap();
+                if let Some(c) = self.stream.lock().unwrap().as_mut() {
+                    c.write_all(lines.as_bytes()).unwrap();
                     return;
                 }
-                assert!(t.elapsed() < Duration::from_secs(5), "flux jamais connecté");
+                assert!(t.elapsed() < Duration::from_secs(5), "stream never connected");
                 std::thread::sleep(Duration::from_millis(5));
             }
         }
 
-        pub fn fermer_flux(&self) {
-            if let Some(c) = self.flux.lock().unwrap().take() {
+        pub fn close_stream(&self) {
+            if let Some(c) = self.stream.lock().unwrap().take() {
                 let _ = c.shutdown(std::net::Shutdown::Both);
             }
         }
     }
 
-    impl Drop for FauxHyprland {
+    impl Drop for FakeHyprland {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dossier);
+            let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::faux::FauxHyprland;
+    use super::fake::FakeHyprland;
     use super::*;
     use std::sync::mpsc;
 
-    const DELAI: Duration = Duration::from_secs(5);
+    const DELAY: Duration = Duration::from_secs(5);
 
     #[test]
-    fn quatre_requetes_fixes_en_lecture_seule() {
-        // Garde-fou : seules ces quatre lectures JSON partent sur .socket.sock.
-        let textes: Vec<&str> = Requete::TOUTES.iter().map(|r| r.texte()).collect();
-        assert_eq!(textes, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
+    fn four_fixed_read_only_requests() {
+        // Guardrail: only these four JSON reads go out on .socket.sock.
+        let texts: Vec<&str> = Request::ALL.iter().map(|r| r.text()).collect();
+        assert_eq!(texts, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
     }
 
     #[test]
-    fn lecture_sans_delai_quand_rien_n_attend() {
-        assert_eq!(delai_lecture(false), None, "aucun réveil à vide");
-        assert_eq!(delai_lecture(true), Some(CALME));
+    fn no_delay_when_nothing_pending() {
+        assert_eq!(read_delay(false), None, "no wakeup for nothing");
+        assert_eq!(read_delay(true), Some(CALM));
     }
 
     #[test]
-    fn session_publie_l_etat_puis_suit_le_flux() {
-        let f = FauxHyprland::demarrer("suit");
+    fn session_publishes_state_then_follows_stream() {
+        let f = FakeHyprland::start("follows");
         let (tx, rx) = mpsc::channel();
-        let d = f.dossier.clone();
+        let d = f.directory.clone();
         let h = std::thread::spawn(move || session(&d, &mut |e| tx.send(e).is_ok()));
-        let e0 = rx.recv_timeout(DELAI).unwrap();
-        assert_eq!(e0.bureaux.len(), 3);
-        assert_eq!(f.requetes().len(), 4);
-        f.ecrire("activewindow>>Alacritty,~/projets — zsh\n");
-        assert_eq!(rx.recv_timeout(DELAI).unwrap().fenetre.unwrap().classe, "Alacritty");
-        f.ecrire("openwindow>>583d9c8a1b20,2,Alacritty,~\n");
-        let _ = rx.recv_timeout(DELAI).unwrap(); // état relu
-        assert_eq!(f.requetes().len(), 8, "une relecture complète après un événement de structure");
-        for r in f.requetes() {
-            assert!(Requete::TOUTES.iter().any(|q| q.texte() == r), "requête hors liste : {r}");
+        let e0 = rx.recv_timeout(DELAY).unwrap();
+        assert_eq!(e0.workspaces.len(), 3);
+        assert_eq!(f.requests().len(), 4);
+        f.write("activewindow>>Alacritty,~/projets — zsh\n");
+        assert_eq!(rx.recv_timeout(DELAY).unwrap().window.unwrap().class, "Alacritty");
+        f.write("openwindow>>583d9c8a1b20,2,Alacritty,~\n");
+        let _ = rx.recv_timeout(DELAY).unwrap(); // state reread
+        assert_eq!(f.requests().len(), 8, "a full reread after a structure event");
+        for r in f.requests() {
+            assert!(Request::ALL.iter().any(|q| q.text() == r), "request outside the list: {r}");
         }
-        f.fermer_flux();
-        let fin = h.join().unwrap();
-        assert_eq!(fin.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        f.close_stream();
+        let end = h.join().unwrap();
+        assert_eq!(end.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]
-    fn relecture_meme_sous_un_deluge_de_titres() {
-        let f = FauxHyprland::demarrer("deluge");
+    fn reread_even_under_a_flood_of_titles() {
+        let f = FakeHyprland::start("flood");
         let (tx, rx) = mpsc::channel();
-        let d = f.dossier.clone();
+        let d = f.directory.clone();
         std::thread::spawn(move || session(&d, &mut |e| tx.send(e).is_ok()));
-        rx.recv_timeout(DELAI).unwrap();
-        f.ecrire("openwindow>>583d9c8a1b20,2,Alacritty,~\n");
+        rx.recv_timeout(DELAY).unwrap();
+        f.write("openwindow>>583d9c8a1b20,2,Alacritty,~\n");
         let t = Instant::now();
         while t.elapsed() < Duration::from_millis(600) {
-            f.ecrire("windowtitlev2>>583d9c8a1b20,compilation en cours\n");
-            std::thread::sleep(Duration::from_millis(10)); // jamais 40 ms de calme
+            f.write("windowtitlev2>>583d9c8a1b20,compiling\n");
+            std::thread::sleep(Duration::from_millis(10)); // never 40 ms of calm
         }
-        assert!(f.requetes().len() >= 8, "la relecture ne doit pas attendre un calme qui ne vient pas");
+        assert!(f.requests().len() >= 8, "the reread must not wait for a calm that never comes");
     }
 
     #[test]
-    fn titre_utf8_invalide_ne_casse_pas_l_etat() {
-        let clients = faux::CLIENTS.replacen("\"title\": \"~/projets", "\"title\": \"\u{1}~/projets", 1).into_bytes();
-        // Un octet invalide en UTF-8 à la place du marqueur.
+    fn invalid_utf8_title_does_not_break_state() {
+        let clients = fake::CLIENTS.replacen("\"title\": \"~/projets", "\"title\": \"\u{1}~/projets", 1).into_bytes();
+        // An invalid UTF-8 byte in place of the marker.
         let clients: Vec<u8> = clients.into_iter().map(|o| if o == 1 { 0xff } else { o }).collect();
         assert!(std::str::from_utf8(&clients).is_err());
-        let f = FauxHyprland::demarrer_avec("utf8", &clients, false);
+        let f = FakeHyprland::start_with("utf8", &clients, false);
         let (tx, rx) = mpsc::channel();
-        let d = f.dossier.clone();
+        let d = f.directory.clone();
         std::thread::spawn(move || session(&d, &mut |e| tx.send(e).is_ok()));
-        assert_eq!(rx.recv_timeout(DELAI).unwrap().bureaux.len(), 3);
+        assert_eq!(rx.recv_timeout(DELAY).unwrap().workspaces.len(), 3);
     }
 
     #[test]
-    fn hyprland_absent_erreur() {
+    fn hyprland_absent_error() {
         let r = session(Path::new("/nonexistent/hypr/x"), &mut |_| true);
         assert!(r.is_err());
     }

@@ -1,49 +1,49 @@
-//! niri en LECTURE seule : une connexion à `$NIRI_SOCKET`, la requête
-//! `"EventStream"`, puis le flux d'événements jusqu'à la fermeture. Aucune
-//! autre requête. Lecture bloquante sans délai : aucun réveil à vide.
+//! niri, READ ONLY: a connection to `$NIRI_SOCKET`, the `"EventStream"`
+//! request, then the event stream until it closes. No other request.
+//! Blocking read with no delay: no wakeup for nothing.
 
-use crate::compositeur::EtatCompositeur;
-use crate::compositeur::niri::Modele;
+use crate::compositor::CompositorState;
+use crate::compositor::niri::Model;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
-/// La seule requête envoyée à niri (vérifiée par tests/garde_fous.rs).
-pub const DEMANDE: &str = "\"EventStream\"";
+/// The only request sent to niri (checked by tests/guardrails.rs).
+pub const REQUEST: &str = "\"EventStream\"";
 
-pub fn session(socket: &Path, publier: &mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()> {
+pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
     let mut s = UnixStream::connect(socket)?;
-    s.write_all(DEMANDE.as_bytes())?;
+    s.write_all(REQUEST.as_bytes())?;
     s.write_all(b"\n")?;
-    let mut lecteur = BufReader::new(s);
-    let mut modele = Modele::default();
-    let mut ligne = Vec::new();
-    // Le flux commence par l'état complet, WorkspacesChanged et
-    // WindowsChanged : rien n'est publié avant les deux (pas d'état à moitié
-    // lu), si bien que la première publication est l'état initial et les
-    // suivantes des événements (le superviseur compte là-dessus). Tout
-    // autre événement débloque aussi, au cas où niri changerait cet ordre.
-    let (mut bureaux_lus, mut fenetres_lues) = (false, false);
+    let mut reader = BufReader::new(s);
+    let mut model = Model::default();
+    let mut line = Vec::new();
+    // The stream starts with the full state, WorkspacesChanged and
+    // WindowsChanged: nothing is published before both (no half-read
+    // state), so the first publication is the initial state and the next
+    // ones are events (the supervisor counts on this). Any other event also
+    // unblocks it, in case niri changes this order someday.
+    let (mut workspaces_read, mut windows_read) = (false, false);
     loop {
-        ligne.clear();
-        if lecteur.read_until(b'\n', &mut ligne)? == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "flux d'événements niri fermé"));
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "niri event stream closed"));
         }
-        let texte = String::from_utf8_lossy(&ligne);
-        let texte = texte.trim_end();
-        match modele.appliquer_ligne(texte) {
+        let text = String::from_utf8_lossy(&line);
+        let text = text.trim_end();
+        match model.apply_line(text) {
             Ok(true) => {
-                if texte.starts_with("{\"WorkspacesChanged\"") {
-                    bureaux_lus = true;
-                } else if texte.starts_with("{\"WindowsChanged\"") {
-                    fenetres_lues = true;
+                if text.starts_with("{\"WorkspacesChanged\"") {
+                    workspaces_read = true;
+                } else if text.starts_with("{\"WindowsChanged\"") {
+                    windows_read = true;
                 } else {
-                    (bureaux_lus, fenetres_lues) = (true, true);
+                    (workspaces_read, windows_read) = (true, true);
                 }
-                if !(bureaux_lus && fenetres_lues) {
+                if !(workspaces_read && windows_read) {
                     continue;
                 }
-                if !publier(modele.etat()) {
+                if !publish(model.state()) {
                     return Ok(());
                 }
             }
@@ -60,42 +60,42 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    const FLUX: &str = include_str!("../../tests/fixtures/niri-evenements.jsonl");
+    const STREAM: &str = include_str!("../../tests/fixtures/niri-evenements.jsonl");
 
     #[test]
-    fn session_lit_le_flux_jusqu_a_la_fermeture() {
-        let dossier = std::env::temp_dir().join(format!("alpheus-niri-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        let chemin = dossier.join("niri.sock");
-        let l = UnixListener::bind(&chemin).unwrap();
-        let serveur = std::thread::spawn(move || {
+    fn session_reads_stream_until_closed() {
+        let directory = std::env::temp_dir().join(format!("alpheus-niri-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("niri.sock");
+        let l = UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
             let (c, _) = l.accept().unwrap();
-            let mut lecteur = BufReader::new(c.try_clone().unwrap());
-            let mut demande = String::new();
-            lecteur.read_line(&mut demande).unwrap();
+            let mut reader = BufReader::new(c.try_clone().unwrap());
+            let mut request = String::new();
+            reader.read_line(&mut request).unwrap();
             let mut c = c;
-            c.write_all(FLUX.as_bytes()).unwrap(); // puis fermeture
-            demande
+            c.write_all(STREAM.as_bytes()).unwrap(); // then close
+            request
         });
         let (tx, rx) = mpsc::channel();
-        let r = session(&chemin, &mut |e| tx.send(e).is_ok());
-        assert_eq!(serveur.join().unwrap().trim_end(), DEMANDE);
+        let r = session(&path, &mut |e| tx.send(e).is_ok());
+        assert_eq!(server.join().unwrap().trim_end(), REQUEST);
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
-        let dernier = rx.try_iter().last().expect("au moins un état publié");
-        assert_eq!(dernier.fenetre.unwrap().classe, "com.mitchellh.ghostty");
+        let last = rx.try_iter().last().expect("at least one state published");
+        assert_eq!(last.window.unwrap().class, "com.mitchellh.ghostty");
         assert!(rx.recv_timeout(Duration::from_millis(10)).is_err());
-        let _ = std::fs::remove_dir_all(&dossier);
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
-    fn demande_est_la_chaine_json_eventstream() {
-        // niri attend une requête JSON : la chaîne "EventStream" entre guillemets.
-        assert_eq!(serde_json::from_str::<String>(DEMANDE).unwrap(), "EventStream");
+    fn request_is_the_json_string_eventstream() {
+        // niri expects a JSON request: the string "EventStream" in quotes.
+        assert_eq!(serde_json::from_str::<String>(REQUEST).unwrap(), "EventStream");
     }
 
     #[test]
-    fn niri_absent_erreur() {
+    fn niri_absent_error() {
         assert!(session(Path::new("/nonexistent/niri.sock"), &mut |_| true).is_err());
     }
 }

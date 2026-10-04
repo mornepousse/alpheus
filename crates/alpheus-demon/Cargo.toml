@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Démon résident d'alpheus : la barre"
+description = "alpheus's resident daemon: the bar"
 
 [dependencies]
 alpheus-commun.workspace = true

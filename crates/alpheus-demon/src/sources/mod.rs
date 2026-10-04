@@ -1,199 +1,197 @@
-//! Sources d'événements du compositeur : connexion en LECTURE seule,
-//! publication de l'état normalisé, relance à délai croissant quand la
-//! source tombe (1 s, 2 s, 4 s… 30 s au plus ; retour à 1 s après un
-//! succès). Pendant une panne, la barre affiche « – ».
+//! Compositor event sources: READ-ONLY connection, publishing of the
+//! normalized state, backoff with growing delay when the source goes down
+//! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
+//! the bar shows "–".
 
 pub mod hypr;
 pub mod niri;
 
-use crate::compositeur::EtatCompositeur;
-use crate::journal::ecrire as journal;
+use crate::compositor::CompositorState;
+use crate::log::write as log;
 use std::ffi::OsString;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// Message lisible d'une panique attrapée (`catch_unwind`) : `panic!("…")`
-/// et `panic!("{}", x)` (le cas courant) donnent `&str` ou `String` ; tout
-/// le reste (une valeur qui n'implémente pas `Display`) reste anonyme
-/// plutôt que d'essayer, à tort, de l'afficher.
-fn panique_texte(p: &(dyn std::any::Any + Send)) -> String {
+/// Readable message of a caught panic (`catch_unwind`): `panic!("…")` and
+/// `panic!("{}", x)` (the common case) give `&str` or `String`; anything
+/// else (a value that doesn't implement `Display`) stays anonymous rather
+/// than wrongly trying to show it.
+fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
         s.to_string()
     } else if let Some(s) = p.downcast_ref::<String>() {
         s.clone()
     } else {
-        "panique sans message".to_string()
+        "panic with no message".to_string()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Compositeur {
-    Hyprland { dossier: PathBuf },
+pub enum Compositor {
+    Hyprland { directory: PathBuf },
     Niri { socket: PathBuf },
 }
 
-/// Même règle que `compositor()` de nixos-config (home/scripts/lib.sh) :
-/// NIRI_SOCKET d'abord, puis HYPRLAND_INSTANCE_SIGNATURE.
-pub fn detecter(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositeur> {
-    let non_vide = |k: &str| var(k).filter(|v| !v.is_empty());
-    if let Some(s) = non_vide("NIRI_SOCKET") {
-        return Some(Compositeur::Niri { socket: s.into() });
+/// Same rule as nixos-config's `compositor()` (home/scripts/lib.sh):
+/// NIRI_SOCKET first, then HYPRLAND_INSTANCE_SIGNATURE.
+pub fn detect(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositor> {
+    let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
+    if let Some(s) = non_empty("NIRI_SOCKET") {
+        return Some(Compositor::Niri { socket: s.into() });
     }
-    // La signature est un nom de dossier : « / » ou « .. » en sortiraient.
-    let sig = non_vide("HYPRLAND_INSTANCE_SIGNATURE").filter(|s| s != ".." && !s.as_encoded_bytes().contains(&b'/'))?;
-    let runtime = non_vide("XDG_RUNTIME_DIR")?;
-    Some(Compositeur::Hyprland { dossier: PathBuf::from(runtime).join("hypr").join(sig) })
+    // The signature is a directory name: "/" or ".." would escape it.
+    let sig = non_empty("HYPRLAND_INSTANCE_SIGNATURE").filter(|s| s != ".." && !s.as_encoded_bytes().contains(&b'/'))?;
+    let runtime = non_empty("XDG_RUNTIME_DIR")?;
+    Some(Compositor::Hyprland { directory: PathBuf::from(runtime).join("hypr").join(sig) })
 }
 
-pub const DELAI_MAX: Duration = Duration::from_secs(30);
+pub const MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug)]
-pub struct Relance {
-    prochain: Duration,
+pub struct Backoff {
+    next: Duration,
 }
 
-impl Default for Relance {
+impl Default for Backoff {
     fn default() -> Self {
-        Relance::new()
+        Backoff::new()
     }
 }
 
-impl Relance {
+impl Backoff {
     pub fn new() -> Self {
-        Relance { prochain: Duration::from_secs(1) }
+        Backoff { next: Duration::from_secs(1) }
     }
 
-    /// Délai avant la prochaine tentative ; le suivant double (30 s au plus).
-    pub fn suivant(&mut self) -> Duration {
-        let d = self.prochain;
-        self.prochain = (d * 2).min(DELAI_MAX);
+    /// Delay before the next attempt; the following one doubles (30 s at most).
+    pub fn next_delay(&mut self) -> Duration {
+        let d = self.next;
+        self.next = (d * 2).min(MAX_DELAY);
         d
     }
 
-    /// La source a fonctionné : la prochaine panne repart de 1 s.
-    pub fn reussite(&mut self) {
-        self.prochain = Duration::from_secs(1);
+    /// The source worked: the next outage starts over from 1 s.
+    pub fn on_success(&mut self) {
+        self.next = Duration::from_secs(1);
     }
 }
 
-/// Durée au-delà de laquelle une session qui a publié compte comme une
-/// réussite, même sans événement après l'état initial.
-pub const DUREE_STABLE: Duration = Duration::from_secs(10);
+/// Duration beyond which a session that published counts as a success, even
+/// with no event after the initial state.
+pub const STABLE_DURATION: Duration = Duration::from_secs(10);
 
-/// Fait tourner `session` (bloquante, rend Err quand la source tombe) tant
-/// que `envoyer` accepte : publie chaque état, publie `None` (« – ») à
-/// chaque panne, puis attend le délai de relance. `dormir`, `maintenant` et
-/// `journal` sont injectés : les tests comptent délais et lignes de journal
-/// en temps simulé.
-pub fn superviser(
-    mut session: impl FnMut(&mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()>,
-    envoyer: impl Fn(Option<EtatCompositeur>) -> bool,
-    mut dormir: impl FnMut(Duration),
-    mut maintenant: impl FnMut() -> Instant,
-    mut journal: impl FnMut(&str),
+/// Runs `session` (blocking, returns Err when the source goes down) as long
+/// as `send` accepts it: publishes each state, publishes `None` ("–") on
+/// every outage, then waits the backoff delay. `sleep`, `now` and `log` are
+/// injected: tests count delays and log lines in simulated time.
+pub fn supervise(
+    mut session: impl FnMut(&mut dyn FnMut(CompositorState) -> bool) -> io::Result<()>,
+    send: impl Fn(Option<CompositorState>) -> bool,
+    mut sleep: impl FnMut(Duration),
+    mut now: impl FnMut() -> Instant,
+    mut log: impl FnMut(&str),
 ) {
-    let mut relance = Relance::new();
-    let mut premier = true;
+    let mut backoff = Backoff::new();
+    let mut first = true;
     loop {
         let mut publications = 0u32;
-        let mut ferme = false;
-        let debut = maintenant();
-        // Un bogue dans `session` (ou dans une bibliothèque qu'elle appelle)
-        // ne doit ni faire tomber tout le démon, ni figer la barre sur son
-        // dernier état : une panique est attrapée ici et traitée exactement
-        // comme l'aurait été un `Err` (« – », délai croissant, une ligne de
-        // journal), puis la source est retentée au prochain tour. `publier`
-        // capture `publications`, `ferme` et `envoyer` par référence : leur
-        // état au moment d'une panique est celui d'avant, cohérent (de
-        // simples entiers et booléens, jamais une invariant à moitié posé).
-        let resultat = catch_unwind(AssertUnwindSafe(|| {
+        let mut closed = false;
+        let start = now();
+        // A bug in `session` (or in a library it calls) must neither bring
+        // the whole daemon down, nor freeze the bar on its last state: a
+        // panic is caught here and handled exactly like an `Err` would have
+        // been ("–", growing delay, one log line), then the source is
+        // retried on the next round. `publish` captures `publications`,
+        // `closed` and `send` by reference: their state at the moment of a
+        // panic is whatever it was before, consistent (plain integers and
+        // booleans, never a half-set invariant).
+        let result = catch_unwind(AssertUnwindSafe(|| {
             session(&mut |e| {
                 publications += 1;
-                let ok = envoyer(Some(e));
-                ferme |= !ok;
+                let ok = send(Some(e));
+                closed |= !ok;
                 ok
             })
         }));
-        // `&*payload` (pas `&payload`) : sans le déréférencement explicite,
-        // `&Box<dyn Any + Send>` se laisse, à tort, convertir en objet trait
-        // sur LE BOX lui-même (qui implémente aussi `Any`) plutôt que sur la
-        // valeur qu'il contient — `downcast_ref` échouerait alors toujours,
-        // silencieusement (piège vérifié : voir le rapport de correction).
-        let r: io::Result<()> = resultat.unwrap_or_else(|payload| Err(io::Error::other(format!("panique : {}", panique_texte(&*payload)))));
-        if ferme {
-            return; // la barre s'arrête
+        // `&*payload` (not `&payload`): without the explicit dereference,
+        // `&Box<dyn Any + Send>` wrongly lets itself be converted into a
+        // trait object over THE BOX itself (which also implements `Any`)
+        // rather than over the value it contains — `downcast_ref` would then
+        // always fail, silently (a verified trap: see the fix report).
+        let r: io::Result<()> = result.unwrap_or_else(|payload| Err(io::Error::other(format!("panic: {}", panic_text(&*payload)))));
+        if closed {
+            return; // the bar stops
         }
-        // Réussite : au moins un événement du flux après l'état initial (une
-        // seconde publication), ou une session tenue DUREE_STABLE. Une source
-        // qui sert l'état initial puis tombe aussitôt recule donc au lieu de
-        // boucler à 1 s (réveils, barre qui clignote, journal inondé).
-        let duree = maintenant().saturating_duration_since(debut);
-        let reussie = publications >= 2 || (publications >= 1 && duree >= DUREE_STABLE);
-        if reussie {
-            relance.reussite();
+        // Success: at least one event from the stream after the initial
+        // state (a second publication), or a session held for
+        // STABLE_DURATION. A source that serves the initial state and then
+        // immediately goes down thus backs off instead of looping at 1 s
+        // (wakeups, a flickering bar, a flooded log).
+        let elapsed = now().saturating_duration_since(start);
+        let succeeded = publications >= 2 || (publications >= 1 && elapsed >= STABLE_DURATION);
+        if succeeded {
+            backoff.on_success();
         }
         if let Err(e) = r {
-            // Journal à la première panne et après chaque reprise, pas à
-            // chaque tentative (jusqu'à 2 880 lignes par jour sinon). Le
-            // préfixe « alpheus-demon : » n'est PAS répété ici : c'est le
-            // `journal` fourni par l'appelant qui l'ajoute une seule fois
-            // (voir `lancer`, plus bas) ; les tests, eux, passent une
-            // fermeture qui n'en a pas besoin.
-            if premier || reussie {
-                journal(&format!("source du compositeur en panne : {e}"));
+            // Logged on the first outage and after each recovery, not on
+            // every attempt (up to 2,880 lines a day otherwise). The
+            // "alpheus-demon:" prefix is NOT repeated here: it's the `log`
+            // closure given by the caller that adds it, only once (see
+            // `run`, further below); the tests pass a closure that doesn't
+            // need it.
+            if first || succeeded {
+                log(&format!("compositor source down: {e}"));
             }
         }
-        premier = false;
-        if !envoyer(None) {
+        first = false;
+        if !send(None) {
             return;
         }
-        dormir(relance.suivant());
+        sleep(backoff.next_delay());
     }
 }
 
-/// Si CE FIL se termine en panique — quelle qu'en soit la cause, même en
-/// dehors de la session surveillée par `superviser` (déjà protégée par
-/// `catch_unwind`) — publie `None` (affichage « – ») et le journalise,
-/// plutôt que de laisser le canal ouvert sans plus jamais rien recevoir :
-/// l'autre bout (`tx`), tenu aussi par le fil principal et le fil de garde,
-/// reste vivant tant que le démon tourne ; sans ce garde, la barre
-/// resterait figée sur son dernier état au lieu d'afficher la panne.
-struct GardeSource<'a, F: Fn(Option<EtatCompositeur>) -> bool> {
-    envoyer: &'a F,
+/// If THIS thread ends in a panic — whatever its cause, even outside the
+/// session watched by `supervise` (already protected by `catch_unwind`) —
+/// publishes `None` ("–" shown) and logs it, rather than leaving the channel
+/// open with nothing ever coming through again: the other end (`tx`), also
+/// held by the main thread and the guard thread, stays alive as long as the
+/// daemon runs; without this guard, the bar would stay frozen on its last
+/// state instead of showing the outage.
+struct SourceGuard<'a, F: Fn(Option<CompositorState>) -> bool> {
+    send: &'a F,
 }
 
-impl<F: Fn(Option<EtatCompositeur>) -> bool> Drop for GardeSource<'_, F> {
+impl<F: Fn(Option<CompositorState>) -> bool> Drop for SourceGuard<'_, F> {
     fn drop(&mut self) {
         if std::thread::panicking() {
-            journal("fil du compositeur : panique, barre à « – »");
-            (self.envoyer)(None);
+            log("compositor thread: panic, bar set to \"–\"");
+            (self.send)(None);
         }
     }
 }
 
-/// Lance la source dans son fil. Aucun compositeur reconnu : « – » une
-/// fois, sans relance (rien ne changera dans cette session).
-pub fn lancer(c: Option<Compositeur>, envoyer: impl Fn(Option<EtatCompositeur>) -> bool + Send + 'static) {
+/// Starts the source in its thread. No compositor recognized: "–" once, with
+/// no backoff (nothing will change in this session).
+pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bool + Send + 'static) {
     std::thread::Builder::new()
-        .name("compositeur".into())
+        .name("compositor".into())
         .spawn(move || {
-            let _garde = GardeSource { envoyer: &envoyer };
+            let _guard = SourceGuard { send: &send };
             match c {
                 None => {
-                    journal("ni niri ni Hyprland détecté (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
-                    envoyer(None);
+                    log("neither niri nor Hyprland detected (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
+                    send(None);
                 }
-                Some(Compositeur::Hyprland { dossier }) => {
-                    superviser(|p| hypr::session(&dossier, p), &envoyer, std::thread::sleep, Instant::now, journal)
+                Some(Compositor::Hyprland { directory }) => {
+                    supervise(|p| hypr::session(&directory, p), &send, std::thread::sleep, Instant::now, log)
                 }
-                Some(Compositeur::Niri { socket }) => {
-                    superviser(|p| niri::session(&socket, p), &envoyer, std::thread::sleep, Instant::now, journal)
-                }
+                Some(Compositor::Niri { socket }) => supervise(|p| niri::session(&socket, p), &send, std::thread::sleep, Instant::now, log),
             }
         })
-        .expect("fil du compositeur");
+        .expect("compositor thread");
 }
 
 #[cfg(test)]
@@ -202,244 +200,244 @@ mod tests {
     use std::cell::RefCell;
     use std::sync::{Arc, Mutex};
 
-    fn env(paires: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
-        move |k| paires.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
+    fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |k| pairs.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
     }
 
     #[test]
-    fn detection_niri_d_abord() {
+    fn niri_detected_first() {
         assert_eq!(
-            detecter(env(&[
+            detect(env(&[
                 ("NIRI_SOCKET", "/run/niri.sock"),
                 ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
                 ("XDG_RUNTIME_DIR", "/run/user/1000")
             ])),
-            Some(Compositeur::Niri { socket: "/run/niri.sock".into() })
+            Some(Compositor::Niri { socket: "/run/niri.sock".into() })
         );
         assert_eq!(
-            detecter(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("XDG_RUNTIME_DIR", "/run/user/1000")])),
-            Some(Compositeur::Hyprland { dossier: "/run/user/1000/hypr/abc".into() })
+            detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("XDG_RUNTIME_DIR", "/run/user/1000")])),
+            Some(Compositor::Hyprland { directory: "/run/user/1000/hypr/abc".into() })
         );
-        assert_eq!(detecter(env(&[("NIRI_SOCKET", ""), ("HYPRLAND_INSTANCE_SIGNATURE", "")])), None);
-        assert_eq!(detecter(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc")])), None, "sans XDG_RUNTIME_DIR");
+        assert_eq!(detect(env(&[("NIRI_SOCKET", ""), ("HYPRLAND_INSTANCE_SIGNATURE", "")])), None);
+        assert_eq!(detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc")])), None, "no XDG_RUNTIME_DIR");
     }
 
     #[test]
-    fn delai_double_jusqu_a_30_s() {
-        let mut r = Relance::new();
-        let d: Vec<u64> = (0..8).map(|_| r.suivant().as_secs()).collect();
+    fn delay_doubles_up_to_30s() {
+        let mut r = Backoff::new();
+        let d: Vec<u64> = (0..8).map(|_| r.next_delay().as_secs()).collect();
         assert_eq!(d, [1, 2, 4, 8, 16, 30, 30, 30]);
-        r.reussite();
-        assert_eq!(r.suivant(), Duration::from_secs(1));
+        r.on_success();
+        assert_eq!(r.next_delay(), Duration::from_secs(1));
     }
 
-    /// Horloge simulée : avance de `pas` à chaque lecture.
-    fn horloge(pas: Duration) -> impl FnMut() -> Instant {
+    /// Simulated clock: advances by `step` on each read.
+    fn clock(step: Duration) -> impl FnMut() -> Instant {
         let mut t = Instant::now();
         move || {
-            t += pas;
+            t += step;
             t
         }
     }
 
     #[test]
-    fn panne_tiret_puis_relance_a_delai_croissant() {
-        let delais = RefCell::new(Vec::new());
-        let envois = RefCell::new(Vec::new());
-        let mut tour = 0;
-        superviser(
-            |publier| {
-                tour += 1;
-                match tour {
-                    1..=6 | 8 => Err(io::Error::other("refusé")),
+    fn outage_dash_then_backoff_with_growing_delay() {
+        let delays = RefCell::new(Vec::new());
+        let sends = RefCell::new(Vec::new());
+        let mut round = 0;
+        supervise(
+            |publish| {
+                round += 1;
+                match round {
+                    1..=6 | 8 => Err(io::Error::other("refused")),
                     7 => {
-                        publier(EtatCompositeur::default()); // état initial
-                        publier(EtatCompositeur::default()); // un événement du flux
-                        Err(io::Error::other("tombé"))
+                        publish(CompositorState::default()); // initial state
+                        publish(CompositorState::default()); // a stream event
+                        Err(io::Error::other("fell"))
                     }
                     _ => {
-                        publier(EtatCompositeur::default());
+                        publish(CompositorState::default());
                         Ok(())
                     }
                 }
             },
             |e| {
-                let mut v = envois.borrow_mut();
+                let mut v = sends.borrow_mut();
                 v.push(e.is_some());
-                v.len() < 11 // le 11e envoi : la barre s'arrête
+                v.len() < 11 // the 11th send: the bar stops
             },
-            |d| delais.borrow_mut().push(d.as_secs()),
-            horloge(Duration::ZERO),
+            |d| delays.borrow_mut().push(d.as_secs()),
+            clock(Duration::ZERO),
             |_| {},
         );
-        assert_eq!(*delais.borrow(), [1, 2, 4, 8, 16, 30, 1, 2], "retour à 1 s après le succès du tour 7");
+        assert_eq!(*delays.borrow(), [1, 2, 4, 8, 16, 30, 1, 2], "back to 1 s after round 7 succeeds");
         let (f, t) = (false, true);
-        assert_eq!(*envois.borrow(), [f, f, f, f, f, f, t, t, f, f, t], "« – » (None) à chaque panne");
+        assert_eq!(*sends.borrow(), [f, f, f, f, f, f, t, t, f, f, t], "\"–\" (None) on every outage");
     }
 
-    /// Un bogue dans `session` (ou dans une bibliothèque qu'elle appelle)
-    /// qui panique ne doit ni faire tomber tout le démon, ni figer la barre :
-    /// `superviser` l'attrape (`catch_unwind`), la traite comme une panne
-    /// ordinaire (« – », délai croissant, une ligne de journal), et continue
-    /// à retenter la source ensuite — exactement comme pour un `Err`.
+    /// A bug in `session` (or in a library it calls) that panics must
+    /// neither bring the whole daemon down, nor freeze the bar: `supervise`
+    /// catches it (`catch_unwind`), treats it like an ordinary outage ("–",
+    /// growing delay, one log line), and keeps retrying the source
+    /// afterwards — exactly like for an `Err`.
     #[test]
-    fn panique_dans_la_session_traitee_comme_une_panne_puis_relancee() {
-        let delais = RefCell::new(Vec::new());
-        let envois = RefCell::new(Vec::new());
-        let journaux = RefCell::new(Vec::new());
-        let mut tour = 0;
-        superviser(
-            |publier| {
-                tour += 1;
-                match tour {
-                    1 => panic!("simulation : bogue dans la session"),
+    fn panic_in_session_handled_like_an_outage_then_retried() {
+        let delays = RefCell::new(Vec::new());
+        let sends = RefCell::new(Vec::new());
+        let logs = RefCell::new(Vec::new());
+        let mut round = 0;
+        supervise(
+            |publish| {
+                round += 1;
+                match round {
+                    1 => panic!("simulation: bug in the session"),
                     2 => {
-                        publier(EtatCompositeur::default()); // état initial
-                        publier(EtatCompositeur::default()); // un événement du flux : réussite
+                        publish(CompositorState::default()); // initial state
+                        publish(CompositorState::default()); // a stream event: success
                         Ok(())
                     }
-                    _ => Err(io::Error::other("refusé")),
+                    _ => Err(io::Error::other("refused")),
                 }
             },
             |e| {
-                let mut v = envois.borrow_mut();
+                let mut v = sends.borrow_mut();
                 v.push(e.is_some());
                 v.len() < 5
             },
-            |d| delais.borrow_mut().push(d.as_secs()),
-            horloge(Duration::ZERO),
-            |m| journaux.borrow_mut().push(m.to_string()),
+            |d| delays.borrow_mut().push(d.as_secs()),
+            clock(Duration::ZERO),
+            |m| logs.borrow_mut().push(m.to_string()),
         );
-        // Tour 1 : panique → délai 1 s. Tour 2 : réussite (2 publications) →
-        // relance remise à 1 s. Tour 3 : panne ordinaire ; le 5e envoi
-        // (« – » après ce tour) arrête la barre avant le prochain `dormir`.
-        assert_eq!(*delais.borrow(), [1, 1]);
+        // Round 1: panic → delay 1 s. Round 2: success (2 publications) →
+        // backoff reset to 1 s. Round 3: ordinary outage; the 5th send
+        // ("–" after this round) stops the bar before the next `sleep`.
+        assert_eq!(*delays.borrow(), [1, 1]);
         let (f, t) = (false, true);
-        assert_eq!(*envois.borrow(), [f, t, t, f, f], "« – » après la panique, comme après une panne ordinaire");
-        // Une seule ligne : à la panique (premier), pas au tour 3 (ni
-        // premier, ni une reprise réussie derrière) — même règle qu'un Err.
-        assert_eq!(journaux.borrow().len(), 1, "{:?}", journaux.borrow());
-        assert!(journaux.borrow()[0].contains("bogue dans la session"), "{:?}", journaux.borrow());
+        assert_eq!(*sends.borrow(), [f, t, t, f, f], "\"–\" after the panic, like after an ordinary outage");
+        // A single line: on the panic (first), not on round 3 (neither
+        // first, nor a recovery behind it) — same rule as an Err.
+        assert_eq!(logs.borrow().len(), 1, "{:?}", logs.borrow());
+        assert!(logs.borrow()[0].contains("bug in the session"), "{:?}", logs.borrow());
     }
 
-    /// Défense en profondeur : même si une panique se produit HORS de la
-    /// session surveillée par `superviser` (déjà protégée par
-    /// `catch_unwind` — ici, on simule directement une panique dans le fil
-    /// qui la porte), la barre ne doit jamais rester figée sur son dernier
-    /// état faute d'un dernier `None` publié.
+    /// Defense in depth: even if a panic happens OUTSIDE the session watched
+    /// by `supervise` (already protected by `catch_unwind` — here, we
+    /// directly simulate a panic in the thread that carries it), the bar
+    /// must never stay frozen on its last state for lack of a final `None`
+    /// published.
     #[test]
-    fn garde_source_publie_tiret_si_le_fil_panique() {
-        let recus = Arc::new(Mutex::new(Vec::new()));
-        let r = recus.clone();
-        let envoyer = move |e: Option<EtatCompositeur>| {
+    fn guard_publishes_dash_if_thread_panics() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let r = received.clone();
+        let send = move |e: Option<CompositorState>| {
             r.lock().unwrap().push(e.is_some());
             true
         };
         let h = std::thread::spawn(move || {
-            let _garde = GardeSource { envoyer: &envoyer };
-            panic!("simulation : panique hors de la session surveillée");
+            let _guard = SourceGuard { send: &send };
+            panic!("simulation: panic outside the watched session");
         });
-        assert!(h.join().is_err(), "le fil doit vraiment paniquer, sinon ce test ne prouve rien");
-        assert_eq!(*recus.lock().unwrap(), [false], "« – » publié par le garde malgré la panique");
+        assert!(h.join().is_err(), "the thread must really panic, otherwise this test proves nothing");
+        assert_eq!(*received.lock().unwrap(), [false], "\"–\" published by the guard despite the panic");
     }
 
-    /// Une source qui sert l'état initial puis tombe aussitôt : le délai
-    /// croît quand même, une seule ligne au journal.
-    fn bagotage(
-        mut session: impl FnMut(&mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()>,
-        pas: Duration,
+    /// A source that serves the initial state and then immediately goes
+    /// down: the delay still grows, a single log line.
+    fn flapping(
+        mut session: impl FnMut(&mut dyn FnMut(CompositorState) -> bool) -> io::Result<()>,
+        step: Duration,
     ) -> (Vec<u64>, Vec<String>, usize) {
-        let delais = RefCell::new(Vec::new());
-        let journal = RefCell::new(Vec::new());
-        let publies = RefCell::new(0);
+        let delays = RefCell::new(Vec::new());
+        let log = RefCell::new(Vec::new());
+        let published = RefCell::new(0);
         let cycles = RefCell::new(0);
-        superviser(
+        supervise(
             &mut session,
             |e| {
                 if e.is_some() {
-                    *publies.borrow_mut() += 1;
+                    *published.borrow_mut() += 1;
                     return true;
                 }
                 *cycles.borrow_mut() += 1;
                 *cycles.borrow() < 6
             },
-            |d| delais.borrow_mut().push(d.as_secs()),
-            horloge(pas),
-            |m| journal.borrow_mut().push(m.to_string()),
+            |d| delays.borrow_mut().push(d.as_secs()),
+            clock(step),
+            |m| log.borrow_mut().push(m.to_string()),
         );
-        (delais.into_inner(), journal.into_inner(), publies.into_inner())
+        (delays.into_inner(), log.into_inner(), published.into_inner())
     }
 
     #[test]
-    fn etat_initial_seul_ne_compte_pas_comme_reussite() {
-        let (delais, journal, _) = bagotage(
+    fn initial_state_alone_is_not_a_success() {
+        let (delays, log, _) = flapping(
             |p| {
-                p(EtatCompositeur::default());
-                Err(io::Error::other("tombé"))
+                p(CompositorState::default());
+                Err(io::Error::other("fell"))
             },
             Duration::from_secs(1),
         );
-        assert_eq!(delais, [1, 2, 4, 8, 16]);
-        assert_eq!(journal.len(), 1, "{journal:?}");
+        assert_eq!(delays, [1, 2, 4, 8, 16]);
+        assert_eq!(log.len(), 1, "{log:?}");
     }
 
     #[test]
-    fn session_de_10_s_compte_comme_reussite() {
-        let (delais, journal, _) = bagotage(
+    fn a_10s_session_counts_as_success() {
+        let (delays, log, _) = flapping(
             |p| {
-                p(EtatCompositeur::default());
-                Err(io::Error::other("tombé"))
+                p(CompositorState::default());
+                Err(io::Error::other("fell"))
             },
-            DUREE_STABLE,
+            STABLE_DURATION,
         );
-        assert_eq!(delais, [1, 1, 1, 1, 1]);
-        assert_eq!(journal.len(), 6, "une ligne par panne après chaque reprise");
+        assert_eq!(delays, [1, 1, 1, 1, 1]);
+        assert_eq!(log.len(), 6, "one line per outage after each recovery");
     }
 
     #[test]
-    fn hyprland_bagoteur_recule() {
-        let f = hypr::faux::FauxHyprland::demarrer_avec("bagoteur", hypr::faux::CLIENTS.as_bytes(), true);
-        let d = f.dossier.clone();
-        let (delais, journal, publies) = bagotage(|p| hypr::session(&d, p), Duration::ZERO);
-        assert_eq!(publies, 6, "l'état initial servi à chaque tour");
-        assert_eq!(delais, [1, 2, 4, 8, 16]);
-        assert_eq!(journal.len(), 1, "{journal:?}");
+    fn hyprland_flapper_backs_off() {
+        let f = hypr::fake::FakeHyprland::start_with("flapper", hypr::fake::CLIENTS.as_bytes(), true);
+        let d = f.directory.clone();
+        let (delays, log, published) = flapping(|p| hypr::session(&d, p), Duration::ZERO);
+        assert_eq!(published, 6, "the initial state served every round");
+        assert_eq!(delays, [1, 2, 4, 8, 16]);
+        assert_eq!(log.len(), 1, "{log:?}");
     }
 
     #[test]
-    fn niri_bagoteur_recule() {
+    fn niri_flapper_backs_off() {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixListener;
-        let dossier = std::env::temp_dir().join(format!("alpheus-niri-bagoteur-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dossier);
-        std::fs::create_dir_all(&dossier).unwrap();
-        let chemin = dossier.join("niri.sock");
-        let l = UnixListener::bind(&chemin).unwrap();
-        // Chaque connexion : l'état initial complet, puis fermeture.
+        let directory = std::env::temp_dir().join(format!("alpheus-niri-flapper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("niri.sock");
+        let l = UnixListener::bind(&path).unwrap();
+        // Each connection: the full initial state, then close.
         let initial: String =
             include_str!("../../tests/fixtures/niri-evenements.jsonl").lines().take(6).map(|l| format!("{l}\n")).collect();
         std::thread::spawn(move || {
             for c in l.incoming() {
                 let Ok(c) = c else { return };
-                let mut demande = String::new();
-                let _ = BufReader::new(&c).read_line(&mut demande);
+                let mut request = String::new();
+                let _ = BufReader::new(&c).read_line(&mut request);
                 let _ = (&c).write_all(initial.as_bytes());
             }
         });
-        let (delais, journal, publies) = bagotage(|p| niri::session(&chemin, p), Duration::ZERO);
-        assert_eq!(publies, 6, "un seul état publié par tour, une fois l'état initial complet");
-        assert_eq!(delais, [1, 2, 4, 8, 16]);
-        assert_eq!(journal.len(), 1, "{journal:?}");
-        let _ = std::fs::remove_dir_all(&dossier);
+        let (delays, log, published) = flapping(|p| niri::session(&path, p), Duration::ZERO);
+        assert_eq!(published, 6, "one state published per round, once the full initial state has arrived");
+        assert_eq!(delays, [1, 2, 4, 8, 16]);
+        assert_eq!(log.len(), 1, "{log:?}");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     #[test]
-    fn signature_hyprland_qui_sort_du_dossier_refusee() {
+    fn hyprland_signature_escaping_directory_refused() {
         for sig in ["../../etc", "a/b", ".."] {
             let v: &'static str = Box::leak(sig.to_string().into_boxed_str());
-            let paires: &'static [(&str, &str)] =
+            let pairs: &'static [(&str, &str)] =
                 Box::leak(Box::new([("HYPRLAND_INSTANCE_SIGNATURE", v), ("XDG_RUNTIME_DIR", "/run/user/1000")]));
-            assert_eq!(detecter(env(paires)), None, "{sig}");
+            assert_eq!(detect(env(pairs)), None, "{sig}");
         }
     }
 }

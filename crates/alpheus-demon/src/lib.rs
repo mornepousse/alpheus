@@ -1,20 +1,19 @@
-//! alpheus-demon — démon résident (sous-projet 2 du cadrage, spec
-//! docs/specs/2026-10-04-alpheus-demon-barre-design.md). Un état pur
-//! (`etat::Barre`) modifié par des messages, des sources qui les envoient,
-//! une grille de cellules dessinée par cosmic-text dans une surface
-//! layer-shell par écran.
+//! alpheus-demon — resident daemon (sub-project 2 of the framing document,
+//! spec docs/specs/2026-10-04-alpheus-demon-barre-design.md). A pure state
+//! (`state::Bar`) changed by messages, sources that send them, a grid of
+//! cells drawn by cosmic-text into a layer-shell surface per screen.
 
 pub mod actions;
-pub mod compositeur;
+pub mod clock;
+pub mod compositor;
 pub mod config;
-pub mod disposition;
-pub mod etat;
-pub mod grille;
-pub mod heure;
-pub mod icones;
-pub mod journal;
-pub mod lancement;
-pub mod peintre;
+pub mod grid;
+pub mod icons;
+pub mod launch;
+pub mod layout;
+pub mod lock;
+pub mod log;
+pub mod painter;
 pub mod sources;
-pub mod verrou;
+pub mod state;
 pub mod wayland;

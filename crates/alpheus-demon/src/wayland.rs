@@ -1,12 +1,12 @@
-//! Wayland : une surface layer-shell (couche Top, ancrée en haut, zone
-//! exclusive) par écran, suivie à chaud ; un pointeur pour les clics et la
-//! molette. Rien d'autre n'est demandé au compositeur. Redessin seulement
-//! quand la grille d'un écran change.
+//! Wayland: one layer-shell surface (Top layer, anchored at the top,
+//! exclusive zone) per screen, tracked live; a pointer for clicks and the
+//! wheel. Nothing else is asked of the compositor. Redraw only when a
+//! screen's grid changes.
 
-use crate::actions::{self, Bouton, Molette};
-use crate::etat::Barre;
-use crate::grille::Grille;
-use crate::peintre::{self, Polices};
+use crate::actions::{self, Button, Wheel};
+use crate::grid::Grid;
+use crate::painter::{self, Fonts};
+use crate::state::Bar;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
@@ -28,258 +28,257 @@ use smithay_client_toolkit::{
 };
 use std::sync::Arc;
 
-use crate::journal::ecrire as journal;
+use crate::log::write as log;
 
-/// Taille de départ du pool (`Etat::new`) : jamais redescendu en dessous,
-/// pour ne pas recréer le pool sans cesse autour d'un écran minuscule ou
-/// quand il est déjà à sa taille plancher.
-const POOL_PLANCHER: usize = 64 * 1024;
-/// Un pool qui dépasse ce qu'il faut aux surfaces restantes par ce facteur
-/// (ou plus) est jugé nettement surdimensionné.
-const POOL_FACTEUR_SURDIMENSIONNE: usize = 4;
+/// Starting pool size (`App::new`): never taken back below this, so as not
+/// to keep recreating the pool around a tiny screen or when it's already at
+/// its floor size.
+const POOL_FLOOR: usize = 64 * 1024;
+/// A pool that exceeds what the remaining surfaces need by this factor (or
+/// more) is judged clearly oversized.
+const POOL_OVERSIZE_FACTOR: usize = 4;
 
-/// Octets nécessaires au tampon d'une surface de `largeur` cases logiques,
-/// à l'échelle `echelle`, pour une barre de `hauteur` px logiques (même
-/// calcul que `dessiner` : ARGB8888, 4 octets par pixel physique).
-fn taille_tampon(largeur: u32, hauteur: u32, echelle: i32) -> usize {
-    let e = echelle.max(1) as usize;
-    (largeur as usize * e) * (hauteur as usize * e) * 4
+/// Bytes needed for a surface's buffer, `width` logical cells wide, at
+/// `scale`, for a bar `height` logical px tall (same computation as `draw`:
+/// ARGB8888, 4 bytes per physical pixel).
+fn buffer_size(width: u32, height: u32, scale: i32) -> usize {
+    let e = scale.max(1) as usize;
+    (width as usize * e) * (height as usize * e) * 4
 }
 
-/// Faut-il recréer le pool (actuellement `actuelle` octets) pour les
-/// surfaces restantes, dont les besoins (en octets) sont `besoins` ? Rend
-/// la taille cible si oui, `None` sinon. `SlotPool::resize` (wl_shm) ne peut
-/// qu'agrandir, jamais rétrécir : la seule façon de rendre la mémoire d'un
-/// grand écran débranché est de recréer le pool, plus petit. On ne le fait
-/// que quand c'est nettement utile (`POOL_FACTEUR_SURDIMENSIONNE`), pour ne
-/// pas recréer à la moindre fluctuation de taille.
+/// Should the pool (currently `current` bytes) be recreated for the
+/// remaining surfaces, whose needs (in bytes) are `needs`? Returns the
+/// target size if so, `None` otherwise. `SlotPool::resize` (wl_shm) can only
+/// grow, never shrink: the only way to return a large screen's memory once
+/// it's unplugged is to recreate the pool, smaller. This is only done when
+/// clearly worthwhile (`POOL_OVERSIZE_FACTOR`), so as not to recreate it at
+/// the slightest size fluctuation.
 ///
-/// Le besoin est la SOMME de `besoins`, pas son maximum : le pool porte le
-/// tampon de chaque surface À LA FOIS (une par écran), pas un seul tampon
-/// réutilisé en rotation — un pool dimensionné sur la plus grande surface
-/// serait trop petit dès qu'une deuxième a aussi besoin de place.
-fn pool_cible(actuelle: usize, besoins: &[usize]) -> Option<usize> {
-    if besoins.is_empty() {
-        // Plus aucune surface : au minimum, revenir au plancher.
-        return (actuelle > POOL_PLANCHER).then_some(POOL_PLANCHER);
+/// The need is the SUM of `needs`, not its maximum: the pool carries every
+/// surface's buffer AT THE SAME TIME (one per screen), not a single buffer
+/// reused in rotation — a pool sized for the largest surface alone would be
+/// too small as soon as a second one also needs room.
+fn target_pool(current: usize, needs: &[usize]) -> Option<usize> {
+    if needs.is_empty() {
+        // No surface left at all: at minimum, return to the floor.
+        return (current > POOL_FLOOR).then_some(POOL_FLOOR);
     }
-    let necessaire = besoins.iter().copied().sum::<usize>().max(POOL_PLANCHER);
-    if actuelle > necessaire.saturating_mul(POOL_FACTEUR_SURDIMENSIONNE) {
-        // Marge (double) pour ne pas re-recréer tout de suite après.
-        Some(necessaire.saturating_mul(2))
+    let required = needs.iter().copied().sum::<usize>().max(POOL_FLOOR);
+    if current > required.saturating_mul(POOL_OVERSIZE_FACTOR) {
+        // Margin (double) so as not to recreate it again right away.
+        Some(required.saturating_mul(2))
     } else {
         None
     }
 }
 
-/// Texte affiché au journal pour une sortie : son nom Wayland s'il est
-/// connu, sinon un repli lisible avec son identifiant protocole — une
-/// sortie `wl_output` antérieure à la version 4 du protocole n'annonce pas
-/// de nom, et `barre posée sur ` (vide) ne dit rien à qui lit le journal.
-/// Fonction pure (le reste, `nom_journal`, en tire l'identifiant depuis le
-/// `wl_output` réel) : testable sans connexion Wayland.
-fn texte_journal(nom: &str, id: u32) -> String {
-    if nom.is_empty() { format!("une sortie sans nom (id {id})") } else { nom.to_string() }
+/// Text logged for an output: its Wayland name if known, otherwise a
+/// readable fallback with its protocol id — a `wl_output` older than
+/// protocol version 4 does not announce a name, and "bar placed on " (empty)
+/// says nothing to whoever reads the log. Pure function (the rest,
+/// `log_name`, derives the id from the real `wl_output`): testable with no
+/// Wayland connection.
+fn log_text(name: &str, id: u32) -> String {
+    if name.is_empty() { format!("an output with no name (id {id})") } else { name.to_string() }
 }
 
-fn nom_journal(nom: &str, sortie: &wl_output::WlOutput) -> String {
-    texte_journal(nom, sortie.id().protocol_id())
+fn log_name(name: &str, output: &wl_output::WlOutput) -> String {
+    log_text(name, output.id().protocol_id())
 }
 
-/// Faut-il reposer la barre sur `sortie` après que le compositeur a fermé
-/// sa surface (`LayerShellHandler::closed`) ? Oui si cette sortie figure
-/// encore parmi `connues` : certains compositeurs ferment la SURFACE sans
-/// jamais détruire la SORTIE (`output_destroyed`), en s'attendant qu'on la
-/// repose — contrairement à un vrai débranchement, où les deux arrivent.
-/// Générique sur `T: PartialEq` plutôt que sur `wl_output::WlOutput`
-/// directement : un `wl_output::WlOutput` ne s'instancie pas hors d'une
-/// vraie connexion, cette forme reste donc testable sans Wayland.
-fn faut_reposer<T: PartialEq>(sortie: &T, connues: impl Iterator<Item = T>) -> bool {
-    connues.into_iter().any(|s| s == *sortie)
+/// Should the bar be restored on `output` after the compositor closed its
+/// surface (`LayerShellHandler::closed`)? Yes if this output is still among
+/// `known`: some compositors close the SURFACE without ever destroying the
+/// OUTPUT (`output_destroyed`), expecting it to be restored — unlike a real
+/// unplugging, where both happen. Generic over `T: PartialEq` rather than
+/// over `wl_output::WlOutput` directly: a `wl_output::WlOutput` cannot be
+/// instantiated outside a real connection, so this form stays testable
+/// without Wayland.
+fn should_restore<T: PartialEq>(output: &T, known: impl Iterator<Item = T>) -> bool {
+    known.into_iter().any(|s| s == *output)
 }
 
-/// Variante bornée de `faut_reposer` : refuse de reposer une DEUXIÈME fois
-/// la même sortie tant que la première repose n'a pas reçu son premier
-/// `configure` (elle est alors dans `attente`). Sans cette borne, un
-/// compositeur qui fermerait la surface en boucle (bogue, protocole mal
-/// respecté) ferait reposer sans fin — `poser`/`retirer` à chaque
-/// `closed`, jamais un `configure` entre deux pour calmer les choses.
-fn faut_reposer_une_fois<T: PartialEq>(sortie: &T, attente: &[T], connues: impl Iterator<Item = T>) -> bool {
-    !attente.iter().any(|s| s == sortie) && faut_reposer(sortie, connues)
+/// Bounded variant of `should_restore`: refuses to restore the SAME output a
+/// second time as long as the first restore hasn't received its first
+/// `configure` (it is then in `pending`). Without this bound, a compositor
+/// that closed the surface in a loop (a bug, a protocol violation) would
+/// restore it endlessly — `place`/`remove` on every `closed`, never a
+/// `configure` in between to settle things down.
+fn should_restore_once<T: PartialEq>(output: &T, pending: &[T], known: impl Iterator<Item = T>) -> bool {
+    !pending.iter().any(|s| s == output) && should_restore(output, known)
 }
 
 struct Surface {
-    sortie: wl_output::WlOutput,
-    nom: String,
-    couche: LayerSurface,
-    /// Largeur logique donnée par le compositeur (0 avant le premier configure).
-    largeur: u32,
-    echelle: i32,
-    configuree: bool,
-    /// Dernière grille dessinée : pas de redessin si rien n'a changé.
-    derniere: Option<Grille>,
+    output: wl_output::WlOutput,
+    name: String,
+    layer: LayerSurface,
+    /// Logical width given by the compositor (0 before the first configure).
+    width: u32,
+    scale: i32,
+    configured: bool,
+    /// Last grid drawn: no redraw if nothing changed.
+    last: Option<Grid>,
 }
 
-pub struct Etat {
-    registre: RegistryState,
-    sorties: OutputState,
-    sieges: SeatState,
+pub struct App {
+    registry: RegistryState,
+    outputs: OutputState,
+    seats: SeatState,
     shm: Shm,
-    compositeur: CompositorState,
-    couches: LayerShell,
+    compositor: CompositorState,
+    layers: LayerShell,
     pool: SlotPool,
     surfaces: Vec<Surface>,
-    pointeur: Option<ThemedPointer>,
-    molette: Molette,
-    pub barre: Barre,
+    pointer: Option<ThemedPointer>,
+    wheel: Wheel,
+    pub bar: Bar,
     palette: Palette,
-    polices: Polices,
+    fonts: Fonts,
     exec: Arc<dyn Executor>,
-    pub fin: bool,
-    /// Levé par un message qui a changé l'affichage (canal, horloge) :
-    /// redessiné une seule fois après le retour de `boucle.dispatch()`, pas
-    /// à chaque message — voir `lancement::sur_message`.
-    sale: bool,
-    /// Sorties reposées depuis la fermeture de leur dernière surface
-    /// (`closed`), sans `configure` réussi depuis (voir
-    /// `faut_reposer_une_fois`) : au plus une repose par sortie tant que la
-    /// précédente n'a pas abouti.
-    en_attente_de_configure: Vec<wl_output::WlOutput>,
+    pub stop: bool,
+    /// Raised by a message that changed the display (channel, clock):
+    /// redrawn exactly once after `loop.dispatch()` returns, not on every
+    /// message — see `launch::on_message`.
+    dirty: bool,
+    /// Outputs restored since their last surface was closed (`closed`),
+    /// with no successful `configure` since (see `should_restore_once`): at
+    /// most one restore per output as long as the previous one hasn't
+    /// succeeded.
+    awaiting_configure: Vec<wl_output::WlOutput>,
 }
 
-impl Etat {
+impl App {
     pub fn new(
         globals: &GlobalList,
         qh: &QueueHandle<Self>,
-        barre: Barre,
+        bar: Bar,
         palette: Palette,
-        polices: Polices,
+        fonts: Fonts,
         exec: Arc<dyn Executor>,
-    ) -> Result<Etat, String> {
-        let compositeur = CompositorState::bind(globals, qh).map_err(|e| format!("wl_compositor : {e}"))?;
-        let couches = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell indisponible : {e}"))?;
-        let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm : {e}"))?;
-        let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("tampon partagé : {e}"))?;
-        Ok(Etat {
-            registre: RegistryState::new(globals),
-            sorties: OutputState::new(globals, qh),
-            sieges: SeatState::new(globals, qh),
+    ) -> Result<App, String> {
+        let compositor = CompositorState::bind(globals, qh).map_err(|e| format!("wl_compositor: {e}"))?;
+        let layers = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell unavailable: {e}"))?;
+        let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm: {e}"))?;
+        let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
+        Ok(App {
+            registry: RegistryState::new(globals),
+            outputs: OutputState::new(globals, qh),
+            seats: SeatState::new(globals, qh),
             shm,
-            compositeur,
-            couches,
+            compositor,
+            layers,
             pool,
             surfaces: Vec::new(),
-            pointeur: None,
-            molette: Molette::default(),
-            barre,
+            pointer: None,
+            wheel: Wheel::default(),
+            bar,
             palette,
-            polices,
+            fonts,
             exec,
-            fin: false,
-            sale: false,
-            en_attente_de_configure: Vec::new(),
+            stop: false,
+            dirty: false,
+            awaiting_configure: Vec::new(),
         })
     }
 
-    fn poser(&mut self, qh: &QueueHandle<Self>, sortie: wl_output::WlOutput) {
-        let info = self.sorties.info(&sortie);
-        let nom = info.as_ref().and_then(|i| i.name.clone()).unwrap_or_default();
-        let echelle = info.map(|i| i.scale_factor).unwrap_or(1);
-        let hauteur = self.barre.config.hauteur;
-        let surface = self.compositeur.create_surface(qh);
-        let couche = self.couches.create_layer_surface(qh, surface, Layer::Top, Some("alpheus-barre"), Some(&sortie));
-        couche.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        couche.set_size(0, hauteur);
-        couche.set_exclusive_zone(hauteur as i32);
-        couche.set_keyboard_interactivity(KeyboardInteractivity::None);
-        couche.commit();
-        journal(&format!("barre posée sur {}", nom_journal(&nom, &sortie)));
-        self.surfaces.push(Surface { sortie, nom, couche, largeur: 0, echelle, configuree: false, derniere: None });
+    fn place(&mut self, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        let info = self.outputs.info(&output);
+        let name = info.as_ref().and_then(|i| i.name.clone()).unwrap_or_default();
+        let scale = info.map(|i| i.scale_factor).unwrap_or(1);
+        let height = self.bar.config.height;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some("alpheus-bar"), Some(&output));
+        layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_size(0, height);
+        layer.set_exclusive_zone(height as i32);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit();
+        log(&format!("bar placed on {}", log_name(&name, &output)));
+        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None });
     }
 
-    /// Rend la sortie de la surface retirée, pour que l'appelant puisse
-    /// décider de reposer la barre dessus (voir `closed`) si elle existe
-    /// encore.
-    fn retirer(&mut self, i: usize) -> wl_output::WlOutput {
-        let s = self.surfaces.remove(i); // la surface est détruite avec `s`
-        journal(&format!("barre retirée de {}", nom_journal(&s.nom, &s.sortie)));
-        self.retrecir_pool_si_besoin();
-        s.sortie
+    /// Returns the removed surface's output, so the caller can decide to
+    /// restore the bar onto it (see `closed`) if it still exists.
+    fn remove(&mut self, i: usize) -> wl_output::WlOutput {
+        let s = self.surfaces.remove(i); // the surface is destroyed along with `s`
+        log(&format!("bar removed from {}", log_name(&s.name, &s.output)));
+        self.shrink_pool_if_needed();
+        s.output
     }
 
-    /// Recrée le pool à une taille ajustée aux surfaces restantes, si
-    /// nettement surdimensionné (voir `pool_cible`) : sans cela, la
-    /// projection de pointe d'un grand écran débranché reste en mémoire
-    /// pour toujours (« tourne sur une patate »).
-    fn retrecir_pool_si_besoin(&mut self) {
-        let hauteur = self.barre.config.hauteur;
-        let besoins: Vec<usize> = self.surfaces.iter().map(|s| taille_tampon(s.largeur, hauteur, s.echelle)).collect();
-        if let Some(taille) = pool_cible(self.pool.len(), &besoins) {
-            match SlotPool::new(taille, &self.shm) {
+    /// Recreates the pool at a size fitted to the remaining surfaces, if
+    /// clearly oversized (see `target_pool`): without this, the peak
+    /// footprint of a large unplugged screen stays in memory forever
+    /// ("running on a potato").
+    fn shrink_pool_if_needed(&mut self) {
+        let height = self.bar.config.height;
+        let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, height, s.scale)).collect();
+        if let Some(size) = target_pool(self.pool.len(), &needs) {
+            match SlotPool::new(size, &self.shm) {
                 Ok(p) => self.pool = p,
-                Err(e) => journal(&format!("pool {taille} : {e}")),
+                Err(e) => log(&format!("pool {size}: {e}")),
             }
         }
     }
 
-    fn indice(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
-        self.surfaces.iter().position(|s| s.couche.wl_surface() == surface)
+    fn index(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
+        self.surfaces.iter().position(|s| s.layer.wl_surface() == surface)
     }
 
-    pub fn redessiner_tout(&mut self) {
+    pub fn redraw_all(&mut self) {
         for i in 0..self.surfaces.len() {
-            self.dessiner(i);
+            self.draw(i);
         }
     }
 
-    fn dessiner(&mut self, i: usize) {
-        let Etat { surfaces, polices, barre, palette, pool, .. } = self;
+    fn draw(&mut self, i: usize) {
+        let App { surfaces, fonts, bar, palette, pool, .. } = self;
         let s = &mut surfaces[i];
-        if !s.configuree || s.largeur == 0 {
+        if !s.configured || s.width == 0 {
             return;
         }
-        let e = s.echelle.max(1);
-        let (w, h) = (s.largeur * e as u32, barre.config.hauteur * e as u32);
-        let grille = barre.grille(&s.nom, peintre::colonnes(w, polices.avance(e)));
-        if s.derniere.as_ref() == Some(&grille) {
-            return; // rien n'a changé sur cet écran
+        let e = s.scale.max(1);
+        let (w, h) = (s.width * e as u32, bar.config.height * e as u32);
+        let grid = bar.grid(&s.name, painter::columns(w, fonts.advance(e)));
+        if s.last.as_ref() == Some(&grid) {
+            return; // nothing changed on this screen
         }
-        let (tampon, pixels) = match pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) {
+        let (buffer, pixels) = match pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) {
             Ok(t) => t,
             Err(err) => {
-                journal(&format!("tampon {w}×{h} : {err}"));
+                log(&format!("buffer {w}×{h}: {err}"));
                 return;
             }
         };
-        polices.peindre(&grille, palette, pixels, w, h, e);
-        let surface = s.couche.wl_surface();
+        fonts.paint(&grid, palette, pixels, w, h, e);
+        let surface = s.layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
-        if tampon.attach_to(surface).is_err() {
+        if buffer.attach_to(surface).is_err() {
             return;
         }
-        s.couche.commit();
-        s.derniere = Some(grille);
+        s.layer.commit();
+        s.last = Some(grid);
     }
 
-    fn cliquer(&mut self, i: usize, x: f64, b: Bouton) {
-        let e = self.surfaces[i].echelle;
-        let avance = self.polices.avance(e);
+    fn click(&mut self, i: usize, x: f64, b: Button) {
+        let e = self.surfaces[i].scale;
+        let advance = self.fonts.advance(e);
         let s = &self.surfaces[i];
-        let Some(grille) = &s.derniere else { return };
-        if let Some(argv) = actions::clic(&self.barre, &s.nom, grille, x, e, avance, b) {
-            actions::executer(self.exec.as_ref(), &argv);
+        let Some(grid) = &s.last else { return };
+        if let Some(argv) = actions::click(&self.bar, &s.name, grid, x, e, advance, b) {
+            actions::run(self.exec.as_ref(), &argv);
         }
     }
 }
 
-impl CompositorHandler for Etat {
+impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
-        if let Some(i) = self.indice(surface) {
-            if self.surfaces[i].echelle != f {
-                self.surfaces[i].echelle = f;
-                self.surfaces[i].derniere = None;
-                self.dessiner(i);
+        if let Some(i) = self.index(surface) {
+            if self.surfaces[i].scale != f {
+                self.surfaces[i].scale = f;
+                self.surfaces[i].last = None;
+                self.draw(i);
             }
         }
     }
@@ -289,131 +288,131 @@ impl CompositorHandler for Etat {
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }
 
-impl OutputHandler for Etat {
+impl OutputHandler for App {
     fn output_state(&mut self) -> &mut OutputState {
-        &mut self.sorties
+        &mut self.outputs
     }
 
-    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, sortie: wl_output::WlOutput) {
-        self.poser(qh, sortie);
+    fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.place(qh, output);
     }
 
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, sortie: wl_output::WlOutput) {
-        // Nom annoncé ou changé après coup : les bureaux affichés en dépendent.
-        let nom = self.sorties.info(&sortie).and_then(|i| i.name);
-        if let Some(i) = self.surfaces.iter().position(|s| s.sortie == sortie) {
-            if let Some(n) = nom.filter(|n| *n != self.surfaces[i].nom) {
-                self.surfaces[i].nom = n;
-                self.surfaces[i].derniere = None;
-                self.dessiner(i);
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        // Name announced or changed afterwards: the shown workspaces depend on it.
+        let name = self.outputs.info(&output).and_then(|i| i.name);
+        if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
+            if let Some(n) = name.filter(|n| *n != self.surfaces[i].name) {
+                self.surfaces[i].name = n;
+                self.surfaces[i].last = None;
+                self.draw(i);
             }
         }
     }
 
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, sortie: wl_output::WlOutput) {
-        if let Some(i) = self.surfaces.iter().position(|s| s.sortie == sortie) {
-            self.retirer(i);
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
+            self.remove(i);
         }
-        // Une sortie vraiment détruite ne sera plus jamais reposée : son
-        // éventuelle attente (si `closed` venait de la reposer sans qu'un
-        // configure ait encore abouti) ne servirait plus à rien — mémoire
-        // bornée, pas une sortie oubliée par session qui s'accumule.
-        self.en_attente_de_configure.retain(|s| *s != sortie);
+        // A truly destroyed output will never be restored again: any
+        // pending restore for it (if `closed` had just restored it with no
+        // configure yet succeeding) would serve no more purpose — bounded
+        // memory, not an output forgotten per session that piles up.
+        self.awaiting_configure.retain(|s| *s != output);
     }
 }
 
-impl LayerShellHandler for Etat {
-    fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, couche: &LayerSurface) {
-        // Le compositeur a fermé la surface. D'ordinaire (écran débranché),
-        // `output_destroyed` suit : on oublie cette barre, les autres
-        // continuent, jamais d'arrêt ici. Mais si la sortie existe encore
-        // (voir `faut_reposer`), le compositeur attend qu'on la repose —
-        // sans ça, cet écran resterait sans barre jusqu'au prochain
-        // changement de sortie. `faut_reposer_une_fois` borne les reposes
-        // à une seule par sortie tant qu'un `configure` n'a pas abouti
-        // (voir `configure`, plus bas) : un compositeur qui fermerait la
-        // surface en boucle (bogue, protocole mal respecté) ne doit jamais
-        // faire reposer sans fin.
-        if let Some(i) = self.indice(couche.wl_surface()) {
-            let sortie = self.retirer(i);
-            if faut_reposer_une_fois(&sortie, &self.en_attente_de_configure, self.sorties.outputs()) {
-                self.en_attente_de_configure.push(sortie.clone());
-                self.poser(qh, sortie);
+impl LayerShellHandler for App {
+    fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+        // The compositor closed the surface. Usually (screen unplugged),
+        // `output_destroyed` follows: we forget this bar, the others carry
+        // on, never a stop here. But if the output still exists (see
+        // `should_restore`), the compositor expects it to be restored —
+        // otherwise this screen would stay without a bar until the next
+        // output change. `should_restore_once` bounds restores to one per
+        // output as long as a `configure` hasn't succeeded (see
+        // `configure`, further below): a compositor that closed the surface
+        // in a loop (a bug, a protocol violation) must never cause endless
+        // restores.
+        if let Some(i) = self.index(layer.wl_surface()) {
+            let output = self.remove(i);
+            if should_restore_once(&output, &self.awaiting_configure, self.outputs.outputs()) {
+                self.awaiting_configure.push(output.clone());
+                self.place(qh, output);
             }
         }
     }
 
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, couche: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
-        let Some(i) = self.indice(couche.wl_surface()) else { return };
-        // Premier configure de CETTE surface : la repose (s'il y en avait
-        // une en attente) a abouti, la sortie peut de nouveau être reposée
-        // à l'avenir si le compositeur referme sa surface.
-        let premier_configure = !self.surfaces[i].configuree;
-        if self.surfaces[i].largeur != c.new_size.0 {
-            self.surfaces[i].derniere = None;
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
+        let Some(i) = self.index(layer.wl_surface()) else { return };
+        // First configure of THIS surface: the restore (if there was one
+        // pending) succeeded, the output can again be restored in the
+        // future if the compositor closes its surface again.
+        let first_configure = !self.surfaces[i].configured;
+        if self.surfaces[i].width != c.new_size.0 {
+            self.surfaces[i].last = None;
         }
-        self.surfaces[i].largeur = c.new_size.0;
-        self.surfaces[i].configuree = true;
-        if premier_configure {
-            let sortie = self.surfaces[i].sortie.clone();
-            self.en_attente_de_configure.retain(|s| *s != sortie);
+        self.surfaces[i].width = c.new_size.0;
+        self.surfaces[i].configured = true;
+        if first_configure {
+            let output = self.surfaces[i].output.clone();
+            self.awaiting_configure.retain(|s| *s != output);
         }
-        self.dessiner(i);
+        self.draw(i);
     }
 }
 
-impl SeatHandler for Etat {
+impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
-        &mut self.sieges
+        &mut self.seats
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, siege: wl_seat::WlSeat, c: Capability) {
-        if c == Capability::Pointer && self.pointeur.is_none() {
-            let surface = self.compositeur.create_surface(qh);
-            match self.sieges.get_pointer_with_theme(qh, &siege, self.shm.wl_shm(), surface, ThemeSpec::default()) {
-                Ok(p) => self.pointeur = Some(p),
-                Err(e) => journal(&format!("pointeur indisponible : {e}")),
+    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
+        if c == Capability::Pointer && self.pointer.is_none() {
+            let surface = self.compositor.create_surface(qh);
+            match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
+                Ok(p) => self.pointer = Some(p),
+                Err(e) => log(&format!("pointer unavailable: {e}")),
             }
         }
     }
 
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, c: Capability) {
         if c == Capability::Pointer {
-            self.pointeur = None;
+            self.pointer = None;
         }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
 }
 
-impl PointerHandler for Etat {
-    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, evenements: &[PointerEvent]) {
-        for ev in evenements {
-            let Some(i) = self.indice(&ev.surface) else { continue };
+impl PointerHandler for App {
+    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+        for ev in events {
+            let Some(i) = self.index(&ev.surface) else { continue };
             match &ev.kind {
                 PointerEventKind::Enter { .. } => {
-                    if let Some(p) = &self.pointeur {
+                    if let Some(p) = &self.pointer {
                         let _ = p.set_cursor(conn, CursorIcon::Default);
                     }
                 }
                 PointerEventKind::Press { button, .. } => {
-                    if let Some(b) = actions::bouton(*button) {
-                        self.cliquer(i, ev.position.0, b);
+                    if let Some(b) = actions::button(*button) {
+                        self.click(i, ev.position.0, b);
                     }
                 }
                 PointerEventKind::Axis { vertical, .. } => {
-                    if let Some(b) = self.molette.ajouter(vertical.absolute, vertical.discrete, vertical.value120) {
-                        self.cliquer(i, ev.position.0, b);
+                    if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
+                        self.click(i, ev.position.0, b);
                     }
-                    // Fin de geste (molette crantée relâchée, pavé tactile
-                    // qui se lève) : rien à reporter sur le prochain geste.
+                    // End of gesture (notched wheel released, touchpad
+                    // lifted): nothing to carry over to the next gesture.
                     if vertical.stop {
-                        self.molette.arreter();
+                        self.wheel.stop();
                     }
                 }
                 PointerEventKind::Leave { .. } => {
-                    self.molette.arreter();
+                    self.wheel.stop();
                 }
                 _ => {}
             }
@@ -421,36 +420,36 @@ impl PointerHandler for Etat {
     }
 }
 
-impl ShmHandler for Etat {
+impl ShmHandler for App {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm
     }
 }
 
-impl ProvidesRegistryState for Etat {
+impl ProvidesRegistryState for App {
     fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registre
+        &mut self.registry
     }
     registry_handlers![OutputState, SeatState];
 }
 
-delegate_compositor!(Etat);
-delegate_output!(Etat);
-delegate_shm!(Etat);
-delegate_layer!(Etat);
-delegate_seat!(Etat);
-delegate_pointer!(Etat);
-delegate_registry!(Etat);
+delegate_compositor!(App);
+delegate_output!(App);
+delegate_shm!(App);
+delegate_layer!(App);
+delegate_seat!(App);
+delegate_pointer!(App);
+delegate_registry!(App);
 
-impl crate::lancement::RedessinDifere for Etat {
-    fn barre_mut(&mut self) -> &mut Barre {
-        &mut self.barre
+impl crate::launch::DeferredRedraw for App {
+    fn bar_mut(&mut self) -> &mut Bar {
+        &mut self.bar
     }
-    fn sale_mut(&mut self) -> &mut bool {
-        &mut self.sale
+    fn dirty_mut(&mut self) -> &mut bool {
+        &mut self.dirty
     }
-    fn redessiner_maintenant(&mut self) {
-        self.redessiner_tout();
+    fn redraw_now(&mut self) {
+        self.redraw_all();
     }
 }
 
@@ -459,86 +458,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn taille_du_tampon_tient_compte_de_l_echelle() {
-        assert_eq!(taille_tampon(100, 22, 1), 100 * 22 * 4);
-        assert_eq!(taille_tampon(100, 22, 2), 200 * 44 * 4);
-        assert_eq!(taille_tampon(100, 22, 0), 100 * 22 * 4, "échelle 0 traitée comme 1");
+    fn buffer_size_accounts_for_scale() {
+        assert_eq!(buffer_size(100, 22, 1), 100 * 22 * 4);
+        assert_eq!(buffer_size(100, 22, 2), 200 * 44 * 4);
+        assert_eq!(buffer_size(100, 22, 0), 100 * 22 * 4, "scale 0 treated as 1");
     }
 
     #[test]
-    fn pool_deja_au_plancher_sans_surface_rien_a_faire() {
-        assert_eq!(pool_cible(POOL_PLANCHER, &[]), None);
-        assert_eq!(pool_cible(POOL_PLANCHER / 2, &[]), None, "déjà sous le plancher : pas de recréation inutile");
+    fn pool_already_at_floor_without_surfaces_nothing_to_do() {
+        assert_eq!(target_pool(POOL_FLOOR, &[]), None);
+        assert_eq!(target_pool(POOL_FLOOR / 2, &[]), None, "already under the floor: no needless recreation");
     }
 
     #[test]
-    fn plus_aucune_surface_revient_au_plancher() {
-        // Un grand écran (3840 px logiques, échelle 2) a fait grossir le
-        // pool bien au-delà du plancher ; une fois débranché, plus aucune
-        // surface ne reste : le pool doit revenir au plancher, pas rester à
-        // sa taille de pointe pour toujours.
-        assert_eq!(pool_cible(4 * 1024 * 1024, &[]), Some(POOL_PLANCHER));
+    fn no_more_surfaces_returns_to_floor() {
+        // A large screen (3840 logical px, scale 2) grew the pool well past
+        // the floor; once unplugged, no surface remains: the pool must
+        // return to the floor, not stay at its peak size forever.
+        assert_eq!(target_pool(4 * 1024 * 1024, &[]), Some(POOL_FLOOR));
     }
 
     #[test]
-    fn surdimensionnement_leger_laisse_le_pool_tel_quel() {
-        // Un pool qui vient de doubler pour accueillir un écran ne doit pas
-        // être recréé à la moindre réduction (churn) : seul un écart net
-        // (POOL_FACTEUR_SURDIMENSIONNE) déclenche une recréation.
-        let besoin = 676_480; // ~3840×44×4 (écran large, échelle 2)
-        assert_eq!(pool_cible(besoin * 2, &[besoin]), None);
-        assert_eq!(pool_cible(besoin * POOL_FACTEUR_SURDIMENSIONNE, &[besoin]), None, "pile au facteur : pas encore net");
+    fn slight_oversize_leaves_the_pool_as_is() {
+        // A pool that just doubled to fit a screen must not be recreated at
+        // the slightest reduction (churn): only a clear gap
+        // (POOL_OVERSIZE_FACTOR) triggers a recreation.
+        let need = 676_480; // ~3840×44×4 (wide screen, scale 2)
+        assert_eq!(target_pool(need * 2, &[need]), None);
+        assert_eq!(target_pool(need * POOL_OVERSIZE_FACTOR, &[need]), None, "right at the factor: not clear yet");
     }
 
     #[test]
-    fn surdimensionnement_net_recree_plus_petit() {
-        let besoin = 676_480;
-        let cible = pool_cible(besoin * POOL_FACTEUR_SURDIMENSIONNE + 1, &[besoin]);
-        assert_eq!(cible, Some(besoin * 2), "{cible:?}");
-        assert!(cible.unwrap() < besoin * POOL_FACTEUR_SURDIMENSIONNE, "nettement plus petit qu'avant");
+    fn clear_oversize_recreates_smaller() {
+        let need = 676_480;
+        let target = target_pool(need * POOL_OVERSIZE_FACTOR + 1, &[need]);
+        assert_eq!(target, Some(need * 2), "{target:?}");
+        assert!(target.unwrap() < need * POOL_OVERSIZE_FACTOR, "clearly smaller than before");
     }
 
     #[test]
-    fn plusieurs_surfaces_la_somme_decide_pas_la_plus_grande() {
-        // Le pool contient le tampon de CHAQUE surface à la fois (une par
-        // écran) : il lui faut la place de leur SOMME, pas seulement du
-        // plus grand — sinon, trois écrans aussi grands les uns que les
-        // autres ne tiendraient jamais tous leurs tampons en même temps
-        // dans un pool dimensionné sur un seul.
-        let (petit, grand) = (10_000, 676_480);
-        let somme = petit + grand;
-        assert_eq!(pool_cible(somme * POOL_FACTEUR_SURDIMENSIONNE, &[petit, grand]), None, "pile au facteur de la somme : pas encore net");
-        let cible = pool_cible(somme * POOL_FACTEUR_SURDIMENSIONNE + 1, &[petit, grand]);
-        assert_eq!(cible, Some(somme * 2));
-        assert!(cible.unwrap() >= somme, "le pool recréé doit au moins tenir tous les tampons à la fois");
+    fn several_surfaces_the_sum_decides_not_the_largest() {
+        // The pool holds EVERY surface's buffer at once (one per screen): it
+        // needs room for their SUM, not just the largest — otherwise three
+        // equally large screens would never all fit their buffers at the
+        // same time in a pool sized for just one.
+        let (small, large) = (10_000, 676_480);
+        let sum = small + large;
+        assert_eq!(target_pool(sum * POOL_OVERSIZE_FACTOR, &[small, large]), None, "right at the sum's factor: not clear yet");
+        let target = target_pool(sum * POOL_OVERSIZE_FACTOR + 1, &[small, large]);
+        assert_eq!(target, Some(sum * 2));
+        assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
     }
 
     #[test]
-    fn texte_journal_repli_lisible_sur_sortie_sans_nom() {
-        assert_eq!(texte_journal("HDMI-A-1", 7), "HDMI-A-1");
-        assert_eq!(texte_journal("", 7), "une sortie sans nom (id 7)");
+    fn log_text_readable_fallback_for_an_unnamed_output() {
+        assert_eq!(log_text("HDMI-A-1", 7), "HDMI-A-1");
+        assert_eq!(log_text("", 7), "an output with no name (id 7)");
     }
 
     #[test]
-    fn faut_reposer_si_la_sortie_est_encore_connue() {
-        // wl_output::WlOutput ne s'instancie pas hors d'une vraie connexion
-        // Wayland (voir le commentaire de `faut_reposer`) : des entiers
-        // tiennent lieu d'identifiants de sortie dans ce test, la fonction
-        // étant générique sur `PartialEq`.
-        assert!(faut_reposer(&2, [1, 2, 3].into_iter()), "encore dans la liste : à reposer");
-        assert!(!faut_reposer(&5, [1, 2, 3].into_iter()), "plus dans la liste : vraiment débranchée");
-        assert!(!faut_reposer(&1, std::iter::empty::<i32>()), "plus aucune sortie connue");
+    fn should_restore_if_the_output_is_still_known() {
+        // wl_output::WlOutput cannot be instantiated outside a real Wayland
+        // connection (see the comment on `should_restore`): plain integers
+        // stand in for output ids in this test, the function being generic
+        // over `PartialEq`.
+        assert!(should_restore(&2, [1, 2, 3].into_iter()), "still in the list: to be restored");
+        assert!(!should_restore(&5, [1, 2, 3].into_iter()), "no longer in the list: really unplugged");
+        assert!(!should_restore(&1, std::iter::empty::<i32>()), "no output known at all anymore");
     }
 
     #[test]
-    fn faut_reposer_une_fois_borne_les_fermetures_en_boucle() {
-        // Toujours connue, jamais encore reposée : à reposer.
-        assert!(faut_reposer_une_fois(&2, &[], [1, 2, 3].into_iter()));
-        // Déjà reposée (dans `attente`), aucun configure reçu depuis : un
-        // compositeur qui fermerait sa surface en boucle ne doit PAS faire
-        // reposer une deuxième fois tant que la première n'a pas abouti.
-        assert!(!faut_reposer_une_fois(&2, &[2], [1, 2, 3].into_iter()));
-        // Plus connue du tout : jamais à reposer, même absente de `attente`.
-        assert!(!faut_reposer_une_fois(&5, &[], [1, 2, 3].into_iter()));
+    fn should_restore_once_bounds_repeated_closures() {
+        // Still known, never yet restored: to be restored.
+        assert!(should_restore_once(&2, &[], [1, 2, 3].into_iter()));
+        // Already restored (in `pending`), no configure received since: a
+        // compositor that closed its surface in a loop must NOT be restored
+        // a second time as long as the first one hasn't succeeded.
+        assert!(!should_restore_once(&2, &[2], [1, 2, 3].into_iter()));
+        // No longer known at all: never to be restored, even absent from `pending`.
+        assert!(!should_restore_once(&5, &[], [1, 2, 3].into_iter()));
     }
 }
