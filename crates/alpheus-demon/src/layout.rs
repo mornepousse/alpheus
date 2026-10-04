@@ -9,7 +9,7 @@ use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
 use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::state::{Bar, Feed};
-use crate::{clock, icons};
+use crate::{clock, icons, segments};
 
 /// Order of disappearance when space runs short.
 const REMOVAL: [ModuleId; 3] = [ModuleId::Resources, ModuleId::Media, ModuleId::Window];
@@ -23,20 +23,23 @@ const SEPARATOR: &str = " │ ";
 /// Margin of one cell at each end.
 const MARGIN: u16 = 1;
 
-struct Piece {
-    text: String,
-    style: Style,
-    target: Option<Target>,
+pub(crate) struct Piece {
+    pub(crate) text: String,
+    pub(crate) style: Style,
+    pub(crate) target: Option<Target>,
 }
 
-struct Segment {
-    module: ModuleId,
-    pieces: Vec<Piece>,
-    elastic: bool,
+pub(crate) struct Segment {
+    pub(crate) module: ModuleId,
+    pub(crate) pieces: Vec<Piece>,
+    pub(crate) elastic: bool,
+    /// Click zone covering the whole segment (system modules); `None`: only
+    /// the pieces' own zones (workspaces), or none (title, clock).
+    pub(crate) target: Option<Target>,
 }
 
 impl Segment {
-    fn width(&self) -> u16 {
+    pub(crate) fn width(&self) -> u16 {
         self.pieces.iter().map(|p| text_width(&p.text)).fold(0, u16::saturating_add)
     }
 
@@ -45,7 +48,7 @@ impl Segment {
     }
 }
 
-fn piece(text: impl Into<String>, style: Style) -> Piece {
+pub(crate) fn piece(text: impl Into<String>, style: Style) -> Piece {
     Piece { text: text.into(), style, target: None }
 }
 
@@ -93,7 +96,7 @@ fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
             m
         }
     };
-    Some(Segment { module: ModuleId::Workspaces, pieces, elastic: false })
+    Some(Segment { module: ModuleId::Workspaces, pieces, elastic: false, target: None })
 }
 
 /// `None` with no active window: no empty segment (no "│ <empty> │"),
@@ -105,7 +108,7 @@ fn window(state: &Feed<CompositorState>) -> Option<Segment> {
         Feed::Ready(CompositorState { window: Some(w), .. }) => format!("{} {}", icons::glyph(&w.class), w.title),
         Feed::Ready(_) => return None,
     };
-    Some(Segment { module: ModuleId::Window, pieces: vec![piece(text, Style::NORMAL)], elastic: true })
+    Some(Segment { module: ModuleId::Window, pieces: vec![piece(text, Style::NORMAL)], elastic: true, target: None })
 }
 
 fn bar_clock(bar: &Bar) -> Segment {
@@ -121,7 +124,7 @@ fn bar_clock(bar: &Bar) -> Segment {
             v
         }
     };
-    Segment { module: ModuleId::Clock, pieces, elastic: false }
+    Segment { module: ModuleId::Clock, pieces, elastic: false, target: None }
 }
 
 /// A module's segment, or None if it has nothing to show.
@@ -130,15 +133,11 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Workspaces => workspaces(&bar.compositor, output),
         ModuleId::Window => window(&bar.compositor),
         ModuleId::Clock => Some(bar_clock(bar)),
-        // Deliveries 3 to 5: not shown yet.
-        ModuleId::Media
-        | ModuleId::Volume
-        | ModuleId::Network
-        | ModuleId::Bluetooth
-        | ModuleId::Battery
-        | ModuleId::Resources
-        | ModuleId::Tray
-        | ModuleId::Notifications => None,
+        ModuleId::Volume => segments::volume(&bar.sound),
+        ModuleId::Network => segments::network(&bar.network),
+        ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth),
+        // Task 7 (battery, resources), deliveries 4 and 5: not shown yet.
+        ModuleId::Media | ModuleId::Battery | ModuleId::Resources | ModuleId::Tray | ModuleId::Notifications => None,
     }
 }
 
@@ -164,7 +163,7 @@ impl Bar {
     }
 }
 
-fn lay_out(segs: &[Segment], columns: u16) -> Grid {
+pub(crate) fn lay_out(segs: &[Segment], columns: u16) -> Grid {
     let mut g = Grid::empty(columns);
     let end = columns.saturating_sub(MARGIN);
     let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(2 * MARGIN + separators(segs.len()), u16::saturating_add);
@@ -180,6 +179,7 @@ fn lay_out(segs: &[Segment], columns: u16) -> Grid {
             x = g.write(x, end, SEPARATOR, Style::MUTED);
         }
         let limit = if s.elastic { x.saturating_add(free).min(end) } else { end };
+        let segment_start = x;
         for p in &s.pieces {
             let text = if s.elastic { truncate(&p.text, limit.saturating_sub(x)) } else { p.text.clone() };
             let start = x;
@@ -187,6 +187,9 @@ fn lay_out(segs: &[Segment], columns: u16) -> Grid {
             if let Some(t) = &p.target {
                 g.zone(start, x, t.clone());
             }
+        }
+        if let Some(t) = &s.target {
+            g.zone(segment_start, x, t.clone());
         }
         if s.elastic {
             x = limit;
