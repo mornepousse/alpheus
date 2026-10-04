@@ -60,7 +60,18 @@ mod tests {
         let e = acquire(&p).unwrap_err();
         assert!(e.contains("already") && e.contains(&std::process::id().to_string()), "{e}");
         drop(v);
-        let _v2 = acquire(&p).expect("lock released at the end of the daemon");
+        // Other tests of this binary fork children: between fork and exec a
+        // child briefly shares the lock's file description (O_CLOEXEC only
+        // closes it at exec), so the release can lag by a few milliseconds.
+        let mut again = acquire(&p);
+        for _ in 0..100 {
+            if again.is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            again = acquire(&p);
+        }
+        let _v2 = again.expect("lock released at the end of the daemon");
         let _ = std::fs::remove_file(&p);
     }
 
