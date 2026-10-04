@@ -194,26 +194,42 @@ fn compositor_sockets_opened_only_in_sources() {
 
 /// Production code of a file: everything EXCEPT the item that follows each
 /// `#[cfg(test)]` (a function, a `mod tests { … }` module, a fixture module
-/// like `sources/hypr.rs::fake`…), whatever its name or place in the file —
-/// not just "the last `#[cfg(test)]`, necessarily a trailing test module":
-/// `compositor/mod.rs` and `sources/hypr.rs` each have TWO, and nothing
-/// guarantees some future file won't have one in the middle. Finds the end
-/// of the item by counting braces (correct even nested), not by cutting at
-/// the first `#[cfg(test)]` found (that would also, wrongly, have erased
-/// everything after it in the file, test or not).
+/// like `sources/hypr.rs::fake`…, or a brace-less one like
+/// `sources/dbus/mod.rs`'s `pub mod fake;`, pointing at a separate file),
+/// whatever its name or place in the file — not just "the last
+/// `#[cfg(test)]`, necessarily a trailing test module": `compositor/mod.rs`
+/// and `sources/hypr.rs` each have TWO, and nothing guarantees some future
+/// file won't have one in the middle. Finds the end of the item by counting
+/// braces (correct even nested), not by cutting at the first `#[cfg(test)]`
+/// found (that would also, wrongly, have erased everything after it in the
+/// file, test or not).
 fn production_code(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(i) = rest.find("#[cfg(test)]") {
         out.push_str(&rest[..i]);
         let after_marker = &rest["#[cfg(test)]".len() + i..];
-        let Some(open) = after_marker.find('{') else {
-            // No brace after this marker (unlikely here, but not our job to
-            // refuse it): nothing to strip, just move past the marker so we
-            // don't loop on it.
-            rest = after_marker;
-            continue;
+        let open = after_marker.find('{');
+        let semi = after_marker.find(';');
+        // A brace-less item (`pub mod fake;`, a `use`, a unit struct…) ends
+        // at its `;`: stop there rather than let `find('{')` run past it
+        // into some later, unrelated item's brace — which would wrongly
+        // also strip every real item in between as if it were the test one.
+        let ends_at_semicolon = match (open, semi) {
+            (Some(o), Some(s)) => s < o,
+            (Some(_), None) => false,
+            (None, _) => true,
         };
+        if ends_at_semicolon {
+            rest = match semi {
+                Some(s) => &after_marker[s + 1..],
+                // No `;` and no `{` anywhere after the marker (end of
+                // file): nothing left to strip.
+                None => "",
+            };
+            continue;
+        }
+        let open = open.expect("ends_at_semicolon is false only when `open` is Some");
         let mut depth = 0u32;
         let mut relative_end = None;
         for (j, c) in after_marker[open..].char_indices() {
@@ -244,11 +260,20 @@ fn production_code_strips_each_item_following_cfg_test() {
     assert_eq!(production_code(text), "fn x() {}\n\nfn y() {}\n\n", "two markers, not just the first or the last");
 }
 
-/// `eprintln!`/`eprint!` panic if the other end of standard error is closed
-/// (EPIPE): forbidden in the daemon's production code, which must always go
-/// through `alpheus_demon::log::write` (`writeln!`, a failed write simply
-/// ignored). Tests are allowed to use them: they only live a fraction of a
-/// second, no risk of EPIPE like in a resident daemon.
+/// A brace-less item (`sources/dbus/mod.rs`'s `#[cfg(test)] pub mod fake;`,
+/// pointing at a separate file) ends at its `;`: `find('{')` must not run
+/// past it into some later, unrelated item's brace, which would wrongly
+/// strip every real item in between along with it (A-m3, review).
+#[test]
+fn production_code_ends_a_brace_less_item_at_its_semicolon() {
+    let text = "#[cfg(test)]\npub mod fake;\nfn real_code() {}\nfn also_real() {}\n";
+    assert_eq!(
+        production_code(text),
+        "\nfn real_code() {}\nfn also_real() {}\n",
+        "only the `mod fake;` stripped, not the real items after it"
+    );
+}
+
 /// `Executor::run` blocks (up to 2 s): it must never be reachable from the
 /// daemon, whose event loop would freeze every bar. The only system
 /// executor is built inside `NonBlocking(…)`, which refuses `run`.
@@ -324,6 +349,11 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
+/// `eprintln!`/`eprint!` panic if the other end of standard error is closed
+/// (EPIPE): forbidden in the daemon's production code, which must always go
+/// through `alpheus_demon::log::write` (`writeln!`, a failed write simply
+/// ignored). Tests are allowed to use them: they only live a fraction of a
+/// second, no risk of EPIPE like in a resident daemon.
 #[test]
 fn eprint_forbidden_outside_tests() {
     for (p, t) in source_files() {

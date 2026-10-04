@@ -111,10 +111,9 @@ pub const MATCH_RULES: [(Domain, &str); 11] = [
 
 /// Resuming from sleep (not suspending): every shown domain may have
 /// changed while the machine slept. Added once, regardless of which
-/// domains are shown — `Signal::is_wake` (task 11a) marks it, `session`
-/// (task 13) re-reads all of `domains`. Reading only: never a call to
-/// logind (Suspend, Hibernate, PowerOff… the guardrail already forbids
-/// those words in this directory).
+/// domains are shown — `Signal::is_wake` marks it, `session` re-reads all
+/// of `domains`. Reading only: never a call to logind (Suspend, Hibernate,
+/// PowerOff… the guardrail already forbids those words in this directory).
 pub const LOGIN1_RULE: &str = "type='signal',sender='org.freedesktop.login1',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
 
 /// D-Bus errors meaning "nothing there": the service or the object is gone.

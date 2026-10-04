@@ -189,12 +189,12 @@ impl Wheel {
     }
 
     /// Clears the continuous remainder and the notch accumulator: nothing
-    /// carries over to the next gesture. To be called when Wayland says THIS
-    /// wheel gesture is over — `wl_pointer::axis_source` at `AxisScroll::stop`
-    /// (`axis_stop`, a touchpad lifted) and `wl_pointer::leave` (pointer left
-    /// the surface) — otherwise a remainder close to the threshold would
-    /// wrongly combine with the next gesture. Wired up in task 12
-    /// (Wayland); this task only provides the method and its test.
+    /// carries over to the next gesture. Called from wayland.rs when
+    /// Wayland says THIS wheel gesture is over — `wl_pointer::axis_source`
+    /// at `AxisScroll::stop` (`axis_stop`, a touchpad lifted) and
+    /// `wl_pointer::leave` (pointer left the surface) — otherwise a
+    /// remainder close to the threshold would wrongly combine with the next
+    /// gesture.
     pub fn stop(&mut self) {
         self.accumulated = 0.0;
         self.accumulated120 = 0;

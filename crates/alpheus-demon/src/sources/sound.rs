@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 /// The only command the daemon keeps running (tests/guardrails.rs).
 /// `-R`: compact output (pretty-printing is otherwise on by default, even
-/// with `-N`) — fewer bytes over the pipe; `pipewire::follow` (task 9) reads
-/// it by structure, not by line, so this changes nothing there.
+/// with `-N`) — fewer bytes over the pipe; `pipewire::follow` reads it by
+/// structure, not by line, so this changes nothing there.
 pub const COMMAND: [&str; 4] = ["pw-dump", "-m", "-N", "-R"];
 
 pub fn session(exec: &dyn Executor, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
