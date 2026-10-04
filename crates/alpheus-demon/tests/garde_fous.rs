@@ -84,6 +84,28 @@ fn chemin_relatif(p: &Path) -> String {
     p.strip_prefix(&racine).expect("chemin hors de src/").to_string_lossy().into_owned()
 }
 
+/// Un `UnixStream::connect` (ou l'ouverture d'un socket du compositeur)
+/// n'est permis que dans `src/sources/` — et n'importe où dans ce dossier,
+/// pas seulement dans les deux fichiers nommés `hypr.rs` et `niri.rs` : le
+/// reste du démon (peintre, wayland, étal, grille…) ne reçoit que l'état
+/// déjà normalisé (`EtatCompositeur`), jamais une connexion brute. Reste
+/// valable si `sources::hypr` ou `sources::niri` se scindent un jour en
+/// plusieurs fichiers, ou si un module partagé (`sources/commun.rs`)
+/// apparaît.
+fn connexion_compositeur_autorisee(chemin_relatif: &str) -> bool {
+    chemin_relatif.starts_with("sources/")
+}
+
+#[test]
+fn connexion_autorisee_dans_tout_sources_pas_seulement_hypr_et_niri() {
+    assert!(connexion_compositeur_autorisee("sources/hypr.rs"));
+    assert!(connexion_compositeur_autorisee("sources/niri.rs"));
+    assert!(connexion_compositeur_autorisee("sources/mod.rs"), "pas seulement les deux fichiers nommés");
+    assert!(connexion_compositeur_autorisee("sources/futur/sous_module.rs"), "même nidifié plus profond");
+    assert!(!connexion_compositeur_autorisee("wayland.rs"));
+    assert!(!connexion_compositeur_autorisee("peintre.rs"));
+}
+
 #[test]
 fn le_demon_ne_parle_au_compositeur_qu_en_lecture() {
     for (p, t) in sources() {
@@ -96,7 +118,7 @@ fn le_demon_ne_parle_au_compositeur_qu_en_lecture() {
             assert_eq!(nom, "sources/hypr.rs", "socket de requêtes Hyprland ouvert ailleurs");
         }
         if t.contains("UnixStream::connect") {
-            assert!(nom == "sources/hypr.rs" || nom == "sources/niri.rs", "connexion au compositeur dans {nom}");
+            assert!(connexion_compositeur_autorisee(&nom), "connexion au compositeur dans {nom}");
         }
         assert!(!t.contains("Command::new"), "processus lancé en direct dans {nom} (passer par l'exécuteur)");
     }
@@ -115,7 +137,7 @@ fn sockets_du_compositeur_ouverts_seulement_dans_sources() {
     for (p, t) in sources() {
         let nom = chemin_relatif(&p);
         for motif in [".socket.sock", ".socket2.sock", "UnixStream::connect"] {
-            assert!(!t.contains(motif) || nom.starts_with("sources/"), "« {motif} » hors de src/sources/ : {nom}");
+            assert!(!t.contains(motif) || connexion_compositeur_autorisee(&nom), "« {motif} » hors de src/sources/ : {nom}");
         }
     }
 }
