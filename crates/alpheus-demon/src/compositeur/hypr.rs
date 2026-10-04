@@ -31,9 +31,10 @@ pub fn adresse(s: &str) -> String {
 }
 
 /// Événements après lesquels l'état se relit (bureaux, fenêtres, écrans).
-/// `configreloaded` : Hyprland a rechargé sa config (`hyprctl reload`, ou un
-/// script qui la régénère) — les bureaux, moniteurs ou règles de fenêtre ont
-/// pu changer sans qu'aucun autre événement de structure ne soit émis.
+/// `configreloaded` : Hyprland a rechargé sa configuration (commande de
+/// rechargement, ou un script qui la régénère) — les bureaux, moniteurs ou
+/// règles de fenêtre ont pu changer sans qu'aucun autre événement de
+/// structure ne soit émis.
 const STRUCTURE: [&str; 21] = [
     "workspace", "workspacev2", "focusedmon", "focusedmonv2", "createworkspace", "createworkspacev2",
     "destroyworkspace", "destroyworkspacev2", "moveworkspace", "moveworkspacev2", "renameworkspace",
