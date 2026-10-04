@@ -3,6 +3,7 @@
 //! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
 //! the bar shows "–".
 
+pub mod dbus;
 pub mod hypr;
 pub mod niri;
 pub mod sound;
