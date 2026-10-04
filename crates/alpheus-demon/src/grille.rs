@@ -2,6 +2,8 @@
 //! teintes, gras), et les zones cliquables. C'est l'objet testé ; le dessin
 //! en pixels (`peintre`) ne fait que la recopier.
 
+use std::str::Chars;
+use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
 
 /// Teinte symbolique, résolue en couleur par la palette au dessin.
@@ -89,21 +91,58 @@ fn largeur_car(c: char) -> u16 {
     if est_controle_affiche(c) { 1 } else { c.width().unwrap_or(0) as u16 }
 }
 
+/// Itère les caractères de `s` recomposés en NFC (accents décomposés, par
+/// exemple venus de macOS, recomposés en précomposés) : `largeur_texte`,
+/// `tronquer` et `Grille::ecrire` voient tous les trois ce même texte, pour
+/// que la largeur annoncée reste ce qui est réellement écrit. Un combinant
+/// sans forme précomposée (ex. `q\u{301}`) n'est pas recomposable : il
+/// reste seul dans le flux, et donc toujours sauté plus loin (largeur 0),
+/// comportement inchangé.
+enum CarsNfc<'a> {
+    /// `s` est déjà en NFC (cas de presque tous les titres) : aucune
+    /// allocation, on relit directement ses caractères.
+    Direct(Chars<'a>),
+    /// `s` est décomposé : on passe par l'itérateur de recomposition
+    /// (toujours sans `String` intermédiaire).
+    Recompose(Recompositions<Chars<'a>>),
+}
+
+impl<'a> Iterator for CarsNfc<'a> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        match self {
+            CarsNfc::Direct(it) => it.next(),
+            CarsNfc::Recompose(it) => it.next(),
+        }
+    }
+}
+
+fn cars_nfc(s: &str) -> CarsNfc<'_> {
+    if is_nfc_quick(s.chars()) == IsNormalized::Yes {
+        CarsNfc::Direct(s.chars())
+    } else {
+        CarsNfc::Recompose(s.nfc())
+    }
+}
+
 pub fn largeur_texte(s: &str) -> u16 {
-    s.chars().map(largeur_car).fold(0u16, u16::saturating_add)
+    cars_nfc(s).map(largeur_car).fold(0u16, u16::saturating_add)
 }
 
 /// `s` coupé à `max` cases, terminé par « … » s'il a été coupé.
 pub fn tronquer(s: &str, max: u16) -> String {
     if largeur_texte(s) <= max {
-        return s.to_string();
+        // Déjà une allocation de toute façon (on rend une `String`) : on
+        // recompose ici aussi, pour rester cohérent avec `ecrire`.
+        return cars_nfc(s).collect();
     }
     if max == 0 {
         return String::new();
     }
     let mut out = String::new();
     let mut l = 0u16;
-    for c in s.chars() {
+    for c in cars_nfc(s) {
         let w = largeur_car(c);
         if l.saturating_add(w) > max - 1 {
             break;
@@ -138,7 +177,7 @@ impl Grille {
     pub fn ecrire(&mut self, col: u16, fin: u16, texte: &str, style: Style) -> u16 {
         let fin = fin.min(self.largeur());
         let mut x = col;
-        for c in texte.chars() {
+        for c in cars_nfc(texte) {
             let c = if est_controle_affiche(c) { ' ' } else { c };
             let w = largeur_car(c);
             if w == 0 {
@@ -228,7 +267,9 @@ mod tests {
         assert_eq!(g.cellules()[2].ch, SUITE);
         let mut g = Grille::vide(8);
         g.ecrire(0, 8, "a\tb\nc\u{1b}[e\u{301}", Style::NORMAL);
-        assert_eq!(g.texte(), "a b c [e", "contrôles en espaces, combinant ignoré");
+        // Depuis la tâche 10b, le "e" décomposé + accent combinant est
+        // recomposé en NFC ("é") avant écriture, comme le reste du texte.
+        assert_eq!(g.texte(), "a b c [é", "contrôles en espaces, accent décomposé recomposé");
         assert_eq!(largeur_texte("🦀日a"), 5);
     }
 
@@ -294,6 +335,41 @@ mod tests {
         assert_eq!(tronquer("abc", 0), "");
         assert_eq!(tronquer("abc", 1), "…");
         assert!(largeur_texte(&tronquer("🦀🦀🦀🦀", 5)) <= 5);
+    }
+
+    #[test]
+    fn accents_decomposes_recomposes() {
+        // "e\u{301}lan" : un "e" décomposé (e + accent aigu combinant) doit
+        // s'écrire recomposé en NFC, comme un titre venu de macOS.
+        let mut g = Grille::vide(6);
+        let x = g.ecrire(0, 6, "e\u{301}lan", Style::NORMAL);
+        assert_eq!(g.texte(), "élan  ");
+        assert_eq!(x, 4);
+        assert_eq!(largeur_texte("e\u{301}lan"), 4);
+        assert_eq!(tronquer("Ame\u{301}lie", 4), "Amé…");
+        // Mord sur le retour rapide de `tronquer` (texte qui tient déjà) :
+        // le rendre sans passer par `cars_nfc` laisserait "e\u{301}lan" tel
+        // quel (décomposé), même si sa largeur ne change pas.
+        assert_eq!(tronquer("e\u{301}lan", 10), "élan");
+    }
+
+    #[test]
+    fn combinant_sans_precompose_toujours_saute() {
+        // "q" n'a pas de forme précomposée avec l'accent aigu : le
+        // combinant reste sauté, comportement inchangé.
+        let mut g = Grille::vide(4);
+        g.ecrire(0, 4, "q\u{301}x", Style::NORMAL);
+        assert_eq!(g.texte(), "qx  ");
+        assert_eq!(largeur_texte("q\u{301}x"), 2);
+    }
+
+    #[test]
+    fn deja_nfc_inchange() {
+        // Un titre déjà en NFC (accents et CJK) s'écrit comme avant.
+        let mut g = Grille::vide(8);
+        g.ecrire(0, 8, "é日本", Style::NORMAL);
+        assert_eq!(g.texte(), "é日本   ");
+        assert_eq!(largeur_texte("é日本"), 5);
     }
 
     #[test]
