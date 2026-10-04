@@ -1,0 +1,52 @@
+//! The daemon's only executor. `Executor::run` waits for its command (up to
+//! 2 s): on the event loop, every bar would freeze. Nothing in the daemon
+//! needs it — clicks `spawn`, the sound source `stream`s on its own thread —
+//! so this wrapper refuses it outright, without even trying.
+
+use crate::log::write as log;
+use alpheus_commun::exec::{ExecError, Executor, Output, Stream};
+
+pub const REFUSED: &str = "Executor::run refused: it blocks, and the daemon must never block its event loop";
+
+pub struct NonBlocking<E: Executor>(pub E);
+
+impl<E: Executor> Executor for NonBlocking<E> {
+    fn run(&self, prog: &str, _args: &[&str]) -> Result<Output, ExecError> {
+        log(&format!("{prog}: {REFUSED}"));
+        Err(ExecError::Io(REFUSED.into()))
+    }
+
+    fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
+        self.0.spawn(prog, args)
+    }
+
+    fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
+        self.0.stream(prog, args)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alpheus_commun::exec::fake::FakeExecutor;
+
+    #[test]
+    fn run_is_refused_and_never_reaches_the_executor() {
+        let fake = FakeExecutor::new();
+        fake.ok("wpctl status", "ok");
+        let e = NonBlocking(fake);
+        assert_eq!(e.run("wpctl", &["status"]), Err(ExecError::Io(REFUSED.into())));
+        assert!(e.0.calls().is_empty(), "run must not even be attempted: {:?}", e.0.calls());
+    }
+
+    #[test]
+    fn spawn_and_stream_are_delegated() {
+        let fake = FakeExecutor::new();
+        fake.ok("alpheus-toggle sound", "");
+        fake.stream_ok("pw-dump -m -N -R", b"[]");
+        let e = NonBlocking(fake);
+        assert_eq!(e.spawn("alpheus-toggle", &["sound"]), Ok(()));
+        assert!(e.stream("pw-dump", &["-m", "-N", "-R"]).is_ok());
+        assert_eq!(e.0.calls(), ["alpheus-toggle sound", "pw-dump -m -N -R"]);
+    }
+}

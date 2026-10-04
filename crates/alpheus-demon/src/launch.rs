@@ -6,11 +6,12 @@ use crate::clock;
 use crate::clock::LocalTime;
 use crate::config::BarConfig;
 use crate::lock;
+use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
 use crate::sources;
 use crate::state::{Bar, Msg};
 use crate::wayland::App;
-use alpheus_commun::exec::SystemExecutor;
+use alpheus_commun::exec::{Executor, SystemExecutor};
 use alpheus_commun::theme::Palette;
 use alpheus_commun::{paths, shutdown};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -177,7 +178,8 @@ pub fn run() -> i32 {
     };
     let qh = file.handle();
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
-    let exec = Arc::new(SystemExecutor::new(Duration::from_secs(2)));
+    // `run` (blocking) is refused: see nonblocking.rs.
+    let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
     let mut state = match App::new(&globals, &qh, Bar::new(config), palette, fonts, exec) {
         Ok(e) => e,
         Err(m) => {

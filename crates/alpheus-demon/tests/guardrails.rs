@@ -197,6 +197,22 @@ fn production_code_strips_each_item_following_cfg_test() {
 /// through `alpheus_demon::log::write` (`writeln!`, a failed write simply
 /// ignored). Tests are allowed to use them: they only live a fraction of a
 /// second, no risk of EPIPE like in a resident daemon.
+/// `Executor::run` blocks (up to 2 s): it must never be reachable from the
+/// daemon, whose event loop would freeze every bar. The only system
+/// executor is built inside `NonBlocking(…)`, which refuses `run`.
+#[test]
+fn the_only_system_executor_is_wrapped_in_non_blocking() {
+    let mut found = 0;
+    for (p, t) in source_files() {
+        let prod = production_code(&t);
+        for (i, _) in prod.match_indices("SystemExecutor::new(") {
+            found += 1;
+            assert!(prod[..i].ends_with("NonBlocking("), "SystemExecutor not wrapped in NonBlocking in {}", relative_path(&p));
+        }
+    }
+    assert_eq!(found, 1, "exactly one system executor in the daemon");
+}
+
 #[test]
 fn eprint_forbidden_outside_tests() {
     for (p, t) in source_files() {
