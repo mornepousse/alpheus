@@ -69,14 +69,9 @@ mod tests {
         assert_eq!(fake.calls(), ["pw-dump -m -N -R"]);
     }
 
-    /// The fixtures only have ONE top-level array each (`INITIAL` alone, like
-    /// `missing_pw_dump_is_an_outage`'s sibling test, naturally ends in EOF
-    /// after a single publication): on its own, that test cannot tell
-    /// `publish`'s real return value (`go_on`) apart from a wrapper that
-    /// always stops `pipewire::follow` after the first one. Bites on
-    /// `let _ = go_on; false` in `session`'s wrapper closure: with the
-    /// deltas appended, that mutation stops the stream after `vol(84,
-    /// false)` alone instead of following it through to EOF.
+    /// `INITIAL` alone holds a single array, so `follow` hits EOF after one
+    /// publication whatever `go_on` is; the deltas make the difference.
+    /// Bites on `let _ = go_on; false` in `session`'s wrapper closure.
     #[test]
     fn session_follows_every_delta_through_to_the_end() {
         let fake = FakeExecutor::new();
