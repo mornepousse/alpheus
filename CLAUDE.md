@@ -1,52 +1,60 @@
-# alpheus — instructions Claude Code
+# alpheus — Claude Code instructions
 
-Shell de bureau « maison » de Mae, léger et en esprit TUI, en Rust.
-Commencer par lire [`docs/CADRAGE.md`](docs/CADRAGE.md) (pourquoi, budget,
-garde-fous, découpage), puis la spec du sous-projet en cours dans
+Mae's "homemade" desktop shell, light and TUI-spirited, written in Rust.
+Start by reading [`docs/SCOPE.md`](docs/SCOPE.md) (why, budget, guardrails,
+breakdown), then the spec of the sub-project currently in progress in
 `docs/specs/`.
 
-## Où on en est
+## Where things stand
 
-- Sous-projet 1 (centre de contrôle TUI, ratatui) : **spec v1 écrite**
+- Sub-project 1 (TUI control center, ratatui): **v1 spec written**
   ([`docs/specs/2026-10-02-alpheus-v1-design.md`](docs/specs/2026-10-02-alpheus-v1-design.md)),
-  plan d'implémentation ([`docs/plans/2026-10-02-alpheus-v1-plan.md`](docs/plans/2026-10-02-alpheus-v1-plan.md))
-  **exécuté** (16 tâches + corrections de la relecture finale, fusionné
-  dans `main` le 2026-10-03) et branché dans nixos-config (`Mod+A`).
-  Essai réel validé par Mae le 2026-10-03 (Hyprland et niri).
-- Sous-projet 1 bis, onglet **Écrans** (Hyprland d'abord) : **spec écrite**
+  implementation plan ([`docs/plans/2026-10-02-alpheus-v1-plan.md`](docs/plans/2026-10-02-alpheus-v1-plan.md))
+  **executed** (16 tasks + fixes from the final review, merged into `main`
+  on 2026-10-03) and wired into nixos-config (`Mod+A`). Real-world trial
+  validated by Mae on 2026-10-03 (Hyprland and niri).
+- Sub-project 1 bis, **Displays** tab (Hyprland first): **spec written**
   ([`docs/specs/2026-10-03-alpheus-ecrans-design.md`](docs/specs/2026-10-03-alpheus-ecrans-design.md)),
-  en relecture par Mae ; plan à écrire ensuite. Dispositions clavier :
-  reportées.
-- Fixtures et instantanés **anonymisés** (Wi-Fi, VPN, MAC, machine) : ne
-  jamais recommiter de relevé brut du poste, le dépôt est destiné à être
-  public.
-- Sous-projet 2 (démon résident), première livraison **la barre** : **spec
-  écrite** ([`docs/specs/2026-10-04-alpheus-demon-barre-design.md`](docs/specs/2026-10-04-alpheus-demon-barre-design.md)),
-  en relecture par Mae. Vision : autant que DMS/Noctalia, dans le budget.
-  Pile mesurée : smithay-client-toolkit + cosmic-text (≈ 4,5 Mo).
-- **Portabilité** (après la barre, accord de Mae 2026-10-04) : livrer ou
-  rendre configurables les dépendances aux scripts de nixos-config (`wm-set`,
-  `shell-ctl`, `tools-menu`, `alpheus-toggle`) avec repli neutre ; touches
-  Dvorak désactivées par défaut (activées chez Mae via son `config.toml`).
-- Sous-projet 3 (intégration NixOS complète) : à concevoir plus tard.
+  under review by Mae; plan to be written next. Keybindings: deferred.
+- Fixtures and snapshots are **anonymized** (Wi-Fi, VPN, MAC, machine): never
+  recommit a raw capture from the workstation, the repository is meant to
+  go public.
+- Sub-project 2 (resident daemon), first delivery **the bar**: **spec
+  written** ([`docs/specs/2026-10-04-alpheus-demon-barre-design.md`](docs/specs/2026-10-04-alpheus-demon-barre-design.md)),
+  under review by Mae. Vision: as much as DMS/Noctalia, within budget.
+  Measured stack: smithay-client-toolkit + cosmic-text (≈ 4.5 MB).
+- **English rename** (2026-10-04, Mae's decision): the whole repository
+  moves to English — identifiers, comments, tests, log and error messages,
+  user-visible strings (TUI and bar), config file names and keys, CLI
+  flags, docs and commit messages. Only conversations with Mae stay in
+  French. Code rename tracked on branch `chore/english`, docs translation
+  on branch `docs/english`; see `.superpowers/sdd/english/` for the brief
+  and glossary.
+- **Portability** (after the bar, agreed with Mae on 2026-10-04): ship or
+  make configurable the dependencies on nixos-config scripts (`wm-set`,
+  `shell-ctl`, `tools-menu`, `alpheus-toggle`) with a neutral fallback;
+  Dvorak-based keys disabled by default (enabled for Mae through her
+  `config.toml`).
+- Sub-project 3 (full NixOS integration): to be designed later.
 
-## Règles
+## Rules
 
-- **Langue** : Mae communique en français ; commentaires en français.
-- **TDD** : test écrit d'abord, rouge, puis vert ; chaque test doit prouver
-  qu'il mord (casser temporairement le code → rouge → rétablir).
-- **Jamais d'appel réel en test** aux outils qui agissent sur la session
-  (`wpctl`, `nmcli`, `bluetoothctl`, `systemctl`, `wm-set`, `shell-ctl`…) :
-  exécuteur de commandes injectable.
-- **Garde-fous** (détail dans le cadrage) : aucune gestion de veille ni de
-  `dpms` ; aucune écriture au compositeur hors `wm-set` ; rien de résident.
-- **Budget** : résident total ≤ 120 Mo (sous-projet 2) ; TUI < 100 ms au
-  premier rendu.
-- **Produit partageable, légèreté d'abord** (Mae, 2026-10-04) : alpheus sera
-  public. Prévoir la personnalisation, mais jamais au détriment des perfs :
-  une option inutilisée ne coûte rien, aucune dépendance lourde « pour la
-  config ». Ne pas coder en dur ce qui est propre au poste de Mae (scripts de
-  nixos-config, Dvorak, chemins) sans défaut neutre ou voie configurable.
-- Le poste est NixOS, configuré dans `~/nixos-config` (flake) : alpheus y
-  sera branché comme input `git+file://` — ce qui n'est pas commité ici
-  n'est pas vu par le build.
+- **Language**: repository content (code, comments, docs, commit messages,
+  UI) is in English; talk to Mae in French.
+- **TDD**: test written first, red, then green; every test must prove it
+  bites (temporarily break the code → red → restore).
+- **Never a real call in tests** to tools that act on the session
+  (`wpctl`, `nmcli`, `bluetoothctl`, `systemctl`, `wm-set`, `shell-ctl`…):
+  injectable command executor.
+- **Guardrails** (details in the scope doc): no sleep or `dpms` handling;
+  no writes to the compositor outside `wm-set`; nothing resident.
+- **Budget**: total resident memory ≤ 120 MB (sub-project 2); TUI < 100 ms
+  to first render.
+- **Shareable product, lightness first** (Mae, 2026-10-04): alpheus will be
+  public. Plan for customization, but never at the expense of performance:
+  an unused option costs nothing, no heavy dependency "for config". Don't
+  hardcode what's specific to Mae's workstation (nixos-config scripts,
+  Dvorak, paths) without a neutral default or a configurable path.
+- The workstation runs NixOS, configured in `~/nixos-config` (flake):
+  alpheus will be wired in there as a `git+file://` input — whatever isn't
+  committed here isn't seen by the build.
