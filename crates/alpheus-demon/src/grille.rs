@@ -74,10 +74,19 @@ pub struct Grille {
     zones: Vec<Zone>,
 }
 
-/// Largeur affichée : un caractère de contrôle devient une espace (1),
-/// un combinant ne prend pas de case (0), CJK et emoji en prennent 2.
+/// Contrôles C0/C1, et séparateurs Unicode de ligne/paragraphe (U+2028,
+/// U+2029) : une largeur de 1 d'après `unicode-width`, mais rien à afficher
+/// tels quels dans une cellule. Traités pareil partout (`largeur_car` et
+/// `Grille::ecrire`) pour ne jamais se contredire sur leur largeur.
+fn est_controle_affiche(c: char) -> bool {
+    c.is_control() || c == '\u{2028}' || c == '\u{2029}'
+}
+
+/// Largeur affichée : un caractère de contrôle (ou assimilé, voir
+/// `est_controle_affiche`) devient une espace (1), un combinant ne prend
+/// pas de case (0), CJK et emoji en prennent 2.
 fn largeur_car(c: char) -> u16 {
-    if c.is_control() { 1 } else { c.width().unwrap_or(0) as u16 }
+    if est_controle_affiche(c) { 1 } else { c.width().unwrap_or(0) as u16 }
 }
 
 pub fn largeur_texte(s: &str) -> u16 {
@@ -96,7 +105,7 @@ pub fn tronquer(s: &str, max: u16) -> String {
     let mut l = 0u16;
     for c in s.chars() {
         let w = largeur_car(c);
-        if l + w > max - 1 {
+        if l.saturating_add(w) > max - 1 {
             break;
         }
         out.push(c);
@@ -130,7 +139,7 @@ impl Grille {
         let fin = fin.min(self.largeur());
         let mut x = col;
         for c in texte.chars() {
-            let c = if c.is_control() { ' ' } else { c };
+            let c = if est_controle_affiche(c) { ' ' } else { c };
             let w = largeur_car(c);
             if w == 0 {
                 continue;
@@ -138,6 +147,7 @@ impl Grille {
             if x.saturating_add(w) > fin {
                 break;
             }
+            self.effacer_bord_large(x, w);
             self.cellules[x as usize] = Cellule { ch: c, style };
             if w == 2 {
                 self.cellules[x as usize + 1] = Cellule { ch: SUITE, style };
@@ -145,6 +155,22 @@ impl Grille {
             x += w;
         }
         x
+    }
+
+    /// Avant d'écrire en `x` une case de largeur `w`, efface la moitié d'un
+    /// caractère large déjà présent qui deviendrait orpheline : si `x` est
+    /// la suite (`SUITE`) d'un large, son début en `x - 1` ; si `x` est le
+    /// début d'un large et que la nouvelle écriture ne couvre pas sa suite
+    /// (`w == 1`), cette suite en `x + 1`.
+    fn effacer_bord_large(&mut self, x: u16, w: u16) {
+        let i = x as usize;
+        if self.cellules[i].ch == SUITE {
+            if i > 0 {
+                self.cellules[i - 1] = Cellule { ch: ' ', style: Style::NORMAL };
+            }
+        } else if w == 1 && i + 1 < self.cellules.len() && self.cellules[i + 1].ch == SUITE {
+            self.cellules[i + 1] = Cellule { ch: ' ', style: Style::NORMAL };
+        }
     }
 
     pub fn zone(&mut self, debut: u16, fin: u16, cible: Cible) {
@@ -203,6 +229,51 @@ mod tests {
         g.ecrire(0, 8, "a\tb\nc\u{1b}[e\u{301}", Style::NORMAL);
         assert_eq!(g.texte(), "a b c [e", "contrôles en espaces, combinant ignoré");
         assert_eq!(largeur_texte("🦀日a"), 5);
+    }
+
+    #[test]
+    fn borne_fin_interieure_respectee() {
+        // Mord sur `let fin = fin.min(self.largeur());` : remplacer par
+        // `let fin = self.largeur();` (ignorer le paramètre) laisse ces
+        // deux assertions rouges (voir rapport de correction).
+        assert_eq!(Grille::vide(8).ecrire(0, 3, "abcdef", Style::NORMAL), 3);
+        let mut g = Grille::vide(8);
+        g.ecrire(0, 3, "abcdef", Style::NORMAL);
+        assert_eq!(g.texte(), "abc     ");
+
+        // Un caractère large qui ne tient pas dans une borne intérieure
+        // (pas seulement dans la grille entière).
+        assert_eq!(Grille::vide(4).ecrire(0, 2, "a日", Style::NORMAL), 1);
+    }
+
+    #[test]
+    fn large_jamais_orphelin() {
+        // Écraser la première moitié d'un large par un caractère étroit
+        // doit blanchir sa suite, sinon elle reste affichée seule.
+        let mut g = Grille::vide(4);
+        g.ecrire(1, 4, "日", Style::NORMAL);
+        g.ecrire(1, 4, "a", Style::NORMAL);
+        assert_eq!(g.cellules()[2].ch, ' ', "la suite du 日 effacé ne doit pas rester");
+        assert_eq!(g.texte(), " a  ");
+
+        // Écrire directement sur la case `SUITE` doit blanchir le large à
+        // gauche, sinon il déborde visuellement sur la nouvelle case.
+        let mut g = Grille::vide(4);
+        g.ecrire(1, 4, "日", Style::NORMAL);
+        g.ecrire(2, 4, "b", Style::NORMAL);
+        assert_eq!(g.cellules()[1].ch, ' ', "le 日 dont la suite est écrasée ne doit pas rester");
+        assert_eq!(g.texte(), "  b ");
+    }
+
+    #[test]
+    fn separateurs_unicode_comme_controles() {
+        // U+2028 (séparateur de ligne) et U+2029 (de paragraphe) ont une
+        // largeur de 1 d'après unicode-width sans être `is_control` :
+        // traités comme les contrôles, en espace, pas affichés tels quels.
+        assert_eq!(largeur_texte("a\u{2028}b\u{2029}"), 4);
+        let mut g = Grille::vide(4);
+        g.ecrire(0, 4, "a\u{2028}b\u{2029}", Style::NORMAL);
+        assert_eq!(g.texte(), "a b ");
     }
 
     #[test]
