@@ -1,7 +1,7 @@
 //! Fake executor for tests: programmed responses, logged calls. An
 //! unprogrammed command replies "not found": a test can NEVER reach a real tool.
 
-use super::{ExecError, Executor, Output};
+use super::{ExecError, Executor, Output, Stream};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -9,6 +9,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub struct FakeExecutor {
     responses: Mutex<HashMap<String, Result<Output, ExecError>>>,
+    streams: Mutex<HashMap<String, Result<Vec<u8>, ExecError>>>,
     calls: Mutex<Vec<String>>,
     delay: Duration,
 }
@@ -37,6 +38,16 @@ impl FakeExecutor {
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// Programs the output of the stream "prog arg1 arg2" (then its end).
+    pub fn stream_ok(&self, cmdline: &str, output: &[u8]) {
+        self.streams.lock().unwrap().insert(cmdline.to_string(), Ok(output.to_vec()));
+    }
+
+    /// Programs a failure to start the stream "prog arg1 arg2".
+    pub fn stream_err(&self, cmdline: &str, e: ExecError) {
+        self.streams.lock().unwrap().insert(cmdline.to_string(), Err(e));
+    }
 }
 
 fn line(prog: &str, args: &[&str]) -> String {
@@ -58,6 +69,16 @@ impl Executor for FakeExecutor {
         self.calls.lock().unwrap().push(l.clone());
         match self.responses.lock().unwrap().get(&l).cloned() {
             Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        match self.streams.lock().unwrap().get(&l).cloned() {
+            Some(Ok(bytes)) => Ok(Box::new(std::io::Cursor::new(bytes))),
             Some(Err(e)) => Err(e),
             None => Err(ExecError::NotFound),
         }
@@ -100,5 +121,19 @@ mod tests {
         let t = Instant::now();
         let _ = f.run("wpctl", &["status"]);
         assert!(t.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn programmed_stream() {
+        use std::io::Read;
+        let f = FakeExecutor::new();
+        f.stream_ok("pw-dump -m -N -R", b"[]\n");
+        f.stream_err("broken", ExecError::Timeout);
+        let mut text = String::new();
+        f.stream("pw-dump", &["-m", "-N", "-R"]).unwrap().read_to_string(&mut text).unwrap();
+        assert_eq!(text, "[]\n");
+        assert_eq!(f.stream("broken", &[]).err(), Some(ExecError::Timeout));
+        assert_eq!(f.stream("unknown", &[]).err(), Some(ExecError::NotFound), "never a real tool");
+        assert_eq!(f.calls(), ["pw-dump -m -N -R", "broken", "unknown"]);
     }
 }

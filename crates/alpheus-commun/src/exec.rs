@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -46,17 +46,28 @@ pub enum ExecError {
     Io(String),
 }
 
+/// Standard output of a long-running command (e.g. `pw-dump -m`), read as a
+/// stream. Dropping it kills the command's process group and reaps it.
+pub type Stream = Box<dyn Read + Send>;
+
 pub trait Executor: Send + Sync {
     /// Launches `prog args…`, waits for it to finish (bounded delay), captures the outputs.
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError>;
     /// Launches `prog args…` without waiting (e.g. hyprlock), outputs discarded.
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError>;
+    /// Launches `prog args…` for as long as its output is read: standard
+    /// output piped, standard error discarded, its own process group, and
+    /// killed (SIGTERM) if the THREAD that launched it ends (prctl
+    /// PR_SET_PDEATHSIG) — even when nothing runs any `Drop` (SIGKILL).
+    /// Dropping the returned stream kills the group and reaps the child.
+    fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError>;
 }
 
-/// PIDs of the `run` commands in progress, and a closing lock: once set to
-/// `true` by `kill_running`, it forbids any new launch — before and after
-/// the call alike, never a window where a tool could start without our
-/// knowing, and therefore without our being able to kill it.
+/// PIDs of the commands in progress — `run`s, and `stream`s not yet dropped —
+/// and a closing lock: once set to `true` by `kill_running`, it forbids any
+/// new launch — before and after the call alike, never a window where a
+/// tool could start without our knowing, and therefore without our being
+/// able to kill it.
 #[derive(Default)]
 struct Running {
     pids: HashSet<u32>,
@@ -79,10 +90,12 @@ impl SystemExecutor {
     pub fn kill_running(&self) {
         let mut guard = self.running.lock().unwrap();
         guard.closed = true;
-        // Killed with the lock held: `run` only removes a child from the
-        // list after reaping it under this same lock, so every PID targeted
-        // here has not yet been reaped — it cannot have been reused. The
-        // whole group is killed: grandchildren (`sh -c '… &'`) included.
+        // Killed with the lock held: a PID only leaves the list under this
+        // same lock — `run` reaps its child and removes it in one go, a
+        // stream's drop removes it before killing and reaping it — so every
+        // PID targeted here has not yet been reaped: it cannot have been
+        // reused. The whole group is killed: grandchildren (`sh -c '… &'`)
+        // included.
         for pid in guard.pids.drain() {
             kill_group(pid);
         }
@@ -138,13 +151,62 @@ fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> std::thread::JoinHandle<S
     })
 }
 
+/// Unblocks every signal in a child about to exec. The daemon and the TUI
+/// block SIGTERM, SIGHUP and SIGINT in all their threads (they wait for
+/// them in one, shutdown.rs); a child inherits that mask across fork and
+/// exec, and std leaves it as is: without this, a PDEATHSIG SIGTERM would
+/// stay pending forever, and an application launched from the bar would
+/// ignore SIGTERM. Async-signal-safe (sigemptyset, sigprocmask).
+fn unblock_signals() -> std::io::Result<()> {
+    // SAFETY: a zero-filled sigset_t is valid storage, initialized by
+    // sigemptyset; sigprocmask only changes the calling (child) process.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+    }
+    Ok(())
+}
+
+/// A command started by `stream`: reading it reads its standard output;
+/// dropping it kills its process group (if `kill_running` hasn't already)
+/// and reaps it, so a stream never leaves anything behind.
+struct ChildStream {
+    child: Child,
+    stdout: ChildStdout,
+    running: Arc<Mutex<Running>>,
+}
+
+impl Read for ChildStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.stdout.read(buf)
+    }
+}
+
+impl Drop for ChildStream {
+    fn drop(&mut self) {
+        let pid = self.child.id();
+        {
+            // Never panic in a drop: a poisoned lock still holds a valid set.
+            let mut guard = self.running.lock().unwrap_or_else(|p| p.into_inner());
+            // Still listed = not killed by `kill_running`, not reaped: its
+            // PID (= PGID) is still ours.
+            if guard.pids.remove(&pid) {
+                kill_group(pid);
+            }
+        }
+        let _ = self.child.wait();
+    }
+}
+
 impl Executor for SystemExecutor {
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError> {
         // alpheus is shutting down (`kill_running` already called): no launch.
         if self.running.lock().unwrap().closed {
             return Err(ExecError::Io("alpheus is shutting down".into()));
         }
-        let mut child = Command::new(prog)
+        let mut command = Command::new(prog);
+        command
             .args(args)
             // Untranslated output: parsers expect English.
             .env("LC_ALL", "C.UTF-8")
@@ -153,9 +215,10 @@ impl Executor for SystemExecutor {
             .stderr(Stdio::piped())
             // Own process group (PGID = child's PID): on timeout or on
             // shutdown, we kill the group, grandchildren included.
-            .process_group(0)
-            .spawn()
-            .map_err(io_err)?;
+            .process_group(0);
+        // SAFETY: `unblock_signals` only makes async-signal-safe calls.
+        unsafe { command.pre_exec(unblock_signals) };
+        let mut child = command.spawn().map_err(io_err)?;
         let pid = child.id();
         {
             let mut guard = self.running.lock().unwrap();
@@ -199,21 +262,70 @@ impl Executor for SystemExecutor {
     }
 
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
-        let mut child = Command::new(prog)
+        let mut command = Command::new(prog);
+        command
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             // Separate process group: closing alpheus's window (SIGHUP to
             // the terminal's group) does not kill the lock screen.
-            .process_group(0)
-            .spawn()
-            .map_err(io_err)?;
+            .process_group(0);
+        // SAFETY: `unblock_signals` only makes async-signal-safe calls.
+        unsafe { command.pre_exec(unblock_signals) };
+        let mut child = command.spawn().map_err(io_err)?;
         // Reaps the child at its end (no zombie) without blocking the caller.
         std::thread::spawn(move || {
             let _ = child.wait();
         });
         Ok(())
+    }
+
+    fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
+        if self.running.lock().unwrap().closed {
+            return Err(ExecError::Io("alpheus is shutting down".into()));
+        }
+        let parent = std::process::id();
+        let mut command = Command::new(prog);
+        command.args(args).env("LC_ALL", "C.UTF-8").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
+        // SAFETY: the closure runs in the child between fork and exec and
+        // only makes async-signal-safe calls (sigprocmask, prctl, getppid,
+        // _exit).
+        unsafe {
+            command.pre_exec(move || {
+                unblock_signals()?;
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                // The parent already died between fork and prctl: nobody
+                // will ever read us. PDEATHSIG follows the forking THREAD,
+                // not the process, and getppid() can't tell whether that
+                // thread is still alive — a harmless gap here: the only
+                // stream's thread (`sound`) lives as long as the daemon,
+                // so the thread dies only when the process does.
+                if libc::getppid() as u32 != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().map_err(io_err)?;
+        let pid = child.id();
+        let Some(stdout) = child.stdout.take() else {
+            kill_group(pid);
+            let _ = child.wait();
+            return Err(ExecError::Io("no standard output".into()));
+        };
+        {
+            let mut guard = self.running.lock().unwrap();
+            if guard.closed {
+                // Shutdown between the check and the spawn (see `run`).
+                drop(guard);
+                kill_group(pid);
+                let _ = child.wait();
+                return Err(ExecError::Io("alpheus is shutting down".into()));
+            }
+            guard.pids.insert(pid);
+        }
+        Ok(Box::new(ChildStream { child, stdout, running: self.running.clone() }))
     }
 }
 
@@ -371,5 +483,124 @@ mod tests {
     #[test]
     fn spawn_missing_program() {
         assert_eq!(exec().spawn("alpheus-nonexistent-program", &[]), Err(ExecError::NotFound));
+    }
+
+    #[test]
+    fn stream_reads_the_output_until_the_end() {
+        let mut s = exec().stream("sh", &["-c", "printf 'a\\nb\\n'"]).unwrap();
+        let mut text = String::new();
+        s.read_to_string(&mut text).unwrap();
+        assert_eq!(text, "a\nb\n");
+    }
+
+    #[test]
+    fn stream_missing_program() {
+        assert_eq!(exec().stream("alpheus-nonexistent-program", &[]).err(), Some(ExecError::NotFound));
+    }
+
+    /// The grandchild outlives the command (300 s against 3 s): only killing
+    /// the group ends it. Without the kill, `drop` would also wait for the
+    /// command to end on its own (3 s) — hence the timing assertion.
+    #[test]
+    fn dropping_the_stream_kills_the_command_and_its_children() {
+        let f = std::env::temp_dir().join(format!("alpheus-stream-{}-drop", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("sleep 300 & echo $! > {}; exec sleep 3", f.display());
+        let s = exec().stream("sh", &["-c", &script]).unwrap();
+        let grandchild = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        assert!(grandchild > 1);
+        let t = Instant::now();
+        drop(s);
+        let took = t.elapsed();
+        wait_for_death(grandchild); // kills it itself (cleanup) before failing
+        assert!(took < Duration::from_secs(1), "drop waited {took:?} for the command instead of killing it");
+    }
+
+    #[test]
+    fn kill_running_also_kills_streams() {
+        let f = std::env::temp_dir().join(format!("alpheus-stream-{}-shutdown", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("echo $$ > {}; exec sleep 30", f.display());
+        let e = exec();
+        let s = e.stream("sh", &["-c", &script]).unwrap();
+        let pid = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        e.kill_running();
+        wait_for_death(pid);
+        drop(s); // already killed: the drop only reaps it
+    }
+
+    #[test]
+    fn no_stream_after_closing() {
+        let e = exec();
+        e.kill_running();
+        assert_eq!(e.stream("sh", &["-c", "true"]).err(), Some(ExecError::Io("alpheus is shutting down".into())));
+    }
+
+    /// If the daemon dies without running any `Drop` (SIGKILL, abort), the
+    /// kernel must still kill the stream's command: PR_SET_PDEATHSIG, which
+    /// fires when the THREAD that launched it ends. Simulated by a thread
+    /// that launches it, then ends without dropping the stream (forgotten).
+    #[test]
+    fn the_command_dies_with_the_thread_that_launched_it() {
+        let f = std::env::temp_dir().join(format!("alpheus-stream-{}-pdeathsig", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("echo $$ > {}; exec sleep 30", f.display());
+        let e = Arc::new(exec());
+        let e2 = e.clone();
+        let f2 = f.clone();
+        let pid = std::thread::spawn(move || {
+            let s = e2.stream("sh", &["-c", &script]).unwrap();
+            // The thread must outlive the shell's `echo`: PDEATHSIG would
+            // otherwise kill it before it writes its PID.
+            let pid = pid_written(&f2);
+            std::mem::forget(s);
+            pid
+        })
+        .join()
+        .unwrap();
+        let _ = std::fs::remove_file(&f);
+        assert!(pid > 1);
+        wait_for_death(pid);
+    }
+
+    /// The daemon and the TUI block SIGTERM, SIGHUP and SIGINT in every
+    /// thread (they wait for them in one, see shutdown.rs); a child inherits
+    /// that mask across fork and exec. Every command must start with none
+    /// blocked, or it ignores SIGTERM (and a PDEATHSIG SIGTERM never comes).
+    #[test]
+    fn children_start_with_no_blocked_signal() {
+        let f = std::env::temp_dir().join(format!("alpheus-sigblk-{}", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("grep SigBlk /proc/self/status > {}", f.display());
+        let (run, stream) = std::thread::spawn(move || {
+            // SAFETY: a zero-filled sigset_t initialized by sigemptyset and
+            // sigaddset; pthread_sigmask only changes THIS test thread's mask.
+            unsafe {
+                let mut set: libc::sigset_t = std::mem::zeroed();
+                libc::sigemptyset(&mut set);
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+            }
+            let e = exec();
+            let run = e.run("grep", &["SigBlk", "/proc/self/status"]).unwrap().stdout;
+            let mut stream = String::new();
+            e.stream("grep", &["SigBlk", "/proc/self/status"]).unwrap().read_to_string(&mut stream).unwrap();
+            e.spawn("sh", &["-c", &script]).unwrap();
+            (run, stream)
+        })
+        .join()
+        .unwrap();
+        let spawned = (0..200)
+            .find_map(|_| {
+                std::thread::sleep(Duration::from_millis(10));
+                std::fs::read_to_string(&f).ok().filter(|t| !t.is_empty())
+            })
+            .expect("the spawned command ran");
+        let _ = std::fs::remove_file(&f);
+        for out in [run, stream, spawned] {
+            assert_eq!(out.trim(), "SigBlk:\t0000000000000000", "a mask inherited from the parent");
+        }
     }
 }
