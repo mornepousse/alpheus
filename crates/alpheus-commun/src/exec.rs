@@ -59,6 +59,8 @@ pub trait Executor: Send + Sync {
     /// output piped, standard error discarded, its own process group, and
     /// killed (SIGTERM) if the THREAD that launched it ends (prctl
     /// PR_SET_PDEATHSIG) — even when nothing runs any `Drop` (SIGKILL).
+    /// PDEATHSIG covers the command itself, not its children: normal
+    /// cleanup (`Drop`, `kill_running`) kills the whole group instead.
     /// Dropping the returned stream kills the group and reaps the child.
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError>;
 }
@@ -163,7 +165,9 @@ fn unblock_signals() -> std::io::Result<()> {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
-        libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut());
+        if libc::sigprocmask(libc::SIG_SETMASK, &set, std::ptr::null_mut()) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
     }
     Ok(())
 }
@@ -294,7 +298,9 @@ impl Executor for SystemExecutor {
         unsafe {
             command.pre_exec(move || {
                 unblock_signals()?;
-                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 // The parent already died between fork and prctl: nobody
                 // will ever read us. PDEATHSIG follows the forking THREAD,
                 // not the process, and getppid() can't tell whether that

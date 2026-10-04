@@ -34,7 +34,7 @@ impl FakeExecutor {
         self.respond(cmdline, Ok(Output::ok(stdout)));
     }
 
-    /// Command lines received (run and spawn), in order.
+    /// Command lines received (run, spawn and stream), in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
