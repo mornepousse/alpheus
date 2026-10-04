@@ -175,6 +175,13 @@ impl<T, F: Fn(Option<T>) -> bool> Drop for SourceGuard<'_, T, F> {
     }
 }
 
+/// Prefixes a source's log line with its name, e.g. `prefixed("compositor", "source down: refused")`
+/// reads "compositor source down: refused": a single source can appear several times in the log
+/// (compositor, sound, network…), so every line it writes must say which one it came from.
+fn prefixed(name: &str, m: &str) -> String {
+    format!("{name} {m}")
+}
+
 /// Starts a supervised source in its own thread, named `name`: its log lines
 /// read "<name> source down: …", a panic anywhere in it publishes "–".
 pub fn spawn_source<T: Send + 'static>(
@@ -186,7 +193,7 @@ pub fn spawn_source<T: Send + 'static>(
         .name(name.into())
         .spawn(move || {
             let _guard = SourceGuard { name, send: &send, value: PhantomData };
-            supervise(session, &send, std::thread::sleep, Instant::now, |m| log(&format!("{name} {m}")));
+            supervise(session, &send, std::thread::sleep, Instant::now, |m| log(&prefixed(name, m)));
         })
         .map(|_| ())
 }
@@ -278,6 +285,11 @@ mod tests {
     }
 
     #[test]
+    fn prefixed_prepends_the_source_name() {
+        assert_eq!(prefixed("compositor", "source down: refused"), "compositor source down: refused");
+    }
+
+    #[test]
     fn delay_doubles_up_to_30s() {
         let mut r = Backoff::new();
         let d: Vec<u64> = (0..8).map(|_| r.next_delay().as_secs()).collect();
@@ -321,7 +333,11 @@ mod tests {
                 v.push(e.is_some());
                 v.len() < 11 // the 11th send: the bar stops
             },
-            |d| delays.borrow_mut().push(d.as_secs()),
+            |d| {
+                let mut v = delays.borrow_mut();
+                v.push(d.as_secs());
+                assert!(v.len() < 100, "supervise never stopped");
+            },
             clock(Duration::ZERO),
             |_| {},
         );
@@ -359,7 +375,11 @@ mod tests {
                 v.push(e.is_some());
                 v.len() < 5
             },
-            |d| delays.borrow_mut().push(d.as_secs()),
+            |d| {
+                let mut v = delays.borrow_mut();
+                v.push(d.as_secs());
+                assert!(v.len() < 100, "supervise never stopped");
+            },
             clock(Duration::ZERO),
             |m| logs.borrow_mut().push(m.to_string()),
         );
@@ -416,7 +436,11 @@ mod tests {
                 *cycles.borrow_mut() += 1;
                 *cycles.borrow() < 6
             },
-            |d| delays.borrow_mut().push(d.as_secs()),
+            |d| {
+                let mut v = delays.borrow_mut();
+                v.push(d.as_secs());
+                assert!(v.len() < 100, "supervise never stopped");
+            },
             clock(step),
             |m| log.borrow_mut().push(m.to_string()),
         );
