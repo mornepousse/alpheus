@@ -3,6 +3,7 @@
 //! compositeur vers cet état normalisé ; le reste du démon ne connaît que lui.
 
 pub mod hypr;
+pub mod niri;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EtatCompositeur {
