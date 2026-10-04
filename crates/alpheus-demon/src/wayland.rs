@@ -111,36 +111,55 @@ fn should_restore_once<T: PartialEq>(output: &T, pending: &[T], known: impl Iter
     !pending.iter().any(|s| s == output) && should_restore(output, known)
 }
 
-/// What `draw` should do about a surface's persisted SHM buffer, given the
-/// physical size (width, height) it was last created at (`None` before the
-/// first draw, or once invalidated), the size now `needed`, and whether the
-/// compositor still has it (`busy`, i.e. not yet released).
+/// What `draw` should do about a surface's persisted SHM buffers, given
+/// each previous buffer's physical size and whether the compositor still
+/// has it (`busy`, i.e. not yet released), and the size now `needed`.
+///
+/// wlroots compositors (sway, Hyprland) keep the surface's CURRENTLY
+/// DISPLAYED buffer locked until a newer one is committed — only then do
+/// they release the previous one. A single persisted buffer is therefore
+/// busy right up to the moment a new one replaces it: checked right
+/// before that replacement, it is always busy, never reusable. Keeping
+/// two buffers breaks the deadlock: whichever one isn't currently on
+/// screen is free, so in steady state the daemon alternates between the
+/// two, painting into whichever was just released, with no further
+/// allocation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BufferPlan {
-    /// No usable previous buffer (none yet, or the wrong size): allocate one.
-    Create,
-    /// Same size, released by the compositor: paint into it again — this is
-    /// the whole point of keeping one buffer per surface (one fewer
-    /// create/destroy round trip per redraw).
-    Reuse,
-    /// Same size, but the compositor hasn't released it yet: never paint
-    /// into a busy buffer — allocate a second one instead, without
-    /// disturbing the one still on screen.
-    Busy,
+    /// A previous buffer (at this index) already matches `needed` and is
+    /// free: paint into it again.
+    Reuse(usize),
+    /// No previous buffer matches `needed` at all (none yet, or a resize):
+    /// every one of them is useless now, whether busy or not.
+    Resize,
+    /// Every previous buffer matches `needed`, but all are still busy:
+    /// allocate one more rather than paint into a busy buffer. In steady
+    /// state this only ever happens once (growing from one buffer to two);
+    /// a compositor slow enough to need a third is handled (the caller
+    /// prunes down to two again), just not optimized for.
+    Grow,
 }
 
 /// Pure decision, testable with no Wayland connection at all: a resize
-/// always forces a fresh buffer, whether the old one happens to be free or
-/// not, since a buffer of the wrong size is useless either way.
-fn plan_buffer(previous: Option<(u32, u32)>, needed: (u32, u32), busy: bool) -> BufferPlan {
-    if previous == Some(needed) { if busy { BufferPlan::Busy } else { BufferPlan::Reuse } } else { BufferPlan::Create }
+/// always discards every previous buffer, whether free or busy, since a
+/// buffer of the wrong size is useless either way.
+fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPlan {
+    if previous.is_empty() || previous.iter().any(|(size, _)| *size != needed) {
+        return BufferPlan::Resize;
+    }
+    match previous.iter().position(|(_, busy)| !busy) {
+        Some(i) => BufferPlan::Reuse(i),
+        None => BufferPlan::Grow,
+    }
 }
 
 /// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
 /// `pool` (same format and stride computation everywhere a buffer is
-/// created, whether on first draw, resize, or a busy fallback).
-fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<(Buffer, &mut [u8]), String> {
-    pool.create_buffer(width as i32, height as i32, width as i32 * 4, wl_shm::Format::Argb8888).map_err(|e| e.to_string())
+/// created, whether on first draw, resize, or growing to a second buffer).
+fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, String> {
+    pool.create_buffer(width as i32, height as i32, width as i32 * 4, wl_shm::Format::Argb8888)
+        .map(|(buffer, _)| buffer)
+        .map_err(|e| e.to_string())
 }
 
 struct Surface {
@@ -153,14 +172,16 @@ struct Surface {
     configured: bool,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
-    /// SHM buffer reused across redraws (one fewer create/destroy round
-    /// trip per redraw than allocating fresh every time), with the
-    /// physical size it was created at — `plan_buffer` needs it to decide
-    /// whether it still fits. `None` before the first draw, after a resize
-    /// whose old buffer no longer matches, or once invalidated by a pool
-    /// recreation (`shrink_pool_if_needed`: a buffer only belongs to the
-    /// pool that created it).
-    buffer: Option<(Buffer, u32, u32)>,
+    /// SHM buffers reused across redraws, each with the physical size it
+    /// was created at — `plan_buffer` needs it to decide whether a buffer
+    /// still fits. At most two in steady state: the compositor keeps the
+    /// currently displayed one locked until a newer one is committed (see
+    /// `BufferPlan`'s doc), so one persisted buffer is never enough to
+    /// avoid reallocating on every redraw. Empty before the first draw,
+    /// after a resize whose old buffers no longer match, or once
+    /// invalidated by a pool recreation (`shrink_pool_if_needed`: a buffer
+    /// only belongs to the pool that created it).
+    buffers: Vec<(Buffer, u32, u32)>,
 }
 
 pub struct App {
@@ -237,7 +258,7 @@ impl App {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.commit();
         log(&format!("bar placed on {}", log_name(&name, &output)));
-        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None, buffer: None });
+        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None, buffers: Vec::new() });
     }
 
     /// Returns the removed surface's output, so the caller can decide to
@@ -260,13 +281,13 @@ impl App {
             match SlotPool::new(size, &self.shm) {
                 Ok(p) => {
                     self.pool = p;
-                    // Every surviving surface's persisted buffer belongs to
+                    // Every surviving surface's persisted buffers belong to
                     // the pool just replaced (`Buffer::canvas` matches it by
-                    // identity): drop them so the next redraw allocates a
-                    // fresh one from the new pool, rather than an orphaned
+                    // identity): drop them so the next redraw allocates
+                    // fresh ones from the new pool, rather than an orphaned
                     // buffer silently failing to be reused forever.
                     for s in &mut self.surfaces {
-                        s.buffer = None;
+                        s.buffers.clear();
                     }
                 }
                 Err(e) => log(&format!("pool {size}: {e}")),
@@ -296,33 +317,53 @@ impl App {
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
         }
-        let previous = s.buffer.as_ref().map(|(_, bw, bh)| (*bw, *bh));
-        let busy = s.buffer.as_ref().is_some_and(|(b, _, _)| b.slot().has_active_buffers());
-        // `Reuse`'s `canvas` call is expected to succeed (same size, not
-        // busy): `None` here would mean `plan_buffer` and `Buffer::canvas`
-        // disagree on busy-ness, defensive, never seen in practice.
-        let reused_pixels = match plan_buffer(previous, (w, h), busy) {
-            BufferPlan::Reuse => s.buffer.as_ref().and_then(|(buf, _, _)| buf.canvas(pool)),
-            BufferPlan::Busy | BufferPlan::Create => None,
+        let states: Vec<((u32, u32), bool)> = s.buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
+        let used = match plan_buffer(&states, (w, h)) {
+            BufferPlan::Resize => {
+                s.buffers.clear();
+                match new_buffer(pool, w, h) {
+                    Ok(buffer) => s.buffers.push((buffer, w, h)),
+                    Err(err) => {
+                        log(&format!("buffer {w}×{h}: {err}"));
+                        return;
+                    }
+                }
+                0
+            }
+            BufferPlan::Grow => {
+                match new_buffer(pool, w, h) {
+                    Ok(buffer) => s.buffers.push((buffer, w, h)),
+                    Err(err) => {
+                        log(&format!("buffer {w}×{h}: {err}"));
+                        return;
+                    }
+                }
+                // Two buffers are enough to alternate forever in steady
+                // state (see `BufferPlan`'s doc): a third was only ever
+                // allocated because neither existing one was free yet.
+                // Drop the oldest rather than let the list grow without
+                // bound in a pathological case (a compositor slower still
+                // to release) — safe even if it's still busy (`Buffer`'s
+                // own drop defers its destruction to the eventual release).
+                while s.buffers.len() > 2 {
+                    s.buffers.remove(0);
+                }
+                s.buffers.len() - 1
+            }
+            BufferPlan::Reuse(i) => i,
         };
-        match reused_pixels {
-            Some(pixels) => fonts.paint(&grid, palette, pixels, w, h, e),
-            None => match new_buffer(pool, w, h) {
-                Ok((buffer, pixels)) => {
-                    fonts.paint(&grid, palette, pixels, w, h, e);
-                    s.buffer = Some((buffer, w, h));
-                }
-                Err(err) => {
-                    log(&format!("buffer {w}×{h}: {err}"));
-                    return;
-                }
-            },
-        }
+        // Expected to succeed (`plan_buffer` already checked free-ness for
+        // `Reuse`, and a buffer fresh out of `new_buffer` is always
+        // inactive): `None` here is defensive, never seen in practice.
+        let Some(pixels) = s.buffers[used].0.canvas(pool) else {
+            log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
+            return;
+        };
+        fonts.paint(&grid, palette, pixels, w, h, e);
         let surface = s.layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
-        let Some((buffer, _, _)) = s.buffer.as_ref() else { return };
-        if buffer.attach_to(surface).is_err() {
+        if s.buffers[used].0.attach_to(surface).is_err() {
             return;
         }
         s.layer.commit();
@@ -596,29 +637,40 @@ mod tests {
     }
 
     #[test]
-    fn plan_buffer_creates_when_none_yet() {
-        assert_eq!(plan_buffer(None, (100, 22), false), BufferPlan::Create);
+    fn plan_buffer_resizes_when_none_yet() {
+        assert_eq!(plan_buffer(&[], (100, 22)), BufferPlan::Resize);
     }
 
     #[test]
-    fn plan_buffer_reuses_same_size_when_free() {
-        assert_eq!(plan_buffer(Some((100, 22)), (100, 22), false), BufferPlan::Reuse);
+    fn plan_buffer_reuses_the_one_free_buffer() {
+        assert_eq!(plan_buffer(&[((100, 22), false)], (100, 22)), BufferPlan::Reuse(0));
     }
 
     #[test]
-    fn plan_buffer_busy_when_same_size_but_not_released() {
-        assert_eq!(plan_buffer(Some((100, 22)), (100, 22), true), BufferPlan::Busy);
+    fn plan_buffer_grows_when_the_only_buffer_is_busy() {
+        // The whole point of double-buffering: a single buffer is always
+        // busy right up to the moment a new one replaces it (see
+        // `BufferPlan`'s doc) — this must grow to a second, not stall.
+        assert_eq!(plan_buffer(&[((100, 22), true)], (100, 22)), BufferPlan::Grow);
     }
 
     #[test]
-    fn plan_buffer_creates_on_resize_even_if_free() {
-        // Wrong size: a free buffer of the wrong size is still useless.
-        assert_eq!(plan_buffer(Some((100, 22)), (120, 22), false), BufferPlan::Create);
+    fn plan_buffer_reuses_whichever_of_two_is_free() {
+        assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), false)], (100, 22)), BufferPlan::Reuse(1));
+        assert_eq!(plan_buffer(&[((100, 22), false), ((100, 22), true)], (100, 22)), BufferPlan::Reuse(0));
     }
 
     #[test]
-    fn plan_buffer_creates_on_resize_even_if_busy() {
-        assert_eq!(plan_buffer(Some((100, 22)), (120, 22), true), BufferPlan::Create);
+    fn plan_buffer_grows_when_both_of_two_are_busy() {
+        assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), true)], (100, 22)), BufferPlan::Grow);
+    }
+
+    #[test]
+    fn plan_buffer_resizes_on_a_size_change_whatever_the_busy_state() {
+        // Wrong size: every previous buffer is useless either way, free or busy.
+        assert_eq!(plan_buffer(&[((100, 22), false)], (120, 22)), BufferPlan::Resize);
+        assert_eq!(plan_buffer(&[((100, 22), true)], (120, 22)), BufferPlan::Resize);
+        assert_eq!(plan_buffer(&[((100, 22), false), ((100, 22), true)], (120, 22)), BufferPlan::Resize);
     }
 
     #[test]
