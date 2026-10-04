@@ -27,8 +27,9 @@ breakdown), then the spec of the sub-project currently in progress in
   nixos-config) **implemented and merged** on 2026-10-04, after a final
   review and fix wave. Measured: ≈ 12 MB PSS at start, ≈ 13 MB under load
   (headless sway, 3 outputs), 5.5 MB live on Mae's laptop, no wake-up at
-  rest. **Real-world trial in progress** (`desktop.shell = "alpheus"`),
-  then back to DMS until the tray lands.
+  rest. Real-world trial validated by Mae on 2026-10-04; **Mae now uses
+  the alpheus bar daily** (`desktop.shell = "alpheus"`, DMS dropped), so
+  every delivery lands on her machine.
 - Next, in order: bar steps 3 (sound, network, Bluetooth, battery,
   resources), 4 (tray and menus), 5 (media, notifications) — each with its
   own plan; then the **OSD** (replaces swayosd, ≈ 44 MB measured), then
