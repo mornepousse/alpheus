@@ -4,6 +4,13 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// La crate `libc` de ce dépôt ne déclare `tzset` que pour Windows : sur
+// Unix, c'est pourtant une fonction C standard (time.h), déjà liée via la
+// bibliothèque C du système. On la déclare donc nous-mêmes.
+unsafe extern "C" {
+    fn tzset();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HeureLocale {
     pub annee: i32,
@@ -38,6 +45,12 @@ impl HeureLocale {
     /// Secondes depuis l'époque Unix → heure locale du système.
     pub fn depuis_epoch(secs: i64) -> HeureLocale {
         let t = secs as libc::time_t;
+        // SAFETY : tzset() ne fait que relire TZ et le fichier de zone ; pas
+        // de pointeur gardé. Sans cet appel, `localtime_r` garde le fuseau
+        // lu à la première utilisation : un changement de fuseau pendant la
+        // vie du démon (un portable qui change de continent, un TZ modifié
+        // par erreur puis corrigé) ne serait jamais pris en compte.
+        unsafe { tzset() };
         // SAFETY : tm est une structure C simple, valide remplie de zéros ;
         // localtime_r écrit dedans et ne garde aucun pointeur.
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };
@@ -159,6 +172,30 @@ mod tests {
         assert_eq!(prochain_tic(59, 999_000_000, false), Duration::from_millis(1) + MARGE);
         assert_eq!(prochain_tic(10, 500_000_000, true), Duration::from_millis(500) + MARGE);
         assert!(prochain_tic(60, 2_000_000_000, false) <= Duration::from_secs(1) + MARGE, "hors bornes : pas de débordement");
+    }
+
+    #[test]
+    fn tzset_rappele_a_chaque_lecture() {
+        // Décalages fixes (« FOO-3 » = UTC+3, sans « : ») plutôt que des noms
+        // de zone (« Europe/Paris ») : aucune base tzdata nécessaire, le test
+        // reste portable (sandbox ou CI sans /usr/share/zoneinfo). Seule
+        // CETTE fonction lit TZ (`tzset`, voir `depuis_epoch`) ; aucun autre
+        // test de cette suite n'en dépend, le risque de l'écriture d'une
+        // variable d'environnement partagée par les fils de test est nul en
+        // pratique ici.
+        let avant = std::env::var("TZ").ok();
+        // SAFETY : seul ce test lit ou écrit TZ dans cette suite.
+        unsafe { std::env::set_var("TZ", "FOO-3") }; // UTC+3
+        let h1 = HeureLocale::depuis_epoch(1_700_000_000);
+        // SAFETY : idem.
+        unsafe { std::env::set_var("TZ", "BAR2") }; // UTC-2
+        let h2 = HeureLocale::depuis_epoch(1_700_000_000);
+        assert_ne!(h1.heure, h2.heure, "le fuseau change : sans tzset(), la deuxième lecture garderait le premier fuseau");
+        match avant {
+            // SAFETY : idem.
+            Some(v) => unsafe { std::env::set_var("TZ", v) },
+            None => unsafe { std::env::remove_var("TZ") },
+        }
     }
 
     #[test]
