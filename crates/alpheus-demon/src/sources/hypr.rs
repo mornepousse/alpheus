@@ -54,9 +54,11 @@ fn demander(dossier: &Path, r: Requete) -> io::Result<String> {
     s.set_read_timeout(Some(DELAI_REQUETE))?;
     s.set_write_timeout(Some(DELAI_REQUETE))?;
     s.write_all(r.texte().as_bytes())?;
-    let mut rep = String::new();
-    s.read_to_string(&mut rep)?;
-    Ok(rep)
+    // Octets bruts puis conversion tolérante : un titre de fenêtre mal
+    // encodé ne doit pas rendre tout l'état illisible.
+    let mut rep = Vec::new();
+    s.read_to_end(&mut rep)?;
+    Ok(String::from_utf8_lossy(&rep).into_owned())
 }
 
 fn instantane(dossier: &Path) -> io::Result<Instantane> {
@@ -140,6 +142,13 @@ pub(crate) mod faux {
 
     impl FauxHyprland {
         pub fn demarrer(nom: &str) -> FauxHyprland {
+            FauxHyprland::demarrer_avec(nom, CLIENTS.as_bytes(), false)
+        }
+
+        /// `clients` : réponse servie à `j/clients` (octets bruts) ;
+        /// `bagoteur` : le flux accepte chaque connexion puis la ferme aussitôt.
+        pub fn demarrer_avec(nom: &str, clients: &[u8], bagoteur: bool) -> FauxHyprland {
+            let clients = clients.to_vec();
             let dossier = std::env::temp_dir().join(format!("alpheus-hypr-{}-{nom}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dossier);
             std::fs::create_dir_all(&dossier).unwrap();
@@ -153,21 +162,26 @@ pub(crate) mod faux {
                     let mut buf = [0u8; 256];
                     let n = c.read(&mut buf).unwrap_or(0);
                     let req = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let rep = match req.as_str() {
-                        "j/monitors" => MONITEURS,
-                        "j/workspaces" => BUREAUX,
-                        "j/clients" => CLIENTS,
-                        "j/activewindow" => ACTIVE,
-                        _ => "unknown request",
+                    let rep: &[u8] = match req.as_str() {
+                        "j/monitors" => MONITEURS.as_bytes(),
+                        "j/workspaces" => BUREAUX.as_bytes(),
+                        "j/clients" => &clients,
+                        "j/activewindow" => ACTIVE.as_bytes(),
+                        _ => b"unknown request",
                     };
                     r.lock().unwrap().push(req);
-                    let _ = c.write_all(rep.as_bytes());
+                    let _ = c.write_all(rep);
                 }
             });
             let l2 = UnixListener::bind(dossier.join(".socket2.sock")).unwrap();
             let f = flux.clone();
             std::thread::spawn(move || {
-                if let Ok((c, _)) = l2.accept() {
+                if bagoteur {
+                    // Chaque connexion fermée dès l'acceptation.
+                    for c in l2.incoming() {
+                        drop(c);
+                    }
+                } else if let Ok((c, _)) = l2.accept() {
                     *f.lock().unwrap() = Some(c);
                 }
             });
@@ -262,6 +276,19 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10)); // jamais 40 ms de calme
         }
         assert!(f.requetes().len() >= 8, "la relecture ne doit pas attendre un calme qui ne vient pas");
+    }
+
+    #[test]
+    fn titre_utf8_invalide_ne_casse_pas_l_etat() {
+        let clients = faux::CLIENTS.replacen("\"title\": \"~/projets", "\"title\": \"\u{1}~/projets", 1).into_bytes();
+        // Un octet invalide en UTF-8 à la place du marqueur.
+        let clients: Vec<u8> = clients.into_iter().map(|o| if o == 1 { 0xff } else { o }).collect();
+        assert!(std::str::from_utf8(&clients).is_err());
+        let f = FauxHyprland::demarrer_avec("utf8", &clients, false);
+        let (tx, rx) = mpsc::channel();
+        let d = f.dossier.clone();
+        std::thread::spawn(move || session(&d, &mut |e| tx.send(e).is_ok()));
+        assert_eq!(rx.recv_timeout(DELAI).unwrap().bureaux.len(), 3);
     }
 
     #[test]

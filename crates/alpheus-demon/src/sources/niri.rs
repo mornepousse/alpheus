@@ -18,14 +18,31 @@ pub fn session(socket: &Path, publier: &mut dyn FnMut(EtatCompositeur) -> bool) 
     let mut lecteur = BufReader::new(s);
     let mut modele = Modele::default();
     let mut ligne = Vec::new();
+    // Le flux commence par l'état complet, WorkspacesChanged et
+    // WindowsChanged : rien n'est publié avant les deux (pas d'état à moitié
+    // lu), si bien que la première publication est l'état initial et les
+    // suivantes des événements (le superviseur compte là-dessus). Tout
+    // autre événement débloque aussi, au cas où niri changerait cet ordre.
+    let (mut bureaux_lus, mut fenetres_lues) = (false, false);
     loop {
         ligne.clear();
         if lecteur.read_until(b'\n', &mut ligne)? == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "flux d'événements niri fermé"));
         }
         let texte = String::from_utf8_lossy(&ligne);
-        match modele.appliquer_ligne(texte.trim_end()) {
+        let texte = texte.trim_end();
+        match modele.appliquer_ligne(texte) {
             Ok(true) => {
+                if texte.starts_with("{\"WorkspacesChanged\"") {
+                    bureaux_lus = true;
+                } else if texte.starts_with("{\"WindowsChanged\"") {
+                    fenetres_lues = true;
+                } else {
+                    (bureaux_lus, fenetres_lues) = (true, true);
+                }
+                if !(bureaux_lus && fenetres_lues) {
+                    continue;
+                }
                 if !publier(modele.etat()) {
                     return Ok(());
                 }
