@@ -4,6 +4,7 @@
 //! neighboring workspace itself and sends an absolute reference.
 
 use crate::compositor::Workspace;
+use crate::config::ModuleId;
 use crate::grid::{Grid, Target};
 use crate::painter::column_under;
 use crate::state::{Bar, Feed};
@@ -39,37 +40,72 @@ fn neighbor<'a>(bar: &'a Bar, output: &str, next: bool) -> Option<&'a Workspace>
     l.get(j).copied()
 }
 
-/// Replaces `{workspace}` and `{output}` in a single pass over `template`
-/// (the bar.toml text, never the already-substituted result): a workspace
-/// reference that would literally contain `{output}` (unlikely, but
-/// possible) is therefore never itself run back through the mill — unlike
-/// two successive calls to `str::replace` on the already-substituted
-/// string, where the second pass would run back over what the first one
-/// inserted.
-fn substitute(template: &str, workspace: &str, output: &str) -> String {
+/// Replaces each placeholder of `values` (e.g. `{workspace}`, `{tab}`) in a
+/// single pass over `template` (the bar.toml text, never the
+/// already-substituted result): a value that would literally contain a
+/// placeholder (unlikely, but possible) is never run back through the mill.
+fn substitute(template: &str, values: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
-    while let Some(i) = rest.find('{') {
+    'next: while let Some(i) = rest.find('{') {
         out.push_str(&rest[..i]);
         let from_the_brace = &rest[i..];
-        if let Some(after) = from_the_brace.strip_prefix("{workspace}") {
-            out.push_str(workspace);
-            rest = after;
-        } else if let Some(after) = from_the_brace.strip_prefix("{output}") {
-            out.push_str(output);
-            rest = after;
-        } else {
-            // A brace that opens neither placeholder: copied as-is, move
-            // forward by one character.
-            out.push('{');
-            rest = &from_the_brace[1..];
+        for (placeholder, value) in values {
+            if let Some(after) = from_the_brace.strip_prefix(placeholder) {
+                out.push_str(value);
+                rest = after;
+                continue 'next;
+            }
         }
+        // A brace that opens no placeholder: copied as-is.
+        out.push('{');
+        rest = &from_the_brace[1..];
     }
     out.push_str(rest);
     out
 }
 
-/// Command for a click on `target` in the bar of `output`.
+/// wpctl target for the volume: the default output, like the TUI.
+pub const SINK: &str = "@DEFAULT_AUDIO_SINK@";
+/// One wheel notch.
+pub const VOLUME_UP: &str = "5%+";
+pub const VOLUME_DOWN: &str = "5%-";
+
+fn wpctl(args: &[&str]) -> Vec<String> {
+    std::iter::once("wpctl").chain(args.iter().copied()).map(String::from).collect()
+}
+
+/// TUI tab opened by a left click on a module (alpheus `--tab`).
+fn tab(m: ModuleId) -> Option<&'static str> {
+    match m {
+        ModuleId::Volume => Some("sound"),
+        ModuleId::Network => Some("network"),
+        ModuleId::Bluetooth => Some("bluetooth"),
+        ModuleId::Battery => Some("home"),
+        _ => None,
+    }
+}
+
+fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
+    match (m, b) {
+        // -l 1.0: never beyond 100 %, like the TUI.
+        (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
+        (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
+        (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
+        (ModuleId::Resources, Button::Left) => Some(bar.config.actions.resources.clone()),
+        (m, Button::Left) => {
+            let t = tab(m)?;
+            Some(bar.config.actions.open_tab.iter().map(|a| substitute(a, &[("{tab}", t)])).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Command for a click on `target` in the bar of `output`. Going to a
+/// workspace goes through the bar.toml command (`[workspaces] command`); the
+/// system modules open a TUI tab (`[actions] open_tab`), btop (`[actions]
+/// resources`), or change the volume through wpctl. Never by writing to the
+/// compositor directly.
 pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Vec<String>> {
     match target {
         Target::Workspace { reference, output: o } => {
@@ -82,10 +118,9 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
                 Button::Right | Button::Middle => return None,
             };
             let template = &bar.config.workspaces.command;
-            Some(template.iter().map(|a| substitute(a, &workspace, &workspace_output)).collect())
+            Some(template.iter().map(|a| substitute(a, &[("{workspace}", &workspace), ("{output}", &workspace_output)])).collect())
         }
-        // TODO(task 8): dispatch to `[actions] open_tab` / `resources` by button.
-        Target::Module(_) => None,
+        Target::Module(m) => module_command(bar, *m, b),
     }
 }
 
@@ -170,8 +205,9 @@ impl Wheel {
 mod tests {
     use super::*;
     use crate::compositor::example;
-    use crate::config::BarConfig;
+    use crate::config::{BarConfig, ModuleId};
     use crate::state::Msg;
+    use crate::system::*;
     use alpheus_commun::exec::fake::FakeExecutor;
 
     #[test]
@@ -295,5 +331,73 @@ mod tests {
         assert_eq!(m.add(0.0, 0, 60), None, "half-notch");
         m.stop();
         assert_eq!(m.add(0.0, 0, 60), None, "reset: 60 + 60 would have triggered it without the stop");
+    }
+
+    fn full() -> Bar {
+        let mut b = bar();
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Network(Some(NetState::Offline)));
+        b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![] })));
+        b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] })));
+        b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+        b
+    }
+
+    #[test]
+    fn volume_clicks_tab_mute_and_wheel() {
+        let b = full();
+        let v = Target::Module(ModuleId::Volume);
+        assert_eq!(command(&b, "HDMI-A-1", &v, Button::Left), argv(&["alpheus-toggle", "sound"]));
+        assert_eq!(command(&b, "HDMI-A-1", &v, Button::Right), argv(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]));
+        assert_eq!(
+            command(&b, "HDMI-A-1", &v, Button::WheelUp),
+            argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"])
+        );
+        assert_eq!(
+            command(&b, "HDMI-A-1", &v, Button::WheelDown),
+            argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%-"])
+        );
+        assert_eq!(command(&b, "HDMI-A-1", &v, Button::Middle), None);
+    }
+
+    #[test]
+    fn indicators_open_their_tab_resources_open_the_monitor() {
+        let b = full();
+        for (m, tab) in [(ModuleId::Network, "network"), (ModuleId::Bluetooth, "bluetooth"), (ModuleId::Battery, "home")] {
+            let t = Target::Module(m);
+            assert_eq!(command(&b, "eDP-1", &t, Button::Left), argv(&["alpheus-toggle", tab]), "{m:?}");
+            for other in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                assert_eq!(command(&b, "eDP-1", &t, other), None, "{m:?} {other:?}");
+            }
+        }
+        let r = Target::Module(ModuleId::Resources);
+        assert_eq!(command(&b, "eDP-1", &r, Button::Left), argv(&["alacritty", "-e", "btop"]));
+        assert_eq!(command(&b, "eDP-1", &r, Button::Right), None);
+    }
+
+    #[test]
+    fn click_commands_configurable_in_bar_toml() {
+        let mut b = full();
+        b.config.actions.open_tab = vec!["my-panel".into(), "--tab={tab}".into(), "{output}".into()];
+        b.config.actions.resources = vec!["foot".into(), "htop".into()];
+        assert_eq!(
+            command(&b, "eDP-1", &Target::Module(ModuleId::Volume), Button::Left),
+            argv(&["my-panel", "--tab=sound", "{output}"]),
+            "only {{tab}} is a placeholder here"
+        );
+        assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Left), argv(&["foot", "htop"]));
+    }
+
+    #[test]
+    fn right_click_on_the_drawn_volume_mutes() {
+        let b = full();
+        let g = b.grid("HDMI-A-1", 160);
+        let col = g.cells().iter().position(|c| c.ch == crate::segments::VOLUME_HIGH).unwrap();
+        let x = col as f64 * 8.0 + 4.0;
+        assert_eq!(click(&b, "HDMI-A-1", &g, x, 1, 8.0, Button::Right), argv(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]));
+        assert_eq!(
+            click(&b, "HDMI-A-1", &g, x, 1, 8.0, Button::WheelUp),
+            argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"])
+        );
     }
 }

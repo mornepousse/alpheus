@@ -11,6 +11,7 @@ use alpheus_demon::compositor::{CompositorState, Window, Workspace};
 use alpheus_demon::config::BarConfig;
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
+use alpheus_demon::system::*;
 use std::path::{Path, PathBuf};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
@@ -41,6 +42,56 @@ fn every_click_only_runs_the_workspace_command() {
         assert!(c.starts_with("wm-set workspace "), "command outside the list: {c}");
         assert_eq!(c.split(' ').count(), 4, "{c}");
         assert!(!c.to_lowercase().contains("dpms"), "{c}");
+    }
+}
+
+fn full_bar() -> Bar {
+    let mut b = Bar::new(BarConfig::default());
+    b.apply(Msg::Compositor(Some(CompositorState {
+        workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
+        window: Some(Window { class: "firefox".into(), title: "t".into() }),
+    })));
+    b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }) })));
+    b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
+    b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
+    b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
+    b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+    b
+}
+
+/// Every zone of a bar where every module is shown, every button: only the
+/// commands of the allowlist (Global Constraints), and each of them reached.
+#[test]
+fn every_click_on_a_full_bar_stays_on_the_allowlist() {
+    let b = full_bar();
+    let fake = FakeExecutor::new();
+    for output in ["eDP-1", "HDMI-A-1"] {
+        let g = b.grid(output, 240);
+        for z in g.zones() {
+            for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                if let Some(argv) = command(&b, output, &z.target, bt) {
+                    run(&fake, &argv);
+                }
+            }
+        }
+    }
+    let fixed = [
+        "alpheus-toggle sound",
+        "alpheus-toggle network",
+        "alpheus-toggle bluetooth",
+        "alpheus-toggle home",
+        "alacritty -e btop",
+        "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
+    ];
+    let calls = fake.calls();
+    for c in &calls {
+        assert!(c.starts_with("wm-set workspace ") || fixed.contains(&c.as_str()), "command outside the allowlist: {c}");
+        assert!(!c.to_lowercase().contains("dpms"), "{c}");
+    }
+    for expected in fixed {
+        assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
 }
 
