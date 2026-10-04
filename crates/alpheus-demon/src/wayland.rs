@@ -51,12 +51,17 @@ fn taille_tampon(largeur: u32, hauteur: u32, echelle: i32) -> usize {
 /// grand écran débranché est de recréer le pool, plus petit. On ne le fait
 /// que quand c'est nettement utile (`POOL_FACTEUR_SURDIMENSIONNE`), pour ne
 /// pas recréer à la moindre fluctuation de taille.
+///
+/// Le besoin est la SOMME de `besoins`, pas son maximum : le pool porte le
+/// tampon de chaque surface À LA FOIS (une par écran), pas un seul tampon
+/// réutilisé en rotation — un pool dimensionné sur la plus grande surface
+/// serait trop petit dès qu'une deuxième a aussi besoin de place.
 fn pool_cible(actuelle: usize, besoins: &[usize]) -> Option<usize> {
     if besoins.is_empty() {
         // Plus aucune surface : au minimum, revenir au plancher.
         return (actuelle > POOL_PLANCHER).then_some(POOL_PLANCHER);
     }
-    let necessaire = besoins.iter().copied().max().unwrap_or(0).max(POOL_PLANCHER);
+    let necessaire = besoins.iter().copied().sum::<usize>().max(POOL_PLANCHER);
     if actuelle > necessaire.saturating_mul(POOL_FACTEUR_SURDIMENSIONNE) {
         // Marge (double) pour ne pas re-recréer tout de suite après.
         Some(necessaire.saturating_mul(2))
@@ -420,9 +425,18 @@ mod tests {
     }
 
     #[test]
-    fn plusieurs_surfaces_la_plus_grande_decide() {
+    fn plusieurs_surfaces_la_somme_decide_pas_la_plus_grande() {
+        // Le pool contient le tampon de CHAQUE surface à la fois (une par
+        // écran) : il lui faut la place de leur SOMME, pas seulement du
+        // plus grand — sinon, trois écrans aussi grands les uns que les
+        // autres ne tiendraient jamais tous leurs tampons en même temps
+        // dans un pool dimensionné sur un seul.
         let (petit, grand) = (10_000, 676_480);
-        assert_eq!(pool_cible(grand * POOL_FACTEUR_SURDIMENSIONNE + 1, &[petit, grand]), Some(grand * 2));
+        let somme = petit + grand;
+        assert_eq!(pool_cible(somme * POOL_FACTEUR_SURDIMENSIONNE, &[petit, grand]), None, "pile au facteur de la somme : pas encore net");
+        let cible = pool_cible(somme * POOL_FACTEUR_SURDIMENSIONNE + 1, &[petit, grand]);
+        assert_eq!(cible, Some(somme * 2));
+        assert!(cible.unwrap() >= somme, "le pool recréé doit au moins tenir tous les tampons à la fois");
     }
 
     #[test]
