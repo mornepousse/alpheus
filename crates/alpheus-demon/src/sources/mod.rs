@@ -6,6 +6,7 @@
 pub mod dbus;
 pub mod hypr;
 pub mod niri;
+pub mod resources;
 pub mod sound;
 
 use crate::compositor::CompositorState;
