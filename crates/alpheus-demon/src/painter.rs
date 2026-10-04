@@ -10,11 +10,53 @@
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Tint};
 use alpheus_commun::theme::{Palette, Rgb};
-use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
+use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Rasterized glyphs kept at most (≈ 1 MB at 14 px).
 pub const MAX_CACHE: usize = 2048;
+
+/// Everything `glyph` needs to blend one shaped glyph, for a given (char,
+/// bold) pair at the current scale — computed once by `shaped`, cached, and
+/// reused on every later cell, column, scale or redraw.
+///
+/// A cell's left edge (`x0`, see `paint`'s `edge`) is always an exact
+/// integer physical pixel: shifting the glyph by an integer leaves its
+/// swash subpixel bin, and therefore its rasterized `cache_key`, unchanged
+/// (`cosmic_text::glyph_cache::SubpixelBin` bins on the fractional part of
+/// the position alone), and shifts its physical x by that same integer.
+/// `dx` below is this glyph's physical x measured at `x0 = 0`: the real
+/// draw position for any cell is just `x0 + dx`, no reshaping needed.
+#[derive(Clone, Copy)]
+struct ShapedGlyph {
+    cache_key: CacheKey,
+    /// Physical x at `x0 = 0`; add the cell's integer left edge to place it.
+    dx: i32,
+    /// Physical y (the line's baseline plus the glyph's own y): independent
+    /// of the column, constant for the whole (single-line) buffer.
+    y: i32,
+    color_opt: Option<Color>,
+}
+
+/// Shapes `ch` (bold or not) at the buffer's current scale and metrics,
+/// collecting every glyph cosmic-text produces for it (almost always
+/// exactly one — a lone `char` can still decompose into several glyphs
+/// through font fallback or shaping rules, so this never assumes a single
+/// result).
+fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool) -> Vec<ShapedGlyph> {
+    let mut s = [0u8; 4];
+    buffer.set_text(fs, ch.encode_utf8(&mut s), attrs(family, bold), Shaping::Advanced);
+    buffer.shape_until_scroll(fs, false);
+    let mut shaped = Vec::new();
+    for run in buffer.layout_runs() {
+        for gl in run.glyphs.iter() {
+            let phys = gl.physical((-gl.x, 0.0), 1.0);
+            shaped.push(ShapedGlyph { cache_key: phys.cache_key, dx: phys.x, y: run.line_y as i32 + phys.y, color_opt: gl.color_opt });
+        }
+    }
+    shaped
+}
 
 pub struct Fonts {
     fs: FontSystem,
@@ -29,6 +71,13 @@ pub struct Fonts {
     /// practice there are only ever a handful of distinct scales per
     /// session). Avoids reshaping "M" on every alternation.
     advances: Vec<(i32, f32)>,
+    /// `shape`'s result, memoized per (char, bold): cosmic-text otherwise
+    /// reshapes the exact same glyph on every cell, column and redraw.
+    /// Bounded like `cache` (`MAX_CACHE`, cleared past it); also cleared on
+    /// a scale change (`set_scale`), since a shape's `cache_key` and
+    /// physical offsets are only valid for the metrics they were measured
+    /// at.
+    shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
 }
 
 pub fn color(p: &Palette, t: Tint) -> Rgb {
@@ -203,8 +252,18 @@ impl Fonts {
         // visible text.
         let mut fs = FontSystem::new_with_locale_and_db("en-US".into(), db);
         let buffer = Buffer::new(&mut fs, Metrics::new(font.size, height as f32));
-        let mut p =
-            Fonts { fs, cache: SwashCache::new(), buffer, family, size: font.size, height, scale: 0, advance: 0.0, advances: Vec::new() };
+        let mut p = Fonts {
+            fs,
+            cache: SwashCache::new(),
+            buffer,
+            family,
+            size: font.size,
+            height,
+            scale: 0,
+            advance: 0.0,
+            advances: Vec::new(),
+            shapes: HashMap::new(),
+        };
         p.set_scale(1);
         let warning = (!warnings.is_empty()).then(|| warnings.join(" ; "));
         Ok((p, warning))
@@ -224,6 +283,11 @@ impl Fonts {
         self.cache.image_cache.len()
     }
 
+    /// Memoized (char, bold) shapes (memory guard).
+    pub fn shaped_glyphs(&self) -> usize {
+        self.shapes.len()
+    }
+
     /// Size and metrics for scale `e`; measures a cell's advance (memorized
     /// per scale: never remeasured twice). The glyph cache is NOT cleared
     /// here: its swash keys include the size, so glyphs from several scales
@@ -235,6 +299,10 @@ impl Fonts {
             return;
         }
         self.scale = e;
+        // A shape's `cache_key` and physical offsets are only valid for the
+        // metrics (font size) they were measured at: a scale change makes
+        // every memoized shape stale.
+        self.shapes.clear();
         let (t, h) = (self.size * e as f32, (self.height * e as u32) as f32);
         self.buffer.set_metrics_and_size(&mut self.fs, Metrics::new(t, h), None, Some(h));
         self.advance = match self.advances.iter().find(|(scale, _)| *scale == e) {
@@ -275,6 +343,23 @@ impl Fonts {
         }
     }
 
+    /// `shape`'s result for (`ch`, `bold`) at the current scale, memoized:
+    /// cosmic-text otherwise reshapes the exact same glyph on every cell,
+    /// column and redraw it appears in. Bounded like `cache` (`MAX_CACHE`):
+    /// past the ceiling we start over from an empty memo, same as the
+    /// rasterized glyph cache does.
+    fn shaped(&mut self, ch: char, bold: bool) -> Vec<ShapedGlyph> {
+        if let Some(s) = self.shapes.get(&(ch, bold)) {
+            return s.clone();
+        }
+        if self.shapes.len() >= MAX_CACHE {
+            self.shapes.clear();
+        }
+        let s = shape(&mut self.fs, &mut self.buffer, &self.family, ch, bold);
+        self.shapes.insert((ch, bold), s.clone());
+        s
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn glyph(&mut self, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, height: u32) {
         // Bounded memory: past the ceiling, we start over from an empty
@@ -283,20 +368,18 @@ impl Fonts {
             self.cache.image_cache.clear();
             self.cache.outline_command_cache.clear();
         }
-        let mut s = [0u8; 4];
-        self.buffer.set_text(&mut self.fs, ch.encode_utf8(&mut s), attrs(&self.family, bold), Shaping::Advanced);
-        self.buffer.shape_until_scroll(&mut self.fs, false);
         let Rgb(r, g, b) = ink;
         let base = Color::rgb(r, g, b);
-        for run in self.buffer.layout_runs() {
-            for gl in run.glyphs.iter() {
-                // Placed at the edge of the cell, whatever its own advance.
-                let phys = gl.physical((x0 - gl.x, 0.0), 1.0);
-                let tint = gl.color_opt.unwrap_or(base);
-                self.cache.with_pixels(&mut self.fs, phys.cache_key, tint, |dx, dy, c| {
-                    blend(px, width, height, phys.x + dx, run.line_y as i32 + phys.y + dy, c);
-                });
-            }
+        // `x0` is always an exact integer physical pixel (`paint`'s `edge`
+        // rounds it): adding it to `dx` (the shape measured at `x0 = 0`)
+        // lands on the same subpixel bin, hence the same `cache_key`, as
+        // reshaping at this exact `x0` would (see `ShapedGlyph`'s doc).
+        let x0 = x0.round() as i32;
+        for g in self.shaped(ch, bold) {
+            let tint = g.color_opt.unwrap_or(base);
+            self.cache.with_pixels(&mut self.fs, g.cache_key, tint, |dx, dy, c| {
+                blend(px, width, height, x0 + g.dx + dx, g.y + dy, c);
+            });
         }
     }
 }
@@ -312,6 +395,109 @@ mod tests {
             .expect("no monospace font available: run the tests inside `nix develop` (ALPHEUS_POLICES)");
         assert_eq!(w, None, "JetBrainsMono Nerd Font Mono expected (nix develop)");
         p
+    }
+
+    /// Frozen copy of `Fonts::glyph` exactly as it shaped text before the
+    /// memo (B-I3): reshapes `ch` from scratch every single call, however
+    /// many times it was already drawn. Kept only so
+    /// `memoized_shaping_is_pixel_identical_to_reshaping_every_glyph` has
+    /// an independent ground truth to compare the memoized path against.
+    #[allow(clippy::too_many_arguments)]
+    fn glyph_reshaped_every_time(p: &mut Fonts, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, height: u32) {
+        if p.cache.image_cache.len() >= MAX_CACHE {
+            p.cache.image_cache.clear();
+            p.cache.outline_command_cache.clear();
+        }
+        let mut s = [0u8; 4];
+        p.buffer.set_text(&mut p.fs, ch.encode_utf8(&mut s), attrs(&p.family, bold), Shaping::Advanced);
+        p.buffer.shape_until_scroll(&mut p.fs, false);
+        let Rgb(r, g, b) = ink;
+        let base = Color::rgb(r, g, b);
+        for run in p.buffer.layout_runs() {
+            for gl in run.glyphs.iter() {
+                let phys = gl.physical((x0 - gl.x, 0.0), 1.0);
+                let tint = gl.color_opt.unwrap_or(base);
+                p.cache.with_pixels(&mut p.fs, phys.cache_key, tint, |dx, dy, c| {
+                    blend(px, width, height, phys.x + dx, run.line_y as i32 + phys.y + dy, c);
+                });
+            }
+        }
+    }
+
+    /// Frozen copy of `Fonts::paint`, calling `glyph_reshaped_every_time`
+    /// instead of the memoized `Fonts::glyph`.
+    fn paint_reshaping_every_glyph(p: &mut Fonts, grid: &Grid, palette: &Palette, px: &mut [u8], width: u32, height: u32, scale: i32) {
+        p.set_scale(scale);
+        let advance = p.advance;
+        let edge = |col: usize| ((col as f32) * advance).round() as u32;
+        fill(px, width, 0, width, height, color(palette, Tint::Bg));
+        for (col, c) in grid.cells().iter().enumerate() {
+            if c.style.bg != Tint::Bg {
+                fill(px, width, edge(col), edge(col + 1), height, color(palette, c.style.bg));
+            }
+        }
+        for (col, c) in grid.cells().iter().enumerate() {
+            if c.ch == ' ' || c.ch == CONT {
+                continue;
+            }
+            glyph_reshaped_every_time(p, c.ch, c.style.bold, edge(col) as f32, color(palette, c.style.fg), px, width, height);
+        }
+    }
+
+    #[test]
+    fn memoized_shaping_is_pixel_identical_to_reshaping_every_glyph() {
+        let mut memo = fonts();
+        let mut fresh = fonts();
+        let pal = Palette::default();
+        let av = memo.advance(1);
+        assert_eq!(av, fresh.advance(1));
+        let mut g = Grid::empty(40);
+        // Varied columns (exercises every x0), repeated characters (the
+        // memo must actually be hit, not just hold one entry), bold and
+        // non-bold, and a CJK glyph (a differently-shaped, wide script).
+        g.write(0, 40, "Hello, World! 日本語", Style::NORMAL);
+        g.write(16, 40, "Hello!", Style { bold: true, ..Style::NORMAL });
+        let (w, h) = ((av * 40.0).ceil() as u32, DEFAULT_HEIGHT);
+        let mut memo_px = vec![0u8; (w * h * 4) as usize];
+        let mut fresh_px = vec![0u8; (w * h * 4) as usize];
+        memo.paint(&g, &pal, &mut memo_px, w, h, 1);
+        paint_reshaping_every_glyph(&mut fresh, &g, &pal, &mut fresh_px, w, h, 1);
+        assert_eq!(memo_px, fresh_px, "memoized shaping must draw byte-identical pixels");
+    }
+
+    /// Release micro-benchmark (not run by default: `--ignored`), prints
+    /// µs/paint with and without the shaping memo. Run with:
+    /// `nix develop -c cargo test --release -p alpheus-demon --lib painter::tests::glyph_shaping_memo_speeds_up_paint -- --ignored --nocapture`
+    #[test]
+    #[ignore = "timing: run in release, numbers are meaningless in debug"]
+    fn glyph_shaping_memo_speeds_up_paint() {
+        let mut memo = fonts();
+        let mut fresh = fonts();
+        let pal = Palette::default();
+        let av = memo.advance(1);
+        fresh.advance(1);
+        // A realistic bar line: repeats of a modest alphabet, as redrawn
+        // every tick, not thousands of distinct glyphs (that's what
+        // `glyph_cache_bounded_on_varied_titles` already covers).
+        let text = "workspaces  01:23:45  CPU 42%  MEM 38%  firefox — Title of the active window";
+        let cols = text.chars().count() as u16;
+        let mut g = Grid::empty(cols);
+        g.write(0, cols, text, Style::NORMAL);
+        let (w, h) = ((av * cols as f32).ceil() as u32, DEFAULT_HEIGHT);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        const ITERATIONS: u32 = 300;
+        let t0 = std::time::Instant::now();
+        for _ in 0..ITERATIONS {
+            paint_reshaping_every_glyph(&mut fresh, &g, &pal, &mut px, w, h, 1);
+        }
+        let before = t0.elapsed() / ITERATIONS;
+        let t1 = std::time::Instant::now();
+        for _ in 0..ITERATIONS {
+            memo.paint(&g, &pal, &mut px, w, h, 1);
+        }
+        let after = t1.elapsed() / ITERATIONS;
+        eprintln!("paint: {before:?}/call reshaping every glyph, {after:?}/call with the shaping memo");
+        assert!(after < before, "the memo should speed up a repeated paint: before {before:?}, after {after:?}");
     }
 
     #[test]
@@ -353,6 +539,7 @@ mod tests {
         let (w, h) = ((av * 256.0).ceil() as u32, DEFAULT_HEIGHT);
         let mut px = vec![0u8; (w * h * 4) as usize];
         let mut highest = 0;
+        let mut highest_shaped = 0;
         // 4,096 distinct glyphs (md icons from the Nerd Font), 256 per title.
         for block in 0..16u32 {
             let title: String = (0..256u32).filter_map(|i| char::from_u32(0xF0001 + block * 256 + i)).collect();
@@ -360,9 +547,26 @@ mod tests {
             g.write(0, 256, &title, Style::NORMAL);
             p.paint(&g, &pal, &mut px, w, h, 1);
             highest = highest.max(p.cached_glyphs());
+            highest_shaped = highest_shaped.max(p.shaped_glyphs());
             assert!(p.cached_glyphs() <= MAX_CACHE, "cache: {} glyphs", p.cached_glyphs());
+            assert!(p.shaped_glyphs() <= MAX_CACHE, "shape memo: {} entries", p.shaped_glyphs());
         }
         assert!(highest > 1000, "the cache does serve a purpose ({highest})");
+        assert!(highest_shaped > 1000, "the shape memo does serve a purpose ({highest_shaped})");
+    }
+
+    /// Bites on `self.shapes.clear()` being removed from `set_scale`: a
+    /// shape's `cache_key` and physical offsets are only valid for the
+    /// metrics they were measured at, so carrying them over to a new scale
+    /// would draw the wrong glyph (or misplace it) at the new size.
+    #[test]
+    fn shape_memo_cleared_on_scale_change() {
+        let mut p = fonts();
+        p.advance(1);
+        p.shaped('A', false);
+        assert_eq!(p.shaped_glyphs(), 1);
+        p.advance(2); // scale change
+        assert_eq!(p.shaped_glyphs(), 0, "a scale change must drop every memoized shape");
     }
 
     #[test]
