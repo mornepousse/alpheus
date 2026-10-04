@@ -159,17 +159,18 @@ impl Grille {
 
     /// Avant d'écrire en `x` une case de largeur `w`, efface la moitié d'un
     /// caractère large déjà présent qui deviendrait orpheline : si `x` est
-    /// la suite (`SUITE`) d'un large, son début en `x - 1` ; si `x` est le
-    /// début d'un large et que la nouvelle écriture ne couvre pas sa suite
-    /// (`w == 1`), cette suite en `x + 1`.
+    /// la suite (`SUITE`) d'un large, son début en `x - 1` ; si la case
+    /// juste après l'écriture (`x + w`) est une suite, son début vient
+    /// d'être recouvert : cette suite.
     fn effacer_bord_large(&mut self, x: u16, w: u16) {
         let i = x as usize;
-        if self.cellules[i].ch == SUITE {
-            if i > 0 {
-                self.cellules[i - 1] = Cellule { ch: ' ', style: Style::NORMAL };
-            }
-        } else if w == 1 && i + 1 < self.cellules.len() && self.cellules[i + 1].ch == SUITE {
-            self.cellules[i + 1] = Cellule { ch: ' ', style: Style::NORMAL };
+        let vide = Cellule { ch: ' ', style: Style::NORMAL };
+        if i > 0 && self.cellules[i].ch == SUITE {
+            self.cellules[i - 1] = vide;
+        }
+        let apres = i + w as usize;
+        if apres < self.cellules.len() && self.cellules[apres].ch == SUITE {
+            self.cellules[apres] = vide;
         }
     }
 
@@ -263,6 +264,15 @@ mod tests {
         g.ecrire(2, 4, "b", Style::NORMAL);
         assert_eq!(g.cellules()[1].ch, ' ', "le 日 dont la suite est écrasée ne doit pas rester");
         assert_eq!(g.texte(), "  b ");
+
+        // Un large écrit sur le début d'un autre large recouvre ce début
+        // par sa propre suite : la suite de l'ancien, juste après, doit
+        // être blanchie.
+        let mut g = Grille::vide(4);
+        g.ecrire(1, 4, "日", Style::NORMAL);
+        g.ecrire(0, 4, "本", Style::NORMAL);
+        assert_eq!(g.cellules()[2].ch, ' ', "la suite du 日 recouvert ne doit pas rester");
+        assert_eq!(g.texte(), "本  ");
     }
 
     #[test]
