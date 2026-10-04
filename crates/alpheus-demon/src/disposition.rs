@@ -71,31 +71,41 @@ fn style_bureau(b: &Bureau) -> Style {
     }
 }
 
-fn bureaux(etat: &Donnee<EtatCompositeur>, sortie: &str) -> Segment {
+/// `None` si le compositeur ne connaît aucun bureau : pas de segment vide
+/// (pas de « │ │ »), plutôt qu'un segment sans morceau.
+fn bureaux(etat: &Donnee<EtatCompositeur>, sortie: &str) -> Option<Segment> {
     let morceaux = match etat {
         Donnee::Attente => vec![morceau(" … ", Style::ESTOMPE)],
         Donnee::Panne => vec![morceau(" – ", Style::ESTOMPE)],
-        Donnee::Pret(e) => e
-            .bureaux_de(sortie)
-            .into_iter()
-            .map(|b| Morceau {
-                texte: etiquette(b),
-                style: style_bureau(b),
-                cible: Some(Cible::Bureau { reference: b.reference.clone(), sortie: b.sortie.clone() }),
-            })
-            .collect(),
+        Donnee::Pret(e) => {
+            let m: Vec<Morceau> = e
+                .bureaux_de(sortie)
+                .into_iter()
+                .map(|b| Morceau {
+                    texte: etiquette(b),
+                    style: style_bureau(b),
+                    cible: Some(Cible::Bureau { reference: b.reference.clone(), sortie: b.sortie.clone() }),
+                })
+                .collect();
+            if m.is_empty() {
+                return None;
+            }
+            m
+        }
     };
-    Segment { module: ModuleId::Bureaux, morceaux, elastique: false }
+    Some(Segment { module: ModuleId::Bureaux, morceaux, elastique: false })
 }
 
-fn fenetre(etat: &Donnee<EtatCompositeur>) -> Segment {
+/// `None` sans fenêtre active : pas de segment vide (pas de
+/// « │ <vide> │ »), plutôt qu'un morceau de texte vide.
+fn fenetre(etat: &Donnee<EtatCompositeur>) -> Option<Segment> {
     let texte = match etat {
         Donnee::Attente => "…".to_string(),
         Donnee::Panne => "–".to_string(),
         Donnee::Pret(EtatCompositeur { fenetre: Some(f), .. }) => format!("{} {}", icones::glyphe(&f.classe), f.titre),
-        Donnee::Pret(_) => String::new(),
+        Donnee::Pret(_) => return None,
     };
-    Segment { module: ModuleId::Fenetre, morceaux: vec![morceau(texte, Style::NORMAL)], elastique: true }
+    Some(Segment { module: ModuleId::Fenetre, morceaux: vec![morceau(texte, Style::NORMAL)], elastique: true })
 }
 
 fn horloge(barre: &Barre) -> Segment {
@@ -117,8 +127,8 @@ fn horloge(barre: &Barre) -> Segment {
 /// Segment d'un module, ou None s'il n'a rien à montrer.
 fn segment(barre: &Barre, m: ModuleId, sortie: &str) -> Option<Segment> {
     match m {
-        ModuleId::Bureaux => Some(bureaux(&barre.compositeur, sortie)),
-        ModuleId::Fenetre => Some(fenetre(&barre.compositeur)),
+        ModuleId::Bureaux => bureaux(&barre.compositeur, sortie),
+        ModuleId::Fenetre => fenetre(&barre.compositeur),
         ModuleId::Heure => Some(horloge(barre)),
         // Livraisons 3 à 5 : pas encore affichés.
         ModuleId::Lecture
@@ -235,6 +245,11 @@ mod tests {
         for w in [0u16, 1, 5, 12, 39] {
             assert_eq!(barre().grille("HDMI-A-1", w).largeur(), w);
         }
+        // À 39 colonnes le titre a disparu (voir
+        // titre_tronque_puis_retire_quand_la_place_manque), mais bureaux et
+        // heure, jamais retirés, restent tous les deux affichés.
+        let t = barre().grille("HDMI-A-1", 39).texte();
+        assert!(t.contains(" 4!····+ ") && t.contains("14:05"), "{t}");
     }
 
     #[test]
@@ -252,8 +267,18 @@ mod tests {
     #[test]
     fn zones_des_bureaux() {
         let g = barre().grille("HDMI-A-1", 100);
+        let deux = Cible::Bureau { reference: "2".into(), sortie: "HDMI-A-1".into() };
         let quatre = Cible::Bureau { reference: "4".into(), sortie: "HDMI-A-1".into() };
+        let cinq = Cible::Bureau { reference: "5".into(), sortie: "HDMI-A-1".into() };
+        // Bords de chaque zone (« 2· » en 1-4, « 4!····+ » en 5-13, « 5 » en 14-16) :
+        // une borne décalée d'une case laisserait passer ou couperait le clic.
+        assert_eq!(g.cible_en(1), Some(&deux), "premier bord du bureau 2");
+        assert_eq!(g.cible_en(4), Some(&deux), "dernier bord du bureau 2");
+        assert_eq!(g.cible_en(5), Some(&quatre), "premier bord du bureau 4");
         assert_eq!(g.cible_en(6), Some(&quatre));
+        assert_eq!(g.cible_en(13), Some(&quatre), "dernier bord du bureau 4");
+        assert_eq!(g.cible_en(16), Some(&cinq), "dernier bord du bureau 5");
+        assert_eq!(g.cible_en(17), None, "sur le séparateur, aucune zone");
         assert_eq!(g.cible_en(0), None, "marge");
         assert_eq!(g.cible_en(30), None, "titre");
         let g = barre().grille("DVI-I-1", 60);
@@ -307,4 +332,28 @@ mod tests {
         let t = b.grille("HDMI-A-1", 60).texte();
         assert_eq!(t.matches('│').count(), 1, "aucun séparateur pour un module absent : {t}");
     }
+
+    #[test]
+    fn aucun_segment_vide_sans_fenetre_ni_bureau_connu() {
+        // Sans fenêtre active : le module fenêtre ne doit laisser aucun
+        // segment vide (donc pas de « │ <vide> │ »).
+        let mut e = exemple();
+        e.fenetre = None;
+        let mut b = barre();
+        b.appliquer(Msg::Compositeur(Some(e)));
+        let t = b.grille("HDMI-A-1", 60).texte();
+        assert_eq!(t.matches('│').count(), 1, "bureaux et heure seulement : {t}");
+
+        // Sans aucun bureau connu du compositeur : même chose pour le
+        // module bureaux.
+        let e2 = EtatCompositeur { bureaux: Vec::new(), fenetre: Some(Fenetre { classe: "firefox".into(), titre: "Page".into() }) };
+        let mut b2 = barre();
+        b2.appliquer(Msg::Compositeur(Some(e2)));
+        let t2 = b2.grille("HDMI-A-1", 60).texte();
+        assert_eq!(t2.matches('│').count(), 1, "fenêtre et heure seulement : {t2}");
+
+        // En attente ou en panne, « … » / « – » restent affichés pour les
+        // deux modules (couvert par `attente_et_panne`), jamais supprimés.
+    }
 }
+
