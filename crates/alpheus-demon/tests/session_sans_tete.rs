@@ -48,6 +48,21 @@ fn arret_propre_sur_sigterm_et_verrou_relache() {
 
 #[test]
 #[ignore = "sway sans tête (nix develop)"]
+fn compositeur_tombe_rend_un_code_non_nul() {
+    // Connexion Wayland perdue (compositeur planté, pas un arrêt demandé) :
+    // un superviseur (systemd, nixos-config) doit pouvoir distinguer ce cas
+    // d'un SIGTERM propre pour relancer la barre.
+    let mut sway = Sway::lancer("compositeur-tombe", 1);
+    let _hypr = FauxHyprland::demarrer(&sway.runtime, SIGNATURE);
+    let mut d = lancer_demon(&sway);
+    assert!(d.attendre("barre posée sur HEADLESS-1", DELAI), "{:?}", d.journal());
+    sway.tuer();
+    let code = d.fin(DELAI);
+    assert!(matches!(code, Some(c) if c != 0), "compositeur tombé : code attendu ≠ 0, eu {code:?} ({:?})", d.journal());
+}
+
+#[test]
+#[ignore = "sway sans tête (nix develop)"]
 fn un_seul_demon_a_la_fois() {
     let sway = Sway::lancer("unique", 1);
     let _hypr = FauxHyprland::demarrer(&sway.runtime, SIGNATURE);

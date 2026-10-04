@@ -58,6 +58,15 @@ fn journal(m: &str) {
     eprintln!("alpheus-demon : {m}");
 }
 
+/// Code de sortie du démon selon comment la boucle a fini : 0 après un
+/// arrêt demandé (signal, `etat.fin` levé proprement), 1 si la boucle de
+/// dispatch calloop est tombée (connexion Wayland perdue, compositeur
+/// planté) — pour qu'un superviseur (systemd, nixos-config) sache qu'il
+/// doit relancer la barre, au lieu de la croire sortie à la demande.
+fn code_de_sortie(panne_dispatch: bool) -> i32 {
+    if panne_dispatch { 1 } else { 0 }
+}
+
 pub fn lancer() -> i32 {
     // Masque des signaux AVANT tout fil : tous en héritent ; seul le fil de
     // garde les reçoit (sigwait).
@@ -169,9 +178,11 @@ pub fn lancer() -> i32 {
         journal("fil de garde impossible");
         return 1;
     }
+    let mut panne_dispatch = false;
     while !etat.fin {
         if let Err(e) = boucle.dispatch(None, &mut etat) {
             journal(&format!("boucle : {e}"));
+            panne_dispatch = true;
             break;
         }
     }
@@ -179,7 +190,7 @@ pub fn lancer() -> i32 {
     let _ = conn.flush();
     FINIE.store(true, Ordering::SeqCst);
     journal("arrêt");
-    0
+    code_de_sortie(panne_dispatch)
 }
 
 #[cfg(test)]
@@ -198,6 +209,12 @@ mod tests {
         assert!(distribuer(&mut b, Msg::Compositeur(Some(exemple())), || APRES));
         assert_eq!(b.heure, Some(APRES), "sortie de veille : l'heure suit le premier événement");
         assert!(!distribuer(&mut b, Msg::Compositeur(Some(exemple())), || APRES), "rien de neuf : pas de redessin");
+    }
+
+    #[test]
+    fn code_de_sortie_panne_dispatch_renvoie_1() {
+        assert_eq!(code_de_sortie(false), 0, "arrêt demandé : code 0, un superviseur ne doit pas relancer");
+        assert_eq!(code_de_sortie(true), 1, "boucle de dispatch tombée : code ≠ 0, un superviseur doit relancer");
     }
 
     #[test]

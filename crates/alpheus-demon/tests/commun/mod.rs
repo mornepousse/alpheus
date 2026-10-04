@@ -30,7 +30,8 @@ impl Sway {
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         let conf = runtime.join("sway.conf");
         fs::write(&conf, "").unwrap();
-        let enfant = Command::new("sway")
+        let mut commande = Command::new("sway");
+        commande
             .arg("-c")
             .arg(&conf)
             .env_clear()
@@ -41,20 +42,47 @@ impl Sway {
             .env("WLR_HEADLESS_OUTPUTS", sorties.to_string())
             .env("WLR_LIBINPUT_NO_DEVICES", "1")
             .env("WLR_RENDERER", "pixman")
+            // Bus D-Bus de session injoignable, exprès : sans ça, le script
+            // wrapper de nixpkgs relaie via `dbus-run-session
+            // sway-unwrapped …` dès qu'il ne trouve ni variable ni
+            // `$XDG_RUNTIME_DIR/bus` (notre dossier temporaire est vide).
+            // `dbus-run-session` FORK ensuite ses propres enfants
+            // (`dbus-daemon`, le compositeur) : un `prctl(PDEATHSIG)` posé
+            // sur le processus qu'on lance (voir plus bas) ne les couvre
+            // pas, puisque ce drapeau ne se transmet pas à travers un fork,
+            // seulement à travers un exec. Avec cette variable (même
+            // injoignable), le wrapper exécute `sway-unwrapped` DIRECTEMENT
+            // (un simple exec, même PID que celui qu'on suit) : sway
+            // tourne très bien sans bus réel en session sans tête (vérifié :
+            // mêmes tests, tous verts). Vérifié aussi par une sonde dédiée,
+            // hors du dépôt : sans cette variable, tuer le processus qui a
+            // lancé sway laisse `dbus-daemon` et le compositeur orphelins
+            // malgré PDEATHSIG ; avec elle, tout meurt.
+            .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/alpheus-pas-de-bus")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            // Son propre groupe de processus (pgid = son propre pid) : sans
-            // bus D-Bus de session (XDG_RUNTIME_DIR est ce dossier
-            // temporaire, vide), le paquet nixpkgs de sway relaie en fait
-            // via `dbus-run-session sway-unwrapped …`. Un SIGKILL sur le
-            // seul PID suivi par `Child` tue `dbus-run-session` sans lui
-            // laisser le temps de relayer le signal : `dbus-daemon` et le
-            // compositeur restent alors orphelins (reparentés à PID 1),
-            // vivants. `Drop` ci-dessous tue tout le groupe, pas seulement
-            // ce PID.
-            .process_group(0)
-            .spawn()
-            .expect("sway introuvable : lancer ces tests dans `nix develop`");
+            // Son propre groupe de processus (pgid = son propre pid) : au
+            // cas où, malgré la variable ci-dessus, une version de sway
+            // emprunterait quand même un relais qui fork (défense en
+            // profondeur, pas seulement pour ce cas précis). `Drop`
+            // ci-dessous tue tout le groupe, pas seulement ce PID.
+            .process_group(0);
+        // SAFETY : `pre_exec` lui-même (le closure tourne dans l'enfant,
+        // entre le fork et l'exec) — elle ne fait qu'un appel système
+        // (prctl), async-signal-safe, rien d'autre. Si CE PROCESSUS (le
+        // test) est lui-même tué sans préavis (SIGKILL : `Drop` ne tourne
+        // pas, rien ne tue sway), le noyau envoie alors SIGKILL à sway à
+        // notre mort, au lieu de le laisser survivre, reparenté à PID 1.
+        unsafe {
+            commande.pre_exec(|| {
+                // SAFETY : prctl(2) n'écrit qu'un drapeau du processus
+                // appelant (l'enfant, après le fork) ; aucune mémoire
+                // partagée touchée.
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let enfant = commande.spawn().expect("sway introuvable : lancer ces tests dans `nix develop`");
         // Rangé tout de suite dans `Sway` : son Drop tue et attend sway même
         // si l'attente ci-dessous panique (aucun sway zombie).
         let mut sway = Sway { runtime: runtime.clone(), wayland: String::new(), ipc: PathBuf::new(), enfant };
@@ -77,6 +105,17 @@ impl Sway {
     pub fn commande(&self, cmd: &str) {
         let ok = Command::new("swaymsg").arg("-s").arg(&self.ipc).arg(cmd).stdout(Stdio::null()).status().unwrap().success();
         assert!(ok, "swaymsg {cmd}");
+    }
+
+    /// Tue tout de suite le groupe de processus de ce sway (voir `Drop`) :
+    /// simule un compositeur qui plante pendant que le démon tourne, sans
+    /// attendre la fin du test.
+    pub fn tuer(&mut self) {
+        let pgid = self.enfant.id() as i32;
+        // SAFETY : comme dans `Drop`, kill(2) vers le groupe que CE sway a
+        // reçu à son lancement (`process_group(0)`).
+        unsafe { libc::kill(-pgid, libc::SIGKILL) };
+        let _ = self.enfant.wait();
     }
 }
 

@@ -11,7 +11,7 @@ use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
+use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -27,6 +27,57 @@ use smithay_client_toolkit::{
     registry_handlers,
 };
 use std::sync::Arc;
+
+/// Taille de départ du pool (`Etat::new`) : jamais redescendu en dessous,
+/// pour ne pas recréer le pool sans cesse autour d'un écran minuscule ou
+/// quand il est déjà à sa taille plancher.
+const POOL_PLANCHER: usize = 64 * 1024;
+/// Un pool qui dépasse ce qu'il faut aux surfaces restantes par ce facteur
+/// (ou plus) est jugé nettement surdimensionné.
+const POOL_FACTEUR_SURDIMENSIONNE: usize = 4;
+
+/// Octets nécessaires au tampon d'une surface de `largeur` cases logiques,
+/// à l'échelle `echelle`, pour une barre de `hauteur` px logiques (même
+/// calcul que `dessiner` : ARGB8888, 4 octets par pixel physique).
+fn taille_tampon(largeur: u32, hauteur: u32, echelle: i32) -> usize {
+    let e = echelle.max(1) as usize;
+    (largeur as usize * e) * (hauteur as usize * e) * 4
+}
+
+/// Faut-il recréer le pool (actuellement `actuelle` octets) pour les
+/// surfaces restantes, dont les besoins (en octets) sont `besoins` ? Rend
+/// la taille cible si oui, `None` sinon. `SlotPool::resize` (wl_shm) ne peut
+/// qu'agrandir, jamais rétrécir : la seule façon de rendre la mémoire d'un
+/// grand écran débranché est de recréer le pool, plus petit. On ne le fait
+/// que quand c'est nettement utile (`POOL_FACTEUR_SURDIMENSIONNE`), pour ne
+/// pas recréer à la moindre fluctuation de taille.
+fn pool_cible(actuelle: usize, besoins: &[usize]) -> Option<usize> {
+    if besoins.is_empty() {
+        // Plus aucune surface : au minimum, revenir au plancher.
+        return (actuelle > POOL_PLANCHER).then_some(POOL_PLANCHER);
+    }
+    let necessaire = besoins.iter().copied().max().unwrap_or(0).max(POOL_PLANCHER);
+    if actuelle > necessaire.saturating_mul(POOL_FACTEUR_SURDIMENSIONNE) {
+        // Marge (double) pour ne pas re-recréer tout de suite après.
+        Some(necessaire.saturating_mul(2))
+    } else {
+        None
+    }
+}
+
+/// Texte affiché au journal pour une sortie : son nom Wayland s'il est
+/// connu, sinon un repli lisible avec son identifiant protocole — une
+/// sortie `wl_output` antérieure à la version 4 du protocole n'annonce pas
+/// de nom, et `barre posée sur ` (vide) ne dit rien à qui lit le journal.
+/// Fonction pure (le reste, `nom_journal`, en tire l'identifiant depuis le
+/// `wl_output` réel) : testable sans connexion Wayland.
+fn texte_journal(nom: &str, id: u32) -> String {
+    if nom.is_empty() { format!("une sortie sans nom (id {id})") } else { nom.to_string() }
+}
+
+fn nom_journal(nom: &str, sortie: &wl_output::WlOutput) -> String {
+    texte_journal(nom, sortie.id().protocol_id())
+}
 
 struct Surface {
     sortie: wl_output::WlOutput,
@@ -102,13 +153,29 @@ impl Etat {
         couche.set_exclusive_zone(hauteur as i32);
         couche.set_keyboard_interactivity(KeyboardInteractivity::None);
         couche.commit();
-        eprintln!("alpheus-demon : barre posée sur {nom}");
+        eprintln!("alpheus-demon : barre posée sur {}", nom_journal(&nom, &sortie));
         self.surfaces.push(Surface { sortie, nom, couche, largeur: 0, echelle, configuree: false, derniere: None });
     }
 
     fn retirer(&mut self, i: usize) {
         let s = self.surfaces.remove(i); // la surface est détruite avec `s`
-        eprintln!("alpheus-demon : barre retirée de {}", s.nom);
+        eprintln!("alpheus-demon : barre retirée de {}", nom_journal(&s.nom, &s.sortie));
+        self.retrecir_pool_si_besoin();
+    }
+
+    /// Recrée le pool à une taille ajustée aux surfaces restantes, si
+    /// nettement surdimensionné (voir `pool_cible`) : sans cela, la
+    /// projection de pointe d'un grand écran débranché reste en mémoire
+    /// pour toujours (« tourne sur une patate »).
+    fn retrecir_pool_si_besoin(&mut self) {
+        let hauteur = self.barre.config.hauteur;
+        let besoins: Vec<usize> = self.surfaces.iter().map(|s| taille_tampon(s.largeur, hauteur, s.echelle)).collect();
+        if let Some(taille) = pool_cible(self.pool.len(), &besoins) {
+            match SlotPool::new(taille, &self.shm) {
+                Ok(p) => self.pool = p,
+                Err(e) => eprintln!("alpheus-demon : pool {taille} : {e}"),
+            }
+        }
     }
 
     fn indice(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
@@ -307,3 +374,60 @@ delegate_layer!(Etat);
 delegate_seat!(Etat);
 delegate_pointer!(Etat);
 delegate_registry!(Etat);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn taille_du_tampon_tient_compte_de_l_echelle() {
+        assert_eq!(taille_tampon(100, 22, 1), 100 * 22 * 4);
+        assert_eq!(taille_tampon(100, 22, 2), 200 * 44 * 4);
+        assert_eq!(taille_tampon(100, 22, 0), 100 * 22 * 4, "échelle 0 traitée comme 1");
+    }
+
+    #[test]
+    fn pool_deja_au_plancher_sans_surface_rien_a_faire() {
+        assert_eq!(pool_cible(POOL_PLANCHER, &[]), None);
+        assert_eq!(pool_cible(POOL_PLANCHER / 2, &[]), None, "déjà sous le plancher : pas de recréation inutile");
+    }
+
+    #[test]
+    fn plus_aucune_surface_revient_au_plancher() {
+        // Un grand écran (3840 px logiques, échelle 2) a fait grossir le
+        // pool bien au-delà du plancher ; une fois débranché, plus aucune
+        // surface ne reste : le pool doit revenir au plancher, pas rester à
+        // sa taille de pointe pour toujours.
+        assert_eq!(pool_cible(4 * 1024 * 1024, &[]), Some(POOL_PLANCHER));
+    }
+
+    #[test]
+    fn surdimensionnement_leger_laisse_le_pool_tel_quel() {
+        // Un pool qui vient de doubler pour accueillir un écran ne doit pas
+        // être recréé à la moindre réduction (churn) : seul un écart net
+        // (POOL_FACTEUR_SURDIMENSIONNE) déclenche une recréation.
+        let besoin = 676_480; // ~3840×44×4 (écran large, échelle 2)
+        assert_eq!(pool_cible(besoin * 2, &[besoin]), None);
+        assert_eq!(pool_cible(besoin * POOL_FACTEUR_SURDIMENSIONNE, &[besoin]), None, "pile au facteur : pas encore net");
+    }
+
+    #[test]
+    fn surdimensionnement_net_recree_plus_petit() {
+        let besoin = 676_480;
+        let cible = pool_cible(besoin * POOL_FACTEUR_SURDIMENSIONNE + 1, &[besoin]);
+        assert_eq!(cible, Some(besoin * 2), "{cible:?}");
+        assert!(cible.unwrap() < besoin * POOL_FACTEUR_SURDIMENSIONNE, "nettement plus petit qu'avant");
+    }
+
+    #[test]
+    fn plusieurs_surfaces_la_plus_grande_decide() {
+        let (petit, grand) = (10_000, 676_480);
+        assert_eq!(pool_cible(grand * POOL_FACTEUR_SURDIMENSIONNE + 1, &[petit, grand]), Some(grand * 2));
+    }
+
+    #[test]
+    fn texte_journal_repli_lisible_sur_sortie_sans_nom() {
+        assert_eq!(texte_journal("HDMI-A-1", 7), "HDMI-A-1");
+        assert_eq!(texte_journal("", 7), "une sortie sans nom (id 7)");
+    }
+}
