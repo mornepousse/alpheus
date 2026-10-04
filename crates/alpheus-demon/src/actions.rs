@@ -200,7 +200,10 @@ mod tests {
     fn clic_gauche_va_au_bureau() {
         let b = barre();
         assert_eq!(commande(&b, "HDMI-A-1", &bureau("4", "HDMI-A-1"), Bouton::Gauche), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
-        assert_eq!(commande(&b, "DVI-I-1", &bureau("name:web", "DVI-I-1"), Bouton::Gauche), argv(&["wm-set", "workspace", "name:web", "DVI-I-1"]));
+        assert_eq!(
+            commande(&b, "DVI-I-1", &bureau("name:web", "DVI-I-1"), Bouton::Gauche),
+            argv(&["wm-set", "workspace", "name:web", "DVI-I-1"])
+        );
         assert_eq!(commande(&b, "HDMI-A-1", &bureau("4", "HDMI-A-1"), Bouton::Droit), None);
         assert_eq!(commande(&b, "HDMI-A-1", &bureau("4", "HDMI-A-1"), Bouton::Milieu), None);
     }
@@ -213,10 +216,7 @@ mod tests {
         // argument littéral (ni coupé, ni interprété).
         let b = barre();
         let c = bureau("mon bureau; $(rm -rf ~)", "HDMI-A-1");
-        assert_eq!(
-            commande(&b, "HDMI-A-1", &c, Bouton::Gauche),
-            argv(&["wm-set", "workspace", "mon bureau; $(rm -rf ~)", "HDMI-A-1"])
-        );
+        assert_eq!(commande(&b, "HDMI-A-1", &c, Bouton::Gauche), argv(&["wm-set", "workspace", "mon bureau; $(rm -rf ~)", "HDMI-A-1"]));
     }
 
     #[test]
@@ -247,7 +247,10 @@ mod tests {
         assert_eq!(commande(&b, "HDMI-A-1", &c, Bouton::MoletteBas), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
         assert_eq!(commande(&b, "HDMI-A-1", &c, Bouton::MoletteHaut), None, "premier bureau : on ne boucle pas");
         // DVI-I-1 : 3 (visible), web.
-        assert_eq!(commande(&b, "DVI-I-1", &bureau("3", "DVI-I-1"), Bouton::MoletteBas), argv(&["wm-set", "workspace", "name:web", "DVI-I-1"]));
+        assert_eq!(
+            commande(&b, "DVI-I-1", &bureau("3", "DVI-I-1"), Bouton::MoletteBas),
+            argv(&["wm-set", "workspace", "name:web", "DVI-I-1"])
+        );
         let attente = Barre::new(BarreConfig::default());
         assert_eq!(commande(&attente, "HDMI-A-1", &c, Bouton::MoletteBas), None);
     }

@@ -46,11 +46,7 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
 /// Indices des libellés qui correspondent, du meilleur au moins bon
 /// (ordre d'origine à égalité ; requête vide = tout, dans l'ordre).
 pub fn rank<S: AsRef<str>>(query: &str, labels: &[S]) -> Vec<usize> {
-    let mut v: Vec<(usize, i32)> = labels
-        .iter()
-        .enumerate()
-        .filter_map(|(i, l)| score(query, l.as_ref()).map(|s| (i, s)))
-        .collect();
+    let mut v: Vec<(usize, i32)> = labels.iter().enumerate().filter_map(|(i, l)| score(query, l.as_ref()).map(|s| (i, s))).collect();
     v.sort_by_key(|&(_, s)| std::cmp::Reverse(s)); // tri stable : ordre d'origine à égalité
     v.into_iter().map(|(i, _)| i).collect()
 }

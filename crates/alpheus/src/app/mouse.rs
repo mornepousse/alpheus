@@ -2,7 +2,7 @@
 
 use super::action::Command;
 use super::{App, Item, Overlay, PanelField, STEP};
-use crate::ui::hit::{slider_pick, HitMap, Target};
+use crate::ui::hit::{HitMap, Target, slider_pick};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use std::time::Instant;
@@ -67,12 +67,7 @@ impl App {
                 if let Some(i) = self.items().iter().position(|it| *it == Item::Profile) {
                     self.focus = i;
                 }
-                let choice = self
-                    .data
-                    .profiles
-                    .ready()
-                    .and_then(|p| p.available.get(j).filter(|name| **name != p.active))
-                    .cloned();
+                let choice = self.data.profiles.ready().and_then(|p| p.available.get(j).filter(|name| **name != p.active)).cloned();
                 if let Some(name) = choice {
                     self.run_command(Command::SetProfile(name), now);
                 }
@@ -114,11 +109,7 @@ impl App {
         if matches!(self.overlay, Overlay::Palette(_)) {
             let count = self.palette_matches().len();
             if let Overlay::Palette(p) = &mut self.overlay {
-                p.selected = if dir > 0 {
-                    p.selected.saturating_sub(1)
-                } else {
-                    (p.selected + 1).min(count.saturating_sub(1))
-                };
+                p.selected = if dir > 0 { p.selected.saturating_sub(1) } else { (p.selected + 1).min(count.saturating_sub(1)) };
             }
             return;
         }
@@ -192,10 +183,10 @@ mod tests {
         send(&mut a, MouseEventKind::Up(MouseButton::Left), 0, 0);
         send(&mut a, MouseEventKind::Drag(MouseButton::Left), bar.x, bar.y);
         assert_eq!(a.slider_value(SliderId::Volume), Some(100), "glissement terminé");
-        assert_eq!(a.take_requests(), vec![
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 0)),
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),
-        ]);
+        assert_eq!(
+            a.take_requests(),
+            vec![Request::Do(Op::SetVolume(NodeRef::DefaultSink, 0)), Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),]
+        );
     }
 
     #[test]

@@ -7,8 +7,8 @@
 //!   sur ce socket prend une `Requete`, dont les quatre textes sont fixes et
 //!   vérifiés par tests/garde_fous.rs : aucune action, aucun réglage.
 
-use crate::compositeur::hypr::{analyser_ligne, Effet, Instantane, Modele, Reponses};
 use crate::compositeur::EtatCompositeur;
+use crate::compositeur::hypr::{Effet, Instantane, Modele, Reponses, analyser_ligne};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;

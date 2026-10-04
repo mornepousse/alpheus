@@ -43,7 +43,9 @@ pub fn prendre(chemin: &Path) -> Result<Verrou, String> {
         let _ = f.read_to_string(&mut pid);
         return Err(message_flock(&err, chemin, &pid));
     }
-    f.set_len(0).and_then(|_| f.write_all(format!("{}\n", std::process::id()).as_bytes())).map_err(|e| format!("verrou {} : {e}", chemin.display()))?;
+    f.set_len(0)
+        .and_then(|_| f.write_all(format!("{}\n", std::process::id()).as_bytes()))
+        .map_err(|e| format!("verrou {} : {e}", chemin.display()))?;
     Ok(Verrou { _fichier: f })
 }
 

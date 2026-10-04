@@ -8,7 +8,7 @@ use super::overlays::frame;
 use crate::app::ecrans::{panel_fields, place_label, placement_labels};
 use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
-use crate::displays::{active_count, rotation_label, short_from_description, short_names, Output};
+use crate::displays::{Output, active_count, rotation_label, short_from_description, short_names};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -291,7 +291,14 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
         y += 1;
     }
     if let Err(e) = &preview {
-        put(buf, inner, inner.x + 3, y, &truncate(&format!("✗ {e}"), usize::from(inner.width.saturating_sub(4))), Style::default().fg(th.error).bg(th.surface));
+        put(
+            buf,
+            inner,
+            inner.x + 3,
+            y,
+            &truncate(&format!("✗ {e}"), usize::from(inner.width.saturating_sub(4))),
+            Style::default().fg(th.error).bg(th.surface),
+        );
     }
     let by = inner.y + inner.height.saturating_sub(1);
     let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);

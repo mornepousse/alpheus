@@ -1,6 +1,6 @@
 //! Son : wpctl (PipeWire / WirePlumber).
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::sync::Arc;
 
@@ -87,10 +87,7 @@ fn to_percent(s: &str) -> Option<u8> {
 
 /// `Volume: 0.62` ou `Volume: 0.62 [MUTED]`.
 pub fn parse_get_volume(out: &str) -> BResult<Volume> {
-    let rest = out
-        .trim()
-        .strip_prefix("Volume:")
-        .ok_or_else(|| unparsable(TOOL, "préfixe « Volume: » absent"))?;
+    let rest = out.trim().strip_prefix("Volume:").ok_or_else(|| unparsable(TOOL, "préfixe « Volume: » absent"))?;
     let muted = rest.contains("[MUTED]");
     let num = rest.replace("[MUTED]", "");
     let num = num.trim();

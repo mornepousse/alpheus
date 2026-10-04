@@ -26,12 +26,9 @@ pub struct HeureLocale {
 
 const JOURS: [&str; 7] = ["dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"];
 const JOURS_COURTS: [&str; 7] = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
-const MOIS: [&str; 12] = [
-    "janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre",
-];
-const MOIS_COURTS: [&str; 12] = [
-    "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc.",
-];
+const MOIS: [&str; 12] =
+    ["janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre", "octobre", "novembre", "décembre"];
+const MOIS_COURTS: [&str; 12] = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
 const DIRECTIVES: &str = "aAedbBmYHMS%";
 
 impl HeureLocale {

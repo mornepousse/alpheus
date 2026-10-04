@@ -181,10 +181,7 @@ impl Keymap {
         let bindings = Action::ALL
             .into_iter()
             .map(|a| {
-                let chords = default_keys(a, dvorak_nav)
-                    .into_iter()
-                    .map(|k| Chord::parse(k).expect("touche par défaut valide"))
-                    .collect();
+                let chords = default_keys(a, dvorak_nav).into_iter().map(|k| Chord::parse(k).expect("touche par défaut valide")).collect();
                 (a, chords)
             })
             .collect();
@@ -233,8 +230,8 @@ impl Keymap {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::action::Tab;
+    use super::*;
     use std::collections::BTreeMap;
 
     fn ev(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

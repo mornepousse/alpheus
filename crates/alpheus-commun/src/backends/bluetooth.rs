@@ -1,6 +1,6 @@
 //! Bluetooth : bluetoothctl.
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::sync::Arc;
 
@@ -36,11 +36,7 @@ impl BluetoothCtl {
 impl Bluetooth for BluetoothCtl {
     fn status(&self) -> BResult<BtStatus> {
         let powered = parse_show(&run_ok(&*self.exec, TOOL, &["show"])?)?;
-        let connected = if powered {
-            parse_devices(&run_ok(&*self.exec, TOOL, &["devices", "Connected"])?)
-        } else {
-            Vec::new()
-        };
+        let connected = if powered { parse_devices(&run_ok(&*self.exec, TOOL, &["devices", "Connected"])?) } else { Vec::new() };
         Ok(BtStatus { powered, connected })
     }
 

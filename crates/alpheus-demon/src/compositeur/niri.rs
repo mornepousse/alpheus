@@ -149,10 +149,11 @@ impl Modele {
                 }
             })
             .collect();
-        let fenetre = self.fenetres.values().find(|f| f.is_focused).map(|f| Fenetre {
-            classe: f.app_id.clone().unwrap_or_default(),
-            titre: f.title.clone().unwrap_or_default(),
-        });
+        let fenetre = self
+            .fenetres
+            .values()
+            .find(|f| f.is_focused)
+            .map(|f| Fenetre { classe: f.app_id.clone().unwrap_or_default(), titre: f.title.clone().unwrap_or_default() });
         EtatCompositeur { bureaux, fenetre }
     }
 }

@@ -8,7 +8,7 @@
 use crate::compositeur::{Bureau, EtatCompositeur};
 use crate::config::ModuleId;
 use crate::etat::{Barre, Donnee};
-use crate::grille::{largeur_texte, tronquer, Cible, Grille, Style};
+use crate::grille::{Cible, Grille, Style, largeur_texte, tronquer};
 use crate::{heure, icones};
 
 /// Ordre de disparition quand la place manque.
@@ -198,7 +198,7 @@ fn poser(segs: &[Segment], colonnes: u16) -> Grille {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compositeur::{exemple, Fenetre};
+    use crate::compositeur::{Fenetre, exemple};
     use crate::config::BarreConfig;
     use crate::etat::Msg;
     use crate::heure::HeureLocale;
@@ -356,4 +356,3 @@ mod tests {
         // deux modules (couvert par `attente_et_panne`), jamais supprimés.
     }
 }
-

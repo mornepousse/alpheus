@@ -4,7 +4,7 @@
 //! l'agencement entier est décalé pour qu'aucune coordonnée ne soit
 //! négative (coin haut-gauche en (0, 0)).
 
-use super::{short_from_description, Mode, Scale};
+use super::{Mode, Scale, short_from_description};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -263,10 +263,7 @@ pub fn deduce(screens: &[Placed], origin: Option<usize>, avoid: Option<usize>) -
             if placed.contains(&i) {
                 continue;
             }
-            let found = placed
-                .iter()
-                .filter(|&&r| Some(r) != avoid)
-                .find_map(|&r| fits(&screens[i], &screens[r]).map(|f| (r, f)));
+            let found = placed.iter().filter(|&&r| Some(r) != avoid).find_map(|&r| fits(&screens[i], &screens[r]).map(|f| (r, f)));
             if let Some((r, (relation, align))) = found {
                 out[i] = Placement::Relative { relation, reference: screens[r].id.clone(), align };
                 placed.push(i);
@@ -375,16 +372,19 @@ mod tests {
     #[test]
     fn refus_avec_raison() {
         let e = |s: &[Screen]| resolve(s).unwrap_err().to_string();
-        let cycle = [
-            scr("A", 100, 100, rel(Relation::RightOf, "B", Align::Start)),
-            scr("B", 100, 100, rel(Relation::RightOf, "A", Align::Start)),
-        ];
+        let cycle =
+            [scr("A", 100, 100, rel(Relation::RightOf, "B", Align::Start)), scr("B", 100, 100, rel(Relation::RightOf, "A", Align::Start))];
         assert!(e(&cycle).starts_with("placement circulaire autour de"), "{}", e(&cycle));
         let soi = [scr("A", 100, 100, rel(Relation::RightOf, "A", Align::Start))];
         assert_eq!(e(&soi), "placement circulaire autour de A");
-        let absente = [scr("A", 100, 100, Placement::Origin), scr("B", 100, 100, rel(Relation::Below, "Charlie Modèle 3 SERIE0003", Align::Start))];
+        let absente =
+            [scr("A", 100, 100, Placement::Origin), scr("B", 100, 100, rel(Relation::Below, "Charlie Modèle 3 SERIE0003", Align::Start))];
         assert_eq!(e(&absente), "B est placé par rapport à Charlie, absent");
-        let mut desactivee = vec![scr("A", 100, 100, Placement::Origin), scr("B", 100, 100, rel(Relation::Below, "C", Align::Start)), scr("C", 100, 100, Placement::Origin)];
+        let mut desactivee = vec![
+            scr("A", 100, 100, Placement::Origin),
+            scr("B", 100, 100, rel(Relation::Below, "C", Align::Start)),
+            scr("C", 100, 100, Placement::Origin),
+        ];
         desactivee[2].enabled = false;
         assert_eq!(e(&desactivee), "B est placé par rapport à C, désactivé");
         let deux = [scr("A", 100, 100, Placement::Origin), scr("B", 100, 100, Placement::Origin)];
@@ -417,11 +417,14 @@ mod tests {
     #[test]
     fn deduction_cote_a_cote_et_dessous() {
         let p = [placed("A", 0, 0, 1920, 1080), placed("B", 1920, 0, 1920, 1080), placed("C", 0, 1080, 2560, 1600)];
-        assert_eq!(deduce(&p, None, None), vec![
-            Placement::Origin,
-            Placement::Relative { relation: Relation::RightOf, reference: "A".into(), align: Align::Start },
-            Placement::Relative { relation: Relation::Below, reference: "A".into(), align: Align::Start },
-        ]);
+        assert_eq!(
+            deduce(&p, None, None),
+            vec![
+                Placement::Origin,
+                Placement::Relative { relation: Relation::RightOf, reference: "A".into(), align: Align::Start },
+                Placement::Relative { relation: Relation::Below, reference: "A".into(), align: Align::Start },
+            ]
+        );
         assert_eq!(aller_retour(&p), vec![Some((0, 0)), Some((1920, 0)), Some((0, 1080))]);
     }
 
@@ -431,11 +434,14 @@ mod tests {
         // Aucun écran en (0, 0) : l'origine est le plus haut, Alpha ; la dalle
         // touche Alpha mais aucun alignement ne redonne x = 0 : absolue.
         let p = [placed("Interne", 0, 1080, 2560, 1600), placed("Alpha", 213, 0, 1920, 1080), placed("Bravo", 2133, 0, 1920, 1080)];
-        assert_eq!(deduce(&p, None, None), vec![
-            Placement::Absolute { x: -213, y: 1080 },
-            Placement::Origin,
-            Placement::Relative { relation: Relation::RightOf, reference: "Alpha".into(), align: Align::Start },
-        ]);
+        assert_eq!(
+            deduce(&p, None, None),
+            vec![
+                Placement::Absolute { x: -213, y: 1080 },
+                Placement::Origin,
+                Placement::Relative { relation: Relation::RightOf, reference: "Alpha".into(), align: Align::Start },
+            ]
+        );
         assert_eq!(aller_retour(&p), vec![Some((0, 1080)), Some((213, 0)), Some((2133, 0))], "aller-retour identique");
     }
 
@@ -443,9 +449,9 @@ mod tests {
     fn deduction_ecran_isole_et_alignements() {
         let p = [
             placed("A", 0, 0, 1920, 1080),
-            placed("B", 1920, 480, 800, 600),   // à droite, aligné en bas
-            placed("C", 600, 1080, 720, 400),   // dessous, centré
-            placed("D", 5000, 3000, 800, 600),  // voisin de personne
+            placed("B", 1920, 480, 800, 600),  // à droite, aligné en bas
+            placed("C", 600, 1080, 720, 400),  // dessous, centré
+            placed("D", 5000, 3000, 800, 600), // voisin de personne
         ];
         let d = deduce(&p, None, None);
         assert_eq!(d[1], Placement::Relative { relation: Relation::RightOf, reference: "A".into(), align: Align::End });
@@ -467,10 +473,10 @@ mod tests {
     fn deduction_origine_imposee_et_ecran_evite() {
         let p = [placed("A", 0, 0, 1920, 1080), placed("B", 1920, 0, 1920, 1080)];
         let d = deduce(&p, Some(1), None);
-        assert_eq!(d, vec![
-            Placement::Relative { relation: Relation::LeftOf, reference: "B".into(), align: Align::Start },
-            Placement::Origin,
-        ]);
+        assert_eq!(
+            d,
+            vec![Placement::Relative { relation: Relation::LeftOf, reference: "B".into(), align: Align::Start }, Placement::Origin,]
+        );
         // A évité : ni origine, ni référence ; A lui-même reste placé contre B.
         let d = deduce(&p, None, Some(0));
         assert_eq!(d[1], Placement::Origin);

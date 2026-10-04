@@ -88,7 +88,8 @@ impl Sway {
         let mut sway = Sway { runtime: runtime.clone(), wayland: String::new(), ipc: PathBuf::new(), enfant };
         let debut = Instant::now();
         loop {
-            let noms: Vec<String> = fs::read_dir(&runtime).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            let noms: Vec<String> =
+                fs::read_dir(&runtime).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
             let wayland = noms.iter().find(|n| n.starts_with("wayland-") && !n.ends_with(".lock")).cloned();
             let ipc = noms.iter().find(|n| n.starts_with("sway-ipc.")).map(|n| runtime.join(n));
             if let (Some(wayland), Some(ipc)) = (wayland, ipc) {

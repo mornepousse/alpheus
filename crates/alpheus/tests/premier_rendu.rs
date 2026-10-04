@@ -7,8 +7,8 @@ use alpheus::app::worker;
 use alpheus::backends::Backends;
 use alpheus::exec::fake::FakeExecutor;
 use alpheus::ui;
-use ratatui::backend::TestBackend;
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 

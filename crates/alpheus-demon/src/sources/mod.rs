@@ -10,7 +10,7 @@ use crate::compositeur::EtatCompositeur;
 use crate::journal::ecrire as journal;
 use std::ffi::OsString;
 use std::io;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -185,8 +185,12 @@ pub fn lancer(c: Option<Compositeur>, envoyer: impl Fn(Option<EtatCompositeur>) 
                     journal("ni niri ni Hyprland détecté (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
                     envoyer(None);
                 }
-                Some(Compositeur::Hyprland { dossier }) => superviser(|p| hypr::session(&dossier, p), &envoyer, std::thread::sleep, Instant::now, journal),
-                Some(Compositeur::Niri { socket }) => superviser(|p| niri::session(&socket, p), &envoyer, std::thread::sleep, Instant::now, journal),
+                Some(Compositeur::Hyprland { dossier }) => {
+                    superviser(|p| hypr::session(&dossier, p), &envoyer, std::thread::sleep, Instant::now, journal)
+                }
+                Some(Compositeur::Niri { socket }) => {
+                    superviser(|p| niri::session(&socket, p), &envoyer, std::thread::sleep, Instant::now, journal)
+                }
             }
         })
         .expect("fil du compositeur");
@@ -205,7 +209,11 @@ mod tests {
     #[test]
     fn detection_niri_d_abord() {
         assert_eq!(
-            detecter(env(&[("NIRI_SOCKET", "/run/niri.sock"), ("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("XDG_RUNTIME_DIR", "/run/user/1000")])),
+            detecter(env(&[
+                ("NIRI_SOCKET", "/run/niri.sock"),
+                ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
+                ("XDG_RUNTIME_DIR", "/run/user/1000")
+            ])),
             Some(Compositeur::Niri { socket: "/run/niri.sock".into() })
         );
         assert_eq!(
@@ -337,7 +345,10 @@ mod tests {
 
     /// Une source qui sert l'état initial puis tombe aussitôt : le délai
     /// croît quand même, une seule ligne au journal.
-    fn bagotage(mut session: impl FnMut(&mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()>, pas: Duration) -> (Vec<u64>, Vec<String>, usize) {
+    fn bagotage(
+        mut session: impl FnMut(&mut dyn FnMut(EtatCompositeur) -> bool) -> io::Result<()>,
+        pas: Duration,
+    ) -> (Vec<u64>, Vec<String>, usize) {
         let delais = RefCell::new(Vec::new());
         let journal = RefCell::new(Vec::new());
         let publies = RefCell::new(0);
@@ -405,7 +416,8 @@ mod tests {
         let chemin = dossier.join("niri.sock");
         let l = UnixListener::bind(&chemin).unwrap();
         // Chaque connexion : l'état initial complet, puis fermeture.
-        let initial: String = include_str!("../../tests/fixtures/niri-evenements.jsonl").lines().take(6).map(|l| format!("{l}\n")).collect();
+        let initial: String =
+            include_str!("../../tests/fixtures/niri-evenements.jsonl").lines().take(6).map(|l| format!("{l}\n")).collect();
         std::thread::spawn(move || {
             for c in l.incoming() {
                 let Ok(c) = c else { return };
@@ -425,7 +437,8 @@ mod tests {
     fn signature_hyprland_qui_sort_du_dossier_refusee() {
         for sig in ["../../etc", "a/b", ".."] {
             let v: &'static str = Box::leak(sig.to_string().into_boxed_str());
-            let paires: &'static [(&str, &str)] = Box::leak(Box::new([("HYPRLAND_INSTANCE_SIGNATURE", v), ("XDG_RUNTIME_DIR", "/run/user/1000")]));
+            let paires: &'static [(&str, &str)] =
+                Box::leak(Box::new([("HYPRLAND_INSTANCE_SIGNATURE", v), ("XDG_RUNTIME_DIR", "/run/user/1000")]));
             assert_eq!(detecter(env(paires)), None, "{sig}");
         }
     }

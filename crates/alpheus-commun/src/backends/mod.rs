@@ -7,35 +7,49 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub mod sound;
+pub mod bluetooth;
 pub mod brightness;
+pub mod displays;
 pub mod energy;
 pub mod network;
-pub mod bluetooth;
 pub mod notifications;
 pub mod power;
-pub mod displays;
+pub mod sound;
 
-pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
+pub use bluetooth::{Bluetooth, BluetoothCtl, BtDevice, BtStatus};
 pub use brightness::{Brightness, BrightnessCtl};
+pub use displays::{Displays, WmSetDisplays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
-pub use bluetooth::{BtDevice, BtStatus, Bluetooth, BluetoothCtl};
 pub use notifications::{Notifications, ShellCtl};
 pub use power::{Power, PowerAction, SessionPower};
-pub use displays::{Displays, WmSetDisplays};
+pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 
 /// Échec d'un backend, affiché tel quel dans l'onglet concerné.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
-    Missing { tool: String },
-    Failed { tool: String, code: Option<i32>, stderr: String },
-    Unparsable { tool: String, detail: String },
-    Timeout { tool: String },
+    Missing {
+        tool: String,
+    },
+    Failed {
+        tool: String,
+        code: Option<i32>,
+        stderr: String,
+    },
+    Unparsable {
+        tool: String,
+        detail: String,
+    },
+    Timeout {
+        tool: String,
+    },
     /// Retour d'écrans appliqué au mieux : sorties dont l'étape a échoué,
     /// avec leur erreur, et sorties laissées allumées faute d'avoir pu
     /// rallumer les autres (leur désactivation n'a pas été tentée).
-    Incomplete { failures: Vec<(String, BackendError)>, kept: Vec<String> },
+    Incomplete {
+        failures: Vec<(String, BackendError)>,
+        kept: Vec<String>,
+    },
 }
 
 impl fmt::Display for BackendError {

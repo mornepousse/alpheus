@@ -61,8 +61,7 @@ impl Launcher for ProcessLauncher {
         // exec (un gestionnaire ne s'hérite pas, contrairement à SIG_IGN).
         let handler = ignore_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         // SAFETY : signal(2) avec un gestionnaire vide (async-signal-safe).
-        let (old_int, old_quit) =
-            unsafe { (libc::signal(libc::SIGINT, handler), libc::signal(libc::SIGQUIT, handler)) };
+        let (old_int, old_quit) = unsafe { (libc::signal(libc::SIGINT, handler), libc::signal(libc::SIGQUIT, handler)) };
         let status = Command::new(prog).args(args).status();
         // SAFETY : rétablit les gestionnaires précédents.
         unsafe {

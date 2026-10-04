@@ -4,7 +4,7 @@
 
 mod commun;
 
-use commun::{lancer_demon, FauxHyprland, Sway, SIGNATURE};
+use commun::{FauxHyprland, SIGNATURE, Sway, lancer_demon};
 use std::time::Duration;
 
 const DELAI: Duration = Duration::from_secs(10);

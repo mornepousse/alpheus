@@ -39,11 +39,7 @@ pub struct CommandsConfig {
 
 impl Default for CommandsConfig {
     fn default() -> Self {
-        CommandsConfig {
-            mixer: vec!["wiremix".into()],
-            network: vec!["nmtui".into()],
-            bluetooth: vec!["bluetui".into()],
-        }
+        CommandsConfig { mixer: vec!["wiremix".into()], network: vec!["nmtui".into()], bluetooth: vec!["bluetui".into()] }
     }
 }
 
@@ -85,7 +81,10 @@ mod tests {
 
     #[test]
     fn fichier_partiel() {
-        let p = file("partiel", "[commands]\nmixer = [\"pavucontrol\"]\n\n[keys]\ndvorak_nav = false\n\n[keys.bindings]\npalette = [\"ctrl+k\"]\n");
+        let p = file(
+            "partiel",
+            "[commands]\nmixer = [\"pavucontrol\"]\n\n[keys]\ndvorak_nav = false\n\n[keys.bindings]\npalette = [\"ctrl+k\"]\n",
+        );
         let (c, w) = Config::load(&p);
         assert_eq!(w, None);
         assert_eq!(c.commands.mixer, vec!["pavucontrol"]);

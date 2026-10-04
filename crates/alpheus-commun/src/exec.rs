@@ -124,11 +124,7 @@ fn exited(pid: u32) -> Result<bool, ExecError> {
 }
 
 fn io_err(e: std::io::Error) -> ExecError {
-    if e.kind() == std::io::ErrorKind::NotFound {
-        ExecError::NotFound
-    } else {
-        ExecError::Io(e.to_string())
-    }
+    if e.kind() == std::io::ErrorKind::NotFound { ExecError::NotFound } else { ExecError::Io(e.to_string()) }
 }
 
 /// Lit un tube jusqu'au bout dans un fil séparé : une sortie plus grosse que
@@ -200,11 +196,7 @@ impl Executor for SystemExecutor {
             return Err(e);
         }
         let status = child.wait().map_err(|e| ExecError::Io(e.to_string()))?;
-        Ok(Output {
-            code: status.code(),
-            stdout: out.join().unwrap_or_default(),
-            stderr: err.join().unwrap_or_default(),
-        })
+        Ok(Output { code: status.code(), stdout: out.join().unwrap_or_default(), stderr: err.join().unwrap_or_default() })
     }
 
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {

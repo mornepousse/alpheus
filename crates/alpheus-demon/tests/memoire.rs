@@ -8,7 +8,7 @@
 
 mod commun;
 
-use commun::{lancer_demon, Demon, FauxHyprland, Sway, SIGNATURE};
+use commun::{Demon, FauxHyprland, SIGNATURE, Sway, lancer_demon};
 use std::time::{Duration, Instant};
 
 const DELAI: Duration = Duration::from_secs(10);
@@ -75,7 +75,9 @@ fn pss_sous_30_mo_et_stable() {
         std::thread::sleep(Duration::from_secs(1));
     }
     let fin = d.pss_ko();
-    eprintln!("PSS : {depart} Ko au départ, {debut} Ko après l'échauffement et un premier cycle, {fin} Ko après {n} événements et 5 branchements");
+    eprintln!(
+        "PSS : {depart} Ko au départ, {debut} Ko après l'échauffement et un premier cycle, {fin} Ko après {n} événements et 5 branchements"
+    );
     assert!(fin < 30 * 1024, "PSS {fin} Ko ≥ 30 Mo");
     assert!(fin <= debut + 1024, "croissance : {debut} → {fin} Ko");
     // Le test commence et finit avec les trois sorties branchées (la

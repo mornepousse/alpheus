@@ -67,11 +67,7 @@ impl Scale {
     /// Argument de `wm-set` : « 1 », « 1.25 », « 1.2 ».
     pub fn arg(self) -> String {
         let (whole, frac) = (self.0 / 1000, self.0 % 1000);
-        if frac == 0 {
-            whole.to_string()
-        } else {
-            format!("{whole}.{frac:03}").trim_end_matches('0').to_string()
-        }
+        if frac == 0 { whole.to_string() } else { format!("{whole}.{frac:03}").trim_end_matches('0').to_string() }
     }
 
     /// Libellé affiché : « 1.0 », « 1.25 ».
@@ -147,9 +143,7 @@ pub fn short_names(outs: &[Output]) -> Vec<String> {
     let base: Vec<String> = outs.iter().map(short_name).collect();
     base.iter()
         .zip(outs)
-        .map(|(b, o)| {
-            if base.iter().filter(|x| *x == b).count() > 1 { format!("{b} {}", o.name) } else { b.clone() }
-        })
+        .map(|(b, o)| if base.iter().filter(|x| *x == b).count() > 1 { format!("{b} {}", o.name) } else { b.clone() })
         .collect()
 }
 
@@ -262,9 +256,7 @@ pub fn changed_elsewhere(before: &[Output], plan: &Plan, now: &[Output]) -> bool
     if names(before) != names(now) {
         return true;
     }
-    now.iter()
-        .filter(|o| !plan.touches(&o.name))
-        .any(|o| before.iter().any(|b| b.name == o.name && b.active != o.active))
+    now.iter().filter(|o| !plan.touches(&o.name)).any(|o| before.iter().any(|b| b.name == o.name && b.active != o.active))
 }
 
 /// Aides de test, partagées avec les tests de la TUI (fonctionnalité
@@ -360,7 +352,10 @@ mod tests {
     #[test]
     fn noms_courts() {
         assert_eq!(short_names(&poste()), vec!["Portable", "Alpha", "Bravo"]);
-        let deux = vec![on("DVI-I-1", "Bravo Modèle 2 SERIE0002", 1920, 1080, 0, 0), on("DVI-I-2", "Bravo Modèle 2 SERIE0003", 1920, 1080, 1920, 0)];
+        let deux = vec![
+            on("DVI-I-1", "Bravo Modèle 2 SERIE0002", 1920, 1080, 0, 0),
+            on("DVI-I-2", "Bravo Modèle 2 SERIE0003", 1920, 1080, 1920, 0),
+        ];
         assert_eq!(short_names(&deux), vec!["Bravo DVI-I-1", "Bravo DVI-I-2"], "même marque : connecteur ajouté");
         assert_eq!(short_names(&[on("HDMI-A-2", "  ", 1920, 1080, 0, 0)]), vec!["HDMI-A-2"], "sans description");
         assert_eq!(short_from_description(BRAVO), "Bravo");
@@ -383,34 +378,31 @@ mod tests {
             ("eDP-1".to_string(), None),
             ("DVI-I-1".to_string(), Some(moved.clone())),
             ("HDMI-A-1".to_string(), cur[2].active.clone()), // inchangé : absent du plan
-            ("DP-9".to_string(), None),                       // inconnue : ignorée
+            ("DP-9".to_string(), None),                      // inconnue : ignorée
         ];
         let p = Plan::between(&cur, &target);
-        assert_eq!(p.steps, vec![
-            Step { output: "DVI-I-1".into(), active: Some(moved) },
-            Step { output: "eDP-1".into(), active: None },
-        ]);
+        assert_eq!(p.steps, vec![Step { output: "DVI-I-1".into(), active: Some(moved) }, Step { output: "eDP-1".into(), active: None },]);
         assert!(p.touches("eDP-1") && !p.touches("HDMI-A-1"));
     }
 
     #[test]
     fn plan_inverse() {
         let before = poste();
-        let p = Plan { steps: vec![
-            Step { output: "HDMI-A-1".into(), active: None },
-            Step { output: "eDP-1".into(), active: None },
-        ] };
+        let p = Plan { steps: vec![Step { output: "HDMI-A-1".into(), active: None }, Step { output: "eDP-1".into(), active: None }] };
         let u = Plan::undo(&before, &p);
-        assert_eq!(u.steps, vec![
-            Step { output: "eDP-1".into(), active: before[0].active.clone() },
-            Step { output: "HDMI-A-1".into(), active: before[2].active.clone() },
-        ], "dalle interne d'abord");
+        assert_eq!(
+            u.steps,
+            vec![
+                Step { output: "eDP-1".into(), active: before[0].active.clone() },
+                Step { output: "HDMI-A-1".into(), active: before[2].active.clone() },
+            ],
+            "dalle interne d'abord"
+        );
         // Une sortie éteinte avant l'essai est rééteinte, après les activations.
         let before = vec![off("DP-3", ALPHA), on("eDP-1", INTERNE, 2560, 1600, 0, 0)];
-        let p = Plan { steps: vec![
-            Step { output: "DP-3".into(), active: before[1].active.clone() },
-            Step { output: "eDP-1".into(), active: None },
-        ] };
+        let p = Plan {
+            steps: vec![Step { output: "DP-3".into(), active: before[1].active.clone() }, Step { output: "eDP-1".into(), active: None }],
+        };
         let u = Plan::undo(&before, &p);
         assert_eq!(u.steps[0].output, "eDP-1");
         assert_eq!(u.steps[1], Step { output: "DP-3".into(), active: None });
@@ -430,15 +422,9 @@ mod tests {
         let mut dl = on("DVI-I-1", ALPHA, 1920, 1080, 0, 0);
         dl.displaylink = true;
         let before = vec![dl, off("eDP-1", INTERNE)];
-        let p = Plan { steps: vec![
-            Step { output: "eDP-1".into(), active: before[0].active.clone() },
-            eteint("DVI-I-1"),
-        ] };
+        let p = Plan { steps: vec![Step { output: "eDP-1".into(), active: before[0].active.clone() }, eteint("DVI-I-1")] };
         let u = Plan::undo(&before, &p);
-        assert_eq!(u.steps, vec![
-            Step { output: "DVI-I-1".into(), active: before[0].active.clone() },
-            eteint("eDP-1"),
-        ]);
+        assert_eq!(u.steps, vec![Step { output: "DVI-I-1".into(), active: before[0].active.clone() }, eteint("eDP-1"),]);
     }
 
     #[test]
@@ -464,10 +450,9 @@ mod tests {
     #[test]
     fn ecran_perdu_pendant_un_essai() {
         let before = poste();
-        let plan = Plan { steps: vec![
-            Step { output: "DVI-I-1".into(), active: None },
-            Step { output: "eDP-1".into(), active: before[0].active.clone() },
-        ] };
+        let plan = Plan {
+            steps: vec![Step { output: "DVI-I-1".into(), active: None }, Step { output: "eDP-1".into(), active: before[0].active.clone() }],
+        };
         assert!(!screen_lost(&plan, &before));
         let mut sans_alpha = before.clone();
         sans_alpha.remove(1);

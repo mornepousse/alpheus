@@ -48,6 +48,15 @@
         };
       });
 
+      # `nix flake check`: the code must stay formatted (rustfmt.toml).
+      checks = pour (pkgs: {
+        fmt = pkgs.runCommand "alpheus-fmt" { nativeBuildInputs = [ pkgs.cargo pkgs.rustfmt ]; } ''
+          cd ${./.}
+          cargo fmt --all --check
+          touch $out
+        '';
+      });
+
       devShells = pour (pkgs: {
         default = pkgs.mkShell {
           # sway : compositeur sans tête des tests ignorés du démon.

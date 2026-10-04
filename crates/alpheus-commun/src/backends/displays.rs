@@ -1,7 +1,7 @@
 //! Écrans : lecture par `wm-set outputs` (JSON normalisé), écriture par
 //! `wm-set monitor` / `monitor-disable`. Jamais le compositeur en direct.
 
-use super::{run_ok, unparsable, BResult, BackendError};
+use super::{BResult, BackendError, run_ok, unparsable};
 use crate::displays::{Active, Mode, Output, Plan, Scale, Step};
 use crate::exec::Executor;
 use serde::Deserialize;
@@ -112,8 +112,8 @@ pub fn parse_outputs(json: &str) -> BResult<Vec<Output>> {
 mod tests {
     use super::*;
     use crate::displays::testing::*;
-    use crate::exec::fake::FakeExecutor;
     use crate::exec::Output as ExecOutput;
+    use crate::exec::fake::FakeExecutor;
 
     /// Relevé `wm-set outputs` du poste, anonymisé (descriptions remplacées).
     const OUTPUTS: &str = include_str!("../../tests/fixtures/wm-set-outputs.json");
@@ -172,11 +172,13 @@ mod tests {
 
     fn plan3() -> Plan {
         let a = |x| Some(Active { mode: mode(1920, 1080, 60), x, y: 0, scale: Scale(1250), transform: 0 });
-        Plan { steps: vec![
-            Step { output: "DVI-I-1".into(), active: a(0) },
-            Step { output: "HDMI-A-1".into(), active: a(1536) },
-            Step { output: "eDP-1".into(), active: None },
-        ] }
+        Plan {
+            steps: vec![
+                Step { output: "DVI-I-1".into(), active: a(0) },
+                Step { output: "HDMI-A-1".into(), active: a(1536) },
+                Step { output: "eDP-1".into(), active: None },
+            ],
+        }
     }
 
     #[test]
@@ -186,11 +188,14 @@ mod tests {
         f.ok("wm-set monitor HDMI-A-1 1920x1080@60 1536x0 1.25 0", "");
         f.ok("wm-set monitor-disable eDP-1", "");
         WmSetDisplays::new(f.clone()).apply(&plan3()).unwrap();
-        assert_eq!(f.calls(), vec![
-            "wm-set monitor DVI-I-1 1920x1080@60 0x0 1.25 0",
-            "wm-set monitor HDMI-A-1 1920x1080@60 1536x0 1.25 0",
-            "wm-set monitor-disable eDP-1",
-        ]);
+        assert_eq!(
+            f.calls(),
+            vec![
+                "wm-set monitor DVI-I-1 1920x1080@60 0x0 1.25 0",
+                "wm-set monitor HDMI-A-1 1920x1080@60 1536x0 1.25 0",
+                "wm-set monitor-disable eDP-1",
+            ]
+        );
     }
 
     #[test]
@@ -212,10 +217,9 @@ mod tests {
         let mut alpha = on("DVI-I-1", ALPHA, 1920, 1080, 0, 0);
         alpha.displaylink = true;
         let before = vec![alpha, off("eDP-1", INTERNE)];
-        let essai = Plan { steps: vec![
-            Step { output: "eDP-1".into(), active: before[0].active.clone() },
-            Step { output: "DVI-I-1".into(), active: None },
-        ] };
+        let essai = Plan {
+            steps: vec![Step { output: "eDP-1".into(), active: before[0].active.clone() }, Step { output: "DVI-I-1".into(), active: None }],
+        };
         let retour = Plan::undo(&before, &essai);
         let f = Arc::new(FakeExecutor::new());
         f.respond("wm-set monitor DVI-I-1 1920x1080@60 0x0 1 0", Ok(ExecOutput::fail(1, "gel du dock\n")));
@@ -252,11 +256,14 @@ mod tests {
         f.ok("wm-set monitor HDMI-A-1 1920x1080@240 2133x0 1 0", "");
         f.respond("wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0", Ok(ExecOutput::fail(1, "gel du dock\n")));
         let e = WmSetDisplays::new(f.clone()).apply_best_effort(&retour).unwrap_err();
-        assert_eq!(f.calls(), vec![
-            "wm-set monitor eDP-1 2560x1600@60 0x1080 1 0",
-            "wm-set monitor HDMI-A-1 1920x1080@240 2133x0 1 0",
-            "wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0",
-        ]);
+        assert_eq!(
+            f.calls(),
+            vec![
+                "wm-set monitor eDP-1 2560x1600@60 0x1080 1 0",
+                "wm-set monitor HDMI-A-1 1920x1080@240 2133x0 1 0",
+                "wm-set monitor DVI-I-1 1920x1080@60 213x0 1 0",
+            ]
+        );
         assert_eq!(e.to_string(), "retour incomplet : DVI-I-1 (wm-set a échoué (code 1) : gel du dock)");
 
         // Les premières étapes en échec n'arrêtent pas les suivantes.

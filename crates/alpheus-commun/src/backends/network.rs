@@ -1,6 +1,6 @@
 //! Réseau : NetworkManager via nmcli (mode « terse » -t).
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::sync::Arc;
 
@@ -38,11 +38,7 @@ impl NmCli {
 impl Network for NmCli {
     fn status(&self) -> BResult<NetStatus> {
         let wifi_enabled = parse_radio(&run_ok(&*self.exec, TOOL, &["-t", "radio", "wifi"])?)?;
-        let active = parse_active(&run_ok(
-            &*self.exec,
-            TOOL,
-            &["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"],
-        )?)?;
+        let active = parse_active(&run_ok(&*self.exec, TOOL, &["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])?)?;
         Ok(NetStatus { wifi_enabled, active })
     }
 

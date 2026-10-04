@@ -9,13 +9,13 @@ mod tabs;
 
 pub use hit::{HitMap, Target};
 
-use crate::app::action::{Action, Tab};
 use crate::app::App;
+use crate::app::action::{Action, Tab};
 use draw::put;
+use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use ratatui::Frame;
 
 /// En dessous, seul un message est affiché (jamais de panique).
 pub const MIN_W: u16 = 30;
@@ -47,11 +47,8 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     x += put(buf, r, x, r.y, "alpheus", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)) + 2;
     for (i, t) in Tab::ALL.iter().enumerate() {
         let label = format!(" {} {} ", i + 1, t.title());
-        let style = if *t == app.tab {
-            Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(th.fg)
-        };
+        let style =
+            if *t == app.tab { Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
         let w = put(buf, r, x, r.y, &label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
         // Collés : chaque libellé porte déjà ses espaces, et les six
@@ -134,8 +131,8 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
-    use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     /// Dessine `app` sur un terminal w×h ; renvoie les lignes et les zones.
     pub fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, HitMap) {
@@ -152,8 +149,8 @@ pub(crate) mod testing {
 mod tests {
     use super::testing::draw;
     use super::*;
-    use crate::app::testing::{app, node, ready_app};
     use crate::app::keymap::Keymap;
+    use crate::app::testing::{app, node, ready_app};
     use crate::app::worker::{Op, Update};
     use crate::app::{Confirm, Loadable, Overlay, Palette, SliderId};
     use crate::backends::PowerAction;
@@ -324,9 +321,23 @@ mod tests {
         a.focus = 2; // Alpha
         let (rows, hits) = draw(&a, 100, 28);
         let all = rows.join("\n");
-        for attendu in ["Profils", "[ Laptop seul ]", "[ Bureau ]", "[ + Enregistrer l'actuel ]", "Carte", "Écrans",
-            "1 Portable", "2 Alpha", "DVI-I-1 ⚠", "3 Bravo", "1920×1080@240", "échelle 1.0",
-            "position 0, 1080", "origine", "à droite de Alpha"] {
+        for attendu in [
+            "Profils",
+            "[ Laptop seul ]",
+            "[ Bureau ]",
+            "[ + Enregistrer l'actuel ]",
+            "Carte",
+            "Écrans",
+            "1 Portable",
+            "2 Alpha",
+            "DVI-I-1 ⚠",
+            "3 Bravo",
+            "1920×1080@240",
+            "échelle 1.0",
+            "position 0, 1080",
+            "origine",
+            "à droite de Alpha",
+        ] {
             assert!(all.contains(attendu), "{attendu} absent :\n{all}");
         }
         assert!(all.contains('●'), "la carte marque l'écran focalisé :\n{all}");
@@ -360,8 +371,8 @@ mod tests {
 
     #[test]
     fn carte_a_l_echelle() {
-        use super::ecrans::{map_canvas, MAP_ROWS};
-        use crate::displays::testing::{on, poste, ALPHA, BRAVO};
+        use super::ecrans::{MAP_ROWS, map_canvas};
+        use crate::displays::testing::{ALPHA, BRAVO, on, poste};
         let text = |g: &Vec<Vec<Option<(char, bool)>>>| -> Vec<String> {
             g.iter().map(|r| r.iter().map(|c| c.map_or(' ', |(ch, _)| ch)).collect()).collect()
         };
@@ -418,9 +429,23 @@ mod tests {
         a.open_panel("HDMI-A-1", Instant::now());
         let (rows, hits) = draw(&a, 80, 24);
         let all = rows.join("\n");
-        for attendu in ["Réglage — Bravo (HDMI-A-1)", "Mode", "1920×1080@240  2/2", "Échelle", "Rotation", "0°",
-            "Placement", "à droite de", "Référence", "Alpha", "Alignement", "en haut", "✗ aucun changement",
-            "[ Annuler ]", "[ Appliquer ]"] {
+        for attendu in [
+            "Réglage — Bravo (HDMI-A-1)",
+            "Mode",
+            "1920×1080@240  2/2",
+            "Échelle",
+            "Rotation",
+            "0°",
+            "Placement",
+            "à droite de",
+            "Référence",
+            "Alpha",
+            "Alignement",
+            "en haut",
+            "✗ aucun changement",
+            "[ Annuler ]",
+            "[ Appliquer ]",
+        ] {
             assert!(all.contains(attendu), "{attendu} absent :\n{all}");
         }
         assert!(hits.find(Target::PanelStep { field: crate::app::PanelField::Align, dir: -1 }).is_some());

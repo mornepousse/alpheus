@@ -1,7 +1,7 @@
 //! Alimentation de la session. Verrouiller : hyprlock détaché ; quitter la
 //! session : wm-set (jamais le compositeur en direct) ; le reste : systemctl.
 
-use super::{run_ok, spawn_ok, BResult};
+use super::{BResult, run_ok, spawn_ok};
 use crate::exec::Executor;
 use std::sync::Arc;
 

@@ -3,22 +3,22 @@
 //! tests/premier_rendu.rs et l'essai réel) ; sa décision de sortie et le
 //! gestionnaire de signaux en ont.
 
+use super::App;
 use super::action::Tab;
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
-use super::App;
 use crate::backends::{BResult, BackendError, Backends, Displays, WmSetDisplays};
 use crate::config::Config;
-use crate::displays::{profiles, Plan};
+use crate::displays::{Plan, profiles};
 use crate::exec::SystemExecutor;
 use crate::externes::{self, CrosstermScreen, ProcessLauncher};
 use crate::theme::Theme;
 use crate::ui;
+use alpheus_commun::arret::{FIN_DEMANDEE, SIGNAL_RECU, installer_signaux, surveiller};
+pub use alpheus_commun::chemins::{config_dir, runtime_dir};
+use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
-use ratatui::DefaultTerminal;
-use alpheus_commun::arret::{installer_signaux, surveiller, FIN_DEMANDEE, SIGNAL_RECU};
-pub use alpheus_commun::chemins::{config_dir, runtime_dir};
 use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::Path;
@@ -210,8 +210,7 @@ pub fn run(options: Options) -> io::Result<()> {
     let r = {
         let mut terminal = ratatui::init(); // installe aussi la restauration du terminal en cas de panique
         let _nettoyage = Nettoyage { exec, undo: undo.clone(), displays: exit_displays };
-        execute!(io::stdout(), EnableMouseCapture)
-            .and_then(|_| event_loop(&mut terminal, app, &tx, &rx, &undo))
+        execute!(io::stdout(), EnableMouseCapture).and_then(|_| event_loop(&mut terminal, app, &tx, &rx, &undo))
     }; // Nettoyage s'exécute ici
     BOUCLE_FINIE.store(true, Ordering::SeqCst);
     r
@@ -381,10 +380,7 @@ mod tests {
     #[test]
     fn retour_de_fermeture_au_mieux() {
         // Décision D2 : une étape du retour en échec n'empêche pas les autres.
-        let plan = Plan { steps: vec![
-            Step { output: "DVI-I-1".into(), active: None },
-            Step { output: "HDMI-A-1".into(), active: None },
-        ] };
+        let plan = Plan { steps: vec![Step { output: "DVI-I-1".into(), active: None }, Step { output: "HDMI-A-1".into(), active: None }] };
         let f = Arc::new(FakeExecutor::new());
         f.ok("wm-set monitor-disable HDMI-A-1", ""); // DVI-I-1 non programmé : échec
         let d = WmSetDisplays::new(f.clone());
@@ -392,10 +388,7 @@ mod tests {
         assert_eq!(f.calls(), vec!["wm-set monitor-disable DVI-I-1", "wm-set monitor-disable HDMI-A-1"]);
         let mut err = Vec::new();
         signaler_retour(r, &mut err);
-        assert_eq!(
-            String::from_utf8(err).unwrap(),
-            "alpheus : écrans : retour incomplet : DVI-I-1 (wm-set introuvable)\n"
-        );
+        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : écrans : retour incomplet : DVI-I-1 (wm-set introuvable)\n");
     }
 
     #[test]
@@ -493,5 +486,4 @@ mod tests {
         a.should_quit = true;
         assert!(doit_sortir(&a, &fin));
     }
-
 }

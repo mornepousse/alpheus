@@ -3,8 +3,8 @@
 //! connecteur ne l'est pas). Fichier absent : aucun profil, sans message ;
 //! fichier invalide : aucun profil + avertissement (comme config.toml).
 
-use super::geometry::{deduce, logical_size, resolve, Align, Placed, Placement, Relation, Screen};
-use super::{short_from_description, short_names, Active, Mode, Output, Plan, Scale};
+use super::geometry::{Align, Placed, Placement, Relation, Screen, deduce, logical_size, resolve};
+use super::{Active, Mode, Output, Plan, Scale, short_from_description, short_names};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -112,7 +112,9 @@ fn from_toml(f: FileToml) -> Result<Vec<Profile>, String> {
                     }
                     let placement = match e.place {
                         None => Placement::Origin,
-                        Some(PlaceToml::Rel(r)) => Placement::Relative { relation: r.relation, reference: r.reference, align: r.alignement },
+                        Some(PlaceToml::Rel(r)) => {
+                            Placement::Relative { relation: r.relation, reference: r.reference, align: r.alignement }
+                        }
                         Some(PlaceToml::Abs(a)) => Placement::Absolute { x: a.x, y: a.y },
                     };
                     Ok(ProfileScreen { description: e.description, enabled: e.actif, mode, scale, transform: e.rotation, placement })
@@ -140,11 +142,9 @@ fn to_toml(profiles: &[Profile]) -> FileToml {
                         rotation: s.transform,
                         place: match &s.placement {
                             Placement::Origin => None,
-                            Placement::Relative { relation, reference, align } => Some(PlaceToml::Rel(RelToml {
-                                relation: *relation,
-                                reference: reference.clone(),
-                                alignement: *align,
-                            })),
+                            Placement::Relative { relation, reference, align } => {
+                                Some(PlaceToml::Rel(RelToml { relation: *relation, reference: reference.clone(), alignement: *align }))
+                            }
                             Placement::Absolute { x, y } => Some(PlaceToml::Abs(AbsToml { x: *x, y: *y })),
                         },
                     })
@@ -189,13 +189,9 @@ pub fn save(path: &Path, profiles: &[Profile]) -> Result<(), String> {
 pub fn placed(outs: &[Output]) -> Vec<Placed> {
     outs.iter()
         .map(|o| match &o.active {
-            Some(a) => Placed {
-                id: o.description.clone(),
-                enabled: true,
-                x: a.x,
-                y: a.y,
-                size: logical_size(a.mode, a.scale, a.transform),
-            },
+            Some(a) => {
+                Placed { id: o.description.clone(), enabled: true, x: a.x, y: a.y, size: logical_size(a.mode, a.scale, a.transform) }
+            }
             None => Placed { id: o.description.clone(), enabled: false, x: 0, y: 0, size: (0, 0) },
         })
         .collect()
@@ -248,10 +244,7 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
     let absent: Vec<String> =
         p.screens.iter().filter(|s| !connected(&s.description)).map(|s| short_from_description(&s.description)).collect();
     let in_profile = |o: &Output| p.screens.iter().find(|s| s.description == o.description);
-    let mut has_origin = outs
-        .iter()
-        .filter_map(in_profile)
-        .any(|s| s.enabled && s.placement == Placement::Origin);
+    let mut has_origin = outs.iter().filter_map(in_profile).any(|s| s.enabled && s.placement == Placement::Origin);
     let mut screens = Vec::new();
     // Réglage visé de chaque sortie activée : mode, échelle, rotation.
     let mut settings: Vec<Option<(Mode, Scale, u8)>> = Vec::new();
@@ -308,8 +301,8 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::displays::testing::*;
     use crate::displays::Step;
+    use crate::displays::testing::*;
     use std::path::PathBuf;
 
     fn dir(name: &str) -> PathBuf {
@@ -362,15 +355,21 @@ place = { x = 0, y = 0 }
         assert_eq!(w, None);
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].name, "Bureau");
-        assert_eq!(p[0].screens[0], ProfileScreen {
-            description: ALPHA.into(),
-            enabled: true,
-            mode: Some(mode(1920, 1080, 60)),
-            scale: Scale::ONE,
-            transform: 0,
-            placement: Placement::Origin,
-        });
-        assert_eq!(p[0].screens[1].placement, Placement::Relative { relation: Relation::RightOf, reference: ALPHA.into(), align: Align::Start });
+        assert_eq!(
+            p[0].screens[0],
+            ProfileScreen {
+                description: ALPHA.into(),
+                enabled: true,
+                mode: Some(mode(1920, 1080, 60)),
+                scale: Scale::ONE,
+                transform: 0,
+                placement: Placement::Origin,
+            }
+        );
+        assert_eq!(
+            p[0].screens[1].placement,
+            Placement::Relative { relation: Relation::RightOf, reference: ALPHA.into(), align: Align::Start }
+        );
         assert!(!p[0].screens[2].enabled);
         assert_eq!(p[1].screens[0].scale, Scale(1250));
         assert_eq!(p[1].screens[0].placement, Placement::Absolute { x: 0, y: 0 }, "forme absolue acceptée");
@@ -386,10 +385,22 @@ place = { x = 0, y = 0 }
         for (nom, contenu, attendu) in [
             ("syntaxe", "[[profil]\nnom = 3", "ecrans.toml invalide"),
             ("champ", "[[profil]]\nnom = \"X\"\ncouleur = 1\n", "couleur"),
-            ("mode", "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1080p\"\n", "mode « 1080p » illisible"),
+            (
+                "mode",
+                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1080p\"\n",
+                "mode « 1080p » illisible",
+            ),
             ("sans-mode", "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\n", "Alpha : mode manquant"),
-            ("rotation", "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1920x1080@60\"\nrotation = 90\n", "rotation 90 invalide"),
-            ("relation", "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"A\"\nmode = \"1920x1080@60\"\nplace = { relation = \"devant\", reference = \"B\" }\n", "ecrans.toml invalide"),
+            (
+                "rotation",
+                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1920x1080@60\"\nrotation = 90\n",
+                "rotation 90 invalide",
+            ),
+            (
+                "relation",
+                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"A\"\nmode = \"1920x1080@60\"\nplace = { relation = \"devant\", reference = \"B\" }\n",
+                "ecrans.toml invalide",
+            ),
         ] {
             let (p, w) = load(&write(nom, contenu));
             assert!(p.is_empty(), "{nom}");
@@ -421,7 +432,10 @@ place = { x = 0, y = 0 }
         assert_eq!(p.screens.len(), 4);
         assert_eq!(p.screens[0].placement, Placement::Absolute { x: -213, y: 1080 }, "non reproductible : absolu");
         assert_eq!(p.screens[1].placement, Placement::Origin);
-        assert_eq!(p.screens[2].placement, Placement::Relative { relation: Relation::RightOf, reference: ALPHA.into(), align: Align::Start });
+        assert_eq!(
+            p.screens[2].placement,
+            Placement::Relative { relation: Relation::RightOf, reference: ALPHA.into(), align: Align::Start }
+        );
         assert_eq!((p.screens[3].enabled, p.screens[3].mode), (false, None));
         // Réappliqué tel quel : rien à faire.
         assert_eq!(plan_profile(&p, &outs).unwrap().plan, Plan::default());
@@ -433,11 +447,20 @@ place = { x = 0, y = 0 }
         let pp = plan_profile(&bureau(), &outs).unwrap();
         assert!(pp.absent.is_empty());
         // Alpha à l'origine (0, 0), Bravo à sa droite, la dalle éteinte en dernier.
-        assert_eq!(pp.plan.steps, vec![
-            Step { output: "DVI-I-1".into(), active: Some(Active { mode: mode(1920, 1080, 60), x: 0, y: 0, scale: Scale::ONE, transform: 0 }) },
-            Step { output: "HDMI-A-1".into(), active: Some(Active { mode: mode(1920, 1080, 60), x: 1920, y: 0, scale: Scale::ONE, transform: 0 }) },
-            Step { output: "eDP-1".into(), active: None },
-        ]);
+        assert_eq!(
+            pp.plan.steps,
+            vec![
+                Step {
+                    output: "DVI-I-1".into(),
+                    active: Some(Active { mode: mode(1920, 1080, 60), x: 0, y: 0, scale: Scale::ONE, transform: 0 })
+                },
+                Step {
+                    output: "HDMI-A-1".into(),
+                    active: Some(Active { mode: mode(1920, 1080, 60), x: 1920, y: 0, scale: Scale::ONE, transform: 0 })
+                },
+                Step { output: "eDP-1".into(), active: None },
+            ]
+        );
     }
 
     #[test]
@@ -457,10 +480,17 @@ place = { x = 0, y = 0 }
         let outs = vec![poste()[0].clone(), poste()[2].clone()];
         let pp = plan_profile(&bureau(), &outs).unwrap();
         assert_eq!(pp.absent, vec!["Alpha"]);
-        assert_eq!(pp.plan.steps[0], Step { output: "HDMI-A-1".into(), active: Some(Active { mode: mode(1920, 1080, 60), x: 0, y: 0, scale: Scale::ONE, transform: 0 }) });
+        assert_eq!(
+            pp.plan.steps[0],
+            Step {
+                output: "HDMI-A-1".into(),
+                active: Some(Active { mode: mode(1920, 1080, 60), x: 0, y: 0, scale: Scale::ONE, transform: 0 })
+            }
+        );
         // Une autre origine existe déjà : refus avec la raison.
         let mut p = bureau();
-        p.screens[1].placement = Placement::Relative { relation: Relation::Below, reference: "Charlie Modèle 3 SERIE0003".into(), align: Align::Start };
+        p.screens[1].placement =
+            Placement::Relative { relation: Relation::Below, reference: "Charlie Modèle 3 SERIE0003".into(), align: Align::Start };
         assert_eq!(plan_profile(&p, &poste()).unwrap_err(), "Bravo est placé par rapport à Charlie, absent");
     }
 

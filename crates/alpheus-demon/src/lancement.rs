@@ -14,14 +14,14 @@ use alpheus_commun::exec::SystemExecutor;
 use alpheus_commun::theme::Palette;
 use alpheus_commun::{arret, chemins};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay_client_toolkit::reexports::calloop::{channel, EventLoop};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, channel};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
-use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::Connection;
+use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 static FIN: AtomicBool = AtomicBool::new(false);
@@ -222,9 +222,7 @@ pub fn lancer() -> i32 {
         return 1;
     }
     let tx_compositeur = tx.clone();
-    sources::lancer(sources::detecter(|k| std::env::var_os(k)), move |e| {
-        tx_compositeur.send(Courrier::Barre(Msg::Compositeur(e))).is_ok()
-    });
+    sources::lancer(sources::detecter(|k| std::env::var_os(k)), move |e| tx_compositeur.send(Courrier::Barre(Msg::Compositeur(e))).is_ok());
     // Fil de garde : attend un signal sans tourner, demande l'arrêt à la
     // boucle, force la sortie si elle ne finit pas dans le délai de grâce.
     let garde = std::thread::Builder::new().name("garde".into()).spawn(move || {

@@ -4,8 +4,8 @@
 use super::draw::{put, truncate};
 use super::ecrans::{self, MapCell};
 use super::hit::{HitMap, Target};
-use crate::app::action::{profile_label, Tab};
-use crate::app::{toggle_label, App, Item, Loadable};
+use crate::app::action::{Tab, profile_label};
+use crate::app::{App, Item, Loadable, toggle_label};
 use crate::theme::Theme;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -179,11 +179,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
     let focused = i == app.focus;
     let row = Rect::new(body.x, y, body.width, 1);
     put(buf, body, body.x, y, if focused { "▶" } else { " " }, Style::default().fg(th.accent));
-    let label_style = if focused {
-        Style::default().fg(th.accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(th.fg)
-    };
+    let label_style = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
     let lx = body.x + 2;
     let vx = lx + label_w;
     let label_max = usize::from(label_w - 1);

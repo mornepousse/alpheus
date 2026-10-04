@@ -8,9 +8,9 @@
 //! base), et le cache de glyphes est vidé au-delà de `CACHE_MAX` entrées.
 
 use crate::config::PoliceConfig;
-use crate::grille::{Grille, Teinte, SUITE};
+use crate::grille::{Grille, SUITE, Teinte};
 use alpheus_commun::theme::{Palette, Rgb};
-use cosmic_text::{fontdb, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::path::{Path, PathBuf};
 
 /// Glyphes rastérisés gardés au plus (≈ 1 Mo à 14 px).
@@ -212,8 +212,17 @@ impl Polices {
         db.set_monospace_family(famille.clone());
         let mut fs = FontSystem::new_with_locale_and_db("fr-FR".into(), db);
         let tampon = Buffer::new(&mut fs, Metrics::new(police.taille, hauteur as f32));
-        let mut p =
-            Polices { fs, cache: SwashCache::new(), tampon, famille, taille: police.taille, hauteur, echelle: 0, avance: 0.0, avances: Vec::new() };
+        let mut p = Polices {
+            fs,
+            cache: SwashCache::new(),
+            tampon,
+            famille,
+            taille: police.taille,
+            hauteur,
+            echelle: 0,
+            avance: 0.0,
+            avances: Vec::new(),
+        };
         p.regler(1);
         let avertissement = (!avertissements.is_empty()).then(|| avertissements.join(" ; "));
         Ok((p, avertissement))

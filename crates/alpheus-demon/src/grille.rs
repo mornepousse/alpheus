@@ -119,11 +119,7 @@ impl<'a> Iterator for CarsNfc<'a> {
 }
 
 fn cars_nfc(s: &str) -> CarsNfc<'_> {
-    if is_nfc_quick(s.chars()) == IsNormalized::Yes {
-        CarsNfc::Direct(s.chars())
-    } else {
-        CarsNfc::Recompose(s.nfc())
-    }
+    if is_nfc_quick(s.chars()) == IsNormalized::Yes { CarsNfc::Direct(s.chars()) } else { CarsNfc::Recompose(s.nfc()) }
 }
 
 pub fn largeur_texte(s: &str) -> u16 {

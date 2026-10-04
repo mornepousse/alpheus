@@ -1,7 +1,7 @@
 //! Ne pas déranger : shell-ctl (nixos-config), qui route vers mako ou DMS
 //! selon la pile de bureau. alpheus ne parle jamais directement au démon.
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::sync::Arc;
 

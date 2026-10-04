@@ -5,28 +5,28 @@
 
 /// (motif cherché dans la classe en minuscules, glyphe), premier trouvé.
 const TABLE: [(&str, char); 32] = [
-    ("firefox", '\u{f0239}'),     // md-firefox
-    ("chrom", '\u{f02af}'),       // md-google_chrome
-    ("alacritty", '\u{f018d}'),   // md-console
+    ("firefox", '\u{f0239}'),   // md-firefox
+    ("chrom", '\u{f02af}'),     // md-google_chrome
+    ("alacritty", '\u{f018d}'), // md-console
     ("kitty", '\u{f018d}'),
     ("foot", '\u{f018d}'),
     ("ghostty", '\u{f018d}'),
     ("wezterm", '\u{f018d}'),
     ("terminal", '\u{f018d}'),
     ("alpheus", '\u{f018d}'),
-    ("thunar", '\u{f024b}'),      // md-folder
+    ("thunar", '\u{f024b}'), // md-folder
     ("nautilus", '\u{f024b}'),
     ("nemo", '\u{f024b}'),
-    ("codium", '\u{f0a1e}'),      // md-microsoft_visual_studio_code
+    ("codium", '\u{f0a1e}'), // md-microsoft_visual_studio_code
     ("code", '\u{f0a1e}'),
-    ("discord", '\u{f066f}'),     // md-discord
+    ("discord", '\u{f066f}'), // md-discord
     ("vesktop", '\u{f066f}'),
-    ("steam", '\u{f04d3}'),       // md-steam
-    ("spotify", '\u{f04c7}'),     // md-spotify
-    ("cider", '\u{f075a}'),       // md-music
-    ("mpv", '\u{f0381}'),         // md-movie
-    ("vlc", '\u{f057c}'),         // md-vlc
-    ("imv", '\u{f02e9}'),         // md-image
+    ("steam", '\u{f04d3}'),   // md-steam
+    ("spotify", '\u{f04c7}'), // md-spotify
+    ("cider", '\u{f075a}'),   // md-music
+    ("mpv", '\u{f0381}'),     // md-movie
+    ("vlc", '\u{f057c}'),     // md-vlc
+    ("imv", '\u{f02e9}'),     // md-image
     ("satty", '\u{f02e9}'),
     ("thunderbird", '\u{f01ee}'), // md-email
     ("gimp", '\u{f03d8}'),        // md-palette

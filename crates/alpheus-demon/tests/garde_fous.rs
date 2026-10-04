@@ -6,7 +6,7 @@
 //! part dans ses sources.
 
 use alpheus_commun::exec::fake::FakeExecutor;
-use alpheus_demon::actions::{commande, executer, Bouton};
+use alpheus_demon::actions::{Bouton, commande, executer};
 use alpheus_demon::compositeur::{Bureau, EtatCompositeur, Fenetre};
 use alpheus_demon::config::BarreConfig;
 use alpheus_demon::etat::{Barre, Msg};

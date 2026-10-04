@@ -17,7 +17,10 @@ pub enum Evenement {
     /// `activewindowv2>>adresse`.
     Focus(Option<String>),
     /// `windowtitlev2>>adresse,titre`.
-    Titre { adresse: String, titre: String },
+    Titre {
+        adresse: String,
+        titre: String,
+    },
     Urgent(String),
     /// `closewindow>>adresse` (structure aussi).
     Fermee(String),
@@ -36,10 +39,27 @@ pub fn adresse(s: &str) -> String {
 /// règles de fenêtre ont pu changer sans qu'aucun autre événement de
 /// structure ne soit émis.
 const STRUCTURE: [&str; 21] = [
-    "workspace", "workspacev2", "focusedmon", "focusedmonv2", "createworkspace", "createworkspacev2",
-    "destroyworkspace", "destroyworkspacev2", "moveworkspace", "moveworkspacev2", "renameworkspace",
-    "openwindow", "movewindow", "movewindowv2", "monitoradded", "monitoraddedv2", "monitorremoved",
-    "monitorremovedv2", "activespecial", "activespecialv2", "configreloaded",
+    "workspace",
+    "workspacev2",
+    "focusedmon",
+    "focusedmonv2",
+    "createworkspace",
+    "createworkspacev2",
+    "destroyworkspace",
+    "destroyworkspacev2",
+    "moveworkspace",
+    "moveworkspacev2",
+    "renameworkspace",
+    "openwindow",
+    "movewindow",
+    "movewindowv2",
+    "monitoradded",
+    "monitoraddedv2",
+    "monitorremoved",
+    "monitorremovedv2",
+    "activespecial",
+    "activespecialv2",
+    "configreloaded",
 ];
 
 pub fn analyser_ligne(ligne: &str) -> Evenement {
@@ -238,13 +258,8 @@ impl Modele {
 
     pub fn etat(&self) -> EtatCompositeur {
         let urgents: BTreeSet<i64> = self.urgents.iter().filter_map(|a| self.inst.fenetres.get(a)).copied().collect();
-        let bureaux = self
-            .inst
-            .bureaux
-            .iter()
-            .zip(&self.inst.ids)
-            .map(|(b, id)| Bureau { urgent: urgents.contains(id), ..b.clone() })
-            .collect();
+        let bureaux =
+            self.inst.bureaux.iter().zip(&self.inst.ids).map(|(b, id)| Bureau { urgent: urgents.contains(id), ..b.clone() }).collect();
         EtatCompositeur { bureaux, fenetre: self.fenetre.clone() }
     }
 }
@@ -291,7 +306,10 @@ mod tests {
         assert_eq!(analyser_ligne("activewindow>>,"), Evenement::FenetreActive(None));
         assert_eq!(analyser_ligne("activewindowv2>>583D9C60DA90"), Evenement::Focus(Some("583d9c60da90".into())));
         assert_eq!(analyser_ligne("activewindowv2>>"), Evenement::Focus(None));
-        assert_eq!(analyser_ligne("windowtitlev2>>583d9c60da90,a,b"), Evenement::Titre { adresse: "583d9c60da90".into(), titre: "a,b".into() });
+        assert_eq!(
+            analyser_ligne("windowtitlev2>>583d9c60da90,a,b"),
+            Evenement::Titre { adresse: "583d9c60da90".into(), titre: "a,b".into() }
+        );
         assert_eq!(analyser_ligne("urgent>>0x583d9d5fd540"), Evenement::Urgent("583d9d5fd540".into()));
         assert_eq!(analyser_ligne("closewindow>>583d9c8a1b20"), Evenement::Fermee("583d9c8a1b20".into()));
         for s in [

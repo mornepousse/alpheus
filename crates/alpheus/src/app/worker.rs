@@ -23,18 +23,24 @@ pub enum Domain {
 
 impl Domain {
     pub const ALL: [Domain; 9] = [
-        Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake,
-        Domain::Profiles, Domain::Network, Domain::Bluetooth, Domain::Audio, Domain::Displays,
+        Domain::Volume,
+        Domain::Brightness,
+        Domain::Dnd,
+        Domain::KeepAwake,
+        Domain::Profiles,
+        Domain::Network,
+        Domain::Bluetooth,
+        Domain::Audio,
+        Domain::Displays,
     ];
 }
 
 /// Domaines affichés par un onglet (les plus lents en dernier).
 pub fn domains(tab: Tab) -> &'static [Domain] {
     match tab {
-        Tab::Accueil => &[
-            Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake,
-            Domain::Profiles, Domain::Network, Domain::Bluetooth,
-        ],
+        Tab::Accueil => {
+            &[Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake, Domain::Profiles, Domain::Network, Domain::Bluetooth]
+        }
         Tab::Son => &[Domain::Audio],
         Tab::Reseau => &[Domain::Network],
         Tab::Bluetooth => &[Domain::Bluetooth],
@@ -54,13 +60,18 @@ pub enum Op {
     /// Bascule « Garder éveillé » ; `now_on` est l'état visé, connu au
     /// moment de l'action (le message de réussite ne dépend donc pas d'une
     /// relecture arrivée entre-temps).
-    ToggleKeepAwake { now_on: bool },
+    ToggleKeepAwake {
+        now_on: bool,
+    },
     SetProfile(String),
     Power(PowerAction),
     /// Réglage d'écrans. `undo` : plan inverse d'un essai (réappliqué si le
     /// plan échoue, ou à l'annulation) ; `None` : c'est lui-même un retour,
     /// appliqué au mieux (chaque étape, même après un échec).
-    ApplyDisplays { plan: Plan, undo: Option<Plan> },
+    ApplyDisplays {
+        plan: Plan,
+        undo: Option<Plan>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,12 +261,15 @@ mod tests {
             Request::Do(Op::SetBrightness(9)),
             Request::Refresh(vec![Domain::Volume, Domain::Brightness]),
         ]);
-        assert_eq!(r, vec![
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 20)),
-            Request::Do(Op::SetVolume(NodeRef::Id(64), 30)),
-            Request::Do(Op::SetBrightness(9)),
-            Request::Refresh(vec![Domain::Volume, Domain::Brightness]),
-        ]);
+        assert_eq!(
+            r,
+            vec![
+                Request::Do(Op::SetVolume(NodeRef::DefaultSink, 20)),
+                Request::Do(Op::SetVolume(NodeRef::Id(64), 30)),
+                Request::Do(Op::SetBrightness(9)),
+                Request::Refresh(vec![Domain::Volume, Domain::Brightness]),
+            ]
+        );
         assert_eq!(abandonnes, vec![Op::SetVolume(NodeRef::DefaultSink, 10), Op::SetBrightness(5)]);
     }
 
@@ -277,10 +291,7 @@ mod tests {
         // Décision D2 : l'essai (avec plan inverse) s'arrête au premier
         // échec ; le retour (sans plan inverse) tente toutes ses étapes.
         use crate::displays::Step;
-        let plan = Plan { steps: vec![
-            Step { output: "eDP-1".into(), active: None },
-            Step { output: "HDMI-A-1".into(), active: None },
-        ] };
+        let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }, Step { output: "HDMI-A-1".into(), active: None }] };
         let f = Arc::new(FakeExecutor::new());
         f.ok("wm-set monitor-disable HDMI-A-1", ""); // eDP-1 non programmé : échec
         let b = backends(&f);

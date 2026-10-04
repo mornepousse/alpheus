@@ -1,6 +1,6 @@
 //! Luminosité de l'écran interne : brightnessctl (classe backlight).
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::sync::Arc;
 

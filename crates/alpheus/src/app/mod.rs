@@ -5,26 +5,24 @@
 
 pub mod action;
 pub mod ecrans;
+mod input;
 pub mod keymap;
+mod mouse;
 pub mod run;
 pub mod worker;
-mod input;
-mod mouse;
 
-use crate::backends::{
-    brightness, AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume,
-};
+use crate::backends::{AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume, brightness};
 use crate::config::Config;
 use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
-use action::{palette_entries, profile_label, Command, External, Tab};
-pub use ecrans::{Ecrans, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial, KEEP_DELAY};
+use action::{Command, External, Tab, palette_entries, profile_label};
+pub use ecrans::{Ecrans, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use worker::{domains, Domain, Op, Request, Update};
+use worker::{Domain, Op, Request, Update, domains};
 
 /// Pas des curseurs (touches -/+, molette).
 pub const STEP: i32 = 5;
@@ -428,17 +426,14 @@ impl App {
         // (shell-ctl notifie chacun de ses échecs) ne doit pas être relancé
         // chaque seconde. Il est relu au plus toutes les 15 s, et à l'entrée
         // dans l'onglet ou après une action.
-        let ds: Vec<Domain> = domains(self.tab)
-            .iter()
-            .copied()
-            .filter(|d| {
-                if self.domain_failed(*d) {
-                    self.last_read.get(d).is_none_or(|t| now.duration_since(*t) >= FAILED_RETRY)
-                } else {
-                    due
-                }
-            })
-            .collect();
+        let ds: Vec<Domain> =
+            domains(self.tab)
+                .iter()
+                .copied()
+                .filter(|d| {
+                    if self.domain_failed(*d) { self.last_read.get(d).is_none_or(|t| now.duration_since(*t) >= FAILED_RETRY) } else { due }
+                })
+                .collect();
         if due {
             self.last_refresh = now;
         }
@@ -502,8 +497,7 @@ impl App {
             ],
             Tab::Son => {
                 let (sinks, sources) = self.visible_nodes();
-                let mut v: Vec<Item> =
-                    sinks.iter().chain(sources.iter()).map(|n| Item::Slider(SliderId::Node(n.id))).collect();
+                let mut v: Vec<Item> = sinks.iter().chain(sources.iter()).map(|n| Item::Slider(SliderId::Node(n.id))).collect();
                 v.push(Item::Button(Command::Open(External::Mixer)));
                 v
             }
@@ -513,9 +507,9 @@ impl App {
             }
             Tab::Alimentation => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
             Tab::Ecrans if self.ecrans.niri => Vec::new(),
-            Tab::Ecrans => std::iter::once(Item::DisplayProfiles)
-                .chain(self.outputs().iter().map(|o| Item::Output(o.name.clone())))
-                .collect(),
+            Tab::Ecrans => {
+                std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
+            }
         }
     }
 
@@ -914,10 +908,13 @@ mod tests {
         let mut a = ready_app();
         a.set_slider(SliderId::Volume, 150);
         a.set_slider(SliderId::Brightness, -20);
-        assert_eq!(a.take_requests(), vec![
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),
-            Request::Do(Op::SetBrightness(crate::backends::brightness::MIN_PERCENT)),
-        ]);
+        assert_eq!(
+            a.take_requests(),
+            vec![
+                Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100)),
+                Request::Do(Op::SetBrightness(crate::backends::brightness::MIN_PERCENT)),
+            ]
+        );
     }
 
     #[test]
@@ -1070,12 +1067,15 @@ mod tests {
         let mut a = ready_app();
         assert_eq!(a.items().len(), 7);
         a.go_tab(Tab::Son, Instant::now());
-        assert_eq!(a.items(), vec![
-            Item::Slider(SliderId::Node(64)),
-            Item::Slider(SliderId::Node(116)),
-            Item::Slider(SliderId::Node(113)),
-            Item::Button(Command::Open(External::Mixer)),
-        ]);
+        assert_eq!(
+            a.items(),
+            vec![
+                Item::Slider(SliderId::Node(64)),
+                Item::Slider(SliderId::Node(116)),
+                Item::Slider(SliderId::Node(113)),
+                Item::Button(Command::Open(External::Mixer)),
+            ]
+        );
         a.go_tab(Tab::Alimentation, Instant::now());
         assert_eq!(a.items().len(), 5);
         a.go_tab(Tab::Reseau, Instant::now());
@@ -1200,7 +1200,12 @@ mod tests {
 
     #[test]
     fn tic_rafraichit_son_reseau_bluetooth_toutes_les_deux_secondes() {
-        for (tab, d) in [(Tab::Son, Domain::Audio), (Tab::Reseau, Domain::Network), (Tab::Bluetooth, Domain::Bluetooth), (Tab::Ecrans, Domain::Displays)] {
+        for (tab, d) in [
+            (Tab::Son, Domain::Audio),
+            (Tab::Reseau, Domain::Network),
+            (Tab::Bluetooth, Domain::Bluetooth),
+            (Tab::Ecrans, Domain::Displays),
+        ] {
             let mut a = ready_app();
             let t0 = Instant::now();
             a.go_tab(tab, t0);
@@ -1215,10 +1220,12 @@ mod tests {
     }
 
     fn refreshed(r: &[Request]) -> Vec<Domain> {
-        r.iter().flat_map(|q| match q {
-            Request::Refresh(ds) => ds.clone(),
-            Request::Do(_) => Vec::new(),
-        }).collect()
+        r.iter()
+            .flat_map(|q| match q {
+                Request::Refresh(ds) => ds.clone(),
+                Request::Do(_) => Vec::new(),
+            })
+            .collect()
     }
 
     #[test]

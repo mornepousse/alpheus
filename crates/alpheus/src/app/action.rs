@@ -139,13 +139,31 @@ pub enum Action {
 
 impl Action {
     pub const ALL: [Action; 25] = [
-        Action::Quit, Action::Back, Action::Help, Action::Palette, Action::Search,
-        Action::NextTab, Action::PrevTab,
-        Action::GoTab(Tab::Accueil), Action::GoTab(Tab::Son), Action::GoTab(Tab::Reseau),
-        Action::GoTab(Tab::Bluetooth), Action::GoTab(Tab::Alimentation), Action::GoTab(Tab::Ecrans),
-        Action::Left, Action::Right, Action::Up, Action::Down,
-        Action::PageUp, Action::PageDown, Action::Home, Action::End,
-        Action::Toggle, Action::Activate, Action::Decrease, Action::Increase,
+        Action::Quit,
+        Action::Back,
+        Action::Help,
+        Action::Palette,
+        Action::Search,
+        Action::NextTab,
+        Action::PrevTab,
+        Action::GoTab(Tab::Accueil),
+        Action::GoTab(Tab::Son),
+        Action::GoTab(Tab::Reseau),
+        Action::GoTab(Tab::Bluetooth),
+        Action::GoTab(Tab::Alimentation),
+        Action::GoTab(Tab::Ecrans),
+        Action::Left,
+        Action::Right,
+        Action::Up,
+        Action::Down,
+        Action::PageUp,
+        Action::PageDown,
+        Action::Home,
+        Action::End,
+        Action::Toggle,
+        Action::Activate,
+        Action::Decrease,
+        Action::Increase,
     ];
 
     pub fn name(self) -> String {
@@ -273,9 +291,21 @@ mod tests {
     fn palette_complete() {
         let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()], &["Bureau".into()]);
         let labels: Vec<&str> = p.iter().map(|(l, _)| l.as_str()).collect();
-        for attendu in ["Ne pas déranger", "Wi-Fi", "Bluetooth", "Garder éveillé", "Verrouiller", "Éteindre",
-            "Mixage par appli", "Choisir un réseau", "Appairer un appareil", "Aller à : Son", "Profil : Équilibré",
-            "Aller à : Écrans", "Profil d'écran : Bureau"] {
+        for attendu in [
+            "Ne pas déranger",
+            "Wi-Fi",
+            "Bluetooth",
+            "Garder éveillé",
+            "Verrouiller",
+            "Éteindre",
+            "Mixage par appli",
+            "Choisir un réseau",
+            "Appairer un appareil",
+            "Aller à : Son",
+            "Profil : Équilibré",
+            "Aller à : Écrans",
+            "Profil d'écran : Bureau",
+        ] {
             assert!(labels.contains(&attendu), "{attendu} manque");
         }
         assert!(p.contains(&("Éteindre".to_string(), Command::Power(PowerAction::Poweroff))));

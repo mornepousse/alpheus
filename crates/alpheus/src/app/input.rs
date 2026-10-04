@@ -335,11 +335,14 @@ mod tests {
         press(&mut a, KeyCode::Char('+'), KeyModifiers::SHIFT);
         k(&mut a, KeyCode::Right);
         c(&mut a, '-');
-        assert_eq!(a.take_requests(), vec![
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 67)),
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 72)),
-            Request::Do(Op::SetVolume(NodeRef::DefaultSink, 67)),
-        ]);
+        assert_eq!(
+            a.take_requests(),
+            vec![
+                Request::Do(Op::SetVolume(NodeRef::DefaultSink, 67)),
+                Request::Do(Op::SetVolume(NodeRef::DefaultSink, 72)),
+                Request::Do(Op::SetVolume(NodeRef::DefaultSink, 67)),
+            ]
+        );
     }
 
     #[test]

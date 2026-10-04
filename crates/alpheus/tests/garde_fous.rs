@@ -2,17 +2,15 @@
 //! prévues sont lancées ; rien ne parle au compositeur en direct ni ne
 //! touche à l'extinction des écrans.
 
-use alpheus::app::worker::{fetch, perform, Domain, Op};
+use alpheus::app::worker::{Domain, Op, fetch, perform};
 use alpheus::backends::{Backends, NodeRef, PowerAction};
 use alpheus::displays::{Active, Mode, Plan, Scale, Step};
 use alpheus::exec::fake::FakeExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const AUTORISES: [&str; 10] = [
-    "wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl",
-    "shell-ctl", "tools-menu", "hyprlock", "wm-set", "systemctl",
-];
+const AUTORISES: [&str; 10] =
+    ["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "tools-menu", "hyprlock", "wm-set", "systemctl"];
 
 #[test]
 fn chaque_commande_lancee_est_dans_la_liste_blanche() {
@@ -22,17 +20,33 @@ fn chaque_commande_lancee_est_dans_la_liste_blanche() {
         let _ = fetch(&b, d);
     }
     let ops = [
-        Op::SetVolume(NodeRef::DefaultSink, 50), Op::SetVolume(NodeRef::Id(64), 50), Op::SetDefault(64),
-        Op::SetBrightness(50), Op::SetWifi(true), Op::SetWifi(false), Op::SetBluetooth(true),
-        Op::SetBluetooth(false), Op::SetDnd(true), Op::SetDnd(false), Op::ToggleKeepAwake { now_on: true },
+        Op::SetVolume(NodeRef::DefaultSink, 50),
+        Op::SetVolume(NodeRef::Id(64), 50),
+        Op::SetDefault(64),
+        Op::SetBrightness(50),
+        Op::SetWifi(true),
+        Op::SetWifi(false),
+        Op::SetBluetooth(true),
+        Op::SetBluetooth(false),
+        Op::SetDnd(true),
+        Op::SetDnd(false),
+        Op::ToggleKeepAwake { now_on: true },
         Op::SetProfile("balanced".into()),
         // Un plan s'arrête au premier échec (ici, chaque appel échoue) : une
         // étape par plan, pour que chaque ligne de commande soit vérifiée.
         Op::ApplyDisplays {
-            plan: Plan { steps: vec![Step {
-                output: "HDMI-A-1".into(),
-                active: Some(Active { mode: Mode { width: 1920, height: 1080, refresh: 60 }, x: 0, y: 0, scale: Scale::ONE, transform: 0 }),
-            }] },
+            plan: Plan {
+                steps: vec![Step {
+                    output: "HDMI-A-1".into(),
+                    active: Some(Active {
+                        mode: Mode { width: 1920, height: 1080, refresh: 60 },
+                        x: 0,
+                        y: 0,
+                        scale: Scale::ONE,
+                        transform: 0,
+                    }),
+                }],
+            },
             undo: None,
         },
         Op::ApplyDisplays { plan: Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] }, undo: None },
@@ -51,10 +65,8 @@ fn chaque_commande_lancee_est_dans_la_liste_blanche() {
         }
         if prog == "wm-set" {
             // Quitter la session, lire et régler les écrans : rien d'autre.
-            let ok = c == "wm-set exit"
-                || c == "wm-set outputs"
-                || c.starts_with("wm-set monitor ")
-                || c.starts_with("wm-set monitor-disable ");
+            let ok =
+                c == "wm-set exit" || c == "wm-set outputs" || c.starts_with("wm-set monitor ") || c.starts_with("wm-set monitor-disable ");
             assert!(ok, "sous-commande wm-set hors liste : {c}");
         }
     }

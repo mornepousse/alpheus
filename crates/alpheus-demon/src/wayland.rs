@@ -14,11 +14,11 @@ use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer,
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shell::WaylandSurface;
-use smithay_client_toolkit::shm::{slot::SlotPool, Shm, ShmHandler};
+use smithay_client_toolkit::shm::{Shm, ShmHandler, slot::SlotPool};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,

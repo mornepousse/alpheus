@@ -6,11 +6,11 @@
 use super::worker::Op;
 use super::{App, Overlay};
 use crate::backends::{BResult, BackendError};
-use crate::displays::geometry::{deduce, logical_size, resolve, Align, GeoError, Placement, Relation, Screen};
-use crate::displays::profiles::{self, from_outputs, placed, plan_profile, Profile};
+use crate::displays::geometry::{Align, GeoError, Placement, Relation, Screen, deduce, logical_size, resolve};
+use crate::displays::profiles::{self, Profile, from_outputs, placed, plan_profile};
 use crate::displays::{
-    active_count, changed_elsewhere, rotation_label, screen_lost, short_from_description, short_names, Active, Mode,
-    Output, Plan, Scale, Step,
+    Active, Mode, Output, Plan, Scale, Step, active_count, changed_elsewhere, rotation_label, screen_lost, short_from_description,
+    short_names,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -243,10 +243,7 @@ fn follows(screens: &[Screen], mut j: usize, i: usize) -> bool {
 /// aucune coordonnée négative.
 fn kept_in_place(outs: &[Output], screens: &[Screen], mut pos: Vec<Option<(i32, i32)>>, i: usize) -> Vec<Option<(i32, i32)>> {
     let now_at = |j: usize| outs[j].active.as_ref().map(|a| (a.x, a.y)).zip(pos[j]);
-    let anchor = (0..outs.len())
-        .filter(|&j| j != i && !follows(screens, j, i))
-        .find_map(now_at)
-        .or_else(|| now_at(i));
+    let anchor = (0..outs.len()).filter(|&j| j != i && !follows(screens, j, i)).find_map(now_at).or_else(|| now_at(i));
     if let Some(((cx, cy), (nx, ny))) = anchor {
         for p in pos.iter_mut().flatten() {
             *p = (p.0 + cx - nx, p.1 + cy - ny);
@@ -268,14 +265,9 @@ fn describe_step(s: &Step, outs: &[Output], labels: &[String]) -> String {
     let label = outs.iter().position(|o| o.name == s.output).map_or_else(|| s.output.clone(), |i| labels[i].clone());
     match &s.active {
         None => format!("{label} : désactivé"),
-        Some(a) => format!(
-            "{label} : {}, échelle {}, {}, position {}, {}",
-            a.mode.label(),
-            a.scale.label(),
-            rotation_label(a.transform),
-            a.x,
-            a.y
-        ),
+        Some(a) => {
+            format!("{label} : {}, échelle {}, {}, position {}, {}", a.mode.label(), a.scale.label(), rotation_label(a.transform), a.x, a.y)
+        }
     }
 }
 
@@ -622,11 +614,7 @@ impl App {
 
     /// Références possibles : les autres écrans activés (descriptions).
     pub fn panel_references(&self, p: &Panel) -> Vec<String> {
-        self.outputs()
-            .iter()
-            .filter(|o| o.name != p.output && o.active.is_some())
-            .map(|o| o.description.clone())
-            .collect()
+        self.outputs().iter().filter(|o| o.name != p.output && o.active.is_some()).map(|o| o.description.clone()).collect()
     }
 
     /// Plan du brouillon, ou la raison du refus (Appliquer grisé).
@@ -641,11 +629,9 @@ impl App {
                 let (x, y) = p.free.ok_or("position inconnue")?;
                 Placement::Absolute { x, y }
             }
-            PlaceChoice::Rel(relation) => Placement::Relative {
-                relation,
-                reference: p.reference.clone().ok_or("choisir un écran de référence")?,
-                align: p.align,
-            },
+            PlaceChoice::Rel(relation) => {
+                Placement::Relative { relation, reference: p.reference.clone().ok_or("choisir un écran de référence")?, align: p.align }
+            }
         };
         let size = logical_size(p.mode, p.scale, p.transform);
         let screens = |placements: Vec<Placement>| -> Vec<Screen> {
@@ -1025,12 +1011,10 @@ mod tests {
         let mut a = ready_app();
         a.go_tab(Tab::Ecrans, Instant::now());
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])]);
-        assert_eq!(a.items(), vec![
-            Item::DisplayProfiles,
-            Item::Output("eDP-1".into()),
-            Item::Output("DVI-I-1".into()),
-            Item::Output("HDMI-A-1".into()),
-        ]);
+        assert_eq!(
+            a.items(),
+            vec![Item::DisplayProfiles, Item::Output("eDP-1".into()), Item::Output("DVI-I-1".into()), Item::Output("HDMI-A-1".into()),]
+        );
     }
 
     #[test]
@@ -1283,10 +1267,7 @@ mod tests {
         outs.truncate(2);
         let ancienne = outs[0].active.take();
         a.data.displays = Loadable::Ready(outs);
-        let plan = Plan { steps: vec![
-            Step { output: "eDP-1".into(), active: ancienne },
-            Step { output: "DVI-I-1".into(), active: None },
-        ] };
+        let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: ancienne }, Step { output: "DVI-I-1".into(), active: None }] };
         a.start_trial("permutation".into(), plan.clone(), Vec::new(), t0);
         let (plan, undo) = sent_trial(&mut a);
         a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
@@ -1366,10 +1347,13 @@ mod tests {
         a.data.displays = Loadable::Ready(outs);
         a.toggle_output("DP-3", Instant::now());
         let (plan, _) = sent_trial(&mut a);
-        assert_eq!(plan.steps, vec![Step {
-            output: "DP-3".into(),
-            active: Some(Active { mode: mode(1920, 1080, 60), x: 4053, y: 0, scale: Scale::ONE, transform: 0 }),
-        }]);
+        assert_eq!(
+            plan.steps,
+            vec![Step {
+                output: "DP-3".into(),
+                active: Some(Active { mode: mode(1920, 1080, 60), x: 4053, y: 0, scale: Scale::ONE, transform: 0 }),
+            }]
+        );
     }
 
     #[test]
@@ -1448,7 +1432,10 @@ mod tests {
         a.open_panel("eDP-1", Instant::now());
         let p = panel(&a);
         assert_eq!((p.place, p.free), (PlaceChoice::Free, Some((-213, 1080))), "position non reproductible : libre");
-        assert_eq!(panel_fields(&p), vec![PanelField::Mode, PanelField::Scale, PanelField::Rotation, PanelField::Place, PanelField::Cancel, PanelField::Apply]);
+        assert_eq!(
+            panel_fields(&p),
+            vec![PanelField::Mode, PanelField::Scale, PanelField::Rotation, PanelField::Place, PanelField::Cancel, PanelField::Apply]
+        );
     }
 
     #[test]
@@ -1535,7 +1522,8 @@ mod tests {
     #[test]
     fn recherche_de_mode() {
         let mut a = ecrans();
-        a.data.displays = Loadable::Ready(crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap());
+        a.data.displays =
+            Loadable::Ready(crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap());
         a.open_panel("DVI-I-1", Instant::now());
         assert_eq!(a.panel_modes(&panel(&a)).len(), 26);
         a.panel_query(|q| q.push_str("1280"));
@@ -1586,10 +1574,14 @@ mod tests {
         a.data.displays = Loadable::Ready(sans_portable());
         a.toggle_output("eDP-1", Instant::now());
         let (plan, _) = sent_trial(&mut a);
-        assert_eq!(plan.steps, vec![Step {
-            output: "eDP-1".into(),
-            active: Some(Active { mode: mode(1920, 1080, 60), x: 4053, y: 0, scale: Scale::ONE, transform: 0 }),
-        }], "Alpha et Bravo restent en 213 et 2133");
+        assert_eq!(
+            plan.steps,
+            vec![Step {
+                output: "eDP-1".into(),
+                active: Some(Active { mode: mode(1920, 1080, 60), x: 4053, y: 0, scale: Scale::ONE, transform: 0 }),
+            }],
+            "Alpha et Bravo restent en 213 et 2133"
+        );
     }
 
     #[test]

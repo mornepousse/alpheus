@@ -32,10 +32,7 @@ pub(super) fn frame(buf: &mut Buffer, r: Rect, title: &str, app: &App, hits: &mu
     let th = &app.theme;
     let style = Style::default().fg(th.fg).bg(th.surface);
     clear(buf, r, style);
-    let block = Block::bordered()
-        .title(title.to_string())
-        .border_style(Style::default().fg(th.accent).bg(th.surface))
-        .style(style);
+    let block = Block::bordered().title(title.to_string()).border_style(Style::default().fg(th.accent).bg(th.surface)).style(style);
     let inner = block.inner(r);
     block.render(r, buf);
     hits.push(r, Target::Overlay);
@@ -49,10 +46,7 @@ fn toasts(buf: &mut Buffer, area: Rect, app: &App) {
         let text = format!(" {} {} ", if t.error { "✗" } else { "✓" }, t.text);
         let w = (text.chars().count() as u16).min(area.width.saturating_sub(2));
         let x = area.right().saturating_sub(w + 1);
-        let style = Style::default()
-            .fg(if t.error { th.error } else { th.ok })
-            .bg(th.surface)
-            .add_modifier(Modifier::BOLD);
+        let style = Style::default().fg(if t.error { th.error } else { th.ok }).bg(th.surface).add_modifier(Modifier::BOLD);
         put(buf, area, x, y, &truncate(&text, usize::from(w)), style);
     }
 }
@@ -115,8 +109,7 @@ fn confirm(buf: &mut Buffer, area: Rect, app: &App, c: &Confirm, hits: &mut HitM
     let th = &app.theme;
     let r = centered(area, 46, 6);
     let inner = frame(buf, r, " Confirmation ", app, hits);
-    put(buf, inner, inner.x + 1, inner.y, c.action.question(),
-        Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD));
+    put(buf, inner, inner.x + 1, inner.y, c.action.question(), Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD));
     let y = inner.y + inner.height.saturating_sub(1);
     let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
     let off = Style::default().fg(th.fg).bg(th.surface);

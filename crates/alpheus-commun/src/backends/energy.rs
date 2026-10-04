@@ -1,6 +1,6 @@
 //! Énergie : profil (powerprofilesctl) et « Garder éveillé » (tools-menu).
 
-use super::{run_ok, unparsable, BResult};
+use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
 use std::path::PathBuf;
 use std::sync::Arc;

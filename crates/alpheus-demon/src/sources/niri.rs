@@ -2,8 +2,8 @@
 //! `"EventStream"`, puis le flux d'événements jusqu'à la fermeture. Aucune
 //! autre requête. Lecture bloquante sans délai : aucun réveil à vide.
 
-use crate::compositeur::niri::Modele;
 use crate::compositeur::EtatCompositeur;
+use crate::compositeur::niri::Modele;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
