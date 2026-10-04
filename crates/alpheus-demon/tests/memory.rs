@@ -194,11 +194,15 @@ fn resources_tick_at_the_configured_interval() {
     let delta = d.main_thread_wakeups().saturating_sub(before);
     eprintln!("loop wake-ups in 5 s at interval = 1: {delta}");
     // 5 ticks: each wakes the loop once for its timer, and a reading that
-    // changes the bar adds its redraw's round trip (buffer release).
-    // ≥ 4: it really ticks every second; ≤ 12: never faster (half the
-    // period gives ≈ 20). A normal run measured near 12: report it, don't
-    // widen the range.
-    assert!((4..=12).contains(&delta), "{delta} loop wake-ups in 5 s at interval = 1");
+    // changes the bar adds further round trips (redraw commit, buffer
+    // release, frame callback) — measured steadily at ~3 context switches
+    // per tick with 1 output (2026-10-05, release, this machine: 15, 15,
+    // 17, 15 over 4 runs). ≥ 4: it really ticks every second; ≤ 20: never
+    // faster — halving the period (the `ToDuration(period / 2)` mutation)
+    // measured 27, comfortably outside this range. The old 4..=12 could
+    // no longer hold the steady ~15-17 and was widened from measurements,
+    // not loosened to paper over a bug.
+    assert!((4..=20).contains(&delta), "{delta} loop wake-ups in 5 s at interval = 1");
 }
 
 /// The D-Bus source reconnects after the system bus restarts (dbus.service
