@@ -17,6 +17,9 @@ pub const VOLUME_LOW: char = '\u{f057f}'; // md-volume_low
 pub const VOLUME_OFF: char = '\u{f0581}'; // md-volume_off (crossed out)
 pub const WIFI: char = '\u{f05a9}'; // md-wifi
 pub const ETHERNET: char = '\u{f0200}'; // md-ethernet
+/// Down: a neutral link icon, never Wi-Fi-specific (a wired machine has no
+/// radio to show while the source hasn't said which link it has).
+pub const NETWORK_DOWN: char = '\u{f0317}'; // md-lan
 pub const VPN: char = '\u{f0582}'; // md-vpn
 pub const NETWORK_OTHER: char = '\u{f059f}'; // md-web
 pub const OFFLINE: char = '\u{f0c9b}'; // md-network_off
@@ -39,6 +42,20 @@ fn down(module: ModuleId, icon: char) -> Segment {
     module_segment(module, vec![piece(format!("{icon} –"), Style::MUTED)])
 }
 
+/// Zero-width characters a hostile or placeholder name could pad itself
+/// with: not `char::is_whitespace` nor `char::is_control`, so `trim_name`
+/// would otherwise leave them in place at the edges.
+fn is_zero_width(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200d}' | '\u{feff}' | '\u{2060}')
+}
+
+/// Leading/trailing whitespace, controls and zero-width characters trimmed
+/// before truncating: a name made only of these shows nothing, not a blank
+/// name piece or a stray space.
+fn trim_name(name: &str) -> &str {
+    name.trim_matches(|c: char| c.is_whitespace() || c.is_control() || is_zero_width(c))
+}
+
 /// Gauge cells lit for `percent` (0 to 6, full beyond 100 %).
 pub fn gauge_cells(percent: u8) -> usize {
     (usize::from(percent) * GAUGE.len()).div_ceil(100).min(GAUGE.len())
@@ -54,10 +71,12 @@ pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
     let pieces = if v.muted {
         vec![piece(format!("{VOLUME_OFF} "), Style::MUTED), piece(gauge, Style::MUTED), piece(format!(" {}%", v.percent), Style::MUTED)]
     } else {
-        let icon = match v.percent {
-            0..=33 => VOLUME_LOW,
-            34..=66 => VOLUME_MEDIUM,
-            _ => VOLUME_HIGH,
+        let icon = if v.percent < 34 {
+            VOLUME_LOW
+        } else if v.percent < 67 {
+            VOLUME_MEDIUM
+        } else {
+            VOLUME_HIGH
         };
         let lit = gauge_cells(v.percent);
         vec![
@@ -73,7 +92,7 @@ pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
 pub(crate) fn network(feed: &Feed<NetState>) -> Option<Segment> {
     let pieces = match feed {
         Feed::Waiting | Feed::Ready(NetState::Absent) => return None,
-        Feed::Down => return Some(down(ModuleId::Network, WIFI)),
+        Feed::Down => return Some(down(ModuleId::Network, NETWORK_DOWN)),
         Feed::Ready(NetState::Offline) => vec![piece(OFFLINE.to_string(), Style::MUTED)],
         // Icons only (Q1): the primary link's, then the VPN count.
         Feed::Ready(NetState::Online { link, vpns, limited }) => {
@@ -103,8 +122,12 @@ pub(crate) fn bluetooth(feed: &Feed<BtState>) -> Option<Segment> {
         Feed::Ready(BtState::On { devices }) => match devices.first() {
             None => vec![piece(BLUETOOTH.to_string(), Style::MUTED)],
             Some(d) => {
-                let mut v =
-                    vec![piece(format!("{BLUETOOTH_CONNECTED} "), Style::ACCENT), piece(truncate(&d.name, DEVICE_MAX), Style::NORMAL)];
+                let name = trim_name(&d.name);
+                let mut v = if name.is_empty() {
+                    vec![piece(BLUETOOTH_CONNECTED.to_string(), Style::ACCENT)]
+                } else {
+                    vec![piece(format!("{BLUETOOTH_CONNECTED} "), Style::ACCENT), piece(truncate(name, DEVICE_MAX), Style::NORMAL)]
+                };
                 if let Some(b) = d.battery {
                     v.push(piece(format!(" {b}%"), if b < LOW { Style::ERROR } else { Style::MUTED }));
                 }
@@ -169,6 +192,16 @@ mod tests {
     }
 
     #[test]
+    fn volume_icon_boundaries() {
+        // Low/medium at 33/34, medium/high at 66/67 (see the `<` chain in
+        // `volume`; each edge is covered by its own case below).
+        assert_eq!(draw(&volume(&sound(33, false)).unwrap()).0.chars().next(), Some(VOLUME_LOW));
+        assert_eq!(draw(&volume(&sound(34, false)).unwrap()).0.chars().next(), Some(VOLUME_MEDIUM));
+        assert_eq!(draw(&volume(&sound(66, false)).unwrap()).0.chars().next(), Some(VOLUME_MEDIUM));
+        assert_eq!(draw(&volume(&sound(67, false)).unwrap()).0.chars().next(), Some(VOLUME_HIGH));
+    }
+
+    #[test]
     fn volume_hidden_while_waiting_or_without_sink_dash_when_down() {
         assert!(volume(&Feed::Waiting).is_none());
         assert!(volume(&Feed::Ready(SoundState { sink: None })).is_none());
@@ -194,7 +227,11 @@ mod tests {
         assert_eq!(draw(&network(&Feed::Ready(NetState::Offline)).unwrap()), ("\u{f0c9b}".into(), "m".into()));
         assert!(network(&Feed::Ready(NetState::Absent)).is_none());
         assert!(network(&Feed::Waiting).is_none());
-        assert_eq!(draw(&network(&Feed::Down).unwrap()), ("\u{f05a9} –".into(), "mmm".into()));
+        assert_eq!(
+            draw(&network(&Feed::Down).unwrap()),
+            ("\u{f0317} –".into(), "mmm".into()),
+            "down: a neutral icon (not Wi-Fi-specific — the link isn't known while down)"
+        );
     }
 
     #[test]
@@ -214,6 +251,14 @@ mod tests {
     }
 
     #[test]
+    fn bluetooth_battery_tint_boundary_at_19_and_20() {
+        // Error tint strictly below LOW (20): 19 % is low, 20 % is not (see
+        // the `b < LOW` comparison in `bluetooth`).
+        assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(19))])).unwrap()).1, "aa........eeee");
+        assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(20))])).unwrap()).1, "aa........mmmm");
+    }
+
+    #[test]
     fn hostile_names_truncated_without_controls() {
         // The only name the bar shows: a Bluetooth device's (the network shows icons only, Q1).
         let name = format!("a\tb\n\u{1b}[31m🦀 {}", "x".repeat(40));
@@ -222,6 +267,20 @@ mod tests {
         assert!(!t.contains(['\t', '\n', '\u{1b}']), "{t:?}");
         assert!(t.ends_with('…'), "{t:?}");
         assert_eq!(b.width(), 2 + DEVICE_MAX, "icon, space, then the name cut at {DEVICE_MAX} cells");
+    }
+
+    #[test]
+    fn device_name_trimmed_before_truncation() {
+        // Surrounding whitespace, controls and zero-width characters are
+        // trimmed before truncating, so they never pad the shown name.
+        let padded = bluetooth(&on(&[("  \t CasqueBT \n ", None)])).unwrap();
+        assert_eq!(draw(&padded).0, "\u{f00b1} CasqueBT");
+
+        // Nothing left after the trim: no name piece at all (icon alone),
+        // not a blank.
+        let blank = bluetooth(&on(&[("\u{200b}\u{feff}\t\u{2060}", None)])).unwrap();
+        assert_eq!(draw(&blank).0, "\u{f00b1}");
+        assert_eq!(blank.width(), 1, "icon alone, no leading space either");
     }
 
     fn three_modules_bar() -> Bar {
