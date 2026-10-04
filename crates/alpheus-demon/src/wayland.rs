@@ -131,6 +131,10 @@ pub struct Etat {
     polices: Polices,
     exec: Arc<dyn Executor>,
     pub fin: bool,
+    /// Levé par un message qui a changé l'affichage (canal, horloge) :
+    /// redessiné une seule fois après le retour de `boucle.dispatch()`, pas
+    /// à chaque message — voir `lancement::sur_message`.
+    sale: bool,
 }
 
 impl Etat {
@@ -162,6 +166,7 @@ impl Etat {
             polices,
             exec,
             fin: false,
+            sale: false,
         })
     }
 
@@ -409,6 +414,18 @@ delegate_layer!(Etat);
 delegate_seat!(Etat);
 delegate_pointer!(Etat);
 delegate_registry!(Etat);
+
+impl crate::lancement::RedessinDifere for Etat {
+    fn barre_mut(&mut self) -> &mut Barre {
+        &mut self.barre
+    }
+    fn sale_mut(&mut self) -> &mut bool {
+        &mut self.sale
+    }
+    fn redessiner_maintenant(&mut self) {
+        self.redessiner_tout();
+    }
+}
 
 #[cfg(test)]
 mod tests {

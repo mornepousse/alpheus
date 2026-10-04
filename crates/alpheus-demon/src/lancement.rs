@@ -55,6 +55,37 @@ pub fn distribuer(barre: &mut Barre, m: Msg, maintenant: impl Fn() -> HeureLocal
     change
 }
 
+/// Ce qu'il faut à la boucle pour redessiner au plus une fois par passage
+/// dans `boucle.dispatch()`, même si une rafale d'événements (p. ex. niri,
+/// qui envoie plusieurs lignes d'un coup) y déclenche plusieurs rappels
+/// (canal, horloge) : chacun appelle `sur_message`, qui met à jour la barre
+/// et lève le drapeau `sale` SANS jamais dessiner ; `apres_dispatch`,
+/// appelée une seule fois après le retour de `dispatch()`, dessine si besoin
+/// et abaisse le drapeau. `Etat` (wayland.rs) l'implémente pour de vrai ;
+/// les tests l'implémentent sur un simple compteur, sans connexion Wayland.
+pub trait RedessinDifere {
+    fn barre_mut(&mut self) -> &mut Barre;
+    fn sale_mut(&mut self) -> &mut bool;
+    fn redessiner_maintenant(&mut self);
+}
+
+/// Appelé par chaque rappel (message du canal, tic d'horloge) : jamais de
+/// redessin ici, seulement le drapeau.
+pub fn sur_message(cible: &mut impl RedessinDifere, m: Msg, maintenant: impl Fn() -> HeureLocale) {
+    if distribuer(cible.barre_mut(), m, maintenant) {
+        *cible.sale_mut() = true;
+    }
+}
+
+/// Appelé une seule fois après le retour de `boucle.dispatch()` : redessine
+/// si le drapeau a été levé par la rafale qui vient d'être traitée, et le
+/// remet à zéro dans tous les cas.
+pub fn apres_dispatch(cible: &mut impl RedessinDifere) {
+    if std::mem::take(cible.sale_mut()) {
+        cible.redessiner_maintenant();
+    }
+}
+
 /// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
 /// (EPIPE : journal relayé par un outil qui s'est arrêté). Un démon
 /// résident ne doit jamais mourir pour si peu : on écrit directement, et
@@ -176,21 +207,20 @@ pub fn lancer() -> i32 {
         return 1;
     }
     let (tx, rx) = channel::channel::<Courrier>();
+    // Chaque rappel (canal, horloge) lève seulement le drapeau `sale` :
+    // aucun des deux ne redessine (voir `RedessinDifere`). Une rafale de
+    // plusieurs messages (p. ex. niri, qui en envoie plusieurs d'un coup)
+    // traités dans le même passage de `dispatch()` ne redessine donc
+    // qu'une fois, après la boucle `while`, au lieu d'une fois par message.
     let courrier = poignee.insert_source(rx, |ev, _, etat: &mut Etat| match ev {
-        channel::Event::Msg(Courrier::Barre(m)) => {
-            if distribuer(&mut etat.barre, m, || HeureLocale::maintenant().0) {
-                etat.redessiner_tout();
-            }
-        }
+        channel::Event::Msg(Courrier::Barre(m)) => sur_message(etat, m, || HeureLocale::maintenant().0),
         channel::Event::Msg(Courrier::Arret) | channel::Event::Closed => etat.fin = true,
     });
     // Horloge : un réveil par changement d'affichage (minute, ou seconde si
     // le format en montre), jamais plus.
     let horloge = poignee.insert_source(Timer::immediate(), move |_, _, etat: &mut Etat| {
         let (h, nanos) = HeureLocale::maintenant();
-        if etat.barre.appliquer(Msg::Heure(h)) {
-            etat.redessiner_tout();
-        }
+        sur_message(etat, Msg::Heure(h), || h); // jamais consultée : Msg::Heure n'est pas « du compositeur »
         TimeoutAction::ToDuration(heure::prochain_tic(h.seconde, nanos, secondes))
     });
     if courrier.is_err() || horloge.is_err() {
@@ -224,6 +254,7 @@ pub fn lancer() -> i32 {
             }
             break;
         }
+        apres_dispatch(&mut etat);
     }
     drop(etat); // surfaces détruites
     let _ = conn.flush();
@@ -248,6 +279,48 @@ mod tests {
         assert!(distribuer(&mut b, Msg::Compositeur(Some(exemple())), || APRES));
         assert_eq!(b.heure, Some(APRES), "sortie de veille : l'heure suit le premier événement");
         assert!(!distribuer(&mut b, Msg::Compositeur(Some(exemple())), || APRES), "rien de neuf : pas de redessin");
+    }
+
+    /// Remplace `Etat` (wayland.rs, une vraie connexion Wayland) : compte
+    /// les redessins au lieu de dessiner pour de vrai.
+    struct Compteur {
+        barre: Barre,
+        sale: bool,
+        redessins: u32,
+    }
+
+    impl RedessinDifere for Compteur {
+        fn barre_mut(&mut self) -> &mut Barre {
+            &mut self.barre
+        }
+        fn sale_mut(&mut self) -> &mut bool {
+            &mut self.sale
+        }
+        fn redessiner_maintenant(&mut self) {
+            self.redessins += 1;
+        }
+    }
+
+    #[test]
+    fn une_rafale_de_messages_ne_redessine_qu_une_fois() {
+        let mut c = Compteur { barre: Barre::new(BarreConfig::default()), sale: false, redessins: 0 };
+        // Une rafale de 9 messages qui changent CHACUN l'affichage (bascule
+        // Some/None, comme les jusqu'à 9 grilles d'une seule rafale niri sur
+        // 3 écrans) : chacun appelle `sur_message`, aucun ne redessine
+        // directement — sans quoi ce test ne mordrait pas (un message
+        // répété, lui, ne change rien à partir du deuxième : voir
+        // `etat::tests::messages_et_changements`).
+        for i in 0..9 {
+            let e = if i % 2 == 0 { Some(exemple()) } else { None };
+            sur_message(&mut c, Msg::Compositeur(e), || AVANT);
+        }
+        apres_dispatch(&mut c);
+        assert_eq!(c.redessins, 1, "rafale de 9 messages qui changent tous l'affichage : un seul redessin, pas 9");
+        assert!(!c.sale, "le drapeau retombe après le redessin");
+        // Rien de neuf dans la rafale suivante : pas de redessin du tout.
+        sur_message(&mut c, Msg::Compositeur(Some(exemple())), || AVANT);
+        apres_dispatch(&mut c);
+        assert_eq!(c.redessins, 1, "rien de changé : aucun redessin de plus");
     }
 
     #[test]
