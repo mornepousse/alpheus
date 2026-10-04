@@ -1,148 +1,144 @@
 # alpheus
 
-> *Alpheus* : la crevette-pistolet, minuscule et la plus rapide de l'océan.
+> *Alpheus*: the pistol shrimp, tiny and the fastest in the ocean.
 
-Un shell de bureau Wayland **léger, en esprit terminal**, écrit en Rust : ce
-qu'apportent DankMaterialShell ou Noctalia (barre, réglages centralisés,
-notifications, OSD), **sans leur poids**. Il vise une machine modeste avec
-des fonctionnalités modernes.
+A **lightweight, terminal-spirited** Wayland desktop shell, written in
+Rust: what DankMaterialShell or Noctalia bring (bar, centralized settings,
+notifications, OSD), **without their weight**. Aimed at modest hardware
+with modern features.
 
-| | Mémoire résidente |
+| | Resident memory |
 |---|---|
-| DankMaterialShell (Quickshell) | ≈ 530 Mo |
-| **Barre alpheus, 3 écrans** | **≈ 13 Mo** (mesuré, stable) |
-| Budget total d'alpheus (barre, notifications, OSD, fond) | ≤ 120 Mo |
+| DankMaterialShell (Quickshell) | ≈ 530 MB |
+| **alpheus bar, 3 screens** | **≈ 13 MB** (measured, stable) |
+| alpheus total budget (bar, notifications, OSD, wallpaper) | ≤ 120 MB |
 
-Hyprland et niri. Souris et clavier partout.
+Hyprland and niri. Mouse and keyboard everywhere.
 
-La veille et l'extinction des écrans restent l'affaire d'outils dédiés
-(hypridle, swayidle…) : alpheus n'y touche jamais. Sur certaines sorties
-(DisplayLink notamment), une extinction mal placée peut geler la machine.
+Sleep and screen power-off remain the job of dedicated tools (hypridle,
+swayidle…): alpheus never touches them. On some outputs (DisplayLink in
+particular), a misplaced power-off can freeze the machine.
 
-> **État** : projet personnel en cours, utilisé quotidiennement par son
-> autrice sur NixOS. Il dépend encore de quelques scripts de sa
-> configuration (`wm-set`, `shell-ctl`…) ; les rendre facultatifs, avec un
-> repli neutre, est la prochaine étape avant un usage ailleurs.
+> **Status**: ongoing personal project, used daily by its author on NixOS.
+> It still depends on a few scripts from her configuration (`wm-set`,
+> `shell-ctl`…); making them optional, with a neutral fallback, is the next
+> step before use elsewhere.
 
-## Ce que contient le dépôt
+## What's in the repository
 
-Un workspace Cargo de trois crates :
+A Cargo workspace of three crates:
 
-| Crate | Rôle |
+| Crate | Role |
 |---|---|
-| `alpheus` | **Centre de contrôle** en TUI (ratatui), ouvert à la demande |
-| `alpheus-demon` | **Démon résident** : la barre, une par écran (layer-shell) |
-| `alpheus-commun` | Socle partagé : exécution des commandes, configuration, thème, accès aux outils système |
+| `alpheus` | **Control center** as a TUI (ratatui), opened on demand |
+| `alpheus-demon` | **Resident daemon**: the bar, one per screen (layer-shell) |
+| `alpheus-commun` | Shared foundation: command execution, configuration, theme, access to system tools |
 
-La TUI n'embarque pas Wayland, le démon n'embarque pas ratatui : un test le
-vérifie.
+The TUI doesn't embed Wayland, the daemon doesn't embed ratatui: a test
+checks this.
 
-### Le centre de contrôle (`alpheus`)
+### The control center (`alpheus`)
 
-Six onglets : **Accueil**, **Son**, **Réseau**, **Bluetooth**,
-**Alimentation**, **Écrans** (activer, placer, régler la résolution et
-l'échelle, profils, avec retour automatique au bout de 15 s si on ne
-confirme pas).
+Six tabs: **Home**, **Sound**, **Network**, **Bluetooth**, **Power**,
+**Displays** (enable, place, set resolution and scale, profiles, with
+automatic rollback after 15 s if not confirmed).
 
-| Touche | Action |
+| Key | Action |
 |---|---|
-| `1`…`6`, `Tab` / `Maj+Tab` | changer d'onglet |
-| `Ctrl+P` | palette de commandes (recherche floue) |
-| `/`, `Ctrl+F` | chercher dans une liste |
-| `F1`, `?` | aide |
-| `Échap` | revenir ; `q` quitte |
+| `1`…`6`, `Tab` / `Shift+Tab` | switch tabs |
+| `Ctrl+P` | command palette (fuzzy search) |
+| `/`, `Ctrl+F` | search a list |
+| `F1`, `?` | help |
+| `Esc` | go back; `q` quits |
 
-`alpheus --onglet <nom>` ouvre directement un onglet (`accueil`, `son`,
-`reseau`, `bluetooth`, `alimentation`, `ecrans`).
+`alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`,
+`bluetooth`, `power`, `displays`).
 
-### La barre (`alpheus-demon`)
+### The bar (`alpheus-demon`)
 
-Une ligne de caractères monospace sur fond uni, modules séparés par `│`,
-élément actif en couleur d'accent inversée.
+A line of monospace characters on a solid background, modules separated by
+`│`, active item in inverted accent color.
 
-Livré : **bureaux** (un point par fenêtre, bureau vide estompé, urgent en
-rouge, clic pour y aller, molette pour passer au suivant), **fenêtre active**
-(icône de l'appli et titre), **heure**. Une barre par écran, écrans branchés
-et débranchés suivis à chaud. Sur un écran étroit, les modules secondaires
-s'effacent ; les bureaux et l'heure restent.
+Shipped: **workspaces** (one dot per window, empty workspace dimmed, urgent
+in red, click to go there, wheel to move to the next one), **active
+window** (app icon and title), **clock**. One bar per screen, screens
+plugged and unplugged are tracked live. On a narrow screen, secondary
+modules disappear; workspaces and the clock remain.
 
-À venir, dans l'ordre : son, réseau, Bluetooth, batterie, ressources ; puis
-plateau système (icônes et menus des applis) ; puis lecture en cours et
-notifications. Ensuite l'OSD, puis les bulles de notification.
+Coming next, in order: sound, network, Bluetooth, battery, resources; then
+system tray (app icons and menus); then now-playing and notifications.
+Then the OSD, then notification toasts.
 
-La barre ne se réveille qu'à chaque minute et sur événement. Le compositeur
-n'est que **lu** (flux d'événements Hyprland ou niri) ; changer de bureau
-passe par une commande configurable.
+The bar only wakes up once a minute and on events. The compositor is only
+**read** (Hyprland or niri event stream); switching workspace goes through
+a configurable command.
 
-## Construire
+## Build
 
-Avec Nix :
+With Nix:
 
 ```sh
-nix build .#alpheus          # la TUI
-nix build .#alpheus-demon    # la barre
-nix develop                  # shell de dev : cargo, polices, sway pour les tests
+nix build .#alpheus          # the TUI
+nix build .#alpheus-demon    # the bar
+nix develop                  # dev shell: cargo, fonts, sway for tests
 ```
 
-Sans Nix, `cargo build --release` suffit pour la TUI. La barre cherche ses
-polices dans `$ALPHEUS_POLICES` (fixé à la compilation par le flake), sinon
-dans celles du système.
+Without Nix, `cargo build --release` is enough for the TUI. The bar looks
+for its fonts in `$ALPHEUS_FONTS` (set at build time by the flake),
+otherwise in the system's.
 
-## Configurer
+## Configure
 
-Tout est facultatif, dans `~/.config/alpheus/`. Un fichier invalide donne
-les valeurs par défaut et un avertissement, jamais un plantage.
+Everything is optional, under `~/.config/alpheus/`. An invalid file falls
+back to default values with a warning, never a crash.
 
-- `colors.toml` : la palette, prévue pour être produite par un modèle
-  [matugen](https://github.com/InioX/matugen).
-- `config.toml` : la TUI (touches, outils ouverts pour le son, le réseau, le
+- `colors.toml`: the palette, meant to be generated by a
+  [matugen](https://github.com/InioX/matugen) template.
+- `config.toml`: the TUI (keys, tools opened for sound, network,
   Bluetooth).
-- `ecrans.toml` : les profils d'écrans, écrits par l'onglet Écrans.
-- `barre.toml` : la barre.
+- `displays.toml`: screen profiles, written by the Displays tab.
+- `bar.toml`: the bar.
 
 ```toml
-# barre.toml — valeurs par défaut
-modules = ["bureaux", "fenetre", "lecture", "volume", "reseau", "bluetooth",
-           "batterie", "ressources", "plateau", "notifications", "heure"]
-hauteur = 22
+# bar.toml — default values
+modules = ["workspaces", "window", "media", "volume", "network", "bluetooth",
+           "battery", "resources", "tray", "notifications", "clock"]
+height = 22
 
-[police]
-famille = "JetBrainsMono Nerd Font Mono"
-taille = 14.0
-repli = []          # familles de repli (emoji, CJK) : chacune coûte sa mémoire
+[font]
+family = "JetBrainsMono Nerd Font Mono"
+size = 14.0
+fallback = []       # fallback families (emoji, CJK): each one costs its own memory
 
-[heure]
+[clock]
 format = "%H:%M"
-date = "%a %e %b"   # vide = pas de date
+date = "%a %e %b"   # empty = no date
 
-[bureaux]
-commande = ["wm-set", "workspace", "{bureau}", "{sortie}"]
+[workspaces]
+command = ["wm-set", "workspace", "{workspace}", "{output}"]
 ```
 
-Les modules pas encore livrés sont acceptés et ignorés : un `barre.toml`
-écrit aujourd'hui restera valable.
+Modules not yet shipped are accepted and ignored: a `bar.toml` written
+today will stay valid.
 
-## Principes
+## Principles
 
-- **La légèreté d'abord.** Une option inutilisée ne coûte rien ; pas de
-  dépendance lourde « pour la config ». Les budgets sont vérifiés par des
-  tests (mémoire et réveils au repos de la barre, mesurés sur un sway sans
-  tête).
-- **Jamais de `dpms`** ni de gestion de la veille : une extinction d'écran
-  sur une sortie DisplayLink peut geler la machine.
-- **Aucune écriture directe au compositeur** : seulement des commandes
-  configurables.
-- **Tests sans session graphique** : toutes les commandes passent par un
-  exécuteur injectable, aucun test n'agit sur la session.
+- **Lightness first.** An unused option costs nothing; no heavy dependency
+  "for config". Budgets are checked by tests (memory and idle wakeups of
+  the bar, measured on a headless sway).
+- **Never `dpms`** nor sleep handling: turning off a screen on a
+  DisplayLink output can freeze the machine.
+- **No direct writes to the compositor**: only configurable commands.
+- **Tests without a graphical session**: every command goes through an
+  injectable executor, no test acts on the session.
 
 ## Documentation
 
-- [`docs/CADRAGE.md`](docs/CADRAGE.md) : pourquoi, budget, garde-fous,
-  découpage.
-- [`docs/specs/`](docs/specs/) : les spécifications (TUI, onglet Écrans,
-  barre).
-- [`docs/plans/`](docs/plans/) : les plans d'implémentation.
+- [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
+- [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
+  bar).
+- [`docs/plans/`](docs/plans/): the implementation plans.
 
-## Licence
+## License
 
 [MIT](LICENSE) © 2026 Mae PUGIN
