@@ -46,14 +46,22 @@ pub fn settings(directory: &Path) -> (BarConfig, Palette, Vec<String>) {
     (config, palette, [w1, w2].into_iter().flatten().collect())
 }
 
-/// Applies a message to the bar. Any compositor event also refreshes the
-/// clock: coming out of sleep, the timer (a monotonic clock, stopped during
-/// sleep) can lag by a minute; the first focus change puts the clock right
-/// again.
+/// Applies a message to the bar. Any compositor event, or a resources tick,
+/// also refreshes the clock: coming out of sleep, the timer (a monotonic
+/// clock, stopped during sleep) can lag by a minute; the first focus change
+/// puts the clock right again — and so does the next resources reading,
+/// which needs no user interaction with the compositor at all (B-m4,
+/// review: the clock could otherwise stay stale for up to a minute after
+/// resume if nothing compositor-related happens meanwhile). Cheapest
+/// correct option: resources already ticks on its own already-scheduled
+/// timer whenever the module is shown, so this reuses an existing wakeup
+/// instead of adding one (e.g. threading a dedicated wake flag through the
+/// D-Bus session/publish plumbing, `PrepareForSleep(false)`, into every
+/// call site and test there).
 pub fn dispatch_msg(bar: &mut Bar, m: Msg, now: impl Fn() -> LocalTime) -> bool {
-    let from_compositor = matches!(m, Msg::Compositor(_));
+    let refreshes_clock = matches!(m, Msg::Compositor(_) | Msg::Resources(_));
     let mut changed = bar.apply(m);
-    if from_compositor {
+    if refreshes_clock {
         changed |= bar.apply(Msg::Clock(now()));
     }
     changed
@@ -354,27 +362,36 @@ mod tests {
     }
 
     #[test]
-    fn system_messages_redraw_once_and_leave_the_clock_alone() {
+    fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
         let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
         }
         on_message(&mut c, Msg::Sound(Some(SoundState { sink: None })), || AFTER);
+        assert_eq!(c.bar.clock, None, "network, bluetooth, battery, sound: not a clock-refreshing event");
         on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None }), || AFTER);
         after_dispatch(&mut c);
         assert_eq!(c.redraws, 1, "a burst of system messages: one redraw");
-        assert_eq!(c.bar.clock, None, "only compositor events reset the clock");
+        assert_eq!(c.bar.clock, Some(AFTER), "a resources tick also puts the clock right (B-m4)");
     }
 
     #[test]
-    fn a_compositor_event_resets_the_clock() {
+    fn a_compositor_event_or_a_resources_tick_resets_the_clock() {
         let mut b = Bar::new(BarConfig::default());
         assert!(dispatch_msg(&mut b, Msg::Clock(BEFORE), || AFTER));
         assert_eq!(b.clock, Some(BEFORE), "a clock tick does not reread the time");
         assert!(dispatch_msg(&mut b, Msg::Compositor(Some(example())), || AFTER));
         assert_eq!(b.clock, Some(AFTER), "coming out of sleep: the clock follows the first event");
         assert!(!dispatch_msg(&mut b, Msg::Compositor(Some(example())), || AFTER), "nothing new: no redraw");
+        // Resources has no down state, so a sleeping laptop with nothing
+        // compositor-related happening right after resume (no focus
+        // change yet) still gets the clock corrected by the next reading.
+        assert!(dispatch_msg(&mut b, Msg::Clock(BEFORE), || AFTER), "clock put back stale for this part of the test");
+        assert_eq!(b.clock, Some(BEFORE));
+        let sample = Sample { cpu: Some(10), memory: Some(50), temperature: Some(40) };
+        assert!(dispatch_msg(&mut b, Msg::Resources(sample), || AFTER));
+        assert_eq!(b.clock, Some(AFTER), "a resources tick follows the clock too, with no compositor event needed");
     }
 
     /// Replaces `App` (wayland.rs, a real Wayland connection): counts
