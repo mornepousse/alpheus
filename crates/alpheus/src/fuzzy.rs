@@ -13,6 +13,11 @@ fn fold(c: char) -> char {
     }
 }
 
+/// `s` sans accents ni majuscules (« Réseau » → « reseau »).
+pub fn plier(s: &str) -> String {
+    s.chars().map(fold).collect()
+}
+
 /// Score (plus grand = meilleur) si les caractères de `query` (espaces
 /// ignorés) apparaissent dans l'ordre dans `cand` ; sinon None.
 pub fn score(query: &str, cand: &str) -> Option<i32> {

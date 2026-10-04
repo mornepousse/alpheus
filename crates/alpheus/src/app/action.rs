@@ -43,6 +43,24 @@ impl Tab {
     pub fn searchable(self) -> bool {
         matches!(self, Tab::Son | Tab::Reseau | Tab::Bluetooth)
     }
+
+    /// Nom de l'onglet en ligne de commande (`alpheus --onglet <nom>`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            Tab::Accueil => "accueil",
+            Tab::Son => "son",
+            Tab::Reseau => "reseau",
+            Tab::Bluetooth => "bluetooth",
+            Tab::Alimentation => "alimentation",
+            Tab::Ecrans => "ecrans",
+        }
+    }
+
+    /// Onglet nommé `nom`, insensible à la casse et aux accents.
+    pub fn from_slug(nom: &str) -> Option<Tab> {
+        let n = crate::fuzzy::plier(nom.trim());
+        Tab::ALL.into_iter().find(|t| t.slug() == n)
+    }
 }
 
 /// Outil TUI externe ouvert dans la même fenêtre.
@@ -219,6 +237,20 @@ mod tests {
         assert_eq!(Tab::Ecrans.next(), Tab::Accueil);
         assert_eq!(Tab::Ecrans.title(), "Écrans");
         assert_eq!(Tab::Reseau.index(), 2);
+    }
+
+    #[test]
+    fn noms_d_onglet_en_ligne_de_commande() {
+        let mut noms: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
+        noms.sort();
+        assert_eq!(noms, ["accueil", "alimentation", "bluetooth", "ecrans", "reseau", "son"]);
+        for t in Tab::ALL {
+            assert_eq!(Tab::from_slug(t.slug()), Some(t));
+        }
+        assert_eq!(Tab::from_slug("Réseau"), Some(Tab::Reseau));
+        assert_eq!(Tab::from_slug(" ÉCRANS "), Some(Tab::Ecrans));
+        assert_eq!(Tab::from_slug("meteo"), None);
+        assert_eq!(Tab::from_slug(""), None);
     }
 
     #[test]

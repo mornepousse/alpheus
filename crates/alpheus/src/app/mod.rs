@@ -243,8 +243,13 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config, theme: Theme, keymap: Keymap, now: Instant) -> App {
+        App::sur_onglet(config, theme, keymap, Tab::Accueil, now)
+    }
+
+    /// Ouvre directement sur `onglet` : seuls ses domaines sont lus.
+    pub fn sur_onglet(config: Config, theme: Theme, keymap: Keymap, onglet: Tab, now: Instant) -> App {
         let mut app = App {
-            tab: Tab::Accueil,
+            tab: onglet,
             data: Data::default(),
             focus: 0,
             overlay: Overlay::None,

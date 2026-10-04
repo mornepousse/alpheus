@@ -1,6 +1,7 @@
 //! Critère de la spec : premier rendu < 100 ms, même si chaque outil met
 //! 500 ms à répondre (le rendu n'attend aucun outil).
 
+use alpheus::app::action::Tab;
 use alpheus::app::run::build_app;
 use alpheus::app::worker;
 use alpheus::backends::Backends;
@@ -15,7 +16,7 @@ use std::time::{Duration, Instant};
 fn premier_rendu_sous_100_ms_meme_avec_des_outils_lents() {
     let start = Instant::now();
     let dir = std::env::temp_dir().join("alpheus-premier-rendu-sans-config");
-    let mut app = build_app(&dir, start);
+    let mut app = build_app(&dir, Tab::Accueil, start);
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
     let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
     for r in app.take_requests() {

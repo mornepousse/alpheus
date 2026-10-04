@@ -3,6 +3,7 @@
 //! tests/premier_rendu.rs et l'essai réel) ; sa décision de sortie et le
 //! gestionnaire de signaux en ont.
 
+use super::action::Tab;
 use super::keymap::Keymap;
 use super::worker::{self, Request, Update};
 use super::App;
@@ -190,7 +191,38 @@ pub fn runtime_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
 }
 
-pub fn build_app(dir: &Path, now: Instant) -> App {
+/// Options de la ligne de commande.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Options {
+    /// Onglet affiché à l'ouverture (`--onglet <nom>`).
+    pub onglet: Tab,
+}
+
+/// `alpheus [--onglet <nom>]`, aussi `--onglet=<nom>`. L'erreur est un
+/// message pour l'utilisateur : main l'affiche et sort en code 2.
+pub fn lire_options(args: &[String]) -> Result<Options, String> {
+    let mut onglet = Tab::Accueil;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        let valeur = if a == "--onglet" {
+            i += 1;
+            args.get(i).map(String::as_str).ok_or("--onglet attend un nom d'onglet")?
+        } else if let Some(v) = a.strip_prefix("--onglet=") {
+            v
+        } else {
+            return Err(format!("option inconnue : « {a} » (usage : alpheus [--onglet <nom>])"));
+        };
+        onglet = Tab::from_slug(valeur).ok_or_else(|| {
+            let noms: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
+            format!("onglet inconnu : « {valeur} » (attendus : {})", noms.join(", "))
+        })?;
+        i += 1;
+    }
+    Ok(Options { onglet })
+}
+
+pub fn build_app(dir: &Path, onglet: Tab, now: Instant) -> App {
     let (config, w_config) = Config::load(&dir.join("config.toml"));
     let (theme, w_theme) = Theme::load(&dir.join("colors.toml"));
     let (keymap, w_keys) = match Keymap::from_config(&config.keys) {
@@ -199,7 +231,7 @@ pub fn build_app(dir: &Path, now: Instant) -> App {
     };
     let ecrans_toml = dir.join("ecrans.toml");
     let (display_profiles, w_ecrans) = profiles::load(&ecrans_toml);
-    let mut app = App::new(config, theme, keymap, now);
+    let mut app = App::sur_onglet(config, theme, keymap, onglet, now);
     app.ecrans.profiles = display_profiles;
     app.ecrans.profiles_path = Some(ecrans_toml);
     // Fichier illisible ou invalide : l'enregistrement l'écraserait sans
@@ -231,9 +263,9 @@ impl Drop for Nettoyage {
     }
 }
 
-pub fn run() -> io::Result<()> {
+pub fn run(options: Options) -> io::Result<()> {
     installer_signaux()?;
-    let mut app = build_app(&config_dir(), Instant::now());
+    let mut app = build_app(&config_dir(), options.onglet, Instant::now());
     // Sous niri, l'onglet Écrans n'appelle rien (pas encore pris en charge).
     app.ecrans.niri = niri_actif(std::env::var_os("NIRI_SOCKET"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"));
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
@@ -313,6 +345,30 @@ mod tests {
         let s = Mutex::new(ExitUndo::default());
         record_undo(&s, plan);
         s
+    }
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn options_de_la_ligne_de_commande() {
+        assert_eq!(lire_options(&[]), Ok(Options { onglet: Tab::Accueil }));
+        assert_eq!(lire_options(&args(&["--onglet", "son"])), Ok(Options { onglet: Tab::Son }));
+        assert_eq!(lire_options(&args(&["--onglet=Réseau"])), Ok(Options { onglet: Tab::Reseau }));
+        assert_eq!(lire_options(&args(&["--onglet", "ecrans"])), Ok(Options { onglet: Tab::Ecrans }));
+        let e = lire_options(&args(&["--onglet", "météo"])).unwrap_err();
+        assert!(e.contains("météo") && e.contains("accueil, son"), "{e}");
+        assert!(lire_options(&args(&["--onglet"])).unwrap_err().contains("attend"));
+        assert!(lire_options(&args(&["-v"])).unwrap_err().contains("option inconnue"));
+    }
+
+    #[test]
+    fn ouverture_sur_un_onglet_ne_lit_que_ses_domaines() {
+        let dir = std::env::temp_dir().join("alpheus-onglet-sans-config");
+        let mut a = build_app(&dir, Tab::Son, Instant::now());
+        assert_eq!(a.tab, Tab::Son);
+        assert_eq!(a.take_requests(), vec![Request::Refresh(worker::domains(Tab::Son).to_vec())]);
     }
 
     #[test]
@@ -472,18 +528,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("alpheus-{}-run-ecrans", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let a = build_app(&dir, Instant::now());
+        let a = build_app(&dir, Tab::Accueil, Instant::now());
         assert!(a.ecrans.profiles.is_empty());
         assert_eq!(a.status.warning, None, "fichier absent : aucun message");
         assert!(!a.ecrans.profiles_invalid, "absent : l'enregistrement le créera");
         std::fs::write(dir.join("ecrans.toml"), "[[profil]]\nnom = \"Bureau\"\n").unwrap();
-        let a = build_app(&dir, Instant::now());
+        let a = build_app(&dir, Tab::Accueil, Instant::now());
         assert_eq!(a.ecrans.profiles.len(), 1);
         assert_eq!(a.ecrans.profiles_path, Some(dir.join("ecrans.toml")));
         assert_eq!(a.status.warning, None);
         assert!(!a.ecrans.profiles_invalid);
         std::fs::write(dir.join("ecrans.toml"), "[[profil]\n").unwrap();
-        let a = build_app(&dir, Instant::now());
+        let a = build_app(&dir, Tab::Accueil, Instant::now());
         assert!(a.ecrans.profiles.is_empty());
         assert!(a.status.warning.as_deref().unwrap_or("").starts_with("ecrans.toml invalide"), "{:?}", a.status.warning);
         assert!(a.ecrans.profiles_invalid, "fichier invalide : enregistrement refusé");
