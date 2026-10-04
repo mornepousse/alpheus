@@ -5,8 +5,10 @@
 //! unique name of the process that owns it: never through its well-known
 //! name, which D-Bus activation would use to start it.
 
+pub mod bluez;
 pub mod network;
 pub mod props;
+pub mod upower;
 
 #[cfg(test)]
 pub mod fake;

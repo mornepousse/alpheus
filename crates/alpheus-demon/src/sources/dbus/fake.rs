@@ -3,7 +3,7 @@
 //! bus. Records every call, and refuses — panics on — a call addressed to a
 //! well-known name: on a real bus, that call could start the service.
 
-use super::props::{Objects, Props, busctl};
+use super::props::{Objects, Prop, Props, busctl};
 use super::{BLUEZ, Bus, NM, Signal, UPOWER};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -100,6 +100,24 @@ impl FakeBus {
     /// A recorded object's properties, to change one in a test.
     pub fn props_mut(&mut self, path: &str, interface: &str) -> &mut Props {
         self.props.get_mut(&(path.to_string(), interface.to_string())).expect("recorded object")
+    }
+
+    /// Synthesized (nothing was connected during the recording): the
+    /// recorded headset connected, its battery at 72 %, and a second
+    /// connected device, ClavierBT, with no battery.
+    pub fn connect_bluetooth(&mut self) {
+        let headset = self.bluez.get_mut("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02").expect("recorded headset");
+        headset.get_mut("org.bluez.Device1").expect("Device1").0.insert("Connected".into(), Prop::Bool(true));
+        headset.insert("org.bluez.Battery1".into(), Props([("Percentage".to_string(), Prop::Int(72))].into()));
+        let keyboard = Props(
+            [
+                ("Address".to_string(), Prop::Str("AA:BB:CC:DD:EE:04".into())),
+                ("Alias".to_string(), Prop::Str("ClavierBT".into())),
+                ("Connected".to_string(), Prop::Bool(true)),
+            ]
+            .into(),
+        );
+        self.bluez.insert("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04".into(), [("org.bluez.Device1".to_string(), keyboard)].into());
     }
 
     /// A call's destination must be a unique name (see the module comment).
