@@ -30,10 +30,27 @@ breakdown), then the spec of the sub-project currently in progress in
   rest. Real-world trial validated by Mae on 2026-10-04; **Mae now uses
   the alpheus bar daily** (`desktop.shell = "alpheus"`, DMS dropped), so
   every delivery lands on her machine.
-- Next, in order: bar steps 3 (sound, network, Bluetooth, battery,
-  resources), 4 (tray and menus), 5 (media, notifications) — each with its
-  own plan; then the **OSD** (replaces swayosd, ≈ 44 MB measured), then
+- Bar **delivery 3** (sound, network, Bluetooth, battery, resources;
+  plan [`docs/plans/2026-10-04-alpheus-bar-plan-2.md`](docs/plans/2026-10-04-alpheus-bar-plan-2.md),
+  19 tasks) **implemented and merged** on 2026-10-05 after per-task reviews,
+  a whole-D-Bus review, two whole-branch reviews and an optimisation round.
+  Sound via a supervised `pw-dump -m -N -R` child; NetworkManager, UPower
+  and BlueZ through one read-only zbus connection (allowlisted signals, no
+  activation, per-domain outages); resources from `/proc` and `/sys` every
+  2 s. Measured in **release** (the budget tests refuse debug builds):
+  startup ≈ 7.9 MB PSS, steady ≈ 9.7 MB, **0 wake-ups at rest**, 8 threads.
+  The transitive crate `blocking` is pinned to 1.6.x in `Cargo.lock`
+  (1.7 keeps an idle thread waking every 500 ms; a test guards it). Real
+  trial on Mae's laptop pending (plan task 18). Possible later memory win:
+  replacing zbus with rustbus (≈ −1.4 MB, measured), not needed for now.
+- Next, in order: the **app launcher** (integrated in alpheus; prior-art
+  research first), then bar step 4 (tray and menus), step 5 (media,
+  notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
+- **Prior art first**: before designing each part, study how other bars and
+  shells do it (i3status-rust, ironbar, ashell, cosmic-applets, waybar,
+  Noctalia/DMS…), one research agent per domain; reuse ideas and signal
+  lists, not heavy dependencies.
 - **English rename** (2026-10-04, Mae's decision): done — identifiers,
   comments, tests, log and error messages, user-visible strings (TUI and
   bar), config file names and keys (`bar.toml`, `displays.toml`), CLI
