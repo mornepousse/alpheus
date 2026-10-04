@@ -4,10 +4,19 @@
 
 mod common;
 
-use common::{FakeHyprland, SIGNATURE, Sway, start_daemon};
+use common::{FakeHyprland, SIGNATURE, Sway, process_alive, start_daemon, wait_for_pid_file};
 use std::time::Duration;
 
 const DELAY: Duration = Duration::from_secs(10);
+
+/// Waits (2 s at most) for the fake pw-dump `pid` to end.
+fn dies_within_2_s(pid: i32) {
+    let t = std::time::Instant::now();
+    while process_alive(pid) {
+        assert!(t.elapsed() < Duration::from_secs(2), "pw-dump {pid} survived the daemon");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -78,4 +87,34 @@ fn only_one_daemon_at_a_time() {
     let mut d2 = start_daemon(&sway);
     assert_eq!(d2.exit(DELAY), Some(1));
     assert!(d2.wait_for("already running", Duration::from_secs(1)), "{:?}", d2.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn pw_dump_dies_with_the_daemon() {
+    let sway = Sway::start("pw-dump", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut d = start_daemon(&sway);
+    let pid = wait_for_pid_file(&sway.runtime.join("pw-dump.pid"), DELAY);
+    assert!(process_alive(pid), "the fake pw-dump runs: {:?}", d.log());
+    // SIGKILL: no Drop runs in the daemon; only PR_SET_PDEATHSIG is left.
+    d.signal(libc::SIGKILL);
+    let _ = d.child.wait();
+    dies_within_2_s(pid);
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn pw_dump_ends_with_a_clean_shutdown() {
+    let sway = Sway::start("pw-dump-term", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut d = start_daemon(&sway);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let pid = wait_for_pid_file(&sway.runtime.join("pw-dump.pid"), DELAY);
+    // SIGTERM: the clean path, within the daemon's grace period (1 s, see
+    // clean_shutdown_on_sigterm…); the sound thread ends with the process,
+    // and PDEATHSIG takes pw-dump along.
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(Duration::from_millis(1500)), Some(0), "clean exit, code 0: {:?}", d.log());
+    dies_within_2_s(pid);
 }

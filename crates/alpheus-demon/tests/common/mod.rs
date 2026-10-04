@@ -191,15 +191,92 @@ pub struct Daemon {
 
 pub const SIGNATURE: &str = "fake";
 
+/// The fake `pw-dump` put first on the daemon's PATH (never the real
+/// PipeWire): it writes its PID to `<runtime>/pw-dump.pid`, prints the
+/// recorded initial dump inflated to the real one's size, then stays silent
+/// (`Silent`) or sends the recorded deltas every 10 ms (`Busy`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PwDump {
+    Silent,
+    Busy,
+}
+
+pub struct DaemonOptions<'a> {
+    /// Written to `$XDG_CONFIG_HOME/alpheus/bar.toml` when given.
+    pub bar_toml: Option<&'a str>,
+    /// `DBUS_SYSTEM_BUS_ADDRESS`: a `PrivateBus`'s address; None: a path
+    /// where no bus listens (the D-Bus modules show "–").
+    pub system_bus: Option<&'a str>,
+    pub pw_dump: PwDump,
+}
+
+impl Default for DaemonOptions<'_> {
+    fn default() -> Self {
+        DaemonOptions { bar_toml: None, system_bus: None, pw_dump: PwDump::Silent }
+    }
+}
+
+/// The recorded initial dump, inflated to the real one's size (≈ 600 KB on
+/// the workstation, survey) by repeating its MIDI port under fresh ids: the
+/// startup PSS then includes parsing a full-size first array (budget: 15 MB).
+fn full_size_initial_dump(fixtures: &Path, to: &Path) {
+    let initial = fs::read_to_string(fixtures.join("pw-dump-initial.json")).unwrap();
+    let port = initial.lines().find(|l| l.contains("{\"id\":51,")).expect("the fixture's port").trim().trim_end_matches(',');
+    let mut dump = initial.trim_end().strip_suffix(']').expect("a JSON array").trim_end().to_string();
+    let mut id = 10_000;
+    while dump.len() < 610_000 {
+        dump.push_str(",\n  ");
+        dump.push_str(&port.replacen("{\"id\":51,", &format!("{{\"id\":{id},"), 1));
+        id += 1;
+    }
+    dump.push_str("\n]\n");
+    fs::write(to, dump).unwrap();
+}
+
+fn fake_pw_dump(sway: &Sway, mode: PwDump) -> PathBuf {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let initial = sway.runtime.join("pw-dump-initial-full.json");
+    full_size_initial_dump(&fixtures, &initial);
+    let then = match mode {
+        PwDump::Silent => "exec sleep 100000".to_string(),
+        PwDump::Busy => format!("while :; do cat '{}'; sleep 0.01; done", fixtures.join("pw-dump-deltas.json").display()),
+    };
+    let script = format!(
+        "#!/bin/sh\n# Fake pw-dump of the daemon's tests: recorded fixtures, never PipeWire.\necho $$ > '{}'\ncat '{}'\n{then}\n",
+        sway.runtime.join("pw-dump.pid").display(),
+        initial.display()
+    );
+    let path = bin.join("pw-dump");
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
 pub fn start_daemon(sway: &Sway) -> Daemon {
+    start_daemon_with(sway, &DaemonOptions::default())
+}
+
+pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
+    let config = sway.runtime.join("config");
+    if let Some(text) = o.bar_toml {
+        fs::create_dir_all(config.join("alpheus")).unwrap();
+        fs::write(config.join("alpheus/bar.toml"), text).unwrap();
+    }
+    let bin = fake_pw_dump(sway, o.pw_dump);
+    let path = env::join_paths(std::iter::once(bin).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let no_bus = format!("unix:path={}", sway.runtime.join("no-system-bus").display());
     let mut child = Command::new(env!("CARGO_BIN_EXE_alpheus-demon"))
         .env_clear()
-        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("PATH", path)
         .env("HOME", &sway.runtime)
         .env("XDG_RUNTIME_DIR", &sway.runtime)
-        .env("XDG_CONFIG_HOME", sway.runtime.join("config"))
+        .env("XDG_CONFIG_HOME", &config)
         .env("WAYLAND_DISPLAY", &sway.wayland)
         .env("HYPRLAND_INSTANCE_SIGNATURE", SIGNATURE)
+        // Never the machine's system bus: a private one, or none at all.
+        .env("DBUS_SYSTEM_BUS_ADDRESS", o.system_bus.map(String::from).unwrap_or(no_bus))
         .env("ALPHEUS_POLICES", env::var_os("ALPHEUS_POLICES").unwrap_or_default())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -214,6 +291,35 @@ pub fn start_daemon(sway: &Sway) -> Daemon {
         }
     });
     Daemon { child, log }
+}
+
+/// Is `pid` alive? A zombie (waiting to be reaped) counts as dead.
+pub fn process_alive(pid: i32) -> bool {
+    match fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => false,
+        Ok(st) => st.rsplit_once(')').and_then(|(_, r)| r.trim_start().chars().next()) != Some('Z'),
+    }
+}
+
+/// Waits for a file holding a PID (the fake pw-dump writes its own).
+pub fn wait_for_pid_file(path: &Path, timeout: Duration) -> i32 {
+    let t = Instant::now();
+    loop {
+        if let Some(p) = fs::read_to_string(path).ok().and_then(|s| s.trim().parse().ok()) {
+            return p;
+        }
+        assert!(t.elapsed() < timeout, "{} never written", path.display());
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Voluntary and involuntary context switches in a /proc status file.
+fn switches(status: &str) -> u64 {
+    status
+        .lines()
+        .filter(|l| l.starts_with("voluntary_ctxt_switches:") || l.starts_with("nonvoluntary_ctxt_switches:"))
+        .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+        .sum()
 }
 
 impl Daemon {
@@ -250,16 +356,28 @@ impl Daemon {
 
     /// Cumulative context switches of all the daemon's threads.
     pub fn wakeups(&self) -> u64 {
-        let mut n = 0;
+        fs::read_dir(format!("/proc/{}/task", self.pid()))
+            .unwrap()
+            .flatten()
+            .map(|t| switches(&fs::read_to_string(t.path().join("status")).unwrap_or_default()))
+            .sum()
+    }
+
+    /// Context switches of the event loop's thread only (the main thread).
+    pub fn main_thread_wakeups(&self) -> u64 {
+        switches(&fs::read_to_string(format!("/proc/{0}/task/{0}/status", self.pid())).unwrap_or_default())
+    }
+
+    /// Context switches of the daemon's thread named `name` (its comm:
+    /// "sound", "D-Bus"…); None if no thread has that name.
+    pub fn thread_wakeups(&self, name: &str) -> Option<u64> {
+        let mut found = None;
         for t in fs::read_dir(format!("/proc/{}/task", self.pid())).unwrap().flatten() {
-            let s = fs::read_to_string(t.path().join("status")).unwrap_or_default();
-            for l in s.lines() {
-                if l.starts_with("voluntary_ctxt_switches:") || l.starts_with("nonvoluntary_ctxt_switches:") {
-                    n += l.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
-                }
+            if fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim_end() == name) {
+                *found.get_or_insert(0) += switches(&fs::read_to_string(t.path().join("status")).unwrap_or_default());
             }
         }
-        n
+        found
     }
 
     pub fn signal(&self, sig: i32) {

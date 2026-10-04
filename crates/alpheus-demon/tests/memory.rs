@@ -1,16 +1,27 @@
-//! Spec budget: PSS < 30 MB at steady state, no growth, over an accelerated
-//! loop (Hyprland events at 200 per second, titles with endlessly different
-//! glyphs, CJK and emoji, hot plugging); a light startup (only the useful
-//! font faces); no wakeup at rest.
-//! `cargo test -p alpheus-demon --test memory -- --ignored --test-threads=1`
-//! (nix develop). The 24h measurement is part of the real-world trial.
+//! Spec budget with every module of delivery 3: startup PSS < 15 MB (firm),
+//! < 30 MB at steady state and no growth, under a busy compositor and a
+//! busy PipeWire; at rest with the resources module hidden, no wake-up —
+//! none at all for the sound and D-Bus threads; with resources, the loop
+//! wakes at the configured interval, no faster; threads counted, none left
+//! behind when the system bus restarts. The system bus is a private
+//! dbus-daemon (no NetworkManager, UPower nor BlueZ on it: those modules
+//! stay hidden), pw-dump a script printing the fixtures.
+//! `cargo test -p alpheus-demon --test memory -- --ignored --test-threads=1 --nocapture`
+//! (nix develop). The 24 h measurement is part of the real-world trial.
 
 mod common;
 
-use common::{Daemon, FakeHyprland, SIGNATURE, Sway, start_daemon};
+use common::{Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, start_daemon_with};
 use std::time::{Duration, Instant};
 
 const DELAY: Duration = Duration::from_secs(10);
+/// Startup PSS budget: firm (Mae, 2026-10-04, Q13). Never raised: a figure
+/// above it is reported to her with `startup_pss_per_source`'s breakdown.
+const STARTUP_MAX_KB: u64 = 15 * 1024;
+/// Every module but the resources, which tick by design. `interval = 1`: a
+/// timer started although the module is hidden would tick 5 times in 5 s.
+const AT_REST: &str =
+    "modules = [\"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"clock\"]\n[resources]\ninterval = 1\n";
 
 /// 24 different glyphs per title: over 700 titles, the 4,096 md icons of
 /// the Nerd Font all cycle through (the glyph cache must stay bounded).
@@ -36,31 +47,32 @@ fn pump(hypr: &FakeHyprland, duration: Duration, n: &mut u64) {
     }
 }
 
-fn start(name: &str) -> (Sway, FakeHyprland, Daemon) {
-    let sway = Sway::start(name, 3);
+fn start(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, pw_dump: PwDump) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, outputs);
     let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let d = start_daemon(&sway);
-    assert!(d.wait_for("bar placed on HEADLESS-3", DELAY), "{:?}", d.log());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml, system_bus: Some(&bus.address), pw_dump });
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
     (sway, hypr, d)
 }
 
 #[test]
-#[ignore = "headless sway (nix develop)"]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn pss_under_30mb_and_stable() {
-    let (sway, hypr, d) = start("memory");
-    std::thread::sleep(Duration::from_secs(1));
+    let bus = PrivateBus::start("memory");
+    let (sway, hypr, d) = start("memory", 3, &bus, Some("[resources]\ninterval = 1\n"), PwDump::Busy);
+    // 3 s: startup is over (fonts, pw-dump's first array, the D-Bus initial
+    // state, their release_memory): `initial` is a settled figure, which the
+    // return-margin check below needs.
+    std::thread::sleep(Duration::from_secs(3));
     let initial = d.pss_kb();
-    // Fonts: regular + bold ≈ 2 MB; the whole font database used to cost
-    // ≈ 47 MB at the plan's review. 15 MB leaves margin for the rest.
-    assert!(initial < 15 * 1024, "startup: PSS {initial} KB >= 15 MB (too many fonts loaded?)");
+    // Fonts: regular + bold ≈ 2 MB (the whole font database: ≈ 47 MB);
+    // plan 1 measured ≈ 12 MB here; zbus (≈ 2.4 MB) and the sound source must
+    // fit in what is left (task 16, budget decisions).
+    assert!(initial < STARTUP_MAX_KB, "startup: PSS {initial} KB >= 15 MB: run startup_pss_per_source and report to Mae, never raise");
     let mut n = 0;
     pump(&hypr, Duration::from_secs(10), &mut n); // warm-up
-    // A first unplug/replug cycle BEFORE setting `baseline`: without it,
-    // `baseline` would be read at the warm-up's transient peak (right after
-    // 10 s of events at 200/s), a different state from `end` (after a
-    // pause, three outputs calmly plugged in). Comparing a peak to a trough
-    // would have let several MB of leak through under cover of a
-    // "zero growth", since the starting peak was already high.
+    // A first unplug/replug cycle before `baseline` (see plan 1, task 13):
+    // `baseline` and `end` are read in comparable states.
     sway.command("output HEADLESS-2 disable");
     std::thread::sleep(Duration::from_secs(1));
     sway.command("output HEADLESS-2 enable");
@@ -74,56 +86,120 @@ fn pss_under_30mb_and_stable() {
         std::thread::sleep(Duration::from_secs(1));
     }
     let end = d.pss_kb();
-    eprintln!("PSS: {initial} KB at startup, {baseline} KB after warm-up and a first cycle, {end} KB after {n} events and 5 plug cycles");
+    eprintln!(
+        "PSS: {initial} KB at startup, {baseline} KB after warm-up, {end} KB after {n} events, 5 plug cycles, pw-dump deltas every 10 ms"
+    );
     assert!(end < 30 * 1024, "PSS {end} KB >= 30 MB");
     assert!(end <= baseline + 1024, "growth: {baseline} -> {end} KB");
-    // The test starts and ends with all three outputs plugged in (the last
-    // action is a replug): the wl_shm pool must therefore have come back
-    // down to a size close to the start (`target_pool`, task 12, recreates
-    // a smaller pool when an output disappears), not stayed at its peak
-    // from the five plug/unplug cycles. No equality required: fontdb
-    // (rayon, a single thread now), the glyph cache (up to MAX_CACHE before
-    // being cleared) and the process's malloc arena leave a few hundred KB
-    // of legitimate slack that `malloc_trim` doesn't always fully reclaim.
-    // 2 MB (2048 KB) is the margin chosen: roughly double the gap observed
-    // over several runs (≈ 1 MB, `baseline` now being measured in a state
-    // comparable to `end`, see fix report) — generous next to this
-    // allocator slack, while staying under a seventh of the startup ceiling
-    // (15 MB); a real pool that no longer shrinks (mutating `target_pool`,
-    // proven further down) produces a gap of several MB, well past this
-    // margin.
     const RETURN_MARGIN_KB: u64 = 2 * 1024;
-    assert!(
-        end.abs_diff(initial) <= RETURN_MARGIN_KB,
-        "PSS does not come back close to the start after the plug cycles: {initial} KB -> {end} KB (margin {RETURN_MARGIN_KB} KB)"
-    );
+    assert!(end.abs_diff(initial) <= RETURN_MARGIN_KB, "PSS does not come back close to the start: {initial} KB -> {end} KB");
+    assert!(d.log().iter().all(|l| !l.contains("sound source down")), "pw-dump kept up: {:?}", d.log());
+}
+
+/// Startup PSS per source, against the firm 15 MB budget: plan 1's modules
+/// alone, then each new source on its own, then everything. Printed for
+/// the task report (step 6): which source costs what.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn startup_pss_per_source() {
+    let bus = PrivateBus::start("per-source");
+    let cases = [
+        ("plan 1", "\"workspaces\", \"window\", \"clock\""),
+        ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
+        ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
+        ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
+        ("everything", "\"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\""),
+    ];
+    let mut report = Vec::new();
+    for (i, (what, modules)) in cases.iter().enumerate() {
+        let toml = format!("modules = [{modules}]\n");
+        let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, Some(&toml), PwDump::Silent);
+        std::thread::sleep(Duration::from_secs(3)); // as in pss_under_30mb_and_stable
+        report.push((*what, d.pss_kb()));
+    }
+    eprintln!("startup PSS per source (KB): {report:?}");
+    for (what, kb) in &report {
+        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
+    }
 }
 
 #[test]
-#[ignore = "headless sway (nix develop)"]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups() {
-    let (_sway, _hypr, d) = start("rest");
+    let bus = PrivateBus::start("rest");
+    let (_sway, _hypr, d) = start("rest", 3, &bus, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2)); // end of startup
     let before = d.wakeups();
+    let sound_before = d.thread_wakeups("sound").expect("the sound thread runs");
+    let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread runs");
     let threads = d.threads();
     std::thread::sleep(Duration::from_secs(5));
-    let after = d.wakeups();
-    // `wakeups()` sums every thread still alive: a transient thread that
-    // disappears between the two reads (a compositor relaunching after an
-    // outage, e.g.) would make a plain subtraction overflow instead of
-    // giving a slightly undercounted delta.
-    let delta = after.saturating_sub(before);
-    eprintln!("wakeups at rest (5 s): {before} -> {after} ({delta} more); {threads} threads");
-    // Observed over several runs, daemon at rest: 0 to 2 context switches in
-    // 5 s (the guard sleeping, the calloop loop blocking). A clock timer
-    // that ticked at 1 Hz instead of waiting for the next minute (a
-    // plausible regression: `TimeoutAction` miscomputed) would add one
-    // wakeup per second, about 5 in 5 s — the previous threshold (<= 10)
-    // would have let it through. 4 stays generous next to what's observed
-    // (×2 the worst value seen) while staying under half a wakeup per
-    // second, proven to bite further below.
-    assert!(delta <= 4, "{delta} wakeups in 5 s at rest");
-    // Loop, compositor, guard, one rayon thread (RAYON_NUM_THREADS=1) and a
-    // few transient threads: never one thread per core.
-    assert!(threads <= 8, "{threads} threads");
+    let delta = d.wakeups().saturating_sub(before);
+    let sound = d.thread_wakeups("sound").unwrap().saturating_sub(sound_before);
+    let dbus = d.thread_wakeups("D-Bus").unwrap().saturating_sub(dbus_before);
+    eprintln!("wake-ups at rest (5 s): {delta} in all, sound thread {sound}, D-Bus thread {dbus}; {threads} threads");
+    // The sound and D-Bus sources are up and block without a timeout: a
+    // source down would retry (1 s, 2 s…) and wake the daemon.
+    assert!(d.log().iter().all(|l| !l.contains("source down")), "every source up: {:?}", d.log());
+    // Nothing changes on the bus nor in PipeWire: a single wake-up of one of
+    // these threads is a poll (a loop with a timeout somewhere).
+    assert_eq!((sound, dbus), (0, 0), "a source thread wakes at rest");
+    // Plan 1 observed 0 to 2; a 1 Hz tick would add ≈ 5.
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest");
+    // Loop, guard, compositor, one rayon, sound, D-Bus, zbus's executor and
+    // reactor (2 measured, 3 allowed), plus transient command reapers.
+    assert!(threads <= 12, "{threads} threads");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_tick_at_the_configured_interval() {
+    let bus = PrivateBus::start("cadence");
+    let toml = "modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n";
+    // One output: one redraw round trip per tick, not three.
+    let (_sway, _hypr, d) = start("cadence", 1, &bus, Some(toml), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(2));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop wake-ups in 5 s at interval = 1: {delta}");
+    // 5 ticks: each wakes the loop once for its timer, and a reading that
+    // changes the bar adds its redraw's round trip (buffer release).
+    // ≥ 4: it really ticks every second; ≤ 12: never faster (half the
+    // period gives ≈ 20). A normal run measured near 12: report it, don't
+    // widen the range.
+    assert!((4..=12).contains(&delta), "{delta} loop wake-ups in 5 s at interval = 1");
+}
+
+/// The D-Bus source reconnects after the system bus restarts (dbus.service
+/// restarted, a crash): each reconnection must leave no thread behind
+/// (zbus's per-connection executor ends with its connection).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn no_thread_leak_across_system_bus_restarts() {
+    let mut bus = PrivateBus::start("restarts");
+    let (_sway, _hypr, d) = start("restarts", 1, &bus, Some(AT_REST), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(2));
+    let before = d.threads();
+    for round in 1..=2 {
+        bus.restart();
+        // Down, then reconnected at the first retry (1 s, then 2 s). The
+        // "down" log line itself is rate-limited (dbus-fixes-report, M2):
+        // only the first outage ever, or one after a SUCCEEDED session,
+        // is logged (`first || succeeded` in `run_supervised`); a session
+        // counts as succeeded only once it has run for `STABLE_DURATION`
+        // (10 s) — this private bus has no NetworkManager/UPower/BlueZ to
+        // generate a second publication, so the reconnected session must
+        // simply stay up that long before the next restart, or its outage
+        // would be silently folded into the previous "down" count instead
+        // of logging a fresh line (the brief's "5 s is plenty" undershoots
+        // STABLE_DURATION; adapted here to the real rate-limiting rule).
+        std::thread::sleep(Duration::from_secs(11));
+        let downs = d.log().iter().filter(|l| l.contains("D-Bus source down")).count();
+        assert_eq!(downs, round, "one outage per restart, then reconnected: {:?}", d.log());
+    }
+    let after = d.threads();
+    eprintln!("threads: {before} before, {after} after two system bus restarts");
+    assert_eq!(after, before, "a reconnection leaves no thread behind");
+    assert!(after <= 12, "{after} threads");
 }

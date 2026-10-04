@@ -1,14 +1,17 @@
 //! Assembling the daemon: signals, lock, settings, fonts, Wayland, the event
-//! loop (calloop), sources. Covered by tests/headless_session.rs (headless
-//! sway) and the real-world trial; its pure decisions have their own tests.
+//! loop (calloop), the sources the modules need (compositor, sound, D-Bus,
+//! resources timer). Covered by tests/headless_session.rs (headless sway)
+//! and the real-world trial; its pure decisions have their own tests.
 
 use crate::clock;
 use crate::clock::LocalTime;
-use crate::config::BarConfig;
+use crate::config::{BarConfig, ModuleId, ResourcesConfig};
 use crate::lock;
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
 use crate::sources;
+use crate::sources::dbus::Domain;
+use crate::sources::resources;
 use crate::state::{Bar, Msg};
 use crate::wayland::App;
 use alpheus_commun::exec::{Executor, SystemExecutor};
@@ -88,6 +91,30 @@ pub fn after_dispatch(target: &mut impl DeferredRedraw) {
 
 use crate::log::write as log;
 
+/// The sources this bar.toml needs: a module that isn't shown costs nothing
+/// (no thread, no child process, no timer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Wanted {
+    pub sound: bool,
+    /// The D-Bus domains to read and follow; empty: no D-Bus thread.
+    pub dbus: Vec<Domain>,
+    pub resources: bool,
+}
+
+pub fn wanted(modules: &[ModuleId]) -> Wanted {
+    let has = |m: ModuleId| modules.contains(&m);
+    let dbus = [(ModuleId::Network, Domain::Network), (ModuleId::Bluetooth, Domain::Bluetooth), (ModuleId::Battery, Domain::Battery)]
+        .into_iter()
+        .filter(|(m, _)| has(*m))
+        .map(|(_, d)| d)
+        .collect();
+    Wanted { sound: has(ModuleId::Volume), dbus, resources: has(ModuleId::Resources) }
+}
+
+pub fn resources_period(c: &ResourcesConfig) -> Duration {
+    Duration::from_secs(c.interval)
+}
+
 /// The Wayland connection closed gently (EPIPE on write, ECONNRESET on read
 /// — the socket closing), rather than with a real protocol error. That is
 /// what BOTH a clean end of session (log out, compositor restart — the
@@ -126,6 +153,16 @@ fn exit_code(dispatch_failure: bool) -> i32 {
 }
 
 pub fn run() -> i32 {
+    // Caps glibc's malloc arenas before any thread starts (startup budget,
+    // 15 MB, step 6): otherwise the sound, D-Bus and zbus threads would each
+    // get their own arena, whose freed fragments `release_memory`
+    // (`malloc_trim`) can't always hand back to the system.
+    // SAFETY: mallopt(3) only changes the allocator's configuration; no
+    // other thread exists yet (sources and the guard start further below).
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
     // Block signals BEFORE any thread: all of them inherit the mask; only
     // the guard thread receives them (sigwait).
     let signals = match shutdown::block_signals() {
@@ -178,9 +215,11 @@ pub fn run() -> i32 {
     };
     let qh = file.handle();
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
+    let want = wanted(&config.modules);
+    let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
-    let mut state = match App::new(&globals, &qh, Bar::new(config), palette, fonts, exec) {
+    let mut state = match App::new(&globals, &qh, Bar::new(config), palette, fonts, exec.clone()) {
         Ok(e) => e,
         Err(m) => {
             log(&m);
@@ -220,8 +259,30 @@ pub fn run() -> i32 {
         log("event loop: source refused");
         return 1;
     }
+    // Resources: a reading of /proc every `interval` seconds, on the loop
+    // (a few µs), only if the module is shown.
+    if want.resources {
+        let mut reader = resources::Reader::new(Path::new("/"), &resources_config.sensor);
+        let period = resources_period(&resources_config);
+        let r = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
+            on_message(state, Msg::Resources(reader.sample()), || LocalTime::now().0);
+            TimeoutAction::ToDuration(period)
+        });
+        if r.is_err() {
+            log("event loop: resources timer refused");
+            return 1;
+        }
+    }
     let tx_compositor = tx.clone();
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
+    if want.sound {
+        let tx = tx.clone();
+        sources::sound::start(exec.clone(), move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+    }
+    if !want.dbus.is_empty() {
+        let tx = tx.clone();
+        sources::dbus::start(want.dbus.clone(), move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()));
+    }
     // Guard thread: waits for a signal without running, asks the loop to
     // stop, forces an exit if it doesn't finish within the grace period.
     let guard = std::thread::Builder::new().name("guard".into()).spawn(move || {
@@ -258,9 +319,53 @@ pub fn run() -> i32 {
 mod tests {
     use super::*;
     use crate::compositor::example;
+    use crate::config::{ModuleId, ResourcesConfig};
+    use crate::sources::dbus::{Domain, SystemState, messages};
+    use crate::system::*;
 
     const BEFORE: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
     const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
+
+    #[test]
+    fn only_the_sources_the_modules_need() {
+        let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
+        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true });
+        assert_eq!(
+            wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
+            Wanted { sound: false, dbus: vec![], resources: false }
+        );
+        assert_eq!(wanted(&[ModuleId::Battery]), Wanted { sound: false, dbus: vec![Domain::Battery], resources: false });
+        assert_eq!(
+            wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
+            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false }
+        );
+        assert_eq!(
+            wanted(&[ModuleId::Battery, ModuleId::Network]),
+            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false },
+            "reading order, whatever the bar's order"
+        );
+        assert_eq!(wanted(&[ModuleId::Volume, ModuleId::Resources]), Wanted { sound: true, dbus: vec![], resources: true });
+    }
+
+    #[test]
+    fn the_resources_period_comes_from_bar_toml() {
+        assert_eq!(resources_period(&ResourcesConfig::default()), Duration::from_secs(2));
+        assert_eq!(resources_period(&ResourcesConfig { interval: 5, ..ResourcesConfig::default() }), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn system_messages_redraw_once_and_leave_the_clock_alone() {
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
+        let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
+        for m in messages(Some(s)) {
+            on_message(&mut c, m, || AFTER);
+        }
+        on_message(&mut c, Msg::Sound(Some(SoundState { sink: None })), || AFTER);
+        on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None }), || AFTER);
+        after_dispatch(&mut c);
+        assert_eq!(c.redraws, 1, "a burst of system messages: one redraw");
+        assert_eq!(c.bar.clock, None, "only compositor events reset the clock");
+    }
 
     #[test]
     fn a_compositor_event_resets_the_clock() {
