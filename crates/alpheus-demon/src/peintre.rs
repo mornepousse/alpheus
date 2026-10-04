@@ -63,7 +63,9 @@ fn attrs(famille: &str, gras: bool) -> Attrs<'_> {
 fn remplir(px: &mut [u8], largeur: u32, x0: u32, x1: u32, hauteur: u32, Rgb(r, g, b): Rgb) {
     for y in 0..hauteur {
         for x in x0..x1.min(largeur) {
-            let o = ((y * largeur + x) * 4) as usize;
+            // usize d'emblée : `(y * largeur + x) * 4` peut dépasser u32
+            // sur un grand tampon avant la conversion.
+            let o = (y as usize * largeur as usize + x as usize) * 4;
             px[o..o + 4].copy_from_slice(&[b, g, r, 0xff]);
         }
     }
@@ -78,7 +80,8 @@ fn melanger(px: &mut [u8], largeur: u32, hauteur: u32, x: i32, y: i32, c: Color)
     if a == 0 {
         return;
     }
-    let o = ((y as u32 * largeur + x as u32) * 4) as usize;
+    // x et y sont positifs et dans les bornes ici : usize d'emblée.
+    let o = (y as usize * largeur as usize + x as usize) * 4;
     let src = [c.b(), c.g(), c.r()];
     for k in 0..3 {
         px[o + k] = ((src[k] as u32 * a + px[o + k] as u32 * (255 - a)) / 255) as u8;
@@ -90,9 +93,42 @@ fn a_la_famille(f: &fontdb::FaceInfo, famille: &str) -> bool {
     f.families.iter().any(|(n, _)| n == famille)
 }
 
-/// Fichiers à charger pour une famille : la régulière et la grasse (style
-/// normal, poids le plus proche de 400 et de 700), sans doublon.
-fn fichiers_utiles(inventaire: &fontdb::Database, famille: &str) -> Vec<fontdb::Source> {
+/// Vrai si `famille` n'a aucune face droite (style normal, posture
+/// verticale) dans la base. Une famille seulement en italique ou oblique
+/// est alors traitée comme absente (remplaçante et avertissement, voir
+/// `depuis`) plutôt que de ne charger silencieusement aucune face.
+fn sans_face_droite(db: &fontdb::Database, famille: &str) -> bool {
+    !db.faces().any(|f| a_la_famille(f, famille) && f.style == fontdb::Style::Normal)
+}
+
+/// Clé de tri déterministe d'une face, pour choisir une remplaçante : par
+/// nom de famille puis chemin puis index, jamais par l'ordre de parcours
+/// de `fontdb` (lui-même `read_dir`, qui change d'une machine à l'autre).
+fn cle_tri(f: &fontdb::FaceInfo) -> (String, String, u32) {
+    let famille = f.families.first().map(|(n, _)| n.clone()).unwrap_or_default();
+    let chemin = match &f.source {
+        fontdb::Source::File(p) => p.display().to_string(),
+        _ => String::new(),
+    };
+    (famille, chemin, f.index)
+}
+
+/// Remplaçante à chasse fixe : parmi les faces droites (style normal), la
+/// première par `cle_tri`, pour un choix stable d'une machine à l'autre.
+fn repere_remplacante<'a>(faces: impl Iterator<Item = &'a fontdb::FaceInfo>) -> Option<String> {
+    faces
+        .filter(|f| f.monospaced && f.style == fontdb::Style::Normal)
+        .min_by_key(|f| cle_tri(f))
+        .and_then(|f| f.families.first().map(|(n, _)| n.clone()))
+}
+
+/// Faces à charger pour une famille : la régulière et la grasse (style
+/// normal, poids le plus proche de 400 et de 700), sans doublon. Rendues
+/// en `FaceInfo` clonées (id remis à `ID::dummy()`, voir `depuis`) plutôt
+/// qu'en `Source` : une police empaquetée en collection (.ttc, fréquent
+/// pour les polices CJK du système) ne doit apporter que CETTE face à la
+/// base finale, jamais toutes les autres faces de son fichier.
+fn faces_utiles(inventaire: &fontdb::Database, famille: &str) -> Vec<fontdb::FaceInfo> {
     let faces: Vec<&fontdb::FaceInfo> =
         inventaire.faces().filter(|f| a_la_famille(f, famille) && f.style == fontdb::Style::Normal).collect();
     let proche = |cible: i32| faces.iter().min_by_key(|f| (f.weight.0 as i32 - cible).abs()).map(|f| f.id);
@@ -102,7 +138,14 @@ fn fichiers_utiles(inventaire: &fontdb::Database, famille: &str) -> Vec<fontdb::
             ids.push(id);
         }
     }
-    ids.into_iter().filter_map(|id| inventaire.face(id).map(|f| f.source.clone())).collect()
+    ids.into_iter()
+        .filter_map(|id| inventaire.face(id))
+        .map(|f| {
+            let mut info = f.clone();
+            info.id = fontdb::ID::dummy();
+            info
+        })
+        .collect()
 }
 
 /// Rend au système la mémoire de l'inventaire (glibc garde sinon les pages
@@ -132,16 +175,14 @@ impl Polices {
             inventaire.load_fonts_dir(d);
         }
         let voulues = std::iter::once(&police.famille).chain(&police.repli);
-        let manque = |db: &fontdb::Database, f: &str| !db.faces().any(|x| a_la_famille(x, f));
-        if voulues.clone().any(|f| manque(&inventaire, f)) {
+        if voulues.clone().any(|f| sans_face_droite(&inventaire, f)) {
             inventaire.load_system_fonts();
         }
         let mut avertissements = Vec::new();
-        let famille = if manque(&inventaire, &police.famille) {
-            let remplacante = inventaire
-                .faces()
-                .find(|x| x.monospaced)
-                .and_then(|x| x.families.first().map(|(n, _)| n.clone()))
+        let famille = if sans_face_droite(&inventaire, &police.famille) {
+            // Absente, ou présente seulement en italique/oblique (aucune
+            // face droite) : traitée pareil, une remplaçante et un avertissement.
+            let remplacante = repere_remplacante(inventaire.faces())
                 .ok_or_else(|| format!("aucune police à chasse fixe (police « {} » introuvable)", police.famille))?;
             avertissements.push(format!("police « {} » introuvable, remplacée par « {remplacante} »", police.famille));
             remplacante
@@ -150,16 +191,16 @@ impl Polices {
         };
         // 2. Base finale : les seules faces utiles.
         let mut db = fontdb::Database::new();
-        for s in fichiers_utiles(&inventaire, &famille) {
-            db.load_font_source(s);
+        for f in faces_utiles(&inventaire, &famille) {
+            db.push_face_info(f);
         }
         for r in &police.repli {
-            let fichiers = fichiers_utiles(&inventaire, r);
-            if fichiers.is_empty() {
+            let faces = faces_utiles(&inventaire, r);
+            if faces.is_empty() {
                 avertissements.push(format!("police de repli « {r} » introuvable"));
             }
-            for s in fichiers {
-                db.load_font_source(s);
+            for f in faces {
+                db.push_face_info(f);
             }
         }
         drop(inventaire);
@@ -359,5 +400,157 @@ mod tests {
         g.ecrire(0, 10, "abcdefghij", Style::NORMAL);
         let mut px = vec![0u8; 16];
         p.peindre(&g, &Palette::default(), &mut px, 100, 22, 1);
+    }
+
+    /// Dossier de test, jeté après (nom unique par pid, comme `config.rs`).
+    fn dossier_de_test(nom: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("alpheus-{}-peintre-{nom}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn racine_polices() -> PathBuf {
+        std::env::var_os("ALPHEUS_POLICES")
+            .map(PathBuf::from)
+            .expect("ALPHEUS_POLICES requis (nix develop) pour fabriquer les fixtures de ce test")
+    }
+
+    /// Décale de `decalage` tous les offsets de table d'un sfnt autonome
+    /// (TrueType/OpenType, pas une collection) : son en-tête (12 octets),
+    /// puis `numTables` enregistrements de 16 octets (tag, somme de
+    /// contrôle, offset, longueur), où seul le champ offset (3ᵉ, aux
+    /// octets 8..12 de l'enregistrement) change. Nécessaire pour empaqueter
+    /// une police autonome dans une collection : ses offsets de table sont
+    /// absolus (depuis le début du FICHIER), donc faux une fois la police
+    /// déplacée à une autre position dans le fichier combiné.
+    fn decaler_tables_sfnt(sfnt: &mut [u8], decalage: u32) {
+        let num_tables = u16::from_be_bytes([sfnt[4], sfnt[5]]) as usize;
+        for i in 0..num_tables {
+            let o = 12 + i * 16 + 8;
+            let ancien = u32::from_be_bytes([sfnt[o], sfnt[o + 1], sfnt[o + 2], sfnt[o + 3]]);
+            sfnt[o..o + 4].copy_from_slice(&(ancien + decalage).to_be_bytes());
+        }
+    }
+
+    /// Assemble un fichier `.ttc` (une collection) à partir de polices TTF
+    /// entières : magie `ttcf`, version (ignorée par ttf-parser), nombre de
+    /// faces, leurs offsets, puis les polices collées bout à bout (offsets
+    /// de table décalés à leur position dans le fichier combiné, sinon la
+    /// collection entière est malformée). Sert à vérifier qu'une collection
+    /// n'apporte que la face choisie à la base finale, jamais toutes les
+    /// autres faces du même fichier (le piège visé par ce correctif).
+    fn fabriquer_ttc(dossier: &Path, faces: &[&str]) -> PathBuf {
+        let racine = racine_polices();
+        let mut contenus: Vec<Vec<u8>> =
+            faces.iter().map(|f| std::fs::read(racine.join(f)).unwrap_or_else(|e| panic!("{f} : {e}"))).collect();
+        let entete = 12 + 4 * contenus.len() as u32;
+        let mut decalages = Vec::new();
+        let mut pos = entete;
+        for c in &contenus {
+            decalages.push(pos);
+            pos += c.len() as u32;
+        }
+        for (c, &decalage) in contenus.iter_mut().zip(&decalages) {
+            decaler_tables_sfnt(c, decalage);
+        }
+        let mut ttc = Vec::new();
+        ttc.extend_from_slice(b"ttcf");
+        ttc.extend_from_slice(&[0x00, 0x01, 0x00, 0x00]); // version 1.0, lue mais ignorée
+        ttc.extend_from_slice(&(contenus.len() as u32).to_be_bytes());
+        for d in &decalages {
+            ttc.extend_from_slice(&d.to_be_bytes());
+        }
+        for c in &contenus {
+            ttc.extend_from_slice(c);
+        }
+        let chemin = dossier.join("fabriquee.ttc");
+        std::fs::write(&chemin, &ttc).unwrap();
+        chemin
+    }
+
+    #[test]
+    fn collection_ttc_une_seule_face_par_poids_choisi() {
+        let dossier = dossier_de_test("ttc");
+        fabriquer_ttc(&dossier, &["JetBrainsMonoNerdFontMono-Regular.ttf", "JetBrainsMonoNerdFontMono-Bold.ttf"]);
+        let (p, w) = Polices::depuis(Some(&dossier), &PoliceConfig::default(), HAUTEUR_DEFAUT)
+            .expect("la collection fabriquée contient une police à chasse fixe");
+        assert_eq!(w, None, "{w:?}");
+        // Régulière + grasse, une fois chacune : pas 4 (la collection
+        // chargée deux fois par `load_font_source`, une par poids choisi).
+        assert_eq!(p.faces_chargees(), 2, "faces chargées depuis la collection : {}", p.faces_chargees());
+    }
+
+    /// Face fictive (pas de fichier réel : `push_face_info` ne lit pas la
+    /// source), pour tester la logique de sélection sans dépendre des
+    /// polices présentes sur la machine qui lance le test.
+    fn face_fictive(famille: &str, chemin: &str, style: fontdb::Style) -> fontdb::FaceInfo {
+        fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: fontdb::Source::File(chemin.into()),
+            index: 0,
+            families: vec![(famille.to_string(), fontdb::Language::English_UnitedStates)],
+            post_script_name: String::new(),
+            style,
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            monospaced: true,
+        }
+    }
+
+    #[test]
+    fn sans_face_droite_traite_une_famille_seulement_italique_comme_absente() {
+        let mut db = fontdb::Database::new();
+        db.push_face_info(face_fictive("Famille Fictive", "/fictif-italique.ttf", fontdb::Style::Italic));
+        // Présente dans la base, mais seulement en italique : absente au
+        // sens de `depuis` (remplaçante et avertissement attendus).
+        assert!(sans_face_droite(&db, "Famille Fictive"), "une famille seulement italique doit compter comme absente");
+        db.push_face_info(face_fictive("Famille Fictive", "/fictif-droit.ttf", fontdb::Style::Normal));
+        // Une face droite suffit maintenant à la considérer présente.
+        assert!(!sans_face_droite(&db, "Famille Fictive"));
+    }
+
+    #[test]
+    fn remplacante_deterministe_par_nom_puis_chemin() {
+        // Logique de tri pure (sans fichiers réels : `push_face_info` ne
+        // lit pas la source) : l'ordre d'insertion ne doit pas décider,
+        // seulement le nom de famille puis le chemin.
+        let mut db = fontdb::Database::new();
+        let face = |famille: &str, chemin: &str| fontdb::FaceInfo {
+            id: fontdb::ID::dummy(),
+            source: fontdb::Source::File(chemin.into()),
+            index: 0,
+            families: vec![(famille.to_string(), fontdb::Language::English_UnitedStates)],
+            post_script_name: String::new(),
+            style: fontdb::Style::Normal,
+            weight: fontdb::Weight::NORMAL,
+            stretch: fontdb::Stretch::Normal,
+            monospaced: true,
+        };
+        // Insérée en premier, mais pas la première alphabétiquement.
+        db.push_face_info(face("Zorro Mono", "/z/a.ttf"));
+        db.push_face_info(face("Alpha Mono", "/b/z.ttf"));
+        db.push_face_info(face("Alpha Mono", "/a/a.ttf"));
+        assert_eq!(repere_remplacante(db.faces()), Some("Alpha Mono".into()));
+    }
+
+    #[test]
+    fn large_en_derniere_colonne_et_grille_plus_large_que_le_tampon() {
+        let mut p = polices();
+        let av = p.avance(1);
+        // Tampon étroit (3 cases), dimensionné pour lui-même.
+        let (w, h) = ((av * 3.0).ceil() as u32, HAUTEUR_DEFAUT);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        // Grille bien plus large (10 cases) que le tampon, avec un
+        // caractère large (CJK, 2 colonnes) posé tout au bord droit, en
+        // style inversé (fond d'accent) : exerce aussi le fond de case
+        // par cellule, pas seulement le dessin du glyphe.
+        let mut g = Grille::vide(10);
+        g.ecrire(8, 10, "日", Style::INVERSE);
+        p.peindre(&g, &Palette::default(), &mut px, w, h, 1); // ne doit pas paniquer
+        // Chaque pixel du tampon reste bien formé (alpha opaque) : aucune
+        // écriture n'a débordé de son emplacement calculé.
+        for o in (0..px.len()).step_by(4) {
+            assert_eq!(px[o + 3], 0xff, "pixel non peint à l'octet {o}");
+        }
     }
 }
