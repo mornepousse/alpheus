@@ -153,6 +153,12 @@ impl Bus for FakeBus {
     fn managed_objects(&mut self, destination: &str) -> io::Result<Objects> {
         self.calls.push(format!("GetManagedObjects {destination}"));
         self.reach(destination)?;
+        // "/": the only path `managed_objects` ever reads (GetManagedObjects
+        // is always called at the root) — a wedged BlueZ, every read timing
+        // out.
+        if self.failing.contains("/") {
+            return Err(io::Error::other("timeout: /"));
+        }
         Ok(self.bluez.clone())
     }
 

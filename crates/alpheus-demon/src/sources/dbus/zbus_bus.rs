@@ -5,7 +5,7 @@
 //! 5.19's source), so a second one would cost a second thread.
 
 use super::props::{Objects, Prop, Props};
-use super::{Bus, Domain, Signal, UPOWER, upower};
+use super::{Bus, Domain, Signal, UPOWER, bluez, upower};
 use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
@@ -74,7 +74,12 @@ pub const MATCH_RULES: [(Domain, &str); 11] = [
     ),
     (
         Domain::Battery,
-        "type='signal',sender='org.freedesktop.UPower',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+        // Narrowed to the device objects (M5, review): UPower's own root
+        // object never sends PropertiesChanged the bar would read. This
+        // still matches BAT0 and the line power supplies — a path_namespace
+        // can't exclude a few device names — so `Signal::domain` drops
+        // those itself (`upower_device_ignored`).
+        "type='signal',sender='org.freedesktop.UPower',path_namespace='/org/freedesktop/UPower/devices',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
     ),
     (Domain::Battery, "type='signal',sender='org.freedesktop.UPower',interface='org.freedesktop.UPower'"),
     (
@@ -233,9 +238,17 @@ impl Bus for ZbusBus {
     fn managed_objects(&mut self, destination: &str) -> io::Result<Objects> {
         let m = self.call(destination, "/", Method::GetManagedObjects, &())?;
         let map: HashMap<OwnedObjectPath, HashMap<String, HashMap<String, OwnedValue>>> = m.body().deserialize().map_err(error)?;
+        // Only the interfaces the readers (bluez.rs) ever look at: skip
+        // Introspectable, Media1, LEAdvertisingManager1… (cheap, review).
+        const READ: [&str; 3] = [bluez::ADAPTER, bluez::DEVICE, bluez::BATTERY];
         Ok(map
             .iter()
-            .map(|(p, interfaces)| (p.as_str().to_string(), interfaces.iter().map(|(i, v)| (i.clone(), props(v))).collect()))
+            .map(|(p, interfaces)| {
+                (
+                    p.as_str().to_string(),
+                    interfaces.iter().filter(|(i, _)| READ.contains(&i.as_str())).map(|(i, v)| (i.clone(), props(v))).collect(),
+                )
+            })
             .collect())
     }
 
@@ -261,7 +274,11 @@ impl Bus for ZbusBus {
             // noise; a body that doesn't parse gives nothing (the signal counts).
             let (arg0, names) = match member.as_str() {
                 "NameOwnerChanged" => (body.deserialize::<(String, String, String)>().ok().map(|(n, _, _)| n), Vec::new()),
-                "PropertiesChanged" => match body.deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>() {
+                // Only the changed properties' names matter to `Signal::domain`
+                // (never their values): borrowed `Value`s, never turned into
+                // `OwnedValue` (an extra clone each) just to be discarded
+                // (cheap, review).
+                "PropertiesChanged" => match body.deserialize::<(String, HashMap<String, Value<'_>>, Vec<String>)>() {
                     Ok((interface, changed, invalidated)) => (Some(interface), changed.into_keys().chain(invalidated).collect()),
                     Err(_) => (None, Vec::new()),
                 },
