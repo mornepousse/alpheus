@@ -70,7 +70,7 @@ pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
     };
     let gauge: String = GAUGE.iter().collect();
     let pieces = if v.muted {
-        vec![piece(format!("{VOLUME_OFF} "), Style::MUTED), piece(gauge, Style::MUTED), piece(format!(" {}%", v.percent), Style::MUTED)]
+        vec![piece(format!("{VOLUME_OFF} "), Style::MUTED), piece(gauge, Style::MUTED), piece(format!(" {:>3}%", v.percent), Style::MUTED)]
     } else {
         let icon = if v.percent < 34 {
             VOLUME_LOW
@@ -84,7 +84,7 @@ pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
             piece(format!("{icon} "), Style::NORMAL),
             piece(GAUGE[..lit].iter().collect::<String>(), Style::ACCENT),
             piece(GAUGE[lit..].iter().collect::<String>(), Style::MUTED),
-            piece(format!(" {}%", v.percent), Style::NORMAL),
+            piece(format!(" {:>3}%", v.percent), Style::NORMAL),
         ]
     };
     Some(module_segment(ModuleId::Volume, pieces))
@@ -297,15 +297,22 @@ mod tests {
 
     #[test]
     fn volume_icon_gauge_and_percent() {
-        assert_eq!(draw(&volume(&sound(84, false)).unwrap()), ("\u{f057e} ▁▃▅▆▇▇ 84%".into(), "..aaaaaa....".into()));
-        assert_eq!(draw(&volume(&sound(50, false)).unwrap()), ("\u{f0580} ▁▃▅▆▇▇ 50%".into(), "..aaammm....".into()));
-        assert_eq!(draw(&volume(&sound(0, false)).unwrap()), ("\u{f057f} ▁▃▅▆▇▇ 0%".into(), "..mmmmmm...".into()));
+        // Fixed width (A-m5, review): the number is always 3 wide, padded
+        // with spaces, so the modules to its right never shift with the
+        // volume level (5 %, 84 %, 100 % used to draw 4, 4, 5 cells wide).
+        assert_eq!(draw(&volume(&sound(84, false)).unwrap()), ("\u{f057e} ▁▃▅▆▇▇  84%".into(), "..aaaaaa.....".into()));
+        assert_eq!(draw(&volume(&sound(50, false)).unwrap()), ("\u{f0580} ▁▃▅▆▇▇  50%".into(), "..aaammm.....".into()));
+        assert_eq!(draw(&volume(&sound(0, false)).unwrap()), ("\u{f057f} ▁▃▅▆▇▇   0%".into(), "..mmmmmm.....".into()));
         assert_eq!(
             draw(&volume(&sound(84, true)).unwrap()),
-            ("\u{f0581} ▁▃▅▆▇▇ 84%".into(), "mmmmmmmmmmmm".into()),
+            ("\u{f0581} ▁▃▅▆▇▇  84%".into(), "mmmmmmmmmmmmm".into()),
             "muted: crossed out, dimmed"
         );
-        assert_eq!(draw(&volume(&sound(120, false)).unwrap()).0, "\u{f057e} ▁▃▅▆▇▇ 120%", "above 100 %: full gauge, real value");
+        assert_eq!(
+            draw(&volume(&sound(120, false)).unwrap()).0,
+            "\u{f057e} ▁▃▅▆▇▇ 120%",
+            "above 100 %: full gauge, real value, same width as a 2-digit one"
+        );
         assert_eq!([0, 1, 16, 17, 50, 83, 84, 100, 255].map(gauge_cells), [0, 1, 1, 2, 3, 5, 6, 6, 6]);
     }
 
@@ -417,9 +424,9 @@ mod tests {
     fn each_module_segment_is_one_click_zone() {
         let g = three_modules_bar().grid("HDMI-A-1", 100);
         let t = g.text();
-        assert!(t.contains(" │ \u{f057e} ▁▃▅▆▇▇ 84% │ \u{f0200} \u{f0582} 2 │ \u{f00b1} CasqueBT 72% │ Sun 4 Oct 14:05 "), "{t}");
+        assert!(t.contains(" │ \u{f057e} ▁▃▅▆▇▇  84% │ \u{f0200} \u{f0582} 2 │ \u{f00b1} CasqueBT 72% │ Sun 4 Oct 14:05 "), "{t}");
         for (icon, module, width) in
-            [(VOLUME_HIGH, ModuleId::Volume, 12u16), (ETHERNET, ModuleId::Network, 5), (BLUETOOTH_CONNECTED, ModuleId::Bluetooth, 14)]
+            [(VOLUME_HIGH, ModuleId::Volume, 13u16), (ETHERNET, ModuleId::Network, 5), (BLUETOOTH_CONNECTED, ModuleId::Bluetooth, 14)]
         {
             let start = g.cells().iter().position(|c| c.ch == icon).unwrap() as u16;
             assert_eq!(g.target_at(start), Some(&Target::Module(module)), "first cell of {module:?}");

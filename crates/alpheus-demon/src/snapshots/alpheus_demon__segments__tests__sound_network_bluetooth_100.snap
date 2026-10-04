@@ -2,5 +2,5 @@
 source: crates/alpheus-demon/src/segments.rs
 expression: snapshot(&g)
 ---
-  2·  4!····+  5  │ 󰈹 Web page — Mozilla… │ 󰕾 ▁▃▅▆▇▇ 84% │ 󰈀 󰖂 2 │ 󰂱 CasqueBT 72% │ Sun 4 Oct 14:05 
-.AAAAeeeeeeeeemmmmmm.....................mmm..aaaaaa....mmm.aaaammmaa........mmmmmmmmmmmmmmmmmGGGGG.
+  2·  4!····+  5  │ 󰈹 Web page — Mozill… │ 󰕾 ▁▃▅▆▇▇  84% │ 󰈀 󰖂 2 │ 󰂱 CasqueBT 72% │ Sun 4 Oct 14:05 
+.AAAAeeeeeeeeemmmmmm....................mmm..aaaaaa.....mmm.aaaammmaa........mmmmmmmmmmmmmmmmmGGGGG.
