@@ -315,6 +315,11 @@ pub fn run() -> i32 {
             break;
         }
         after_dispatch(&mut state);
+        // After the whole batch (so any `output_destroyed` paired with a
+        // `closed` of this same batch has already run): places the bar
+        // back on outputs `closed` marked for restoration and that are
+        // still known now (see `App::restore_pending`'s doc).
+        state.restore_pending(&qh);
     }
     drop(state); // surfaces destroyed
     let _ = conn.flush();

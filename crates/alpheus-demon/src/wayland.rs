@@ -111,6 +111,26 @@ fn should_restore_once<T: PartialEq>(output: &T, pending: &[T], known: impl Iter
     !pending.iter().any(|s| s == output) && should_restore(output, known)
 }
 
+/// Which of the outputs marked for restoration (`closed` events handled
+/// during the batch `loop.dispatch()` just processed) should actually be
+/// restored now, once the WHOLE batch has been dispatched. Called once from
+/// the after-dispatch step, never from inside `closed` itself.
+///
+/// This is what fixes the hot-plug race: a compositor can send a surface's
+/// `closed` (the output still listed, so `closed` alone looks worth
+/// restoring) and the matching `output_destroyed` (the output really gone)
+/// as two events of the SAME batch, in that order. Deciding inside `closed`
+/// sees the output as still known — it hasn't been removed yet — and
+/// restores it, only for `output_destroyed` to tear it straight back down:
+/// an extra remove+place pair that serves no purpose. Deferring the
+/// decision to here, after the whole batch (hence any paired
+/// `output_destroyed`) has been processed, sees the true end state: `known`
+/// no longer lists it, so it is correctly left alone.
+fn pending_restores<T: PartialEq + Clone>(pending: &[T], known: impl Iterator<Item = T>) -> Vec<T> {
+    let known: Vec<T> = known.collect();
+    pending.iter().filter(|o| known.contains(o)).cloned().collect()
+}
+
 /// What `draw` should do about a surface's persisted SHM buffers, given
 /// each previous buffer's physical size and whether the compositor still
 /// has it (`busy`, i.e. not yet released), and the size now `needed`.
@@ -209,6 +229,11 @@ pub struct App {
     /// most one restore per output as long as the previous one hasn't
     /// succeeded.
     awaiting_configure: Vec<wl_output::WlOutput>,
+    /// Outputs `closed` marked for restoration, not yet placed: decided for
+    /// real only after the whole dispatch batch has been processed (see
+    /// `pending_restores`), so a paired `output_destroyed` of the SAME
+    /// batch is taken into account instead of racing it.
+    pending_restore: Vec<wl_output::WlOutput>,
 }
 
 impl App {
@@ -242,6 +267,7 @@ impl App {
             stop: false,
             dirty: false,
             awaiting_configure: Vec::new(),
+            pending_restore: Vec::new(),
         })
     }
 
@@ -302,6 +328,19 @@ impl App {
     pub fn redraw_all(&mut self) {
         for i in 0..self.surfaces.len() {
             self.draw(i);
+        }
+    }
+
+    /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
+    /// (`launch::run`): places the bar back on every output `closed` marked
+    /// for restoration this batch and that is still known now — see
+    /// `pending_restores`'s doc for why this can't be decided synchronously
+    /// inside `closed` itself.
+    pub fn restore_pending(&mut self, qh: &QueueHandle<Self>) {
+        let marked = std::mem::take(&mut self.pending_restore);
+        for output in pending_restores(&marked, self.outputs.outputs()) {
+            self.awaiting_configure.push(output.clone());
+            self.place(qh, output);
         }
     }
 
@@ -424,29 +463,50 @@ impl OutputHandler for App {
         }
         // A truly destroyed output will never be restored again: any
         // pending restore for it (if `closed` had just restored it with no
-        // configure yet succeeding) would serve no more purpose — bounded
-        // memory, not an output forgotten per session that piles up.
+        // configure yet succeeding, or marked it for restoration this same
+        // batch) would serve no more purpose — bounded memory, not an
+        // output forgotten per session that piles up. `restore_pending`
+        // would filter it out anyway (`pending_restores`), but dropping it
+        // here too keeps both lists free of outputs already known gone,
+        // rather than relying on that one later check alone.
         self.awaiting_configure.retain(|s| *s != output);
+        self.pending_restore.retain(|s| *s != output);
     }
 }
 
 impl LayerShellHandler for App {
-    fn closed(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface) {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
         // on, never a stop here. But if the output still exists (see
         // `should_restore`), the compositor expects it to be restored —
         // otherwise this screen would stay without a bar until the next
-        // output change. `should_restore_once` bounds restores to one per
-        // output as long as a `configure` hasn't succeeded (see
-        // `configure`, further below): a compositor that closed the surface
-        // in a loop (a bug, a protocol violation) must never cause endless
-        // restores.
+        // output change.
+        //
+        // This only MARKS the output (`pending_restore`); it does not place
+        // it back right away. Some compositors send `closed` and the
+        // matching `output_destroyed` as two events of the very same
+        // dispatch batch, `closed` first: deciding here, synchronously,
+        // would see the output as still known (its `output_destroyed`
+        // hasn't run yet) and restore it, only for `output_destroyed` a
+        // moment later to tear it right back down — an extra remove+place
+        // pair with no purpose. `restore_pending`, called once the whole
+        // batch has been dispatched (`launch::run`), sees the true end
+        // state instead.
+        //
+        // `should_restore_once` (bounding restores to one per output as
+        // long as a `configure` hasn't succeeded — see `configure`, further
+        // below) is checked against BOTH `awaiting_configure` (already
+        // placed, awaiting its first `configure`) and `pending_restore`
+        // (already marked this batch, not yet placed): without the second
+        // check, a compositor that closed the surface in a loop within one
+        // batch (a bug, a protocol violation) could mark the same output
+        // more than once before `restore_pending` ever runs.
         if let Some(i) = self.index(layer.wl_surface()) {
             let output = self.remove(i);
-            if should_restore_once(&output, &self.awaiting_configure, self.outputs.outputs()) {
-                self.awaiting_configure.push(output.clone());
-                self.place(qh, output);
+            let already_pending = self.pending_restore.contains(&output);
+            if !already_pending && should_restore_once(&output, &self.awaiting_configure, self.outputs.outputs()) {
+                self.pending_restore.push(output);
             }
         }
     }
@@ -683,5 +743,30 @@ mod tests {
         assert!(!should_restore_once(&2, &[2], [1, 2, 3].into_iter()));
         // No longer known at all: never to be restored, even absent from `pending`.
         assert!(!should_restore_once(&5, &[], [1, 2, 3].into_iter()));
+    }
+
+    #[test]
+    fn pending_restores_keeps_only_still_known_outputs() {
+        // 2 is still known at after-dispatch time: restored. 1 no longer
+        // is (its `output_destroyed`, in the same batch, already ran): the
+        // hot-plug race this fixes — left alone, no extra remove+place.
+        assert_eq!(pending_restores(&[1, 2], [2, 3].into_iter()), vec![2]);
+    }
+
+    #[test]
+    fn pending_restores_empty_when_nothing_marked() {
+        assert_eq!(pending_restores::<i32>(&[], [1, 2, 3].into_iter()), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn pending_restores_empty_when_none_of_the_marked_outputs_survived() {
+        // Every output marked for restore by `closed` turned out to be
+        // truly gone by the time the batch finished: nothing restored.
+        assert_eq!(pending_restores(&[5, 6], [1, 2, 3].into_iter()), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn pending_restores_preserves_the_marked_order() {
+        assert_eq!(pending_restores(&[3, 1, 2], [1, 2, 3].into_iter()), vec![3, 1, 2]);
     }
 }
