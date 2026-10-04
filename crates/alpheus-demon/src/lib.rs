@@ -11,4 +11,5 @@ pub mod etat;
 pub mod grille;
 pub mod heure;
 pub mod icones;
+pub mod peintre;
 pub mod sources;

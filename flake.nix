@@ -34,6 +34,8 @@
       devShells = pour (pkgs: {
         default = pkgs.mkShell {
           packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer ];
+          # Polices du démon (JetBrainsMono Nerd Font) : lues par les tests de dessin.
+          ALPHEUS_POLICES = "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/JetBrainsMono";
         };
       });
     };

@@ -15,6 +15,7 @@ toml = "1"
 libc = "0.2"
 ratatui = "0.30"
 unicode-width = "0.2"
+cosmic-text = "0.12"
 insta = "1"
 
 [profile.release]
