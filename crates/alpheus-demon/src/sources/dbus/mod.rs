@@ -133,6 +133,16 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
     }
 }
 
+/// UPower's own native name for the laptop's built-in battery (whatever
+/// kernel driver exposes it): short, no underscore — `BAT0`, `BAT1`, the
+/// ThinkPad-style `BATC`/`BATT`, `CMB0`/`CMB1`… A peripheral's native name
+/// always carries its own driver's prefix, joined with an underscore
+/// (`hidpp_battery_1`, `sony_controller_battery_0`…), which is what still
+/// tells the two apart (follow-up, re-review: not only `BATn`).
+fn looks_like_builtin_battery_name(native: &str) -> bool {
+    !native.is_empty() && !native.contains('_')
+}
+
 /// UPower emits `PropertiesChanged` for every device it tracks, including
 /// the laptop's raw battery (`battery_BAT0`…) and the line power supplies
 /// (M5, review): the bar never reads those objects directly — `DisplayDevice`
@@ -142,8 +152,7 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
 /// so this drops them here instead, regardless of which property changed.
 fn upower_device_ignored(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or("");
-    name.starts_with("line_power_")
-        || name.strip_prefix("battery_BAT").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    name.starts_with("line_power_") || name.strip_prefix("battery_").is_some_and(looks_like_builtin_battery_name)
 }
 
 impl Signal {
@@ -774,6 +783,27 @@ mod tests {
             changed("/org/freedesktop/UPower/devices/battery_hidpp_battery_1", &["Percentage"]),
             Some(Domain::Battery),
             "a peripheral, not BATn-named"
+        );
+    }
+
+    #[test]
+    fn other_acpi_battery_naming_schemes_are_dropped_too() {
+        // Follow-up (5), re-review: not only BATn — other machines' ACPI
+        // battery drivers use their own short, underscore-free native name
+        // (ThinkPads: BATC/BATT; some boards: CMB0/CMB1…). A peripheral's
+        // native name always carries its driver's own prefix with an
+        // underscore (hidpp_battery_1, sony_controller_battery_0…): that is
+        // what still tells the two apart.
+        let changed = |path: &str| {
+            with_names(signal(path, PROPERTIES, "PropertiesChanged", Some("org.freedesktop.UPower.Device")), &["Percentage"]).domain()
+        };
+        assert_eq!(changed("/org/freedesktop/UPower/devices/battery_BAT1"), None, "a second laptop battery");
+        assert_eq!(changed("/org/freedesktop/UPower/devices/battery_BATC"), None, "ThinkPad-style ACPI naming");
+        assert_eq!(changed("/org/freedesktop/UPower/devices/battery_CMB0"), None, "another ACPI naming scheme");
+        assert_eq!(
+            changed("/org/freedesktop/UPower/devices/battery_sony_controller_battery_0"),
+            Some(Domain::Battery),
+            "a peripheral's underscore-carrying native name, still shown"
         );
     }
 
