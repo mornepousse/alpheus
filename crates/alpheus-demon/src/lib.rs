@@ -15,6 +15,7 @@ pub mod lock;
 pub mod log;
 pub mod nonblocking;
 pub mod painter;
+pub mod pipewire;
 pub mod segments;
 pub mod sources;
 pub mod state;
