@@ -90,7 +90,10 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 /// A UPower device's properties the bar reads (the laptop's DisplayDevice,
 /// or a peripheral — never a raw battery_BAT0 or line_power_*, dropped
 /// below by `upower_device_ignored` regardless of which property changed).
-const UPOWER_PROPS: [&str; 5] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply"];
+/// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`) —
+/// missing from this list (re-review, follow-up): a rename wouldn't have
+/// re-read it until something else happened to change too.
+const UPOWER_PROPS: [&str; 6] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model"];
 /// BlueZ: the properties the bar reads, by interface.
 const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
 // Deviation from the brief's Device1{Connected, Alias, Name} (reported):
@@ -739,6 +742,7 @@ mod tests {
         };
         assert_eq!(changed_up(&["Capacity"]), None);
         assert_eq!(changed_up(&["Type"]), Some(Domain::Battery));
+        assert_eq!(changed_up(&["Model"]), Some(Domain::Battery), "a peripheral's name, read into Peripheral::name");
         // BlueZ's adapter: Powered only.
         let changed_adapter = |names: &[&str]| {
             with_names(signal("/org/bluez/hci0", PROPERTIES, "PropertiesChanged", Some("org.bluez.Adapter1")), names).domain()
