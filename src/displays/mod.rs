@@ -233,6 +233,20 @@ impl Plan {
     pub fn touches(&self, output: &str) -> bool {
         self.steps.iter().any(|s| s.output == output)
     }
+
+    /// Les étapes de ce plan dont la sortie est encore présente dans `now`,
+    /// dans le même ordre.
+    pub fn restricted_to(&self, now: &[Output]) -> Plan {
+        let steps = self.steps.iter().filter(|s| now.iter().any(|o| o.name == s.output)).cloned().collect();
+        Plan { steps }
+    }
+}
+
+/// Un écran a-t-il été perdu pendant un essai ? Oui si une sortie touchée
+/// par le plan a disparu, ou si plus aucune sortie n'est active (décision
+/// D1) : il faut alors revenir en arrière sur ce qui reste.
+pub fn screen_lost(plan: &Plan, now: &[Output]) -> bool {
+    active_count(now) == 0 || plan.steps.iter().any(|s| !now.iter().any(|o| o.name == s.output))
 }
 
 /// Les écrans ont-ils changé hors d'alpheus pendant un essai ? Oui si une
@@ -443,6 +457,25 @@ mod tests {
         let mut now4 = now.clone();
         now4.push(off("DP-3", "Charlie Modèle 3 SERIE0003")); // dock branché
         assert!(changed_elsewhere(&before, &plan, &now4));
+    }
+
+    #[test]
+    fn ecran_perdu_pendant_un_essai() {
+        let before = poste();
+        let plan = Plan { steps: vec![
+            Step { output: "DVI-I-1".into(), active: None },
+            Step { output: "eDP-1".into(), active: before[0].active.clone() },
+        ] };
+        assert!(!screen_lost(&plan, &before));
+        let mut sans_alpha = before.clone();
+        sans_alpha.remove(1);
+        assert!(screen_lost(&plan, &sans_alpha), "sortie touchée disparue");
+        assert_eq!(plan.restricted_to(&sans_alpha).steps, vec![plan.steps[1].clone()]);
+        let mut sans_bravo = before.clone();
+        sans_bravo.remove(2);
+        assert!(!screen_lost(&plan, &sans_bravo), "sortie non touchée : pas « perdu »");
+        let eteintes: Vec<Output> = before.iter().map(|o| Output { active: None, ..o.clone() }).collect();
+        assert!(screen_lost(&plan, &eteintes), "plus aucune sortie active");
     }
 
     #[test]

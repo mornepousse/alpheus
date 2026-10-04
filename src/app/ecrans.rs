@@ -9,8 +9,8 @@ use crate::backends::{BResult, BackendError};
 use crate::displays::geometry::{deduce, logical_size, resolve, Align, GeoError, Placement, Relation, Screen};
 use crate::displays::profiles::{self, from_outputs, placed, plan_profile, Profile};
 use crate::displays::{
-    active_count, changed_elsewhere, rotation_label, short_from_description, short_names, Active, Mode, Output, Plan,
-    Scale, Step,
+    active_count, changed_elsewhere, rotation_label, screen_lost, short_from_description, short_names, Active, Mode,
+    Output, Plan, Scale, Step,
 };
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -315,8 +315,9 @@ impl App {
 
     // ── Réponses et temps ────────────────────────────────────────────
 
-    /// Après une lecture des sorties : changement extérieur pendant un essai,
-    /// profil demandé par la palette, panneau d'une sortie débranchée.
+    /// Après une lecture des sorties : écran perdu ou changement extérieur
+    /// pendant un essai, profil demandé par la palette, panneau d'une sortie
+    /// débranchée.
     pub(crate) fn displays_read(&mut self, now: Instant) {
         let outs = self.outputs().to_vec();
         if self.data.displays.ready().is_none() {
@@ -328,7 +329,19 @@ impl App {
         // pendant un plan sont écartées) : base fiable pour la suite.
         self.ecrans.awaiting_read = false;
         if let Some(t) = &self.ecrans.trial {
-            if t.deadline.is_some() && changed_elsewhere(&t.before, &t.plan, &outs) {
+            if t.deadline.is_some() && screen_lost(&t.plan, &outs) {
+                // Décision D1 : un écran de l'essai a disparu, ou plus rien
+                // n'est allumé : retour sur les sorties encore présentes.
+                let undo = t.undo.restricted_to(&outs);
+                self.ecrans.trial = None;
+                self.close_keep();
+                let msg = "Écran perdu pendant l'essai : retour à l'état précédent".to_string();
+                self.status.error = Some(msg.clone());
+                self.toast(msg, true, now);
+                if !undo.steps.is_empty() {
+                    self.start_undo(undo);
+                }
+            } else if t.deadline.is_some() && changed_elsewhere(&t.before, &t.plan, &outs) {
                 self.ecrans.trial = None;
                 self.close_keep();
                 self.status.last = Some("Écrans modifiés ailleurs".into());
@@ -1120,20 +1133,100 @@ mod tests {
         let t0 = Instant::now();
         let (mut a, plan, _) = applied(t0);
         // Lecture conforme à l'essai : la boîte reste.
-        let mut attendu = poste();
-        for s in &plan.steps {
-            let o = attendu.iter_mut().find(|o| o.name == s.output).unwrap();
-            o.active = s.active.clone();
-        }
-        a.on_update(Update::Displays(Ok(attendu.clone())), t0);
+        a.on_update(Update::Displays(Ok(relu(&plan))), t0);
         assert!(a.ecrans.trial.is_some());
-        // Dock débranché : la boîte se ferme, aucun retour envoyé.
-        attendu.retain(|o| o.name != "DVI-I-1");
-        a.on_update(Update::Displays(Ok(attendu)), t0);
+        // Dock branché à côté (sortie que l'essai ne touche pas) : la boîte
+        // se ferme, aucun retour envoyé.
+        let mut lu = relu(&plan);
+        lu.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
+        a.on_update(Update::Displays(Ok(lu)), t0);
         assert_eq!(a.ecrans.trial, None);
         assert_eq!(a.overlay, Overlay::None);
         assert!(a.toasts.iter().any(|t| t.text == "Écrans modifiés ailleurs"));
-        assert!(!a.take_requests().iter().any(|r| matches!(r, Request::Do(_))), "rien n'est réappliqué");
+        assert!(sans_do(&mut a), "rien n'est réappliqué");
+        assert_eq!(a.exit_undo(), None);
+
+        // Sortie non touchée débranchée (l'essai n'éteint que Bravo) : idem.
+        let mut a = ecrans();
+        a.toggle_output("HDMI-A-1", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+        a.take_requests();
+        let mut lu = relu(&plan);
+        lu.retain(|o| o.name != "DVI-I-1");
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert_eq!(a.ecrans.trial, None);
+        assert_eq!(a.status.last.as_deref(), Some("Écrans modifiés ailleurs"));
+        assert!(sans_do(&mut a), "rien n'est réappliqué");
+    }
+
+    const ECRAN_PERDU: &str = "Écran perdu pendant l'essai : retour à l'état précédent";
+
+    #[test]
+    fn ecran_touche_perdu_retour_sur_les_sorties_presentes() {
+        // Décision D1 : Bureau essayé (dalle éteinte, Alpha et Bravo
+        // allumés), puis Alpha (DVI-I-1) disparaît.
+        let t0 = Instant::now();
+        let (mut a, plan, undo) = applied(t0);
+        let mut lu = relu(&plan);
+        lu.retain(|o| o.name != "DVI-I-1");
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        let retour = sent_undo(&mut a);
+        let attendu: Vec<Step> = undo.steps.iter().filter(|s| s.output != "DVI-I-1").cloned().collect();
+        assert_eq!(retour.steps, attendu, "plan inverse restreint aux sorties présentes");
+        assert_eq!(retour.steps[0], Step { output: "eDP-1".into(), active: poste()[0].active.clone() }, "dalle rallumée");
+        assert_eq!((a.ecrans.trial.clone(), a.overlay.clone()), (None, Overlay::None));
+        assert_eq!(a.exit_undo(), Some(retour), "retour en vol : refait à la fermeture");
+        assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
+        assert!(a.toasts.iter().any(|t| t.text == ECRAN_PERDU));
+    }
+
+    #[test]
+    fn plus_aucun_ecran_actif_retour() {
+        // Toutes les sorties présentes, aucune active : retour complet.
+        let t0 = Instant::now();
+        let (mut a, plan, undo) = applied(t0);
+        let mut lu = relu(&plan);
+        for o in &mut lu {
+            o.active = None;
+        }
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert_eq!(sent_undo(&mut a), undo);
+        assert_eq!(a.ecrans.trial, None);
+        assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
+
+        // Essai qui n'éteint que Bravo, puis les deux autres s'éteignent
+        // ailleurs : plus rien d'allumé, Bravo est rallumé.
+        let mut a = ecrans();
+        a.toggle_output("HDMI-A-1", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo.clone()) }, Ok(())), t0);
+        a.take_requests();
+        let mut lu = relu(&plan);
+        lu[0].active = None;
+        lu[1].active = None;
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert_eq!(sent_undo(&mut a), undo);
+        assert_eq!(undo.steps, vec![Step { output: "HDMI-A-1".into(), active: poste()[2].active.clone() }]);
+    }
+
+    #[test]
+    fn ecran_touche_perdu_sans_rien_a_retablir() {
+        // L'essai n'éteint qu'Alpha, qui disparaît : les autres sorties
+        // n'ont pas été touchées, rien à envoyer, la boîte se ferme.
+        let t0 = Instant::now();
+        let mut a = ecrans();
+        a.toggle_output("DVI-I-1", t0);
+        let (plan, undo) = sent_trial(&mut a);
+        a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+        a.take_requests();
+        let mut lu = relu(&plan);
+        lu.retain(|o| o.name != "DVI-I-1");
+        a.on_update(Update::Displays(Ok(lu)), t0);
+        assert!(sans_do(&mut a), "aucun plan vide envoyé");
+        assert_eq!((a.ecrans.trial.clone(), a.ecrans.undoing.clone()), (None, None));
+        assert_eq!(a.overlay, Overlay::None);
+        assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
     }
 
     #[test]
