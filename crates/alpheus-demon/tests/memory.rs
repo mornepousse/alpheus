@@ -6,8 +6,14 @@
 //! behind when the system bus restarts. The system bus is a private
 //! dbus-daemon (no NetworkManager, UPower nor BlueZ on it: those modules
 //! stay hidden), pw-dump a script printing the fixtures.
-//! `cargo test -p alpheus-demon --test memory -- --ignored --test-threads=1 --nocapture`
-//! (nix develop). The 24 h measurement is part of the real-world trial.
+//!
+//! **Release only.** These budgets are tuned against the release binary —
+//! the daemon ships in release, and a debug build inflates PSS by roughly
+//! 2x (measured 2026-10-05: "everything" startup 17.4 MB debug vs 7.8 MB
+//! release), which would either fail a budget tuned for release or pass
+//! one loosened to fit debug, neither of them the figure that matters.
+//! `require_release` below panics with this same command if it's missing:
+//! `nix develop -c cargo test --release -p alpheus-demon --test memory -- --ignored --test-threads=1`
 
 mod common;
 
@@ -18,6 +24,26 @@ const DELAY: Duration = Duration::from_secs(10);
 /// Startup PSS budget: firm (Mae, 2026-10-04, Q13). Never raised: a figure
 /// above it is reported to her with `startup_pss_per_source`'s breakdown.
 const STARTUP_MAX_KB: u64 = 15 * 1024;
+
+/// Refuses to measure PSS on a debug build (module doc: roughly 2x
+/// inflated, in either direction against a budget tuned for release).
+/// Takes the flag rather than reading `cfg!` itself so the decision stays
+/// a plain, testable function.
+fn require_release(debug_assertions: bool) {
+    assert!(
+        !debug_assertions,
+        "run with --release: these PSS budgets are tuned for the release binary (debug roughly doubles it) — \
+         nix develop -c cargo test --release -p alpheus-demon --test memory -- --ignored --test-threads=1"
+    );
+}
+
+#[test]
+fn require_release_panics_only_on_a_debug_build() {
+    require_release(false);
+    let panicked = std::panic::catch_unwind(|| require_release(true)).is_err();
+    assert!(panicked, "a debug build must refuse to run these budget tests");
+}
+
 /// Every module but the resources, which tick by design. `interval = 1`: a
 /// timer started although the module is hidden would tick 5 times in 5 s.
 const AT_REST: &str =
@@ -58,6 +84,7 @@ fn start(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, pw_
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn pss_under_30mb_and_stable() {
+    require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("memory");
     let (sway, hypr, d) = start("memory", 3, &bus, Some("[resources]\ninterval = 1\n"), PwDump::Busy);
     // 3 s: startup is over (fonts, pw-dump's first array, the D-Bus initial
@@ -102,6 +129,7 @@ fn pss_under_30mb_and_stable() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn startup_pss_per_source() {
+    require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("per-source");
     let cases = [
         ("plan 1", "\"workspaces\", \"window\", \"clock\""),
@@ -126,6 +154,7 @@ fn startup_pss_per_source() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups() {
+    require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("rest");
     let (_sway, _hypr, d) = start("rest", 3, &bus, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2)); // end of startup
@@ -154,6 +183,7 @@ fn at_rest_no_wakeups() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn resources_tick_at_the_configured_interval() {
+    require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("cadence");
     let toml = "modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n";
     // One output: one redraw round trip per tick, not three.
@@ -177,6 +207,7 @@ fn resources_tick_at_the_configured_interval() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn no_thread_leak_across_system_bus_restarts() {
+    require_release(cfg!(debug_assertions));
     let mut bus = PrivateBus::start("restarts");
     let (_sway, _hypr, d) = start("restarts", 1, &bus, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2));
