@@ -3,6 +3,7 @@ name = "alpheus-demon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Démon résident d'alpheus : la barre"
 
 [dependencies]

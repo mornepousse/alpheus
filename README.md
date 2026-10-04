@@ -139,3 +139,7 @@ Les modules pas encore livrés sont acceptés et ignorés : un `barre.toml`
 - [`docs/specs/`](docs/specs/) : les spécifications (TUI, onglet Écrans,
   barre).
 - [`docs/plans/`](docs/plans/) : les plans d'implémentation.
+
+## Licence
+
+[MIT](LICENSE) © 2026 Mae PUGIN

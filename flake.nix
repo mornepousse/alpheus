@@ -27,6 +27,7 @@
           meta = {
             inherit description;
             mainProgram = pname;
+            license = pkgs.lib.licenses.mit;
             platforms = pkgs.lib.platforms.linux;
           };
         };

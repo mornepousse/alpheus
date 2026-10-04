@@ -6,6 +6,7 @@ members = ["crates/alpheus-commun", "crates/alpheus", "crates/alpheus-demon"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+license = "MIT"
 
 [workspace.dependencies]
 alpheus-commun = { path = "crates/alpheus-commun" }
