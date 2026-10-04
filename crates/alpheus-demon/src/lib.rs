@@ -13,6 +13,7 @@ pub mod launch;
 pub mod layout;
 pub mod lock;
 pub mod log;
+pub mod memory;
 pub mod nonblocking;
 pub mod painter;
 pub mod pipewire;

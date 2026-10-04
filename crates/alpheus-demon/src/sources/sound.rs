@@ -1,0 +1,119 @@
+//! Sound: `pw-dump -m -N -R`, a child process read on this source's thread
+//! (silent at rest: PipeWire only writes on a change). Supervised like the
+//! compositor: "–" then a restart with a growing delay when it exits; killed
+//! with the thread that launched it (PDEATHSIG) and at the end of every
+//! session (its stream dropped).
+
+use crate::log::write as log;
+use crate::memory::release_memory;
+use crate::pipewire;
+use crate::sources::spawn_source;
+use crate::system::SoundState;
+use alpheus_commun::exec::{ExecError, Executor};
+use std::io;
+use std::sync::Arc;
+
+/// The only command the daemon keeps running (tests/guardrails.rs).
+/// `-R`: compact output (pretty-printing is otherwise on by default, even
+/// with `-N`) — fewer bytes over the pipe; `pipewire::follow` (task 9) reads
+/// it by structure, not by line, so this changes nothing there.
+pub const COMMAND: [&str; 4] = ["pw-dump", "-m", "-N", "-R"];
+
+pub fn session(exec: &dyn Executor, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
+    let output = exec.stream(COMMAND[0], &COMMAND[1..]).map_err(|e| match e {
+        ExecError::NotFound => io::Error::new(io::ErrorKind::NotFound, "pw-dump not found"),
+        e => io::Error::other(format!("pw-dump: {e:?}")),
+    })?;
+    let mut first = true;
+    pipewire::follow(output, &mut |s| {
+        let go_on = publish(s);
+        if std::mem::take(&mut first) {
+            // The initial dump (≈ 600 KB) is parsed and dropped by now:
+            // hand its pages back (startup budget, 15 MB).
+            release_memory();
+        }
+        go_on
+    })
+}
+
+/// Starts the sound source in its thread (`sound`), for the whole session.
+pub fn start(exec: Arc<dyn Executor>, send: impl Fn(Option<SoundState>) -> bool + Send + 'static) {
+    if let Err(e) = spawn_source("sound", move |p| session(exec.as_ref(), p), send) {
+        log(&format!("sound thread: {e}"));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::supervise;
+    use crate::system::Volume;
+    use alpheus_commun::exec::fake::FakeExecutor;
+    use std::cell::RefCell;
+    use std::time::Instant;
+
+    const INITIAL: &str = include_str!("../../tests/fixtures/pw-dump-initial.json");
+    const DELTAS: &str = include_str!("../../tests/fixtures/pw-dump-deltas.json");
+
+    #[test]
+    fn session_reads_pw_dump_through_the_executor() {
+        let fake = FakeExecutor::new();
+        fake.stream_ok("pw-dump -m -N -R", INITIAL.as_bytes());
+        let mut seen = Vec::new();
+        let r = session(&fake, &mut |s| {
+            seen.push(s);
+            true
+        });
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "pw-dump ending is an outage");
+        assert_eq!(seen, [SoundState { sink: Some(Volume { percent: 84, muted: false }) }]);
+        assert_eq!(fake.calls(), ["pw-dump -m -N -R"]);
+    }
+
+    /// The fixtures only have ONE top-level array each (`INITIAL` alone, like
+    /// `missing_pw_dump_is_an_outage`'s sibling test, naturally ends in EOF
+    /// after a single publication): on its own, that test cannot tell
+    /// `publish`'s real return value (`go_on`) apart from a wrapper that
+    /// always stops `pipewire::follow` after the first one. Bites on
+    /// `let _ = go_on; false` in `session`'s wrapper closure: with the
+    /// deltas appended, that mutation stops the stream after `vol(84,
+    /// false)` alone instead of following it through to EOF.
+    #[test]
+    fn session_follows_every_delta_through_to_the_end() {
+        let fake = FakeExecutor::new();
+        fake.stream_ok("pw-dump -m -N -R", format!("{INITIAL}{DELTAS}").as_bytes());
+        let mut seen = Vec::new();
+        let r = session(&fake, &mut |s| {
+            seen.push(s.sink.map(|v| v.percent));
+            true
+        });
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(seen, [Some(84), Some(90), Some(90), Some(94), None, Some(90)], "every delta published, not just the initial dump");
+    }
+
+    #[test]
+    fn missing_pw_dump_is_an_outage() {
+        let fake = FakeExecutor::new();
+        assert_eq!(session(&fake, &mut |_| true).unwrap_err().kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn pw_dump_exit_dash_then_restart() {
+        let fake = FakeExecutor::new();
+        fake.stream_ok("pw-dump -m -N -R", INITIAL.as_bytes());
+        let sends = RefCell::new(Vec::new());
+        let delays = RefCell::new(Vec::new());
+        supervise(
+            |p| session(&fake, p),
+            |s: Option<SoundState>| {
+                let mut v = sends.borrow_mut();
+                v.push(s.map(|s| s.sink.map(|v| v.percent)));
+                v.len() < 6
+            },
+            |d| delays.borrow_mut().push(d.as_secs()),
+            Instant::now,
+            |_| {},
+        );
+        assert_eq!(*sends.borrow(), [Some(Some(84)), None, Some(Some(84)), None, Some(Some(84)), None], "\"–\" between two runs");
+        assert_eq!(*delays.borrow(), [1, 2], "the initial dump alone is not a success: the delay grows");
+    }
+}

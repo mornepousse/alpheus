@@ -5,6 +5,7 @@
 
 pub mod hypr;
 pub mod niri;
+pub mod sound;
 
 use crate::compositor::CompositorState;
 use crate::log::write as log;

@@ -151,16 +151,6 @@ fn useful_faces(inventory: &fontdb::Database, family: &str) -> Vec<fontdb::FaceI
         .collect()
 }
 
-/// Returns the inventory's memory to the system (glibc otherwise keeps the
-/// freed pages for itself).
-fn release_memory() {
-    #[cfg(target_env = "gnu")]
-    // SAFETY: malloc_trim(3) only returns free pages.
-    unsafe {
-        libc::malloc_trim(0);
-    }
-}
-
 impl Fonts {
     pub fn load(font: &FontConfig, height: u32) -> Result<(Fonts, Option<String>), String> {
         let directory = std::env::var_os("ALPHEUS_POLICES")
@@ -207,7 +197,7 @@ impl Fonts {
             }
         }
         drop(inventory);
-        release_memory();
+        crate::memory::release_memory();
         db.set_monospace_family(family.clone());
         // The locale only steers cosmic-text's font fallback, never any
         // visible text.

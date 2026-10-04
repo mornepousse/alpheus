@@ -264,6 +264,19 @@ fn the_only_system_executor_is_wrapped_in_non_blocking() {
     assert_eq!(found, 1, "exactly one system executor in the daemon");
 }
 
+/// The daemon keeps exactly one command running, `pw-dump -m -N -R`, started
+/// only by the sound source (the executor wrapper merely delegates).
+#[test]
+fn the_only_stream_is_pw_dump_monitor() {
+    assert_eq!(alpheus_demon::sources::sound::COMMAND, ["pw-dump", "-m", "-N", "-R"]);
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if production_code(&t).contains(".stream(") {
+            assert!(["sources/sound.rs", "nonblocking.rs"].contains(&name.as_str()), "a stream started in {name}");
+        }
+    }
+}
+
 #[test]
 fn eprint_forbidden_outside_tests() {
     for (p, t) in source_files() {
