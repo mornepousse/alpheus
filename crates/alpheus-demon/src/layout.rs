@@ -2,8 +2,8 @@
 //! are laid out left to right in bar.toml order, separated by "│". The
 //! window module is elastic: it takes the free space (without it, the free
 //! space precedes the last module). Narrow screen: modules disappear by
-//! priority (resources, media, then title); workspaces and the clock
-//! always stay.
+//! priority (resources, media, title, then Bluetooth, network, volume,
+//! battery); workspaces and the clock always stay.
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
@@ -11,8 +11,11 @@ use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
 
-/// Order of disappearance when space runs short.
-const REMOVAL: [ModuleId; 3] = [ModuleId::Resources, ModuleId::Media, ModuleId::Window];
+/// Order of disappearance when space runs short: the spec's (resources,
+/// media, title), then the system indicators (Q9). Workspaces and the clock
+/// always stay.
+const REMOVAL: [ModuleId; 7] =
+    [ModuleId::Resources, ModuleId::Media, ModuleId::Window, ModuleId::Bluetooth, ModuleId::Network, ModuleId::Volume, ModuleId::Battery];
 /// Minimum title width before it disappears.
 const MIN_TITLE: u16 = 8;
 /// Beyond this, a workspace's windows are summarized by "+" (Q4).
@@ -136,8 +139,10 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Volume => segments::volume(&bar.sound),
         ModuleId::Network => segments::network(&bar.network),
         ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth),
-        // Task 7 (battery, resources), deliveries 4 and 5: not shown yet.
-        ModuleId::Media | ModuleId::Battery | ModuleId::Resources | ModuleId::Tray | ModuleId::Notifications => None,
+        ModuleId::Battery => segments::battery(&bar.battery),
+        ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources),
+        // Deliveries 4 and 5: not shown yet.
+        ModuleId::Media | ModuleId::Tray | ModuleId::Notifications => None,
     }
 }
 
