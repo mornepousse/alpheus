@@ -289,23 +289,63 @@ fn worth_logging(kind: io::ErrorKind) -> bool {
     kind != io::ErrorKind::NotFound
 }
 
+/// `d`'s index into `DomainLog`'s per-domain array.
+fn domain_index(d: Domain) -> usize {
+    match d {
+        Domain::Network => 0,
+        Domain::Bluetooth => 1,
+        Domain::Battery => 2,
+    }
+}
+
+/// Per-domain log rate limiting (follow-up, re-review): `read` runs again,
+/// fresh, on every backoff round — a new `session`, a new `SystemState` —
+/// so without state that outlives one round, a domain stuck down would
+/// repeat the same log line every round, forever. One `DomainLog` lives for
+/// as long as the D-Bus thread does (owned by `start`'s closure, across
+/// every `run_supervised` round), not reset by a fresh `SystemState`.
+#[derive(Debug, Default)]
+pub struct DomainLog([bool; DOMAINS.len()]);
+
+impl DomainLog {
+    /// Whether this failure of `d` is worth a line: the first one, or the
+    /// first since its last success. Records the new state either way.
+    fn note_failure(&mut self, d: Domain) -> bool {
+        let i = domain_index(d);
+        let first = !self.0[i];
+        self.0[i] = true;
+        first
+    }
+
+    /// `d` just succeeded: its next failure is worth a line again.
+    fn note_success(&mut self, d: Domain) {
+        self.0[domain_index(d)] = false;
+    }
+}
+
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
 /// domain is now None, tagged `Outage::Domain(d)` (I2, review) so a caller
 /// can blank just that domain rather than the whole state. An absence
 /// (NotFound) also gives None, but is not an error.
-fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState) -> io::Result<()> {
+fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut DomainLog) -> io::Result<()> {
     let r = match d {
         Domain::Network => network::read(bus).map(|v| s.network = Some(v)),
         Domain::Bluetooth => bluez::read(bus).map(|v| s.bluetooth = Some(v)),
         Domain::Battery => upower::read(bus).map(|v| s.battery = Some(v)),
     };
-    let Err(e) = r else { return Ok(()) };
+    let Err(e) = r else {
+        log_state.note_success(d);
+        return Ok(());
+    };
     match d {
         Domain::Network => s.network = None,
         Domain::Bluetooth => s.bluetooth = None,
         Domain::Battery => s.battery = None,
     }
-    if worth_logging(e.kind()) {
+    // Rate limited per domain (follow-up, re-review): NotFound never logs
+    // (worth_logging), and a short-circuiting `&&` means it never touches
+    // `log_state` either — an absence doesn't arm or disarm the limiter.
+    if worth_logging(e.kind()) && log_state.note_failure(d) {
         log(&format!("D-Bus {d:?}: {e}"));
     }
     if e.kind() == io::ErrorKind::NotFound {
@@ -317,10 +357,10 @@ fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState) -> io::Result<()> {
 /// Reads every domain in `domains` into `s`; the first real failure (not an
 /// absence), if any. Used both for the initial state and for logind's
 /// `PrepareForSleep(false)`, which re-reads all of them at once.
-fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState) -> Option<io::Error> {
+fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState, log_state: &mut DomainLog) -> Option<io::Error> {
     let mut failed = None;
     for d in domains {
-        if let Err(e) = read(bus, *d, s) {
+        if let Err(e) = read(bus, *d, s, log_state) {
             failed.get_or_insert(e);
         }
     }
@@ -331,9 +371,18 @@ fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState) -> Optio
 /// a wanted domain re-reads it and publishes the whole state. Returns Err
 /// when the bus goes away or a domain's read fails (after publishing it as
 /// "–"): the supervisor shows "–" and retries with a growing delay.
-pub fn session(bus: &mut dyn Bus, domains: &[Domain], publish: &mut dyn FnMut(SystemState) -> bool) -> io::Result<()> {
+/// `log_state` rate-limits each domain's own failure log line (follow-up,
+/// re-review) — it must outlive this one call to do that, so it's the
+/// caller's (`start`'s closure persists across every backoff round;
+/// `session`'s own locals, like `s`, do not).
+pub fn session(
+    bus: &mut dyn Bus,
+    domains: &[Domain],
+    log_state: &mut DomainLog,
+    publish: &mut dyn FnMut(SystemState) -> bool,
+) -> io::Result<()> {
     let mut s = SystemState { network: None, bluetooth: None, battery: None };
-    let failed = read_all(bus, domains, &mut s);
+    let failed = read_all(bus, domains, &mut s, log_state);
     if !publish(s.clone()) {
         return Ok(());
     }
@@ -361,7 +410,7 @@ pub fn session(bus: &mut dyn Bus, domains: &[Domain], publish: &mut dyn FnMut(Sy
             // slept (a VPN reconnected, a Bluetooth device, the battery) —
             // re-read every shown domain, not just the one a match rule
             // would otherwise point to.
-            let failed = read_all(bus, domains, &mut s);
+            let failed = read_all(bus, domains, &mut s, log_state);
             if !publish(s.clone()) {
                 return Ok(());
             }
@@ -371,7 +420,7 @@ pub fn session(bus: &mut dyn Bus, domains: &[Domain], publish: &mut dyn FnMut(Sy
             continue;
         }
         let Some(d) = signal.domain().filter(|d| domains.contains(d)) else { continue };
-        let r = read(bus, d, &mut s);
+        let r = read(bus, d, &mut s, log_state);
         if !publish(s.clone()) {
             return Ok(());
         }
@@ -466,7 +515,11 @@ pub fn start(domains: Vec<Domain>, send: impl Fn(Option<SystemState>) -> bool + 
     }
     let result = std::thread::Builder::new().name("D-Bus".into()).spawn(move || {
         let _guard = SourceGuard { name: "D-Bus", send: &send, value: PhantomData };
-        let run = move |p: &mut dyn FnMut(SystemState) -> bool| session(&mut zbus_bus::ZbusBus::system(&domains)?, &domains, p);
+        // Owned here, across every `run_supervised` round (follow-up,
+        // re-review): a domain stuck down must log once, not once per round.
+        let mut log_state = DomainLog::default();
+        let run =
+            move |p: &mut dyn FnMut(SystemState) -> bool| session(&mut zbus_bus::ZbusBus::system(&domains)?, &domains, &mut log_state, p);
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });
     if let Err(e) = result {
@@ -518,7 +571,7 @@ mod tests {
     /// A session over `domains`, every publication accepted.
     fn run_over(bus: &mut FakeBus, domains: &[Domain]) -> (Vec<SystemState>, io::Result<()>) {
         let mut seen = Vec::new();
-        let r = session(bus, domains, &mut |s| {
+        let r = session(bus, domains, &mut DomainLog::default(), &mut |s| {
             seen.push(s);
             true
         });
@@ -660,7 +713,7 @@ mod tests {
     fn stops_when_the_bar_stops() {
         let mut bus = FakeBus::workstation();
         bus.script = VecDeque::from([(signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing as fn(&mut FakeBus))]);
-        assert!(session(&mut bus, &DOMAINS, &mut |_| false).is_ok());
+        assert!(session(&mut bus, &DOMAINS, &mut DomainLog::default(), &mut |_| false).is_ok());
         assert_eq!(bus.script.len(), 1, "no signal read after the bar said stop");
     }
 
@@ -815,6 +868,24 @@ mod tests {
     }
 
     #[test]
+    fn a_domains_failure_logs_once_until_it_recovers() {
+        // Follow-up (2), re-review: `read` is retried fresh on every backoff
+        // round (a new `session`, a new `SystemState`) — without state that
+        // outlives a single session, a domain stuck down would repeat the
+        // same line every round forever. `DomainLog` is the pure predicate
+        // behind that rate limiting.
+        let mut log_state = DomainLog::default();
+        assert!(log_state.note_failure(Domain::Network), "the first failure is worth a line");
+        assert!(!log_state.note_failure(Domain::Network), "still down: not worth a line again");
+        assert!(!log_state.note_failure(Domain::Network), "and again: still quiet");
+        log_state.note_success(Domain::Network);
+        assert!(log_state.note_failure(Domain::Network), "recovered, then failed again: worth a line");
+        // Independent per domain.
+        assert!(log_state.note_failure(Domain::Bluetooth), "a different domain logs its own first failure");
+        assert!(!log_state.note_failure(Domain::Network), "Bluetooth's failure didn't reset Network's state");
+    }
+
+    #[test]
     fn optional_turns_an_absence_into_nothing_and_keeps_outages() {
         assert_eq!(optional(Ok(props::Props::default())).unwrap(), Some(props::Props::default()));
         assert_eq!(optional(Err(io::Error::new(io::ErrorKind::NotFound, "UnknownObject"))).unwrap(), None);
@@ -921,7 +992,7 @@ mod tests {
             |publish: &mut dyn FnMut(SystemState) -> bool| {
                 let mut bus = FakeBus::workstation();
                 bus.failing.insert("/".into());
-                session(&mut bus, &domains, publish)
+                session(&mut bus, &domains, &mut DomainLog::default(), publish)
             },
             &|v: Option<SystemState>| {
                 sends.borrow_mut().push(v);
@@ -946,7 +1017,9 @@ mod tests {
         run_supervised(
             // An empty script: the next (and only) call to `next_signal`
             // ends the session — a real bus going away, untagged.
-            |publish: &mut dyn FnMut(SystemState) -> bool| session(&mut FakeBus::workstation(), &domains, publish),
+            |publish: &mut dyn FnMut(SystemState) -> bool| {
+                session(&mut FakeBus::workstation(), &domains, &mut DomainLog::default(), publish)
+            },
             &|v: Option<SystemState>| {
                 sends.borrow_mut().push(v);
                 sends.borrow().len() < 2

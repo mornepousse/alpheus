@@ -5,7 +5,7 @@
 mod common;
 
 use alpheus_demon::sources::dbus::zbus_bus::ZbusBus;
-use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, NM, session};
+use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
 use alpheus_demon::system::{BtState, NetState, PowerState};
 use common::PrivateBus;
 use std::io;
@@ -85,7 +85,7 @@ fn the_session_on_an_empty_bus_hides_everything() {
     let b = PrivateBus::start("session");
     let mut bus = ZbusBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &mut |s| {
         first = Some(s);
         false
     });
