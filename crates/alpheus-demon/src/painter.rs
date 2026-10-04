@@ -209,10 +209,9 @@ impl Fonts {
         drop(inventory);
         release_memory();
         db.set_monospace_family(family.clone());
-        // Locale left as "fr-FR": this only steers cosmic-text's internal
-        // shaping fallback, not any user-visible text, and is out of scope
-        // for this translation (behaviour must not change).
-        let mut fs = FontSystem::new_with_locale_and_db("fr-FR".into(), db);
+        // The locale only steers cosmic-text's font fallback, never any
+        // visible text.
+        let mut fs = FontSystem::new_with_locale_and_db("en-US".into(), db);
         let buffer = Buffer::new(&mut fs, Metrics::new(font.size, height as f32));
         let mut p =
             Fonts { fs, cache: SwashCache::new(), buffer, family, size: font.size, height, scale: 0, advance: 0.0, advances: Vec::new() };
