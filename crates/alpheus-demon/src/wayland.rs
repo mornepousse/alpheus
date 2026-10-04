@@ -18,7 +18,10 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shm::{Shm, ShmHandler, slot::SlotPool};
+use smithay_client_toolkit::shm::{
+    Shm, ShmHandler,
+    slot::{Buffer, SlotPool},
+};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
@@ -108,6 +111,38 @@ fn should_restore_once<T: PartialEq>(output: &T, pending: &[T], known: impl Iter
     !pending.iter().any(|s| s == output) && should_restore(output, known)
 }
 
+/// What `draw` should do about a surface's persisted SHM buffer, given the
+/// physical size (width, height) it was last created at (`None` before the
+/// first draw, or once invalidated), the size now `needed`, and whether the
+/// compositor still has it (`busy`, i.e. not yet released).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferPlan {
+    /// No usable previous buffer (none yet, or the wrong size): allocate one.
+    Create,
+    /// Same size, released by the compositor: paint into it again — this is
+    /// the whole point of keeping one buffer per surface (one fewer
+    /// create/destroy round trip per redraw).
+    Reuse,
+    /// Same size, but the compositor hasn't released it yet: never paint
+    /// into a busy buffer — allocate a second one instead, without
+    /// disturbing the one still on screen.
+    Busy,
+}
+
+/// Pure decision, testable with no Wayland connection at all: a resize
+/// always forces a fresh buffer, whether the old one happens to be free or
+/// not, since a buffer of the wrong size is useless either way.
+fn plan_buffer(previous: Option<(u32, u32)>, needed: (u32, u32), busy: bool) -> BufferPlan {
+    if previous == Some(needed) { if busy { BufferPlan::Busy } else { BufferPlan::Reuse } } else { BufferPlan::Create }
+}
+
+/// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
+/// `pool` (same format and stride computation everywhere a buffer is
+/// created, whether on first draw, resize, or a busy fallback).
+fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<(Buffer, &mut [u8]), String> {
+    pool.create_buffer(width as i32, height as i32, width as i32 * 4, wl_shm::Format::Argb8888).map_err(|e| e.to_string())
+}
+
 struct Surface {
     output: wl_output::WlOutput,
     name: String,
@@ -118,6 +153,14 @@ struct Surface {
     configured: bool,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
+    /// SHM buffer reused across redraws (one fewer create/destroy round
+    /// trip per redraw than allocating fresh every time), with the
+    /// physical size it was created at — `plan_buffer` needs it to decide
+    /// whether it still fits. `None` before the first draw, after a resize
+    /// whose old buffer no longer matches, or once invalidated by a pool
+    /// recreation (`shrink_pool_if_needed`: a buffer only belongs to the
+    /// pool that created it).
+    buffer: Option<(Buffer, u32, u32)>,
 }
 
 pub struct App {
@@ -194,7 +237,7 @@ impl App {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.commit();
         log(&format!("bar placed on {}", log_name(&name, &output)));
-        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None });
+        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None, buffer: None });
     }
 
     /// Returns the removed surface's output, so the caller can decide to
@@ -215,7 +258,17 @@ impl App {
         let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, height, s.scale)).collect();
         if let Some(size) = target_pool(self.pool.len(), &needs) {
             match SlotPool::new(size, &self.shm) {
-                Ok(p) => self.pool = p,
+                Ok(p) => {
+                    self.pool = p;
+                    // Every surviving surface's persisted buffer belongs to
+                    // the pool just replaced (`Buffer::canvas` matches it by
+                    // identity): drop them so the next redraw allocates a
+                    // fresh one from the new pool, rather than an orphaned
+                    // buffer silently failing to be reused forever.
+                    for s in &mut self.surfaces {
+                        s.buffer = None;
+                    }
+                }
                 Err(e) => log(&format!("pool {size}: {e}")),
             }
         }
@@ -243,17 +296,32 @@ impl App {
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
         }
-        let (buffer, pixels) = match pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) {
-            Ok(t) => t,
-            Err(err) => {
-                log(&format!("buffer {w}×{h}: {err}"));
-                return;
-            }
+        let previous = s.buffer.as_ref().map(|(_, bw, bh)| (*bw, *bh));
+        let busy = s.buffer.as_ref().is_some_and(|(b, _, _)| b.slot().has_active_buffers());
+        // `Reuse`'s `canvas` call is expected to succeed (same size, not
+        // busy): `None` here would mean `plan_buffer` and `Buffer::canvas`
+        // disagree on busy-ness, defensive, never seen in practice.
+        let reused_pixels = match plan_buffer(previous, (w, h), busy) {
+            BufferPlan::Reuse => s.buffer.as_ref().and_then(|(buf, _, _)| buf.canvas(pool)),
+            BufferPlan::Busy | BufferPlan::Create => None,
         };
-        fonts.paint(&grid, palette, pixels, w, h, e);
+        match reused_pixels {
+            Some(pixels) => fonts.paint(&grid, palette, pixels, w, h, e),
+            None => match new_buffer(pool, w, h) {
+                Ok((buffer, pixels)) => {
+                    fonts.paint(&grid, palette, pixels, w, h, e);
+                    s.buffer = Some((buffer, w, h));
+                }
+                Err(err) => {
+                    log(&format!("buffer {w}×{h}: {err}"));
+                    return;
+                }
+            },
+        }
         let surface = s.layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
+        let Some((buffer, _, _)) = s.buffer.as_ref() else { return };
         if buffer.attach_to(surface).is_err() {
             return;
         }
@@ -525,6 +593,32 @@ mod tests {
         assert!(should_restore(&2, [1, 2, 3].into_iter()), "still in the list: to be restored");
         assert!(!should_restore(&5, [1, 2, 3].into_iter()), "no longer in the list: really unplugged");
         assert!(!should_restore(&1, std::iter::empty::<i32>()), "no output known at all anymore");
+    }
+
+    #[test]
+    fn plan_buffer_creates_when_none_yet() {
+        assert_eq!(plan_buffer(None, (100, 22), false), BufferPlan::Create);
+    }
+
+    #[test]
+    fn plan_buffer_reuses_same_size_when_free() {
+        assert_eq!(plan_buffer(Some((100, 22)), (100, 22), false), BufferPlan::Reuse);
+    }
+
+    #[test]
+    fn plan_buffer_busy_when_same_size_but_not_released() {
+        assert_eq!(plan_buffer(Some((100, 22)), (100, 22), true), BufferPlan::Busy);
+    }
+
+    #[test]
+    fn plan_buffer_creates_on_resize_even_if_free() {
+        // Wrong size: a free buffer of the wrong size is still useless.
+        assert_eq!(plan_buffer(Some((100, 22)), (120, 22), false), BufferPlan::Create);
+    }
+
+    #[test]
+    fn plan_buffer_creates_on_resize_even_if_busy() {
+        assert_eq!(plan_buffer(Some((100, 22)), (120, 22), true), BufferPlan::Create);
     }
 
     #[test]
