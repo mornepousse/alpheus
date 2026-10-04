@@ -502,7 +502,7 @@ mod tests {
             panic!("retour attendu")
         };
         a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
-        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
         a.take_requests();
     }
 
@@ -532,7 +532,7 @@ mod tests {
         k(&mut a, KeyCode::Enter);
         assert_eq!(a.ecrans.trial, None);
         assert!(!retour_envoye(&mut a), "gardé");
-        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
         a.take_requests();
         c(&mut a, ' ');
         applique(&mut a);

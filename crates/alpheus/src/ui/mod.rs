@@ -228,7 +228,7 @@ mod tests {
         assert!(all.contains("Appareils connectés") && all.contains("CasqueBT") && all.contains("[ Appairer un appareil ]"));
         a.go_tab(Tab::Alimentation, Instant::now());
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("[ Verrouiller ]") && all.contains("[ Éteindre ]"));
+        assert!(all.contains("[ Lock ]") && all.contains("[ Power off ]"));
     }
 
     #[test]
@@ -328,7 +328,7 @@ mod tests {
             "[ + Enregistrer l'actuel ]",
             "Carte",
             "Écrans",
-            "1 Portable",
+            "1 Laptop",
             "2 Alpha",
             "DVI-I-1 ⚠",
             "3 Bravo",
@@ -336,7 +336,7 @@ mod tests {
             "échelle 1.0",
             "position 0, 1080",
             "origine",
-            "à droite de Alpha",
+            "right of Alpha",
         ] {
             assert!(all.contains(attendu), "{attendu} absent :\n{all}");
         }
@@ -351,7 +351,7 @@ mod tests {
     #[test]
     fn dernier_ecran_grise() {
         let mut a = ecrans();
-        a.data.displays = Loadable::Ready(vec![crate::displays::testing::poste()[0].clone()]);
+        a.data.displays = Loadable::Ready(vec![crate::displays::testing::machine()[0].clone()]);
         assert!(draw(&a, 100, 28).0.join("\n").contains("[■] seul actif"));
     }
 
@@ -372,15 +372,15 @@ mod tests {
     #[test]
     fn carte_a_l_echelle() {
         use super::ecrans::{MAP_ROWS, map_canvas};
-        use crate::displays::testing::{ALPHA, BRAVO, on, poste};
+        use crate::displays::testing::{ALPHA, BRAVO, machine, on};
         let text = |g: &Vec<Vec<Option<(char, bool)>>>| -> Vec<String> {
             g.iter().map(|r| r.iter().map(|c| c.map_or(' ', |(ch, _)| ch)).collect()).collect()
         };
-        let g = map_canvas(&poste(), Some("HDMI-A-1"), 76);
+        let g = map_canvas(&machine(), Some("HDMI-A-1"), 76);
         let lines = text(&g);
         assert!(lines.len() <= usize::from(MAP_ROWS));
         let all = lines.join("\n");
-        assert!(all.contains("Alpha") && all.contains("Bravo") && all.contains("Portable"), "{all}");
+        assert!(all.contains("Alpha") && all.contains("Bravo") && all.contains("Laptop"), "{all}");
         for n in ["1", "2", "3"] {
             assert!(all.contains(n), "numéro {n} :\n{all}");
         }
@@ -388,7 +388,7 @@ mod tests {
         let g = map_canvas(&[on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 1920, 1080, 1920, 0)], None, 20);
         assert!(!g.is_empty() && g.iter().all(|r| r.len() <= 20), "bornée par la largeur");
         assert!(map_canvas(&[], None, 76).is_empty());
-        assert!(map_canvas(&poste(), None, 2).is_empty(), "trop étroit : rien");
+        assert!(map_canvas(&machine(), None, 2).is_empty(), "trop étroit : rien");
     }
 
     #[test]
@@ -437,11 +437,11 @@ mod tests {
             "Rotation",
             "0°",
             "Placement",
-            "à droite de",
+            "right of",
             "Référence",
             "Alpha",
             "Alignement",
-            "en haut",
+            "top",
             "✗ aucun changement",
             "[ Annuler ]",
             "[ Appliquer ]",
@@ -546,7 +546,7 @@ mod tests {
         let n = a.palette_matches().len();
         a.overlay = Overlay::Palette(Palette { query: String::new(), selected: n - 1 });
         let (rows, hits) = draw(&a, 80, 24);
-        assert!(rows.join("\n").contains("Éteindre"), "dernière entrée visible");
+        assert!(rows.join("\n").contains("Power off"), "dernière entrée visible");
         assert!(hits.find(Target::PaletteEntry(n - 1)).is_some());
         assert!(hits.find(Target::PaletteEntry(0)).is_none());
     }
@@ -557,7 +557,7 @@ mod tests {
         a.overlay = Overlay::Confirm(Confirm { action: PowerAction::Poweroff, yes_focused: false });
         let (rows, hits) = draw(&a, 80, 24);
         let all = rows.join("\n");
-        assert!(all.contains("Éteindre l'ordinateur ?") && all.contains("[ Annuler ]") && all.contains("[ Confirmer ]"));
+        assert!(all.contains("Shut down the computer?") && all.contains("[ Annuler ]") && all.contains("[ Confirmer ]"));
         let no = hits.find(Target::ConfirmNo).unwrap();
         let yes = hits.find(Target::ConfirmYes).unwrap();
         assert!(no.x < yes.x && no.y == yes.y);

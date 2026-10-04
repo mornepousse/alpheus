@@ -302,7 +302,7 @@ mod tests {
         let b = backends(&f);
         let e = perform(&b, &Op::ApplyDisplays { plan, undo: None }).unwrap_err();
         assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1", "wm-set monitor-disable HDMI-A-1"], "retour : au mieux");
-        assert_eq!(e.to_string(), "retour incomplet : eDP-1 (wm-set introuvable)");
+        assert_eq!(e.to_string(), "incomplete rollback: eDP-1 (wm-set not found)");
     }
 
     #[test]

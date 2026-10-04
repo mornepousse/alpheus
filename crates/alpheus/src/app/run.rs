@@ -14,8 +14,8 @@ use crate::exec::SystemExecutor;
 use crate::externes::{self, CrosstermScreen, ProcessLauncher};
 use crate::theme::Theme;
 use crate::ui;
-use alpheus_commun::arret::{FIN_DEMANDEE, SIGNAL_RECU, installer_signaux, surveiller};
-pub use alpheus_commun::chemins::{config_dir, runtime_dir};
+pub use alpheus_commun::paths::{config_dir, runtime_dir};
+use alpheus_commun::shutdown::{SIGNAL_RECEIVED, STOP_REQUESTED, install_signals, watch};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
 use ratatui::crossterm::execute;
@@ -104,9 +104,9 @@ fn fermer(kill_running: impl FnOnce(), slot: &Mutex<ExitUndo>, displays: &dyn Di
 /// ait fini de le faire) et termine le processus.
 fn lancer_garde(exec: Arc<SystemExecutor>, undo: UndoSlot, displays: Arc<dyn Displays>) {
     std::thread::spawn(move || {
-        surveiller(&FIN_DEMANDEE, &BOUCLE_FINIE, GRACE, Duration::from_millis(50), || {
+        watch(&STOP_REQUESTED, &BOUCLE_FINIE, GRACE, Duration::from_millis(50), || {
             fermer(|| exec.kill_running(), &undo, &*displays); // aucun outil laissé derrière
-            std::process::exit(128 + SIGNAL_RECU.load(Ordering::SeqCst));
+            std::process::exit(128 + SIGNAL_RECEIVED.load(Ordering::SeqCst));
         });
     });
 }
@@ -196,7 +196,7 @@ impl Drop for Nettoyage {
 }
 
 pub fn run(options: Options) -> io::Result<()> {
-    installer_signaux()?;
+    install_signals()?;
     let mut app = build_app(&config_dir(), options.onglet, Instant::now());
     // Sous niri, l'onglet Écrans n'appelle rien (pas encore pris en charge).
     app.ecrans.niri = niri_actif(std::env::var_os("NIRI_SOCKET"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"));
@@ -228,7 +228,7 @@ fn event_loop(
         // avant l'envoi des requêtes du tour : un essai n'est jamais envoyé
         // au fil de travail sans que son retour soit déjà noté ici.
         record_undo(undo, app.exit_undo());
-        if doit_sortir(&app, &FIN_DEMANDEE) {
+        if doit_sortir(&app, &STOP_REQUESTED) {
             return Ok(()); // la garde Nettoyage restaure le terminal et tue les outils
         }
         for r in app.take_requests() {
@@ -269,7 +269,7 @@ mod tests {
     use crate::exec::fake::FakeExecutor;
 
     /// Pas de scrutation de `sortie_forcee_seulement_apres_le_retour` (seul
-    /// test d'ici à encore appeler `surveiller` directement).
+    /// test d'ici à encore appeler `watch` directement).
     const PAS: Duration = Duration::from_millis(5);
 
     fn plan_retour() -> Plan {
@@ -368,10 +368,10 @@ mod tests {
         let mut err = Vec::new();
         signaler_retour(r, &mut err);
         let msg = String::from_utf8(err).unwrap();
-        assert_eq!(msg, "alpheus : écrans : retour incomplet : HDMI-A-1 (wm-set introuvable)\n");
+        assert_eq!(msg, "alpheus : écrans : incomplete rollback: HDMI-A-1 (wm-set not found)\n");
         let mut err = Vec::new();
         signaler_retour(Err(BackendError::Timeout { tool: "wm-set".into() }), &mut err);
-        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : retour des écrans impossible : wm-set ne répond pas\n");
+        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : retour des écrans impossible : wm-set is not responding\n");
         let mut err = Vec::new();
         signaler_retour(undo_on_exit(&slot_avec(None), &d), &mut err);
         assert!(err.is_empty(), "rien à défaire : rien à dire");
@@ -388,7 +388,7 @@ mod tests {
         assert_eq!(f.calls(), vec!["wm-set monitor-disable DVI-I-1", "wm-set monitor-disable HDMI-A-1"]);
         let mut err = Vec::new();
         signaler_retour(r, &mut err);
-        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : écrans : retour incomplet : DVI-I-1 (wm-set introuvable)\n");
+        assert_eq!(String::from_utf8(err).unwrap(), "alpheus : écrans : incomplete rollback: DVI-I-1 (wm-set not found)\n");
     }
 
     #[test]
@@ -441,7 +441,7 @@ mod tests {
         let debut_retour = Instant::now();
         let (fin, finie) = (AtomicBool::new(true), AtomicBool::new(false));
         let mut sortie_apres = None;
-        let force = surveiller(&fin, &finie, Duration::from_millis(20), PAS, || {
+        let force = watch(&fin, &finie, Duration::from_millis(20), PAS, || {
             fermer(|| {}, &slot, &*d);
             sortie_apres = Some(debut_retour.elapsed()); // ici : process::exit
         });
@@ -461,16 +461,16 @@ mod tests {
         assert!(a.ecrans.profiles.is_empty());
         assert_eq!(a.status.warning, None, "fichier absent : aucun message");
         assert!(!a.ecrans.profiles_invalid, "absent : l'enregistrement le créera");
-        std::fs::write(dir.join("ecrans.toml"), "[[profil]]\nnom = \"Bureau\"\n").unwrap();
+        std::fs::write(dir.join("ecrans.toml"), "[[profile]]\nname = \"Bureau\"\n").unwrap();
         let a = build_app(&dir, Tab::Accueil, Instant::now());
         assert_eq!(a.ecrans.profiles.len(), 1);
         assert_eq!(a.ecrans.profiles_path, Some(dir.join("ecrans.toml")));
         assert_eq!(a.status.warning, None);
         assert!(!a.ecrans.profiles_invalid);
-        std::fs::write(dir.join("ecrans.toml"), "[[profil]\n").unwrap();
+        std::fs::write(dir.join("ecrans.toml"), "[[profile]\n").unwrap();
         let a = build_app(&dir, Tab::Accueil, Instant::now());
         assert!(a.ecrans.profiles.is_empty());
-        assert!(a.status.warning.as_deref().unwrap_or("").starts_with("ecrans.toml invalide"), "{:?}", a.status.warning);
+        assert!(a.status.warning.as_deref().unwrap_or("").starts_with("invalid displays.toml"), "{:?}", a.status.warning);
         assert!(a.ecrans.profiles_invalid, "fichier invalide : enregistrement refusé");
         let _ = std::fs::remove_dir_all(&dir);
     }

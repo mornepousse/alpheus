@@ -296,8 +296,8 @@ mod tests {
             "Wi-Fi",
             "Bluetooth",
             "Garder éveillé",
-            "Verrouiller",
-            "Éteindre",
+            "Lock",
+            "Power off",
             "Mixage par appli",
             "Choisir un réseau",
             "Appairer un appareil",
@@ -308,7 +308,7 @@ mod tests {
         ] {
             assert!(labels.contains(&attendu), "{attendu} manque");
         }
-        assert!(p.contains(&("Éteindre".to_string(), Command::Power(PowerAction::Poweroff))));
+        assert!(p.contains(&("Power off".to_string(), Command::Power(PowerAction::Poweroff))));
         assert!(p.contains(&("Profil d'écran : Bureau".to_string(), Command::ApplyDisplayProfile("Bureau".into()))));
     }
 }

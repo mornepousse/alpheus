@@ -818,7 +818,7 @@ pub(crate) mod testing {
                 sinks: vec![node(64, "Dock D6000 Dell", 75, false), node(116, "CasqueBT", 62, true)],
                 sources: vec![node(113, "Stereo Microphone", 100, true)],
             }),
-            displays: Loadable::Ready(crate::displays::testing::poste()),
+            displays: Loadable::Ready(crate::displays::testing::machine()),
         };
         a.ecrans.profiles = crate::displays::profiles::parse(PROFILS).unwrap();
         a
@@ -826,30 +826,30 @@ pub(crate) mod testing {
 
     /// Profils d'écran des tests (descriptions anonymisées du poste).
     pub const PROFILS: &str = r#"
-[[profil]]
-nom = "Laptop seul"
-[[profil.ecran]]
+[[profile]]
+name = "Laptop seul"
+[[profile.display]]
 description = "Interne Dalle 0x0001"
 mode = "2560x1600@60"
-[[profil.ecran]]
+[[profile.display]]
 description = "Alpha Modèle 1 SERIE0001"
-actif = false
-[[profil.ecran]]
+enabled = false
+[[profile.display]]
 description = "Bravo Modèle 2 SERIE0002"
-actif = false
+enabled = false
 
-[[profil]]
-nom = "Bureau"
-[[profil.ecran]]
+[[profile]]
+name = "Bureau"
+[[profile.display]]
 description = "Alpha Modèle 1 SERIE0001"
 mode = "1920x1080@60"
-[[profil.ecran]]
+[[profile.display]]
 description = "Bravo Modèle 2 SERIE0002"
 mode = "1920x1080@60"
-place = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001" }
-[[profil.ecran]]
+placement = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001" }
+[[profile.display]]
 description = "Interne Dalle 0x0001"
-actif = false
+enabled = false
 "#;
 }
 
@@ -877,7 +877,7 @@ mod tests {
         a.on_update(Update::Volume(Ok(Volume { percent: 40, muted: true })), Instant::now());
         a.on_update(Update::Brightness(Err(BackendError::Missing { tool: "brightnessctl".into() })), Instant::now());
         assert_eq!(a.data.volume, Loadable::Ready(Volume { percent: 40, muted: true }));
-        assert_eq!(a.data.brightness, Loadable::Failed("brightnessctl introuvable".into()));
+        assert_eq!(a.data.brightness, Loadable::Failed("brightnessctl not found".into()));
     }
 
     #[test]
@@ -886,7 +886,7 @@ mod tests {
         a.on_update(Update::Displays(Ok(Vec::new())), Instant::now());
         assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
         a.send_op(Op::ApplyDisplays { plan: crate::displays::Plan::default(), undo: None });
-        a.on_update(Update::Displays(Ok(crate::displays::testing::poste())), Instant::now());
+        a.on_update(Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
         assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "relecture périmée ignorée");
         a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
         assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
@@ -1172,7 +1172,7 @@ mod tests {
         let mut a = ready_app();
         let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boum".into() };
         a.on_update(Update::Done(Op::SetDnd(true), Err(e)), Instant::now());
-        assert_eq!(a.status.error.as_deref(), Some("Ne pas déranger : shell-ctl a échoué (code 1) : boum"));
+        assert_eq!(a.status.error.as_deref(), Some("Ne pas déranger : shell-ctl failed (code 1): boum"));
         assert!(a.toasts[0].error);
         assert_eq!(a.take_requests().len(), 1, "relecture pour annuler l'affichage optimiste");
     }
@@ -1286,8 +1286,8 @@ mod tests {
     #[test]
     fn palette_sans_accents() {
         let mut a = ready_app();
-        a.overlay = Overlay::Palette(Palette { query: "eteindre".into(), selected: 0 });
-        assert_eq!(a.palette_matches()[0].0, "Éteindre");
+        a.overlay = Overlay::Palette(Palette { query: "poweroff".into(), selected: 0 });
+        assert_eq!(a.palette_matches()[0].0, "Power off");
         a.palette_run(None, Instant::now());
         assert!(matches!(a.overlay, Overlay::Confirm(_)));
     }

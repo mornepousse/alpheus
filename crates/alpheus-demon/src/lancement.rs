@@ -12,7 +12,7 @@ use crate::verrou;
 use crate::wayland::Etat;
 use alpheus_commun::exec::SystemExecutor;
 use alpheus_commun::theme::Palette;
-use alpheus_commun::{arret, chemins};
+use alpheus_commun::{paths, shutdown};
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, channel};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
@@ -130,21 +130,21 @@ fn code_de_sortie(panne_dispatch: bool) -> i32 {
 pub fn lancer() -> i32 {
     // Masque des signaux AVANT tout fil : tous en héritent ; seul le fil de
     // garde les reçoit (sigwait).
-    let signaux = match arret::bloquer_signaux() {
+    let signaux = match shutdown::block_signals() {
         Ok(s) => s,
         Err(e) => {
             journal(&format!("signaux : {e}"));
             return 1;
         }
     };
-    let _verrou = match verrou::prendre(&chemins::runtime_dir().join("alpheus-demon.lock")) {
+    let _verrou = match verrou::prendre(&paths::runtime_dir().join("alpheus-demon.lock")) {
         Ok(v) => v,
         Err(m) => {
             journal(&m);
             return 1;
         }
     };
-    let (config, palette, avertissements) = reglages(&chemins::config_dir());
+    let (config, palette, avertissements) = reglages(&paths::config_dir());
     for a in &avertissements {
         journal(a);
     }
@@ -226,10 +226,10 @@ pub fn lancer() -> i32 {
     // Fil de garde : attend un signal sans tourner, demande l'arrêt à la
     // boucle, force la sortie si elle ne finit pas dans le délai de grâce.
     let garde = std::thread::Builder::new().name("garde".into()).spawn(move || {
-        let sig = arret::attendre_signal(&signaux);
+        let sig = shutdown::wait_signal(&signaux);
         FIN.store(true, Ordering::SeqCst);
         let _ = tx.send(Courrier::Arret);
-        arret::surveiller(&FIN, &FINIE, GRACE, Duration::from_millis(20), || std::process::exit(128 + sig));
+        shutdown::watch(&FIN, &FINIE, GRACE, Duration::from_millis(20), || std::process::exit(128 + sig));
     });
     if garde.is_err() {
         journal("fil de garde impossible");

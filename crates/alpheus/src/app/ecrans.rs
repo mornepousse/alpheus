@@ -912,7 +912,7 @@ mod tests {
 
     /// Les sorties telles que `plan` les laisse (relecture conforme).
     fn relu(plan: &Plan) -> Vec<Output> {
-        let mut outs = poste();
+        let mut outs = machine();
         for s in &plan.steps {
             let o = outs.iter_mut().find(|o| o.name == s.output).unwrap();
             o.active = s.active.clone();
@@ -943,11 +943,11 @@ mod tests {
         assert!(a.toasts.iter().any(|t| t.text == "Écrans : en attente d'une relecture"));
         assert!(!a.toasts.iter().any(|t| t.text == "Écrans : un changement est déjà en cours"));
         // Relecture fraîche : l'état rétabli sert de base, et de retour.
-        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.on_update(Update::Displays(Ok(machine())), t0);
         a.toggle_output("HDMI-A-1", t0);
         let (p, u) = sent_trial(&mut a);
-        assert_eq!(u, Plan::undo(&poste(), &p));
-        assert_eq!(a.ecrans.trial.as_ref().unwrap().before, poste());
+        assert_eq!(u, Plan::undo(&machine(), &p));
+        assert_eq!(a.ecrans.trial.as_ref().unwrap().before, machine());
 
         // Garder avant toute relecture : même verrou.
         let (mut a, _, _) = applied(t0);
@@ -977,7 +977,7 @@ mod tests {
         assert!(sans_do(&mut a), "pas de second retour à l'échéance");
         a.on_update(Update::Done(Op::ApplyDisplays { plan: undo, undo: None }, Ok(())), t0);
         assert_eq!(a.exit_undo(), None);
-        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.on_update(Update::Displays(Ok(machine())), t0);
         a.take_requests();
         a.toggle_output("HDMI-A-1", t0);
         sent_trial(&mut a);
@@ -1000,7 +1000,7 @@ mod tests {
         }
         assert_eq!(a.ecrans.undoing, None);
         assert_eq!(a.exit_undo(), None);
-        a.on_update(Update::Displays(Ok(poste())), t0);
+        a.on_update(Update::Displays(Ok(machine())), t0);
         a.take_requests();
         a.toggle_output("HDMI-A-1", t0);
         sent_trial(&mut a);
@@ -1043,13 +1043,13 @@ mod tests {
         a.profile_bar_activate(t0);
         let (plan, undo) = sent_trial(&mut a);
         assert_eq!(plan.steps.iter().map(|s| s.output.as_str()).collect::<Vec<_>>(), vec!["DVI-I-1", "HDMI-A-1", "eDP-1"]);
-        assert_eq!(undo, Plan::undo(&poste(), &plan));
+        assert_eq!(undo, Plan::undo(&machine(), &plan));
         assert_eq!(a.overlay, Overlay::Keep(Keep { keep_focused: false }), "focus sur Annuler");
         let t = a.ecrans.trial.clone().unwrap();
         assert_eq!(t.title, "Profil « Bureau »");
         assert_eq!(t.deadline, None, "pas de compte à rebours avant la réponse");
         assert_eq!(t.summary[0], "Alpha : 1920×1080@60, échelle 1.0, 0°, position 0, 0");
-        assert_eq!(t.summary[2], "Portable : désactivé");
+        assert_eq!(t.summary[2], "Laptop : désactivé");
         assert_eq!(a.exit_undo(), Some(undo.clone()), "fermeture pendant l'application : retour");
         a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo) }, Ok(())), t0);
         let t = a.ecrans.trial.clone().unwrap();
@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(
             a.status.error.as_deref(),
-            Some("Écrans : wm-set a échoué (code 1) : Hyprland a refusé « eval … » : boum — retour aux réglages précédents")
+            Some("Écrans : wm-set failed (code 1): Hyprland a refusé « eval … » : boum — retour aux réglages précédents")
         );
     }
 
@@ -1120,7 +1120,7 @@ mod tests {
         let e = BackendError::Timeout { tool: "wm-set".into() };
         a.ecrans.undoing = Some(Plan::default());
         a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
-        assert_eq!(a.status.error.as_deref(), Some("Écrans : retour impossible : wm-set ne répond pas"));
+        assert_eq!(a.status.error.as_deref(), Some("Écrans : retour impossible : wm-set is not responding"));
         assert_eq!(a.ecrans.undoing, None);
     }
 
@@ -1133,7 +1133,7 @@ mod tests {
         };
         a.ecrans.undoing = Some(Plan::default());
         a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
-        assert_eq!(a.status.error.as_deref(), Some("Écrans : retour incomplet : DVI-I-1 (wm-set ne répond pas)"));
+        assert_eq!(a.status.error.as_deref(), Some("Écrans : incomplete rollback: DVI-I-1 (wm-set is not responding)"));
         assert_eq!(a.ecrans.undoing, None);
     }
 
@@ -1183,7 +1183,7 @@ mod tests {
         let retour = sent_undo(&mut a);
         let attendu: Vec<Step> = undo.steps.iter().filter(|s| s.output != "DVI-I-1").cloned().collect();
         assert_eq!(retour.steps, attendu, "plan inverse restreint aux sorties présentes");
-        assert_eq!(retour.steps[0], Step { output: "eDP-1".into(), active: poste()[0].active.clone() }, "dalle rallumée");
+        assert_eq!(retour.steps[0], Step { output: "eDP-1".into(), active: machine()[0].active.clone() }, "dalle rallumée");
         assert_eq!((a.ecrans.trial.clone(), a.overlay.clone()), (None, Overlay::None));
         assert_eq!(a.exit_undo(), Some(retour), "retour en vol : refait à la fermeture");
         assert_eq!(a.status.error.as_deref(), Some(ECRAN_PERDU));
@@ -1216,7 +1216,7 @@ mod tests {
         lu[1].active = None;
         a.on_update(Update::Displays(Ok(lu)), t0);
         assert_eq!(sent_undo(&mut a), undo);
-        assert_eq!(undo.steps, vec![Step { output: "HDMI-A-1".into(), active: poste()[2].active.clone() }]);
+        assert_eq!(undo.steps, vec![Step { output: "HDMI-A-1".into(), active: machine()[2].active.clone() }]);
     }
 
     const RIEN_A_RETABLIR: &str = "Écran perdu pendant l'essai : rien à rétablir";
@@ -1243,7 +1243,7 @@ mod tests {
         // Bravo éteint, l'essai l'allume ; puis tout s'éteint ailleurs : le
         // retour ne contiendrait que « éteindre Bravo », déjà éteint.
         let mut a = ecrans();
-        let mut outs = poste();
+        let mut outs = machine();
         outs[2].active = None;
         a.data.displays = Loadable::Ready(outs);
         a.toggle_output("HDMI-A-1", t0);
@@ -1263,7 +1263,7 @@ mod tests {
         // Dalle éteinte et Alpha allumé ; l'essai les permute, puis Alpha
         // disparaît : éteindre la dalle laisserait tout noir, rien n'est envoyé.
         let mut a = ecrans();
-        let mut outs = poste();
+        let mut outs = machine();
         outs.truncate(2);
         let ancienne = outs[0].active.take();
         a.data.displays = Loadable::Ready(outs);
@@ -1323,15 +1323,15 @@ mod tests {
     #[test]
     fn dernier_ecran_actif_protege() {
         let mut a = ecrans();
-        a.data.displays = Loadable::Ready(vec![poste()[0].clone(), off("DVI-I-1", ALPHA), off("HDMI-A-1", BRAVO)]);
+        a.data.displays = Loadable::Ready(vec![machine()[0].clone(), off("DVI-I-1", ALPHA), off("HDMI-A-1", BRAVO)]);
         a.toggle_output("eDP-1", Instant::now());
         assert!(a.take_requests().is_empty());
-        assert!(a.toasts.iter().any(|t| t.text == "Impossible de désactiver Portable : dernier écran actif"));
+        assert!(a.toasts.iter().any(|t| t.text == "Impossible de désactiver Laptop : dernier écran actif"));
         // Depuis un profil : Bureau loin du dock éteindrait la dalle, seule branchée.
-        a.data.displays = Loadable::Ready(vec![poste()[0].clone()]);
+        a.data.displays = Loadable::Ready(vec![machine()[0].clone()]);
         a.apply_display_profile("Bureau", Instant::now());
         assert!(a.take_requests().is_empty());
-        assert_eq!(a.status.error.as_deref(), Some("Profil « Bureau » refusé : ce profil désactiverait le dernier écran actif"));
+        assert_eq!(a.status.error.as_deref(), Some("Profil « Bureau » refusé : this profile would turn off the last active screen"));
     }
 
     #[test]
@@ -1342,7 +1342,7 @@ mod tests {
         assert_eq!(plan.steps, vec![Step { output: "eDP-1".into(), active: None }], "les autres ne bougent pas");
         // Une sortie éteinte s'allume à droite de la plus à droite (Bravo finit à 4053).
         let mut a = ecrans();
-        let mut outs = poste();
+        let mut outs = machine();
         outs.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
         a.data.displays = Loadable::Ready(outs);
         a.toggle_output("DP-3", Instant::now());
@@ -1362,7 +1362,7 @@ mod tests {
         a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
         assert_eq!(a.tab, Tab::Ecrans);
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])], "lecture d'abord, rien d'appliqué");
-        a.on_update(Update::Displays(Ok(poste())), Instant::now());
+        a.on_update(Update::Displays(Ok(machine())), Instant::now());
         let (plan, _) = sent_trial(&mut a);
         assert!(plan.touches("DVI-I-1"));
         assert_eq!(a.ecrans.queued_profile, None);
@@ -1376,7 +1376,7 @@ mod tests {
         a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
         assert_eq!(a.ecrans.queued_profile, None);
         // Une lecture réussie bien plus tard n'applique rien.
-        a.on_update(Update::Displays(Ok(poste())), Instant::now());
+        a.on_update(Update::Displays(Ok(machine())), Instant::now());
         assert!(sans_do(&mut a), "profil abandonné avec la lecture échouée");
         assert_eq!(a.ecrans.trial, None);
     }
@@ -1384,7 +1384,7 @@ mod tests {
     #[test]
     fn ecran_du_profil_absent_signale() {
         let mut a = ecrans();
-        a.data.displays = Loadable::Ready(vec![poste()[0].clone(), poste()[1].clone()]);
+        a.data.displays = Loadable::Ready(vec![machine()[0].clone(), machine()[1].clone()]);
         a.apply_display_profile("Bureau", Instant::now());
         assert_eq!(a.ecrans.trial.as_ref().unwrap().notes, vec!["Bravo absent, ignoré"]);
     }
@@ -1392,7 +1392,7 @@ mod tests {
     #[test]
     fn profil_deja_en_place() {
         let mut a = ecrans();
-        a.ecrans.profiles = vec![from_outputs("Ici", &poste())];
+        a.ecrans.profiles = vec![from_outputs("Ici", &machine())];
         a.apply_display_profile("Ici", Instant::now());
         assert!(a.take_requests().is_empty());
         assert_eq!(a.ecrans.trial, None);
@@ -1475,7 +1475,7 @@ mod tests {
         let mut p = panel(&a);
         p.place = PlaceChoice::Rel(Relation::Below);
         a.overlay = Overlay::Panel(p.clone());
-        assert_eq!(a.panel_preview(&p), Err("Portable et Bravo se chevauchent".into()));
+        assert_eq!(a.panel_preview(&p), Err("Laptop and Bravo overlap".into()));
         a.panel_apply(Instant::now());
         assert!(a.take_requests().is_empty(), "Appliquer grisé : rien n'est envoyé");
         assert!(matches!(a.overlay, Overlay::Panel(_)));
@@ -1540,7 +1540,7 @@ mod tests {
         let mut a = ecrans();
         a.open_panel("HDMI-A-1", Instant::now());
         let p = panel(&a);
-        let sans: Vec<Output> = poste().into_iter().filter(|o| o.name != "HDMI-A-1").collect();
+        let sans: Vec<Output> = machine().into_iter().filter(|o| o.name != "HDMI-A-1").collect();
         a.data.displays = Loadable::Ready(sans.clone());
         assert_eq!(a.panel_preview(&p), Err("sortie débranchée".into()));
         a.on_update(Update::Displays(Ok(sans)), Instant::now());
@@ -1551,7 +1551,7 @@ mod tests {
     #[test]
     fn sortie_eteinte_reglee_puis_allumee() {
         let mut a = ecrans();
-        let mut outs = poste();
+        let mut outs = machine();
         outs.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
         a.data.displays = Loadable::Ready(outs);
         a.open_panel("DP-3", Instant::now());
@@ -1563,8 +1563,8 @@ mod tests {
 
     /// Le poste, dalle interne éteinte : l'agencement commence en (213, 0).
     fn sans_portable() -> Vec<Output> {
-        let mut outs = poste();
-        outs[0] = off("eDP-1", INTERNE);
+        let mut outs = machine();
+        outs[0] = off("eDP-1", INTERNAL);
         outs
     }
 
@@ -1607,7 +1607,7 @@ mod tests {
         let at = |o: &str| plan.steps.iter().find(|s| s.output == o).and_then(|s| s.active.as_ref().map(|a| (a.x, a.y)));
         assert_eq!((at("DVI-I-1"), at("HDMI-A-1")), (Some((213, 0)), Some((1749, 0))));
         // Dalle seule, en 0, 1080.
-        a.data.displays = Loadable::Ready(vec![poste()[0].clone()]);
+        a.data.displays = Loadable::Ready(vec![machine()[0].clone()]);
         a.open_panel("eDP-1", Instant::now());
         assert_eq!(a.panel_preview(&panel(&a)), Err("aucun changement".into()));
     }
@@ -1664,7 +1664,7 @@ mod tests {
         a.save_enter(Instant::now());
         assert_eq!(a.overlay, Overlay::None);
         assert_eq!(a.ecrans.profiles.len(), 3);
-        assert_eq!(a.ecrans.profiles[2], from_outputs("Maison", &poste()));
+        assert_eq!(a.ecrans.profiles[2], from_outputs("Maison", &machine()));
         assert_eq!(profiles::load(&path), (a.ecrans.profiles.clone(), None), "écrit sur le disque");
         assert!(a.toasts.iter().any(|t| t.text == "Profil « Maison » enregistré"));
     }
@@ -1683,7 +1683,7 @@ mod tests {
         a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: true });
         a.save_enter(Instant::now());
         assert_eq!(a.ecrans.profiles.len(), 2);
-        assert_eq!(a.ecrans.profiles[1], from_outputs("Bureau", &poste()));
+        assert_eq!(a.ecrans.profiles[1], from_outputs("Bureau", &machine()));
     }
 
     #[test]
@@ -1716,8 +1716,8 @@ mod tests {
 
     #[test]
     fn libelles_de_placement() {
-        assert_eq!(placement_labels(&poste()), vec!["position 0, 1080", "origine", "à droite de Alpha"]);
+        assert_eq!(placement_labels(&machine()), vec!["position 0, 1080", "origine", "right of Alpha"]);
         let outs = vec![on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 800, 600, 560, 1080), off("DP-3", "Charlie 3")];
-        assert_eq!(placement_labels(&outs), vec!["origine", "en dessous de Alpha, centré", ""]);
+        assert_eq!(placement_labels(&outs), vec!["origine", "below Alpha, centered", ""]);
     }
 }
