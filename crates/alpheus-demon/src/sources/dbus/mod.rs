@@ -375,6 +375,27 @@ fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState, log_stat
 /// re-review) — it must outlive this one call to do that, so it's the
 /// caller's (`start`'s closure persists across every backoff round;
 /// `session`'s own locals, like `s`, do not).
+/// Calls `publish` only when `s` differs from the last state actually
+/// published (B-m6, review): a signal that passed `relevant`'s allowlist
+/// can still leave every field `session` tracks unchanged (two different
+/// allowed properties parsing to the same `SystemState`, a duplicate
+/// signal…), and publishing it anyway would reach the bar's channel, and
+/// cost a redraw, for nothing. `last` starts at `None`, which no real
+/// `SystemState` equals, so the very first call always publishes — the bar
+/// must leave "…" (Waiting) even when every domain reads as absent.
+/// Returns what `publish` returned, or `true` (nothing to report) when
+/// skipped; `last` is only updated on an actual, accepted publish.
+fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: &mut dyn FnMut(SystemState) -> bool) -> bool {
+    if last.as_ref() == Some(s) {
+        return true;
+    }
+    let ok = publish(s.clone());
+    if ok {
+        *last = Some(s.clone());
+    }
+    ok
+}
+
 pub fn session(
     bus: &mut dyn Bus,
     domains: &[Domain],
@@ -382,8 +403,9 @@ pub fn session(
     publish: &mut dyn FnMut(SystemState) -> bool,
 ) -> io::Result<()> {
     let mut s = SystemState { network: None, bluetooth: None, battery: None };
+    let mut last = None;
     let failed = read_all(bus, domains, &mut s, log_state);
-    if !publish(s.clone()) {
+    if !publish_if_changed(&mut last, &s, publish) {
         return Ok(());
     }
     // Right after the initial publish (follow-up, re-review): the startup
@@ -411,7 +433,7 @@ pub fn session(
             // re-read every shown domain, not just the one a match rule
             // would otherwise point to.
             let failed = read_all(bus, domains, &mut s, log_state);
-            if !publish(s.clone()) {
+            if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
             if let Some(e) = failed {
@@ -421,7 +443,7 @@ pub fn session(
         }
         let Some(d) = signal.domain().filter(|d| domains.contains(d)) else { continue };
         let r = read(bus, d, &mut s, log_state);
-        if !publish(s.clone()) {
+        if !publish_if_changed(&mut last, &s, publish) {
             return Ok(());
         }
         r?;
@@ -620,6 +642,23 @@ mod tests {
         assert_eq!(seen[1].battery, Some(workstation_battery()), "other domains carried along");
         assert!(matches!(&seen[2].bluetooth, Some(BtState::On { devices }) if devices.len() == 2), "{:?}", seen[2]);
         assert_eq!(seen[3].battery, Some(PowerState::default()), "UPower gone: nothing to show");
+    }
+
+    /// A signal can pass `relevant`'s allowlist (or carry no property names
+    /// at all, counted as "unknown change") and still leave every field
+    /// `session` tracks unchanged — a duplicate signal, or two different
+    /// allowed properties that both parse to the same value (B-m6, review).
+    #[test]
+    fn an_unchanged_state_is_not_republished() {
+        let mut bus = FakeBus::workstation();
+        let steps: [Step; 2] = [
+            (signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing),
+            (signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing),
+        ];
+        bus.script = VecDeque::from(steps);
+        let (seen, r) = run(&mut bus);
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(seen.len(), 1, "two relevant signals that change nothing: only the initial publish");
     }
 
     #[test]
