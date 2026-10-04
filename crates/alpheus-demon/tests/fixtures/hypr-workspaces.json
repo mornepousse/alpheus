@@ -1,0 +1,5 @@
+[
+  {"id": 1, "name": "1", "monitor": "eDP-1", "monitorID": 0, "windows": 0, "hasfullscreen": false, "lastwindow": "0x0", "lastwindowtitle": "", "ispersistent": false, "tiledLayout": "dwindle"},
+  {"id": 3, "name": "3", "monitor": "DVI-I-1", "monitorID": 2, "windows": 2, "hasfullscreen": false, "lastwindow": "0x583d9d5fd540", "lastwindowtitle": "Page web — Mozilla Firefox", "ispersistent": false, "tiledLayout": "dwindle"},
+  {"id": 2, "name": "2", "monitor": "HDMI-A-1", "monitorID": 1, "windows": 1, "hasfullscreen": false, "lastwindow": "0x583d9c60da90", "lastwindowtitle": "Page web — Mozilla Firefox", "ispersistent": false, "tiledLayout": "dwindle"}
+]

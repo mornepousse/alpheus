@@ -1,0 +1,5 @@
+[
+  {"address": "0x583d9d5fd540", "mapped": true, "hidden": false, "at": [1178, 50], "size": [945, 1020], "workspace": {"id": 3, "name": "3"}, "floating": false, "monitor": 2, "class": "firefox", "title": "Page web — Mozilla Firefox", "initialClass": "firefox", "initialTitle": "Mozilla Firefox", "pid": 4242, "xwayland": false, "fullscreen": 0, "focusHistoryID": 1},
+  {"address": "0x583d9c701c60", "mapped": true, "hidden": false, "at": [223, 50], "size": [945, 1020], "workspace": {"id": 3, "name": "3"}, "floating": false, "monitor": 2, "class": "Alacritty", "title": "~/projets — zsh", "initialClass": "Alacritty", "initialTitle": "Alacritty", "pid": 4243, "xwayland": false, "fullscreen": 0, "focusHistoryID": 2},
+  {"address": "0x583d9c60da90", "mapped": true, "hidden": false, "at": [2143, 50], "size": [1900, 1020], "workspace": {"id": 2, "name": "2"}, "floating": false, "monitor": 1, "class": "firefox", "title": "Page web — Mozilla Firefox", "initialClass": "firefox", "initialTitle": "Mozilla Firefox", "pid": 4242, "xwayland": false, "fullscreen": 0, "focusHistoryID": 0}
+]

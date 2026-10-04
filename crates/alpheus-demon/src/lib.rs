@@ -4,5 +4,6 @@
 //! une grille de cellules dessinée par cosmic-text dans une surface
 //! layer-shell par écran.
 
+pub mod compositeur;
 pub mod config;
 pub mod heure;

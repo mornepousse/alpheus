@@ -1,0 +1,5 @@
+[
+  {"id": 0, "name": "eDP-1", "description": "Fabricant Modèle 0", "make": "Fabricant", "model": "Modèle 0", "width": 2560, "height": 1600, "refreshRate": 60.00100, "x": 0, "y": 1080, "activeWorkspace": {"id": 1, "name": "1"}, "specialWorkspace": {"id": 0, "name": ""}, "reserved": [0, 40, 0, 0], "scale": 1.00, "transform": 0, "focused": false, "disabled": false},
+  {"id": 2, "name": "DVI-I-1", "description": "Fabricant Modèle 2", "make": "Fabricant", "model": "Modèle 2", "width": 1920, "height": 1080, "refreshRate": 59.93400, "x": 213, "y": 0, "activeWorkspace": {"id": 3, "name": "3"}, "specialWorkspace": {"id": 0, "name": ""}, "reserved": [0, 40, 0, 0], "scale": 1.00, "transform": 0, "focused": false, "disabled": false},
+  {"id": 1, "name": "HDMI-A-1", "description": "Fabricant Modèle 1", "make": "Fabricant", "model": "Modèle 1", "width": 1920, "height": 1080, "refreshRate": 239.75999, "x": 2133, "y": 0, "activeWorkspace": {"id": 2, "name": "2"}, "specialWorkspace": {"id": 0, "name": ""}, "reserved": [0, 40, 0, 0], "scale": 1.00, "transform": 0, "focused": true, "disabled": false}
+]

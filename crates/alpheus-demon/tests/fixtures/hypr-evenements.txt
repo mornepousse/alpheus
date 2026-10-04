@@ -1,0 +1,13 @@
+windowtitle>>583d9c60da90
+windowtitlev2>>583d9c60da90,Autre page — Mozilla Firefox
+activewindow>>firefox,Autre page — Mozilla Firefox
+activewindowv2>>583d9c60da90
+urgent>>583d9d5fd540
+focusedmon>>DVI-I-1,3
+focusedmonv2>>DVI-I-1,3
+workspace>>3
+workspacev2>>3,3
+activewindow>>Alacritty,~/projets — zsh
+activewindowv2>>583d9c701c60
+openwindow>>583d9c8a1b20,3,Alacritty,~
+closewindow>>583d9c8a1b20
