@@ -1,5 +1,6 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
+assertion_line: 504
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
@@ -10,16 +11,16 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
     ┌──Alpha───┐┌──Bravo──┐                                                     
     │    2     ││    3    │                                                     
     └──────────┘└─────────┘                                                     
-   ┌──Portable───┐                                                              
+   ┌───Laptop────┐                                                              
    │             │                                                              
    │      1      │                                                              
    │             │                                                              
    └─────────────┘                                                              
                                                                                 
  Écrans                                                                         
-   1 Portable   eDP-1     [■] activé    2560×1600@60  échelle 1.0  position 0,… 
+   1 Laptop     eDP-1     [■] activé    2560×1600@60  échelle 1.0  position 0,… 
    2 Alpha      DVI-I-1 ⚠ [■] activé    1920×1080@60  échelle 1.0  origine      
-   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  à droite de… 
+   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  right of Al… 
                                                                                 
                                                                                 
                                                                                 

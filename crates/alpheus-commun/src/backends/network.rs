@@ -1,4 +1,4 @@
-//! Réseau : NetworkManager via nmcli (mode « terse » -t).
+//! Network: NetworkManager via nmcli ("terse" mode -t).
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -9,7 +9,7 @@ const TOOL: &str = "nmcli";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
     pub name: String,
-    /// Libellé lisible : Wi-Fi, Ethernet, WireGuard…
+    /// Readable label: Wi-Fi, Ethernet, WireGuard…
     pub kind: String,
     pub device: String,
 }
@@ -47,7 +47,7 @@ impl Network for NmCli {
     }
 }
 
-/// Champs séparés par « : » ; « : » et « \ » d'un champ sont échappés par « \ ».
+/// Fields separated by ":"; a field's ":" and "\" are escaped with "\".
 pub fn split_terse(line: &str) -> Vec<String> {
     let mut fields = vec![String::new()];
     let mut chars = line.chars();
@@ -69,7 +69,7 @@ pub fn parse_radio(out: &str) -> BResult<bool> {
     match out.trim() {
         "enabled" => Ok(true),
         "disabled" => Ok(false),
-        other => Err(unparsable(TOOL, format!("état radio « {other} »"))),
+        other => Err(unparsable(TOOL, format!("radio state `{other}`"))),
     }
 }
 
@@ -90,7 +90,7 @@ pub fn parse_active(out: &str) -> BResult<Vec<Connection>> {
     for line in out.lines().filter(|l| !l.trim().is_empty()) {
         let f = split_terse(line);
         if f.len() != 3 {
-            return Err(unparsable(TOOL, format!("{} champs au lieu de 3", f.len())));
+            return Err(unparsable(TOOL, format!("{} fields instead of 3", f.len())));
         }
         if f[1] == "loopback" {
             continue;
@@ -108,13 +108,13 @@ mod tests {
     const ACTIVE: &str = include_str!("../../tests/fixtures/nmcli-active.txt");
 
     #[test]
-    fn decoupe_avec_echappements() {
+    fn splits_with_escapes() {
         assert_eq!(split_terse(r"a\:b:c\\d:e"), vec!["a:b", r"c\d", "e"]);
-        assert_eq!(split_terse("seul"), vec!["seul"]);
+        assert_eq!(split_terse("alone"), vec!["alone"]);
     }
 
     #[test]
-    fn connexions_actives_reelles_sans_loopback() {
+    fn real_active_connections_without_loopback() {
         let c = parse_active(ACTIVE).unwrap();
         assert_eq!(c.len(), 4);
         assert_eq!(c[0], Connection { name: "Wired connection 1".into(), kind: "Ethernet".into(), device: "enp0s0u1u2i10".into() });
@@ -124,8 +124,8 @@ mod tests {
     }
 
     #[test]
-    fn ligne_au_mauvais_format() {
-        assert!(parse_active("juste:deux\n").is_err());
+    fn badly_formatted_line() {
+        assert!(parse_active("just:two\n").is_err());
     }
 
     #[test]
@@ -136,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("nmcli -t radio wifi", "enabled\n");
         f.ok("nmcli -t -f NAME,TYPE,DEVICE connection show --active", ACTIVE);

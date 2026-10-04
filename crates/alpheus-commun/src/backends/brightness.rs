@@ -1,4 +1,4 @@
-//! Luminosité de l'écran interne : brightnessctl (classe backlight).
+//! Internal screen brightness: brightnessctl (backlight class).
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 const TOOL: &str = "brightnessctl";
 
-/// Plancher : 0 % éteint le rétroéclairage, ce qui revient à éteindre
-/// l'écran, et alpheus ne fait jamais ça.
+/// Floor: 0% turns off the backlight, which amounts to turning off the
+/// screen, and alpheus never does that.
 pub const MIN_PERCENT: u8 = 1;
 
 pub trait Brightness: Send + Sync {
@@ -36,17 +36,17 @@ impl Brightness for BrightnessCtl {
     }
 }
 
-/// `intel_backlight,backlight,3879,20%,19393` : actuel et maximum.
+/// `intel_backlight,backlight,3879,20%,19393`: current and maximum.
 pub fn parse_machine(out: &str) -> BResult<u8> {
-    let line = out.lines().next().ok_or_else(|| unparsable(TOOL, "sortie vide"))?;
+    let line = out.lines().next().ok_or_else(|| unparsable(TOOL, "empty output"))?;
     let f: Vec<&str> = line.split(',').collect();
     if f.len() < 5 {
-        return Err(unparsable(TOOL, format!("{} champs au lieu de 5", f.len())));
+        return Err(unparsable(TOOL, format!("{} fields instead of 5", f.len())));
     }
-    let cur: u64 = f[2].trim().parse().map_err(|_| unparsable(TOOL, format!("valeur « {} »", f[2])))?;
-    let max: u64 = f[4].trim().parse().map_err(|_| unparsable(TOOL, format!("maximum « {} »", f[4])))?;
+    let cur: u64 = f[2].trim().parse().map_err(|_| unparsable(TOOL, format!("value `{}`", f[2])))?;
+    let max: u64 = f[4].trim().parse().map_err(|_| unparsable(TOOL, format!("maximum `{}`", f[4])))?;
     if max == 0 {
-        return Err(unparsable(TOOL, "maximum nul"));
+        return Err(unparsable(TOOL, "zero maximum"));
     }
     Ok(((cur * 100 + max / 2) / max).min(100) as u8)
 }
@@ -57,20 +57,20 @@ mod tests {
     use crate::exec::fake::FakeExecutor;
 
     #[test]
-    fn analyse_la_sortie_reelle() {
+    fn parses_the_real_output() {
         assert_eq!(parse_machine("intel_backlight,backlight,3879,20%,19393\n").unwrap(), 20);
         assert_eq!(parse_machine("x,backlight,19393,100%,19393\n").unwrap(), 100);
     }
 
     #[test]
-    fn sortie_illisible() {
+    fn unreadable_output() {
         assert!(parse_machine("").is_err());
         assert!(parse_machine("a,b").is_err());
-        assert!(parse_machine("x,backlight,5,0%,0").is_err()); // maximum nul
+        assert!(parse_machine("x,backlight,5,0%,0").is_err()); // zero maximum
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("brightnessctl -m --class=backlight info", "intel_backlight,backlight,3879,20%,19393\n");
         f.ok("brightnessctl --class=backlight set 35%", "");
@@ -80,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn set_borne_a_1_pour_cent() {
+    fn set_is_clamped_to_1_percent() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("brightnessctl --class=backlight set 1%", "");
         f.ok("brightnessctl --class=backlight set 100%", "");

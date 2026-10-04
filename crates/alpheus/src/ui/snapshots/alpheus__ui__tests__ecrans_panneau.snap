@@ -1,5 +1,6 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
+assertion_line: 493
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
@@ -10,16 +11,16 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
     ┌──Alpha───┐┌──Bravo──┐                                                     
     │    2┌ Réglage — Bravo (HDMI-A-1) ──────────────────────────────┐          
     └─────│ ▶ Mode         ◀ 1920×1080@240  2/2 ▶                    │          
-   ┌──Port│   Échelle      ◀ 1.0 ▶                                   │          
+   ┌───Lap│   Échelle      ◀ 1.0 ▶                                   │          
    │      │   Rotation     ◀ 0° ▶                                    │          
-   │      │   Placement    ◀ à droite de ▶                           │          
+   │      │   Placement    ◀ right of ▶                              │          
    │      │   Référence    ◀ Alpha ▶                                 │          
-   └──────│   Alignement   ◀ en haut ▶                               │          
+   └──────│   Alignement   ◀ top ▶                                   │          
           │   ✗ aucun changement                                     │          
  Écrans   │                                                          │          
-   1 Porta│ [ Annuler ]  [ Appliquer ]                               │ition 0,… 
+   1 Lapto│ [ Annuler ]  [ Appliquer ]                               │ition 0,… 
  ▶ 2 Alpha└──────────────────────────────────────────────────────────┘gine      
-   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  à droite de… 
+   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  right of Al… 
                                                                                 
                                                                                 
                                                                                 

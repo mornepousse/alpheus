@@ -1,5 +1,5 @@
-//! Ne pas déranger : shell-ctl (nixos-config), qui route vers mako ou DMS
-//! selon la pile de bureau. alpheus ne parle jamais directement au démon.
+//! Do not disturb: shell-ctl (nixos-config), which routes to mako or DMS
+//! depending on the desktop stack. alpheus never talks directly to the daemon.
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -27,7 +27,7 @@ impl Notifications for ShellCtl {
         match run_ok(&*self.exec, TOOL, &["dnd-status"])?.trim() {
             "on" => Ok(true),
             "off" => Ok(false),
-            other => Err(unparsable(TOOL, format!("état « {other} »"))),
+            other => Err(unparsable(TOOL, format!("state `{other}`"))),
         }
     }
 
@@ -43,19 +43,19 @@ mod tests {
     use crate::exec::fake::FakeExecutor;
 
     #[test]
-    fn lit_l_etat() {
+    fn reads_the_state() {
         let f = Arc::new(FakeExecutor::new());
         let n = ShellCtl::new(f.clone());
         f.ok("shell-ctl dnd-status", "on\n");
         assert_eq!(n.dnd(), Ok(true));
         f.ok("shell-ctl dnd-status", "off\n");
         assert_eq!(n.dnd(), Ok(false));
-        f.ok("shell-ctl dnd-status", "peut-être\n");
+        f.ok("shell-ctl dnd-status", "maybe\n");
         assert!(matches!(n.dnd(), Err(BackendError::Unparsable { .. })));
     }
 
     #[test]
-    fn bascule() {
+    fn toggles() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("shell-ctl dnd-on", "");
         f.ok("shell-ctl dnd-off", "");

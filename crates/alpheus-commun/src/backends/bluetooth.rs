@@ -1,4 +1,4 @@
-//! Bluetooth : bluetoothctl.
+//! Bluetooth: bluetoothctl.
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -45,25 +45,25 @@ impl Bluetooth for BluetoothCtl {
     }
 }
 
-/// Champ `Powered: yes|no` du contrôleur par défaut.
+/// `Powered: yes|no` field of the default controller.
 pub fn parse_show(out: &str) -> BResult<bool> {
     for line in out.lines() {
         if let Some(v) = line.trim().strip_prefix("Powered:") {
             return match v.trim() {
                 "yes" => Ok(true),
                 "no" => Ok(false),
-                other => Err(unparsable(TOOL, format!("Powered « {other} »"))),
+                other => Err(unparsable(TOOL, format!("Powered `{other}`"))),
             };
         }
     }
     if out.contains("No default controller") {
-        Err(unparsable(TOOL, "aucun contrôleur Bluetooth"))
+        Err(unparsable(TOOL, "no Bluetooth controller"))
     } else {
-        Err(unparsable(TOOL, "champ « Powered » absent"))
+        Err(unparsable(TOOL, "missing `Powered` field"))
     }
 }
 
-/// Lignes `Device <MAC> <nom>` ; les autres sont ignorées.
+/// `Device <MAC> <name>` lines; others are ignored.
 pub fn parse_devices(out: &str) -> Vec<BtDevice> {
     out.lines()
         .filter_map(|l| l.trim().strip_prefix("Device "))
@@ -81,26 +81,26 @@ mod tests {
     const DEVICES: &str = include_str!("../../tests/fixtures/bluetoothctl-devices.txt");
 
     #[test]
-    fn show_reel() {
+    fn real_show() {
         assert_eq!(parse_show(SHOW), Ok(true));
         assert_eq!(parse_show("Controller x\n\tPowered: no\n"), Ok(false));
     }
 
     #[test]
-    fn sans_controleur() {
+    fn no_controller() {
         let e = parse_show("No default controller available\n").unwrap_err();
-        assert!(e.to_string().contains("contrôleur"), "{e}");
+        assert!(e.to_string().contains("controller"), "{e}");
         assert!(parse_show("Controller x\n").is_err());
     }
 
     #[test]
-    fn appareils_reels() {
+    fn real_devices() {
         assert_eq!(parse_devices(DEVICES), vec![BtDevice { mac: "AA:BB:CC:DD:EE:01".into(), name: "CasqueBT".into() }]);
         assert!(parse_devices("Waiting to connect to bluetoothd...\n").is_empty());
     }
 
     #[test]
-    fn eteint_ne_liste_pas_les_appareils() {
+    fn powered_off_does_not_list_devices() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("bluetoothctl show", "Controller x\n\tPowered: no\n");
         let st = BluetoothCtl::new(f.clone()).status().unwrap();
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("bluetoothctl show", SHOW);
         f.ok("bluetoothctl devices Connected", DEVICES);

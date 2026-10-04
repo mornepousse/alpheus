@@ -1,5 +1,5 @@
-//! Alimentation de la session. Verrouiller : hyprlock détaché ; quitter la
-//! session : wm-set (jamais le compositeur en direct) ; le reste : systemctl.
+//! Session power. Lock: detached hyprlock; log out of the session: wm-set
+//! (never the compositor directly); the rest: systemctl.
 
 use super::{BResult, run_ok, spawn_ok};
 use crate::exec::Executor;
@@ -20,26 +20,26 @@ impl PowerAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            PowerAction::Lock => "Verrouiller",
-            PowerAction::Logout => "Se déconnecter",
-            PowerAction::Suspend => "Veille",
-            PowerAction::Reboot => "Redémarrer",
-            PowerAction::Poweroff => "Éteindre",
+            PowerAction::Lock => "Lock",
+            PowerAction::Logout => "Log out",
+            PowerAction::Suspend => "Suspend",
+            PowerAction::Reboot => "Reboot",
+            PowerAction::Poweroff => "Power off",
         }
     }
 
-    /// Question de la boîte de confirmation.
+    /// Confirmation dialog's question.
     pub fn question(self) -> &'static str {
         match self {
-            PowerAction::Lock => "Verrouiller la session ?",
-            PowerAction::Logout => "Fermer la session ?",
-            PowerAction::Suspend => "Mettre en veille ?",
-            PowerAction::Reboot => "Redémarrer l'ordinateur ?",
-            PowerAction::Poweroff => "Éteindre l'ordinateur ?",
+            PowerAction::Lock => "Lock the session?",
+            PowerAction::Logout => "Log out of the session?",
+            PowerAction::Suspend => "Suspend?",
+            PowerAction::Reboot => "Restart the computer?",
+            PowerAction::Poweroff => "Shut down the computer?",
         }
     }
 
-    /// Confirmation obligatoire : ce qui ferme la session ou la machine.
+    /// Confirmation required: whatever closes the session or the machine.
     pub fn needs_confirm(self) -> bool {
         matches!(self, PowerAction::Logout | PowerAction::Reboot | PowerAction::Poweroff)
     }
@@ -78,20 +78,20 @@ mod tests {
     use crate::exec::fake::FakeExecutor;
 
     #[test]
-    fn libelles() {
+    fn labels() {
         let l: Vec<_> = PowerAction::ALL.iter().map(|a| a.label()).collect();
-        assert_eq!(l, vec!["Verrouiller", "Se déconnecter", "Veille", "Redémarrer", "Éteindre"]);
-        assert_eq!(PowerAction::Poweroff.question(), "Éteindre l'ordinateur ?");
+        assert_eq!(l, vec!["Lock", "Log out", "Suspend", "Reboot", "Power off"]);
+        assert_eq!(PowerAction::Poweroff.question(), "Shut down the computer?");
     }
 
     #[test]
-    fn confirmation_pour_deconnexion_redemarrage_extinction() {
+    fn confirmation_for_logout_reboot_and_poweroff() {
         let c: Vec<_> = PowerAction::ALL.iter().filter(|a| a.needs_confirm()).copied().collect();
         assert_eq!(c, vec![PowerAction::Logout, PowerAction::Reboot, PowerAction::Poweroff]);
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         for l in ["hyprlock", "wm-set exit", "systemctl suspend", "systemctl reboot", "systemctl poweroff"] {
             f.ok(l, "");

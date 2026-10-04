@@ -1,12 +1,12 @@
-//! alpheus-commun — socle partagé par la TUI (`alpheus`) et le démon
-//! résident (`alpheus-demon`) : exécuteur injectable, configuration, thème,
-//! backends, écrans. Aucune dépendance d'affichage (ni ratatui, ni
-//! Wayland) : vérifié par tests/frontieres.rs.
+//! alpheus-commun — shared foundation for the TUI (`alpheus`) and the
+//! resident daemon (`alpheus-demon`): injectable executor, configuration,
+//! theme, backends, displays. No display dependency (neither ratatui nor
+//! Wayland): checked by tests/boundaries.rs.
 
-pub mod arret;
 pub mod backends;
-pub mod chemins;
 pub mod config;
 pub mod displays;
 pub mod exec;
+pub mod paths;
+pub mod shutdown;
 pub mod theme;

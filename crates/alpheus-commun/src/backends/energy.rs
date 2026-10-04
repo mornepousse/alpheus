@@ -1,4 +1,4 @@
-//! Énergie : profil (powerprofilesctl) et « Garder éveillé » (tools-menu).
+//! Energy: profile (powerprofilesctl) and "Keep awake" (tools-menu).
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -7,13 +7,15 @@ use std::sync::Arc;
 
 const TOOL: &str = "powerprofilesctl";
 
-/// Drapeau posé par tools-menu dans $XDG_RUNTIME_DIR quand « Garder éveillé » est actif.
+/// Flag dropped by tools-menu in $XDG_RUNTIME_DIR while "Keep awake" is
+/// active. Filename kept as-is: it is the contract with the external
+/// tools-menu script (nixos-config), not translated here.
 pub const KEEP_AWAKE_FLAG: &str = "garder-eveille";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Profiles {
     pub active: String,
-    /// Dans l'ordre de powerprofilesctl (performance, balanced, power-saver).
+    /// In powerprofilesctl's order (performance, balanced, power-saver).
     pub available: Vec<String>,
 }
 
@@ -21,7 +23,8 @@ pub trait Energy: Send + Sync {
     fn profiles(&self) -> BResult<Profiles>;
     fn set_profile(&self, name: &str) -> BResult<()>;
     fn keep_awake(&self) -> BResult<bool>;
-    /// Bascule via tools-menu : la logique (hypridle, Mode gaming) n'est pas dupliquée ici.
+    /// Toggles via tools-menu: the logic (hypridle, gaming mode) is not
+    /// duplicated here.
     fn toggle_keep_awake(&self) -> BResult<()>;
 }
 
@@ -50,11 +53,13 @@ impl Energy for PowerProfiles {
     }
 
     fn toggle_keep_awake(&self) -> BResult<()> {
+        // Argument kept as-is: the exact subcommand name expected by the
+        // external tools-menu script (nixos-config), not translated here.
         run_ok(&*self.exec, "tools-menu", &["Garder éveillé"]).map(|_| ())
     }
 }
 
-/// Lignes de profil : `* nom:` (actif) ou `  nom:` ; les détails sont indentés de 4.
+/// Profile lines: `* name:` (active) or `  name:`; details are indented by 4.
 pub fn parse_list(out: &str) -> BResult<Profiles> {
     let mut active = None;
     let mut available = Vec::new();
@@ -67,7 +72,7 @@ pub fn parse_list(out: &str) -> BResult<Profiles> {
             continue;
         };
         if rest.starts_with(char::is_whitespace) {
-            continue; // détail indenté de 4 (CpuDriver…)
+            continue; // detail indented by 4 (CpuDriver…)
         }
         let Some(name) = rest.trim_end().strip_suffix(':') else { continue };
         if name.is_empty() || name.contains(char::is_whitespace) {
@@ -80,7 +85,7 @@ pub fn parse_list(out: &str) -> BResult<Profiles> {
     }
     match active {
         Some(active) => Ok(Profiles { active, available }),
-        None => Err(unparsable(TOOL, "aucun profil actif")),
+        None => Err(unparsable(TOOL, "no active profile")),
     }
 }
 
@@ -99,27 +104,27 @@ mod tests {
     }
 
     #[test]
-    fn analyse_la_liste_reelle() {
+    fn parses_the_real_list() {
         let p = parse_list(LIST).unwrap();
         assert_eq!(p.active, "balanced");
         assert_eq!(p.available, vec!["performance", "balanced", "power-saver"]);
     }
 
     #[test]
-    fn liste_sans_profil_actif() {
+    fn list_without_an_active_profile() {
         assert!(parse_list("").is_err());
         assert!(parse_list("  performance:\n").is_err());
     }
 
     #[test]
-    fn detail_sans_valeur_ignore() {
-        // Un détail vide (« PlatformDriver:\t ») se termine par « : » une fois rogné.
+    fn detail_without_a_value_ignored() {
+        // An empty detail ("PlatformDriver:\t") ends with ":" once trimmed.
         let p = parse_list("* balanced:\n    PlatformDriver:\t\n  power-saver:\n").unwrap();
         assert_eq!(p.available, vec!["balanced", "power-saver"]);
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("powerprofilesctl list", LIST);
         f.ok("powerprofilesctl set power-saver", "");
@@ -134,8 +139,8 @@ mod tests {
     }
 
     #[test]
-    fn garder_eveille_lit_le_drapeau() {
-        let dir = temp_dir("eveil");
+    fn keep_awake_reads_the_flag() {
+        let dir = temp_dir("awake");
         let e = PowerProfiles::new(Arc::new(FakeExecutor::new()), dir.clone());
         assert_eq!(e.keep_awake(), Ok(false));
         std::fs::write(dir.join(KEEP_AWAKE_FLAG), "").unwrap();

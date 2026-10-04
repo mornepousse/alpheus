@@ -1,12 +1,12 @@
-//! Couleurs : ~/.config/alpheus/colors.toml (modèle matugen), sinon palette
-//! intégrée (Catppuccin Mocha, comme les autres secours du poste).
-//! Indépendant de tout affichage : la TUI convertit en couleurs ratatui
-//! (alpheus::theme), le démon en pixels.
+//! Colors: ~/.config/alpheus/colors.toml (matugen template), otherwise a
+//! built-in palette (Catppuccin Mocha, like the machine's other fallbacks).
+//! Independent of any display: the TUI converts to ratatui colors
+//! (alpheus::theme), the daemon to pixels.
 
 use serde::Deserialize;
 use std::path::Path;
 
-/// Couleur 24 bits.
+/// 24-bit color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
@@ -47,7 +47,7 @@ struct Raw {
     ok: String,
 }
 
-/// `#rrggbb` → couleur ; tout autre format → None (jamais de panique).
+/// `#rrggbb` → color; any other format → None (never a panic).
 pub fn parse_hex(s: &str) -> Option<Rgb> {
     let h = s.strip_prefix('#')?;
     if h.len() != 6 || !h.is_ascii() {
@@ -75,14 +75,14 @@ impl Palette {
     pub fn load(path: &Path) -> (Palette, Option<String>) {
         let s = match std::fs::read_to_string(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Palette::default(), None),
-            Err(e) => return (Palette::default(), Some(format!("colors.toml illisible : {e}"))),
+            Err(e) => return (Palette::default(), Some(format!("colors.toml unreadable: {e}"))),
             Ok(s) => s,
         };
         match toml::from_str::<Raw>(&s) {
-            Err(e) => (Palette::default(), Some(format!("colors.toml invalide : {}", e.message()))),
+            Err(e) => (Palette::default(), Some(format!("invalid colors.toml: {}", e.message()))),
             Ok(raw) => match raw.to_palette() {
                 Some(p) => (p, None),
-                None => (Palette::default(), Some("colors.toml : couleur invalide (attendu #rrggbb)".into())),
+                None => (Palette::default(), Some("colors.toml: invalid color (expected #rrggbb)".into())),
             },
         }
     }
@@ -101,7 +101,7 @@ mod tests {
         p
     }
 
-    const VALIDE: &str = "bg = \"#101010\"\nfg = \"#eeeeee\"\naccent = \"#ff8800\"\nmuted = \"#777777\"\nsurface = \"#202020\"\nerror = \"#ff0000\"\nok = \"#00ff00\"\n";
+    const VALID: &str = "bg = \"#101010\"\nfg = \"#eeeeee\"\naccent = \"#ff8800\"\nmuted = \"#777777\"\nsurface = \"#202020\"\nerror = \"#ff0000\"\nok = \"#00ff00\"\n";
 
     #[test]
     fn hex() {
@@ -109,31 +109,31 @@ mod tests {
         assert_eq!(parse_hex("1e1e2e"), None);
         assert_eq!(parse_hex("#zzzzzz"), None);
         assert_eq!(parse_hex("#12345"), None);
-        assert_eq!(parse_hex("#aééa"), None); // 6 octets non ASCII : pas de découpe au milieu de « é »
+        assert_eq!(parse_hex("#aééa"), None); // 6 non-ASCII bytes: no cut in the middle of « é »
     }
 
     #[test]
-    fn absent_secours_sans_message() {
+    fn absent_falls_back_with_no_message() {
         assert_eq!(Palette::load(Path::new("/nonexistent/colors.toml")), (Palette::default(), None));
     }
 
     #[test]
-    fn fichier_valide() {
-        let (p, w) = Palette::load(&file("valide", VALIDE));
+    fn valid_file() {
+        let (p, w) = Palette::load(&file("valid", VALID));
         assert_eq!(w, None);
         assert_eq!(p.accent, Rgb(0xff, 0x88, 0x00));
     }
 
     #[test]
-    fn couleur_invalide_secours_et_message() {
-        let (p, w) = Palette::load(&file("mauvais", &VALIDE.replace("#ff8800", "orange")));
+    fn invalid_color_falls_back_with_a_message() {
+        let (p, w) = Palette::load(&file("bad", &VALID.replace("#ff8800", "orange")));
         assert_eq!(p, Palette::default());
         assert!(w.unwrap().contains("colors.toml"));
     }
 
     #[test]
-    fn cle_manquante_secours_et_message() {
-        let (p, w) = Palette::load(&file("manque", "bg = \"#101010\"\n"));
+    fn missing_key_falls_back_with_a_message() {
+        let (p, w) = Palette::load(&file("missing", "bg = \"#101010\"\n"));
         assert_eq!(p, Palette::default());
         assert!(w.is_some());
     }

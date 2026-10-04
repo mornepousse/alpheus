@@ -1,6 +1,5 @@
-//! Faux exécuteur pour les tests : réponses programmées, appels journalisés.
-//! Une commande non programmée répond « introuvable » : un test ne peut
-//! JAMAIS atteindre un vrai outil.
+//! Fake executor for tests: programmed responses, logged calls. An
+//! unprogrammed command replies "not found": a test can NEVER reach a real tool.
 
 use super::{ExecError, Executor, Output};
 use std::collections::HashMap;
@@ -19,22 +18,22 @@ impl FakeExecutor {
         Self::default()
     }
 
-    /// Chaque appel `run` dure `delay` (simule un outil lent).
+    /// Every `run` call takes `delay` (simulates a slow tool).
     pub fn with_delay(delay: Duration) -> Self {
         FakeExecutor { delay, ..Self::default() }
     }
 
-    /// Programme la réponse à la ligne de commande exacte « prog arg1 arg2 ».
+    /// Programs the response to the exact command line "prog arg1 arg2".
     pub fn respond(&self, cmdline: &str, r: Result<Output, ExecError>) {
         self.responses.lock().unwrap().insert(cmdline.to_string(), r);
     }
 
-    /// Raccourci : succès avec cette sortie standard.
+    /// Shortcut: success with this standard output.
     pub fn ok(&self, cmdline: &str, stdout: &str) {
         self.respond(cmdline, Ok(Output::ok(stdout)));
     }
 
-    /// Lignes de commande reçues (run et spawn), dans l'ordre.
+    /// Command lines received (run and spawn), in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
@@ -71,14 +70,14 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn commande_non_programmee_introuvable_et_journalisee() {
+    fn unprogrammed_command_not_found_and_logged() {
         let f = FakeExecutor::new();
         assert_eq!(f.run("wpctl", &["status"]), Err(ExecError::NotFound));
         assert_eq!(f.calls(), vec!["wpctl status".to_string()]);
     }
 
     #[test]
-    fn reponse_programmee() {
+    fn programmed_response() {
         let f = FakeExecutor::new();
         f.ok("nmcli -t radio wifi", "enabled\n");
         f.respond("bluetoothctl show", Err(ExecError::Timeout));
@@ -87,16 +86,16 @@ mod tests {
     }
 
     #[test]
-    fn spawn_journalise() {
+    fn spawn_logged() {
         let f = FakeExecutor::new();
         f.ok("hyprlock", "");
         assert_eq!(f.spawn("hyprlock", &[]), Ok(()));
-        assert_eq!(f.spawn("inconnu", &[]), Err(ExecError::NotFound));
-        assert_eq!(f.calls(), vec!["hyprlock".to_string(), "inconnu".to_string()]);
+        assert_eq!(f.spawn("unknown", &[]), Err(ExecError::NotFound));
+        assert_eq!(f.calls(), vec!["hyprlock".to_string(), "unknown".to_string()]);
     }
 
     #[test]
-    fn delai_simule() {
+    fn simulated_delay() {
         let f = FakeExecutor::with_delay(Duration::from_millis(50));
         let t = Instant::now();
         let _ = f.run("wpctl", &["status"]);

@@ -1,7 +1,7 @@
-//! Profils d'écran : ~/.config/alpheus/ecrans.toml. Les écrans y sont
-//! identifiés par leur description (stable d'un branchement à l'autre, le
-//! connecteur ne l'est pas). Fichier absent : aucun profil, sans message ;
-//! fichier invalide : aucun profil + avertissement (comme config.toml).
+//! Display profiles: ~/.config/alpheus/displays.toml. Screens are
+//! identified there by their description (stable from one plug-in to
+//! another, unlike the connector). Absent file: no profile, no message;
+//! invalid file: no profile + a warning (like config.toml).
 
 use super::geometry::{Align, Placed, Placement, Relation, Screen, deduce, logical_size, resolve};
 use super::{Active, Mode, Output, Plan, Scale, short_from_description, short_names};
@@ -12,10 +12,10 @@ use std::path::Path;
 pub struct ProfileScreen {
     pub description: String,
     pub enabled: bool,
-    /// Obligatoire pour un écran actif.
+    /// Required for an active screen.
     pub mode: Option<Mode>,
     pub scale: Scale,
-    /// Rotation Hyprland 0-7 (comme `wm-set monitor`).
+    /// Hyprland rotation 0-7 (as in `wm-set monitor`).
     pub transform: u8,
     pub placement: Placement,
 }
@@ -26,126 +26,128 @@ pub struct Profile {
     pub screens: Vec<ProfileScreen>,
 }
 
-// ── Format du fichier ────────────────────────────────────────────────────
+// ── File format ──────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct FileToml {
     #[serde(default)]
-    profil: Vec<ProfilToml>,
+    profile: Vec<ProfileToml>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProfilToml {
-    nom: String,
+struct ProfileToml {
+    name: String,
     #[serde(default)]
-    ecran: Vec<EcranToml>,
+    display: Vec<DisplayToml>,
 }
 
-fn vrai() -> bool {
+fn default_true() -> bool {
     true
 }
-fn un() -> f64 {
+fn default_scale() -> f64 {
     1.0
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct EcranToml {
+struct DisplayToml {
     description: String,
-    #[serde(default = "vrai")]
-    actif: bool,
+    #[serde(default = "default_true")]
+    enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
-    #[serde(default = "un")]
-    echelle: f64,
+    #[serde(default = "default_scale")]
+    scale: f64,
     #[serde(default)]
     rotation: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    place: Option<PlaceToml>,
+    placement: Option<PlacementToml>,
 }
 
-/// `{ relation, reference, alignement }` ou `{ x, y }` (coordonnées absolues).
+/// `{ relation, reference, align }` or `{ x, y }` (absolute coordinates).
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum PlaceToml {
-    Rel(RelToml),
-    Abs(AbsToml),
+enum PlacementToml {
+    Relative(RelativeToml),
+    Absolute(AbsoluteToml),
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RelToml {
+struct RelativeToml {
     relation: Relation,
     reference: String,
     #[serde(default)]
-    alignement: Align,
+    align: Align,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AbsToml {
+struct AbsoluteToml {
     x: i32,
     y: i32,
 }
 
 fn from_toml(f: FileToml) -> Result<Vec<Profile>, String> {
-    f.profil
+    f.profile
         .into_iter()
         .map(|p| {
             let screens = p
-                .ecran
+                .display
                 .into_iter()
                 .map(|e| {
-                    let ctx = |m: String| format!("profil « {} », {} : {m}", p.nom, short_from_description(&e.description));
+                    let ctx = |m: String| format!("profile `{}`, {}: {m}", p.name, short_from_description(&e.description));
                     let mode = match &e.mode {
                         None => None,
-                        Some(s) => Some(Mode::parse(s).ok_or_else(|| ctx(format!("mode « {s} » illisible")))?),
+                        Some(s) => Some(Mode::parse(s).ok_or_else(|| ctx(format!("unreadable mode `{s}`")))?),
                     };
-                    if e.actif && mode.is_none() {
-                        return Err(ctx("mode manquant".into()));
+                    if e.enabled && mode.is_none() {
+                        return Err(ctx("missing mode".into()));
                     }
-                    let scale = Scale::from_f64(e.echelle).ok_or_else(|| ctx(format!("échelle {} invalide", e.echelle)))?;
+                    let scale = Scale::from_f64(e.scale).ok_or_else(|| ctx(format!("invalid scale {}", e.scale)))?;
                     if e.rotation > 7 {
-                        return Err(ctx(format!("rotation {} invalide (0 à 7)", e.rotation)));
+                        return Err(ctx(format!("invalid rotation {} (0 to 7)", e.rotation)));
                     }
-                    let placement = match e.place {
+                    let placement = match e.placement {
                         None => Placement::Origin,
-                        Some(PlaceToml::Rel(r)) => {
-                            Placement::Relative { relation: r.relation, reference: r.reference, align: r.alignement }
+                        Some(PlacementToml::Relative(r)) => {
+                            Placement::Relative { relation: r.relation, reference: r.reference, align: r.align }
                         }
-                        Some(PlaceToml::Abs(a)) => Placement::Absolute { x: a.x, y: a.y },
+                        Some(PlacementToml::Absolute(a)) => Placement::Absolute { x: a.x, y: a.y },
                     };
-                    Ok(ProfileScreen { description: e.description, enabled: e.actif, mode, scale, transform: e.rotation, placement })
+                    Ok(ProfileScreen { description: e.description, enabled: e.enabled, mode, scale, transform: e.rotation, placement })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            Ok(Profile { name: p.nom, screens })
+            Ok(Profile { name: p.name, screens })
         })
         .collect()
 }
 
 fn to_toml(profiles: &[Profile]) -> FileToml {
     FileToml {
-        profil: profiles
+        profile: profiles
             .iter()
-            .map(|p| ProfilToml {
-                nom: p.name.clone(),
-                ecran: p
+            .map(|p| ProfileToml {
+                name: p.name.clone(),
+                display: p
                     .screens
                     .iter()
-                    .map(|s| EcranToml {
+                    .map(|s| DisplayToml {
                         description: s.description.clone(),
-                        actif: s.enabled,
+                        enabled: s.enabled,
                         mode: s.mode.map(|m| m.to_string()),
-                        echelle: s.scale.as_f64(),
+                        scale: s.scale.as_f64(),
                         rotation: s.transform,
-                        place: match &s.placement {
+                        placement: match &s.placement {
                             Placement::Origin => None,
-                            Placement::Relative { relation, reference, align } => {
-                                Some(PlaceToml::Rel(RelToml { relation: *relation, reference: reference.clone(), alignement: *align }))
-                            }
-                            Placement::Absolute { x, y } => Some(PlaceToml::Abs(AbsToml { x: *x, y: *y })),
+                            Placement::Relative { relation, reference, align } => Some(PlacementToml::Relative(RelativeToml {
+                                relation: *relation,
+                                reference: reference.clone(),
+                                align: *align,
+                            })),
+                            Placement::Absolute { x, y } => Some(PlacementToml::Absolute(AbsoluteToml { x: *x, y: *y })),
                         },
                     })
                     .collect(),
@@ -154,29 +156,29 @@ fn to_toml(profiles: &[Profile]) -> FileToml {
     }
 }
 
-/// Analyse le contenu d'ecrans.toml ; l'erreur est la raison, en français.
+/// Parses the content of displays.toml; the error is the reason.
 pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
     toml::from_str::<FileToml>(text).map_err(|e| e.message().to_string()).and_then(from_toml)
 }
 
-/// Absent → aucun profil, sans message ; illisible ou invalide → aucun
-/// profil + message pour la ligne d'état.
+/// Absent → no profile, no message; unreadable or invalid → no profile +
+/// a message for the status line.
 pub fn load(path: &Path) -> (Vec<Profile>, Option<String>) {
     match std::fs::read_to_string(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
-        Err(e) => (Vec::new(), Some(format!("ecrans.toml illisible : {e}"))),
+        Err(e) => (Vec::new(), Some(format!("displays.toml unreadable: {e}"))),
         Ok(s) => match parse(&s) {
             Ok(p) => (p, None),
-            Err(e) => (Vec::new(), Some(format!("ecrans.toml invalide : {e}"))),
+            Err(e) => (Vec::new(), Some(format!("invalid displays.toml: {e}"))),
         },
     }
 }
 
-/// Écrit tous les profils (dossier créé au besoin ; fichier remplacé d'un
-/// coup, jamais à moitié écrit).
+/// Writes every profile (directory created if needed; file replaced in one
+/// go, never half-written).
 pub fn save(path: &Path, profiles: &[Profile]) -> Result<(), String> {
     let body = toml::to_string(&to_toml(profiles)).map_err(|e| e.to_string())?;
-    let text = format!("# Profils d'écran d'alpheus (onglet Écrans), modifiables à la main.\n\n{body}");
+    let text = format!("# alpheus's display profiles (Displays tab), editable by hand.\n\n{body}");
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
@@ -185,7 +187,7 @@ pub fn save(path: &Path, profiles: &[Profile]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
-/// Écrans posés tels que Hyprland les rapporte (taille logique), pour la déduction.
+/// Screens as laid out by Hyprland's report (logical size), for inference.
 pub fn placed(outs: &[Output]) -> Vec<Placed> {
     outs.iter()
         .map(|o| match &o.active {
@@ -197,7 +199,7 @@ pub fn placed(outs: &[Output]) -> Vec<Placed> {
         .collect()
 }
 
-/// « Enregistrer l'actuel » : un profil qui reproduit l'état courant.
+/// "Save the current layout": a profile that reproduces the current state.
 pub fn from_outputs(name: &str, outs: &[Output]) -> Profile {
     let placements = deduce(&placed(outs), None, None);
     let screens = outs
@@ -225,19 +227,20 @@ pub fn from_outputs(name: &str, outs: &[Output]) -> Profile {
     Profile { name: name.to_string(), screens }
 }
 
-/// Plan d'un profil, et les écrans du profil qui ne sont pas branchés.
+/// A profile's plan, and the profile's screens that are not plugged in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePlan {
     pub plan: Plan,
-    /// Noms courts des écrans du profil absents (« Bravo »), ignorés.
+    /// Short names of the profile's missing screens ("Bravo"), ignored.
     pub absent: Vec<String>,
 }
 
-/// Calcule l'application d'un profil sur les sorties branchées. Un écran du
-/// profil non branché est ignoré (et signalé) ; un écran branché absent du
-/// profil reste tel quel. Un placement dont la référence n'est pas branchée
-/// devient l'origine si aucune autre n'existe, sinon le profil est refusé.
-/// Refusé aussi s'il ne laisse aucun écran actif, ou si la géométrie refuse.
+/// Computes the application of a profile to the plugged-in outputs. A
+/// profile screen that is not plugged in is ignored (and reported); a
+/// plugged-in output missing from the profile stays as it is. A placement
+/// whose reference is not plugged in becomes the origin if no other one
+/// exists, otherwise the profile is refused. Also refused if it would
+/// leave no screen active, or if the geometry refuses.
 pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String> {
     let labels = short_names(outs);
     let connected = |d: &str| outs.iter().any(|o| o.description == d);
@@ -246,18 +249,18 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
     let in_profile = |o: &Output| p.screens.iter().find(|s| s.description == o.description);
     let mut has_origin = outs.iter().filter_map(in_profile).any(|s| s.enabled && s.placement == Placement::Origin);
     let mut screens = Vec::new();
-    // Réglage visé de chaque sortie activée : mode, échelle, rotation.
+    // Target setting of each enabled output: mode, scale, rotation.
     let mut settings: Vec<Option<(Mode, Scale, u8)>> = Vec::new();
     for (o, label) in outs.iter().zip(&labels) {
         let off = Screen { id: o.description.clone(), label: label.clone(), enabled: false, size: (0, 0), placement: Placement::Origin };
         let (screen, setting) = match in_profile(o) {
             Some(s) if s.enabled => {
-                let mode = s.mode.ok_or_else(|| format!("{label} : mode manquant"))?;
+                let mode = s.mode.ok_or_else(|| format!("{label}: missing mode"))?;
                 let mut placement = s.placement.clone();
                 if let Placement::Relative { reference, .. } = &placement {
                     if !connected(reference) {
                         if has_origin {
-                            return Err(format!("{label} est placé par rapport à {}, absent", short_from_description(reference)));
+                            return Err(format!("{label} is placed relative to {}, which is missing", short_from_description(reference)));
                         }
                         placement = Placement::Origin;
                         has_origin = true;
@@ -267,7 +270,7 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
                 (Screen { enabled: true, size, placement, ..off }, Some((mode, s.scale, s.transform)))
             }
             Some(_) => (off, None),
-            // Branché mais absent du profil : reste où il est.
+            // Plugged in but missing from the profile: stays where it is.
             None => match &o.active {
                 Some(a) => {
                     let size = logical_size(a.mode, a.scale, a.transform);
@@ -281,7 +284,7 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
         settings.push(setting);
     }
     if !screens.iter().any(|s| s.enabled) {
-        return Err("ce profil désactiverait le dernier écran actif".into());
+        return Err("this profile would turn off the last active screen".into());
     }
     let pos = resolve(&screens).map_err(|e| e.to_string())?;
     let target: Vec<(String, Option<Active>)> = outs
@@ -306,52 +309,52 @@ mod tests {
     use std::path::PathBuf;
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-ecrans-{name}", std::process::id()));
+        let d = std::env::temp_dir().join(format!("alpheus-{}-displays-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
     }
 
-    const BUREAU: &str = r#"
-[[profil]]
-nom = "Bureau"
-[[profil.ecran]]
+    const OFFICE: &str = r#"
+[[profile]]
+name = "Bureau"
+[[profile.display]]
 description = "Alpha Modèle 1 SERIE0001"
 mode = "1920x1080@60"
-[[profil.ecran]]
+[[profile.display]]
 description = "Bravo Modèle 2 SERIE0002"
-actif = true
+enabled = true
 mode = "1920x1080@60"
-echelle = 1.0
+scale = 1.0
 rotation = 0
-place = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001", alignement = "start" }
-[[profil.ecran]]
+placement = { relation = "right_of", reference = "Alpha Modèle 1 SERIE0001", align = "start" }
+[[profile.display]]
 description = "Interne Dalle 0x0001"
-actif = false
+enabled = false
 
-[[profil]]
-nom = "Portable seul"
-[[profil.ecran]]
+[[profile]]
+name = "Portable seul"
+[[profile.display]]
 description = "Interne Dalle 0x0001"
 mode = "2560x1600@60"
-echelle = 1.25
-place = { x = 0, y = 0 }
+scale = 1.25
+placement = { x = 0, y = 0 }
 "#;
 
     fn write(name: &str, content: &str) -> PathBuf {
         let d = dir(name);
         std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("ecrans.toml");
+        let p = d.join("displays.toml");
         std::fs::write(&p, content).unwrap();
         p
     }
 
-    fn bureau() -> Profile {
-        parse(BUREAU).unwrap().remove(0)
+    fn office() -> Profile {
+        parse(OFFICE).unwrap().remove(0)
     }
 
     #[test]
-    fn lecture() {
-        let (p, w) = load(&write("lecture", BUREAU));
+    fn reads() {
+        let (p, w) = load(&write("reads", OFFICE));
         assert_eq!(w, None);
         assert_eq!(p.len(), 2);
         assert_eq!(p[0].name, "Bureau");
@@ -372,81 +375,81 @@ place = { x = 0, y = 0 }
         );
         assert!(!p[0].screens[2].enabled);
         assert_eq!(p[1].screens[0].scale, Scale(1250));
-        assert_eq!(p[1].screens[0].placement, Placement::Absolute { x: 0, y: 0 }, "forme absolue acceptée");
+        assert_eq!(p[1].screens[0].placement, Placement::Absolute { x: 0, y: 0 }, "absolute form accepted");
     }
 
     #[test]
-    fn absent_sans_message() {
-        assert_eq!(load(Path::new("/nonexistent/alpheus/ecrans.toml")), (Vec::new(), None));
+    fn absent_with_no_message() {
+        assert_eq!(load(Path::new("/nonexistent/alpheus/displays.toml")), (Vec::new(), None));
     }
 
     #[test]
-    fn invalide_avec_message() {
-        for (nom, contenu, attendu) in [
-            ("syntaxe", "[[profil]\nnom = 3", "ecrans.toml invalide"),
-            ("champ", "[[profil]]\nnom = \"X\"\ncouleur = 1\n", "couleur"),
+    fn invalid_with_message() {
+        for (name, content, expected) in [
+            ("syntax", "[[profile]\nname = 3", "invalid displays.toml"),
+            ("field", "[[profile]]\nname = \"X\"\ncolor = 1\n", "color"),
             (
                 "mode",
-                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1080p\"\n",
-                "mode « 1080p » illisible",
+                "[[profile]]\nname = \"X\"\n[[profile.display]]\ndescription = \"Alpha 1\"\nmode = \"1080p\"\n",
+                "unreadable mode `1080p`",
             ),
-            ("sans-mode", "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\n", "Alpha : mode manquant"),
+            ("missing-mode", "[[profile]]\nname = \"X\"\n[[profile.display]]\ndescription = \"Alpha 1\"\n", "Alpha: missing mode"),
             (
                 "rotation",
-                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"Alpha 1\"\nmode = \"1920x1080@60\"\nrotation = 90\n",
-                "rotation 90 invalide",
+                "[[profile]]\nname = \"X\"\n[[profile.display]]\ndescription = \"Alpha 1\"\nmode = \"1920x1080@60\"\nrotation = 90\n",
+                "invalid rotation 90",
             ),
             (
                 "relation",
-                "[[profil]]\nnom = \"X\"\n[[profil.ecran]]\ndescription = \"A\"\nmode = \"1920x1080@60\"\nplace = { relation = \"devant\", reference = \"B\" }\n",
-                "ecrans.toml invalide",
+                "[[profile]]\nname = \"X\"\n[[profile.display]]\ndescription = \"A\"\nmode = \"1920x1080@60\"\nplacement = { relation = \"in-front-of\", reference = \"B\" }\n",
+                "invalid displays.toml",
             ),
         ] {
-            let (p, w) = load(&write(nom, contenu));
-            assert!(p.is_empty(), "{nom}");
+            let (p, w) = load(&write(name, content));
+            assert!(p.is_empty(), "{name}");
             let w = w.unwrap_or_default();
-            assert!(w.starts_with("ecrans.toml invalide") && w.contains(attendu), "{nom} : {w}");
+            assert!(w.starts_with("invalid displays.toml") && w.contains(expected), "{name}: {w}");
         }
     }
 
     #[test]
-    fn ecriture_puis_relecture() {
-        let path = dir("ecriture").join("sous-dossier").join("ecrans.toml");
-        let (profils, _) = load(&write("source", BUREAU));
-        save(&path, &profils).unwrap();
-        let (relu, w) = load(&path);
+    fn write_then_reread() {
+        let path = dir("write").join("subdir").join("displays.toml");
+        let (profiles, _) = load(&write("source", OFFICE));
+        save(&path, &profiles).unwrap();
+        let (reread, w) = load(&path);
         assert_eq!(w, None);
-        assert_eq!(relu, profils);
-        let texte = std::fs::read_to_string(&path).unwrap();
-        assert!(texte.starts_with("# Profils d'écran d'alpheus"), "{texte}");
-        assert!(texte.contains("nom = \"Bureau\"") && texte.contains("relation = \"right_of\""), "{texte}");
-        assert!(!path.with_extension("toml.tmp").exists(), "pas de fichier temporaire laissé");
+        assert_eq!(reread, profiles);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# alpheus's display profiles"), "{text}");
+        assert!(text.contains("name = \"Bureau\"") && text.contains("relation = \"right_of\""), "{text}");
+        assert!(!path.with_extension("toml.tmp").exists(), "no temporary file left behind");
     }
 
     #[test]
-    fn enregistrer_l_actuel_deduit_les_placements() {
-        let mut outs = poste();
+    fn save_current_deduces_the_placements() {
+        let mut outs = machine();
         outs.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
-        let p = from_outputs("Maison", &outs);
-        assert_eq!(p.name, "Maison");
+        let p = from_outputs("Home", &outs);
+        assert_eq!(p.name, "Home");
         assert_eq!(p.screens.len(), 4);
-        assert_eq!(p.screens[0].placement, Placement::Absolute { x: -213, y: 1080 }, "non reproductible : absolu");
+        assert_eq!(p.screens[0].placement, Placement::Absolute { x: -213, y: 1080 }, "not reproducible: absolute");
         assert_eq!(p.screens[1].placement, Placement::Origin);
         assert_eq!(
             p.screens[2].placement,
             Placement::Relative { relation: Relation::RightOf, reference: ALPHA.into(), align: Align::Start }
         );
         assert_eq!((p.screens[3].enabled, p.screens[3].mode), (false, None));
-        // Réappliqué tel quel : rien à faire.
+        // Applied again as-is: nothing to do.
         assert_eq!(plan_profile(&p, &outs).unwrap().plan, Plan::default());
     }
 
     #[test]
-    fn profil_applique() {
-        let outs = poste();
-        let pp = plan_profile(&bureau(), &outs).unwrap();
+    fn profile_applied() {
+        let outs = machine();
+        let pp = plan_profile(&office(), &outs).unwrap();
         assert!(pp.absent.is_empty());
-        // Alpha à l'origine (0, 0), Bravo à sa droite, la dalle éteinte en dernier.
+        // Alpha at the origin (0, 0), Bravo to its right, the panel off last.
         assert_eq!(
             pp.plan.steps,
             vec![
@@ -464,21 +467,21 @@ place = { x = 0, y = 0 }
     }
 
     #[test]
-    fn profil_incomplet_ecran_absent_ignore() {
-        // Bravo débranché ; une sortie branchée hors profil reste telle quelle.
-        let outs = vec![poste()[0].clone(), poste()[1].clone(), on("DP-3", "Charlie Modèle 3 SERIE0003", 1280, 1024, 5000, 0)];
-        let pp = plan_profile(&bureau(), &outs).unwrap();
+    fn incomplete_profile_missing_screen_ignored() {
+        // Bravo unplugged; a plugged-in output outside the profile stays as it is.
+        let outs = vec![machine()[0].clone(), machine()[1].clone(), on("DP-3", "Charlie Modèle 3 SERIE0003", 1280, 1024, 5000, 0)];
+        let pp = plan_profile(&office(), &outs).unwrap();
         assert_eq!(pp.absent, vec!["Bravo"]);
-        assert!(!pp.plan.touches("DP-3"), "hors profil : inchangée");
+        assert!(!pp.plan.touches("DP-3"), "outside the profile: unchanged");
         assert!(pp.plan.touches("DVI-I-1") && pp.plan.touches("eDP-1"));
     }
 
     #[test]
-    fn reference_absente_devient_l_origine_si_possible() {
-        // Seul Bravo est branché (avec la dalle) : sa référence Alpha manque,
-        // aucune autre origine active → Bravo devient l'origine.
-        let outs = vec![poste()[0].clone(), poste()[2].clone()];
-        let pp = plan_profile(&bureau(), &outs).unwrap();
+    fn missing_reference_becomes_the_origin_if_possible() {
+        // Only Bravo is plugged in (with the panel): its reference Alpha is
+        // missing, no other active origin → Bravo becomes the origin.
+        let outs = vec![machine()[0].clone(), machine()[2].clone()];
+        let pp = plan_profile(&office(), &outs).unwrap();
         assert_eq!(pp.absent, vec!["Alpha"]);
         assert_eq!(
             pp.plan.steps[0],
@@ -487,31 +490,31 @@ place = { x = 0, y = 0 }
                 active: Some(Active { mode: mode(1920, 1080, 60), x: 0, y: 0, scale: Scale::ONE, transform: 0 })
             }
         );
-        // Une autre origine existe déjà : refus avec la raison.
-        let mut p = bureau();
+        // Another origin already exists: refused with the reason.
+        let mut p = office();
         p.screens[1].placement =
             Placement::Relative { relation: Relation::Below, reference: "Charlie Modèle 3 SERIE0003".into(), align: Align::Start };
-        assert_eq!(plan_profile(&p, &poste()).unwrap_err(), "Bravo est placé par rapport à Charlie, absent");
+        assert_eq!(plan_profile(&p, &machine()).unwrap_err(), "Bravo is placed relative to Charlie, which is missing");
     }
 
     #[test]
-    fn profil_qui_eteindrait_tout_refuse() {
-        // Bureau loin du dock : Alpha et Bravo absents, la dalle éteinte.
-        let outs = vec![poste()[0].clone()];
-        assert_eq!(plan_profile(&bureau(), &outs).unwrap_err(), "ce profil désactiverait le dernier écran actif");
+    fn profile_that_would_turn_everything_off_is_refused() {
+        // Office far from the dock: Alpha and Bravo absent, the panel off.
+        let outs = vec![machine()[0].clone()];
+        assert_eq!(plan_profile(&office(), &outs).unwrap_err(), "this profile would turn off the last active screen");
     }
 
     #[test]
-    fn refus_de_la_geometrie() {
-        let mut p = bureau();
+    fn geometry_refusal() {
+        let mut p = office();
         p.screens[1].placement = Placement::Absolute { x: 100, y: 0 };
-        assert_eq!(plan_profile(&p, &poste()).unwrap_err(), "Alpha et Bravo se chevauchent");
+        assert_eq!(plan_profile(&p, &machine()).unwrap_err(), "Alpha and Bravo overlap");
     }
 
     #[test]
-    fn frequence_arrondie_rien_a_faire() {
-        // Hyprland rapporte 59,934 Hz, lu « @60 » : le profil à 60 Hz est déjà en place.
-        let outs = vec![on("DVI-I-1", ALPHA, 1920, 1080, 0, 0), on("HDMI-A-1", BRAVO, 1920, 1080, 1920, 0), off("eDP-1", INTERNE)];
-        assert_eq!(plan_profile(&bureau(), &outs).unwrap().plan, Plan::default());
+    fn rounded_refresh_rate_nothing_to_do() {
+        // Hyprland reports 59.934 Hz, read as "@60": the 60 Hz profile is already in place.
+        let outs = vec![on("DVI-I-1", ALPHA, 1920, 1080, 0, 0), on("HDMI-A-1", BRAVO, 1920, 1080, 1920, 0), off("eDP-1", INTERNAL)];
+        assert_eq!(plan_profile(&office(), &outs).unwrap().plan, Plan::default());
     }
 }

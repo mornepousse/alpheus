@@ -1,4 +1,4 @@
-//! Son : wpctl (PipeWire / WirePlumber).
+//! Sound: wpctl (PipeWire / WirePlumber).
 
 use super::{BResult, run_ok, unparsable};
 use crate::exec::Executor;
@@ -12,7 +12,7 @@ pub struct Volume {
     pub muted: bool,
 }
 
-/// Une sortie (sink) ou une entrée (source).
+/// An output (sink) or an input (source).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioNode {
     pub id: u32,
@@ -27,7 +27,7 @@ pub struct AudioStatus {
     pub sources: Vec<AudioNode>,
 }
 
-/// Cible d'un réglage de volume.
+/// Target of a volume change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NodeRef {
     DefaultSink,
@@ -35,9 +35,9 @@ pub enum NodeRef {
 }
 
 pub trait Sound: Send + Sync {
-    /// Sorties et entrées audio.
+    /// Audio outputs and inputs.
     fn status(&self) -> BResult<AudioStatus>;
-    /// Volume de la sortie par défaut.
+    /// Volume of the default output.
     fn volume(&self) -> BResult<Volume>;
     fn set_volume(&self, node: NodeRef, percent: u8) -> BResult<()>;
     fn set_default(&self, id: u32) -> BResult<()>;
@@ -68,7 +68,7 @@ impl Sound for WpctlSound {
             NodeRef::Id(id) => id.to_string(),
         };
         let value = format!("{:.2}", f32::from(percent.min(100)) / 100.0);
-        // -l 1.0 : jamais au-delà de 100 %, quoi qu'on lui demande.
+        // -l 1.0: never beyond 100%, whatever is asked of it.
         run_ok(&*self.exec, TOOL, &["set-volume", "-l", "1.0", &target, &value]).map(|_| ())
     }
 
@@ -85,13 +85,13 @@ fn to_percent(s: &str) -> Option<u8> {
     Some((v * 100.0).round().min(255.0) as u8)
 }
 
-/// `Volume: 0.62` ou `Volume: 0.62 [MUTED]`.
+/// `Volume: 0.62` or `Volume: 0.62 [MUTED]`.
 pub fn parse_get_volume(out: &str) -> BResult<Volume> {
-    let rest = out.trim().strip_prefix("Volume:").ok_or_else(|| unparsable(TOOL, "préfixe « Volume: » absent"))?;
+    let rest = out.trim().strip_prefix("Volume:").ok_or_else(|| unparsable(TOOL, "missing `Volume:` prefix"))?;
     let muted = rest.contains("[MUTED]");
     let num = rest.replace("[MUTED]", "");
     let num = num.trim();
-    let percent = to_percent(num).ok_or_else(|| unparsable(TOOL, format!("volume « {num} »")))?;
+    let percent = to_percent(num).ok_or_else(|| unparsable(TOOL, format!("volume `{num}`")))?;
     Ok(Volume { percent, muted })
 }
 
@@ -102,7 +102,7 @@ enum Section {
     Sources,
 }
 
-/// Ligne de nœud, ex. `*  116. CasqueBT   [vol: 0.62]` (cadres déjà retirés).
+/// A node line, e.g. `*  116. CasqueBT   [vol: 0.62]` (frame already stripped).
 fn parse_node(body: &str) -> Option<AudioNode> {
     let (default, rest) = match body.strip_prefix('*') {
         Some(r) => (true, r.trim_start()),
@@ -118,7 +118,7 @@ fn parse_node(body: &str) -> Option<AudioNode> {
     Some(AudioNode { id, name, volume: Volume { percent, muted }, default })
 }
 
-/// Sorties et entrées de la section « Audio » de `wpctl status`.
+/// Outputs and inputs from the "Audio" section of `wpctl status`.
 pub fn parse_status(out: &str) -> BResult<AudioStatus> {
     const FRAME: [char; 5] = [' ', '│', '├', '└', '─'];
     let mut in_audio = false;
@@ -126,7 +126,7 @@ pub fn parse_status(out: &str) -> BResult<AudioStatus> {
     let mut section = Section::Other;
     let mut st = AudioStatus::default();
     for line in out.lines() {
-        // Titres de premier niveau (« Audio », « Video »…) : sans indentation.
+        // Top-level titles ("Audio", "Video"…): no indentation.
         if !line.trim().is_empty() && !line.starts_with(FRAME) {
             in_audio = line.trim() == "Audio";
             seen_audio |= in_audio;
@@ -153,7 +153,7 @@ pub fn parse_status(out: &str) -> BResult<AudioStatus> {
         }
     }
     if !seen_audio {
-        return Err(unparsable(TOOL, "section « Audio » absente"));
+        return Err(unparsable(TOOL, "missing `Audio` section"));
     }
     Ok(st)
 }
@@ -167,7 +167,7 @@ mod tests {
     const STATUS: &str = include_str!("../../tests/fixtures/wpctl-status.txt");
 
     #[test]
-    fn analyse_les_sorties_reelles() {
+    fn parses_the_real_sinks() {
         let st = parse_status(STATUS).unwrap();
         assert_eq!(st.sinks.len(), 6);
         let def: Vec<_> = st.sinks.iter().filter(|n| n.default).collect();
@@ -181,7 +181,7 @@ mod tests {
     }
 
     #[test]
-    fn analyse_les_entrees_sans_defaut_et_ignore_la_video() {
+    fn parses_sources_without_a_default_and_ignores_video() {
         let st = parse_status(STATUS).unwrap();
         assert_eq!(st.sources.len(), 3);
         assert!(st.sources.iter().all(|n| !n.default));
@@ -191,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn noeud_muet() {
+    fn muted_node() {
         let out = "Audio\n ├─ Sinks:\n │  *   50. Casque                [vol: 0.40 MUTED]\n";
         let st = parse_status(out).unwrap();
         assert_eq!(st.sinks[0].volume, Volume { percent: 40, muted: true });
@@ -199,20 +199,20 @@ mod tests {
     }
 
     #[test]
-    fn sans_section_audio_illisible() {
-        assert!(matches!(parse_status("rien d'utile\n"), Err(BackendError::Unparsable { .. })));
+    fn no_audio_section_is_unreadable() {
+        assert!(matches!(parse_status("nothing useful\n"), Err(BackendError::Unparsable { .. })));
     }
 
     #[test]
     fn get_volume() {
         assert_eq!(parse_get_volume("Volume: 0.62\n").unwrap(), Volume { percent: 62, muted: false });
         assert_eq!(parse_get_volume("Volume: 0.30 [MUTED]\n").unwrap(), Volume { percent: 30, muted: true });
-        assert!(parse_get_volume("n'importe quoi").is_err());
+        assert!(parse_get_volume("anything at all").is_err());
         assert!(parse_get_volume("Volume: abc").is_err());
     }
 
     #[test]
-    fn commandes_exactes() {
+    fn exact_commands() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("wpctl get-volume @DEFAULT_AUDIO_SINK@", "Volume: 0.62\n");
         f.ok("wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 0.65", "");
@@ -221,12 +221,12 @@ mod tests {
         let s = WpctlSound::new(f.clone());
         assert_eq!(s.volume().unwrap().percent, 62);
         s.set_volume(NodeRef::DefaultSink, 65).unwrap();
-        s.set_volume(NodeRef::Id(64), 150).unwrap(); // borné à 100 %
+        s.set_volume(NodeRef::Id(64), 150).unwrap(); // clamped to 100%
         s.set_default(116).unwrap();
     }
 
     #[test]
-    fn outil_absent() {
+    fn missing_tool() {
         let s = WpctlSound::new(Arc::new(FakeExecutor::new()));
         assert_eq!(s.status(), Err(BackendError::Missing { tool: "wpctl".into() }));
     }

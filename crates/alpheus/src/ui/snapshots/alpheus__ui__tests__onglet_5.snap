@@ -1,18 +1,19 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
+assertion_line: 504
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
                                                                                 
- ▶ [ Verrouiller ]                                                              
+ ▶ [ Lock ]                                                                     
                                                                                 
-   [ Se déconnecter ]                                                           
+   [ Log out ]                                                                  
                                                                                 
-   [ Veille ]                                                                   
+   [ Suspend ]                                                                  
                                                                                 
-   [ Redémarrer ]                                                               
+   [ Reboot ]                                                                   
                                                                                 
-   [ Éteindre ]                                                                 
+   [ Power off ]                                                                
                                                                                 
                                                                                 
                                                                                 

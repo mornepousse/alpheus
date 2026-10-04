@@ -4,11 +4,10 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Socle commun d'alpheus : exécuteur, configuration, thème, backends, écrans (sans affichage)"
+description = "alpheus's shared foundation: executor, configuration, theme, backends, displays (no display dependency)"
 
 [features]
-# Aides de test (displays::testing…) pour les tests de la TUI ; jamais dans
-# un binaire.
+# Test helpers (displays::testing…) for the TUI's tests; never in a binary.
 testing = []
 
 [dependencies]

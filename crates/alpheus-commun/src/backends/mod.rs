@@ -1,6 +1,6 @@
-//! Une interface (trait) par domaine ; implémentation v1 = outils existants
-//! appelés via l'exécuteur injectable. Un backend D-Bus pourra remplacer une
-//! implémentation sans toucher à `ui`.
+//! One interface (trait) per domain; v1 implementation = existing tools
+//! called through the injectable executor. A D-Bus backend will be able to
+//! replace an implementation without touching `ui`.
 
 use crate::exec::{ExecError, Executor};
 use std::fmt;
@@ -25,7 +25,7 @@ pub use notifications::{Notifications, ShellCtl};
 pub use power::{Power, PowerAction, SessionPower};
 pub use sound::{AudioNode, AudioStatus, NodeRef, Sound, Volume, WpctlSound};
 
-/// Échec d'un backend, affiché tel quel dans l'onglet concerné.
+/// Failure of a backend, displayed as-is in the relevant tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackendError {
     Missing {
@@ -43,9 +43,9 @@ pub enum BackendError {
     Timeout {
         tool: String,
     },
-    /// Retour d'écrans appliqué au mieux : sorties dont l'étape a échoué,
-    /// avec leur erreur, et sorties laissées allumées faute d'avoir pu
-    /// rallumer les autres (leur désactivation n'a pas été tentée).
+    /// Display rollback applied best-effort: outputs whose step failed,
+    /// with their error, and outputs left on because the others could not
+    /// be turned back on (their deactivation was never attempted).
     Incomplete {
         failures: Vec<(String, BackendError)>,
         kept: Vec<String>,
@@ -55,25 +55,25 @@ pub enum BackendError {
 impl fmt::Display for BackendError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BackendError::Missing { tool } => write!(f, "{tool} introuvable"),
-            BackendError::Timeout { tool } => write!(f, "{tool} ne répond pas"),
-            BackendError::Unparsable { tool, detail } => write!(f, "sortie de {tool} illisible : {detail}"),
+            BackendError::Missing { tool } => write!(f, "{tool} not found"),
+            BackendError::Timeout { tool } => write!(f, "{tool} is not responding"),
+            BackendError::Unparsable { tool, detail } => write!(f, "unreadable output from {tool}: {detail}"),
             BackendError::Incomplete { failures, kept } => {
                 let list: Vec<String> = failures
                     .iter()
                     .map(|(out, e)| format!("{out} ({e})"))
-                    .chain(kept.iter().map(|out| format!("{out} (gardé allumé : retour incomplet)")))
+                    .chain(kept.iter().map(|out| format!("{out} (left on: incomplete rollback)")))
                     .collect();
-                write!(f, "retour incomplet : {}", list.join(", "))
+                write!(f, "incomplete rollback: {}", list.join(", "))
             }
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {
-                    Some(c) => write!(f, "{tool} a échoué (code {c})")?,
-                    None => write!(f, "{tool} a échoué")?,
+                    Some(c) => write!(f, "{tool} failed (code {c})")?,
+                    None => write!(f, "{tool} failed")?,
                 }
                 if !first.is_empty() {
-                    write!(f, " : {first}")?;
+                    write!(f, ": {first}")?;
                 }
                 Ok(())
             }
@@ -95,7 +95,7 @@ fn exec_error(tool: &str, e: ExecError) -> BackendError {
     }
 }
 
-/// Lance une commande ; tout ce qui n'est pas un succès devient BackendError.
+/// Runs a command; anything short of a success becomes a BackendError.
 pub(crate) fn run_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<String> {
     match exec.run(prog, args) {
         Ok(out) if out.success() => Ok(out.stdout),
@@ -104,12 +104,12 @@ pub(crate) fn run_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<
     }
 }
 
-/// Lance sans attendre (écran de verrouillage).
+/// Launches without waiting (lock screen).
 pub(crate) fn spawn_ok(exec: &dyn Executor, prog: &str, args: &[&str]) -> BResult<()> {
     exec.spawn(prog, args).map_err(|e| exec_error(prog, e))
 }
 
-/// Tous les backends, partagés entre la boucle et le fil de travail.
+/// All backends, shared between the loop and the worker thread.
 #[derive(Clone)]
 pub struct Backends {
     pub sound: Arc<dyn Sound>,
@@ -123,7 +123,7 @@ pub struct Backends {
 }
 
 impl Backends {
-    /// Backends v1 (outils en ligne de commande). `runtime_dir` = $XDG_RUNTIME_DIR.
+    /// v1 backends (command-line tools). `runtime_dir` = $XDG_RUNTIME_DIR.
     pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
         Backends {
             sound: Arc::new(WpctlSound::new(exec.clone())),
@@ -145,36 +145,36 @@ mod tests {
     use crate::exec::fake::FakeExecutor;
 
     #[test]
-    fn messages_en_francais() {
+    fn messages_in_english() {
         let m = |e: BackendError| e.to_string();
-        assert_eq!(m(BackendError::Missing { tool: "wpctl".into() }), "wpctl introuvable");
-        assert_eq!(m(BackendError::Timeout { tool: "bluetoothctl".into() }), "bluetoothctl ne répond pas");
+        assert_eq!(m(BackendError::Missing { tool: "wpctl".into() }), "wpctl not found");
+        assert_eq!(m(BackendError::Timeout { tool: "bluetoothctl".into() }), "bluetoothctl is not responding");
         assert_eq!(
-            m(BackendError::Failed { tool: "nmcli".into(), code: Some(8), stderr: "Error: boum\nsuite".into() }),
-            "nmcli a échoué (code 8) : Error: boum"
+            m(BackendError::Failed { tool: "nmcli".into(), code: Some(8), stderr: "Error: boom\nmore".into() }),
+            "nmcli failed (code 8): Error: boom"
         );
-        assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: Some(1), stderr: "".into() }), "nmcli a échoué (code 1)");
-        assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: None, stderr: "".into() }), "nmcli a échoué");
-        assert_eq!(m(unparsable("wpctl", "section absente")), "sortie de wpctl illisible : section absente");
+        assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: Some(1), stderr: "".into() }), "nmcli failed (code 1)");
+        assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: None, stderr: "".into() }), "nmcli failed");
+        assert_eq!(m(unparsable("wpctl", "missing section")), "unreadable output from wpctl: missing section");
     }
 
     #[test]
-    fn run_ok_convertit_les_echecs() {
+    fn run_ok_converts_failures() {
         let f = FakeExecutor::new();
-        f.ok("a ok", "sortie");
-        f.respond("a ko", Ok(Output::fail(2, "mal")));
-        f.respond("a lent", Err(ExecError::Timeout));
-        f.respond("a io", Err(ExecError::Io("tube cassé".into())));
-        assert_eq!(run_ok(&f, "a", &["ok"]), Ok("sortie".into()));
-        assert_eq!(run_ok(&f, "a", &["ko"]), Err(BackendError::Failed { tool: "a".into(), code: Some(2), stderr: "mal".into() }));
-        assert_eq!(run_ok(&f, "a", &["lent"]), Err(BackendError::Timeout { tool: "a".into() }));
-        assert_eq!(run_ok(&f, "a", &["io"]), Err(BackendError::Failed { tool: "a".into(), code: None, stderr: "tube cassé".into() }));
-        assert_eq!(run_ok(&f, "absent", &[]), Err(BackendError::Missing { tool: "absent".into() }));
-        assert_eq!(spawn_ok(&f, "absent", &[]), Err(BackendError::Missing { tool: "absent".into() }));
+        f.ok("a ok", "output");
+        f.respond("a ko", Ok(Output::fail(2, "bad")));
+        f.respond("a slow", Err(ExecError::Timeout));
+        f.respond("a io", Err(ExecError::Io("broken pipe".into())));
+        assert_eq!(run_ok(&f, "a", &["ok"]), Ok("output".into()));
+        assert_eq!(run_ok(&f, "a", &["ko"]), Err(BackendError::Failed { tool: "a".into(), code: Some(2), stderr: "bad".into() }));
+        assert_eq!(run_ok(&f, "a", &["slow"]), Err(BackendError::Timeout { tool: "a".into() }));
+        assert_eq!(run_ok(&f, "a", &["io"]), Err(BackendError::Failed { tool: "a".into(), code: None, stderr: "broken pipe".into() }));
+        assert_eq!(run_ok(&f, "missing", &[]), Err(BackendError::Missing { tool: "missing".into() }));
+        assert_eq!(spawn_ok(&f, "missing", &[]), Err(BackendError::Missing { tool: "missing".into() }));
     }
 
     #[test]
-    fn system_branche_chaque_domaine_sur_son_outil() {
+    fn system_wires_each_domain_to_its_tool() {
         let f = std::sync::Arc::new(FakeExecutor::new());
         let b = Backends::system(f.clone(), std::env::temp_dir());
         let _ = b.sound.volume();

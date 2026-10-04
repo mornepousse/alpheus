@@ -1,5 +1,5 @@
-//! Dossiers d'alpheus, communs à la TUI et au démon : configuration
-//! (~/.config/alpheus) et exécution ($XDG_RUNTIME_DIR).
+//! alpheus's directories, shared by the TUI and the daemon: configuration
+//! (~/.config/alpheus) and runtime ($XDG_RUNTIME_DIR).
 
 use std::path::PathBuf;
 
@@ -14,6 +14,6 @@ pub fn config_dir() -> PathBuf {
 pub fn runtime_dir() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
-        // SAFETY : getuid(2) ne peut pas échouer.
+        // SAFETY: getuid(2) cannot fail.
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
 }

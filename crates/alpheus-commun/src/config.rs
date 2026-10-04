@@ -1,6 +1,6 @@
-//! Configuration facultative : ~/.config/alpheus/config.toml. Défauts sûrs
-//! sans fichier ; fichier invalide = défauts + avertissement dans la ligne
-//! d'état (jamais d'arrêt).
+//! Optional configuration: ~/.config/alpheus/config.toml. Safe defaults
+//! without a file; invalid file = defaults + a warning on the status line
+//! (never a stop).
 
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -16,9 +16,9 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct KeysConfig {
-    /// D/H/T/N = gauche/bas/haut/droite (positions hjkl sur le Dvorak de Mae).
+    /// D/H/T/N = left/down/up/right (hjkl positions on Mae's Dvorak layout).
     pub dvorak_nav: bool,
-    /// Surcharges : nom d'action → touches (remplacent celles par défaut).
+    /// Overrides: action name → keys (replace the defaults).
     pub bindings: BTreeMap<String, Vec<String>>,
 }
 
@@ -28,7 +28,7 @@ impl Default for KeysConfig {
     }
 }
 
-/// Outils externes ouverts dans la fenêtre d'alpheus (programme + arguments).
+/// External tools opened in alpheus's window (program + arguments).
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CommandsConfig {
@@ -44,14 +44,14 @@ impl Default for CommandsConfig {
 }
 
 impl Config {
-    /// Absent → défauts sans message ; illisible ou invalide → défauts + message.
+    /// Absent → defaults with no message; unreadable or invalid → defaults + a message.
     pub fn load(path: &Path) -> (Config, Option<String>) {
         match std::fs::read_to_string(path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Config::default(), None),
-            Err(e) => (Config::default(), Some(format!("config.toml illisible : {e}"))),
+            Err(e) => (Config::default(), Some(format!("config.toml unreadable: {e}"))),
             Ok(s) => match toml::from_str::<Config>(&s) {
                 Ok(c) => (c, None),
-                Err(e) => (Config::default(), Some(format!("config.toml invalide : {}", e.message()))),
+                Err(e) => (Config::default(), Some(format!("invalid config.toml: {}", e.message()))),
             },
         }
     }
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_donne_les_defauts_sans_message() {
+    fn absent_gives_the_defaults_with_no_message() {
         let (c, w) = Config::load(Path::new("/nonexistent/alpheus/config.toml"));
         assert_eq!(c, Config::default());
         assert_eq!(w, None);
@@ -80,9 +80,9 @@ mod tests {
     }
 
     #[test]
-    fn fichier_partiel() {
+    fn partial_file() {
         let p = file(
-            "partiel",
+            "partial",
             "[commands]\nmixer = [\"pavucontrol\"]\n\n[keys]\ndvorak_nav = false\n\n[keys.bindings]\npalette = [\"ctrl+k\"]\n",
         );
         let (c, w) = Config::load(&p);
@@ -94,17 +94,17 @@ mod tests {
     }
 
     #[test]
-    fn invalide_donne_les_defauts_et_un_message() {
-        let (c, w) = Config::load(&file("invalide", "[commands\nmixer = 3"));
+    fn invalid_gives_the_defaults_and_a_message() {
+        let (c, w) = Config::load(&file("invalid", "[commands\nmixer = 3"));
         assert_eq!(c, Config::default());
         let w = w.unwrap();
-        assert!(w.starts_with("config.toml invalide"), "{w}");
+        assert!(w.starts_with("invalid config.toml"), "{w}");
         assert!(w.contains("expected"), "{w}");
     }
 
     #[test]
-    fn champ_inconnu_signale() {
-        let (_, w) = Config::load(&file("inconnu", "[commandes]\nmixer = [\"x\"]\n"));
+    fn unknown_field_reported() {
+        let (_, w) = Config::load(&file("unknown", "[commandes]\nmixer = [\"x\"]\n"));
         let w = w.unwrap();
         assert!(w.contains("commandes"), "{w}");
     }
