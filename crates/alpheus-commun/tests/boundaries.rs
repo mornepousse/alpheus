@@ -63,3 +63,12 @@ fn the_daemon_does_not_carry_ratatui() {
         assert!(!f.contains(forbidden), "the daemon pulls in {forbidden}");
     }
 }
+
+#[test]
+fn zbus_stays_in_the_daemon() {
+    let g = graph();
+    assert!(closure(&g, "alpheus-demon").contains("zbus"), "the daemon reads the system bus");
+    for p in ["alpheus-commun", "alpheus"] {
+        assert!(!closure(&g, p).contains("zbus"), "{p} pulls in zbus");
+    }
+}

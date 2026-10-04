@@ -60,7 +60,8 @@
       devShells = pour (pkgs: {
         default = pkgs.mkShell {
           # sway : compositeur sans tête des tests ignorés du démon.
-          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.sway ];
+          # dbus : dbus-daemon privé des tests ignorés du démon (jamais le bus de session ni le bus système).
+          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.sway pkgs.dbus ];
           ALPHEUS_POLICES = polices pkgs;
         };
       });

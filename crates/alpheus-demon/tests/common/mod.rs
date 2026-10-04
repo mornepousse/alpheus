@@ -286,3 +286,77 @@ impl Drop for Daemon {
         let _ = self.child.wait();
     }
 }
+
+/// A private D-Bus daemon for the tests: its own socket in a temporary
+/// directory, the session configuration (anyone may own a name). Never the
+/// user's session bus nor the system bus.
+pub struct PrivateBus {
+    child: Child,
+    /// `unix:path=…`, without the server's guid: the same address across
+    /// `restart`s (a new daemon has a new guid, which zbus would refuse).
+    pub address: String,
+    directory: PathBuf,
+}
+
+impl PrivateBus {
+    pub fn start(name: &str) -> PrivateBus {
+        let directory = env::temp_dir().join(format!("alpheus-bus-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let address = format!("unix:path={}", directory.join("bus").display());
+        let child = Self::spawn(&address);
+        PrivateBus { child, address, directory }
+    }
+
+    fn spawn(address: &str) -> Child {
+        let mut command = Command::new("dbus-daemon");
+        command
+            .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+            .arg(format!("--address={address}"))
+            .env_clear()
+            .env("PATH", env::var_os("PATH").unwrap_or_default())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .process_group(0);
+        // SAFETY: as for sway (see `Sway::start`): a single prctl(2) between
+        // fork and exec, so the bus dies with the test even on a SIGKILL.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().expect("dbus-daemon not found: run these tests inside `nix develop`");
+        // The printed address means it listens.
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
+        assert!(line.starts_with(address), "dbus-daemon address: {line:?}");
+        child
+    }
+
+    /// Kills it and starts a new one at the same address: a system bus
+    /// restarting (dbus.service restarted, or a crash).
+    pub fn restart(&mut self) {
+        self.kill();
+        let _ = fs::remove_file(self.directory.join("bus")); // left behind by a SIGKILL
+        self.child = Self::spawn(&self.address);
+    }
+
+    /// Kills it right away (a system bus going away).
+    pub fn kill(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            // SAFETY: kill(2) towards the group this dbus-daemon received at
+            // launch (process_group(0)), not reaped yet: still ours.
+            unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+        }
+        let _ = self.child.wait();
+    }
+}
+
+impl Drop for PrivateBus {
+    fn drop(&mut self) {
+        self.kill();
+        let _ = fs::remove_dir_all(&self.directory);
+    }
+}

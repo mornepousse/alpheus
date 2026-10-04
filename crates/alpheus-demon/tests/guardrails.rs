@@ -9,6 +9,7 @@ use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::compositor::{CompositorState, Window, Workspace};
 use alpheus_demon::config::BarConfig;
+use alpheus_demon::sources::dbus::zbus_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
@@ -275,6 +276,52 @@ fn the_only_stream_is_pw_dump_monitor() {
             assert!(["sources/sound.rs", "nonblocking.rs"].contains(&name.as_str()), "a stream started in {name}");
         }
     }
+}
+
+/// D-Bus only in src/sources/ (like the compositor's sockets), through one
+/// file, which can only call read methods; no word of a method that changes
+/// anything in the D-Bus sources.
+#[test]
+fn d_bus_is_confined_to_sources_and_read_only() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if t.contains("zbus::") {
+            assert_eq!(name, "sources/dbus/zbus_bus.rs", "zbus used in {name}");
+        }
+        if name.starts_with("sources/dbus/") {
+            let prod = production_code(&t);
+            for word in [
+                "\"Set\"",
+                "\"Connect\"",
+                "\"Disconnect\"",
+                "\"ActivateConnection\"",
+                "\"DeactivateConnection\"",
+                "\"Enable\"",
+                "\"Sleep\"",
+                "\"Pair\"",
+                "\"RemoveDevice\"",
+                "\"StartDiscovery\"",
+                "\"Suspend\"",
+                "\"Hibernate\"",
+                "\"PowerOff\"",
+                "\"Reboot\"",
+            ] {
+                assert!(!prod.contains(word), "{word} in {name}");
+            }
+        }
+    }
+    let names: Vec<&str> = Method::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices"]);
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/zbus_bus.rs").expect("zbus_bus.rs").1;
+    assert_eq!(production_code(&file).matches("call_method(").count(), 1, "every call goes through `call`, which takes a `Method`");
+    for (_, rule) in MATCH_RULES {
+        assert!(rule.starts_with("type='signal',"), "{rule}");
+    }
+    assert!(
+        MATCH_RULES.iter().all(|(_, r)| !r.contains("AccessPoint")),
+        "the network module is icons only (Q1): no AccessPoint signal is ever read"
+    );
+    assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
 #[test]

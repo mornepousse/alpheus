@@ -9,12 +9,14 @@ pub mod bluez;
 pub mod network;
 pub mod props;
 pub mod upower;
+pub mod zbus_bus;
 
 #[cfg(test)]
 pub mod fake;
 
 use crate::log::write as log;
 use crate::memory::release_memory;
+use crate::sources::spawn_source;
 use crate::state::Msg;
 use crate::system::{BtState, NetState, PowerState};
 use props::{Objects, Props};
@@ -248,6 +250,17 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 3] {
     match s {
         Some(s) => [Msg::Network(s.network), Msg::Bluetooth(s.bluetooth), Msg::Battery(s.battery)],
         None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None)],
+    }
+}
+
+/// Starts the D-Bus source in its thread (`D-Bus`) for the `domains` of
+/// the shown modules: one connection to the system bus per session, made
+/// again with a growing delay if lost or if a domain's read fails (the
+/// modules show "–" meanwhile).
+pub fn start(domains: Vec<Domain>, send: impl Fn(Option<SystemState>) -> bool + Send + 'static) {
+    let run = move |p: &mut dyn FnMut(SystemState) -> bool| session(&mut zbus_bus::ZbusBus::system(&domains)?, &domains, p);
+    if let Err(e) = spawn_source("D-Bus", run, send) {
+        log(&format!("D-Bus thread: {e}"));
     }
 }
 
