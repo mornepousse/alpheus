@@ -23,6 +23,27 @@ pub fn graph() -> BTreeMap<String, BTreeSet<String>> {
     g
 }
 
+/// Locked version string of `name` (e.g. "1.6.2"), read from Cargo.lock.
+pub fn version_of(name: &str) -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    version_of_in(&text, name)
+}
+
+/// Same lookup, but against an in-memory Cargo.lock text (used to prove the
+/// pinning assertion below actually bites, without editing the real lock).
+fn version_of_in(text: &str, name: &str) -> String {
+    let lock: toml::Table = toml::from_str(text).expect("unreadable Cargo.lock");
+    lock["package"]
+        .as_array()
+        .expect("[[package]]")
+        .iter()
+        .find(|p| p["name"].as_str() == Some(name))
+        .and_then(|p| p["version"].as_str())
+        .unwrap_or_else(|| panic!("{name} missing from Cargo.lock"))
+        .to_string()
+}
+
 /// Transitive closure of `root`'s dependencies (root excluded).
 pub fn closure(g: &BTreeMap<String, BTreeSet<String>>, root: &str) -> BTreeSet<String> {
     assert!(g.contains_key(root), "{root} missing from Cargo.lock");
@@ -71,4 +92,32 @@ fn zbus_stays_in_the_daemon() {
     for p in ["alpheus-commun", "alpheus"] {
         assert!(!closure(&g, p).contains("zbus"), "{p} pulls in zbus");
     }
+}
+
+/// `blocking` is a transitive dependency (through async-io, used by zbus's
+/// async executor). Its 1.7 release keeps one idle thread parked in the pool
+/// forever, waking every 500 ms even with nothing to do (measured: ~10
+/// wake-ups/5s at rest on an otherwise idle daemon). 1.6.2 lets that idle
+/// thread exit after its timeout, so the daemon reaches 0 wake-ups at rest.
+/// Pinned with `cargo update -p blocking --precise 1.6.2`; no Cargo.toml
+/// entry — alpheus never depends on it directly.
+#[test]
+fn blocking_stays_on_1_6_to_avoid_an_eternal_idle_wakeup() {
+    let v = version_of("blocking");
+    assert!(v.starts_with("1.6."), "blocking {v} must stay on 1.6.x (1.7 keeps an idle thread waking every 500 ms forever)");
+}
+
+#[test]
+fn blocking_pin_check_bites_on_an_unpinned_lock() {
+    let fake = r#"
+[[package]]
+name = "blocking"
+version = "1.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#;
+    let v = version_of_in(fake, "blocking");
+    let result = std::panic::catch_unwind(|| {
+        assert!(v.starts_with("1.6."), "blocking {v} must stay on 1.6.x (1.7 keeps an idle thread waking every 500 ms forever)");
+    });
+    assert!(result.is_err(), "the pin check must reject blocking 1.7.0");
 }
