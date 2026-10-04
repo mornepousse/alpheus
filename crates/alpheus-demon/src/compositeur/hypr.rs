@@ -1,6 +1,6 @@
-//! Hyprland, analyse pure (aucune entrée-sortie ici, voir sources::hypr) :
-//! lignes du flux d'événements (`.socket2.sock`, « nom>>données ») et
-//! réponses JSON des quatre requêtes de lecture. Le flux ne redonne jamais
+//! Hyprland, analyse pure (aucune entrée-sortie ici, voir sources::hypr, qui
+//! nomme les deux sockets) : lignes du flux d'événements (« nom>>données »)
+//! et réponses JSON des quatre requêtes de lecture. Le flux ne redonne jamais
 //! l'état initial ni l'urgence passée : l'état vient des réponses JSON,
 //! l'urgence des seuls événements `urgent>>`.
 
