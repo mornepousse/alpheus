@@ -1,4 +1,4 @@
-//! Zones cliquables relevées au rendu, consultées par la souris.
+//! Clickable regions recorded at render time, looked up by the mouse.
 
 use crate::app::PanelField;
 use crate::app::action::Tab;
@@ -7,32 +7,32 @@ use ratatui::layout::Rect;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Tab(Tab),
-    /// Ligne d'un élément focalisable (index dans App::items()).
+    /// Row of a focusable element (index into App::items()).
     Item(usize),
-    /// Barre d'un curseur (index dans App::items()).
+    /// A slider's bar (index into App::items()).
     Slider {
         item: usize,
     },
-    /// Option du profil d'énergie (index dans Profiles::available).
+    /// Energy profile option (index into Profiles::available).
     ProfileOption(usize),
     ConfirmYes,
     ConfirmNo,
     PaletteEntry(usize),
-    /// Puce de la barre des profils d'écran (= nombre de profils :
-    /// « + Enregistrer l'actuel »).
+    /// Chip in the display-profile bar (count = number of profiles:
+    /// "+ Save current").
     DisplayProfile(usize),
-    /// Interrupteur d'une sortie (index dans App::items()).
+    /// A display's on/off switch (index into App::items()).
     OutputToggle(usize),
-    /// Ligne d'un champ du panneau de réglage.
+    /// Row of a field in the settings panel.
     PanelField(PanelField),
-    /// Flèche ◀ (-1) ou ▶ (+1) d'un champ du panneau.
+    /// ◀ (-1) or ▶ (+1) arrow of a panel field.
     PanelStep {
         field: PanelField,
         dir: i32,
     },
     PanelCancel,
     PanelApply,
-    /// Intérieur d'une surcouche : absorbe le clic.
+    /// Inside of an overlay: absorbs the click.
     Overlay,
 }
 
@@ -71,25 +71,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn la_zone_la_plus_recente_gagne() {
+    fn the_most_recent_region_wins() {
         let mut h = HitMap::default();
         h.push(Rect::new(0, 2, 80, 1), Target::Item(0));
         h.push(Rect::new(23, 2, 24, 1), Target::Slider { item: 0 });
-        h.push(Rect::new(0, 0, 0, 1), Target::Overlay); // vide : ignorée
+        h.push(Rect::new(0, 0, 0, 1), Target::Overlay); // empty: ignored
         assert_eq!(h.at(30, 2).map(|x| x.1), Some(Target::Slider { item: 0 }));
         assert_eq!(h.at(5, 2).map(|x| x.1), Some(Target::Item(0)));
         assert_eq!(h.at(5, 3), None);
-        assert_eq!(h.at(80, 2), None, "bord droit exclu");
+        assert_eq!(h.at(80, 2), None, "right edge excluded");
     }
 
     #[test]
-    fn valeur_d_un_clic_sur_une_barre() {
+    fn value_of_a_click_on_a_bar() {
         let bar = Rect::new(10, 0, 21, 1);
         assert_eq!(slider_pick(bar, 10), 0);
         assert_eq!(slider_pick(bar, 30), 100);
         assert_eq!(slider_pick(bar, 20), 50);
-        assert_eq!(slider_pick(bar, 2), 0, "glissé à gauche de la barre");
-        assert_eq!(slider_pick(bar, 70), 100, "glissé à droite de la barre");
+        assert_eq!(slider_pick(bar, 2), 0, "dragged left of the bar");
+        assert_eq!(slider_pick(bar, 70), 100, "dragged right of the bar");
         assert_eq!(slider_pick(Rect::new(0, 0, 1, 1), 0), 0);
     }
 }

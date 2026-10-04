@@ -1,5 +1,5 @@
-//! Clavier : surcouches d'abord (confirmation, palette, aide), puis saisie de
-//! recherche, puis table de touches configurable.
+//! Keyboard: overlays first (confirmation, palette, help), then search
+//! entry, then the configurable key table.
 
 use super::action::{Action, Tab};
 use super::{App, Item, Overlay, Palette, PanelField, Search};
@@ -50,8 +50,8 @@ impl App {
                 let yes = matches!(self.overlay, Overlay::Confirm(c) if c.yes_focused);
                 self.close_confirm(yes);
             }
-            // Flèches directionnelles : « Annuler » est à gauche, « Confirmer »
-            // à droite ; Tab et Maj+Tab basculent.
+            // Arrow keys: "Cancel" is on the left, "Confirm" on the right;
+            // Tab and Shift+Tab toggle between them.
             Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
                 if let Overlay::Confirm(c) = &mut self.overlay {
                     c.yes_focused = match a {
@@ -65,8 +65,8 @@ impl App {
         }
     }
 
-    /// « Garder ces réglages ? » : ← Annuler, → Garder, Échap annule ;
-    /// « q » ferme alpheus, et le nettoyage de sortie défait l'essai.
+    /// "Keep these settings?": ← Cancel, → Keep, Esc cancels; "q" closes
+    /// alpheus, and the exit cleanup undoes the trial.
     fn key_keep(&mut self, e: KeyEvent, now: Instant) {
         let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
         match action {
@@ -89,14 +89,14 @@ impl App {
         }
     }
 
-    /// Panneau de réglage : ↑/↓ champ, ←/→ valeur, « / » cherche un mode,
-    /// Entrée sur Appliquer envoie, Échap ferme.
+    /// Settings panel: ↑/↓ field, ←/→ value, "/" searches a mode, Enter on
+    /// Apply sends, Esc closes.
     fn key_panel(&mut self, e: KeyEvent, now: Instant) {
         if matches!(&self.overlay, Overlay::Panel(p) if p.query.is_some()) {
             match e.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     if let Overlay::Panel(p) = &mut self.overlay {
-                        p.query = None; // le mode choisi reste
+                        p.query = None; // the chosen mode remains
                     }
                 }
                 KeyCode::Backspace => self.panel_query(|q| {
@@ -128,7 +128,7 @@ impl App {
         }
     }
 
-    /// Nom du profil à enregistrer, puis confirmation s'il existe déjà.
+    /// Name of the profile to save, then confirmation if it already exists.
     fn key_save(&mut self, e: KeyEvent, now: Instant) {
         let replace = matches!(&self.overlay, Overlay::SaveProfile(d) if d.replace);
         if replace {
@@ -230,8 +230,8 @@ impl App {
                 if !self.search.text.is_empty() {
                     self.search = Search::default();
                     self.clamp_focus();
-                } else if self.tab != Tab::Accueil {
-                    self.go_tab(Tab::Accueil, now);
+                } else if self.tab != Tab::Home {
+                    self.go_tab(Tab::Home, now);
                 }
             }
             Action::Help => self.overlay = Overlay::Help,
@@ -285,44 +285,44 @@ mod tests {
     }
 
     #[test]
-    fn quitter() {
+    fn quit() {
         let mut a = ready_app();
         c(&mut a, 'q');
         assert!(a.should_quit);
     }
 
     #[test]
-    fn onglets() {
+    fn tabs() {
         let mut a = ready_app();
         c(&mut a, '2');
-        assert_eq!(a.tab, Tab::Son);
+        assert_eq!(a.tab, Tab::Sound);
         k(&mut a, KeyCode::Tab);
-        assert_eq!(a.tab, Tab::Reseau);
+        assert_eq!(a.tab, Tab::Network);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(a.tab, Tab::Ecrans, "Maj+Tab depuis l'Accueil : le dernier onglet");
+        assert_eq!(a.tab, Tab::Displays, "Shift+Tab from Home: the last tab");
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(a.tab, Tab::Alimentation);
+        assert_eq!(a.tab, Tab::Power);
         c(&mut a, '6');
-        assert_eq!(a.tab, Tab::Ecrans);
+        assert_eq!(a.tab, Tab::Displays);
         k(&mut a, KeyCode::Esc);
-        assert_eq!(a.tab, Tab::Accueil);
+        assert_eq!(a.tab, Tab::Home);
         k(&mut a, KeyCode::Esc);
-        assert_eq!(a.tab, Tab::Accueil);
-        assert!(!a.should_quit, "Échap ne quitte pas");
+        assert_eq!(a.tab, Tab::Home);
+        assert!(!a.should_quit, "Esc does not quit");
     }
 
     #[test]
-    fn deplacements() {
+    fn movement() {
         let mut a = ready_app();
         k(&mut a, KeyCode::Down);
-        c(&mut a, 'h'); // Dvorak : bas
+        c(&mut a, 'h'); // Dvorak: down
         assert_eq!(a.focus, 2);
         k(&mut a, KeyCode::End);
         assert_eq!(a.focus, 6);
         k(&mut a, KeyCode::Down);
-        assert_eq!(a.focus, 6, "borné");
+        assert_eq!(a.focus, 6, "bounded");
         k(&mut a, KeyCode::PageUp);
         assert_eq!(a.focus, 1);
         k(&mut a, KeyCode::Home);
@@ -330,7 +330,7 @@ mod tests {
     }
 
     #[test]
-    fn curseur_au_clavier() {
+    fn slider_from_the_keyboard() {
         let mut a = ready_app();
         press(&mut a, KeyCode::Char('+'), KeyModifiers::SHIFT);
         k(&mut a, KeyCode::Right);
@@ -346,9 +346,9 @@ mod tests {
     }
 
     #[test]
-    fn espace_bascule_seulement_les_interrupteurs() {
+    fn space_only_toggles_switches() {
         let mut a = ready_app();
-        c(&mut a, ' '); // sur le curseur Volume : rien
+        c(&mut a, ' '); // on the Volume slider: nothing
         assert!(a.take_requests().is_empty());
         a.focus = 2;
         c(&mut a, ' ');
@@ -357,17 +357,17 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_au_clavier() {
+    fn confirmation_from_the_keyboard() {
         let mut a = ready_app();
         c(&mut a, '5');
-        a.focus = 4; // Éteindre
+        a.focus = 4; // Power off
         k(&mut a, KeyCode::Enter);
         assert_eq!(a.overlay, Overlay::Confirm(Confirm { action: PowerAction::Poweroff, yes_focused: false }));
         c(&mut a, 'q');
-        assert!(!a.should_quit, "q annule la confirmation, ne quitte pas");
+        assert!(!a.should_quit, "q cancels the confirmation, does not quit");
         assert_eq!(a.overlay, Overlay::None);
         k(&mut a, KeyCode::Enter);
-        k(&mut a, KeyCode::Enter); // focus sur Annuler
+        k(&mut a, KeyCode::Enter); // focus on Cancel
         assert_eq!(a.overlay, Overlay::None);
         a.take_requests();
         k(&mut a, KeyCode::Enter);
@@ -380,36 +380,36 @@ mod tests {
     }
 
     #[test]
-    fn fleches_directionnelles_dans_la_confirmation() {
+    fn arrow_keys_in_the_confirmation() {
         let mut a = ready_app();
         a.run_command(crate::app::action::Command::Power(PowerAction::Poweroff), Instant::now());
         let focus = |a: &App| match a.overlay {
             Overlay::Confirm(c) => c.yes_focused,
-            _ => panic!("confirmation fermée"),
+            _ => panic!("confirmation closed"),
         };
         k(&mut a, KeyCode::Left);
-        assert!(!focus(&a), "← depuis Annuler reste sur Annuler");
+        assert!(!focus(&a), "← from Cancel stays on Cancel");
         k(&mut a, KeyCode::Right);
         assert!(focus(&a));
         k(&mut a, KeyCode::Right);
-        assert!(focus(&a), "→ depuis Confirmer reste sur Confirmer");
+        assert!(focus(&a), "→ from Confirm stays on Confirm");
         k(&mut a, KeyCode::Left);
         assert!(!focus(&a));
-        c(&mut a, 'n'); // Dvorak : droite
+        c(&mut a, 'n'); // Dvorak: right
         assert!(focus(&a));
-        c(&mut a, 'd'); // Dvorak : gauche
+        c(&mut a, 'd'); // Dvorak: left
         assert!(!focus(&a));
         k(&mut a, KeyCode::Tab);
-        assert!(focus(&a), "Tab bascule");
+        assert!(focus(&a), "Tab toggles");
         k(&mut a, KeyCode::Tab);
         assert!(!focus(&a));
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert!(focus(&a), "Maj+Tab bascule");
-        assert!(a.take_requests().is_empty(), "rien n'est lancé sans Entrée");
+        assert!(focus(&a), "Shift+Tab toggles");
+        assert!(a.take_requests().is_empty(), "nothing is launched without Enter");
     }
 
     #[test]
-    fn palette_au_clavier() {
+    fn palette_from_the_keyboard() {
         let mut a = ready_app();
         press(&mut a, KeyCode::Char('p'), KeyModifiers::CONTROL);
         assert_eq!(a.overlay, Overlay::Palette(Palette::default()));
@@ -427,11 +427,11 @@ mod tests {
         k(&mut a, KeyCode::Up);
         assert_eq!(a.overlay, Overlay::Palette(Palette { query: String::new(), selected: 1 }));
         press(&mut a, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert_eq!(a.overlay, Overlay::None, "Ctrl+P referme");
+        assert_eq!(a.overlay, Overlay::None, "Ctrl+P closes it");
     }
 
     #[test]
-    fn aide() {
+    fn help() {
         let mut a = ready_app();
         press(&mut a, KeyCode::Char('?'), KeyModifiers::SHIFT);
         assert_eq!(a.overlay, Overlay::Help);
@@ -443,10 +443,10 @@ mod tests {
     }
 
     #[test]
-    fn recherche() {
+    fn search() {
         let mut a = ready_app();
         c(&mut a, '/');
-        assert!(!a.search.editing, "pas de liste sur l'Accueil");
+        assert!(!a.search.editing, "no list on Home");
         c(&mut a, '2');
         c(&mut a, '/');
         assert!(a.search.editing);
@@ -459,11 +459,11 @@ mod tests {
         assert_eq!(a.focus, 1);
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.search, Search::default());
-        assert_eq!(a.tab, Tab::Son, "le premier Échap efface le filtre");
+        assert_eq!(a.tab, Tab::Sound, "the first Esc clears the filter");
     }
 
     #[test]
-    fn entree_sur_une_sortie() {
+    fn enter_on_an_output() {
         let mut a = ready_app();
         c(&mut a, '2');
         a.take_requests();
@@ -472,34 +472,34 @@ mod tests {
         assert_eq!(a.focused(), Some(Item::Slider(SliderId::Node(64))));
     }
 
-    // ── Onglet Écrans ────────────────────────────────────────────────
+    // ── Displays tab ─────────────────────────────────────────────────
 
     use super::super::{Keep, SaveDialog};
 
-    fn ecrans() -> App {
+    fn displays_tab() -> App {
         let mut a = ready_app();
         c(&mut a, '6');
         a.take_requests();
         a
     }
 
-    /// Répond au fil : l'essai envoyé est appliqué.
-    fn applique(a: &mut App) {
+    /// Answers the worker: the sent trial is applied.
+    fn applied(a: &mut App) {
         let r = a.take_requests();
-        let Some(Request::Do(op)) = r.into_iter().next() else { panic!("essai attendu") };
+        let Some(Request::Do(op)) = r.into_iter().next() else { panic!("expected a trial") };
         a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
         a.take_requests();
     }
 
-    fn retour_envoye(a: &mut App) -> bool {
+    fn rollback_sent(a: &mut App) -> bool {
         a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::ApplyDisplays { undo: None, .. })))
     }
 
-    /// Le fil répond au retour, puis une relecture fraîche arrive.
-    fn retour_applique_et_relu(a: &mut App) {
+    /// The worker answers the rollback, then a fresh read arrives.
+    fn rollback_applied_and_reread(a: &mut App) {
         let r = a.take_requests();
         let Some(Request::Do(op)) = r.into_iter().find(|q| matches!(q, Request::Do(Op::ApplyDisplays { undo: None, .. }))) else {
-            panic!("retour attendu")
+            panic!("expected a rollback")
         };
         a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
         a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
@@ -507,8 +507,8 @@ mod tests {
     }
 
     #[test]
-    fn profils_au_clavier() {
-        let mut a = ecrans();
+    fn profiles_from_the_keyboard() {
+        let mut a = displays_tab();
         assert_eq!(a.focused(), Some(Item::DisplayProfiles));
         k(&mut a, KeyCode::Right);
         k(&mut a, KeyCode::Enter); // Bureau
@@ -517,60 +517,60 @@ mod tests {
     }
 
     #[test]
-    fn garder_ces_reglages_au_clavier() {
-        let mut a = ecrans();
+    fn keep_these_settings_from_the_keyboard() {
+        let mut a = displays_tab();
         k(&mut a, KeyCode::Down); // Portable
         c(&mut a, ' ');
-        applique(&mut a);
-        k(&mut a, KeyCode::Enter); // focus sur Annuler
+        applied(&mut a);
+        k(&mut a, KeyCode::Enter); // focus on Cancel
         assert_eq!(a.overlay, Overlay::None);
-        retour_applique_et_relu(&mut a); // « Entrée par réflexe : retour »
+        rollback_applied_and_reread(&mut a); // "Enter by reflex: rollback"
         c(&mut a, ' ');
-        applique(&mut a);
+        applied(&mut a);
         k(&mut a, KeyCode::Right);
         assert_eq!(a.overlay, Overlay::Keep(Keep { keep_focused: true }));
         k(&mut a, KeyCode::Enter);
-        assert_eq!(a.ecrans.trial, None);
-        assert!(!retour_envoye(&mut a), "gardé");
+        assert_eq!(a.displays.trial, None);
+        assert!(!rollback_sent(&mut a), "kept");
         a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
         a.take_requests();
         c(&mut a, ' ');
-        applique(&mut a);
+        applied(&mut a);
         k(&mut a, KeyCode::Esc);
-        assert!(retour_envoye(&mut a), "Échap annule");
+        assert!(rollback_sent(&mut a), "Esc cancels");
     }
 
     #[test]
-    fn q_pendant_l_essai_ferme_et_laisse_le_retour_a_la_sortie() {
-        let mut a = ecrans();
+    fn q_during_the_trial_closes_and_leaves_the_rollback_for_exit() {
+        let mut a = displays_tab();
         k(&mut a, KeyCode::Down);
         c(&mut a, ' ');
-        applique(&mut a);
+        applied(&mut a);
         c(&mut a, 'q');
         assert!(a.should_quit);
-        assert!(a.exit_undo().is_some(), "le nettoyage de sortie défera l'essai");
+        assert!(a.exit_undo().is_some(), "the exit cleanup will undo the trial");
     }
 
     #[test]
-    fn panneau_au_clavier() {
-        let mut a = ecrans();
+    fn panel_from_the_keyboard() {
+        let mut a = displays_tab();
         k(&mut a, KeyCode::Down);
-        k(&mut a, KeyCode::Enter); // panneau de la dalle interne
-        let Overlay::Panel(p) = &a.overlay else { panic!("panneau attendu") };
+        k(&mut a, KeyCode::Enter); // panel of the laptop panel
+        let Overlay::Panel(p) = &a.overlay else { panic!("expected a panel") };
         assert_eq!(p.output, "eDP-1");
         k(&mut a, KeyCode::Down);
         press(&mut a, KeyCode::Char('+'), KeyModifiers::SHIFT);
         let Overlay::Panel(p) = &a.overlay else { panic!() };
         assert_eq!((p.field, p.scale), (PanelField::Scale, crate::displays::Scale(1250)));
-        k(&mut a, KeyCode::Enter); // vers Appliquer
-        k(&mut a, KeyCode::Enter); // applique
+        k(&mut a, KeyCode::Enter); // to Apply
+        k(&mut a, KeyCode::Enter); // applies
         assert!(matches!(a.overlay, Overlay::Keep(_)));
         assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
     }
 
     #[test]
-    fn recherche_de_mode_au_clavier() {
-        let mut a = ecrans();
+    fn mode_search_from_the_keyboard() {
+        let mut a = displays_tab();
         a.data.displays = super::super::Loadable::Ready(
             crate::backends::displays::parse_outputs(include_str!("../../tests/fixtures/wm-set-outputs.json")).unwrap(),
         );
@@ -578,14 +578,14 @@ mod tests {
         k(&mut a, KeyCode::Down); // Alpha
         k(&mut a, KeyCode::Enter);
         c(&mut a, '/');
-        typed(&mut a, "1280q"); // « q » s'écrit, ne ferme rien
-        let Overlay::Panel(p) = &a.overlay else { panic!("panneau fermé") };
+        typed(&mut a, "1280q"); // "q" is typed, closes nothing
+        let Overlay::Panel(p) = &a.overlay else { panic!("panel closed") };
         assert_eq!(p.query.as_deref(), Some("1280q"));
         k(&mut a, KeyCode::Backspace);
         let Overlay::Panel(p) = &a.overlay else { panic!() };
         assert_eq!(p.mode.to_string(), "1280x1024@75");
         k(&mut a, KeyCode::Esc);
-        let Overlay::Panel(p) = &a.overlay else { panic!("Échap ferme d'abord la recherche") };
+        let Overlay::Panel(p) = &a.overlay else { panic!("Esc closes the search first") };
         assert_eq!((p.query.clone(), p.mode.to_string()), (None, "1280x1024@75".to_string()));
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.overlay, Overlay::None);
@@ -593,10 +593,10 @@ mod tests {
     }
 
     #[test]
-    fn enregistrer_au_clavier() {
-        let mut a = ecrans();
+    fn saving_from_the_keyboard() {
+        let mut a = displays_tab();
         k(&mut a, KeyCode::Right);
-        k(&mut a, KeyCode::Right); // « + Enregistrer l'actuel »
+        k(&mut a, KeyCode::Right); // "+ Save current"
         k(&mut a, KeyCode::Enter);
         typed(&mut a, "Bureaux");
         k(&mut a, KeyCode::Backspace);
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn relachement_ignore() {
+    fn release_is_ignored() {
         let mut a = ready_app();
         let mut e = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         e.kind = KeyEventKind::Release;

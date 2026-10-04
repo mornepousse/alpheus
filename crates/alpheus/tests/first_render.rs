@@ -1,5 +1,5 @@
-//! Critère de la spec : premier rendu < 100 ms, même si chaque outil met
-//! 500 ms à répondre (le rendu n'attend aucun outil).
+//! Spec criterion: first render < 100 ms, even if every tool takes 500 ms
+//! to answer (rendering never waits for any tool).
 
 use alpheus::app::action::Tab;
 use alpheus::app::run::build_app;
@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 #[test]
-fn premier_rendu_sous_100_ms_meme_avec_des_outils_lents() {
+fn first_render_under_100_ms_even_with_slow_tools() {
     let start = Instant::now();
-    let dir = std::env::temp_dir().join("alpheus-premier-rendu-sans-config");
-    let mut app = build_app(&dir, Tab::Accueil, start);
+    let dir = std::env::temp_dir().join("alpheus-first-render-no-config");
+    let mut app = build_app(&dir, Tab::Home, start);
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
     let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
     for r in app.take_requests() {
@@ -28,8 +28,8 @@ fn premier_rendu_sous_100_ms_meme_avec_des_outils_lents() {
     })
     .unwrap();
     let elapsed = start.elapsed();
-    assert!(elapsed < Duration::from_millis(100), "premier rendu en {elapsed:?}");
+    assert!(elapsed < Duration::from_millis(100), "first render in {elapsed:?}");
     let buf = term.backend().buffer();
     let text: String = (0..30).flat_map(|y| (0..100).map(move |x| (x, y))).map(|p| buf[p].symbol().to_string()).collect();
-    assert!(text.contains("Volume") && text.contains('…'), "l'écran montre l'attente, pas du vide");
+    assert!(text.contains("Volume") && text.contains('…'), "the screen shows waiting, not emptiness");
 }

@@ -1,6 +1,6 @@
-//! Thème de la TUI : la palette commune (alpheus-commun) en couleurs
-//! ratatui. Le reste de la TUI ne voit que `Theme`, comme avant le
-//! découpage en workspace.
+//! TUI theme: the common palette (alpheus-commun) turned into ratatui
+//! colors. The rest of the TUI only ever sees `Theme`, same as before the
+//! workspace split.
 
 use alpheus_commun::theme::{Palette, Rgb};
 use ratatui::style::Color;
@@ -17,20 +17,20 @@ pub struct Theme {
     pub ok: Color,
 }
 
-fn couleur(Rgb(r, g, b): Rgb) -> Color {
+fn color(Rgb(r, g, b): Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
 
 impl From<Palette> for Theme {
     fn from(p: Palette) -> Self {
         Theme {
-            bg: couleur(p.bg),
-            fg: couleur(p.fg),
-            accent: couleur(p.accent),
-            muted: couleur(p.muted),
-            surface: couleur(p.surface),
-            error: couleur(p.error),
-            ok: couleur(p.ok),
+            bg: color(p.bg),
+            fg: color(p.fg),
+            accent: color(p.accent),
+            muted: color(p.muted),
+            surface: color(p.surface),
+            error: color(p.error),
+            ok: color(p.ok),
         }
     }
 }
@@ -42,7 +42,7 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// colors.toml lu par le socle, converti ; mêmes messages qu'avant.
+    /// colors.toml read by the core, converted; same messages as before.
     pub fn load(path: &Path) -> (Theme, Option<String>) {
         let (p, w) = Palette::load(path);
         (p.into(), w)
@@ -54,7 +54,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn palette_commune_en_couleurs_ratatui() {
+    fn common_palette_as_ratatui_colors() {
         let t = Theme::default();
         assert_eq!(t.bg, Color::Rgb(0x1e, 0x1e, 0x2e));
         assert_eq!(t.accent, Color::Rgb(0xcb, 0xa6, 0xf7));
@@ -64,7 +64,7 @@ mod tests {
     }
 
     #[test]
-    fn fichier_absent_secours_sans_message() {
+    fn missing_file_falls_back_silently() {
         assert_eq!(Theme::load(Path::new("/nonexistent/colors.toml")), (Theme::default(), None));
     }
 }

@@ -1,11 +1,10 @@
-//! Onglet Écrans : barre des profils, carte à l'échelle, ligne d'une sortie ;
-//! et ses surcouches (panneau de réglage, « Garder ces réglages ? »,
-//! enregistrement d'un profil).
+//! Displays tab: profile bar, scaled map, one output's row; and its
+//! overlays (settings panel, "Keep these settings?", saving a profile).
 
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
-use crate::app::ecrans::{panel_fields, place_label, placement_labels};
+use crate::app::displays::{panel_fields, place_label, placement_labels};
 use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
 use crate::displays::{Output, active_count, rotation_label, short_from_description, short_names};
@@ -13,16 +12,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// Hauteur maximale de la carte, en lignes.
+/// Maximum map height, in rows.
 pub const MAP_ROWS: u16 = 8;
 
-/// Case de la carte : caractère, et appartient-il à l'écran focalisé ?
+/// A map cell: character, and does it belong to the focused screen?
 pub type MapCell = Option<(char, bool)>;
 
-/// Carte à l'échelle des écrans activés, `width` colonnes au plus. Une
-/// ligne de terminal vaut à peu près deux colonnes. Chaque écran porte son
-/// numéro (rang dans la liste) et son nom court ; celui qui a le focus dans
-/// la liste porte « ● ».
+/// Scaled map of the enabled screens, at most `width` columns. One terminal
+/// row is worth roughly two columns. Each screen carries its number (rank
+/// in the list) and its short name; the one focused in the list carries "●".
 pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec<MapCell>> {
     let labels = short_names(outs);
     let boxes: Vec<(usize, i32, i32, i32, i32)> = outs
@@ -63,7 +61,7 @@ pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec
         let number = (i + 1).to_string();
         let (wc, hc) = (x1 - x0, y1 - y0);
         if hc == 1 || wc < 3 {
-            // Trop petit pour un cadre : « [Alpha 3] » sur une ligne.
+            // Too small for a frame: "[Alpha 3]" on one line.
             let text = truncate(&format!("[{} {number}]", labels[i]), wc);
             for (k, ch) in text.chars().enumerate() {
                 set(x0 + k, y0, ch);
@@ -102,16 +100,16 @@ pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec
     grid
 }
 
-/// Ligne de la barre des profils : « Profils  [ Bureau ]  [ + Enregistrer l'actuel ] ».
+/// Profile bar row: "Profiles  [ Bureau ]  [ + Save current ]".
 pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let lx = body.x + 2;
     let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
-    put(buf, body, lx, y, "Profils", label);
-    let names = app.ecrans.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Enregistrer l'actuel".to_string()));
+    put(buf, body, lx, y, "Profiles", label);
+    let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
     let mut x = lx + 11;
     for (j, name) in names.enumerate() {
-        let style = if focused && j == app.ecrans.profile_sel {
+        let style = if focused && j == app.displays.profile_sel {
             Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(th.accent)
@@ -122,8 +120,8 @@ pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &
     }
 }
 
-/// Ligne d'une sortie : numéro et nom court, connecteur (⚠ DisplayLink),
-/// interrupteur, mode, échelle, placement.
+/// An output's row: number and short name, connector (⚠ DisplayLink),
+/// on/off switch, mode, scale, placement.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, focused: bool, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
@@ -140,21 +138,21 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     put(buf, body, lx + 13, y, &truncate(&conn, 10), Style::default().fg(th.muted));
     let last = o.active.is_some() && active_count(outs) <= 1;
     let (text, style) = match (&o.active, last) {
-        (Some(_), true) => ("[■] seul actif", Style::default().fg(th.muted)),
-        (Some(_), false) => ("[■] activé", Style::default().fg(th.accent)),
-        (None, _) => ("[ ] désactivé", Style::default().fg(th.muted)),
+        (Some(_), true) => ("[■] only on", Style::default().fg(th.muted)),
+        (Some(_), false) => ("[■] on", Style::default().fg(th.accent)),
+        (None, _) => ("[ ] off", Style::default().fg(th.muted)),
     };
     let w = put(buf, body, lx + 23, y, text, style);
     hits.push(Rect::new(lx + 23, y, w, 1), Target::OutputToggle(i));
     let Some(a) = &o.active else { return };
     put(buf, body, lx + 37, y, &a.mode.label(), Style::default().fg(th.fg));
-    put(buf, body, lx + 51, y, &format!("échelle {}", a.scale.label()), Style::default().fg(th.fg));
+    put(buf, body, lx + 51, y, &format!("scale {}", a.scale.label()), Style::default().fg(th.fg));
     let px = lx + 64;
     let avail = usize::from(body.right().saturating_sub(px));
     put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(th.muted));
 }
 
-// ── Surcouches ───────────────────────────────────────────────────────
+// ── Overlays ─────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
 fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focused: bool, yes_enabled: bool, app: &App, hits: &mut HitMap) {
@@ -175,57 +173,57 @@ fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focus
     hits.push(Rect::new(x, y, w, 1), Target::ConfirmYes);
 }
 
-/// « Garder ces réglages ? » : résumé, absents, avertissement DisplayLink,
-/// compte à rebours ; le focus démarre sur Annuler.
+/// "Keep these settings?": summary, missing screens, DisplayLink warning,
+/// countdown; focus starts on Cancel.
 pub fn keep(buf: &mut Buffer, area: Rect, app: &App, k: &Keep, hits: &mut HitMap) {
     let th = &app.theme;
-    let Some(t) = &app.ecrans.trial else { return };
+    let Some(t) = &app.displays.trial else { return };
     let text = Style::default().fg(th.fg).bg(th.surface);
-    // Tête : titre, résumé, absents — coupée par le bas si la fenêtre est
-    // basse. Pied : avertissement DisplayLink, ligne vide (sacrifiée la
-    // première) et compte à rebours, toujours visibles.
+    // Head: title, summary, missing screens — cut from the bottom if the
+    // window is short. Foot: DisplayLink warning, blank line (sacrificed
+    // first) and countdown, always visible.
     let mut head: Vec<(String, Style)> = vec![(t.title.clone(), text.add_modifier(Modifier::BOLD))];
     head.extend(t.summary.iter().map(|s| (s.clone(), text)));
     head.extend(t.notes.iter().map(|s| (s.clone(), Style::default().fg(th.muted).bg(th.surface))));
     let mut foot: Vec<(String, Style)> = Vec::new();
     if t.displaylink {
-        foot.push(("⚠ Sortie DisplayLink : risque de gel connu sur ce poste".into(), Style::default().fg(th.error).bg(th.surface)));
+        foot.push(("⚠ DisplayLink output: known freeze risk on this machine".into(), Style::default().fg(th.error).bg(th.surface)));
     }
     let wait = match t.deadline {
-        None => "Application en cours…".to_string(),
-        Some(_) => format!("Retour automatique dans {} s", t.remaining),
+        None => "Applying…".to_string(),
+        Some(_) => format!("Automatic rollback in {} s", t.remaining),
     };
     foot.push((String::new(), text));
     foot.push((wait, Style::default().fg(th.accent).bg(th.surface)));
     let r = centered(area, 66, (head.len() + foot.len()) as u16 + 3);
-    let inner = frame(buf, r, " Garder ces réglages ? ", app, hits);
+    let inner = frame(buf, r, " Keep these settings? ", app, hits);
     let room = usize::from(inner.height.saturating_sub(1));
     if head.len() + foot.len() > room {
-        foot.remove(foot.len() - 2); // la ligne vide
+        foot.remove(foot.len() - 2); // the blank line
     }
     head.truncate(room.saturating_sub(foot.len()));
-    let skip = foot.len().saturating_sub(room); // extrême : le compte à rebours d'abord
+    let skip = foot.len().saturating_sub(room); // extreme case: the countdown first
     let lines: Vec<_> = head.iter().chain(foot.iter().skip(skip)).collect();
     for (n, (l, style)) in lines.iter().enumerate() {
         put(buf, inner, inner.x + 1, inner.y + n as u16, &truncate(l, usize::from(inner.width.saturating_sub(2))), *style);
     }
     let y = inner.y + inner.height.saturating_sub(1);
-    buttons(buf, inner, y, "Annuler", "Garder", k.keep_focused, t.deadline.is_some(), app, hits);
+    buttons(buf, inner, y, "Cancel", "Keep", k.keep_focused, t.deadline.is_some(), app, hits);
 }
 
 fn field_label(f: PanelField) -> &'static str {
     match f {
         PanelField::Mode => "Mode",
-        PanelField::Scale => "Échelle",
+        PanelField::Scale => "Scale",
         PanelField::Rotation => "Rotation",
         PanelField::Place => "Placement",
-        PanelField::Reference => "Référence",
-        PanelField::Align => "Alignement",
+        PanelField::Reference => "Reference",
+        PanelField::Align => "Alignment",
         PanelField::Cancel | PanelField::Apply => "",
     }
 }
 
-/// Valeur affichée d'un champ du panneau.
+/// Displayed value of a panel field.
 fn field_value(app: &App, p: &Panel, f: PanelField) -> String {
     match f {
         PanelField::Mode => {
@@ -252,19 +250,19 @@ fn field_value(app: &App, p: &Panel, f: PanelField) -> String {
     }
 }
 
-/// Panneau de réglage : un champ par ligne (◀ valeur ▶), la raison d'un
-/// refus, puis Annuler et Appliquer (grisé si la géométrie refuse).
+/// Settings panel: one field per row (◀ value ▶), the reason for a refusal,
+/// then Cancel and Apply (greyed out if the geometry refuses).
 pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitMap) {
     let th = &app.theme;
     let outs = app.outputs();
     let labels = short_names(outs);
     let title = match outs.iter().position(|o| o.name == p.output) {
-        Some(i) => format!(" Réglage — {} ({}) ", labels[i], p.output),
-        None => format!(" Réglage — {} ", p.output),
+        Some(i) => format!(" Settings — {} ({}) ", labels[i], p.output),
+        None => format!(" Settings — {} ", p.output),
     };
     let fields: Vec<PanelField> = panel_fields(p).into_iter().filter(|f| !matches!(f, PanelField::Cancel | PanelField::Apply)).collect();
     let preview = app.panel_preview(p);
-    let extra = u16::from(p.query.is_some()) + 1; // recherche, raison ou ligne vide
+    let extra = u16::from(p.query.is_some()) + 1; // search, reason, or blank line
     let r = centered(area, 60, fields.len() as u16 + extra + 4);
     let inner = frame(buf, r, &title, app, hits);
     let text = Style::default().fg(th.fg).bg(th.surface);
@@ -287,7 +285,7 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
     }
     let mut y = inner.y + fields.len() as u16;
     if let Some(q) = &p.query {
-        put(buf, inner, inner.x + 3, y, &format!("Recherche : {q}▏"), Style::default().fg(th.accent).bg(th.surface));
+        put(buf, inner, inner.x + 3, y, &format!("Search: {q}▏"), Style::default().fg(th.accent).bg(th.surface));
         y += 1;
     }
     if let Err(e) = &preview {
@@ -304,7 +302,7 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
     let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
     let mut x = inner.x + 1;
     let cancel_style = if p.field == PanelField::Cancel { on } else { text };
-    let w = put(buf, inner, x, by, "[ Annuler ]", cancel_style);
+    let w = put(buf, inner, x, by, "[ Cancel ]", cancel_style);
     hits.push(Rect::new(x, by, w, 1), Target::PanelCancel);
     x = x.saturating_add(w + 2);
     let apply_style = match (preview.is_ok(), p.field == PanelField::Apply) {
@@ -312,29 +310,29 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
         (true, true) => on,
         (true, false) => text,
     };
-    let w = put(buf, inner, x, by, "[ Appliquer ]", apply_style);
+    let w = put(buf, inner, x, by, "[ Apply ]", apply_style);
     hits.push(Rect::new(x, by, w, 1), Target::PanelApply);
 }
 
-/// « Enregistrer l'actuel » : nom, puis « Remplacer le profil ? » s'il existe.
+/// "Save current": name, then "Replace the profile?" if it already exists.
 pub fn save(buf: &mut Buffer, area: Rect, app: &App, d: &SaveDialog, hits: &mut HitMap) {
     let th = &app.theme;
     let r = centered(area, 52, 7);
-    let inner = frame(buf, r, " Enregistrer l'actuel ", app, hits);
+    let inner = frame(buf, r, " Save current ", app, hits);
     let text = Style::default().fg(th.fg).bg(th.surface);
     if d.replace {
-        put(buf, inner, inner.x + 1, inner.y, &format!("Remplacer le profil « {} » ?", d.name), text.add_modifier(Modifier::BOLD));
+        put(buf, inner, inner.x + 1, inner.y, &format!("Replace profile \"{}\"?", d.name), text.add_modifier(Modifier::BOLD));
         let y = inner.y + inner.height.saturating_sub(1);
-        buttons(buf, inner, y, "Annuler", "Remplacer", d.yes_focused, true, app, hits);
+        buttons(buf, inner, y, "Cancel", "Replace", d.yes_focused, true, app, hits);
         return;
     }
-    put(buf, inner, inner.x + 1, inner.y, "Nom du profil :", text);
+    put(buf, inner, inner.x + 1, inner.y, "Profile name:", text);
     put(buf, inner, inner.x + 1, inner.y + 1, &format!("> {}▏", d.name), Style::default().fg(th.accent).bg(th.surface));
     let y = inner.y + inner.height.saturating_sub(1);
-    put(buf, inner, inner.x + 1, y, "Entrée Enregistrer · Échap Annuler", Style::default().fg(th.muted).bg(th.surface));
+    put(buf, inner, inner.x + 1, y, "Enter Save · Esc Cancel", Style::default().fg(th.muted).bg(th.surface));
 }
 
-/// La ligne `n` de la carte, dessinée à partir de `x`.
+/// Row `n` of the map, drawn starting at `x`.
 pub fn draw_map_row(buf: &mut Buffer, body: Rect, x: u16, y: u16, row: &[MapCell], app: &App) {
     let th = &app.theme;
     for (c, cell) in row.iter().enumerate() {
@@ -345,7 +343,7 @@ pub fn draw_map_row(buf: &mut Buffer, body: Rect, x: u16, y: u16, row: &[MapCell
     }
 }
 
-/// Nom de la sortie focalisée dans la liste, s'il y en a une.
+/// Name of the output focused in the list, if any.
 pub fn focused_output(app: &App) -> Option<String> {
     match app.focused() {
         Some(Item::Output(name)) => Some(name),

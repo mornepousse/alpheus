@@ -1,18 +1,16 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
+ alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays         
                                                                                 
- Sorties                                                                        
- ▶   Dock D6000 Dell                 ██████████████████░░░░░░  75 %             
-   ● CasqueBT                        ███████████████░░░░░░░░░  62 %             
+ ▶ Wi-Fi               [■] on                                                   
                                                                                 
- Entrées                                                                        
-   ● Stereo Microphone               ████████████████████████ 100 %             
+ Active connections                                                             
+   Wi-Fi      MON_WIFI_1  (wlp0s1f01)                                           
+   Ethernet   Wired connection 1  (enp0s0u1u2i10)                               
                                                                                 
-   [ Mixage par appli ]                                                         
-                                                                                
+   [ Choose a network ]                                                         
                                                                                 
                                                                                 
                                                                                 
@@ -24,5 +22,7 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
                                                                                 
                                                                                 
                                                                                 
- Son · prêt                                                                     
- F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Entrée Par défaut  -/+ Volume
+                                                                                
+                                                                                
+ Network · ready                                                                
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Open  / Search

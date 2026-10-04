@@ -1,10 +1,10 @@
-//! État et logique d'alpheus, sans terminal ni thread : chaque entrée
-//! (touche, souris, réponse du worker, tic) modifie l'état ; les requêtes au
-//! worker et l'outil externe à ouvrir sont déposés dans des boîtes que la
-//! boucle réelle (run.rs) vide. Tout se teste en appelant des méthodes.
+//! alpheus's state and logic, with no terminal or thread: every input (key,
+//! mouse, worker response, tick) changes the state; requests to the worker
+//! and the external tool to open are left in boxes that the real loop
+//! (run.rs) drains. Everything is tested by calling methods.
 
 pub mod action;
-pub mod ecrans;
+pub mod displays;
 mod input;
 pub mod keymap;
 mod mouse;
@@ -17,28 +17,27 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{Command, External, Tab, palette_entries, profile_label};
-pub use ecrans::{Ecrans, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
+pub use displays::{DisplaysTab, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
 use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use worker::{Domain, Op, Request, Update, domains};
 
-/// Pas des curseurs (touches -/+, molette).
+/// Slider step (-/+ keys, scroll wheel).
 pub const STEP: i32 = 5;
-/// Durée de vie d'un message éphémère.
+/// Lifetime of an ephemeral message.
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
-/// Un domaine en échec est relu au plus une fois par cette période.
+/// A failed domain is re-read at most once per this period.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
 
-/// Période de rafraîchissement de l'onglet visible : l'Accueil chaque
-/// seconde, Son/Réseau/Bluetooth/Écrans toutes les 2 s, l'Alimentation
-/// jamais (rien à lire).
+/// Refresh period of the visible tab: Home every second, Sound/Network/
+/// Bluetooth/Displays every 2 s, Power never (nothing to read).
 pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
-        Tab::Accueil => Some(Duration::from_secs(1)),
-        Tab::Son | Tab::Reseau | Tab::Bluetooth | Tab::Ecrans => Some(Duration::from_secs(2)),
-        Tab::Alimentation => None,
+        Tab::Home => Some(Duration::from_secs(1)),
+        Tab::Sound | Tab::Network | Tab::Bluetooth | Tab::Displays => Some(Duration::from_secs(2)),
+        Tab::Power => None,
     }
 }
 
@@ -108,16 +107,16 @@ pub enum ToggleId {
     KeepAwake,
 }
 
-/// Élément focalisable de l'onglet courant (ordre = ordre d'affichage).
+/// Focusable element of the current tab (order = display order).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Item {
     Slider(SliderId),
     Toggle(ToggleId),
     Profile,
     Button(Command),
-    /// Barre des profils d'écran (←/→ choisit, Entrée applique).
+    /// Display profile bar (←/→ chooses, Enter applies).
     DisplayProfiles,
-    /// Une sortie d'écran, par connecteur.
+    /// A display output, by connector.
     Output(String),
 }
 
@@ -130,7 +129,7 @@ pub struct Palette {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Confirm {
     pub action: PowerAction,
-    /// Le focus démarre sur « Annuler » : Entrée par réflexe n'éteint rien.
+    /// Focus starts on "Cancel": Enter by reflex powers nothing off.
     pub yes_focused: bool,
 }
 
@@ -140,11 +139,11 @@ pub enum Overlay {
     Help,
     Palette(Palette),
     Confirm(Confirm),
-    /// « Garder ces réglages ? » (compte à rebours d'un essai d'écrans).
+    /// "Keep these settings?" (display-trial countdown).
     Keep(Keep),
-    /// Panneau de réglage d'une sortie.
+    /// Settings panel for an output.
     Panel(Panel),
-    /// « Enregistrer l'actuel » : nom du profil d'écran.
+    /// "Save current": display profile name.
     SaveProfile(SaveDialog),
 }
 
@@ -164,9 +163,9 @@ pub struct Toast {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Status {
     pub last: Option<String>,
-    /// Dernière erreur d'action ; effacée au succès suivant.
+    /// Last action error; cleared on the next success.
     pub error: Option<String>,
-    /// Avertissement de démarrage (config, thème, touches) : persistant.
+    /// Startup warning (config, theme, keys): persistent.
     pub warning: Option<String>,
 }
 
@@ -174,27 +173,27 @@ pub fn toggle_label(id: ToggleId) -> &'static str {
     match id {
         ToggleId::Wifi => "Wi-Fi",
         ToggleId::Bluetooth => "Bluetooth",
-        ToggleId::Dnd => "Ne pas déranger",
-        ToggleId::KeepAwake => "Garder éveillé",
+        ToggleId::Dnd => "Do not disturb",
+        ToggleId::KeepAwake => "Keep awake",
     }
 }
 
 fn op_label(op: &Op) -> String {
     match op {
         Op::SetVolume(..) => "Volume".into(),
-        Op::SetDefault(_) => "Périphérique par défaut".into(),
-        Op::SetBrightness(_) => "Luminosité".into(),
+        Op::SetDefault(_) => "Default device".into(),
+        Op::SetBrightness(_) => "Brightness".into(),
         Op::SetWifi(_) => "Wi-Fi".into(),
         Op::SetBluetooth(_) => "Bluetooth".into(),
-        Op::SetDnd(_) => "Ne pas déranger".into(),
-        Op::ToggleKeepAwake { .. } => "Garder éveillé".into(),
-        Op::SetProfile(_) => "Profil d'énergie".into(),
+        Op::SetDnd(_) => "Do not disturb".into(),
+        Op::ToggleKeepAwake { .. } => "Keep awake".into(),
+        Op::SetProfile(_) => "Energy profile".into(),
         Op::Power(a) => a.label().into(),
-        Op::ApplyDisplays { .. } => "Écrans".into(),
+        Op::ApplyDisplays { .. } => "Displays".into(),
     }
 }
 
-/// Domaine relu par une mise à jour (aucun pour une réponse d'action).
+/// Domain re-read by an update (none for an action's response).
 fn update_domain(u: &Update) -> Option<Domain> {
     Some(match u {
         Update::Volume(_) => Domain::Volume,
@@ -222,32 +221,32 @@ pub struct App {
     pub config: Config,
     pub theme: Theme,
     pub should_quit: bool,
-    pub ecrans: Ecrans,
-    /// Curseur en cours de glissement à la souris, et sa barre.
+    pub displays: DisplaysTab,
+    /// Slider currently being dragged with the mouse, and its bar.
     pub(crate) dragging: Option<(SliderId, Rect)>,
     last_refresh: Instant,
     requests: Vec<Request>,
     external: Option<External>,
-    /// Actions envoyées et encore sans réponse, par domaine touché. Tant
-    /// qu'un domaine en a, ses relectures sont ignorées : lancées avant
-    /// l'action, elles ramèneraient l'ancien état par-dessus l'affichage
-    /// optimiste (clignotement). Le fil répond à chaque `Request::Do` par
-    /// exactement un `Done` ou un `Superseded` (réglage fusionné dans une
-    /// rafale), donc le compte revient toujours à zéro.
+    /// Actions sent and still unanswered, by domain touched. As long as a
+    /// domain has one, its reads are ignored: if launched before the
+    /// action, they would bring back the old state over the optimistic
+    /// display (a flicker). The thread answers each `Request::Do` with
+    /// exactly one `Done` or `Superseded` (a setting coalesced into a
+    /// burst), so the count always returns to zero.
     pending: HashMap<Domain, u32>,
-    /// Dernière demande de lecture, par domaine (relecture lente des pannes).
+    /// Last read request, by domain (slow re-read of failures).
     last_read: HashMap<Domain, Instant>,
 }
 
 impl App {
     pub fn new(config: Config, theme: Theme, keymap: Keymap, now: Instant) -> App {
-        App::sur_onglet(config, theme, keymap, Tab::Accueil, now)
+        App::with_tab(config, theme, keymap, Tab::Home, now)
     }
 
-    /// Ouvre directement sur `onglet` : seuls ses domaines sont lus.
-    pub fn sur_onglet(config: Config, theme: Theme, keymap: Keymap, onglet: Tab, now: Instant) -> App {
+    /// Opens directly on `tab`: only its domains are read.
+    pub fn with_tab(config: Config, theme: Theme, keymap: Keymap, tab: Tab, now: Instant) -> App {
         let mut app = App {
-            tab: onglet,
+            tab,
             data: Data::default(),
             focus: 0,
             overlay: Overlay::None,
@@ -258,7 +257,7 @@ impl App {
             config,
             theme,
             should_quit: false,
-            ecrans: Ecrans::default(),
+            displays: DisplaysTab::default(),
             dragging: None,
             last_refresh: now,
             requests: Vec::new(),
@@ -270,20 +269,20 @@ impl App {
         app
     }
 
-    /// Requêtes à transmettre au worker (vide la boîte).
+    /// Requests to forward to the worker (empties the box).
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
     }
 
-    /// Outil externe à ouvrir (vide la boîte).
+    /// External tool to open (empties the box).
     pub fn take_external(&mut self) -> Option<External> {
         self.external.take()
     }
 
-    /// Avertissement de démarrage (config, thème, touches) : ligne d'état.
+    /// Startup warning (config, theme, keys): status line.
     pub fn warn(&mut self, msg: String) {
         self.status.warning = Some(match self.status.warning.take() {
-            Some(prev) => format!("{prev} ; {msg}"), // plusieurs fichiers fautifs
+            Some(prev) => format!("{prev} ; {msg}"), // several faulty files
             None => msg,
         });
     }
@@ -299,16 +298,16 @@ impl App {
 
     pub fn external_done(&mut self, e: External, r: Result<(), String>, now: Instant) {
         if let Err(msg) = r {
-            let msg = format!("{} : {msg}", e.label());
+            let msg = format!("{}: {msg}", e.label());
             self.status.error = Some(msg.clone());
             self.toast(msg, true, now);
         }
-        self.refresh_tab(now); // l'outil a pu tout changer
+        self.refresh_tab(now); // the tool may have changed anything
     }
 
-    // ── Réponses du worker ───────────────────────────────────────────
+    // ── Worker responses ─────────────────────────────────────────────
 
-    /// Envoie une action au fil et note les domaines qu'elle touche.
+    /// Sends an action to the thread and records the domains it touches.
     fn send_op(&mut self, op: Op) {
         for d in op.domains() {
             *self.pending.entry(*d).or_default() += 1;
@@ -316,7 +315,7 @@ impl App {
         self.requests.push(Request::Do(op));
     }
 
-    /// L'action a reçu sa réponse (faite ou abandonnée par fusion).
+    /// The action got its response (done or dropped by coalescing).
     fn op_answered(&mut self, op: &Op) {
         for d in op.domains() {
             if let Some(n) = self.pending.get_mut(d) {
@@ -335,7 +334,7 @@ impl App {
     pub fn on_update(&mut self, u: Update, now: Instant) {
         if let Some(d) = update_domain(&u) {
             if self.is_pending(d) {
-                return; // relecture périmée : une action sur ce domaine est en cours
+                return; // stale read: an action on this domain is in progress
             }
         }
         match u {
@@ -372,37 +371,37 @@ impl App {
                     self.status.last = Some(msg.clone());
                     self.toast(msg, false, now);
                 }
-                // Curseurs : la valeur affichée est déjà la bonne ; relire
-                // pendant un glissement ferait sautiller le curseur.
+                // Sliders: the displayed value is already correct; reading
+                // again mid-drag would make the slider jump.
                 if !matches!(op, Op::SetVolume(..) | Op::SetBrightness(_)) {
                     self.refresh_tab(now);
                 }
             }
             Err(e) => {
-                let msg = format!("{} : {e}", op_label(&op));
+                let msg = format!("{}: {e}", op_label(&op));
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
-                self.refresh_tab(now); // annule l'affichage optimiste
+                self.refresh_tab(now); // cancels the optimistic display
             }
         }
     }
 
     fn success_message(&self, op: &Op) -> Option<String> {
-        let onoff = |b: bool| if b { "activé" } else { "désactivé" };
+        let onoff = |b: bool| if b { "on" } else { "off" };
         Some(match op {
             Op::SetVolume(..) | Op::SetBrightness(_) => return None,
             Op::SetDefault(id) => {
                 let a = self.data.audio.ready()?;
                 match a.sinks.iter().find(|n| n.id == *id) {
-                    Some(n) => format!("Sortie : {}", n.name),
-                    None => format!("Entrée : {}", a.sources.iter().find(|n| n.id == *id)?.name),
+                    Some(n) => format!("Output: {}", n.name),
+                    None => format!("Input: {}", a.sources.iter().find(|n| n.id == *id)?.name),
                 }
             }
-            Op::SetWifi(b) => format!("Wi-Fi : {}", onoff(*b)),
-            Op::SetBluetooth(b) => format!("Bluetooth : {}", onoff(*b)),
-            Op::SetDnd(b) => format!("Ne pas déranger : {}", onoff(*b)),
-            Op::ToggleKeepAwake { now_on } => format!("Garder éveillé : {}", onoff(*now_on)),
-            Op::SetProfile(p) => format!("Profil : {}", profile_label(p)),
+            Op::SetWifi(b) => format!("Wi-Fi: {}", onoff(*b)),
+            Op::SetBluetooth(b) => format!("Bluetooth: {}", onoff(*b)),
+            Op::SetDnd(b) => format!("Do not disturb: {}", onoff(*b)),
+            Op::ToggleKeepAwake { now_on } => format!("Keep awake: {}", onoff(*now_on)),
+            Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
             Op::ApplyDisplays { .. } => return None,
         })
@@ -415,17 +414,17 @@ impl App {
         }
     }
 
-    // ── Temps ────────────────────────────────────────────────────────
+    // ── Time ─────────────────────────────────────────────────────────
 
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
         let Some(period) = refresh_period(self.tab) else { return };
         let due = now.duration_since(self.last_refresh) >= period;
-        // Un domaine en échec n'est pas sondé au tic normal : un outil cassé
-        // (shell-ctl notifie chacun de ses échecs) ne doit pas être relancé
-        // chaque seconde. Il est relu au plus toutes les 15 s, et à l'entrée
-        // dans l'onglet ou après une action.
+        // A failed domain is not probed on the normal tick: a broken tool
+        // (shell-ctl reports every one of its failures) must not be
+        // relaunched every second. It's re-read at most every 15 s, and on
+        // entering the tab or after an action.
         let ds: Vec<Domain> =
             domains(self.tab)
                 .iter()
@@ -440,10 +439,10 @@ impl App {
         self.push_refresh(ds, now);
     }
 
-    /// Demande la relecture de `ds` et note l'heure, domaine par domaine.
+    /// Requests a re-read of `ds` and records the time, domain by domain.
     fn push_refresh(&mut self, mut ds: Vec<Domain>, now: Instant) {
-        if self.ecrans.niri {
-            ds.retain(|d| *d != Domain::Displays); // sous niri, l'onglet n'appelle rien
+        if self.displays.niri {
+            ds.retain(|d| *d != Domain::Displays); // under niri, the tab calls nothing
         }
         if ds.is_empty() {
             return;
@@ -486,7 +485,7 @@ impl App {
 
     pub fn items(&self) -> Vec<Item> {
         match self.tab {
-            Tab::Accueil => vec![
+            Tab::Home => vec![
                 Item::Slider(SliderId::Volume),
                 Item::Slider(SliderId::Brightness),
                 Item::Toggle(ToggleId::Wifi),
@@ -495,19 +494,19 @@ impl App {
                 Item::Toggle(ToggleId::KeepAwake),
                 Item::Profile,
             ],
-            Tab::Son => {
+            Tab::Sound => {
                 let (sinks, sources) = self.visible_nodes();
                 let mut v: Vec<Item> = sinks.iter().chain(sources.iter()).map(|n| Item::Slider(SliderId::Node(n.id))).collect();
                 v.push(Item::Button(Command::Open(External::Mixer)));
                 v
             }
-            Tab::Reseau => vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))],
+            Tab::Network => vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))],
             Tab::Bluetooth => {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
-            Tab::Alimentation => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
-            Tab::Ecrans if self.ecrans.niri => Vec::new(),
-            Tab::Ecrans => {
+            Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
+            Tab::Displays if self.displays.niri => Vec::new(),
+            Tab::Displays => {
                 std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
             }
         }
@@ -529,7 +528,7 @@ impl App {
         }
     }
 
-    /// Sorties puis entrées, filtrées par la recherche.
+    /// Outputs then inputs, filtered by the search.
     pub fn visible_nodes(&self) -> (Vec<&AudioNode>, Vec<&AudioNode>) {
         match self.data.audio.ready() {
             None => (Vec::new(), Vec::new()),
@@ -544,7 +543,7 @@ impl App {
         self.search.text.is_empty() || fuzzy::score(&self.search.text, label).is_some()
     }
 
-    // ── Commandes ────────────────────────────────────────────────────
+    // ── Commands ─────────────────────────────────────────────────────
 
     pub fn run_command(&mut self, c: Command, now: Instant) {
         match c {
@@ -565,10 +564,10 @@ impl App {
             Command::Open(e) => self.external = Some(e),
             Command::GoTab(t) => self.go_tab(t, now),
             Command::ApplyDisplayProfile(name) => {
-                // Appliqué à la prochaine lecture : jamais sur un état périmé.
-                self.go_tab(Tab::Ecrans, now);
-                if !self.ecrans.niri {
-                    self.ecrans.queued_profile = Some(name);
+                // Applied on the next read: never on a stale state.
+                self.go_tab(Tab::Displays, now);
+                if !self.displays.niri {
+                    self.displays.queued_profile = Some(name);
                 }
             }
         }
@@ -576,7 +575,7 @@ impl App {
 
     pub(crate) fn toggle(&mut self, id: ToggleId, now: Instant) {
         let Some(on) = self.toggle_loadable(id).ready().copied() else {
-            self.toast(format!("{} : état inconnu", toggle_label(id)), true, now);
+            self.toast(format!("{}: unknown state", toggle_label(id)), true, now);
             return;
         };
         let op = match id {
@@ -604,7 +603,7 @@ impl App {
         self.send_op(op);
     }
 
-    /// Entrée (ou clic) sur l'élément focalisé.
+    /// Enter (or click) on the focused item.
     pub(crate) fn activate(&mut self, now: Instant) {
         match self.focused() {
             Some(Item::Toggle(id)) => self.toggle(id, now),
@@ -616,7 +615,7 @@ impl App {
         }
     }
 
-    /// -/+ ou flèches gauche/droite sur l'élément focalisé.
+    /// -/+ or left/right arrows on the focused item.
     pub(crate) fn adjust(&mut self, dir: i32, now: Instant) {
         match self.focused() {
             Some(Item::Slider(id)) => self.nudge_slider(id, dir * STEP),
@@ -630,11 +629,12 @@ impl App {
         let min = if id == SliderId::Brightness { i32::from(brightness::MIN_PERCENT) } else { 0 };
         let v = value.clamp(min, 100) as u8;
         match self.slider_value(id) {
-            None => return, // état inconnu : on n'envoie rien à l'aveugle
+            None => return, // unknown state: nothing sent blindly
             Some(cur) if cur == v => return,
-            // Volume poussé au-delà de 100 % (wpctl le permet) : une hausse
-            // demandée serait bornée à 100 et baisserait le son. Rien n'est
-            // envoyé ; une baisse, elle, descend normalement (à 100 au plus).
+            // Volume pushed above 100 % (wpctl allows it): a requested
+            // increase would be clamped to 100 and would lower the sound.
+            // Nothing is sent; a decrease, though, goes down normally (to
+            // 100 at most).
             Some(cur) if cur > 100 && value > i32::from(cur) => return,
             Some(_) => {}
         }
@@ -708,13 +708,13 @@ impl App {
         };
         let profiles = self.data.profiles.ready().map(|p| p.available.clone()).unwrap_or_default();
         let display_profiles: Vec<String> =
-            if self.ecrans.niri { Vec::new() } else { self.ecrans.profiles.iter().map(|p| p.name.clone()).collect() };
+            if self.displays.niri { Vec::new() } else { self.displays.profiles.iter().map(|p| p.name.clone()).collect() };
         let entries = palette_entries(&profiles, &display_profiles);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
         fuzzy::rank(query, &labels).into_iter().map(|i| entries[i].clone()).collect()
     }
 
-    /// Lance l'entrée `index` (ou la sélection) de la palette, puis la ferme.
+    /// Runs the palette's `index` entry (or the selection), then closes it.
     pub(crate) fn palette_run(&mut self, index: Option<usize>, now: Instant) {
         let sel = match &self.overlay {
             Overlay::Palette(p) => index.unwrap_or(p.selected),
@@ -727,7 +727,7 @@ impl App {
         }
     }
 
-    // ── Vues pour l'affichage ────────────────────────────────────────
+    // ── Views for rendering ──────────────────────────────────────────
 
     fn node(&self, id: u32) -> Option<&AudioNode> {
         self.data.audio.ready()?.sinks.iter().chain(&self.data.audio.ready()?.sources).find(|n| n.id == id)
@@ -759,7 +759,7 @@ impl App {
     pub fn slider_label(&self, id: SliderId) -> String {
         match id {
             SliderId::Volume => "Volume".into(),
-            SliderId::Brightness => "Luminosité".into(),
+            SliderId::Brightness => "Brightness".into(),
             SliderId::Node(n) => match self.node(n) {
                 Some(x) => format!("{} {}", if x.default { "●" } else { " " }, x.name),
                 None => "?".into(),
@@ -790,7 +790,7 @@ pub(crate) mod testing {
         AudioNode { id, name: name.into(), volume: Volume { percent, muted: false }, default }
     }
 
-    /// Données prêtes, reprises des relevés du poste.
+    /// Ready data, taken from the machine's recordings.
     pub fn ready_app() -> App {
         let mut a = app();
         a.take_requests();
@@ -820,12 +820,12 @@ pub(crate) mod testing {
             }),
             displays: Loadable::Ready(crate::displays::testing::machine()),
         };
-        a.ecrans.profiles = crate::displays::profiles::parse(PROFILS).unwrap();
+        a.displays.profiles = crate::displays::profiles::parse(PROFILES).unwrap();
         a
     }
 
-    /// Profils d'écran des tests (descriptions anonymisées du poste).
-    pub const PROFILS: &str = r#"
+    /// Test display profiles (anonymized descriptions from the machine).
+    pub const PROFILES: &str = r#"
 [[profile]]
 name = "Laptop seul"
 [[profile.display]]
@@ -864,15 +864,15 @@ mod tests {
     }
 
     #[test]
-    fn demarrage_demande_l_accueil() {
+    fn startup_requests_home() {
         let mut a = app();
-        assert_eq!(a.tab, Tab::Accueil);
-        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Accueil).to_vec())]);
+        assert_eq!(a.tab, Tab::Home);
+        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
         assert_eq!(a.data.volume, Loadable::Loading);
     }
 
     #[test]
-    fn mises_a_jour() {
+    fn updates() {
         let mut a = app();
         a.on_update(Update::Volume(Ok(Volume { percent: 40, muted: true })), Instant::now());
         a.on_update(Update::Brightness(Err(BackendError::Missing { tool: "brightnessctl".into() })), Instant::now());
@@ -881,19 +881,19 @@ mod tests {
     }
 
     #[test]
-    fn lecture_des_ecrans_ignoree_pendant_un_reglage() {
+    fn display_read_ignored_during_a_setting() {
         let mut a = ready_app();
         a.on_update(Update::Displays(Ok(Vec::new())), Instant::now());
         assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
         a.send_op(Op::ApplyDisplays { plan: crate::displays::Plan::default(), undo: None });
         a.on_update(Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
-        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "relecture périmée ignorée");
+        assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "stale read ignored");
         a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
         assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
     }
 
     #[test]
-    fn curseur_optimiste_et_requete() {
+    fn optimistic_slider_and_request() {
         let mut a = ready_app();
         a.nudge_slider(SliderId::Volume, STEP);
         assert_eq!(a.slider_value(SliderId::Volume), Some(67));
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn curseurs_bornes() {
+    fn sliders_are_bounded() {
         let mut a = ready_app();
         a.set_slider(SliderId::Volume, 150);
         a.set_slider(SliderId::Brightness, -20);
@@ -918,16 +918,16 @@ mod tests {
     }
 
     #[test]
-    fn volume_au_dessus_de_100_jamais_baisse_par_plus() {
+    fn volume_above_100_is_never_lowered_by_plus() {
         let mut a = ready_app();
         a.data.volume = Loadable::Ready(Volume { percent: 120, muted: false });
         a.nudge_slider(SliderId::Volume, STEP);
-        assert!(a.take_requests().is_empty(), "« + » ne ramène pas 120 % à 100 %");
+        assert!(a.take_requests().is_empty(), "\"+\" does not bring 120 % down to 100 %");
         assert_eq!(a.slider_value(SliderId::Volume), Some(120));
         a.nudge_slider(SliderId::Volume, -STEP);
-        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100))], "« - » borne à 100");
+        assert_eq!(a.take_requests(), vec![Request::Do(Op::SetVolume(NodeRef::DefaultSink, 100))], "\"-\" clamps to 100");
         assert_eq!(a.slider_value(SliderId::Volume), Some(100));
-        // Même règle pour un périphérique de l'onglet Son.
+        // Same rule for a device in the Sound tab.
         if let Loadable::Ready(st) = &mut a.data.audio {
             st.sinks[0].volume.percent = 130;
         }
@@ -938,7 +938,7 @@ mod tests {
     }
 
     #[test]
-    fn curseur_inconnu_ou_inchange_n_envoie_rien() {
+    fn unknown_or_unchanged_slider_sends_nothing() {
         let mut a = app();
         a.take_requests();
         a.nudge_slider(SliderId::Volume, STEP);
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn bascule_optimiste() {
+    fn optimistic_toggle() {
         let mut a = ready_app();
         a.toggle(ToggleId::Wifi, Instant::now());
         assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false));
@@ -962,21 +962,21 @@ mod tests {
     }
 
     #[test]
-    fn relecture_perimee_ignoree_pendant_une_bascule() {
+    fn stale_read_ignored_during_a_toggle() {
         let mut a = ready_app();
         a.toggle(ToggleId::Wifi, Instant::now());
         a.take_requests();
-        // Relecture lancée avant la bascule : elle porte l'ancien état.
+        // Read launched before the toggle: it carries the old state.
         a.on_update(net(true), Instant::now());
-        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "l'affichage reste optimiste");
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "the display stays optimistic");
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
-        // Après la réponse, la relecture suivante fait foi.
+        // After the response, the next read is trusted.
         a.on_update(net(true), Instant::now());
         assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
     }
 
     #[test]
-    fn les_autres_domaines_restent_relus_pendant_une_bascule() {
+    fn other_domains_keep_being_read_during_a_toggle() {
         let mut a = ready_app();
         a.toggle(ToggleId::Wifi, Instant::now());
         a.on_update(Update::Dnd(Ok(true)), Instant::now());
@@ -984,38 +984,38 @@ mod tests {
     }
 
     #[test]
-    fn deux_bascules_attendent_les_deux_reponses() {
+    fn two_toggles_wait_for_both_responses() {
         let mut a = ready_app();
-        a.toggle(ToggleId::Wifi, Instant::now()); // → désactivé
-        a.toggle(ToggleId::Wifi, Instant::now()); // → activé
+        a.toggle(ToggleId::Wifi, Instant::now()); // → off
+        a.toggle(ToggleId::Wifi, Instant::now()); // → on
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
-        a.on_update(net(false), Instant::now()); // lue entre les deux actions
+        a.on_update(net(false), Instant::now()); // read between the two actions
         assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
         a.on_update(Update::Done(Op::SetWifi(true), Ok(())), Instant::now());
         a.on_update(net(true), Instant::now());
         assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(true));
         a.on_update(net(false), Instant::now());
-        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "plus rien en attente");
+        assert_eq!(a.toggle_loadable(ToggleId::Wifi), Loadable::Ready(false), "nothing pending any more");
     }
 
     #[test]
-    fn rafale_de_curseur_fusionnee_ne_bloque_pas_le_domaine() {
+    fn coalesced_slider_burst_does_not_lock_the_domain() {
         let mut a = ready_app();
         a.nudge_slider(SliderId::Brightness, STEP); // 25
         a.nudge_slider(SliderId::Brightness, STEP); // 30
         a.nudge_slider(SliderId::Brightness, STEP); // 35
         a.on_update(Update::Brightness(Ok(20)), Instant::now());
-        assert_eq!(a.data.brightness, Loadable::Ready(35), "relecture périmée ignorée");
-        // Le fil a fusionné la rafale : deux réglages abandonnés, un seul fait.
+        assert_eq!(a.data.brightness, Loadable::Ready(35), "stale read ignored");
+        // The thread coalesced the burst: two settings dropped, one done.
         a.on_update(Update::Superseded(Op::SetBrightness(25)), Instant::now());
         a.on_update(Update::Superseded(Op::SetBrightness(30)), Instant::now());
         a.on_update(Update::Done(Op::SetBrightness(35), Ok(())), Instant::now());
         a.on_update(Update::Brightness(Ok(40)), Instant::now());
-        assert_eq!(a.data.brightness, Loadable::Ready(40), "le domaine n'est pas resté bloqué");
+        assert_eq!(a.data.brightness, Loadable::Ready(40), "the domain did not stay locked");
     }
 
     #[test]
-    fn volume_par_defaut_bloque_aussi_la_liste_audio() {
+    fn default_volume_also_locks_the_audio_list() {
         let mut a = ready_app();
         a.nudge_slider(SliderId::Volume, STEP);
         a.on_update(Update::Audio(Ok(AudioStatus { sinks: Vec::new(), sources: Vec::new() })), Instant::now());
@@ -1026,47 +1026,47 @@ mod tests {
     }
 
     #[test]
-    fn message_garder_eveille_malgre_une_valeur_perimee() {
-        let mut a = ready_app(); // désactivé
+    fn keep_awake_message_survives_a_stale_value() {
+        let mut a = ready_app(); // off
         a.toggle(ToggleId::KeepAwake, Instant::now());
         assert_eq!(a.take_requests(), vec![Request::Do(Op::ToggleKeepAwake { now_on: true })]);
-        a.on_update(Update::KeepAwake(Ok(false)), Instant::now()); // lue avant la bascule
+        a.on_update(Update::KeepAwake(Ok(false)), Instant::now()); // read before the toggle
         a.on_update(Update::Done(Op::ToggleKeepAwake { now_on: true }, Ok(())), Instant::now());
-        assert_eq!(a.toasts[0].text, "Garder éveillé : activé");
-        // Même si l'état affiché était périmé, le message suit l'état visé.
+        assert_eq!(a.toasts[0].text, "Keep awake: on");
+        // Even if the displayed state was stale, the message follows the intended state.
         a.data.keep_awake = Loadable::Ready(false);
         a.on_update(Update::Done(Op::ToggleKeepAwake { now_on: true }, Ok(())), Instant::now());
-        assert_eq!(a.toasts[1].text, "Garder éveillé : activé");
+        assert_eq!(a.toasts[1].text, "Keep awake: on");
     }
 
     #[test]
-    fn bascule_d_un_etat_inconnu() {
+    fn toggling_from_an_unknown_state() {
         let mut a = app();
         a.take_requests();
         a.toggle(ToggleId::Dnd, Instant::now());
         assert!(a.take_requests().is_empty());
-        assert_eq!(a.toasts[0].text, "Ne pas déranger : état inconnu");
+        assert_eq!(a.toasts[0].text, "Do not disturb: unknown state");
         assert!(a.toasts[0].error);
     }
 
     #[test]
-    fn changer_d_onglet() {
+    fn changing_tab() {
         let mut a = ready_app();
         a.focus = 3;
         a.search.text = "x".into();
-        a.go_tab(Tab::Son, Instant::now());
-        assert_eq!((a.tab, a.focus), (Tab::Son, 0));
+        a.go_tab(Tab::Sound, Instant::now());
+        assert_eq!((a.tab, a.focus), (Tab::Sound, 0));
         assert_eq!(a.search, Search::default());
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Audio])]);
-        a.go_tab(Tab::Alimentation, Instant::now());
-        assert!(a.take_requests().is_empty()); // rien à lire
+        a.go_tab(Tab::Power, Instant::now());
+        assert!(a.take_requests().is_empty()); // nothing to read
     }
 
     #[test]
-    fn elements_par_onglet() {
+    fn items_per_tab() {
         let mut a = ready_app();
         assert_eq!(a.items().len(), 7);
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         assert_eq!(
             a.items(),
             vec![
@@ -1076,16 +1076,16 @@ mod tests {
                 Item::Button(Command::Open(External::Mixer)),
             ]
         );
-        a.go_tab(Tab::Alimentation, Instant::now());
+        a.go_tab(Tab::Power, Instant::now());
         assert_eq!(a.items().len(), 5);
-        a.go_tab(Tab::Reseau, Instant::now());
+        a.go_tab(Tab::Network, Instant::now());
         assert_eq!(a.items(), vec![Item::Toggle(ToggleId::Wifi), Item::Button(Command::Open(External::Network))]);
     }
 
     #[test]
-    fn filtre_de_recherche() {
+    fn search_filter() {
         let mut a = ready_app();
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         a.search.text = "casq".into();
         let (sinks, sources) = a.visible_nodes();
         assert_eq!(sinks.iter().map(|n| n.id).collect::<Vec<_>>(), vec![116]);
@@ -1097,19 +1097,19 @@ mod tests {
     }
 
     #[test]
-    fn activer_une_sortie_la_rend_par_defaut() {
+    fn activating_an_output_makes_it_the_default() {
         let mut a = ready_app();
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         a.take_requests();
         a.activate(Instant::now());
         let st = a.data.audio.ready().unwrap();
         assert!(st.sinks[0].default && !st.sinks[1].default);
-        assert!(st.sources[0].default, "les entrées ne bougent pas");
+        assert!(st.sources[0].default, "inputs do not move");
         assert_eq!(a.take_requests(), vec![Request::Do(Op::SetDefault(64))]);
     }
 
     #[test]
-    fn profil_borne() {
+    fn profile_is_bounded() {
         let mut a = ready_app();
         a.focus = 6;
         a.adjust(1, Instant::now());
@@ -1119,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn alimentation_avec_ou_sans_confirmation() {
+    fn power_with_or_without_confirmation() {
         let mut a = ready_app();
         a.run_command(Command::Power(PowerAction::Poweroff), Instant::now());
         assert_eq!(a.overlay, Overlay::Confirm(Confirm { action: PowerAction::Poweroff, yes_focused: false }));
@@ -1135,32 +1135,32 @@ mod tests {
     }
 
     #[test]
-    fn outil_externe() {
+    fn external_tool() {
         let mut a = ready_app();
         a.run_command(Command::Open(External::Mixer), Instant::now());
         assert_eq!(a.take_external(), Some(External::Mixer));
         assert_eq!(a.take_external(), None);
         assert_eq!(a.external_argv(External::Mixer), vec!["wiremix"]);
-        a.external_done(External::Mixer, Err("wiremix introuvable".into()), Instant::now());
-        assert_eq!(a.status.error.as_deref(), Some("Mixage par appli : wiremix introuvable"));
+        a.external_done(External::Mixer, Err("wiremix not found".into()), Instant::now());
+        assert_eq!(a.status.error.as_deref(), Some("Per-app mixer: wiremix not found"));
         assert!(a.toasts[0].error);
     }
 
     #[test]
-    fn action_reussie() {
+    fn successful_action() {
         let mut a = ready_app();
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
-        assert_eq!(a.toasts[0].text, "Wi-Fi : désactivé");
-        assert_eq!(a.status.last.as_deref(), Some("Wi-Fi : désactivé"));
-        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Accueil).to_vec())]);
+        assert_eq!(a.toasts[0].text, "Wi-Fi: off");
+        assert_eq!(a.status.last.as_deref(), Some("Wi-Fi: off"));
+        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
         a.on_update(Update::Done(Op::SetDefault(116), Ok(())), Instant::now());
-        assert_eq!(a.toasts[1].text, "Sortie : CasqueBT");
+        assert_eq!(a.toasts[1].text, "Output: CasqueBT");
         a.on_update(Update::Done(Op::SetDefault(113), Ok(())), Instant::now());
-        assert_eq!(a.toasts[2].text, "Entrée : Stereo Microphone");
+        assert_eq!(a.toasts[2].text, "Input: Stereo Microphone");
     }
 
     #[test]
-    fn curseur_reussi_sans_message_ni_relecture() {
+    fn successful_slider_has_no_message_or_reread() {
         let mut a = ready_app();
         a.on_update(Update::Done(Op::SetVolume(NodeRef::DefaultSink, 50), Ok(())), Instant::now());
         assert!(a.toasts.is_empty());
@@ -1168,28 +1168,28 @@ mod tests {
     }
 
     #[test]
-    fn action_echouee() {
+    fn failed_action() {
         let mut a = ready_app();
-        let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boum".into() };
+        let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boom".into() };
         a.on_update(Update::Done(Op::SetDnd(true), Err(e)), Instant::now());
-        assert_eq!(a.status.error.as_deref(), Some("Ne pas déranger : shell-ctl failed (code 1): boum"));
+        assert_eq!(a.status.error.as_deref(), Some("Do not disturb: shell-ctl failed (code 1): boom"));
         assert!(a.toasts[0].error);
-        assert_eq!(a.take_requests().len(), 1, "relecture pour annuler l'affichage optimiste");
+        assert_eq!(a.take_requests().len(), 1, "re-read to cancel the optimistic display");
     }
 
     #[test]
-    fn tic_rafraichit_l_accueil_chaque_seconde() {
+    fn tick_refreshes_home_every_second() {
         let mut a = ready_app();
         a.on_tick(later(1100));
-        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Accueil).to_vec())]);
+        assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
         a.on_tick(later(1500));
         assert!(a.take_requests().is_empty());
     }
 
     #[test]
-    fn tic_ne_resonde_pas_un_domaine_en_echec() {
+    fn tick_does_not_reread_a_failed_domain() {
         let mut a = ready_app();
-        a.data.dnd = Loadable::Failed("shell-ctl a échoué (code 1)".into());
+        a.data.dnd = Loadable::Failed("shell-ctl failed (code 1)".into());
         a.on_tick(later(1100));
         let r = a.take_requests();
         assert_eq!(r.len(), 1);
@@ -1199,23 +1199,23 @@ mod tests {
     }
 
     #[test]
-    fn tic_rafraichit_son_reseau_bluetooth_toutes_les_deux_secondes() {
+    fn tick_refreshes_sound_network_bluetooth_every_two_seconds() {
         for (tab, d) in [
-            (Tab::Son, Domain::Audio),
-            (Tab::Reseau, Domain::Network),
+            (Tab::Sound, Domain::Audio),
+            (Tab::Network, Domain::Network),
             (Tab::Bluetooth, Domain::Bluetooth),
-            (Tab::Ecrans, Domain::Displays),
+            (Tab::Displays, Domain::Displays),
         ] {
             let mut a = ready_app();
             let t0 = Instant::now();
             a.go_tab(tab, t0);
             a.take_requests();
             a.on_tick(t0 + Duration::from_millis(1100));
-            assert!(a.take_requests().is_empty(), "{tab:?} : pas relu à 1 s");
+            assert!(a.take_requests().is_empty(), "{tab:?}: not read at 1 s");
             a.on_tick(t0 + Duration::from_millis(2100));
-            assert_eq!(a.take_requests(), vec![Request::Refresh(vec![d])], "{tab:?} : relu à 2 s");
+            assert_eq!(a.take_requests(), vec![Request::Refresh(vec![d])], "{tab:?}: read at 2 s");
             a.on_tick(t0 + Duration::from_millis(3000));
-            assert!(a.take_requests().is_empty(), "{tab:?} : période repartie de la relecture");
+            assert!(a.take_requests().is_empty(), "{tab:?}: the period restarted from the read");
         }
     }
 
@@ -1229,51 +1229,51 @@ mod tests {
     }
 
     #[test]
-    fn domaine_en_echec_relu_toutes_les_quinze_secondes() {
+    fn failed_domain_reread_every_fifteen_seconds() {
         let mut a = ready_app();
         let t0 = Instant::now();
-        a.go_tab(Tab::Accueil, t0); // lecture complète à t0
+        a.go_tab(Tab::Home, t0); // full read at t0
         a.take_requests();
-        a.data.dnd = Loadable::Failed("shell-ctl a échoué (code 1)".into());
+        a.data.dnd = Loadable::Failed("shell-ctl failed (code 1)".into());
         let at = |ms| t0 + Duration::from_millis(ms);
         a.on_tick(at(1100));
-        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "pas relu à 1 s");
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "not read at 1 s");
         a.on_tick(at(14_900));
-        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "pas relu avant 15 s");
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "not read before 15 s");
         a.on_tick(at(15_100));
         let r = refreshed(&a.take_requests());
-        assert_eq!(r, vec![Domain::Dnd], "relu à 15 s, sans attendre le tic normal");
+        assert_eq!(r, vec![Domain::Dnd], "read at 15 s, without waiting for the normal tick");
         a.on_tick(at(16_200));
-        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "la période de 15 s repart");
+        assert!(!refreshed(&a.take_requests()).contains(&Domain::Dnd), "the 15 s period restarts");
         a.on_tick(at(30_200));
         assert!(refreshed(&a.take_requests()).contains(&Domain::Dnd));
     }
 
     #[test]
-    fn onglet_en_echec_relu_a_quinze_secondes_seulement() {
+    fn failed_tab_reread_only_at_fifteen_seconds() {
         let mut a = ready_app();
         let t0 = Instant::now();
-        a.go_tab(Tab::Son, t0);
+        a.go_tab(Tab::Sound, t0);
         a.take_requests();
-        a.data.audio = Loadable::Failed("wpctl introuvable".into());
+        a.data.audio = Loadable::Failed("wpctl not found".into());
         a.on_tick(t0 + Duration::from_millis(2100));
-        assert!(a.take_requests().is_empty(), "pas relu au tic de 2 s");
+        assert!(a.take_requests().is_empty(), "not read at the 2 s tick");
         a.on_tick(t0 + Duration::from_millis(15_100));
         assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Audio])]);
     }
 
     #[test]
-    fn tic_ne_relit_rien_sur_l_alimentation() {
+    fn tick_reads_nothing_on_power() {
         let mut a = ready_app();
         let t0 = Instant::now();
-        a.go_tab(Tab::Alimentation, t0);
+        a.go_tab(Tab::Power, t0);
         a.take_requests();
         a.on_tick(t0 + Duration::from_secs(60));
         assert!(a.take_requests().is_empty());
     }
 
     #[test]
-    fn les_messages_expirent_et_sont_limites_a_trois() {
+    fn messages_expire_and_are_capped_at_three() {
         let mut a = ready_app();
         for _ in 0..5 {
             a.on_update(Update::Done(Op::SetWifi(true), Ok(())), Instant::now());
@@ -1284,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn palette_sans_accents() {
+    fn palette_without_accents() {
         let mut a = ready_app();
         a.overlay = Overlay::Palette(Palette { query: "poweroff".into(), selected: 0 });
         assert_eq!(a.palette_matches()[0].0, "Power off");
@@ -1293,24 +1293,24 @@ mod tests {
     }
 
     #[test]
-    fn avertissement_de_demarrage() {
+    fn startup_warning() {
         let mut a = app();
-        a.warn("config.toml invalide : x".into());
-        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x"));
+        a.warn("invalid config.toml: x".into());
+        assert_eq!(a.status.warning.as_deref(), Some("invalid config.toml: x"));
         assert_eq!(a.status.error, None);
-        a.warn("colors.toml invalide : y".into());
-        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x ; colors.toml invalide : y"), "aucun n'est perdu");
+        a.warn("invalid colors.toml: y".into());
+        assert_eq!(a.status.warning.as_deref(), Some("invalid config.toml: x ; invalid colors.toml: y"), "neither is lost");
     }
 
     #[test]
-    fn l_avertissement_survit_aux_actions() {
+    fn the_warning_survives_actions() {
         let mut a = ready_app();
-        a.warn("config.toml invalide : x".into());
-        let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boum".into() };
+        a.warn("invalid config.toml: x".into());
+        let e = BackendError::Failed { tool: "shell-ctl".into(), code: Some(1), stderr: "boom".into() };
         a.on_update(Update::Done(Op::SetDnd(true), Err(e)), Instant::now());
         assert!(a.status.error.is_some());
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
-        assert_eq!(a.status.error, None, "la dernière erreur d'action s'efface au succès suivant");
-        assert_eq!(a.status.warning.as_deref(), Some("config.toml invalide : x"), "l'avertissement reste");
+        assert_eq!(a.status.error, None, "the last action error is cleared on the next success");
+        assert_eq!(a.status.warning.as_deref(), Some("invalid config.toml: x"), "the warning remains");
     }
 }

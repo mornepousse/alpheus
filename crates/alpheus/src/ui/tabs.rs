@@ -1,8 +1,8 @@
-//! Contenu des onglets, en lignes : un élément focalisable par ligne, titres
-//! et listes autour ; défilement pour garder le focus visible.
+//! Tab content, as rows: one focusable element per row, headings and lists
+//! around it; scrolling keeps the focus visible.
 
+use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
-use super::ecrans::{self, MapCell};
 use super::hit::{HitMap, Target};
 use crate::app::action::{Tab, profile_label};
 use crate::app::{App, Item, Loadable, toggle_label};
@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// Largeur maximale d'une barre de curseur.
+/// Maximum width of a slider bar.
 const BAR_W: u16 = 24;
 
 enum Row {
@@ -20,19 +20,19 @@ enum Row {
     Text(String),
     Error(String),
     Item(usize),
-    /// Ligne de la carte des écrans.
+    /// Row of the display map.
     Map(usize),
 }
 
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
-    let map: Vec<Vec<MapCell>> = if app.tab == Tab::Ecrans {
-        let focused = ecrans::focused_output(app);
-        ecrans::map_canvas(app.outputs(), focused.as_deref(), body.width.saturating_sub(4))
+    let map: Vec<Vec<MapCell>> = if app.tab == Tab::Displays {
+        let focused = displays::focused_output(app);
+        displays::map_canvas(app.outputs(), focused.as_deref(), body.width.saturating_sub(4))
     } else {
         Vec::new()
     };
     let rows = rows(app, map.len());
-    let label_w: u16 = if app.tab == Tab::Son { 34 } else { 20 };
+    let label_w: u16 = if app.tab == Tab::Sound { 34 } else { 20 };
     let focus_row = rows.iter().position(|r| matches!(r, Row::Item(i) if *i == app.focus)).unwrap_or(0);
     let h = usize::from(body.height);
     let offset = if focus_row >= h { focus_row + 1 - h } else { 0 };
@@ -58,24 +58,24 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
             }
             Row::Map(k) => {
                 if let Some(line) = map.get(*k) {
-                    ecrans::draw_map_row(buf, body, body.x + 2, y, line, app);
+                    displays::draw_map_row(buf, body, body.x + 2, y, line, app);
                 }
             }
         }
     }
 }
 
-/// Lignes de l'onglet ; `map_rows` : hauteur de la carte des écrans.
+/// Rows of the tab; `map_rows`: height of the display map.
 fn rows(app: &App, map_rows: usize) -> Vec<Row> {
     let mut rows = Vec::new();
     if app.search.editing || !app.search.text.is_empty() {
         let cursor = if app.search.editing { "▏" } else { "" };
-        rows.push(Row::Text(format!("Recherche : {}{cursor}", app.search.text)));
+        rows.push(Row::Text(format!("Search: {}{cursor}", app.search.text)));
         rows.push(Row::Blank);
     }
     let items = app.items();
     match app.tab {
-        Tab::Accueil | Tab::Alimentation => {
+        Tab::Home | Tab::Power => {
             for i in 0..items.len() {
                 if i > 0 {
                     rows.push(Row::Blank);
@@ -83,15 +83,15 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
                 rows.push(Row::Item(i));
             }
         }
-        Tab::Son => {
+        Tab::Sound => {
             let (sinks, sources) = app.visible_nodes();
             let mut i = 0;
-            for (title, count) in [("Sorties", sinks.len()), ("Entrées", sources.len())] {
+            for (title, count) in [("Outputs", sinks.len()), ("Inputs", sources.len())] {
                 rows.push(Row::Heading(title));
                 match &app.data.audio {
                     Loadable::Loading => rows.push(Row::Text("…".into())),
                     Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                    Loadable::Ready(_) if count == 0 => rows.push(Row::Text("aucune".into())),
+                    Loadable::Ready(_) if count == 0 => rows.push(Row::Text("none".into())),
                     Loadable::Ready(_) => {
                         for _ in 0..count {
                             rows.push(Row::Item(i));
@@ -101,22 +101,22 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
                 }
                 rows.push(Row::Blank);
             }
-            // Le bouton « Mixage par appli » est toujours le dernier élément
-            // de l'onglet Son (App::items()) ; soustraction protégée pour que
-            // le rendu ne panique jamais même si l'invariant venait à changer.
+            // The "Per-app mixer" button is always the last item of the
+            // Sound tab (App::items()); subtraction is guarded so the
+            // render never panics even if that invariant were to change.
             rows.push(Row::Item(items.len().saturating_sub(1)));
         }
-        Tab::Reseau => {
+        Tab::Network => {
             rows.push(Row::Item(0));
             rows.push(Row::Blank);
-            rows.push(Row::Heading("Connexions actives"));
+            rows.push(Row::Heading("Active connections"));
             match &app.data.network {
                 Loadable::Loading => rows.push(Row::Text("…".into())),
                 Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
                 Loadable::Ready(n) => {
                     let list: Vec<_> = n.active.iter().filter(|c| app.matches_search(&c.name)).collect();
                     if list.is_empty() {
-                        rows.push(Row::Text("aucune".into()));
+                        rows.push(Row::Text("none".into()));
                     }
                     for c in list {
                         rows.push(Row::Text(format!("{:<10} {}  ({})", c.kind, c.name, c.device)));
@@ -126,9 +126,9 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
             rows.push(Row::Blank);
             rows.push(Row::Item(1));
         }
-        Tab::Ecrans => {
-            if app.ecrans.niri {
-                rows.push(Row::Text("Écrans : pas encore disponible sous niri".into()));
+        Tab::Displays => {
+            if app.displays.niri {
+                rows.push(Row::Text("Displays: not available under niri yet".into()));
                 return rows;
             }
             rows.push(Row::Item(0));
@@ -137,12 +137,12 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
                 Loadable::Loading => rows.push(Row::Text("…".into())),
                 Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
                 Loadable::Ready(outs) => {
-                    rows.push(Row::Heading("Carte"));
+                    rows.push(Row::Heading("Map"));
                     rows.extend((0..map_rows).map(Row::Map));
                     rows.push(Row::Blank);
-                    rows.push(Row::Heading("Écrans"));
+                    rows.push(Row::Heading("Displays"));
                     if outs.is_empty() {
-                        rows.push(Row::Text("aucune sortie".into()));
+                        rows.push(Row::Text("no output".into()));
                     }
                     rows.extend((1..=outs.len()).map(Row::Item));
                 }
@@ -151,15 +151,15 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
         Tab::Bluetooth => {
             rows.push(Row::Item(0));
             rows.push(Row::Blank);
-            rows.push(Row::Heading("Appareils connectés"));
+            rows.push(Row::Heading("Connected devices"));
             match &app.data.bluetooth {
                 Loadable::Loading => rows.push(Row::Text("…".into())),
                 Loadable::Failed(e) => rows.push(Row::Error(e.clone())),
-                Loadable::Ready(b) if !b.powered => rows.push(Row::Text("Bluetooth coupé".into())),
+                Loadable::Ready(b) if !b.powered => rows.push(Row::Text("Bluetooth is off".into())),
                 Loadable::Ready(b) => {
                     let list: Vec<_> = b.connected.iter().filter(|d| app.matches_search(&d.name)).collect();
                     if list.is_empty() {
-                        rows.push(Row::Text("aucun".into()));
+                        rows.push(Row::Text("none".into()));
                     }
                     for d in list {
                         rows.push(Row::Text(format!("{}  ({})", d.name, d.mac)));
@@ -197,7 +197,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
             draw_toggle(buf, body, vx, y, &app.toggle_loadable(*id), th);
         }
         Item::Profile => {
-            put(buf, body, lx, y, "Profil d'énergie", label_style);
+            put(buf, body, lx, y, "Energy profile", label_style);
             hits.push(row, Target::Item(i));
             match &app.data.profiles {
                 Loadable::Loading => {
@@ -221,8 +221,8 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 }
             }
         }
-        Item::DisplayProfiles => ecrans::draw_profiles(buf, body, y, focused, app, hits),
-        Item::Output(name) => ecrans::draw_output(buf, body, y, i, name, focused, app, hits),
+        Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits),
+        Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits),
         Item::Button(c) => {
             let style = if focused {
                 Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
@@ -230,7 +230,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 Style::default().fg(th.accent)
             };
             let w = put(buf, body, lx, y, &format!("[ {} ]", c.label()), style);
-            // Zone cliquable volontairement limitée au bouton dessiné (pas toute la ligne).
+            // Clickable area intentionally limited to the drawn button (not the whole row).
             hits.push(Rect::new(body.x, y, w + 2, 1), Target::Item(i));
         }
     }
@@ -247,7 +247,7 @@ fn draw_slider(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, m
             None
         }
         Loadable::Ready(p) => {
-            // 12 colonnes réservées à « 100 % muet ».
+            // 12 columns reserved for "100 % muted".
             let w = BAR_W.min(clip.right().saturating_sub(x).saturating_sub(12));
             if w < 3 {
                 put(buf, clip, x, y, &format!("{p} %"), Style::default().fg(th.fg));
@@ -258,7 +258,7 @@ fn draw_slider(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, m
             put(buf, clip, x, y, &bar, Style::default().fg(th.accent));
             let mut tail = format!(" {p:>3} %");
             if muted {
-                tail.push_str(" muet");
+                tail.push_str(" muted");
             }
             put(buf, clip, x + w, y, &tail, Style::default().fg(th.fg));
             Some(Rect::new(x, y, w, 1))
@@ -270,8 +270,8 @@ fn draw_toggle(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<bool>,
     let (text, style) = match v {
         Loadable::Loading => ("…".to_string(), Style::default().fg(th.muted)),
         Loadable::Failed(e) => (format!("✗ {e}"), Style::default().fg(th.error)),
-        Loadable::Ready(true) => ("[■] activé".to_string(), Style::default().fg(th.accent)),
-        Loadable::Ready(false) => ("[ ] désactivé".to_string(), Style::default().fg(th.muted)),
+        Loadable::Ready(true) => ("[■] on".to_string(), Style::default().fg(th.accent)),
+        Loadable::Ready(false) => ("[ ] off".to_string(), Style::default().fg(th.muted)),
     };
     put(buf, clip, x, y, &text, style);
 }

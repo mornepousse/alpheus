@@ -1,29 +1,29 @@
-//! Vocabulaire de l'application : onglets, intentions clavier (Action),
-//! effets métier (Command), outils externes, entrées de la palette.
+//! Vocabulary of the application: tabs, keyboard intents (Action), business
+//! effects (Command), external tools, palette entries.
 
 use crate::backends::PowerAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
-    Accueil,
-    Son,
-    Reseau,
+    Home,
+    Sound,
+    Network,
     Bluetooth,
-    Alimentation,
-    Ecrans,
+    Power,
+    Displays,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Accueil, Tab::Son, Tab::Reseau, Tab::Bluetooth, Tab::Alimentation, Tab::Ecrans];
+    pub const ALL: [Tab; 6] = [Tab::Home, Tab::Sound, Tab::Network, Tab::Bluetooth, Tab::Power, Tab::Displays];
 
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Accueil => "Accueil",
-            Tab::Son => "Son",
-            Tab::Reseau => "Réseau",
+            Tab::Home => "Home",
+            Tab::Sound => "Sound",
+            Tab::Network => "Network",
             Tab::Bluetooth => "Bluetooth",
-            Tab::Alimentation => "Alimentation",
-            Tab::Ecrans => "Écrans",
+            Tab::Power => "Power",
+            Tab::Displays => "Displays",
         }
     }
 
@@ -39,31 +39,31 @@ impl Tab {
         Tab::ALL[(self.index() + Tab::ALL.len() - 1) % Tab::ALL.len()]
     }
 
-    /// Onglets dont la liste se filtre avec « / ».
+    /// Tabs whose list is filtered with "/".
     pub fn searchable(self) -> bool {
-        matches!(self, Tab::Son | Tab::Reseau | Tab::Bluetooth)
+        matches!(self, Tab::Sound | Tab::Network | Tab::Bluetooth)
     }
 
-    /// Nom de l'onglet en ligne de commande (`alpheus --onglet <nom>`).
+    /// Tab name on the command line (`alpheus --tab <name>`).
     pub fn slug(self) -> &'static str {
         match self {
-            Tab::Accueil => "accueil",
-            Tab::Son => "son",
-            Tab::Reseau => "reseau",
+            Tab::Home => "home",
+            Tab::Sound => "sound",
+            Tab::Network => "network",
             Tab::Bluetooth => "bluetooth",
-            Tab::Alimentation => "alimentation",
-            Tab::Ecrans => "ecrans",
+            Tab::Power => "power",
+            Tab::Displays => "displays",
         }
     }
 
-    /// Onglet nommé `nom`, insensible à la casse et aux accents.
-    pub fn from_slug(nom: &str) -> Option<Tab> {
-        let n = crate::fuzzy::plier(nom.trim());
+    /// Tab named `name`, case- and accent-insensitive.
+    pub fn from_slug(name: &str) -> Option<Tab> {
+        let n = crate::fuzzy::fold_str(name.trim());
         Tab::ALL.into_iter().find(|t| t.slug() == n)
     }
 }
 
-/// Outil TUI externe ouvert dans la même fenêtre.
+/// External TUI tool opened in the same window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum External {
     Mixer,
@@ -74,14 +74,14 @@ pub enum External {
 impl External {
     pub fn label(self) -> &'static str {
         match self {
-            External::Mixer => "Mixage par appli",
-            External::Network => "Choisir un réseau",
-            External::Bluetooth => "Appairer un appareil",
+            External::Mixer => "Per-app mixer",
+            External::Network => "Choose a network",
+            External::Bluetooth => "Pair a device",
         }
     }
 }
 
-/// Effet métier, déclenché par une touche, la souris ou la palette.
+/// Business effect, triggered by a key, the mouse or the palette.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     ToggleWifi,
@@ -92,7 +92,7 @@ pub enum Command {
     Power(PowerAction),
     Open(External),
     GoTab(Tab),
-    /// Applique un profil d'écran (palette « Profil d'écran : … »).
+    /// Applies a display profile (palette "Display profile: …").
     ApplyDisplayProfile(String),
 }
 
@@ -101,18 +101,18 @@ impl Command {
         match self {
             Command::ToggleWifi => "Wi-Fi".into(),
             Command::ToggleBluetooth => "Bluetooth".into(),
-            Command::ToggleDnd => "Ne pas déranger".into(),
-            Command::ToggleKeepAwake => "Garder éveillé".into(),
-            Command::SetProfile(p) => format!("Profil : {}", profile_label(p)),
+            Command::ToggleDnd => "Do not disturb".into(),
+            Command::ToggleKeepAwake => "Keep awake".into(),
+            Command::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Command::Power(a) => a.label().into(),
             Command::Open(e) => e.label().into(),
-            Command::GoTab(t) => format!("Aller à : {}", t.title()),
-            Command::ApplyDisplayProfile(p) => format!("Profil d'écran : {p}"),
+            Command::GoTab(t) => format!("Go to: {}", t.title()),
+            Command::ApplyDisplayProfile(p) => format!("Display profile: {p}"),
         }
     }
 }
 
-/// Intention clavier, configurable par son nom dans config.toml.
+/// Keyboard intent, configurable by name in config.toml.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Quit,
@@ -146,12 +146,12 @@ impl Action {
         Action::Search,
         Action::NextTab,
         Action::PrevTab,
-        Action::GoTab(Tab::Accueil),
-        Action::GoTab(Tab::Son),
-        Action::GoTab(Tab::Reseau),
+        Action::GoTab(Tab::Home),
+        Action::GoTab(Tab::Sound),
+        Action::GoTab(Tab::Network),
         Action::GoTab(Tab::Bluetooth),
-        Action::GoTab(Tab::Alimentation),
-        Action::GoTab(Tab::Ecrans),
+        Action::GoTab(Tab::Power),
+        Action::GoTab(Tab::Displays),
         Action::Left,
         Action::Right,
         Action::Up,
@@ -195,29 +195,29 @@ impl Action {
         Action::ALL.into_iter().find(|a| a.name() == s)
     }
 
-    /// Libellé de l'aide.
+    /// Help label.
     pub fn label(self) -> String {
         match self {
-            Action::Quit => "Quitter".into(),
-            Action::Back => "Retour".into(),
-            Action::Help => "Aide".into(),
-            Action::Palette => "Palette de commandes".into(),
-            Action::Search => "Chercher".into(),
-            Action::NextTab => "Onglet suivant".into(),
-            Action::PrevTab => "Onglet précédent".into(),
-            Action::GoTab(t) => format!("Onglet {}", t.title()),
-            Action::Left => "Gauche".into(),
-            Action::Right => "Droite".into(),
-            Action::Up => "Haut".into(),
-            Action::Down => "Bas".into(),
-            Action::PageUp => "Page précédente".into(),
-            Action::PageDown => "Page suivante".into(),
-            Action::Home => "Début".into(),
-            Action::End => "Fin".into(),
-            Action::Toggle => "Basculer".into(),
-            Action::Activate => "Activer".into(),
-            Action::Decrease => "Diminuer".into(),
-            Action::Increase => "Augmenter".into(),
+            Action::Quit => "Quit".into(),
+            Action::Back => "Back".into(),
+            Action::Help => "Help".into(),
+            Action::Palette => "Command palette".into(),
+            Action::Search => "Search".into(),
+            Action::NextTab => "Next tab".into(),
+            Action::PrevTab => "Previous tab".into(),
+            Action::GoTab(t) => format!("Tab {}", t.title()),
+            Action::Left => "Left".into(),
+            Action::Right => "Right".into(),
+            Action::Up => "Up".into(),
+            Action::Down => "Down".into(),
+            Action::PageUp => "Page up".into(),
+            Action::PageDown => "Page down".into(),
+            Action::Home => "Home".into(),
+            Action::End => "End".into(),
+            Action::Toggle => "Toggle".into(),
+            Action::Activate => "Activate".into(),
+            Action::Decrease => "Decrease".into(),
+            Action::Increase => "Increase".into(),
         }
     }
 }
@@ -225,15 +225,14 @@ impl Action {
 pub fn profile_label(p: &str) -> String {
     match p {
         "performance" => "Performance",
-        "balanced" => "Équilibré",
-        "power-saver" => "Économie",
+        "balanced" => "Balanced",
+        "power-saver" => "Power saver",
         other => other,
     }
     .to_string()
 }
 
-/// Toutes les commandes de la palette ; les profils (énergie, écrans)
-/// dépendent du poste.
+/// All palette commands; the profiles (energy, displays) depend on the machine.
 pub fn palette_entries(profiles: &[String], display_profiles: &[String]) -> Vec<(String, Command)> {
     let mut v: Vec<Command> = vec![Command::ToggleDnd, Command::ToggleWifi, Command::ToggleBluetooth, Command::ToggleKeepAwake];
     v.extend(Tab::ALL.map(Command::GoTab));
@@ -249,66 +248,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn onglets_circulaires() {
-        assert_eq!(Tab::Accueil.prev(), Tab::Ecrans);
-        assert_eq!(Tab::Alimentation.next(), Tab::Ecrans);
-        assert_eq!(Tab::Ecrans.next(), Tab::Accueil);
-        assert_eq!(Tab::Ecrans.title(), "Écrans");
-        assert_eq!(Tab::Reseau.index(), 2);
+    fn tabs_wrap_around() {
+        assert_eq!(Tab::Home.prev(), Tab::Displays);
+        assert_eq!(Tab::Power.next(), Tab::Displays);
+        assert_eq!(Tab::Displays.next(), Tab::Home);
+        assert_eq!(Tab::Displays.title(), "Displays");
+        assert_eq!(Tab::Network.index(), 2);
     }
 
     #[test]
-    fn noms_d_onglet_en_ligne_de_commande() {
-        let mut noms: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
-        noms.sort();
-        assert_eq!(noms, ["accueil", "alimentation", "bluetooth", "ecrans", "reseau", "son"]);
+    fn tab_names_on_the_command_line() {
+        let mut names: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
+        names.sort();
+        assert_eq!(names, ["bluetooth", "displays", "home", "network", "power", "sound"]);
         for t in Tab::ALL {
             assert_eq!(Tab::from_slug(t.slug()), Some(t));
         }
-        assert_eq!(Tab::from_slug("Réseau"), Some(Tab::Reseau));
-        assert_eq!(Tab::from_slug(" ÉCRANS "), Some(Tab::Ecrans));
-        assert_eq!(Tab::from_slug("meteo"), None);
+        assert_eq!(Tab::from_slug("Network"), Some(Tab::Network));
+        assert_eq!(Tab::from_slug(" DISPLAYS "), Some(Tab::Displays));
+        assert_eq!(Tab::from_slug("weather"), None);
         assert_eq!(Tab::from_slug(""), None);
     }
 
     #[test]
-    fn noms_d_action_aller_retour() {
+    fn action_names_round_trip() {
         for a in Action::ALL {
             assert_eq!(Action::from_name(&a.name()), Some(a), "{}", a.name());
         }
-        assert_eq!(Action::GoTab(Tab::Reseau).name(), "tab_3");
+        assert_eq!(Action::GoTab(Tab::Network).name(), "tab_3");
         assert_eq!(Action::PageUp.name(), "page_up");
-        assert_eq!(Action::from_name("voler"), None);
+        assert_eq!(Action::from_name("fly"), None);
     }
 
     #[test]
-    fn libelles_d_aide() {
-        assert_eq!(Action::Palette.label(), "Palette de commandes");
-        assert_eq!(Action::GoTab(Tab::Son).label(), "Onglet Son");
+    fn help_labels() {
+        assert_eq!(Action::Palette.label(), "Command palette");
+        assert_eq!(Action::GoTab(Tab::Sound).label(), "Tab Sound");
     }
 
     #[test]
-    fn palette_complete() {
+    fn full_palette() {
         let p = palette_entries(&["performance".into(), "balanced".into(), "power-saver".into()], &["Bureau".into()]);
         let labels: Vec<&str> = p.iter().map(|(l, _)| l.as_str()).collect();
-        for attendu in [
-            "Ne pas déranger",
+        for expected in [
+            "Do not disturb",
             "Wi-Fi",
             "Bluetooth",
-            "Garder éveillé",
+            "Keep awake",
             "Lock",
             "Power off",
-            "Mixage par appli",
-            "Choisir un réseau",
-            "Appairer un appareil",
-            "Aller à : Son",
-            "Profil : Équilibré",
-            "Aller à : Écrans",
-            "Profil d'écran : Bureau",
+            "Per-app mixer",
+            "Choose a network",
+            "Pair a device",
+            "Go to: Sound",
+            "Profile: Balanced",
+            "Go to: Displays",
+            "Display profile: Bureau",
         ] {
-            assert!(labels.contains(&attendu), "{attendu} manque");
+            assert!(labels.contains(&expected), "{expected} missing");
         }
         assert!(p.contains(&("Power off".to_string(), Command::Power(PowerAction::Poweroff))));
-        assert!(p.contains(&("Profil d'écran : Bureau".to_string(), Command::ApplyDisplayProfile("Bureau".into()))));
+        assert!(p.contains(&("Display profile: Bureau".to_string(), Command::ApplyDisplayProfile("Bureau".into()))));
     }
 }

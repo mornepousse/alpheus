@@ -1,0 +1,28 @@
+---
+source: crates/alpheus/src/ui/mod.rs
+expression: "draw(&a, 80, 24).0.join(\"\\n\")"
+---
+ alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays         
+                                                                                
+   Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]                   
+                                                                                
+ Map                                                                            
+    ┌──Alpha───┐┌──Bravo──┐                                                     
+    │    2   ● ││    3    │                                                     
+    └──┌ Keep these settings? ──────────────────────────────────────────┐       
+   ┌───│ Profile "Bureau"                                               │       
+   │   │ Alpha: 1920×1080@60, scale 1.0, 0°, position 0, 0              │       
+   │   │ Bravo: 1920×1080@60, scale 1.0, 0°, position 1920, 0           │       
+   │   │ Laptop: off                                                    │       
+   └───│ ⚠ DisplayLink output: known freeze risk on this machine        │       
+       │                                                                │       
+ Displa│ Applying…                                                      │       
+   1 La│ [ Cancel ]  [ Keep ]                                           │on 0,… 
+ ▶ 2 Al└────────────────────────────────────────────────────────────────┘       
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Al… 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Displays · ready                                                               
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Adjust

@@ -1,7 +1,7 @@
-//! Fil de travail : interroge les backends hors de la boucle d'affichage.
-//! Un outil lent (jusqu'à 2 s avant d'être tué) ne fige donc jamais l'écran.
-//! Chaque domaine est renvoyé dès qu'il est lu ; une rafale de réglages de
-//! curseur est fusionnée (seul le dernier compte).
+//! Worker thread: queries the backends outside the render loop. A slow tool
+//! (killed after up to 2 s) therefore never freezes the screen. Each domain
+//! is returned as soon as it's read; a burst of slider changes is coalesced
+//! (only the last one counts).
 
 use super::action::Tab;
 use crate::backends::{AudioStatus, BResult, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
@@ -35,17 +35,17 @@ impl Domain {
     ];
 }
 
-/// Domaines affichés par un onglet (les plus lents en dernier).
+/// Domains shown by a tab (the slowest last).
 pub fn domains(tab: Tab) -> &'static [Domain] {
     match tab {
-        Tab::Accueil => {
+        Tab::Home => {
             &[Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake, Domain::Profiles, Domain::Network, Domain::Bluetooth]
         }
-        Tab::Son => &[Domain::Audio],
-        Tab::Reseau => &[Domain::Network],
+        Tab::Sound => &[Domain::Audio],
+        Tab::Network => &[Domain::Network],
         Tab::Bluetooth => &[Domain::Bluetooth],
-        Tab::Alimentation => &[],
-        Tab::Ecrans => &[Domain::Displays],
+        Tab::Power => &[],
+        Tab::Displays => &[Domain::Displays],
     }
 }
 
@@ -57,17 +57,17 @@ pub enum Op {
     SetWifi(bool),
     SetBluetooth(bool),
     SetDnd(bool),
-    /// Bascule « Garder éveillé » ; `now_on` est l'état visé, connu au
-    /// moment de l'action (le message de réussite ne dépend donc pas d'une
-    /// relecture arrivée entre-temps).
+    /// Toggles "Keep awake"; `now_on` is the state aimed for, known at the
+    /// time of the action (so the success message doesn't depend on a
+    /// stale read arriving in the meantime).
     ToggleKeepAwake {
         now_on: bool,
     },
     SetProfile(String),
     Power(PowerAction),
-    /// Réglage d'écrans. `undo` : plan inverse d'un essai (réappliqué si le
-    /// plan échoue, ou à l'annulation) ; `None` : c'est lui-même un retour,
-    /// appliqué au mieux (chaque étape, même après un échec).
+    /// Display setting. `undo`: reverse plan of a trial (reapplied if the
+    /// plan fails, or on cancel); `None`: this one is itself a rollback,
+    /// applied best-effort (every step, even after a failure).
     ApplyDisplays {
         plan: Plan,
         undo: Option<Plan>,
@@ -92,15 +92,15 @@ pub enum Update {
     Audio(BResult<AudioStatus>),
     Displays(BResult<Vec<Output>>),
     Done(Op, BResult<()>),
-    /// Réglage abandonné par la fusion d'une rafale (un réglage plus récent
-    /// du même curseur l'a remplacé) : chaque `Request::Do` reçoit ainsi
-    /// exactement une réponse, `Done` ou `Superseded`.
+    /// A setting dropped by coalescing a burst (a more recent change to the
+    /// same slider replaced it): each `Request::Do` thus gets exactly one
+    /// response, `Done` or `Superseded`.
     Superseded(Op),
 }
 
 impl Op {
-    /// Domaines dont l'affichage est modifié par cette action (affichage
-    /// optimiste) : leurs relectures sont ignorées tant qu'elle est en cours.
+    /// Domains whose display this action changes (optimistic display):
+    /// their reads are ignored while it's in flight.
     pub fn domains(&self) -> &'static [Domain] {
         match self {
             Op::SetVolume(NodeRef::DefaultSink, _) => &[Domain::Volume, Domain::Audio],
@@ -142,16 +142,16 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::ToggleKeepAwake { .. } => b.energy.toggle_keep_awake(),
         Op::SetProfile(p) => b.energy.set_profile(p),
         Op::Power(a) => b.power.perform(*a),
-        // Un essai s'arrête au premier échec ; un retour (sans plan
-        // inverse) tente chaque étape (décision D2).
+        // A trial (with a reverse plan) stops at the first failure; a
+        // rollback (without a reverse plan) tries every step (decision D2).
         Op::ApplyDisplays { plan, undo: Some(_) } => b.displays.apply(plan),
         Op::ApplyDisplays { plan, undo: None } => b.displays.apply_best_effort(plan),
     }
 }
 
-/// Fusionne une rafale : dernier réglage par curseur, un seul
-/// rafraîchissement (union des domaines) placé après les actions. Renvoie
-/// aussi les réglages abandonnés, à annoncer par `Update::Superseded`.
+/// Coalesces a burst: last setting per slider, a single refresh (union of
+/// domains) placed after the actions. Also returns the dropped settings, to
+/// be announced as `Update::Superseded`.
 pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     let mut superseded: Vec<Op> = Vec::new();
     let mut ops: Vec<Op> = Vec::new();
@@ -172,7 +172,7 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
                     _ => false,
                 };
                 if let Some(i) = ops.iter().position(replaced) {
-                    superseded.push(ops.remove(i)); // au plus un : le précédent a déjà été retiré
+                    superseded.push(ops.remove(i)); // at most one: the previous one was already removed
                 }
                 ops.push(op);
             }
@@ -185,7 +185,7 @@ pub fn coalesce(reqs: Vec<Request>) -> (Vec<Request>, Vec<Op>) {
     (out, superseded)
 }
 
-/// Lance le fil ; il s'arrête quand l'émetteur de requêtes est abandonné.
+/// Starts the thread; it stops once the request sender is dropped.
 pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
     let (tx_req, rx_req) = mpsc::channel::<Request>();
     let (tx_up, rx_up) = mpsc::channel::<Update>();
@@ -196,8 +196,8 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
                 batch.push(r);
             }
             let (reqs, superseded) = coalesce(batch);
-            // Une réponse par réglage, même abandonné : l'application compte
-            // ses actions en attente et ne doit jamais rester bloquée.
+            // One response per setting, even a dropped one: the app counts
+            // its pending actions and must never stay stuck.
             for op in superseded {
                 if tx_up.send(Update::Superseded(op)).is_err() {
                     return;
@@ -212,7 +212,7 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
                     }
                 };
                 if !sent {
-                    return; // l'application est partie
+                    return; // the app has gone away
                 }
             }
         }
@@ -228,19 +228,19 @@ mod tests {
     use std::time::{Duration, Instant};
 
     fn backends(f: &Arc<FakeExecutor>) -> Backends {
-        Backends::system(f.clone(), std::env::temp_dir().join("alpheus-worker-sans-drapeau"))
+        Backends::system(f.clone(), std::env::temp_dir().join("alpheus-worker-no-flag"))
     }
 
     #[test]
-    fn domaines_par_onglet() {
-        assert_eq!(domains(Tab::Accueil).len(), 7);
-        assert_eq!(domains(Tab::Son), &[Domain::Audio]);
-        assert_eq!(domains(Tab::Ecrans), &[Domain::Displays]);
-        assert!(domains(Tab::Alimentation).is_empty());
+    fn domains_per_tab() {
+        assert_eq!(domains(Tab::Home).len(), 7);
+        assert_eq!(domains(Tab::Sound), &[Domain::Audio]);
+        assert_eq!(domains(Tab::Displays), &[Domain::Displays]);
+        assert!(domains(Tab::Power).is_empty());
     }
 
     #[test]
-    fn fetch_et_perform() {
+    fn fetch_and_perform() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("shell-ctl dnd-status", "on\n");
         f.ok("nmcli radio wifi off", "");
@@ -251,8 +251,8 @@ mod tests {
     }
 
     #[test]
-    fn fusion_des_rafales() {
-        let (r, abandonnes) = coalesce(vec![
+    fn burst_coalescing() {
+        let (r, dropped) = coalesce(vec![
             Request::Do(Op::SetVolume(NodeRef::DefaultSink, 10)),
             Request::Refresh(vec![Domain::Volume]),
             Request::Do(Op::SetVolume(NodeRef::DefaultSink, 20)),
@@ -270,11 +270,11 @@ mod tests {
                 Request::Refresh(vec![Domain::Volume, Domain::Brightness]),
             ]
         );
-        assert_eq!(abandonnes, vec![Op::SetVolume(NodeRef::DefaultSink, 10), Op::SetBrightness(5)]);
+        assert_eq!(dropped, vec![Op::SetVolume(NodeRef::DefaultSink, 10), Op::SetBrightness(5)]);
     }
 
     #[test]
-    fn ecrans_lus_et_appliques_par_wm_set() {
+    fn displays_read_and_applied_through_wm_set() {
         use crate::displays::Step;
         let f = Arc::new(FakeExecutor::new());
         f.ok("wm-set outputs", "[]");
@@ -287,43 +287,43 @@ mod tests {
     }
 
     #[test]
-    fn essai_arrete_au_premier_echec_retour_au_mieux() {
-        // Décision D2 : l'essai (avec plan inverse) s'arrête au premier
-        // échec ; le retour (sans plan inverse) tente toutes ses étapes.
+    fn trial_stops_at_first_failure_rollback_is_best_effort() {
+        // Decision D2: the trial (with a reverse plan) stops at the first
+        // failure; the rollback (without a reverse plan) tries every step.
         use crate::displays::Step;
         let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }, Step { output: "HDMI-A-1".into(), active: None }] };
         let f = Arc::new(FakeExecutor::new());
-        f.ok("wm-set monitor-disable HDMI-A-1", ""); // eDP-1 non programmé : échec
+        f.ok("wm-set monitor-disable HDMI-A-1", ""); // eDP-1 not programmed: failure
         let b = backends(&f);
         assert!(perform(&b, &Op::ApplyDisplays { plan: plan.clone(), undo: Some(Plan::default()) }).is_err());
-        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1"], "essai : arrêt au premier échec");
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1"], "trial: stops at the first failure");
         let f = Arc::new(FakeExecutor::new());
         f.ok("wm-set monitor-disable HDMI-A-1", "");
         let b = backends(&f);
         let e = perform(&b, &Op::ApplyDisplays { plan, undo: None }).unwrap_err();
-        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1", "wm-set monitor-disable HDMI-A-1"], "retour : au mieux");
+        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1", "wm-set monitor-disable HDMI-A-1"], "rollback: best-effort");
         assert_eq!(e.to_string(), "incomplete rollback: eDP-1 (wm-set not found)");
     }
 
     #[test]
-    fn les_reglages_d_ecran_ne_sont_jamais_fusionnes() {
-        // Un essai puis son retour : les deux passent, dans l'ordre.
-        let essai = Op::ApplyDisplays { plan: Plan::default(), undo: Some(Plan::default()) };
-        let retour = Op::ApplyDisplays { plan: Plan::default(), undo: None };
-        let (r, abandonnes) = coalesce(vec![Request::Do(essai.clone()), Request::Do(retour.clone())]);
-        assert_eq!(r, vec![Request::Do(essai), Request::Do(retour)]);
-        assert!(abandonnes.is_empty());
+    fn display_settings_are_never_coalesced() {
+        // A trial then its rollback: both pass, in order.
+        let trial = Op::ApplyDisplays { plan: Plan::default(), undo: Some(Plan::default()) };
+        let rollback = Op::ApplyDisplays { plan: Plan::default(), undo: None };
+        let (r, dropped) = coalesce(vec![Request::Do(trial.clone()), Request::Do(rollback.clone())]);
+        assert_eq!(r, vec![Request::Do(trial), Request::Do(rollback)]);
+        assert!(dropped.is_empty());
     }
 
     #[test]
-    fn les_bascules_ne_sont_jamais_fusionnees() {
-        let (r, abandonnes) = coalesce(vec![Request::Do(Op::SetWifi(false)), Request::Do(Op::SetWifi(true))]);
+    fn toggles_are_never_coalesced() {
+        let (r, dropped) = coalesce(vec![Request::Do(Op::SetWifi(false)), Request::Do(Op::SetWifi(true))]);
         assert_eq!(r.len(), 2);
-        assert!(abandonnes.is_empty());
+        assert!(dropped.is_empty());
     }
 
     #[test]
-    fn le_fil_repond() {
+    fn the_thread_responds() {
         let f = Arc::new(FakeExecutor::new());
         f.ok("shell-ctl dnd-status", "off\n");
         f.ok("shell-ctl dnd-on", "");
@@ -337,17 +337,17 @@ mod tests {
     }
 
     #[test]
-    fn chaque_reglage_recoit_une_reponse_meme_fusionne() {
-        // Le fil est occupé 200 ms par une lecture lente : les trois
-        // réglages s'accumulent derrière et forment une seule rafale.
+    fn each_setting_gets_a_response_even_when_coalesced() {
+        // The thread is busy for 200 ms on a slow read: the three settings
+        // pile up behind it and form a single burst.
         let f = Arc::new(FakeExecutor::with_delay(Duration::from_millis(200)));
         let (tx, rx) = spawn(backends(&f));
         tx.send(Request::Refresh(vec![Domain::Dnd])).unwrap();
-        // L'appel est noté avant l'attente : dès qu'il paraît, le fil est
-        // occupé et sa rafale courante déjà formée.
+        // The call is recorded before the wait: as soon as it shows up, the
+        // thread is busy and its current burst already formed.
         let t0 = Instant::now();
         while f.calls().is_empty() {
-            assert!(t0.elapsed() < Duration::from_secs(2), "le fil n'a pas démarré");
+            assert!(t0.elapsed() < Duration::from_secs(2), "the thread did not start");
             std::thread::yield_now();
         }
         tx.send(Request::Do(Op::SetBrightness(30))).unwrap();
@@ -355,17 +355,17 @@ mod tests {
         tx.send(Request::Do(Op::SetBrightness(50))).unwrap();
         let t = Duration::from_secs(2);
         assert!(matches!(rx.recv_timeout(t).unwrap(), Update::Dnd(_)));
-        let mut recus = Vec::new();
-        while recus.len() < 3 {
-            recus.push(rx.recv_timeout(t).expect("une réponse par réglage"));
+        let mut received = Vec::new();
+        while received.len() < 3 {
+            received.push(rx.recv_timeout(t).expect("one response per setting"));
         }
-        let fin = recus.pop().unwrap();
-        assert!(matches!(fin, Update::Done(Op::SetBrightness(50), _)), "{fin:?}");
-        assert_eq!(recus, vec![Update::Superseded(Op::SetBrightness(30)), Update::Superseded(Op::SetBrightness(40))]);
+        let last = received.pop().unwrap();
+        assert!(matches!(last, Update::Done(Op::SetBrightness(50), _)), "{last:?}");
+        assert_eq!(received, vec![Update::Superseded(Op::SetBrightness(30)), Update::Superseded(Op::SetBrightness(40))]);
     }
 
     #[test]
-    fn domaines_touches_par_une_action() {
+    fn domains_touched_by_an_action() {
         assert_eq!(Op::SetWifi(true).domains(), &[Domain::Network]);
         assert_eq!(Op::ToggleKeepAwake { now_on: true }.domains(), &[Domain::KeepAwake]);
         assert!(Op::SetVolume(NodeRef::DefaultSink, 5).domains().contains(&Domain::Audio));
@@ -375,13 +375,13 @@ mod tests {
     }
 
     #[test]
-    fn spawn_ne_bloque_pas_l_appelant() {
+    fn spawn_does_not_block_the_caller() {
         let f = Arc::new(FakeExecutor::with_delay(Duration::from_millis(300)));
         let (tx, rx) = spawn(backends(&f));
         let t = Instant::now();
-        tx.send(Request::Refresh(domains(Tab::Accueil).to_vec())).unwrap();
+        tx.send(Request::Refresh(domains(Tab::Home).to_vec())).unwrap();
         assert!(t.elapsed() < Duration::from_millis(50));
-        // Le premier domaine arrive sans attendre les six autres.
+        // The first domain arrives without waiting for the other six.
         assert!(matches!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), Update::Volume(Err(_))));
     }
 }

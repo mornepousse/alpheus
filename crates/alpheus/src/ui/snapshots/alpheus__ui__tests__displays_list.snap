@@ -1,12 +1,12 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
 expression: "draw(&a, 100, 28).0.join(\"\\n\")"
 ---
- alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans                        
+ alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays                             
                                                                                                     
-   Profils    [ Laptop seul ]  [ Bureau ]  [ + Enregistrer l'actuel ]                               
+   Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]                                       
                                                                                                     
- Carte                                                                                              
+ Map                                                                                                
     ┌──Alpha───┐┌──Bravo──┐                                                                         
     │    2   ● ││    3    │                                                                         
     └──────────┘└─────────┘                                                                         
@@ -16,10 +16,10 @@ expression: "draw(&a, 100, 28).0.join(\"\\n\")"
    │             │                                                                                  
    └─────────────┘                                                                                  
                                                                                                     
- Écrans                                                                                             
-   1 Laptop     eDP-1     [■] activé    2560×1600@60  échelle 1.0  position 0, 1080                 
- ▶ 2 Alpha      DVI-I-1 ⚠ [■] activé    1920×1080@60  échelle 1.0  origine                          
-   3 Bravo      HDMI-A-1  [■] activé    1920×1080@240 échelle 1.0  right of Alpha                   
+ Displays                                                                                           
+   1 Laptop     eDP-1     [■] on        2560×1600@60  scale 1.0    position 0, 1080                 
+ ▶ 2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  scale 1.0    origin                           
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Alpha                   
                                                                                                     
                                                                                                     
                                                                                                     
@@ -28,5 +28,5 @@ expression: "draw(&a, 100, 28).0.join(\"\\n\")"
                                                                                                     
                                                                                                     
                                                                                                     
- Écrans · prêt                                                                                      
- F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Espace Basculer  Entrée Régler
+ Displays · ready                                                                                   
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Adjust

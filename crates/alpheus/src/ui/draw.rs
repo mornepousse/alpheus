@@ -1,11 +1,11 @@
-//! Écriture bornée dans le tampon : rien ne déborde jamais de son cadre,
-//! quelle que soit la taille de la fenêtre.
+//! Bounded writes into the buffer: nothing ever overflows its frame,
+//! whatever the window size.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-/// Écrit `text` à (x, y) sans sortir de `clip` ; renvoie la largeur écrite.
+/// Writes `text` at (x, y) without leaving `clip`; returns the width written.
 pub fn put(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, style: Style) -> u16 {
     let clip = clip.intersection(buf.area);
     if y < clip.top() || y >= clip.bottom() || x < clip.left() || x >= clip.right() {
@@ -15,7 +15,7 @@ pub fn put(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, style: Styl
     end.saturating_sub(x)
 }
 
-/// Efface `r` et lui donne `style`.
+/// Clears `r` and gives it `style`.
 pub fn clear(buf: &mut Buffer, r: Rect, style: Style) {
     let r = r.intersection(buf.area);
     for y in r.top()..r.bottom() {
@@ -27,14 +27,14 @@ pub fn clear(buf: &mut Buffer, r: Rect, style: Style) {
     }
 }
 
-/// Rectangle (w, h) centré dans `area`, réduit s'il ne tient pas.
+/// Rectangle (w, h) centered in `area`, shrunk if it doesn't fit.
 pub fn centered(area: Rect, w: u16, h: u16) -> Rect {
     let w = w.min(area.width);
     let h = h.min(area.height);
     Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h)
 }
 
-/// Tronque à `n` caractères, « … » final si coupé.
+/// Truncates to `n` characters, trailing "…" if cut.
 pub fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()

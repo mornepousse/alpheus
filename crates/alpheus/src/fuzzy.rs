@@ -1,5 +1,6 @@
-//! Recherche floue minimale (palette, filtre des listes) : sous-séquence,
-//! insensible à la casse et aux accents (« eteindre » trouve « Éteindre »).
+//! Minimal fuzzy search (palette, list filtering): subsequence match,
+//! case- and accent-insensitive (plain letters still match accented ones,
+//! e.g. "cafe" finds "Café").
 
 fn fold(c: char) -> char {
     match c {
@@ -13,13 +14,13 @@ fn fold(c: char) -> char {
     }
 }
 
-/// `s` sans accents ni majuscules (« Réseau » → « reseau »).
-pub fn plier(s: &str) -> String {
+/// `s` without accents or uppercase letters ("Café" → "cafe").
+pub fn fold_str(s: &str) -> String {
     s.chars().map(fold).collect()
 }
 
-/// Score (plus grand = meilleur) si les caractères de `query` (espaces
-/// ignorés) apparaissent dans l'ordre dans `cand` ; sinon None.
+/// Score (higher = better) if the characters of `query` (whitespace
+/// ignored) appear in order in `cand`; `None` otherwise.
 pub fn score(query: &str, cand: &str) -> Option<i32> {
     let q: Vec<char> = query.chars().filter(|c| !c.is_whitespace()).map(fold).collect();
     if q.is_empty() {
@@ -31,10 +32,10 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
         if qi < q.len() && ch == q[qi] {
             score += 1;
             if prev.is_some_and(|p| p + 1 == i) {
-                score += 5; // contigu
+                score += 5; // contiguous
             }
             if i == 0 || !c[i - 1].is_alphanumeric() {
-                score += 8; // début de mot
+                score += 8; // start of word
             }
             prev = Some(i);
             qi += 1;
@@ -43,11 +44,11 @@ pub fn score(query: &str, cand: &str) -> Option<i32> {
     (qi == q.len()).then(|| score - c.len() as i32 / 10)
 }
 
-/// Indices des libellés qui correspondent, du meilleur au moins bon
-/// (ordre d'origine à égalité ; requête vide = tout, dans l'ordre).
+/// Indices of the labels that match, best first (original order on a tie;
+/// an empty query matches everything, in order).
 pub fn rank<S: AsRef<str>>(query: &str, labels: &[S]) -> Vec<usize> {
     let mut v: Vec<(usize, i32)> = labels.iter().enumerate().filter_map(|(i, l)| score(query, l.as_ref()).map(|s| (i, s))).collect();
-    v.sort_by_key(|&(_, s)| std::cmp::Reverse(s)); // tri stable : ordre d'origine à égalité
+    v.sort_by_key(|&(_, s)| std::cmp::Reverse(s)); // stable sort: original order on a tie
     v.into_iter().map(|(i, _)| i).collect()
 }
 
@@ -56,21 +57,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sans_accents_ni_casse() {
-        assert!(score("eteindre", "Éteindre").is_some());
-        assert!(score("NE PAS", "Ne pas déranger").is_some());
-        assert!(score("zz", "Éteindre").is_none());
+    fn without_accents_or_case() {
+        assert!(score("cafe", "Café").is_some());
+        assert!(score("DEJA VU", "déjà vu").is_some());
+        assert!(score("zz", "Café").is_none());
     }
 
     #[test]
-    fn debut_de_mot_et_contiguite_l_emportent() {
-        let labels = ["Garder éveillé", "Wi-Fi", "Verrouiller"];
+    fn start_of_word_and_contiguity_win() {
+        let labels = ["Keep awake", "Wi-Fi", "Lock"];
         assert_eq!(rank("wifi", &labels), vec![1]);
-        assert_eq!(rank("ver", &labels)[0], 2);
+        assert_eq!(rank("loc", &labels)[0], 2);
     }
 
     #[test]
-    fn requete_vide_tout_dans_l_ordre() {
+    fn empty_query_returns_everything_in_order() {
         assert_eq!(rank("", &["b", "a", "c"]), vec![0, 1, 2]);
     }
 }

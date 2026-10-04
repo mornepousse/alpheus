@@ -1,0 +1,28 @@
+---
+source: crates/alpheus/src/ui/mod.rs
+expression: "draw(&a, 80, 24).0.join(\"\\n\")"
+---
+ alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays         
+                                                                                
+   Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]                   
+                                                                                
+ Map                                                                            
+    ┌──Alpha───┐┌──Bravo──┐                                                     
+    │    2┌ Settings — Bravo (HDMI-A-1) ─────────────────────────────┐          
+    └─────│ ▶ Mode         ◀ 1920×1080@240  2/2 ▶                    │          
+   ┌───Lap│   Scale        ◀ 1.0 ▶                                   │          
+   │      │   Rotation     ◀ 0° ▶                                    │          
+   │      │   Placement    ◀ right of ▶                              │          
+   │      │   Reference    ◀ Alpha ▶                                 │          
+   └──────│   Alignment    ◀ top ▶                                   │          
+          │   ✗ no change                                            │          
+ Displays │                                                          │          
+   1 Lapto│ [ Cancel ]  [ Apply ]                                    │ition 0,… 
+ ▶ 2 Alpha└──────────────────────────────────────────────────────────┘gin       
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Al… 
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+ Displays · ready                                                               
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Adjust

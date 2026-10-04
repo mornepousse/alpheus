@@ -1,11 +1,11 @@
-//! Table de touches : conventions standard (Ctrl+P, F1, Échap…), D/H/T/N en
-//! plus (désactivables), toutes surchargeables dans config.toml.
+//! Key table: standard conventions (Ctrl+P, F1, Esc…), plus D/H/T/N
+//! (can be disabled), all overridable in config.toml.
 
 use super::action::Action;
 use crate::config::KeysConfig;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Une touche avec ses modificateurs, normalisée.
+/// A key with its modifiers, normalized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Chord {
     pub code: KeyCode,
@@ -13,29 +13,29 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// Normalise un événement : pour un caractère, Maj est déjà dans le
-    /// caractère (« ? », « + », « D ») et Maj+Tab arrive en BackTab, donc on
-    /// retire SHIFT, sinon « ? » ne correspondrait jamais.
+    /// Normalizes an event: for a character, Shift is already baked into the
+    /// character ("?", "+", "D") and Shift+Tab arrives as BackTab, so SHIFT
+    /// is removed — otherwise "?" would never match.
     pub fn from_event(e: &KeyEvent) -> Chord {
         let mut mods = e.modifiers & (KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SHIFT);
         if matches!(e.code, KeyCode::Char(_) | KeyCode::BackTab) {
             mods.remove(KeyModifiers::SHIFT);
         }
         let code = match e.code {
-            // Ctrl+P peut arriver en « P » majuscule selon le terminal.
+            // Ctrl+P may arrive as uppercase "P" depending on the terminal.
             KeyCode::Char(c) if mods.contains(KeyModifiers::CONTROL) => KeyCode::Char(c.to_ascii_lowercase()),
             c => c,
         };
         Chord { code, mods }
     }
 
-    /// « ctrl+p », « f1 », « ? », « shift+tab », « space », « pageup », « - », « + »…
+    /// "ctrl+p", "f1", "?", "shift+tab", "space", "pageup", "-", "+"…
     pub fn parse(s: &str) -> Result<Chord, String> {
         let s = s.trim();
         if s.is_empty() {
-            return Err("touche vide".into());
+            return Err("empty key".into());
         }
-        // « + » seul ou « ctrl++ » : le dernier « + » est la touche.
+        // A lone "+", or "ctrl++": the last "+" is the key.
         let (mods_part, key) = if s == "+" {
             ("", "+")
         } else if let Some(p) = s.strip_suffix("++") {
@@ -48,15 +48,15 @@ impl Chord {
             match m.to_lowercase().as_str() {
                 "ctrl" | "control" => mods |= KeyModifiers::CONTROL,
                 "alt" => mods |= KeyModifiers::ALT,
-                "shift" | "maj" => mods |= KeyModifiers::SHIFT,
-                other => return Err(format!("modificateur inconnu : {other}")),
+                "shift" => mods |= KeyModifiers::SHIFT,
+                other => return Err(format!("unknown modifier: {other}")),
             }
         }
         let lower = key.to_lowercase();
         let mut code = match lower.as_str() {
-            "esc" | "echap" | "échap" => KeyCode::Esc,
-            "enter" | "entree" | "entrée" => KeyCode::Enter,
-            "space" | "espace" => KeyCode::Char(' '),
+            "esc" => KeyCode::Esc,
+            "enter" => KeyCode::Enter,
+            "space" => KeyCode::Char(' '),
             "tab" => KeyCode::Tab,
             "backspace" => KeyCode::Backspace,
             "up" => KeyCode::Up,
@@ -68,17 +68,17 @@ impl Chord {
             "home" => KeyCode::Home,
             "end" => KeyCode::End,
             f if f.len() > 1 && f.starts_with('f') && f[1..].chars().all(|c| c.is_ascii_digit()) => {
-                KeyCode::F(f[1..].parse().map_err(|_| format!("touche inconnue : {key}"))?)
+                KeyCode::F(f[1..].parse().map_err(|_| format!("unknown key: {key}"))?)
             }
             _ => {
                 let mut cs = key.chars();
                 match (cs.next(), cs.next()) {
                     (Some(c), None) => KeyCode::Char(c),
-                    _ => return Err(format!("touche inconnue : {key}")),
+                    _ => return Err(format!("unknown key: {key}")),
                 }
             }
         };
-        // Même normalisation que from_event.
+        // Same normalization as from_event.
         if code == KeyCode::Tab && mods.contains(KeyModifiers::SHIFT) {
             code = KeyCode::BackTab;
         }
@@ -96,26 +96,26 @@ impl Chord {
         Ok(Chord { code, mods })
     }
 
-    /// Libellé affiché : « Ctrl+P », « F1 », « Échap », « Maj+Tab », « q »…
+    /// Displayed label: "Ctrl+P", "F1", "Esc", "Shift+Tab", "q"…
     pub fn label(&self) -> String {
         let key = match self.code {
-            KeyCode::Char(' ') => "Espace".to_string(),
+            KeyCode::Char(' ') => "Space".to_string(),
             KeyCode::Char(c) if self.mods.contains(KeyModifiers::CONTROL) => c.to_ascii_uppercase().to_string(),
             KeyCode::Char(c) => c.to_string(),
             KeyCode::F(n) => format!("F{n}"),
-            KeyCode::Esc => "Échap".into(),
-            KeyCode::Enter => "Entrée".into(),
+            KeyCode::Esc => "Esc".into(),
+            KeyCode::Enter => "Enter".into(),
             KeyCode::Tab => "Tab".into(),
-            KeyCode::BackTab => "Maj+Tab".into(),
-            KeyCode::Backspace => "Retour arr.".into(),
+            KeyCode::BackTab => "Shift+Tab".into(),
+            KeyCode::Backspace => "Backspace".into(),
             KeyCode::Up => "↑".into(),
             KeyCode::Down => "↓".into(),
             KeyCode::Left => "←".into(),
             KeyCode::Right => "→".into(),
             KeyCode::PageUp => "Page↑".into(),
             KeyCode::PageDown => "Page↓".into(),
-            KeyCode::Home => "Début".into(),
-            KeyCode::End => "Fin".into(),
+            KeyCode::Home => "Home".into(),
+            KeyCode::End => "End".into(),
             _ => "?".into(),
         };
         let mut s = String::new();
@@ -166,7 +166,7 @@ fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Keymap {
-    /// Dans l'ordre d'Action::ALL (sert à l'aide).
+    /// In Action::ALL order (used by the help screen).
     bindings: Vec<(Action, Vec<Chord>)>,
 }
 
@@ -181,18 +181,18 @@ impl Keymap {
         let bindings = Action::ALL
             .into_iter()
             .map(|a| {
-                let chords = default_keys(a, dvorak_nav).into_iter().map(|k| Chord::parse(k).expect("touche par défaut valide")).collect();
+                let chords = default_keys(a, dvorak_nav).into_iter().map(|k| Chord::parse(k).expect("valid default key")).collect();
                 (a, chords)
             })
             .collect();
         Keymap { bindings }
     }
 
-    /// Défauts + surcharges ; une touche surchargée est retirée des autres actions.
+    /// Defaults + overrides; an overridden key is removed from other actions.
     pub fn from_config(cfg: &KeysConfig) -> Result<Keymap, String> {
         let mut km = Keymap::defaults(cfg.dvorak_nav);
         for (name, keys) in &cfg.bindings {
-            let action = Action::from_name(name).ok_or_else(|| format!("action inconnue : {name}"))?;
+            let action = Action::from_name(name).ok_or_else(|| format!("unknown action: {name}"))?;
             let chords = keys.iter().map(|k| Chord::parse(k)).collect::<Result<Vec<_>, _>>()?;
             km.set(action, chords);
         }
@@ -218,7 +218,7 @@ impl Keymap {
         self.bindings.iter().find(|(b, _)| *b == a).map(|(_, cs)| cs.as_slice()).unwrap_or(&[])
     }
 
-    /// Première touche de l'action (barre de raccourcis), vide si aucune.
+    /// First key of the action (shortcut bar), empty if none.
     pub fn label(&self, a: Action) -> String {
         self.keys(a).first().map(Chord::label).unwrap_or_default()
     }
@@ -242,13 +242,13 @@ mod tests {
     }
 
     #[test]
-    fn touches_par_defaut() {
+    fn default_keys_work() {
         let k = Keymap::default();
         assert_eq!(k.lookup(&ch('q')), Some(Action::Quit));
         assert_eq!(k.lookup(&ev(KeyCode::F(1), KeyModifiers::NONE)), Some(Action::Help));
         assert_eq!(k.lookup(&ev(KeyCode::Char('p'), KeyModifiers::CONTROL)), Some(Action::Palette));
-        assert_eq!(k.lookup(&ch('3')), Some(Action::GoTab(Tab::Reseau)));
-        assert_eq!(k.lookup(&ch('6')), Some(Action::GoTab(Tab::Ecrans)));
+        assert_eq!(k.lookup(&ch('3')), Some(Action::GoTab(Tab::Network)));
+        assert_eq!(k.lookup(&ch('6')), Some(Action::GoTab(Tab::Displays)));
         assert_eq!(k.lookup(&ch(' ')), Some(Action::Toggle));
         assert_eq!(k.lookup(&ev(KeyCode::Enter, KeyModifiers::NONE)), Some(Action::Activate));
         assert_eq!(k.lookup(&ch('-')), Some(Action::Decrease));
@@ -257,8 +257,8 @@ mod tests {
     }
 
     #[test]
-    fn touches_avec_maj() {
-        // Le terminal envoie SHIFT avec « ? », « + » et Maj+Tab.
+    fn keys_with_shift() {
+        // The terminal sends SHIFT along with "?", "+" and Shift+Tab.
         let k = Keymap::default();
         assert_eq!(k.lookup(&ev(KeyCode::Char('?'), KeyModifiers::SHIFT)), Some(Action::Help));
         assert_eq!(k.lookup(&ev(KeyCode::Char('+'), KeyModifiers::SHIFT)), Some(Action::Increase));
@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn dvorak_desactivable() {
+    fn dvorak_can_be_disabled() {
         assert_eq!(Keymap::defaults(true).lookup(&ch('d')), Some(Action::Left));
         assert_eq!(Keymap::defaults(true).lookup(&ch('h')), Some(Action::Down));
         assert_eq!(Keymap::defaults(true).lookup(&ch('t')), Some(Action::Up));
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn analyse_des_touches() {
+    fn key_parsing() {
         assert_eq!(Chord::parse("ctrl+p"), Ok(Chord { code: KeyCode::Char('p'), mods: KeyModifiers::CONTROL }));
         assert_eq!(Chord::parse("Ctrl+P"), Ok(Chord { code: KeyCode::Char('p'), mods: KeyModifiers::CONTROL }));
         assert_eq!(Chord::parse("shift+tab"), Ok(Chord { code: KeyCode::BackTab, mods: KeyModifiers::NONE }));
@@ -288,18 +288,18 @@ mod tests {
     }
 
     #[test]
-    fn libelles() {
+    fn labels() {
         let k = Keymap::default();
         assert_eq!(k.label(Action::Help), "F1");
         assert_eq!(k.label(Action::Palette), "Ctrl+P");
-        assert_eq!(k.label(Action::Back), "Échap");
+        assert_eq!(k.label(Action::Back), "Esc");
         assert_eq!(k.label(Action::Quit), "q");
-        assert_eq!(k.label(Action::Toggle), "Espace");
-        assert_eq!(k.label(Action::PrevTab), "Maj+Tab");
+        assert_eq!(k.label(Action::Toggle), "Space");
+        assert_eq!(k.label(Action::PrevTab), "Shift+Tab");
     }
 
     #[test]
-    fn surcharge_et_vol_de_touche() {
+    fn override_and_key_theft() {
         let mut b = BTreeMap::new();
         b.insert("palette".to_string(), vec!["q".to_string()]);
         b.insert("quit".to_string(), vec!["x".to_string()]);
@@ -310,9 +310,9 @@ mod tests {
     }
 
     #[test]
-    fn surcharge_vole_une_touche_a_une_action_non_surchargee() {
-        // Seul « palette » est surchargé ; « quit » garde son défaut ailleurs,
-        // mais doit perdre « q » au profit de « palette ».
+    fn override_steals_a_key_from_an_action_not_itself_overridden() {
+        // Only "palette" is overridden; "quit" keeps its default elsewhere,
+        // but must lose "q" to "palette".
         let mut b = BTreeMap::new();
         b.insert("palette".to_string(), vec!["q".to_string()]);
         let k = Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).unwrap();
@@ -321,10 +321,10 @@ mod tests {
     }
 
     #[test]
-    fn surcharge_invalide() {
+    fn invalid_override() {
         let mut b = BTreeMap::new();
-        b.insert("voler".to_string(), vec!["v".to_string()]);
-        assert!(Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).unwrap_err().contains("voler"));
+        b.insert("fly".to_string(), vec!["v".to_string()]);
+        assert!(Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).unwrap_err().contains("fly"));
         let mut b = BTreeMap::new();
         b.insert("quit".to_string(), vec!["hyper+q".to_string()]);
         assert!(Keymap::from_config(&KeysConfig { dvorak_nav: true, bindings: b }).is_err());

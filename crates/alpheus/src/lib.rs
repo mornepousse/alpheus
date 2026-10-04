@@ -1,12 +1,12 @@
-//! alpheus — centre de contrôle TUI (sous-projet 1, voir docs/CADRAGE.md).
-//! `exec`, `config`, `backends` et `displays` vivent dans alpheus-commun ;
-//! ré-exportés ici pour que `crate::displays::…` et `alpheus::backends::…`
-//! restent valables.
+//! alpheus — TUI control center (sub-project 1, see docs/CADRAGE.md).
+//! `exec`, `config`, `backends` and `displays` live in alpheus-commun;
+//! re-exported here so that `crate::displays::…` and `alpheus::backends::…`
+//! stay valid.
 
 pub use alpheus_commun::{backends, config, displays, exec};
 
 pub mod app;
-pub mod externes;
+pub mod external_tools;
 pub mod fuzzy;
 pub mod theme;
 pub mod ui;

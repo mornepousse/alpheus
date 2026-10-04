@@ -1,28 +1,28 @@
 ---
-source: src/ui/mod.rs
+source: crates/alpheus/src/ui/mod.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Accueil  2 Son  3 Réseau  4 Bluetooth  5 Alimentation  6 Écrans    
+ alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays         
                                                                                 
  ▶ Volume              ███████████████░░░░░░░░░  62 %                           
                                                                                 
-   Luminosité          █████░░░░░░░░░░░░░░░░░░░  20 %                           
+   Brightness          █████░░░░░░░░░░░░░░░░░░░  20 %                           
                                                                                 
-   Wi-Fi               [■] activé                                               
+   Wi-Fi               [■] on                                                   
                                                                                 
-   Bluetooth           [■] activé                                               
+   Bluetooth           [■] on                                                   
                                                                                 
-   Ne pas déranger     [ ] désactivé                                            
+   Do not disturb      [ ] off                                                  
                                                                                 
-   Garder éveillé      [ ] désactivé                                            
+   Keep awake          [ ] off                                                  
                                                                                 
-   Profil d'énergie     Performance   Équilibré   Économie                      
-                                                                                
-                                                                                
+   Energy profile       Performance   Balanced   Power saver                    
                                                                                 
                                                                                 
                                                                                 
                                                                                 
                                                                                 
- Accueil · prêt                                                                 
- F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter  Espace Basculer  -/+ Régler
+                                                                                
+                                                                                
+ Home · ready                                                                   
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  -/+ Adjust

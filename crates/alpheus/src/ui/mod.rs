@@ -1,8 +1,8 @@
-//! Rendu ratatui. `render` dessine tout et renvoie la carte des zones
-//! cliquables : chaque composant connaît sa zone pour le test de clic.
+//! ratatui rendering. `render` draws everything and returns the map of
+//! clickable regions: each component knows its own region for click testing.
 
+mod displays;
 pub mod draw;
-mod ecrans;
 pub mod hit;
 mod overlays;
 mod tabs;
@@ -17,7 +17,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-/// En dessous, seul un message est affiché (jamais de panique).
+/// Below this, only a message is shown (never a panic).
 pub const MIN_W: u16 = 30;
 pub const MIN_H: u16 = 8;
 
@@ -28,7 +28,7 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
     let th = &app.theme;
     draw::clear(buf, area, Style::default().fg(th.fg).bg(th.bg));
     if area.width < MIN_W || area.height < MIN_H {
-        put(buf, area, area.x, area.y, "alpheus : fenêtre trop petite", Style::default().fg(th.error));
+        put(buf, area, area.x, area.y, "alpheus: window too small", Style::default().fg(th.error));
         return hits;
     }
     let bar = |y| Rect::new(area.x, y, area.width, 1);
@@ -51,8 +51,8 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
             if *t == app.tab { Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
         let w = put(buf, r, x, r.y, &label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
-        // Collés : chaque libellé porte déjà ses espaces, et les six
-        // onglets tiennent ainsi en 80 colonnes.
+        // Glued together: each label already carries its own spaces, so
+        // the six tabs fit in 80 columns this way.
         x = x.saturating_add(w);
     }
 }
@@ -61,10 +61,10 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     let th = &app.theme;
     let style = Style::default().fg(th.fg).bg(th.surface);
     draw::clear(buf, r, style);
-    let last = app.status.last.as_deref().unwrap_or("prêt");
+    let last = app.status.last.as_deref().unwrap_or("ready");
     let mut x = r.x + 1;
     x += put(buf, r, x, r.y, &format!("{} · {last}", app.tab.title()), style);
-    // Dernière erreur d'action, puis avertissement de démarrage (persistant).
+    // Last action error, then the startup warning (persistent).
     for msg in [&app.status.error, &app.status.warning].into_iter().flatten() {
         x = x.saturating_add(put(buf, r, x, r.y, &format!(" · ✗ {msg}"), Style::default().fg(th.error).bg(th.surface)));
     }
@@ -75,38 +75,38 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
     let km = &app.keymap;
     let mut pairs: Vec<(String, &str)> = Vec::new();
     if app.search.editing {
-        pairs.push(("Entrée".into(), "Valider"));
-        pairs.push(("Échap".into(), "Effacer"));
+        pairs.push(("Enter".into(), "Confirm"));
+        pairs.push(("Esc".into(), "Clear"));
     } else {
-        pairs.push((km.label(Action::Help), "Aide"));
+        pairs.push((km.label(Action::Help), "Help"));
         pairs.push((km.label(Action::Palette), "Palette"));
-        pairs.push((km.label(Action::Back), "Retour"));
-        pairs.push((km.label(Action::Quit), "Quitter"));
+        pairs.push((km.label(Action::Back), "Back"));
+        pairs.push((km.label(Action::Quit), "Quit"));
         let adjust = format!("{}/{}", km.label(Action::Decrease), km.label(Action::Increase));
         match app.tab {
-            Tab::Accueil => {
-                pairs.push((km.label(Action::Toggle), "Basculer"));
-                pairs.push((adjust, "Régler"));
+            Tab::Home => {
+                pairs.push((km.label(Action::Toggle), "Toggle"));
+                pairs.push((adjust, "Adjust"));
             }
-            Tab::Son => {
-                pairs.push((km.label(Action::Activate), "Par défaut"));
+            Tab::Sound => {
+                pairs.push((km.label(Action::Activate), "Default"));
                 pairs.push((adjust, "Volume"));
-                pairs.push((km.label(Action::Search), "Chercher"));
+                pairs.push((km.label(Action::Search), "Search"));
             }
-            Tab::Reseau | Tab::Bluetooth => {
-                pairs.push((km.label(Action::Toggle), "Basculer"));
-                pairs.push((km.label(Action::Activate), "Ouvrir"));
-                pairs.push((km.label(Action::Search), "Chercher"));
+            Tab::Network | Tab::Bluetooth => {
+                pairs.push((km.label(Action::Toggle), "Toggle"));
+                pairs.push((km.label(Action::Activate), "Open"));
+                pairs.push((km.label(Action::Search), "Search"));
             }
-            Tab::Alimentation => pairs.push((km.label(Action::Activate), "Activer")),
-            Tab::Ecrans => match app.focused() {
+            Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
+            Tab::Displays => match app.focused() {
                 Some(crate::app::Item::DisplayProfiles) => {
-                    pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choisir"));
-                    pairs.push((km.label(Action::Activate), "Appliquer"));
+                    pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
+                    pairs.push((km.label(Action::Activate), "Apply"));
                 }
                 _ => {
-                    pairs.push((km.label(Action::Toggle), "Basculer"));
-                    pairs.push((km.label(Action::Activate), "Régler"));
+                    pairs.push((km.label(Action::Toggle), "Toggle"));
+                    pairs.push((km.label(Action::Activate), "Adjust"));
                 }
             },
         }
@@ -114,11 +114,11 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
     let mut x = r.x + 1;
     for (key, what) in pairs {
         if key.is_empty() {
-            continue; // action sans touche (désaffectée dans config.toml)
+            continue; // action with no key (unassigned in config.toml)
         }
-        // Largeur de la paire « clé étiquette », sans le rembourrage final :
-        // si elle ne tient pas entière avant le bord droit, on s'arrête plutôt
-        // que de couper un libellé au milieu d'un mot.
+        // Width of the "key label" pair, without the trailing padding: if it
+        // doesn't fit whole before the right edge, stop rather than cut a
+        // label in the middle of a word.
         let w = key.chars().count() as u16 + 1 + what.chars().count() as u16;
         if x.saturating_add(w) > r.right() {
             break;
@@ -134,7 +134,7 @@ pub(crate) mod testing {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Dessine `app` sur un terminal w×h ; renvoie les lignes et les zones.
+    /// Draws `app` on a w×h terminal; returns the rows and the regions.
     pub fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, HitMap) {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = HitMap::default();
@@ -159,33 +159,33 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn cadre_de_l_accueil() {
+    fn home_frame() {
         let (rows, _) = draw(&ready_app(), 80, 24);
-        assert!(rows[0].contains("alpheus") && rows[0].contains(" 1 Accueil ") && rows[0].contains(" 5 Alimentation "));
-        assert!(rows[0].contains(" 6 Écrans "), "six onglets en 80 colonnes : {:?}", rows[0]);
+        assert!(rows[0].contains("alpheus") && rows[0].contains(" 1 Home ") && rows[0].contains(" 5 Power "));
+        assert!(rows[0].contains(" 6 Displays "), "six tabs in 80 columns: {:?}", rows[0]);
         assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
         assert!(rows[2].contains("  62 %"));
-        assert!(rows[4].contains("Luminosité") && rows[4].contains("  20 %"));
-        assert!(rows[6].contains("Wi-Fi") && rows[6].contains("[■] activé"));
-        assert!(rows[10].contains("Ne pas déranger") && rows[10].contains("[ ] désactivé"));
-        assert!(rows[14].contains("Profil d'énergie") && rows[14].contains("Équilibré"));
-        assert!(rows[22].contains("Accueil · prêt"));
-        assert!(rows[23].contains("F1 Aide  Ctrl+P Palette  Échap Retour  q Quitter"), "{:?}", rows[23]);
-        assert!(rows[23].contains("Espace Basculer"));
+        assert!(rows[4].contains("Brightness") && rows[4].contains("  20 %"));
+        assert!(rows[6].contains("Wi-Fi") && rows[6].contains("[■] on"));
+        assert!(rows[10].contains("Do not disturb") && rows[10].contains("[ ] off"));
+        assert!(rows[14].contains("Energy profile") && rows[14].contains("Balanced"));
+        assert!(rows[22].contains("Home · ready"));
+        assert!(rows[23].contains("F1 Help  Ctrl+P Palette  Esc Back  q Quit"), "{:?}", rows[23]);
+        assert!(rows[23].contains("Space Toggle"));
     }
 
     #[test]
-    fn barre_de_curseur_proportionnelle() {
+    fn proportional_slider_bar() {
         let (rows, _) = draw(&ready_app(), 80, 24);
-        // 62 % de 24 cases = 15 pleines.
+        // 62 % of 24 cells = 15 full.
         assert!(rows[2].contains(&format!("{}{}", "█".repeat(15), "░".repeat(9))), "{:?}", rows[2]);
     }
 
     #[test]
-    fn zones_cliquables() {
+    fn clickable_regions() {
         let (_, hits) = draw(&ready_app(), 80, 24);
-        let son = hits.find(Target::Tab(Tab::Son)).unwrap();
-        assert_eq!((son.y, son.width), (0, 7));
+        let sound = hits.find(Target::Tab(Tab::Sound)).unwrap();
+        assert_eq!((sound.y, sound.width), (0, 9));
         assert_eq!(hits.find(Target::Slider { item: 0 }), Some(Rect::new(23, 2, 24, 1)));
         assert_eq!(hits.at(30, 2).map(|h| h.1), Some(Target::Slider { item: 0 }));
         assert_eq!(hits.at(5, 6).map(|h| h.1), Some(Target::Item(2)));
@@ -193,71 +193,71 @@ mod tests {
     }
 
     #[test]
-    fn chargement_et_echec() {
+    fn loading_and_failure() {
         let (rows, _) = draw(&app(), 80, 24);
         assert!(rows[2].contains('…'));
         let mut a = ready_app();
-        a.data.brightness = Loadable::Failed("brightnessctl introuvable".into());
+        a.data.brightness = Loadable::Failed("brightnessctl not found".into());
         let (rows, hits) = draw(&a, 80, 24);
-        assert!(rows[4].contains("✗ brightnessctl introuvable"));
+        assert!(rows[4].contains("✗ brightnessctl not found"));
         assert!(hits.find(Target::Slider { item: 1 }).is_none());
     }
 
     #[test]
-    fn onglet_son() {
+    fn sound_tab() {
         let mut a = ready_app();
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         let (rows, hits) = draw(&a, 80, 24);
         let all = rows.join("\n");
-        for attendu in ["Sorties", "● CasqueBT", "Dock D6000 Dell", "Entrées", "● Stereo Microphone", "[ Mixage par appli ]"] {
-            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+        for expected in ["Outputs", "● CasqueBT", "Dock D6000 Dell", "Inputs", "● Stereo Microphone", "[ Per-app mixer ]"] {
+            assert!(all.contains(expected), "{expected} missing:\n{all}");
         }
         assert!(hits.find(Target::Slider { item: 2 }).is_some());
-        assert!(hits.find(Target::Item(3)).is_some(), "bouton cliquable");
-        assert!(rows[23].contains("Entrée Par défaut"));
+        assert!(hits.find(Target::Item(3)).is_some(), "clickable button");
+        assert!(rows[23].contains("Enter Default"));
     }
 
     #[test]
-    fn onglets_reseau_bluetooth_alimentation() {
+    fn network_bluetooth_power_tabs() {
         let mut a = ready_app();
-        a.go_tab(Tab::Reseau, Instant::now());
+        a.go_tab(Tab::Network, Instant::now());
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("Connexions actives") && all.contains("MON_WIFI_1") && all.contains("[ Choisir un réseau ]"));
+        assert!(all.contains("Active connections") && all.contains("MON_WIFI_1") && all.contains("[ Choose a network ]"));
         a.go_tab(Tab::Bluetooth, Instant::now());
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("Appareils connectés") && all.contains("CasqueBT") && all.contains("[ Appairer un appareil ]"));
-        a.go_tab(Tab::Alimentation, Instant::now());
+        assert!(all.contains("Connected devices") && all.contains("CasqueBT") && all.contains("[ Pair a device ]"));
+        a.go_tab(Tab::Power, Instant::now());
         let all = draw(&a, 80, 24).0.join("\n");
         assert!(all.contains("[ Lock ]") && all.contains("[ Power off ]"));
     }
 
     #[test]
-    fn ligne_de_recherche() {
+    fn search_row() {
         let mut a = ready_app();
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         a.search.editing = true;
         a.search.text = "casq".into();
         let (rows, _) = draw(&a, 80, 24);
-        assert!(rows[2].contains("Recherche : casq▏"));
+        assert!(rows[2].contains("Search: casq▏"));
         assert!(!rows.join("\n").contains("Dock D6000 Dell"));
-        assert!(rows[23].contains("Entrée Valider") && rows[23].contains("Échap Effacer"));
+        assert!(rows[23].contains("Enter Confirm") && rows[23].contains("Esc Clear"));
     }
 
     #[test]
-    fn erreur_dans_la_ligne_d_etat() {
+    fn error_in_the_status_line() {
         let mut a = ready_app();
-        a.warn("config.toml invalide : x".into());
-        assert!(draw(&a, 80, 24).0[22].contains("✗ config.toml invalide : x"));
-        // Une action réussie n'efface pas l'avertissement de démarrage.
+        a.warn("invalid config.toml: x".into());
+        assert!(draw(&a, 80, 24).0[22].contains("✗ invalid config.toml: x"));
+        // A successful action does not clear the startup warning.
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
-        assert!(draw(&a, 80, 24).0[22].contains("✗ config.toml invalide : x"), "{:?}", draw(&a, 80, 24).0[22]);
-        a.status.error = Some("Wi-Fi : boum".into());
+        assert!(draw(&a, 80, 24).0[22].contains("✗ invalid config.toml: x"), "{:?}", draw(&a, 80, 24).0[22]);
+        a.status.error = Some("Wi-Fi: boom".into());
         let line = &draw(&a, 100, 24).0[22];
-        assert!(line.contains("✗ Wi-Fi : boum") && line.contains("✗ config.toml invalide : x"), "{line:?}");
+        assert!(line.contains("✗ Wi-Fi: boom") && line.contains("✗ invalid config.toml: x"), "{line:?}");
     }
 
     #[test]
-    fn touche_reconfiguree_affichee() {
+    fn reconfigured_key_shown() {
         let mut b = BTreeMap::new();
         b.insert("palette".to_string(), vec!["ctrl+k".to_string()]);
         let mut a = ready_app();
@@ -266,112 +266,112 @@ mod tests {
     }
 
     #[test]
-    fn barre_de_raccourcis_sans_coupure() {
+    fn shortcut_bar_never_cut_mid_word() {
         let mut a = ready_app();
-        a.go_tab(Tab::Reseau, Instant::now());
+        a.go_tab(Tab::Network, Instant::now());
         let (rows, _) = draw(&a, 80, 24);
         let bar = &rows[23];
-        // « Ouvrir » ne doit jamais apparaître tronqué en « Ouvri ».
-        assert!(!bar.contains("Entrée Ouvri") || bar.contains("Entrée Ouvrir"), "{bar:?}");
+        // "Open" must never appear truncated as "Ope".
+        assert!(!bar.contains("Enter Ope ") || bar.contains("Enter Open"), "{bar:?}");
     }
 
     #[test]
-    fn petites_tailles_sans_panique() {
+    fn small_sizes_never_panic() {
         let a = ready_app();
         for (w, h) in [(1, 1), (10, 3), (29, 24), (80, 7), (30, 8), (31, 9), (200, 60)] {
             let (rows, _) = draw(&a, w, h);
             if w < MIN_W || h < MIN_H {
-                assert!("alpheus : fenêtre trop petite".starts_with(rows[0].trim_end()), "{:?}", rows[0]);
+                assert!("alpheus: window too small".starts_with(rows[0].trim_end()), "{:?}", rows[0]);
             }
         }
         let (rows, _) = draw(&a, 10, 3);
-        assert_eq!(rows[0], "alpheus : ");
+        assert_eq!(rows[0], "alpheus: w");
     }
 
     #[test]
-    fn defilement_garde_le_focus_visible() {
+    fn scrolling_keeps_the_focus_visible() {
         let mut a = ready_app();
         if let Loadable::Ready(st) = &mut a.data.audio {
-            st.sinks = (0..30).map(|i| node(i, &format!("Sortie {i}"), 50, i == 0)).collect();
+            st.sinks = (0..30).map(|i| node(i, &format!("Output {i}"), 50, i == 0)).collect();
         }
-        a.go_tab(Tab::Son, Instant::now());
+        a.go_tab(Tab::Sound, Instant::now());
         a.focus = 29;
         let (rows, hits) = draw(&a, 80, 12);
         let all = rows.join("\n");
-        assert!(all.contains("Sortie 29"), "{all}");
-        assert!(!all.contains("Sortie 0 "), "le haut de la liste a défilé");
+        assert!(all.contains("Output 29"), "{all}");
+        assert!(!all.contains("Output 0 "), "the top of the list has scrolled away");
         assert!(hits.find(Target::Slider { item: 29 }).is_some());
         assert_eq!(a.items()[29], crate::app::Item::Slider(SliderId::Node(29)));
     }
 
-    // ── Onglet Écrans ────────────────────────────────────────────────
+    // ── Displays tab ─────────────────────────────────────────────────
 
     use crate::app::SaveDialog;
 
-    fn ecrans() -> crate::app::App {
+    fn displays_tab() -> crate::app::App {
         let mut a = ready_app();
-        a.go_tab(Tab::Ecrans, Instant::now());
+        a.go_tab(Tab::Displays, Instant::now());
         a.take_requests();
         a
     }
 
     #[test]
-    fn onglet_ecrans() {
-        let mut a = ecrans();
+    fn displays_tab_rendering() {
+        let mut a = displays_tab();
         a.focus = 2; // Alpha
         let (rows, hits) = draw(&a, 100, 28);
         let all = rows.join("\n");
-        for attendu in [
-            "Profils",
+        for expected in [
+            "Profiles",
             "[ Laptop seul ]",
             "[ Bureau ]",
-            "[ + Enregistrer l'actuel ]",
-            "Carte",
-            "Écrans",
+            "[ + Save current ]",
+            "Map",
+            "Displays",
             "1 Laptop",
             "2 Alpha",
             "DVI-I-1 ⚠",
             "3 Bravo",
             "1920×1080@240",
-            "échelle 1.0",
+            "scale 1.0",
             "position 0, 1080",
-            "origine",
+            "origin",
             "right of Alpha",
         ] {
-            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+            assert!(all.contains(expected), "{expected} missing:\n{all}");
         }
-        assert!(all.contains('●'), "la carte marque l'écran focalisé :\n{all}");
+        assert!(all.contains('●'), "the map marks the focused screen:\n{all}");
         assert!(hits.find(Target::DisplayProfile(2)).is_some());
         assert!(hits.find(Target::OutputToggle(3)).is_some());
-        assert!(rows[27].contains("Espace Basculer") && rows[27].contains("Entrée Régler"), "{:?}", rows[27]);
+        assert!(rows[27].contains("Space Toggle") && rows[27].contains("Enter Adjust"), "{:?}", rows[27]);
         a.focus = 0;
-        assert!(draw(&a, 100, 28).0[27].contains("Entrée Appliquer"));
+        assert!(draw(&a, 100, 28).0[27].contains("Enter Apply"));
     }
 
     #[test]
-    fn dernier_ecran_grise() {
-        let mut a = ecrans();
+    fn last_screen_greyed_out() {
+        let mut a = displays_tab();
         a.data.displays = Loadable::Ready(vec![crate::displays::testing::machine()[0].clone()]);
-        assert!(draw(&a, 100, 28).0.join("\n").contains("[■] seul actif"));
+        assert!(draw(&a, 100, 28).0.join("\n").contains("[■] only on"));
     }
 
     #[test]
-    fn ecrans_sous_niri_en_echec_ou_en_attente() {
-        let mut a = ecrans();
-        a.ecrans.niri = true;
-        assert!(draw(&a, 80, 24).0.join("\n").contains("Écrans : pas encore disponible sous niri"));
-        let mut a = ecrans();
-        a.data.displays = Loadable::Failed("wm-set a échoué (code 1) : sous-commande inconnue : outputs".into());
+    fn displays_under_niri_or_loading_or_failed() {
+        let mut a = displays_tab();
+        a.displays.niri = true;
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Displays: not available under niri yet"));
+        let mut a = displays_tab();
+        a.data.displays = Loadable::Failed("wm-set failed (code 1): unknown subcommand: outputs".into());
         let all = draw(&a, 100, 24).0.join("\n");
-        assert!(all.contains("✗ wm-set a échoué (code 1) : sous-commande inconnue : outputs"), "{all}");
-        assert!(all.contains("[ Bureau ]"), "les profils restent visibles");
+        assert!(all.contains("✗ wm-set failed (code 1): unknown subcommand: outputs"), "{all}");
+        assert!(all.contains("[ Bureau ]"), "the profiles stay visible");
         a.data.displays = Loadable::Loading;
         assert!(draw(&a, 80, 24).0.join("\n").contains('…'));
     }
 
     #[test]
-    fn carte_a_l_echelle() {
-        use super::ecrans::{MAP_ROWS, map_canvas};
+    fn scaled_map() {
+        use super::displays::{MAP_ROWS, map_canvas};
         use crate::displays::testing::{ALPHA, BRAVO, machine, on};
         let text = |g: &Vec<Vec<Option<(char, bool)>>>| -> Vec<String> {
             g.iter().map(|r| r.iter().map(|c| c.map_or(' ', |(ch, _)| ch)).collect()).collect()
@@ -382,101 +382,101 @@ mod tests {
         let all = lines.join("\n");
         assert!(all.contains("Alpha") && all.contains("Bravo") && all.contains("Laptop"), "{all}");
         for n in ["1", "2", "3"] {
-            assert!(all.contains(n), "numéro {n} :\n{all}");
+            assert!(all.contains(n), "number {n}:\n{all}");
         }
-        assert!(g.iter().flatten().flatten().any(|(ch, foc)| *ch == '●' && *foc), "● sur Bravo");
+        assert!(g.iter().flatten().flatten().any(|(ch, foc)| *ch == '●' && *foc), "● on Bravo");
         let g = map_canvas(&[on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 1920, 1080, 1920, 0)], None, 20);
-        assert!(!g.is_empty() && g.iter().all(|r| r.len() <= 20), "bornée par la largeur");
+        assert!(!g.is_empty() && g.iter().all(|r| r.len() <= 20), "bounded by the width");
         assert!(map_canvas(&[], None, 76).is_empty());
-        assert!(map_canvas(&machine(), None, 2).is_empty(), "trop étroit : rien");
+        assert!(map_canvas(&machine(), None, 2).is_empty(), "too narrow: nothing");
     }
 
     #[test]
-    fn boite_garder_ces_reglages() {
-        let mut a = ecrans();
+    fn keep_these_settings_dialog() {
+        let mut a = displays_tab();
         a.toggle_output("DVI-I-1", Instant::now());
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("Garder ces réglages ?") && all.contains("Alpha désactivé") && all.contains("Alpha : désactivé"), "{all}");
-        assert!(all.contains("⚠ Sortie DisplayLink : risque de gel connu sur ce poste"), "{all}");
-        assert!(all.contains("Application en cours…") && all.contains("[ Annuler ]") && all.contains("[ Garder ]"), "{all}");
+        assert!(all.contains("Keep these settings?") && all.contains("Alpha disabled") && all.contains("Alpha: off"), "{all}");
+        assert!(all.contains("⚠ DisplayLink output: known freeze risk on this machine"), "{all}");
+        assert!(all.contains("Applying…") && all.contains("[ Cancel ]") && all.contains("[ Keep ]"), "{all}");
         let r = a.take_requests();
         let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
         a.on_update(Update::Done(op, Ok(())), Instant::now());
-        assert!(draw(&a, 80, 24).0.join("\n").contains("Retour automatique dans 15 s"));
+        assert!(draw(&a, 80, 24).0.join("\n").contains("Automatic rollback in 15 s"));
         let (_, hits) = draw(&a, 80, 24);
         let (no, yes) = (hits.find(Target::ConfirmNo).unwrap(), hits.find(Target::ConfirmYes).unwrap());
-        assert!(no.x < yes.x && no.y == yes.y, "Annuler à gauche");
+        assert!(no.x < yes.x && no.y == yes.y, "Cancel on the left");
     }
 
     #[test]
-    fn boite_garder_en_petite_hauteur_garde_le_compte_a_rebours() {
-        let mut a = ecrans();
+    fn keep_dialog_in_short_windows_keeps_the_countdown() {
+        let mut a = displays_tab();
         a.apply_display_profile("Bureau", Instant::now());
         let r = a.take_requests();
         let Some(crate::app::worker::Request::Do(op)) = r.into_iter().next() else { panic!() };
         a.on_update(Update::Done(op, Ok(())), Instant::now());
         for h in [MIN_H, MIN_H + 1, 10] {
             let all = draw(&a, 80, h).0.join("\n");
-            assert!(all.contains("Retour automatique dans 15 s"), "h={h}\n{all}");
-            assert!(all.contains("⚠ Sortie DisplayLink"), "h={h}\n{all}");
-            assert!(all.contains("[ Annuler ]"), "h={h}\n{all}");
+            assert!(all.contains("Automatic rollback in 15 s"), "h={h}\n{all}");
+            assert!(all.contains("⚠ DisplayLink output"), "h={h}\n{all}");
+            assert!(all.contains("[ Cancel ]"), "h={h}\n{all}");
         }
     }
 
     #[test]
-    fn panneau_de_reglage() {
-        let mut a = ecrans();
+    fn settings_panel() {
+        let mut a = displays_tab();
         a.open_panel("HDMI-A-1", Instant::now());
         let (rows, hits) = draw(&a, 80, 24);
         let all = rows.join("\n");
-        for attendu in [
-            "Réglage — Bravo (HDMI-A-1)",
+        for expected in [
+            "Settings — Bravo (HDMI-A-1)",
             "Mode",
             "1920×1080@240  2/2",
-            "Échelle",
+            "Scale",
             "Rotation",
             "0°",
             "Placement",
             "right of",
-            "Référence",
+            "Reference",
             "Alpha",
-            "Alignement",
+            "Alignment",
             "top",
-            "✗ aucun changement",
-            "[ Annuler ]",
-            "[ Appliquer ]",
+            "✗ no change",
+            "[ Cancel ]",
+            "[ Apply ]",
         ] {
-            assert!(all.contains(attendu), "{attendu} absent :\n{all}");
+            assert!(all.contains(expected), "{expected} missing:\n{all}");
         }
         assert!(hits.find(Target::PanelStep { field: crate::app::PanelField::Align, dir: -1 }).is_some());
-        // Origine : plus de référence ni d'alignement.
+        // Origin: no more reference or alignment.
         if let Overlay::Panel(p) = &mut a.overlay {
             p.place = crate::app::PlaceChoice::Origin;
         }
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(!all.contains("Référence") && all.contains("origine"), "{all}");
+        assert!(!all.contains("Reference") && all.contains("origin"), "{all}");
     }
 
     #[test]
-    fn saisie_du_nom_de_profil() {
-        let mut a = ecrans();
+    fn profile_name_entry() {
+        let mut a = displays_tab();
         a.overlay = Overlay::SaveProfile(SaveDialog { name: "Maison".into(), ..SaveDialog::default() });
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("Enregistrer l'actuel") && all.contains("> Maison▏"), "{all}");
+        assert!(all.contains("Save current") && all.contains("> Maison▏"), "{all}");
         a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), replace: true, yes_focused: false });
         let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains("Remplacer le profil « Bureau » ?") && all.contains("[ Remplacer ]"), "{all}");
+        assert!(all.contains("Replace profile \"Bureau\"?") && all.contains("[ Replace ]"), "{all}");
     }
 
     #[test]
-    fn ecrans_sans_panique_en_petite_fenetre() {
-        let mut a = ecrans();
+    fn displays_never_panic_in_a_small_window() {
+        let mut a = displays_tab();
         a.open_panel("eDP-1", Instant::now());
-        let panneau = a.overlay.clone();
+        let panel = a.overlay.clone();
         a.overlay = Overlay::None;
         a.toggle_output("DVI-I-1", Instant::now());
-        let garder = a.overlay.clone();
-        for o in [Overlay::None, panneau, garder, Overlay::SaveProfile(SaveDialog::default())] {
+        let keep = a.overlay.clone();
+        for o in [Overlay::None, panel, keep, Overlay::SaveProfile(SaveDialog::default())] {
             a.overlay = o;
             for (w, h) in [(30, 8), (31, 9), (40, 10), (50, 12), (200, 60)] {
                 draw(&a, w, h);
@@ -485,51 +485,51 @@ mod tests {
     }
 
     #[test]
-    fn instantanes_ecrans() {
-        let mut a = ecrans();
+    fn displays_snapshots() {
+        let mut a = displays_tab();
         a.focus = 2;
-        insta::assert_snapshot!("ecrans_liste", draw(&a, 100, 28).0.join("\n"));
+        insta::assert_snapshot!("displays_list", draw(&a, 100, 28).0.join("\n"));
         a.open_panel("HDMI-A-1", Instant::now());
-        insta::assert_snapshot!("ecrans_panneau", draw(&a, 80, 24).0.join("\n"));
+        insta::assert_snapshot!("displays_panel", draw(&a, 80, 24).0.join("\n"));
         a.overlay = Overlay::None;
         a.apply_display_profile("Bureau", Instant::now());
-        insta::assert_snapshot!("ecrans_garder", draw(&a, 80, 24).0.join("\n"));
+        insta::assert_snapshot!("displays_keep", draw(&a, 80, 24).0.join("\n"));
     }
 
     #[test]
-    fn instantanes() {
+    fn tab_snapshots() {
         let mut a = ready_app();
         for t in Tab::ALL {
             a.go_tab(t, Instant::now());
-            insta::assert_snapshot!(format!("onglet_{}", t.index() + 1), draw(&a, 80, 24).0.join("\n"));
+            insta::assert_snapshot!(format!("tab_{}", t.index() + 1), draw(&a, 80, 24).0.join("\n"));
         }
     }
 
     #[test]
-    fn aide() {
+    fn help_screen() {
         let mut a = ready_app();
         a.overlay = Overlay::Help;
         let (rows, hits) = draw(&a, 80, 30);
         let all = rows.join("\n");
-        assert!(all.contains("Palette de commandes") && all.contains("Ctrl+P"));
-        assert!(all.contains("Aide — Échap pour fermer"));
+        assert!(all.contains("Command palette") && all.contains("Ctrl+P"));
+        assert!(all.contains("Help — Esc to close"));
         assert_eq!(hits.at(40, 15).map(|h| h.1), Some(Target::Overlay));
     }
 
     #[test]
-    fn aide_entiere_en_80x26() {
+    fn full_help_fits_in_80x26() {
         let mut a = ready_app();
         a.overlay = Overlay::Help;
         let (rows, _) = draw(&a, 80, 26);
         let all = rows.join("\n");
-        assert!(all.contains("Aide — Échap pour fermer"), "{all}");
-        assert!(all.contains("Souris") && all.contains("clic, glisser, molette"), "dernière ligne coupée :\n{all}");
-        assert!(all.contains("Onglets 1 à 6") && all.contains("1, 2, 3, 4, 5, 6"), "{all}");
-        assert!(!all.contains("Onglet Son"), "les six onglets tiennent sur une ligne");
+        assert!(all.contains("Help — Esc to close"), "{all}");
+        assert!(all.contains("Mouse") && all.contains("click, drag, scroll"), "last row cut off:\n{all}");
+        assert!(all.contains("Tabs 1 to 6") && all.contains("1, 2, 3, 4, 5, 6"), "{all}");
+        assert!(!all.contains("Tab Sound"), "the six tabs fit on one line");
     }
 
     #[test]
-    fn palette() {
+    fn palette_screen() {
         let mut a = ready_app();
         a.overlay = Overlay::Palette(Palette { query: "wifi".into(), selected: 0 });
         let (rows, hits) = draw(&a, 80, 24);
@@ -537,46 +537,46 @@ mod tests {
         assert!(all.contains("> wifi▏") && all.contains("Wi-Fi"));
         assert!(hits.find(Target::PaletteEntry(0)).is_some());
         a.overlay = Overlay::Palette(Palette { query: "zzz".into(), selected: 0 });
-        assert!(draw(&a, 80, 24).0.join("\n").contains("aucune commande"));
+        assert!(draw(&a, 80, 24).0.join("\n").contains("no command"));
     }
 
     #[test]
-    fn palette_defile_jusqu_a_la_selection() {
+    fn palette_scrolls_to_the_selection() {
         let mut a = ready_app();
         let n = a.palette_matches().len();
         a.overlay = Overlay::Palette(Palette { query: String::new(), selected: n - 1 });
         let (rows, hits) = draw(&a, 80, 24);
-        assert!(rows.join("\n").contains("Power off"), "dernière entrée visible");
+        assert!(rows.join("\n").contains("Power off"), "last entry visible");
         assert!(hits.find(Target::PaletteEntry(n - 1)).is_some());
         assert!(hits.find(Target::PaletteEntry(0)).is_none());
     }
 
     #[test]
-    fn confirmation() {
+    fn confirmation_screen() {
         let mut a = ready_app();
         a.overlay = Overlay::Confirm(Confirm { action: PowerAction::Poweroff, yes_focused: false });
         let (rows, hits) = draw(&a, 80, 24);
         let all = rows.join("\n");
-        assert!(all.contains("Shut down the computer?") && all.contains("[ Annuler ]") && all.contains("[ Confirmer ]"));
+        assert!(all.contains("Shut down the computer?") && all.contains("[ Cancel ]") && all.contains("[ Confirm ]"));
         let no = hits.find(Target::ConfirmNo).unwrap();
         let yes = hits.find(Target::ConfirmYes).unwrap();
         assert!(no.x < yes.x && no.y == yes.y);
     }
 
     #[test]
-    fn messages_en_coin() {
+    fn corner_messages() {
         let mut a = ready_app();
         a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
         let rows = draw(&a, 80, 24).0;
-        assert!(rows[1].trim_end().ends_with("✓ Wi-Fi : désactivé"), "{:?}", rows[1]);
+        assert!(rows[1].trim_end().ends_with("✓ Wi-Fi: off"), "{:?}", rows[1]);
     }
 
     #[test]
-    fn appliquer_grise_si_refuse() {
+    fn apply_greyed_out_if_refused() {
         let mut a = ready_app();
-        a.go_tab(Tab::Ecrans, Instant::now());
+        a.go_tab(Tab::Displays, Instant::now());
         a.open_panel("HDMI-A-1", Instant::now());
-        // Couleur du texte de « [ Appliquer ] » après rendu.
+        // Text color of "[ Apply ]" after rendering.
         let fg = |a: &crate::app::App| {
             let r = draw(a, 80, 24).1.find(Target::PanelApply).unwrap();
             let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
@@ -586,15 +586,15 @@ mod tests {
             .unwrap();
             t.backend().buffer()[(r.x + 2, r.y)].fg
         };
-        assert_eq!(fg(&a), a.theme.muted, "aucun changement : grisé");
+        assert_eq!(fg(&a), a.theme.muted, "no change: greyed out");
         if let Overlay::Panel(p) = &mut a.overlay {
             p.scale = crate::displays::Scale(1250);
         }
-        assert_ne!(fg(&a), a.theme.muted, "réglage valide : actif");
+        assert_ne!(fg(&a), a.theme.muted, "valid setting: active");
     }
 
     #[test]
-    fn surcouches_sans_panique_en_petite_fenetre() {
+    fn overlays_never_panic_in_a_small_window() {
         let mut a = ready_app();
         for o in [
             Overlay::Help,
