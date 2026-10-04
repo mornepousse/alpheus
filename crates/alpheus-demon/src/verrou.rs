@@ -4,7 +4,7 @@
 //! bloquerait le suivant).
 
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -12,6 +12,19 @@ use std::path::Path;
 #[derive(Debug)]
 pub struct Verrou {
     _fichier: File,
+}
+
+/// Message pour un `flock` en échec : « tourne déjà » seulement si l'erreur
+/// est `EWOULDBLOCK` (le verrou est tenu par un autre démon, `LOCK_NB` a
+/// refusé d'attendre) ; toute autre erreur (droits, système de fichiers…)
+/// affiche son vrai message — sinon elle serait prise, à tort, pour un
+/// second démon alors que la cause est ailleurs.
+fn message_flock(err: &io::Error, chemin: &Path, pid: &str) -> String {
+    if err.raw_os_error() == Some(libc::EWOULDBLOCK) {
+        format!("alpheus-demon tourne déjà (pid {}) ; verrou {}", pid.trim(), chemin.display())
+    } else {
+        format!("verrou {} : {err}", chemin.display())
+    }
 }
 
 pub fn prendre(chemin: &Path) -> Result<Verrou, String> {
@@ -25,9 +38,10 @@ pub fn prendre(chemin: &Path) -> Result<Verrou, String> {
         .map_err(|e| format!("verrou {} : {e}", chemin.display()))?;
     // SAFETY : flock(2) sur un descripteur valide que `f` possède.
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
         let mut pid = String::new();
         let _ = f.read_to_string(&mut pid);
-        return Err(format!("alpheus-demon tourne déjà (pid {}) ; verrou {}", pid.trim(), chemin.display()));
+        return Err(message_flock(&err, chemin, &pid));
     }
     f.set_len(0).and_then(|_| f.write_all(format!("{}\n", std::process::id()).as_bytes())).map_err(|e| format!("verrou {} : {e}", chemin.display()))?;
     Ok(Verrou { _fichier: f })
@@ -51,5 +65,19 @@ mod tests {
     #[test]
     fn dossier_absent_message_clair() {
         assert!(prendre(Path::new("/nonexistent/alpheus-demon.lock")).unwrap_err().contains("/nonexistent"));
+    }
+
+    #[test]
+    fn flock_rate_autre_que_deja_affiche_la_vraie_erreur() {
+        // EWOULDBLOCK (verrou déjà tenu, LOCK_NB) : message « tourne déjà ».
+        let chemin = Path::new("/run/alpheus-demon.lock");
+        let m = message_flock(&io::Error::from_raw_os_error(libc::EWOULDBLOCK), chemin, "42");
+        assert!(m.contains("déjà") && m.contains("42"), "{m}");
+        // Toute autre erreur (ici simulée, sans vraiment appeler flock) :
+        // le message réel, pas « tourne déjà » qui ferait croire à un
+        // second démon alors que la cause est ailleurs (droits, FS…).
+        let m = message_flock(&io::Error::from_raw_os_error(libc::EACCES), chemin, "");
+        assert!(!m.contains("déjà"), "{m}");
+        assert!(m.contains(&chemin.display().to_string()), "{m}");
     }
 }

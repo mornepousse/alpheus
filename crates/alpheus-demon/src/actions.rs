@@ -37,6 +37,34 @@ fn voisin<'a>(barre: &'a Barre, sortie: &str, suivant: bool) -> Option<&'a Burea
     l.get(j).copied()
 }
 
+/// Remplace `{bureau}` et `{sortie}` en un seul passage sur `modele` (le
+/// texte du barre.toml, jamais le résultat déjà substitué) : une référence
+/// de bureau qui contiendrait littéralement `{sortie}` (ou `{bureau}`)
+/// n'est donc jamais, elle, repassée à la moulinette — contrairement à deux
+/// appels successifs de `str::replace` sur la chaîne déjà substituée.
+fn substituer(modele: &str, bureau: &str, sortie: &str) -> String {
+    let mut sortie_ecrite = String::with_capacity(modele.len());
+    let mut reste = modele;
+    while let Some(i) = reste.find('{') {
+        sortie_ecrite.push_str(&reste[..i]);
+        let a_partir_de_l_accolade = &reste[i..];
+        if let Some(suite) = a_partir_de_l_accolade.strip_prefix("{bureau}") {
+            sortie_ecrite.push_str(bureau);
+            reste = suite;
+        } else if let Some(suite) = a_partir_de_l_accolade.strip_prefix("{sortie}") {
+            sortie_ecrite.push_str(sortie);
+            reste = suite;
+        } else {
+            // Une accolade qui n'ouvre aucun des deux espaces réservés :
+            // recopiée telle quelle, on avance d'un caractère.
+            sortie_ecrite.push('{');
+            reste = &a_partir_de_l_accolade[1..];
+        }
+    }
+    sortie_ecrite.push_str(reste);
+    sortie_ecrite
+}
+
 /// Commande pour un clic sur `cible` dans la barre de `sortie`.
 pub fn commande(barre: &Barre, sortie: &str, cible: &Cible, b: Bouton) -> Option<Vec<String>> {
     match cible {
@@ -50,7 +78,7 @@ pub fn commande(barre: &Barre, sortie: &str, cible: &Cible, b: Bouton) -> Option
                 Bouton::Droit | Bouton::Milieu => return None,
             };
             let modele = &barre.config.bureaux.commande;
-            Some(modele.iter().map(|a| a.replace("{bureau}", &bureau).replace("{sortie}", &sortie_bureau)).collect())
+            Some(modele.iter().map(|a| substituer(a, &bureau, &sortie_bureau)).collect())
         }
     }
 }
@@ -66,7 +94,6 @@ pub fn executer(exec: &dyn Executor, argv: &[String]) {
 
 /// Clic en `x_logique` (px logiques, comme le pointeur Wayland) sur la
 /// barre de `sortie`, dont `grille` est la dernière dessinée.
-#[allow(clippy::too_many_arguments)]
 pub fn clic(barre: &Barre, sortie: &str, grille: &Grille, x_logique: f64, echelle: i32, avance: f32, b: Bouton) -> Option<Vec<String>> {
     let col = colonne_sous(x_logique, echelle, avance);
     commande(barre, sortie, grille.cible_en(col)?, b)
@@ -118,6 +145,18 @@ impl Molette {
         } else {
             None
         }
+    }
+
+    /// Vide le reste continu et le cumul de cran : rien n'est reporté sur
+    /// le prochain geste. À appeler quand Wayland dit que CE geste de
+    /// molette est fini — `wl_pointer::axis_source` en `AxisScroll::stop`
+    /// (`axis_stop`, pavé tactile qui se lève) et `wl_pointer::leave`
+    /// (pointeur sorti de la surface) — sans quoi un reste proche du seuil
+    /// se combinerait à tort avec le geste suivant. Câblage fait en tâche 12
+    /// (Wayland) ; cette tâche ne fournit que la méthode et son test.
+    pub fn arreter(&mut self) {
+        self.cumul = 0.0;
+        self.cumul120 = 0;
     }
 }
 
@@ -179,6 +218,19 @@ mod tests {
     }
 
     #[test]
+    fn reference_contenant_litteralement_un_espace_reserve_non_resubstituee() {
+        // Une référence de bureau qui contient littéralement « {sortie} »
+        // (improbable, mais possible) ne doit pas être réécrite par la
+        // substitution de {sortie} : {bureau} et {sortie} sont remplacés en
+        // une seule passe sur le MODÈLE, jamais en deux passes successives
+        // sur le résultat (la deuxième repasserait sur ce que la première a
+        // inséré).
+        let b = barre();
+        let c = bureau("name:{sortie}", "HDMI-A-1");
+        assert_eq!(commande(&b, "HDMI-A-1", &c, Bouton::Gauche), argv(&["wm-set", "workspace", "name:{sortie}", "HDMI-A-1"]));
+    }
+
+    #[test]
     fn commande_reglable_dans_barre_toml() {
         let mut b = barre();
         b.config.bureaux.commande = vec!["mon-outil".into(), "--aller".into(), "{bureau}".into()];
@@ -223,5 +275,17 @@ mod tests {
         assert_eq!(m.ajouter(12.0, 0, 0), None);
         assert_eq!(m.ajouter(12.0, 0, 0), Some(Bouton::MoletteBas));
         assert_eq!(m.ajouter(-31.0, 0, 0), Some(Bouton::MoletteHaut));
+    }
+
+    #[test]
+    fn arreter_remet_a_zero_le_reste_continu_et_le_cumul_de_cran() {
+        let mut m = Molette::default();
+        assert_eq!(m.ajouter(25.0, 0, 0), None, "reste sous le seuil des 30 px");
+        m.arreter();
+        assert_eq!(m.ajouter(5.0, 0, 0), None, "remis à zéro : 25 + 5 l'aurait déclenché sans l'arrêt");
+        // Même chose pour le cumul en value120 (cran fin, deux demi-crans).
+        assert_eq!(m.ajouter(0.0, 0, 60), None, "demi-cran");
+        m.arreter();
+        assert_eq!(m.ajouter(0.0, 0, 60), None, "remis à zéro : 60 + 60 l'aurait déclenché sans l'arrêt");
     }
 }
