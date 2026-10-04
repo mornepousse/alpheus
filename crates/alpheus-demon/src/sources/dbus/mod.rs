@@ -321,14 +321,18 @@ pub fn session(bus: &mut dyn Bus, domains: &[Domain], publish: &mut dyn FnMut(Sy
     if !publish(s.clone()) {
         return Ok(());
     }
+    // Right after the initial publish (follow-up, re-review): the startup
+    // GetAll/GetManagedObjects/EnumerateDevices replies are done allocating
+    // by now, and `malloc_trim` is cheap (a few µs) — freeing here, rather
+    // than waiting for a first signal that may be seconds or minutes away,
+    // gives the lower startup footprint (budget: 15 MB) sooner.
+    release_memory();
     if let Some(e) = failed {
         return Err(e);
     }
-    // M1 (review): released past the first signal, not right here — the
-    // connection's first read off the socket (inside `next_signal`) can
-    // itself grow a buffer; waiting for it past the initial reads gives a
-    // more accurate startup footprint (budget: 15 MB) than releasing before
-    // it has even happened.
+    // A second, equally cheap call once the first signal's own read off the
+    // socket (inside `next_signal`) has had its chance to grow a buffer of
+    // its own — kept alongside the one above rather than instead of it.
     let mut drained = false;
     loop {
         let signal = bus.next_signal()?;
