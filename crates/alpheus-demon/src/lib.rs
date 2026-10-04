@@ -7,3 +7,4 @@
 pub mod compositeur;
 pub mod config;
 pub mod heure;
+pub mod sources;
