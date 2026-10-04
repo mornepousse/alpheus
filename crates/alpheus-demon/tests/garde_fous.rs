@@ -142,32 +142,71 @@ fn sockets_du_compositeur_ouverts_seulement_dans_sources() {
     }
 }
 
-/// Code de production d'un fichier : tout, jusqu'au premier `#[cfg(test)]`
-/// (convention de ce dépôt : au plus un module de tests par fichier, à la
-/// fin). Les tests ont le droit d'utiliser `eprintln!` : ils ne vivent
-/// qu'une fraction de seconde, aucun risque d'EPIPE comme dans un démon
-/// résident.
-fn code_de_production(texte: &str) -> &str {
-    texte.split("#[cfg(test)]").next().unwrap_or(texte)
+/// Code de production d'un fichier : tout, SAUF l'élément qui suit chaque
+/// `#[cfg(test)]` (une fonction, un module `mod tests { … }`, un module de
+/// fixtures comme `sources/hypr.rs::faux`…), quel que soit son nom ou sa
+/// place dans le fichier — pas seulement « le dernier `#[cfg(test)]`,
+/// forcément un module de tests final » : `compositeur/mod.rs` et
+/// `sources/hypr.rs` en ont chacun DEUX, et rien ne garantit qu'un futur
+/// fichier n'en ait pas un au milieu. Repère la fin de l'élément en comptant
+/// les accolades (correct même nidifié), pas en coupant au premier
+/// `#[cfg(test)]` rencontré (ça aurait aussi, à tort, effacé tout ce qui
+/// suit dans le fichier, test ou non).
+fn code_de_production(texte: &str) -> String {
+    let mut sortie = String::with_capacity(texte.len());
+    let mut reste = texte;
+    while let Some(i) = reste.find("#[cfg(test)]") {
+        sortie.push_str(&reste[..i]);
+        let apres_marqueur = &reste["#[cfg(test)]".len() + i..];
+        let Some(ouvre) = apres_marqueur.find('{') else {
+            // Pas d'accolade après ce marqueur (improbable ici, mais pas
+            // notre travail de le refuser) : rien à retirer, on avance
+            // juste après le marqueur pour ne pas boucler dessus.
+            reste = apres_marqueur;
+            continue;
+        };
+        let mut profondeur = 0u32;
+        let mut fin_relative = None;
+        for (j, c) in apres_marqueur[ouvre..].char_indices() {
+            match c {
+                '{' => profondeur += 1,
+                '}' => {
+                    profondeur -= 1;
+                    if profondeur == 0 {
+                        fin_relative = Some(ouvre + j + 1);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // Accolade jamais refermée : ne devrait pas arriver dans du Rust
+        // qui compile, mais une chaîne vide plutôt qu'un panique sur un
+        // fichier malformé reste le choix le plus sûr pour un garde-fou.
+        reste = fin_relative.map(|f| &apres_marqueur[f..]).unwrap_or("");
+    }
+    sortie.push_str(reste);
+    sortie
 }
 
 #[test]
-fn code_de_production_coupe_avant_le_module_de_tests() {
-    let texte = "fn x() {}\n#[cfg(test)]\nmod tests {\n    fn y() { eprintln!(\"ok\"); }\n}\n";
-    assert_eq!(code_de_production(texte), "fn x() {}\n");
+fn code_de_production_retire_chaque_element_suivant_cfg_test() {
+    let texte = "fn x() {}\n#[cfg(test)]\nfn aide() { eprintln!(\"x\"); }\nfn y() {}\n#[cfg(test)]\nmod tests {\n    fn z() { eprintln!(\"ok\"); }\n}\n";
+    assert_eq!(code_de_production(texte), "fn x() {}\n\nfn y() {}\n\n", "deux marqueurs, pas seulement le premier ou le dernier");
 }
 
-/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
-/// (EPIPE) : interdit dans le code de production du démon, qui doit
+/// `eprintln!`/`eprint!` paniquent si l'autre bout de l'erreur standard est
+/// fermé (EPIPE) : interdits dans le code de production du démon, qui doit
 /// toujours passer par `alpheus_demon::journal::ecrire` (`writeln!`, une
-/// écriture ratée simplement ignorée).
+/// écriture ratée simplement ignorée). Les tests ont le droit d'en user :
+/// ils ne vivent qu'une fraction de seconde, aucun risque d'EPIPE comme
+/// dans un démon résident.
 #[test]
-fn eprintln_interdit_hors_des_tests() {
+fn eprint_interdit_hors_des_tests() {
     for (p, t) in sources() {
-        assert!(
-            !code_de_production(&t).contains("eprintln!("),
-            "eprintln! (panique sur EPIPE) dans {} : utiliser crate::journal::ecrire",
-            p.display()
-        );
+        let prod = code_de_production(&t);
+        for mot in ["eprintln!(", "eprint!("] {
+            assert!(!prod.contains(mot), "{mot} (panique sur EPIPE) dans {} : utiliser crate::journal::ecrire", p.display());
+        }
     }
 }

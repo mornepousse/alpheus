@@ -98,6 +98,16 @@ fn faut_reposer<T: PartialEq>(sortie: &T, connues: impl Iterator<Item = T>) -> b
     connues.into_iter().any(|s| s == *sortie)
 }
 
+/// Variante bornée de `faut_reposer` : refuse de reposer une DEUXIÈME fois
+/// la même sortie tant que la première repose n'a pas reçu son premier
+/// `configure` (elle est alors dans `attente`). Sans cette borne, un
+/// compositeur qui fermerait la surface en boucle (bogue, protocole mal
+/// respecté) ferait reposer sans fin — `poser`/`retirer` à chaque
+/// `closed`, jamais un `configure` entre deux pour calmer les choses.
+fn faut_reposer_une_fois<T: PartialEq>(sortie: &T, attente: &[T], connues: impl Iterator<Item = T>) -> bool {
+    !attente.iter().any(|s| s == sortie) && faut_reposer(sortie, connues)
+}
+
 struct Surface {
     sortie: wl_output::WlOutput,
     nom: String,
@@ -130,6 +140,11 @@ pub struct Etat {
     /// redessiné une seule fois après le retour de `boucle.dispatch()`, pas
     /// à chaque message — voir `lancement::sur_message`.
     sale: bool,
+    /// Sorties reposées depuis la fermeture de leur dernière surface
+    /// (`closed`), sans `configure` réussi depuis (voir
+    /// `faut_reposer_une_fois`) : au plus une repose par sortie tant que la
+    /// précédente n'a pas abouti.
+    en_attente_de_configure: Vec<wl_output::WlOutput>,
 }
 
 impl Etat {
@@ -162,6 +177,7 @@ impl Etat {
             exec,
             fin: false,
             sale: false,
+            en_attente_de_configure: Vec::new(),
         })
     }
 
@@ -298,6 +314,11 @@ impl OutputHandler for Etat {
         if let Some(i) = self.surfaces.iter().position(|s| s.sortie == sortie) {
             self.retirer(i);
         }
+        // Une sortie vraiment détruite ne sera plus jamais reposée : son
+        // éventuelle attente (si `closed` venait de la reposer sans qu'un
+        // configure ait encore abouti) ne servirait plus à rien — mémoire
+        // bornée, pas une sortie oubliée par session qui s'accumule.
+        self.en_attente_de_configure.retain(|s| *s != sortie);
     }
 }
 
@@ -308,25 +329,36 @@ impl LayerShellHandler for Etat {
         // continuent, jamais d'arrêt ici. Mais si la sortie existe encore
         // (voir `faut_reposer`), le compositeur attend qu'on la repose —
         // sans ça, cet écran resterait sans barre jusqu'au prochain
-        // changement de sortie.
+        // changement de sortie. `faut_reposer_une_fois` borne les reposes
+        // à une seule par sortie tant qu'un `configure` n'a pas abouti
+        // (voir `configure`, plus bas) : un compositeur qui fermerait la
+        // surface en boucle (bogue, protocole mal respecté) ne doit jamais
+        // faire reposer sans fin.
         if let Some(i) = self.indice(couche.wl_surface()) {
             let sortie = self.retirer(i);
-            if faut_reposer(&sortie, self.sorties.outputs()) {
+            if faut_reposer_une_fois(&sortie, &self.en_attente_de_configure, self.sorties.outputs()) {
+                self.en_attente_de_configure.push(sortie.clone());
                 self.poser(qh, sortie);
             }
         }
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, couche: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
-        if let Some(i) = self.indice(couche.wl_surface()) {
-            let s = &mut self.surfaces[i];
-            if s.largeur != c.new_size.0 {
-                s.derniere = None;
-            }
-            s.largeur = c.new_size.0;
-            s.configuree = true;
-            self.dessiner(i);
+        let Some(i) = self.indice(couche.wl_surface()) else { return };
+        // Premier configure de CETTE surface : la repose (s'il y en avait
+        // une en attente) a abouti, la sortie peut de nouveau être reposée
+        // à l'avenir si le compositeur referme sa surface.
+        let premier_configure = !self.surfaces[i].configuree;
+        if self.surfaces[i].largeur != c.new_size.0 {
+            self.surfaces[i].derniere = None;
         }
+        self.surfaces[i].largeur = c.new_size.0;
+        self.surfaces[i].configuree = true;
+        if premier_configure {
+            let sortie = self.surfaces[i].sortie.clone();
+            self.en_attente_de_configure.retain(|s| *s != sortie);
+        }
+        self.dessiner(i);
     }
 }
 
@@ -496,5 +528,17 @@ mod tests {
         assert!(faut_reposer(&2, [1, 2, 3].into_iter()), "encore dans la liste : à reposer");
         assert!(!faut_reposer(&5, [1, 2, 3].into_iter()), "plus dans la liste : vraiment débranchée");
         assert!(!faut_reposer(&1, std::iter::empty::<i32>()), "plus aucune sortie connue");
+    }
+
+    #[test]
+    fn faut_reposer_une_fois_borne_les_fermetures_en_boucle() {
+        // Toujours connue, jamais encore reposée : à reposer.
+        assert!(faut_reposer_une_fois(&2, &[], [1, 2, 3].into_iter()));
+        // Déjà reposée (dans `attente`), aucun configure reçu depuis : un
+        // compositeur qui fermerait sa surface en boucle ne doit PAS faire
+        // reposer une deuxième fois tant que la première n'a pas abouti.
+        assert!(!faut_reposer_une_fois(&2, &[2], [1, 2, 3].into_iter()));
+        // Plus connue du tout : jamais à reposer, même absente de `attente`.
+        assert!(!faut_reposer_une_fois(&5, &[], [1, 2, 3].into_iter()));
     }
 }
