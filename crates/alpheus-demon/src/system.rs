@@ -1,0 +1,125 @@
+//! What the system sources say, normalized for the bar: sound, network,
+//! Bluetooth, power, resources. Pure data: the sources fill it, `state`
+//! keeps it, `segments` draws it.
+
+pub use alpheus_commun::backends::Volume;
+use std::collections::VecDeque;
+
+/// The default output (PipeWire). `sink: None`: no output at all (hidden).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoundState {
+    pub sink: Option<Volume>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Link {
+    Wifi,
+    Ethernet,
+    Vpn,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetState {
+    /// NetworkManager is not on the bus: hidden.
+    Absent,
+    Offline,
+    /// The primary connection's kind (the bar shows icons only, Q1);
+    /// `vpns`: how many other VPNs are active (Q2).
+    Online {
+        link: Link,
+        vpns: usize,
+        limited: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtDevice {
+    pub name: String,
+    pub battery: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BtState {
+    /// No bluetoothd, or no adapter: hidden.
+    Absent,
+    /// Adapter powered off: hidden (spec § 2).
+    Off,
+    /// Connected devices: those reporting a battery first, then by name (Q8).
+    On { devices: Vec<BtDevice> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Charge {
+    Charging,
+    Discharging,
+    Full,
+    /// Plugged in, not charging (charge threshold reached).
+    PendingCharge,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Battery {
+    pub percent: u8,
+    pub charge: Charge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeripheralKind {
+    Mouse,
+    Keyboard,
+    Headset,
+    Gamepad,
+    Other,
+}
+
+/// A device with its own battery known to UPower (a mouse on its receiver…).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Peripheral {
+    pub kind: PeripheralKind,
+    pub name: String,
+    pub percent: u8,
+}
+
+/// `laptop: None` and no peripheral: nothing to show (a desktop, or no UPower).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PowerState {
+    pub laptop: Option<Battery>,
+    pub peripherals: Vec<Peripheral>,
+}
+
+/// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Sample {
+    /// Percent, since the previous reading.
+    pub cpu: Option<u8>,
+    /// Memory in use (MemTotal − MemAvailable), in tenths of GiB: 61 = 6.1G (Q5).
+    pub memory: Option<u16>,
+    /// °C.
+    pub temperature: Option<i16>,
+}
+
+/// Points of CPU history kept (spec § 3: graph histories capped at 60).
+pub const HISTORY: usize = 60;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Resources {
+    pub history: VecDeque<u8>,
+    pub last: Option<Sample>,
+}
+
+impl Resources {
+    /// Adds a reading; true if the display may have changed.
+    pub fn push(&mut self, s: Sample) -> bool {
+        if let Some(c) = s.cpu {
+            if self.history.len() == HISTORY {
+                self.history.pop_front();
+            }
+            self.history.push_back(c);
+        }
+        let changed = s.cpu.is_some() || self.last != Some(s);
+        self.last = Some(s);
+        changed
+    }
+}

@@ -2,6 +2,7 @@
 //! bold), and the clickable zones. This is the tested object; the pixel
 //! drawing (`painter`) only copies it.
 
+use crate::config::ModuleId;
 use std::str::Chars;
 use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
@@ -32,6 +33,8 @@ impl Style {
     pub const SURFACE: Style = Style { fg: Tint::Fg, bg: Tint::Surface, bold: false };
     pub const ERROR: Style = Style { fg: Tint::Error, bg: Tint::Bg, bold: false };
     pub const BOLD_ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: true };
+    /// Accent without bold: gauges, graphs, a live link.
+    pub const ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: false };
 
     /// Letter code for snapshots.
     pub fn code(self) -> char {
@@ -42,6 +45,7 @@ impl Style {
             Style::SURFACE => 's',
             Style::ERROR => 'e',
             Style::BOLD_ACCENT => 'G',
+            Style::ACCENT => 'a',
             _ => '?',
         }
     }
@@ -59,7 +63,12 @@ pub struct Cell {
 /// What a click targets.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
-    Workspace { reference: String, output: String },
+    Workspace {
+        reference: String,
+        output: String,
+    },
+    /// A whole system module (volume, network…): `actions` decides by button.
+    Module(ModuleId),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +376,14 @@ mod tests {
         g.write(0, 8, "é日本", Style::NORMAL);
         assert_eq!(g.text(), "é日本   ");
         assert_eq!(text_width("é日本"), 5);
+    }
+
+    #[test]
+    fn accent_style_and_module_target() {
+        assert_eq!(Style::ACCENT.code(), 'a');
+        let mut g = Grid::empty(4);
+        g.zone(1, 3, Target::Module(crate::config::ModuleId::Volume));
+        assert_eq!(g.target_at(2), Some(&Target::Module(crate::config::ModuleId::Volume)));
     }
 
     #[test]

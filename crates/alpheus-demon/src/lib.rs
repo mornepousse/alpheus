@@ -17,4 +17,5 @@ pub mod nonblocking;
 pub mod painter;
 pub mod sources;
 pub mod state;
+pub mod system;
 pub mod wayland;

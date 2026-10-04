@@ -4,6 +4,7 @@
 use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
 use crate::config::BarConfig;
+use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Feed<T> {
@@ -19,6 +20,12 @@ pub enum Msg {
     /// None: the compositor source is down.
     Compositor(Option<CompositorState>),
     Clock(LocalTime),
+    /// None: that source is down ("–").
+    Sound(Option<SoundState>),
+    Network(Option<NetState>),
+    Bluetooth(Option<BtState>),
+    Battery(Option<PowerState>),
+    Resources(Sample),
 }
 
 #[derive(Debug, Clone)]
@@ -26,28 +33,45 @@ pub struct Bar {
     pub config: BarConfig,
     pub compositor: Feed<CompositorState>,
     pub clock: Option<LocalTime>,
+    pub sound: Feed<SoundState>,
+    pub network: Feed<NetState>,
+    pub bluetooth: Feed<BtState>,
+    pub battery: Feed<PowerState>,
+    pub resources: Resources,
+}
+
+/// Puts `v` in `slot` (None: down); true if it changed.
+fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
+    let n = match v {
+        Some(x) => Feed::Ready(x),
+        None => Feed::Down,
+    };
+    if *slot == n {
+        false
+    } else {
+        *slot = n;
+        true
+    }
 }
 
 impl Bar {
     pub fn new(config: BarConfig) -> Bar {
-        Bar { config, compositor: Feed::Waiting, clock: None }
+        Bar {
+            config,
+            compositor: Feed::Waiting,
+            clock: None,
+            sound: Feed::Waiting,
+            network: Feed::Waiting,
+            bluetooth: Feed::Waiting,
+            battery: Feed::Waiting,
+            resources: Resources::default(),
+        }
     }
 
     /// Applies a message; true if the display may have changed.
     pub fn apply(&mut self, m: Msg) -> bool {
         match m {
-            Msg::Compositor(e) => {
-                let n = match e {
-                    Some(e) => Feed::Ready(e),
-                    None => Feed::Down,
-                };
-                if n == self.compositor {
-                    false
-                } else {
-                    self.compositor = n;
-                    true
-                }
-            }
+            Msg::Compositor(e) => update(&mut self.compositor, e),
             Msg::Clock(h) => {
                 if self.clock == Some(h) {
                     false
@@ -56,6 +80,11 @@ impl Bar {
                     true
                 }
             }
+            Msg::Sound(s) => update(&mut self.sound, s),
+            Msg::Network(s) => update(&mut self.network, s),
+            Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
+            Msg::Battery(s) => update(&mut self.battery, s),
+            Msg::Resources(s) => self.resources.push(s),
         }
     }
 }
@@ -64,6 +93,8 @@ impl Bar {
 mod tests {
     use super::*;
     use crate::compositor::example;
+    use crate::system::*;
+    use alpheus_commun::backends::Volume;
 
     const H: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -79,5 +110,40 @@ mod tests {
         assert!(b.apply(Msg::Clock(H)));
         assert!(!b.apply(Msg::Clock(H)));
         assert_eq!(b.clock, Some(H));
+    }
+
+    #[test]
+    fn system_messages_and_changes() {
+        let mut b = Bar::new(BarConfig::default());
+        assert_eq!((&b.sound, &b.network, &b.bluetooth, &b.battery), (&Feed::Waiting, &Feed::Waiting, &Feed::Waiting, &Feed::Waiting));
+        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }) };
+        assert!(b.apply(Msg::Sound(Some(s.clone()))));
+        assert!(!b.apply(Msg::Sound(Some(s))), "same volume: nothing to redraw");
+        assert!(b.apply(Msg::Sound(None)));
+        assert_eq!(b.sound, Feed::Down);
+        assert!(b.apply(Msg::Network(Some(NetState::Offline))));
+        assert!(!b.apply(Msg::Network(Some(NetState::Offline))));
+        assert!(b.apply(Msg::Bluetooth(Some(BtState::Off))));
+        assert_eq!(b.bluetooth, Feed::Ready(BtState::Off));
+        assert!(b.apply(Msg::Battery(Some(PowerState::default()))));
+        assert!(!b.apply(Msg::Battery(Some(PowerState::default()))));
+        assert!(b.apply(Msg::Battery(None)));
+        assert_eq!(b.battery, Feed::Down);
+    }
+
+    #[test]
+    fn resources_history_bounded_to_60_points() {
+        let mut b = Bar::new(BarConfig::default());
+        for i in 0..100u8 {
+            assert!(b.apply(Msg::Resources(Sample { cpu: Some(i), memory: Some(61), temperature: Some(60) })));
+        }
+        assert_eq!(b.resources.history.len(), HISTORY);
+        assert_eq!((b.resources.history.front(), b.resources.history.back()), (Some(&40), Some(&99)));
+        // First reading after startup: no CPU yet (it takes two readings).
+        let mut r = Resources::default();
+        let s = Sample { cpu: None, memory: Some(61), temperature: None };
+        assert!(r.push(s));
+        assert!(!r.push(s), "same reading, no CPU: nothing to redraw");
+        assert!(r.history.is_empty());
     }
 }

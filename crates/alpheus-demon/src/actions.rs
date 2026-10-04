@@ -84,6 +84,8 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
             let template = &bar.config.workspaces.command;
             Some(template.iter().map(|a| substitute(a, &workspace, &workspace_output)).collect())
         }
+        // TODO(task 8): dispatch to `[actions] open_tab` / `resources` by button.
+        Target::Module(_) => None,
     }
 }
 
