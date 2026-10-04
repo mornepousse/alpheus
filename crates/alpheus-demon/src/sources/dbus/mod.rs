@@ -103,6 +103,10 @@ const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
 // as it collects more of it, right alongside RSSI/UUIDs; keeping it in
 // would defeat the scan-storm test below (a batch carrying Name, even with
 // nothing else relevant, would re-read on every such correction).
+// Settled (re-review, follow-up): a device with no alias of its own has
+// BlueZ mirror its Name into Alias, so a rename of an unaliased device
+// already arrives as an Alias change too — Name carries nothing Alias
+// doesn't, for anything the bar actually shows.
 const BLUEZ_DEVICE_PROPS: [&str; 2] = ["Connected", "Alias"];
 const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
 
