@@ -48,17 +48,24 @@ fn arret_propre_sur_sigterm_et_verrou_relache() {
 
 #[test]
 #[ignore = "sway sans tête (nix develop)"]
-fn compositeur_tombe_rend_un_code_non_nul() {
-    // Connexion Wayland perdue (compositeur planté, pas un arrêt demandé) :
-    // un superviseur (systemd, nixos-config) doit pouvoir distinguer ce cas
-    // d'un SIGTERM propre pour relancer la barre.
+fn compositeur_tombe_est_une_fin_de_session_code_0() {
+    // Décidé et vérifié sur ce poste (relevé 2026-10-04) : tuer sway d'un
+    // SIGKILL ferme la connexion Wayland du démon avec EPIPE (« Broken
+    // pipe (os error 32) »), exactement ce que produirait aussi une
+    // déconnexion propre (fin de session, redémarrage du compositeur —
+    // voir la spec § 3). Rien, côté client, ne distingue les deux. Le
+    // démon ne se reconnecte jamais lui-même dans aucun cas (c'est la
+    // session qui le relance, par exec-once puis shell-ctl) : les traiter
+    // pareil (code 0, fin_de_session) évite qu'un superviseur externe y
+    // voie, à tort, un signe de panne à chaque fin de session ordinaire.
     let mut sway = Sway::lancer("compositeur-tombe", 1);
     let _hypr = FauxHyprland::demarrer(&sway.runtime, SIGNATURE);
     let mut d = lancer_demon(&sway);
     assert!(d.attendre("barre posée sur HEADLESS-1", DELAI), "{:?}", d.journal());
     sway.tuer();
     let code = d.fin(DELAI);
-    assert!(matches!(code, Some(c) if c != 0), "compositeur tombé : code attendu ≠ 0, eu {code:?} ({:?})", d.journal());
+    assert_eq!(code, Some(0), "connexion coupée (EPIPE/ECONNRESET) : fin de session, code 0 ({:?})", d.journal());
+    assert!(d.attendre("fin de session", Duration::from_millis(500)), "{:?}", d.journal());
 }
 
 #[test]

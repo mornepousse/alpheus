@@ -18,6 +18,7 @@ use smithay_client_toolkit::reexports::calloop::{channel, EventLoop};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::Connection;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -54,15 +55,49 @@ pub fn distribuer(barre: &mut Barre, m: Msg, maintenant: impl Fn() -> HeureLocal
     change
 }
 
+/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
+/// (EPIPE : journal relayé par un outil qui s'est arrêté). Un démon
+/// résident ne doit jamais mourir pour si peu : on écrit directement, et
+/// une écriture ratée est juste ignorée (rien d'autre ne peut en faire).
 fn journal(m: &str) {
-    eprintln!("alpheus-demon : {m}");
+    let _ = writeln!(io::stderr(), "alpheus-demon : {m}");
+}
+
+/// La connexion Wayland s'est coupée en douceur (le socket s'est fermé :
+/// EPIPE à l'écriture, ECONNRESET à la lecture), plutôt qu'avec une
+/// véritable erreur de protocole. C'est ce que produisent À LA FOIS une fin
+/// de session propre (déconnexion, redémarrage du compositeur — la
+/// signature Hyprland change, voir la spec § 3) ET un compositeur qui
+/// plante : rien, du côté du client, ne permet de distinguer les deux. Le
+/// démon ne se reconnecte jamais lui-même dans aucun des deux cas (c'est la
+/// session, par `exec-once` puis `shell-ctl`, qui le relance) : les traiter
+/// pareil, comme une fin de session normale, évite qu'un superviseur externe
+/// y voie un signe de panne à chaque redémarrage ou déconnexion ordinaire.
+///
+/// `calloop` emboîte parfois l'erreur d'une source dans une autre (observé
+/// sur ce poste : un `OtherError` qui enveloppe l'`IoError` d'origine) : la
+/// vraie erreur système n'est donc pas toujours la première de la chaîne.
+/// On la cherche en suivant `source()` de bout en bout, plutôt que de ne
+/// regarder que le sommet.
+fn fin_de_session(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut courant = Some(e);
+    while let Some(erreur) = courant {
+        if let Some(io) = erreur.downcast_ref::<io::Error>() {
+            if matches!(io.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset) {
+                return true;
+            }
+        }
+        courant = erreur.source();
+    }
+    false
 }
 
 /// Code de sortie du démon selon comment la boucle a fini : 0 après un
-/// arrêt demandé (signal, `etat.fin` levé proprement), 1 si la boucle de
-/// dispatch calloop est tombée (connexion Wayland perdue, compositeur
-/// planté) — pour qu'un superviseur (systemd, nixos-config) sache qu'il
-/// doit relancer la barre, au lieu de la croire sortie à la demande.
+/// arrêt demandé (signal, `etat.fin` levé proprement) ou une fin de
+/// session (`fin_de_session`) ; 1 pour toute autre panne de la boucle de
+/// dispatch calloop (erreur de protocole, bogue…) — pour qu'un superviseur
+/// (systemd, nixos-config) sache qu'il doit relancer la barre, au lieu de
+/// la croire sortie à la demande.
 fn code_de_sortie(panne_dispatch: bool) -> i32 {
     if panne_dispatch { 1 } else { 0 }
 }
@@ -181,8 +216,12 @@ pub fn lancer() -> i32 {
     let mut panne_dispatch = false;
     while !etat.fin {
         if let Err(e) = boucle.dispatch(None, &mut etat) {
-            journal(&format!("boucle : {e}"));
-            panne_dispatch = true;
+            if fin_de_session(&e) {
+                journal(&format!("fin de session : {e}"));
+            } else {
+                journal(&format!("boucle : {e}"));
+                panne_dispatch = true;
+            }
             break;
         }
     }
@@ -215,6 +254,29 @@ mod tests {
     fn code_de_sortie_panne_dispatch_renvoie_1() {
         assert_eq!(code_de_sortie(false), 0, "arrêt demandé : code 0, un superviseur ne doit pas relancer");
         assert_eq!(code_de_sortie(true), 1, "boucle de dispatch tombée : code ≠ 0, un superviseur doit relancer");
+    }
+
+    #[test]
+    fn fin_de_session_reconnait_epipe_et_econnreset_seulement() {
+        assert!(fin_de_session(&io::Error::from(io::ErrorKind::BrokenPipe)), "EPIPE : compositeur parti, socket fermé");
+        assert!(fin_de_session(&io::Error::from(io::ErrorKind::ConnectionReset)), "ECONNRESET : même chose à la lecture");
+        assert!(!fin_de_session(&io::Error::from(io::ErrorKind::PermissionDenied)), "une vraie erreur reste une panne");
+        assert!(!fin_de_session(&io::Error::other("erreur de protocole")), "idem");
+    }
+
+    #[test]
+    fn fin_de_session_traverse_l_emboitement_de_calloop() {
+        use smithay_client_toolkit::reexports::calloop::Error as ErreurBoucle;
+        // Relevé sur ce poste (sway sans tête, compositeur tué) : calloop
+        // renvoie parfois un `OtherError` qui enveloppe l'`IoError` d'une
+        // source, au lieu de le rendre directement — la vraie erreur système
+        // est alors au deuxième niveau de `source()`, pas au premier.
+        let direct = ErreurBoucle::IoError(io::Error::from(io::ErrorKind::BrokenPipe));
+        assert!(fin_de_session(&direct), "cas direct : IoError au premier niveau");
+        let emboite = ErreurBoucle::OtherError(Box::new(ErreurBoucle::IoError(io::Error::from(io::ErrorKind::BrokenPipe))));
+        assert!(fin_de_session(&emboite), "cas observé : OtherError(IoError(EPIPE))");
+        let sans_rapport = ErreurBoucle::OtherError(Box::new(io::Error::other("erreur de protocole")));
+        assert!(!fin_de_session(&sans_rapport), "emboîté mais pas EPIPE/ECONNRESET : reste une panne");
     }
 
     #[test]
