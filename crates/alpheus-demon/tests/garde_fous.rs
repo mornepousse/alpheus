@@ -73,9 +73,15 @@ fn sources() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-fn fin_de_chemin(p: &Path) -> String {
-    let c: Vec<_> = p.components().rev().take(2).collect();
-    c.iter().rev().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+/// Chemin de `p` relatif à `src/` (p. ex. `sources/hypr.rs`, ou
+/// `sources/hypr/mod.rs` si `sources::hypr` devient un jour un dossier) :
+/// contrairement aux deux derniers composants du chemin, cette forme reste
+/// correcte quelle que soit la profondeur de nidification — un simple
+/// `components().rev().take(2)` perdrait le préfixe `sources/` dès qu'un
+/// module gagnerait un sous-dossier.
+fn chemin_relatif(p: &Path) -> String {
+    let racine = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    p.strip_prefix(&racine).expect("chemin hors de src/").to_string_lossy().into_owned()
 }
 
 #[test]
@@ -85,7 +91,7 @@ fn le_demon_ne_parle_au_compositeur_qu_en_lecture() {
         for mot in ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"] {
             assert!(!bas.contains(mot), "« {mot} » dans {}", p.display());
         }
-        let nom = fin_de_chemin(&p);
+        let nom = chemin_relatif(&p);
         if t.contains(".socket.sock") {
             assert_eq!(nom, "sources/hypr.rs", "socket de requêtes Hyprland ouvert ailleurs");
         }
@@ -107,7 +113,7 @@ fn le_demon_ne_parle_au_compositeur_qu_en_lecture() {
 #[test]
 fn sockets_du_compositeur_ouverts_seulement_dans_sources() {
     for (p, t) in sources() {
-        let nom = fin_de_chemin(&p);
+        let nom = chemin_relatif(&p);
         for motif in [".socket.sock", ".socket2.sock", "UnixStream::connect"] {
             assert!(!t.contains(motif) || nom.starts_with("sources/"), "« {motif} » hors de src/sources/ : {nom}");
         }

@@ -56,8 +56,18 @@ fn pss_sous_30_mo_et_stable() {
     assert!(depart < 15 * 1024, "démarrage : PSS {depart} Ko ≥ 15 Mo (polices chargées en trop ?)");
     let mut n = 0;
     pomper(&hypr, Duration::from_secs(10), &mut n); // échauffement
+    // Un premier cycle débranchement/rebranchement AVANT de fixer `debut` :
+    // sans lui, `debut` serait lu au pic transitoire de l'échauffement (pile
+    // après 10 s d'événements à 200/s), un état différent de celui de `fin`
+    // (après une pause, trois sorties posément branchées). Comparer un pic
+    // à un creux aurait laissé passer plusieurs Mo de fuite sous couvert
+    // d'une « croissance » nulle, puisque le pic de départ était déjà haut.
+    sway.commande("output HEADLESS-2 disable");
+    std::thread::sleep(Duration::from_secs(1));
+    sway.commande("output HEADLESS-2 enable");
+    std::thread::sleep(Duration::from_secs(1));
     let debut = d.pss_ko();
-    for _ in 0..5 {
+    for _ in 0..4 {
         pomper(&hypr, Duration::from_secs(8), &mut n);
         sway.commande("output HEADLESS-2 disable");
         std::thread::sleep(Duration::from_secs(1));
@@ -65,7 +75,7 @@ fn pss_sous_30_mo_et_stable() {
         std::thread::sleep(Duration::from_secs(1));
     }
     let fin = d.pss_ko();
-    eprintln!("PSS : {depart} Ko au départ, {debut} Ko après l'échauffement, {fin} Ko après {n} événements et 5 branchements");
+    eprintln!("PSS : {depart} Ko au départ, {debut} Ko après l'échauffement et un premier cycle, {fin} Ko après {n} événements et 5 branchements");
     assert!(fin < 30 * 1024, "PSS {fin} Ko ≥ 30 Mo");
     assert!(fin <= debut + 1024, "croissance : {debut} → {fin} Ko");
     // Le test commence et finit avec les trois sorties branchées (la
@@ -76,11 +86,15 @@ fn pss_sous_30_mo_et_stable() {
     // exigée : fontdb (rayon, un seul fil désormais), le cache de glyphes
     // (jusqu'à CACHE_MAX avant d'être vidé) et l'arène malloc du processus
     // laissent quelques centaines de Ko de jeu légitime que `malloc_trim`
-    // ne récupère pas toujours entièrement. 4 Mo (4096 Ko) est la marge
-    // retenue : large devant ce jeu d'allocateur, mais à peine plus du
-    // quart du plafond de démarrage (15 Mo) — une vraie fuite (prouvée plus
-    // bas par `std::mem::forget`) la dépasse très largement sur 5 cycles.
-    const MARGE_RETOUR_KO: u64 = 4 * 1024;
+    // ne récupère pas toujours entièrement. 2 Mo (2048 Ko) est la marge
+    // retenue : environ le double de l'écart observé sur plusieurs
+    // exécutions (≈ 1 Mo, `debut` étant désormais mesuré dans un état
+    // comparable à `fin`, voir rapport de correction) — large devant ce jeu
+    // d'allocateur, tout en restant sous le septième du plafond de
+    // démarrage (15 Mo) ; un vrai pool qui ne rétrécit plus (mutation de
+    // `pool_cible`, prouvée plus bas) produit un écart de plusieurs Mo,
+    // nettement au-delà de cette marge.
+    const MARGE_RETOUR_KO: u64 = 2 * 1024;
     assert!(
         fin.abs_diff(depart) <= MARGE_RETOUR_KO,
         "PSS ne revient pas près du départ après les branchements/débranchements : {depart} Ko → {fin} Ko (marge {MARGE_RETOUR_KO} Ko)"
@@ -96,10 +110,21 @@ fn au_repos_aucun_reveil() {
     let fils = d.fils();
     std::thread::sleep(Duration::from_secs(5));
     let apres = d.reveils();
-    eprintln!("réveils au repos (5 s) : {} → {} ({} de plus) ; {fils} fils", avant, apres, apres - avant);
-    // Au plus un tic d'horloge (changement de minute) dans la fenêtre, et
-    // ses quelques changements de contexte.
-    assert!(apres - avant <= 10, "{} réveils en 5 s au repos", apres - avant);
+    // `reveils()` cumule tous les fils encore vivants : un fil passager qui
+    // disparaît entre les deux lectures (compositeur qui se relance après
+    // une panne, p. ex.) ferait déborder une simple soustraction au lieu de
+    // rendre un delta légèrement sous-compté.
+    let delta = apres.saturating_sub(avant);
+    eprintln!("réveils au repos (5 s) : {avant} → {apres} ({delta} de plus) ; {fils} fils");
+    // Observé sur plusieurs passages, démon au repos : 0 à 2 changements de
+    // contexte en 5 s (garde qui dort, boucle calloop bloquante). Un
+    // minuteur d'horloge qui tiquerait à 1 Hz au lieu d'attendre la
+    // prochaine minute (régression plausible : `TimeoutAction` mal
+    // recalculé) ajouterait un réveil par seconde, soit environ 5 en 5 s —
+    // le seuil précédent (≤ 10) l'aurait laissé passer. 4 reste large
+    // devant l'observé (×2 la pire valeur vue) tout en restant sous la
+    // moitié d'un réveil par seconde, prouvé mordre plus bas.
+    assert!(delta <= 4, "{delta} réveils en 5 s au repos");
     // Boucle, compositeur, garde, un fil rayon (RAYON_NUM_THREADS=1) et
     // quelques fils passagers : jamais un fil par cœur.
     assert!(fils <= 8, "{fils} fils");
