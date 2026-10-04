@@ -18,7 +18,7 @@ use smithay_client_toolkit::reexports::calloop::{channel, EventLoop};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::Connection;
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -86,13 +86,7 @@ pub fn apres_dispatch(cible: &mut impl RedessinDifere) {
     }
 }
 
-/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
-/// (EPIPE : journal relayé par un outil qui s'est arrêté). Un démon
-/// résident ne doit jamais mourir pour si peu : on écrit directement, et
-/// une écriture ratée est juste ignorée (rien d'autre ne peut en faire).
-fn journal(m: &str) {
-    let _ = writeln!(io::stderr(), "alpheus-demon : {m}");
-}
+use crate::journal::ecrire as journal;
 
 /// La connexion Wayland s'est coupée en douceur (le socket s'est fermé :
 /// EPIPE à l'écriture, ECONNRESET à la lecture), plutôt qu'avec une

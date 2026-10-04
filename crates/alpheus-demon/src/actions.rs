@@ -9,6 +9,8 @@ use crate::grille::{Cible, Grille};
 use crate::peintre::colonne_sous;
 use alpheus_commun::exec::Executor;
 
+use crate::journal::ecrire as journal;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bouton {
     Gauche,
@@ -88,7 +90,7 @@ pub fn executer(exec: &dyn Executor, argv: &[String]) {
     let Some((prog, args)) = argv.split_first() else { return };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     if let Err(e) = exec.spawn(prog, &args) {
-        eprintln!("alpheus-demon : {} : {e:?}", argv.join(" "));
+        journal(&format!("{} : {e:?}", argv.join(" ")));
     }
 }
 

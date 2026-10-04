@@ -141,3 +141,33 @@ fn sockets_du_compositeur_ouverts_seulement_dans_sources() {
         }
     }
 }
+
+/// Code de production d'un fichier : tout, jusqu'au premier `#[cfg(test)]`
+/// (convention de ce dépôt : au plus un module de tests par fichier, à la
+/// fin). Les tests ont le droit d'utiliser `eprintln!` : ils ne vivent
+/// qu'une fraction de seconde, aucun risque d'EPIPE comme dans un démon
+/// résident.
+fn code_de_production(texte: &str) -> &str {
+    texte.split("#[cfg(test)]").next().unwrap_or(texte)
+}
+
+#[test]
+fn code_de_production_coupe_avant_le_module_de_tests() {
+    let texte = "fn x() {}\n#[cfg(test)]\nmod tests {\n    fn y() { eprintln!(\"ok\"); }\n}\n";
+    assert_eq!(code_de_production(texte), "fn x() {}\n");
+}
+
+/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
+/// (EPIPE) : interdit dans le code de production du démon, qui doit
+/// toujours passer par `alpheus_demon::journal::ecrire` (`writeln!`, une
+/// écriture ratée simplement ignorée).
+#[test]
+fn eprintln_interdit_hors_des_tests() {
+    for (p, t) in sources() {
+        assert!(
+            !code_de_production(&t).contains("eprintln!("),
+            "eprintln! (panique sur EPIPE) dans {} : utiliser crate::journal::ecrire",
+            p.display()
+        );
+    }
+}

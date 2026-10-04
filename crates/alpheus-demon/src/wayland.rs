@@ -26,14 +26,9 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
 };
-use std::io::{self, Write};
 use std::sync::Arc;
 
-/// `eprintln!` panique si l'autre bout de l'erreur standard est fermé
-/// (EPIPE) : un démon résident ne doit jamais mourir pour si peu.
-fn journal(m: &str) {
-    let _ = writeln!(io::stderr(), "alpheus-demon : {m}");
-}
+use crate::journal::ecrire as journal;
 
 /// Taille de départ du pool (`Etat::new`) : jamais redescendu en dessous,
 /// pour ne pas recréer le pool sans cesse autour d'un écran minuscule ou
