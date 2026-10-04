@@ -25,6 +25,10 @@ pub struct Polices {
     hauteur: u32,
     echelle: i32,
     avance: f32,
+    /// Avance déjà mesurée pour chaque échelle vue (petit tableau : il n'y a
+    /// en pratique qu'une poignée d'échelles distinctes par session).
+    /// Évite de remettre en forme « M » à chaque alternance.
+    avances: Vec<(i32, f32)>,
 }
 
 pub fn couleur(p: &Palette, t: Teinte) -> Rgb {
@@ -208,7 +212,8 @@ impl Polices {
         db.set_monospace_family(famille.clone());
         let mut fs = FontSystem::new_with_locale_and_db("fr-FR".into(), db);
         let tampon = Buffer::new(&mut fs, Metrics::new(police.taille, hauteur as f32));
-        let mut p = Polices { fs, cache: SwashCache::new(), tampon, famille, taille: police.taille, hauteur, echelle: 0, avance: 0.0 };
+        let mut p =
+            Polices { fs, cache: SwashCache::new(), tampon, famille, taille: police.taille, hauteur, echelle: 0, avance: 0.0, avances: Vec::new() };
         p.regler(1);
         let avertissement = (!avertissements.is_empty()).then(|| avertissements.join(" ; "));
         Ok((p, avertissement))
@@ -228,19 +233,30 @@ impl Polices {
         self.cache.image_cache.len()
     }
 
-    /// Taille et métriques pour l'échelle `e` ; mesure l'avance d'une case.
+    /// Taille et métriques pour l'échelle `e` ; mesure l'avance d'une case
+    /// (mémorisée par échelle : jamais remesurée deux fois). Le cache de
+    /// glyphes n'est PAS vidé ici : ses clés swash incluent la taille, donc
+    /// les glyphes de plusieurs échelles cohabitent (écrans à l'échelle 1 et
+    /// 2 dessinés en alternance) ; `CACHE_MAX`, dans `glyphe`, reste la
+    /// seule borne mémoire.
     fn regler(&mut self, e: i32) {
         let e = e.max(1);
         if e == self.echelle {
             return;
         }
         self.echelle = e;
-        self.cache.image_cache.clear(); // glyphes de l'ancienne taille
         let (t, h) = (self.taille * e as f32, (self.hauteur * e as u32) as f32);
         self.tampon.set_metrics_and_size(&mut self.fs, Metrics::new(t, h), None, Some(h));
-        self.tampon.set_text(&mut self.fs, "M", attrs(&self.famille, false), Shaping::Advanced);
-        self.tampon.shape_until_scroll(&mut self.fs, false);
-        self.avance = self.tampon.layout_runs().flat_map(|r| r.glyphs.iter()).map(|g| g.w).next().unwrap_or(t * 0.6);
+        self.avance = match self.avances.iter().find(|(echelle, _)| *echelle == e) {
+            Some((_, avance)) => *avance,
+            None => {
+                self.tampon.set_text(&mut self.fs, "M", attrs(&self.famille, false), Shaping::Advanced);
+                self.tampon.shape_until_scroll(&mut self.fs, false);
+                let avance = self.tampon.layout_runs().flat_map(|r| r.glyphs.iter()).map(|g| g.w).next().unwrap_or(t * 0.6);
+                self.avances.push((e, avance));
+                avance
+            }
+        };
     }
 
     pub fn avance(&mut self, echelle: i32) -> f32 {
@@ -364,6 +380,35 @@ mod tests {
         let mut p = polices();
         let (a1, a2) = (p.avance(1), p.avance(2));
         assert!(a1 > 4.0 && (a2 - 2.0 * a1).abs() <= 1.0, "{a1} {a2}");
+    }
+
+    /// Un écran à l'échelle 2 et un autre à 1 : `dessiner` alterne les
+    /// échelles à chaque trame. Les clés de swash incluent la taille (les
+    /// glyphes des deux échelles cohabitent) : le cache ne doit donc jamais
+    /// être vidé à l'alternance, seulement borné par CACHE_MAX. Mord sur
+    /// `self.cache.image_cache.clear()` dans `regler` : en le rétablissant,
+    /// chaque retour à l'échelle 1 ferait retomber le cache à son compte
+    /// d'une seule échelle au lieu de rester stable aux deux.
+    #[test]
+    fn echelles_mixtes_pas_de_vidage_a_chaque_alternance() {
+        let mut p = polices();
+        let pal = Palette::default();
+        let mut g = Grille::vide(4);
+        g.ecrire(0, 4, "Ab1", Style::NORMAL);
+        let av2 = p.avance(2);
+        let (w, h) = ((av2 * 4.0).ceil() as u32, HAUTEUR_DEFAUT * 2);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        p.peindre(&g, &pal, &mut px, w, h, 1);
+        let n1 = p.glyphes_en_cache();
+        p.peindre(&g, &pal, &mut px, w, h, 2);
+        let n2 = p.glyphes_en_cache();
+        assert!(n2 > n1, "les glyphes de l'échelle 2 s'ajoutent à ceux de l'échelle 1 : {n1} puis {n2}");
+        for _ in 0..4 {
+            p.peindre(&g, &pal, &mut px, w, h, 1);
+            assert_eq!(p.glyphes_en_cache(), n2, "vidage au retour à l'échelle 1 : le cache ne devrait pas rétrécir");
+            p.peindre(&g, &pal, &mut px, w, h, 2);
+            assert_eq!(p.glyphes_en_cache(), n2, "vidage au retour à l'échelle 2 : le cache ne devrait pas rétrécir");
+        }
     }
 
     #[test]

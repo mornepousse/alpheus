@@ -12,6 +12,8 @@ pub mod etat;
 pub mod grille;
 pub mod heure;
 pub mod icones;
+pub mod lancement;
 pub mod peintre;
 pub mod sources;
 pub mod verrou;
+pub mod wayland;

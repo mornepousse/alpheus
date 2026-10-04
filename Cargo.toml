@@ -17,6 +17,7 @@ ratatui = "0.30"
 unicode-width = "0.2"
 unicode-normalization = "0.1"
 cosmic-text = "0.12"
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
 insta = "1"
 
 [profile.release]
