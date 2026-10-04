@@ -53,7 +53,13 @@ pub type Stream = Box<dyn Read + Send>;
 pub trait Executor: Send + Sync {
     /// Launches `prog args…`, waits for it to finish (bounded delay), captures the outputs.
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError>;
-    /// Launches `prog args…` without waiting (e.g. hyprlock), outputs discarded.
+    /// Launches `prog args…` without waiting (e.g. hyprlock, or whatever a
+    /// click's `[actions]`/`[workspaces]` command runs), outputs discarded.
+    /// Fully detached (double fork): the launched program is never our
+    /// child, so it is never reachable through `kill_running` and outlives
+    /// alpheus restarting or shutting down (e.g. a lock screen must keep
+    /// running). No thread lives for as long as the program does, however
+    /// long that is.
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError>;
     /// Launches `prog args…` for as long as its output is read: standard
     /// output piped, standard error discarded, its own process group, and
@@ -172,6 +178,58 @@ fn unblock_signals() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Forks a second time so the process that ultimately execs `prog` is never
+/// our direct child: the first fork's child (the one `Command::spawn`
+/// returns, reaped synchronously right after by `spawn`, above) exits
+/// immediately here, while the second fork's child — about to be reparented
+/// to init or the nearest subreaper — is the one that returns `Ok(())` and
+/// lets `do_exec` proceed. Runs between fork and exec: only async-signal-safe
+/// calls (sigprocmask via `unblock_signals`, fork, `_exit`); stdio, process
+/// group and the rest of `Command`'s setup already happened before this
+/// closure runs, and both forked copies inherit them identically.
+fn detach() -> std::io::Result<()> {
+    unblock_signals()?;
+    // SAFETY: fork(2) and _exit(2) are async-signal-safe; nothing allocates
+    // and no `Drop` runs between the fork and the `_exit`/return below.
+    match unsafe { libc::fork() } {
+        -1 => Err(std::io::Error::last_os_error()),
+        0 => Ok(()),                    // grandchild: proceed to exec `prog`.
+        _ => unsafe { libc::_exit(0) }, // intermediate: nothing left to do.
+    }
+}
+
+/// Launches `prog args…` fully detached (double fork), outputs discarded,
+/// never waiting for it. Returns the INTERMEDIATE's PID — reaped
+/// synchronously before returning, kept only so tests can confirm it is
+/// never left as a zombie; callers otherwise have no use for it. The
+/// grandchild that actually execs `prog` is reparented to init (or the
+/// nearest subreaper) the instant the intermediate exits (see `detach`), so
+/// no zombie is ever left for alpheus to clean up, and nothing of ours keeps
+/// running once `prog` has started — a click never leaves a resident reaper
+/// thread behind for as long as the program runs. Same guarantees as the
+/// pre-double-fork implementation: own process group, signal mask unblocked,
+/// stdio nulled, not killed by `kill_running` (never registered in
+/// `Running`: a spawned program outlives the daemon, e.g. the lock screen
+/// must survive alpheus restarting).
+fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
+    let mut command = Command::new(prog);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        // Separate process group: closing alpheus's window (SIGHUP to
+        // the terminal's group) does not kill the lock screen.
+        .process_group(0);
+    // SAFETY: `detach` runs in the child between fork and exec and only
+    // makes async-signal-safe calls (sigprocmask, fork, _exit).
+    unsafe { command.pre_exec(detach) };
+    let mut intermediate = command.spawn().map_err(io_err)?;
+    let pid = intermediate.id();
+    let _ = intermediate.wait();
+    Ok(pid)
+}
+
 /// A command started by `stream`: reading it reads its standard output;
 /// dropping it kills its process group (if `kill_running` hasn't already)
 /// and reaps it, so a stream never leaves anything behind.
@@ -266,23 +324,7 @@ impl Executor for SystemExecutor {
     }
 
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
-        let mut command = Command::new(prog);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // Separate process group: closing alpheus's window (SIGHUP to
-            // the terminal's group) does not kill the lock screen.
-            .process_group(0);
-        // SAFETY: `unblock_signals` only makes async-signal-safe calls.
-        unsafe { command.pre_exec(unblock_signals) };
-        let mut child = command.spawn().map_err(io_err)?;
-        // Reaps the child at its end (no zombie) without blocking the caller.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        Ok(())
+        spawn_detached(prog, args).map(|_intermediate_pid| ())
     }
 
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
@@ -489,6 +531,83 @@ mod tests {
     #[test]
     fn spawn_missing_program() {
         assert_eq!(exec().spawn("alpheus-nonexistent-program", &[]), Err(ExecError::NotFound));
+    }
+
+    /// Threads of this whole test binary (other tests may have their own,
+    /// transient ones): a regression that brings back a reaper thread per
+    /// `spawn` shows up as a jump of (about) N, held for as long as the N
+    /// children run.
+    fn thread_count() -> usize {
+        std::fs::read_dir("/proc/self/task").map(|d| d.count()).unwrap_or(0)
+    }
+
+    /// The old implementation (`std::thread::spawn` + `child.wait()`) kept
+    /// one OS thread alive per `spawn` for as long as the launched program
+    /// ran. With the double fork, `spawn` only reaps the intermediate (which
+    /// exits immediately) and returns: no thread survives into the
+    /// children's 2 s lifetime. A generous tolerance absorbs unrelated
+    /// threads from tests running concurrently in this binary; the old bug
+    /// would add N persistent threads, far past this margin.
+    #[test]
+    fn spawn_leaves_no_thread_for_the_lifetime_of_the_children() {
+        let e = exec();
+        let before = thread_count();
+        const N: usize = 50;
+        for _ in 0..N {
+            e.spawn("sleep", &["2"]).unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let after = thread_count();
+        // Generous tolerance absorbs unrelated threads from tests running
+        // concurrently in this binary; the old bug would add N (here 50)
+        // persistent threads, far past this margin.
+        assert!(after <= before + 10, "before={before} after={after}: spawn left threads alive while children run");
+    }
+
+    /// The grandchild that actually execs `prog` is never our child (it is
+    /// reparented to init, or the nearest subreaper, the instant the
+    /// intermediate exits): it still runs (writes its marker file), and
+    /// never lingers as a zombie under its own PID.
+    #[test]
+    fn spawned_child_runs_and_leaves_no_zombie() {
+        let f = std::env::temp_dir().join(format!("alpheus-spawn-{}-detach", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("echo $$ > {}", f.display());
+        exec().spawn("sh", &["-c", &script]).unwrap();
+        let pid = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        assert!(pid > 1);
+        // `sh -c "echo $$ > f"` ends right after writing: give it a moment,
+        // then check it is gone or at least never a zombie — nothing of
+        // ours reaps it (we never see its PID), so a lingering zombie here
+        // would mean it is NOT reparented to a reaper, i.e. the double fork
+        // did not detach it.
+        let t = Instant::now();
+        loop {
+            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                Err(_) => break, // reaped by its new parent: no zombie.
+                Ok(st) => {
+                    let state = st.rsplit_once(')').and_then(|(_, r)| r.trim_start().chars().next());
+                    assert_ne!(state, Some('Z'), "grandchild {pid} is a zombie (not reparented to a reaper)");
+                    assert!(t.elapsed() < Duration::from_secs(2), "grandchild {pid} never disappeared");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+
+    /// `spawn`'s own child (the intermediate — see `detach`) must be reaped
+    /// synchronously before `spawn` returns: forgetting that `wait()` would
+    /// leave it a zombie under its own (known) PID forever. Goes through
+    /// `spawn_detached` directly (not the `Executor` trait) to get that PID:
+    /// scanning all of `/proc` for "any zombie child of this process" would
+    /// also catch other tests' transient, legitimate zombies (the brief
+    /// window between a child exiting and ITS parent's `wait()`), since
+    /// every test in this binary shares one PID.
+    #[test]
+    fn spawn_leaves_no_zombie_intermediate() {
+        let pid = spawn_detached("true", &[]).unwrap();
+        assert!(std::fs::metadata(format!("/proc/{pid}")).is_err(), "intermediate {pid} still present after wait() (zombie or otherwise)");
     }
 
     #[test]
