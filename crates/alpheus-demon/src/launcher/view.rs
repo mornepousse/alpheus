@@ -189,7 +189,10 @@ fn help_text(l: &Launcher) -> &'static str {
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
         Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
-        _ => "enter open · ctrl+enter action · tab mode · esc close",
+        // No `.desktop` action to run on a window: Ctrl+Enter is just Enter again here
+        // (`secondary`'s catch-all), so it is left out, like Script's line above.
+        Mode::Windows => "enter focus · tab mode · esc close",
+        Mode::All | Mode::Apps => "enter open · ctrl+enter action · tab mode · esc close",
     }
 }
 
@@ -296,7 +299,11 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push(("ctrl+enter  run in background".to_string(), Style::NORMAL));
             }
         }
-        Source::Line(i) => out.extend(wrap(&l.lines[i], width).into_iter().map(|t| (t, Style::NORMAL))),
+        // Unreachable in practice: a `Source::Line` hit only exists in Script mode, where
+        // `layout()` never reserves a preview panel (`preview` is always `!script`, see
+        // `layout`'s doc comment) — this function is never even called with one. Kept empty,
+        // not removed, for `Source`'s match exhaustiveness.
+        Source::Line(_) => {}
     }
     out
 }
@@ -740,6 +747,16 @@ mod tests {
         let s = Launcher::for_script(LauncherConfig::default(), None, vec![]);
         let text = help_text(&s);
         assert!(text.chars().count() <= limit, "Script: {text:?} is {} chars, limit {limit}", text.chars().count());
+    }
+
+    /// Windows mode never has a `.desktop` action to run: Ctrl+Enter on a window is just Enter
+    /// again (`secondary`'s catch-all falls back to `primary`), so the generic "ctrl+enter
+    /// action" line (true for Apps, and for All's app results) would be misleading here.
+    #[test]
+    fn windows_mode_help_does_not_promise_an_action() {
+        let mut l = launcher();
+        l.mode = Mode::Windows;
+        assert!(!help_text(&l).contains("action"), "{:?}", help_text(&l));
     }
 
     #[test]

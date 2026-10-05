@@ -342,6 +342,15 @@ impl Model {
         if let Some(i) = toplevels.iter().position(|t| t.focused) {
             let focused = toplevels.remove(i);
             toplevels.push(focused);
+        } else if !toplevels.is_empty() {
+            // No window is currently reported as active (a layer-shell
+            // surface, like the launcher, may have grabbed exclusive focus,
+            // or Hyprland's `activewindow` response was simply empty):
+            // `clients[0]` is still the most recently used window by
+            // `focusHistoryID`, so keep it last, as if it were still
+            // "focused".
+            let most_recent = toplevels.remove(0);
+            toplevels.push(most_recent);
         }
         CompositorState { workspaces, window: self.window.clone(), toplevels }
     }
@@ -490,6 +499,22 @@ mod tests {
     }
 
     #[test]
+    fn focus_null_keeps_the_most_recent_window_last() {
+        // A layer-shell surface (the launcher) grabbing exclusive focus can
+        // make Hyprland report no active window at all (`activewindowv2>>`
+        // with an empty address): the previously focused window must stay
+        // last, not jump back to the front.
+        let mut m = model_from_fixture();
+        assert_eq!(m.apply(&Event::Focus(Some("583d9c701c60".into()))), Effect::Changed, "focus 1");
+        assert_eq!(m.apply(&Event::Focus(Some("583d9d5fd540".into()))), Effect::Changed, "focus 2");
+        assert_eq!(m.apply(&Event::Focus(None)), Effect::Changed, "focus null");
+        let e = m.state();
+        let order: Vec<&str> = e.toplevels.iter().map(|t| t.selector.as_str()).collect();
+        assert_eq!(order, ["address:0x583d9c701c60", "address:0x583d9c60da90", "address:0x583d9d5fd540"], "order still ends with 2");
+        assert!(!e.toplevels.iter().any(|t| t.focused), "nothing flagged focused once activewindow is empty");
+    }
+
+    #[test]
     fn a_focus_change_between_same_titled_windows_is_published() {
         // Two windows sharing class and title (e.g. two Firefox tabs with
         // the same page title): `ActiveWindow` alone cannot tell them apart,
@@ -537,11 +562,12 @@ mod tests {
         assert_eq!(
             toplevels(&e),
             [
-                ("address:0x1a", "foot", "a", "1", false),
                 ("address:0x1e", "foot", "e", "1", false),
-                ("address:0x1d", "firefox", "d", "web", false)
+                ("address:0x1d", "firefox", "d", "web", false),
+                ("address:0x1a", "foot", "a", "1", false)
             ],
-            "unmapped and special:magic left out; never focused (-1) or no mapped/focusHistoryID: listed, last"
+            "unmapped and special:magic left out; no active window reported: 1a (the most recently used \
+             by focusHistoryID) kept last, as if still focused"
         );
     }
 

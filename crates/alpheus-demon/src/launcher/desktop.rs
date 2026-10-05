@@ -251,6 +251,11 @@ fn listed(names: &[String], desktops: &[String]) -> bool {
     names.iter().any(|n| desktops.iter().any(|d| d.eq_ignore_ascii_case(n)))
 }
 
+/// A real app uses well under ten of either: a hostile or malformed file declaring thousands
+/// of keywords or actions must not bloat the catalog kept in memory.
+const KEYWORDS_MAX: usize = 32;
+const ACTIONS_MAX: usize = 16;
+
 /// Err(reason) for an invalid file (no [Desktop Entry] group first, missing Type/Name,
 /// missing or invalid Exec for an application, file not UTF-8): treated as absent by the scan.
 /// `Hidden=true` and `NoDisplay=true` mask before any other check: the usual minimal user
@@ -288,6 +293,9 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &ParseEnv) -> Result<Verdic
     }
     let mut actions: Vec<DesktopAction> = Vec::new();
     for key in main.get("Actions").map(|a| list(a)).unwrap_or_default() {
+        if actions.len() >= ACTIONS_MAX {
+            break;
+        }
         if actions.iter().any(|a| a.key == key) {
             continue;
         }
@@ -304,7 +312,11 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &ParseEnv) -> Result<Verdic
         path: path.to_path_buf(),
         generic_name: localized(&main, env.locale, "GenericName").map(unescape).filter(|s| !s.trim().is_empty()),
         comment: localized(&main, env.locale, "Comment").map(unescape).filter(|s| !s.trim().is_empty()),
-        keywords: localized(&main, env.locale, "Keywords").map(list).unwrap_or_default(),
+        keywords: {
+            let mut k = localized(&main, env.locale, "Keywords").map(list).unwrap_or_default();
+            k.truncate(KEYWORDS_MAX);
+            k
+        },
         terminal: is_true(&main, "Terminal"),
         startup_wm_class: string(&main, "StartupWMClass"),
         name,
@@ -644,6 +656,26 @@ mod tests {
         assert_eq!(e.actions, expected, "missing group, missing Exec, invalid Exec and unlisted groups skipped");
         let fr = Locale::parse("fr_FR").unwrap();
         assert_eq!(shown("actions.desktop", &penv(Some(&fr), &[], &any_program)).actions[1].name, "Nouvelle fenêtre privée");
+    }
+
+    /// A hostile or malformed file could list thousands of keywords or actions: both are
+    /// capped, so one file cannot bloat the catalog kept in memory.
+    #[test]
+    fn keywords_and_actions_are_capped() {
+        let keywords: String = (0..50).map(|i| format!("k{i};")).collect();
+        let text = format!("[Desktop Entry]\nType=Application\nName=Many\nExec=many\nKeywords={keywords}\n");
+        let Ok(Verdict::Show(e)) = inline(&text, &plain_env()) else { panic!("expected Show") };
+        assert_eq!(e.keywords.len(), 32, "50 declared, capped to 32");
+        assert_eq!(e.keywords[0], "k0", "the first ones are kept, not the last ones");
+        assert_eq!(e.keywords[31], "k31");
+
+        let actions_list: String = (0..20).map(|i| format!("a{i};")).collect();
+        let groups: String = (0..20).map(|i| format!("\n[Desktop Action a{i}]\nName=Action {i}\nExec=many --a{i}\n")).collect();
+        let text = format!("[Desktop Entry]\nType=Application\nName=Many\nExec=many\nActions={actions_list}\n{groups}");
+        let Ok(Verdict::Show(e)) = inline(&text, &plain_env()) else { panic!("expected Show") };
+        assert_eq!(e.actions.len(), 16, "20 valid actions declared, capped to 16");
+        assert_eq!(e.actions[0].key, "a0", "the first ones are kept, not the last ones");
+        assert_eq!(e.actions[15].key, "a15");
     }
 
     #[test]

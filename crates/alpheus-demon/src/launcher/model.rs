@@ -331,18 +331,19 @@ impl Launcher {
     }
 
     /// Arrow keys, PageUp/PageDown, Home/End and the wheel (`scroll`) all land here: the only
-    /// keys that set `moved` (Mae, 2026-10-05), and only when there is something to navigate —
-    /// an empty list leaves `moved` untouched.
+    /// keys that set `moved` (Mae, 2026-10-05), and only when the selection actually changes —
+    /// an empty list, or a clamped move at an edge (already the top or bottom result), leaves
+    /// `moved` untouched.
     fn move_by(&mut self, delta: i64) -> Outcome {
         if self.results.is_empty() {
             return Outcome::Nothing;
         }
-        self.moved = true;
         let last = self.results.len() as i64 - 1;
         let to = (self.selected as i64).saturating_add(delta).clamp(0, last) as usize;
         if to == self.selected {
             return Outcome::Nothing;
         }
+        self.moved = true;
         self.selected = to;
         self.keep_visible();
         Outcome::Redraw
@@ -401,14 +402,17 @@ impl Launcher {
         }
     }
 
-    /// Click on result `index` (absolute index into `results`): select then activate. Like
-    /// `key`, turns a `Nothing` into a `Redraw` when it clears a message — otherwise the error
-    /// line would linger after a click that already invalidated it.
+    /// Click on result `index` (absolute index into `results`): select then activate. Counts
+    /// as navigation like `move_by` (Mae, 2026-10-05): a later catalog/window update pins the
+    /// clicked item by identity instead of landing back on top. Like `key`, turns a `Nothing`
+    /// into a `Redraw` when it clears a message — otherwise the error line would linger after
+    /// a click that already invalidated it.
     pub fn click(&mut self, index: usize, secondary: bool) -> Outcome {
         if index >= self.results.len() {
             return Outcome::Nothing;
         }
         let had_message = self.message.take().is_some();
+        self.moved = true;
         self.selected = index;
         self.keep_visible();
         let o = if secondary { self.secondary() } else { self.primary() };
@@ -535,6 +539,18 @@ mod tests {
         assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "moved already: kept by identity, as before");
     }
 
+    /// A click is navigation too, like the keys `move_by` covers (Mae, 2026-10-05's rule):
+    /// only `query_changed` (typing, a mode switch) resets to the top, never a click.
+    #[test]
+    fn clicking_counts_as_moved_a_catalog_update_keeps_the_chosen_item() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        l.click(1, false);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)));
+        assert!(l.moved, "a click counts as navigation");
+        l.set_catalog(catalog());
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "clicked already: kept by identity");
+    }
+
     /// Typing never counts as moved, even when it reshuffles the results (Mae, 2026-10-05):
     /// only navigation does. Discriminates from "kept by identity" by giving the selected
     /// window a new, non-zero position after the update: a third window sorts before it once
@@ -578,6 +594,19 @@ mod tests {
         assert!(l.results.is_empty(), "no windows, no catalog yet");
         assert_eq!(l.key(Key::Up), Outcome::Nothing);
         assert!(!l.moved, "nothing to navigate: moved must stay false");
+    }
+
+    /// A clamped move (already at the top or bottom result: `to == self.selected`) is a no-op
+    /// and must not set `moved` either, or a later catalog/window update would wrongly treat a
+    /// boundary bump as a deliberate choice and stop landing on top (Mae, 2026-10-05).
+    #[test]
+    fn a_clamped_move_at_an_edge_does_not_set_moved() {
+        let mut l = launcher(); // 3 apps + 3 windows, selection starts on top
+        assert_eq!(l.key(Key::Up), Outcome::Nothing, "already at the top: no wrap");
+        assert!(!l.moved, "a clamped move changed nothing: must not count as navigation");
+        assert_eq!(l.key(Key::End), Outcome::Redraw, "End actually moves the selection");
+        assert!(l.moved, "a real move: counts");
+        assert_eq!(l.key(Key::Down), Outcome::Nothing, "already at the bottom: no wrap");
     }
 
     #[test]
@@ -882,6 +911,8 @@ mod tests {
         assert_eq!(l.mode, Mode::Commands);
         assert_eq!(l.click_mode(Mode::Commands), Outcome::Nothing, "already there");
         assert_eq!(l.click_mode(Mode::Script), Outcome::Nothing, "never into Script");
+        assert_eq!(sources(&l)[0], Source::Command(0), "fd, alphabetically first");
+        assert_eq!(l.click(0, false), activate(Activation::Command { index: 0, terminal: true }), "clicking a command row runs it");
         assert_eq!(l.scroll(2), Outcome::Redraw);
         assert_eq!(l.selected, 2);
         assert_eq!(l.scroll(10), Outcome::Nothing, "clamped at the last command");
@@ -892,7 +923,7 @@ mod tests {
     #[test]
     fn a_message_lasts_until_the_next_key() {
         let mut l = launcher();
-        l.key(Key::Home); // the top result, whatever it is (ignores the default-selection quirk below)
+        l.key(Key::Home); // the top result, whatever it is (ignores the default-selection quirk above)
         l.show_message("firefox: not found".into());
         assert_eq!(l.message.as_deref(), Some("firefox: not found"));
         assert_eq!(l.key(Key::Up), Outcome::Redraw, "nothing moved, but the message goes");

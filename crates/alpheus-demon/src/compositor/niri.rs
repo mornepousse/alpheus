@@ -199,6 +199,14 @@ impl Model {
         if let Some(i) = toplevels.iter().position(|t| t.focused) {
             let focused = toplevels.remove(i);
             toplevels.push(focused);
+        } else if !self.recent.is_empty() {
+            // niri reports `WindowFocusChanged{id: null}` when a
+            // layer-shell surface (the launcher) grabs exclusive focus:
+            // `recent[0]` is still the most recently used window (and
+            // `toplevels[0]` after the rank sort above), so keep it last,
+            // as if it were still "focused".
+            let most_recent = toplevels.remove(0);
+            toplevels.push(most_recent);
         }
         CompositorState { workspaces, window, toplevels }
     }
@@ -303,7 +311,29 @@ mod tests {
         assert_eq!(order(&m), ["id:2", "id:3", "id:1"], "focus through WindowOpenedOrChanged too");
         m.apply_line(r#"{"WindowClosed":{"id":2}}"#).unwrap();
         m.apply_line(r#"{"WindowFocusChanged":{"id":99}}"#).unwrap();
-        assert_eq!(order(&m), ["id:1", "id:3"], "closed and unknown ids are not kept");
+        assert_eq!(
+            order(&m),
+            ["id:3", "id:1"],
+            "closed and unknown ids are not kept in `recent`; nothing flagged focused (99 does not \
+             exist), so 1 (still the most recent) stays last"
+        );
+    }
+
+    #[test]
+    fn focus_null_keeps_the_most_recent_window_last() {
+        // A layer-shell surface (the launcher) grabbing exclusive focus
+        // makes niri emit `WindowFocusChanged{id: null}`: the previously
+        // focused window must stay last, not jump back to the front.
+        let mut m = Model::default();
+        let window =
+            |id: u64, focused: bool| format!(r#"{{"id":{id},"title":"w{id}","app_id":"foot","workspace_id":1,"is_focused":{focused}}}"#);
+        m.apply_line(&format!(r#"{{"WindowsChanged":{{"windows":[{},{}]}}}}"#, window(1, false), window(2, false))).unwrap();
+        let order = |m: &Model| m.state().toplevels.iter().map(|t| t.selector.clone()).collect::<Vec<_>>();
+        m.apply_line(r#"{"WindowFocusChanged":{"id":1}}"#).unwrap();
+        m.apply_line(r#"{"WindowFocusChanged":{"id":2}}"#).unwrap();
+        m.apply_line(r#"{"WindowFocusChanged":{"id":null}}"#).unwrap();
+        assert_eq!(order(&m), ["id:1", "id:2"], "order still ends with 2");
+        assert!(!m.state().toplevels.iter().any(|t| t.focused), "nothing flagged focused once focus is null");
     }
 
     #[test]

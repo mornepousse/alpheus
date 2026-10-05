@@ -15,7 +15,7 @@ expression: snapshot(&rows)
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
-│ enter open · ctrl+enter action · tab mode · esc close    │                                    │
+│ enter focus · tab mode · esc close                       │                                    │
 ╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
 
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
@@ -31,5 +31,5 @@ m..........................................................m....................
 m..........................................................m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m
-m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm....m....................................m
+m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.......................m....................................m
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

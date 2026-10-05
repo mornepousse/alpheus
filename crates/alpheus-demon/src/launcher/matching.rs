@@ -5,14 +5,14 @@
 //! opens, dropped when it closes (nothing kept at rest).
 
 use crate::compositor::Toplevel;
-use crate::launcher::desktop::DesktopEntry;
+use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
 use crate::launcher::history::History;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -230,6 +230,15 @@ fn order_by_frecency(len: usize, frecency: &[u32], name_rank: &[u32]) -> Vec<u32
     order
 }
 
+/// An id without ".desktop", then its last dot-segment ("org.gnome.Nautilus.desktop" →
+/// "org.gnome.Nautilus" → "Nautilus"): shared by `build_class_index` and `app_for_window`,
+/// which must agree on exactly the same two candidate keys.
+fn id_and_last(id: &str) -> (&str, &str) {
+    let id = id.strip_suffix(".desktop").unwrap_or(id);
+    let last = id.rsplit('.').next().unwrap_or(id);
+    (id, last)
+}
+
 /// Lower-folded id / last dot-segment / StartupWMClass / program → first app with that key, in
 /// app order (first match wins, as `app_for_window`'s `position` would find). Built once per
 /// catalog (apps alone), reused for every window and across a window-only refresh.
@@ -237,8 +246,7 @@ fn build_class_index(apps: &[DesktopEntry], programs: &[Option<String>]) -> Hash
     let mut index = HashMap::new();
     let mut keys: Vec<&str> = Vec::with_capacity(4);
     for (i, e) in apps.iter().enumerate() {
-        let id = e.id.strip_suffix(".desktop").unwrap_or(&e.id);
-        let last = id.rsplit('.').next().unwrap_or(id);
+        let (id, last) = id_and_last(&e.id);
         keys.clear();
         keys.extend(e.startup_wm_class.as_deref());
         keys.push(id);
@@ -368,14 +376,24 @@ impl Ranker {
             }
             prepared.refresh_windows(q);
         }
-        let pattern = if q.mode == Mode::Script {
-            // dmenu lines are plain text: "!", "^", "'" and "$" are
-            // characters to find, not fzf operators.
-            Pattern::new(q.text, CaseMatching::Smart, Normalization::Smart, AtomKind::Fuzzy)
+        // Commands mode with non-blank text that contains whitespace ("git log") is text the
+        // model runs through the shell (model.rs's `primary`/`secondary`), never a command to
+        // pick: nothing here would be meaningful to select, so nothing is ranked (Mae's
+        // feedback round, final review). A blank/whitespace-only query ("", "  ") is still the
+        // empty-query case below: there is no typed text to run either way (`shell`'s own
+        // `trim().is_empty()` check), so it keeps listing every command.
+        let mut hits = if q.mode == Mode::Commands && !q.text.trim().is_empty() && q.text.contains(char::is_whitespace) {
+            Vec::new()
         } else {
-            Pattern::parse(q.text, CaseMatching::Smart, Normalization::Smart)
+            let pattern = if q.mode == Mode::Script {
+                // dmenu lines are plain text: "!", "^", "'" and "$" are
+                // characters to find, not fzf operators.
+                Pattern::new(q.text, CaseMatching::Smart, Normalization::Smart, AtomKind::Fuzzy)
+            } else {
+                Pattern::parse(q.text, CaseMatching::Smart, Normalization::Smart)
+            };
+            if pattern.atoms.is_empty() { self.everything(q, &prepared) } else { self.matching(q, &prepared, &pattern) }
         };
-        let mut hits = if pattern.atoms.is_empty() { self.everything(q, &prepared) } else { self.matching(q, &prepared, &pattern) };
         self.prepared = Some(prepared);
         hits.truncate(MAX_RESULTS);
         // Many windows open can make `hits` grow past MAX_RESULTS before the truncate above
@@ -393,8 +411,12 @@ impl Ranker {
         let mut hits = Vec::new();
         if matches!(q.mode, Mode::All | Mode::Apps) {
             // The final `rank` truncates to MAX_RESULTS anyway: never build more of the
-            // precomputed order than could survive that truncation.
-            let remaining = MAX_RESULTS.saturating_sub(hits.len());
+            // precomputed order than could survive that truncation. In All, windows are
+            // appended next and are never themselves capped (there are rarely many open at
+            // once): a catalog larger than MAX_RESULTS must leave them room, or they would be
+            // the ones cut off that final truncation, coming after apps in the list.
+            let reserved_for_windows = if q.mode == Mode::All { q.windows.len() } else { 0 };
+            let remaining = MAX_RESULTS.saturating_sub(hits.len()).saturating_sub(reserved_for_windows);
             hits.extend(pr.apps_empty_order.iter().take(remaining).map(|&i| {
                 let i = i as usize;
                 Hit { source: Source::App(i), score: 0, frecency: pr.app_frecency[i] }
@@ -532,8 +554,7 @@ pub fn app_for_window(apps: &[DesktopEntry], class: &str) -> Option<usize> {
     }
     let eq = |a: &str| cmp_ci(a, class) == Ordering::Equal;
     apps.iter().position(|e| {
-        let id = e.id.strip_suffix(".desktop").unwrap_or(&e.id);
-        let last = id.rsplit('.').next().unwrap_or(id);
+        let (id, last) = id_and_last(&e.id);
         e.startup_wm_class.as_deref().is_some_and(eq) || eq(id) || eq(last) || exec_program(&e.exec).is_some_and(|p| eq(&p))
     })
 }
@@ -547,25 +568,15 @@ pub fn command_path(path_dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
 }
 
 /// Basename of the first argv word of an Exec value ("env FOO=1 bar" →
-/// "env"; quotes honoured).
+/// "env"), through `exec_argv`'s own quoting (single quotes, a backslash
+/// outside quotes, field codes) rather than a hand-rolled subset of it: a
+/// name and icon are never relevant to just naming the program, so an
+/// empty/absent placeholder context stands in for the real one.
 pub fn exec_program(exec: &str) -> Option<String> {
-    let s = exec.trim_start();
-    let word: String = if let Some(rest) = s.strip_prefix('"') {
-        let mut w = String::new();
-        let mut chars = rest.chars();
-        while let Some(c) = chars.next() {
-            match c {
-                '"' => break,
-                '\\' => w.extend(chars.next()),
-                c => w.push(c),
-            }
-        }
-        w
-    } else {
-        s.split(char::is_whitespace).next().unwrap_or("").to_string()
-    };
+    let ctx = ExecContext { name: "", icon: None, path: Path::new("") };
+    let word = exec_argv(exec, &ctx).ok()?.into_iter().next()?;
     let base = word.rsplit('/').next().unwrap_or("");
-    (!base.is_empty()).then(|| base.to_string())
+    (!base.is_empty()).then_some(base.to_string())
 }
 
 #[cfg(test)]
@@ -742,6 +753,22 @@ mod tests {
         assert_eq!(l.sources(Mode::Commands, "lsb"), [Source::Command(0)], "a partial name: nothing typed whole");
     }
 
+    /// Commands mode with whitespace in the query is text the model runs through the shell
+    /// (model.rs's `primary`/`secondary`), never a command to pick: ranking it would show a
+    /// row Enter then ignores. `gitlog` would otherwise fuzzy-match both atoms of "git log".
+    #[test]
+    fn commands_mode_does_not_rank_a_query_with_whitespace() {
+        let mut l = Lists::new();
+        l.commands = vec!["gitlog".into()];
+        assert_eq!(l.sources(Mode::Commands, "git log"), [], "whitespace: nothing ranked, not even a fuzzy hit");
+        assert_eq!(l.sources(Mode::Commands, "gitlog"), [Source::Command(0)], "no whitespace: ranked as usual");
+        assert_eq!(
+            l.sources(Mode::Commands, "  "),
+            [Source::Command(0)],
+            "blank (whitespace-only, nothing typed): still the empty-query listing, not suppressed"
+        );
+    }
+
     #[test]
     fn per_list_facts_are_computed_once_until_the_lists_change() {
         let mut l = Lists::new();
@@ -876,6 +903,16 @@ mod tests {
         assert_eq!(exec_program("/usr/bin/"), None);
     }
 
+    /// `exec_program` follows `exec_argv`'s quoting (single quotes, a backslash outside
+    /// quotes, field codes), not a hand-rolled subset of it: a single-quoted first argument
+    /// (valid Exec, just not the common case) must not leave a stray leading quote in the
+    /// basename.
+    #[test]
+    fn exec_program_follows_exec_argv_s_quoting() {
+        assert_eq!(exec_program("'my app' --x").as_deref(), Some("my app"), "single-quoted, like exec_argv");
+        assert_eq!(exec_program("prog\\ it\\'s"), Some("prog it's".into()), "backslash escapes outside quotes too");
+    }
+
     // --- Performance round (delivery 3): precomputed orders, select_nth_unstable_by, a
     // frecency map and a window → app index, plus two minor correctness fixes. ---
 
@@ -947,6 +984,21 @@ mod tests {
         let hits = Ranker::new().rank(&l.query(Mode::Windows, ""));
         assert_eq!(hits.len(), MAX_RESULTS);
         assert!(hits.capacity() <= MAX_RESULTS, "capacity {} must not carry the 20,000-window scan", hits.capacity());
+    }
+
+    /// `everything()` appends windows after the apps slice, and the windows loop is never
+    /// itself capped (there are rarely many open at once): with a catalog larger than
+    /// `MAX_RESULTS`, apps alone could fill the budget and `rank()`'s final truncation would
+    /// then cut every window off the tail. Apps must leave windows their room.
+    #[test]
+    fn an_empty_all_query_reserves_room_for_every_window() {
+        let mut l = Lists::new();
+        l.apps = (0..MAX_RESULTS + 50).map(|i| app(&format!("a{i}.desktop"), &format!("App {i:04}"), None, &[], "x")).collect();
+        l.windows = (0..5).map(|i| window(&format!("id:{i}"), "x", &format!("win-{i}"))).collect();
+        let hits = l.rank(Mode::All, "");
+        assert_eq!(hits.len(), MAX_RESULTS, "still capped");
+        let windows_kept = hits.iter().filter(|h| matches!(h.source, Source::Window(_))).count();
+        assert_eq!(windows_kept, 5, "every window must survive, not get truncated away by the apps ahead of it");
     }
 
     /// Review Focus 4: dmenu lines must not rebuild `everything()`'s old behaviour of
@@ -1072,8 +1124,8 @@ mod tests {
         assert_eq!(actual2, expected2, "All mode, mixing windows and apps, through rank()");
 
         // Empty query: `everything()`'s precomputed `apps_empty_order` (also built from
-        // `name_ranks`/`fold_cow`) must match a reference order too — windows as given
-        // (`everything()` never sorts them), then apps by frecency then name.
+        // `name_ranks`/`fold_cow`) must match a reference order too — apps by frecency then
+        // name first (Mae, 2026-10-05), then windows as given (`everything()` never sorts them).
         let q3 = Query {
             text: "",
             mode: Mode::All,
