@@ -9,6 +9,7 @@ pub mod history;
 pub mod input;
 pub mod matching;
 pub mod model;
+pub mod run;
 pub mod scan;
 pub mod view;
 

@@ -7,8 +7,16 @@
 
 use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_demon::actions::{Button, command, run};
-use alpheus_demon::compositor::{CompositorState, Window, Workspace};
+use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
 use alpheus_demon::config::BarConfig;
+use alpheus_demon::launcher::config::LauncherConfig;
+use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
+use alpheus_demon::launcher::history::History;
+use alpheus_demon::launcher::input::Key;
+use alpheus_demon::launcher::matching::Mode;
+use alpheus_demon::launcher::model::{Launcher, Outcome};
+use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
+use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::sources::dbus::zbus_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
@@ -387,4 +395,118 @@ fn eprint_forbidden_outside_tests() {
             assert!(!prod.contains(word), "{word} (panics on EPIPE) in {}: use crate::log::write", p.display());
         }
     }
+}
+
+fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&str, &str)]) -> DesktopEntry {
+    DesktopEntry {
+        id: id.into(),
+        path: PathBuf::from(format!("/usr/share/applications/{id}")),
+        name: name.into(),
+        generic_name: None,
+        comment: None,
+        keywords: vec![],
+        icon: None,
+        exec: exec.into(),
+        terminal,
+        startup_wm_class: None,
+        actions: actions.iter().map(|(n, e)| DesktopAction { key: n.to_lowercase(), name: n.to_string(), exec: e.to_string() }).collect(),
+    }
+}
+
+/// Every activation the launcher can produce — every result of every mode,
+/// Enter and Ctrl+Enter, typed shell text, under both spawners — only runs
+/// the shapes of the allowlist (Global Constraints): an app's argv, alone
+/// or in its systemd scope, after the terminal for Terminal=true; a $PATH
+/// command; `sh -c` only from the Commands mode; the focus template, never
+/// wrapped. And each shape is reached.
+#[test]
+fn every_launcher_activation_stays_on_the_allowlist() {
+    let catalog = Catalog {
+        apps: vec![
+            launcher_app("org.mozilla.firefox.desktop", "Firefox", "firefox %u", false, &[("New Window", "firefox --new-window %u")]),
+            launcher_app("btop.desktop", "btop++", "btop", true, &[]),
+            launcher_app("files.desktop", "Files", "nautilus --new-window", false, &[]),
+        ],
+        commands: vec!["htop".into(), "nvim".into()],
+    };
+    let toplevel = |selector: &str| Toplevel {
+        selector: selector.into(),
+        class: "firefox".into(),
+        title: "t".into(),
+        workspace: "1".into(),
+        focused: false,
+    };
+    let windows = vec![toplevel("address:0x583d9c60da90"), toplevel("id:12")];
+    // Every program the fixture may start, as executable stubs on a $PATH of
+    // its own (never run: the executor is fake).
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh"] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path_dirs = [bin.clone()];
+    let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window", "htop", "nvim"];
+    let terminal_commands = ["foot -e htop", "foot -e nvim"];
+    let focus = ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"];
+    let scope = format!("{} ", SYSTEMD_RUN.join(" "));
+    let mut seen = Vec::new();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for mode in Mode::CYCLE {
+            let fresh = || {
+                let mut l = Launcher::for_apps(LauncherConfig::default(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                l.click_mode(mode);
+                l
+            };
+            let mut outcomes = Vec::new();
+            let n = fresh().results.len();
+            for i in 0..n {
+                for secondary in [false, true] {
+                    outcomes.push((fresh().click(i, secondary), mode));
+                }
+            }
+            let mut typed = fresh();
+            for c in "ls -la".chars() {
+                typed.key(Key::Char(c));
+            }
+            outcomes.push((typed.key(Key::Enter), mode));
+            outcomes.push((typed.key(Key::CtrlEnter), mode));
+            for (o, mode) in outcomes {
+                let Outcome::Activate(a) = o else { continue };
+                let fake = FakeExecutor::new();
+                let mut l = fresh();
+                let _ = perform(&mut l, a, &RunContext { exec: &fake, spawner, history_path: None, path_dirs: &path_dirs });
+                for c in fake.calls() {
+                    assert!(!c.to_lowercase().contains("dpms"), "{c}");
+                    let unwrapped = c.strip_prefix(&scope).unwrap_or(&c);
+                    let shape = if focus.contains(&c.as_str()) {
+                        "focus"
+                    } else if unwrapped.starts_with("wm-set") {
+                        panic!("the focus template wrapped or altered: {c}")
+                    } else if apps.contains(&unwrapped) {
+                        "program"
+                    } else if terminal_commands.contains(&unwrapped) {
+                        assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
+                        "terminal command"
+                    } else if let Some(text) = unwrapped.strip_prefix("sh -c ").or_else(|| unwrapped.strip_prefix("foot -e sh -c ")) {
+                        assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
+                        assert_eq!(text, "ls -la", "only typed text goes through the shell: {c}");
+                        if unwrapped.starts_with("sh") { "shell" } else { "terminal shell" }
+                    } else {
+                        panic!("command outside the allowlist: {c}")
+                    };
+                    seen.push((shape, c.starts_with(&scope)));
+                }
+            }
+        }
+    }
+    for expected in
+        [("program", true), ("program", false), ("terminal command", true), ("shell", true), ("terminal shell", false), ("focus", false)]
+    {
+        assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
+    }
+    assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+    let _ = std::fs::remove_dir_all(&bin);
 }

@@ -44,7 +44,7 @@ fn neighbor<'a>(bar: &'a Bar, output: &str, next: bool) -> Option<&'a Workspace>
 /// single pass over `template` (the bar.toml text, never the
 /// already-substituted result): a value that would literally contain a
 /// placeholder (unlikely, but possible) is never run back through the mill.
-fn substitute(template: &str, values: &[(&str, &str)]) -> String {
+pub(crate) fn substitute(template: &str, values: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     'next: while let Some(i) = rest.find('{') {
