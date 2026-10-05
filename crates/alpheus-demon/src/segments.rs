@@ -26,6 +26,8 @@ pub const NETWORK_OTHER: char = '\u{f059f}'; // md-web
 pub const OFFLINE: char = '\u{f0c9b}'; // md-network_off
 pub const BLUETOOTH: char = '\u{f00af}'; // md-bluetooth
 pub const BLUETOOTH_CONNECTED: char = '\u{f00b1}'; // md-bluetooth_connect
+/// The launcher's button, left of the workspaces.
+pub const LAUNCHER: char = '\u{f0349}'; // md-magnify
 
 /// The volume's mini-gauge (spec § 2): one cell per sixth.
 pub const GAUGE: [char; 6] = ['▁', '▃', '▅', '▆', '▇', '▇'];
@@ -60,6 +62,11 @@ fn trim_name(name: &str) -> &str {
 /// Gauge cells lit for `percent` (0 to 6, full beyond 100 %).
 pub fn gauge_cells(percent: u8) -> usize {
     (usize::from(percent) * GAUGE.len()).div_ceil(100).min(GAUGE.len())
+}
+
+/// The launcher's button: always shown, one click zone (spec § 2).
+pub(crate) fn launcher() -> Segment {
+    module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
 }
 
 pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
@@ -431,6 +438,15 @@ mod tests {
         assert_eq!(blank.width(), 1, "icon alone, no leading space either");
     }
 
+    #[test]
+    fn launcher_button_is_one_glyph_and_one_click_zone() {
+        let s = launcher();
+        assert_eq!(draw(&s), ("\u{f0349}".into(), ".".into()));
+        assert_eq!(s.width(), 1, "one cell, like the other icons");
+        assert_eq!(s.target, Some(Target::Module(ModuleId::Launcher)));
+        assert_eq!(crate::grid::text_width(&LAUNCHER.to_string()), 1);
+    }
+
     fn three_modules_bar() -> Bar {
         let mut b = Bar::new(BarConfig::default());
         b.config.modules =
@@ -672,8 +688,10 @@ mod tests {
         // Paths spelled out: `Battery`, `Resources`, `Volume` are also system types here.
         let (window, volume, network, bluetooth, battery, resources) =
             (ModuleId::Window, ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth, ModuleId::Battery, ModuleId::Resources);
+        let launcher = ModuleId::Launcher;
         let b = full_bar();
         let marks = [
+            (launcher, "\u{f0349}"),
             (window, "Web page"),
             (volume, "\u{f057e}"),
             (network, "\u{f0200}"),
@@ -685,20 +703,28 @@ mod tests {
             let t = b.grid("HDMI-A-1", w).text();
             marks.iter().filter(|(_, s)| t.contains(s)).map(|(m, _)| *m).collect::<Vec<_>>()
         };
-        assert_eq!(shown(160), [window, volume, network, bluetooth, battery, resources]);
-        assert_eq!(shown(120), [window, volume, network, bluetooth, battery], "resources leave first");
+        // The launcher button and its separator (4 cells) leave last of
+        // all: every other threshold sits 4 cells further than without it.
+        const BUTTON: u16 = 4;
+        assert_eq!(shown(160 + BUTTON), [launcher, window, volume, network, bluetooth, battery, resources]);
+        assert_eq!(shown(120 + BUTTON), [launcher, window, volume, network, bluetooth, battery], "resources leave first");
         // Each width pins one more step of REMOVAL's order; a swap inside it
-        // (title/Bluetooth, Bluetooth/network or volume/battery) turns one
-        // of these red (see the "prove it bites" mutations).
-        assert_eq!(shown(90), [volume, network, bluetooth, battery], "then the title");
-        assert_eq!(shown(70), [volume, network, battery], "then Bluetooth");
-        assert_eq!(shown(60), [volume, battery], "then network");
-        assert_eq!(shown(50), [battery], "then volume");
-        assert_eq!(shown(40), Vec::<ModuleId>::new(), "then battery");
-        for w in [160u16, 120, 90, 70, 60, 50, 40] {
+        // (title/Bluetooth, Bluetooth/network, volume/battery or
+        // battery/launcher) turns one of these red (see the "prove it bites"
+        // mutations).
+        assert_eq!(shown(90 + BUTTON), [launcher, volume, network, bluetooth, battery], "then the title");
+        assert_eq!(shown(70 + BUTTON), [launcher, volume, network, battery], "then Bluetooth");
+        assert_eq!(shown(60 + BUTTON), [launcher, volume, battery], "then network");
+        assert_eq!(shown(50 + BUTTON), [launcher, battery], "then volume");
+        assert_eq!(shown(40 + BUTTON), [launcher], "then battery");
+        assert_eq!(shown(40), [launcher], "the button still fits whole");
+        assert_eq!(shown(39), Vec::<ModuleId>::new(), "the launcher button last");
+        for w in [160u16, 120, 90, 70, 60, 50, 40].map(|w| w + BUTTON).into_iter().chain([40, 39]) {
             let g = b.grid("HDMI-A-1", w);
             assert_eq!(g.width(), w);
-            assert!(g.text().ends_with(" 14:05 ") && g.text().contains(" 4!····+ "), "workspaces and clock whole at {w}: {}", g.text());
+            let t = g.text();
+            assert!(w < 40 || t.starts_with(" \u{f0349} │ "), "launcher button whole and first at {w}: {t}");
+            assert!(t.ends_with(" 14:05 ") && t.contains(" 4!····+ "), "workspaces and clock whole at {w}: {t}");
         }
         insta::assert_snapshot!("full_160", snapshot(&b.grid("HDMI-A-1", 160)));
         insta::assert_snapshot!("full_120", snapshot(&b.grid("HDMI-A-1", 120)));

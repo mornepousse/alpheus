@@ -54,6 +54,17 @@ fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
     }
 }
 
+/// Same bar drawing from the compositor: its workspaces and focused window.
+/// The launcher's `toplevels` are not drawn: a background title change
+/// (niri publishes every one) is stored without a redraw.
+fn same_drawing(a: &Feed<CompositorState>, b: &Feed<CompositorState>) -> bool {
+    match (a, b) {
+        (Feed::Ready(a), Feed::Ready(b)) => a.workspaces == b.workspaces && a.window == b.window,
+        (Feed::Waiting, Feed::Waiting) | (Feed::Down, Feed::Down) => true,
+        _ => false,
+    }
+}
+
 impl Bar {
     pub fn new(config: BarConfig) -> Bar {
         Bar {
@@ -71,7 +82,16 @@ impl Bar {
     /// Applies a message; true if the display may have changed.
     pub fn apply(&mut self, m: Msg) -> bool {
         match m {
-            Msg::Compositor(e) => update(&mut self.compositor, e),
+            Msg::Compositor(e) => {
+                let new = match e {
+                    Some(s) => Feed::Ready(s),
+                    None => Feed::Down,
+                };
+                let redraw = !same_drawing(&self.compositor, &new);
+                // Always kept: an open launcher reads the toplevels from here.
+                self.compositor = new;
+                redraw
+            }
             Msg::Clock(h) => {
                 if self.clock == Some(h) {
                     false
@@ -110,6 +130,22 @@ mod tests {
         assert!(b.apply(Msg::Clock(H)));
         assert!(!b.apply(Msg::Clock(H)));
         assert_eq!(b.clock, Some(H));
+    }
+
+    #[test]
+    fn a_toplevels_only_change_is_stored_without_a_redraw() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(b.apply(Msg::Compositor(Some(example()))));
+        let mut e = example();
+        e.toplevels[0].title = "vim notes.md".into();
+        assert!(!b.apply(Msg::Compositor(Some(e.clone()))), "a background title: the bar draws the same");
+        assert_eq!(b.compositor, Feed::Ready(e.clone()), "but the launcher's list is up to date");
+        e.toplevels.pop();
+        assert!(!b.apply(Msg::Compositor(Some(e.clone()))), "a window closed elsewhere: same drawing");
+        e.window = None;
+        assert!(b.apply(Msg::Compositor(Some(e.clone()))), "the focused window drawn: redraw");
+        e.workspaces[0].windows = 3;
+        assert!(b.apply(Msg::Compositor(Some(e))), "workspaces drawn: redraw");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! initial state nor past urgency: state comes from the JSON responses,
 //! urgency from `urgent>>` events alone.
 
-use super::{CompositorState, Window, Workspace};
+use super::{CompositorState, Toplevel, Window, Workspace};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -91,6 +91,8 @@ pub fn parse_line(line: &str) -> Event {
 #[derive(Deserialize)]
 struct WorkspaceRef {
     id: i64,
+    #[serde(default)]
+    name: String,
 }
 
 #[derive(Deserialize)]
@@ -111,10 +113,38 @@ struct RawWorkspace {
     windows: u16,
 }
 
+fn yes() -> bool {
+    true
+}
+
+/// Never focused (or a Hyprland too old to say): after every other window.
+fn never_focused() -> i64 {
+    i64::MAX
+}
+
 #[derive(Deserialize)]
 struct Client {
     address: String,
     workspace: WorkspaceRef,
+    #[serde(default = "yes")]
+    mapped: bool,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    title: String,
+    /// 0: the focused window, 1: the one before…
+    #[serde(rename = "focusHistoryID", default = "never_focused")]
+    focus_history: i64,
+}
+
+/// A mapped window outside special workspaces, for the launcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClientInfo {
+    /// Normalized (see `address`).
+    address: String,
+    class: String,
+    title: String,
+    workspace: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -144,6 +174,8 @@ pub struct Snapshot {
     /// Window address → id of its workspace.
     windows: BTreeMap<String, i64>,
     active: Option<(String, Window)>,
+    /// Mapped windows outside special workspaces, most recently focused first.
+    clients: Vec<ClientInfo>,
 }
 
 impl Snapshot {
@@ -174,7 +206,19 @@ impl Snapshot {
                 focused: m.is_some_and(|m| m.focused),
             });
         }
-        out.windows = clients.into_iter().map(|c| (address(&c.address), c.workspace.id)).collect();
+        out.windows = clients.iter().map(|c| (address(&c.address), c.workspace.id)).collect();
+        let mut listed: Vec<&Client> = clients.iter().filter(|c| c.mapped && !c.workspace.name.starts_with("special:")).collect();
+        // Hyprland writes -1 for a window never focused: after every focused one.
+        listed.sort_by_key(|c| if c.focus_history < 0 { i64::MAX } else { c.focus_history });
+        out.clients = listed
+            .into_iter()
+            .map(|c| ClientInfo {
+                address: address(&c.address),
+                class: c.class.clone(),
+                title: c.title.clone(),
+                workspace: c.workspace.name.clone(),
+            })
+            .collect();
         if !active.address.is_empty() || !active.class.is_empty() {
             out.active = Some((address(&active.address), Window { class: active.class, title: active.title }));
         }
@@ -232,18 +276,31 @@ impl Model {
             }
             Event::Focus(a) => {
                 self.active = a.clone();
+                // Most recently focused first, like focusHistoryID at the next
+                // reread: the launcher lists the previous window first.
+                if let Some(i) = a.as_ref().and_then(|a| self.snapshot.clients.iter().position(|c| &c.address == a)) {
+                    let c = self.snapshot.clients.remove(i);
+                    self.snapshot.clients.insert(0, c);
+                }
                 match a {
                     Some(a) if self.urgent.remove(a) => Effect::Changed,
                     _ => Effect::Nothing, // the title arrives through `activewindow`
                 }
             }
-            Event::Title { address, title } => match (&self.active, &mut self.window) {
-                (Some(a), Some(w)) if a == address && &w.title != title => {
-                    w.title = title.clone();
-                    Effect::Changed
+            Event::Title { address, title } => {
+                // Any window's title is kept for the launcher's list, silently:
+                // it is published with the next state, never an extra wake-up.
+                if let Some(c) = self.snapshot.clients.iter_mut().find(|c| &c.address == address) {
+                    c.title.clone_from(title);
                 }
-                _ => Effect::Nothing,
-            },
+                match (&self.active, &mut self.window) {
+                    (Some(a), Some(w)) if a == address && &w.title != title => {
+                        w.title = title.clone();
+                        Effect::Changed
+                    }
+                    _ => Effect::Nothing,
+                }
+            }
             Event::Urgent(a) => {
                 if self.active.as_ref() != Some(a) && self.urgent.insert(a.clone()) {
                     Effect::Changed
@@ -264,7 +321,23 @@ impl Model {
             .zip(&self.snapshot.ids)
             .map(|(w, id)| Workspace { urgent: urgent.contains(id), ..w.clone() })
             .collect();
-        CompositorState { workspaces, window: self.window.clone() }
+        let mut toplevels: Vec<Toplevel> = self
+            .snapshot
+            .clients
+            .iter()
+            .map(|c| Toplevel {
+                selector: format!("address:0x{}", c.address),
+                class: c.class.clone(),
+                title: c.title.clone(),
+                workspace: c.workspace.clone(),
+                focused: self.active.as_deref() == Some(c.address.as_str()),
+            })
+            .collect();
+        if let Some(i) = toplevels.iter().position(|t| t.focused) {
+            let focused = toplevels.remove(i);
+            toplevels.push(focused);
+        }
+        CompositorState { workspaces, window: self.window.clone(), toplevels }
     }
 }
 
@@ -370,6 +443,81 @@ mod tests {
         let r: Vec<(&str, &str)> = e.workspaces.iter().map(|w| (w.name.as_str(), w.reference.as_str())).collect();
         assert_eq!(r, [("1", "1"), ("web", "name:web")]);
         assert_eq!(e.window, None);
+    }
+
+    /// (selector, class, title, workspace, focused) of each toplevel.
+    fn toplevels(e: &CompositorState) -> Vec<(&str, &str, &str, &str, bool)> {
+        e.toplevels.iter().map(|t| (t.selector.as_str(), t.class.as_str(), t.title.as_str(), t.workspace.as_str(), t.focused)).collect()
+    }
+
+    #[test]
+    fn toplevels_from_clients_focused_last() {
+        let e = model_from_fixture().state();
+        assert_eq!(
+            toplevels(&e),
+            [
+                ("address:0x583d9d5fd540", "firefox", "Page web — Mozilla Firefox", "3", false),
+                ("address:0x583d9c701c60", "Alacritty", "~/projets — zsh", "3", false),
+                ("address:0x583d9c60da90", "firefox", "Page web — Mozilla Firefox", "2", true),
+            ],
+            "focusHistoryID order (1, 2), the focused one (0) last"
+        );
+    }
+
+    #[test]
+    fn focus_moves_the_window_last_without_a_reread() {
+        let mut m = model_from_fixture();
+        assert_eq!(m.apply(&Event::Focus(Some("583d9c701c60".into()))), Effect::Nothing);
+        let e = m.state();
+        let order: Vec<&str> = e.toplevels.iter().map(|t| t.selector.as_str()).collect();
+        assert_eq!(order, ["address:0x583d9c60da90", "address:0x583d9d5fd540", "address:0x583d9c701c60"], "previously focused first");
+        assert!(e.toplevels[2].focused && !e.toplevels[0].focused);
+        // A second focus change: the window focused just before comes first
+        // (alt-tab), not the snapshot's old order.
+        assert_eq!(m.apply(&Event::Focus(Some("583d9d5fd540".into()))), Effect::Nothing);
+        let e = m.state();
+        let order: Vec<&str> = e.toplevels.iter().map(|t| t.selector.as_str()).collect();
+        assert_eq!(order, ["address:0x583d9c701c60", "address:0x583d9c60da90", "address:0x583d9d5fd540"], "most recent first");
+    }
+
+    #[test]
+    fn unmapped_and_special_clients_are_not_listed() {
+        let clients = r#"[
+            {"address": "0x1e", "mapped": true, "workspace": {"id": 1, "name": "1"}, "class": "foot", "title": "e", "focusHistoryID": -1},
+            {"address": "0x1a", "mapped": true, "workspace": {"id": 1, "name": "1"}, "class": "foot", "title": "a", "focusHistoryID": 1},
+            {"address": "0x1b", "mapped": false, "workspace": {"id": 1, "name": "1"}, "class": "foot", "title": "b", "focusHistoryID": 2},
+            {"address": "0x1c", "mapped": true, "workspace": {"id": -98, "name": "special:magic"}, "class": "foot", "title": "c", "focusHistoryID": 3},
+            {"address": "0x1d", "workspace": {"id": -1337, "name": "web"}, "class": "firefox", "title": "d"}
+        ]"#;
+        let monitors = r#"[{"name": "eDP-1", "focused": true, "activeWorkspace": {"id": 1, "name": "1"}}]"#;
+        let workspaces = r#"[{"id": 1, "name": "1", "monitor": "eDP-1", "windows": 2}]"#;
+        let s = Snapshot::parse(&Responses { monitors, workspaces, clients, active: "{}" }).unwrap();
+        let mut m = Model::default();
+        m.set_snapshot(s);
+        let e = m.state();
+        assert_eq!(
+            toplevels(&e),
+            [
+                ("address:0x1a", "foot", "a", "1", false),
+                ("address:0x1e", "foot", "e", "1", false),
+                ("address:0x1d", "firefox", "d", "web", false)
+            ],
+            "unmapped and special:magic left out; never focused (-1) or no mapped/focusHistoryID: listed, last"
+        );
+    }
+
+    #[test]
+    fn a_background_title_change_is_kept_silently() {
+        let mut m = model_from_fixture();
+        let e = Event::Title { address: "583d9c701c60".into(), title: "vim notes.md".into() };
+        assert_eq!(m.apply(&e), Effect::Nothing, "not the active window: no extra publication");
+        let s = m.state();
+        let t = s.toplevels.iter().find(|t| t.selector == "address:0x583d9c701c60").unwrap();
+        assert_eq!(t.title, "vim notes.md", "published with the next state");
+        assert_eq!(s.window.unwrap().title, "Page web — Mozilla Firefox", "the bar's title unchanged");
+        let e = Event::Title { address: "583d9c60da90".into(), title: "Other".into() };
+        assert_eq!(m.apply(&e), Effect::Changed, "the active window's title: as before");
+        assert_eq!(m.state().toplevels[2].title, "Other");
     }
 
     #[test]

@@ -25,6 +25,7 @@ fn every_click_only_runs_the_workspace_command() {
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
+        toplevels: vec![],
     })));
     let fake = FakeExecutor::new();
     for output in ["eDP-1", "HDMI-A-1"] {
@@ -51,6 +52,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
+        toplevels: vec![],
     })));
     b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }) })));
     b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));

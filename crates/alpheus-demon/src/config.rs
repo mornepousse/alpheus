@@ -3,7 +3,7 @@
 //! setting is read once at startup and costs nothing if unused.
 //!
 //! ```toml
-//! modules = ["workspaces", "window", "clock"]   # order and presence, left to right
+//! modules = ["launcher", "workspaces", "window", "clock"]   # order and presence, left to right
 //! height = 22                                   # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"       # absent: a monospace font from the system
@@ -36,6 +36,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModuleId {
+    /// The launcher's button (opens the launcher on a left click).
+    Launcher,
     Workspaces,
     Window,
     Media,
@@ -50,7 +52,8 @@ pub enum ModuleId {
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 11] = [
+    pub const ALL: [ModuleId; 12] = [
+        ModuleId::Launcher,
         ModuleId::Workspaces,
         ModuleId::Window,
         ModuleId::Media,
@@ -67,6 +70,7 @@ impl ModuleId {
     /// Name in bar.toml.
     pub fn name(self) -> &'static str {
         match self {
+            ModuleId::Launcher => "launcher",
             ModuleId::Workspaces => "workspaces",
             ModuleId::Window => "window",
             ModuleId::Media => "media",
@@ -342,9 +346,23 @@ mod tests {
         let (c, w) = BarConfig::load(Path::new("/nonexistent/bar.toml"));
         assert_eq!((c, w), (BarConfig::default(), None));
         let d = BarConfig::default();
-        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Workspaces), Some(&ModuleId::Clock)));
+        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Launcher), Some(&ModuleId::Clock)));
         assert_eq!((d.height, d.font.size, d.font.fallback.len()), (22, 14.0, 0));
         assert_eq!(d.workspaces.command, ["wm-set", "workspace", "{workspace}", "{output}"]);
+    }
+
+    #[test]
+    fn launcher_module_first_by_default_and_removable() {
+        assert_eq!(ModuleId::ALL[0], ModuleId::Launcher);
+        assert_eq!(ModuleId::Launcher.name(), "launcher");
+        let c = BarConfig::from_text("modules = [\"clock\", \"launcher\"]").unwrap();
+        assert_eq!(c.modules, vec![ModuleId::Clock, ModuleId::Launcher], "named \"launcher\" in bar.toml, placed anywhere");
+        let c = BarConfig::from_text("modules = [\"workspaces\", \"clock\"]").unwrap();
+        assert!(!c.modules.contains(&ModuleId::Launcher), "removable");
+        for m in ModuleId::ALL {
+            let parsed = BarConfig::from_text(&format!("modules = [\"{}\"]", m.name())).unwrap();
+            assert_eq!(parsed.modules, vec![m], "name() is the bar.toml name of {m:?}");
+        }
     }
 
     #[test]

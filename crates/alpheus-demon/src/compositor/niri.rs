@@ -6,7 +6,7 @@
 //! types are not stable from one version to another (hence a hand-rolled
 //! parser rather than the niri-ipc crate).
 
-use super::{CompositorState, Window, Workspace};
+use super::{CompositorState, Toplevel, Window, Workspace};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -46,6 +46,9 @@ struct WindowN {
 pub struct Model {
     workspaces: BTreeMap<u64, WorkspaceN>,
     windows: BTreeMap<u64, WindowN>,
+    /// Ids of the windows that had focus, most recent first (the launcher
+    /// lists the previous window first); only ids still in `windows`.
+    recent: Vec<u64>,
 }
 
 fn field_u64(body: &Value, key: &str) -> Result<u64, String> {
@@ -95,6 +98,10 @@ impl Model {
             "WindowsChanged" => {
                 let l: Vec<WindowN> = read(name, body.get("windows"))?;
                 self.windows = l.into_iter().map(|w| (w.id, w)).collect();
+                self.recent.retain(|id| self.windows.contains_key(id));
+                if let Some(id) = self.windows.values().find(|w| w.is_focused).map(|w| w.id) {
+                    self.focus(id);
+                }
                 Ok(true)
             }
             "WindowOpenedOrChanged" => {
@@ -104,17 +111,26 @@ impl Model {
                         g.is_focused = false;
                     }
                 }
-                self.windows.insert(w.id, w);
+                let (id, focused) = (w.id, w.is_focused);
+                self.windows.insert(id, w);
+                if focused {
+                    self.focus(id);
+                }
                 Ok(true)
             }
             "WindowClosed" => {
-                self.windows.remove(&field_u64(body, "id")?);
+                let id = field_u64(body, "id")?;
+                self.windows.remove(&id);
+                self.recent.retain(|r| *r != id);
                 Ok(true)
             }
             "WindowFocusChanged" => {
                 let id = body.get("id").and_then(Value::as_u64); // null: no more focus
                 for w in self.windows.values_mut() {
                     w.is_focused = Some(w.id) == id;
+                }
+                if let Some(id) = id {
+                    self.focus(id);
                 }
                 Ok(true)
             }
@@ -126,6 +142,14 @@ impl Model {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    /// `id` now has focus: first of `recent` (an unknown id is not kept).
+    fn focus(&mut self, id: u64) {
+        self.recent.retain(|r| *r != id);
+        if self.windows.contains_key(&id) {
+            self.recent.insert(0, id);
         }
     }
 
@@ -154,7 +178,29 @@ impl Model {
             .values()
             .find(|w| w.is_focused)
             .map(|w| Window { class: w.app_id.clone().unwrap_or_default(), title: w.title.clone().unwrap_or_default() });
-        CompositorState { workspaces, window }
+        // The launcher's window list: most recently focused first (never
+        // focused ones after, by id), then the focused one moved last.
+        let workspace_name = |id: Option<u64>| {
+            id.and_then(|id| self.workspaces.get(&id)).map(|w| w.name.clone().unwrap_or_else(|| w.idx.to_string())).unwrap_or_default()
+        };
+        let rank = |id: u64| self.recent.iter().position(|r| *r == id).unwrap_or(usize::MAX);
+        let mut listed: Vec<&WindowN> = self.windows.values().collect();
+        listed.sort_by_key(|w| rank(w.id)); // stable: by id within "never focused"
+        let mut toplevels: Vec<Toplevel> = listed
+            .into_iter()
+            .map(|w| Toplevel {
+                selector: format!("id:{}", w.id),
+                class: w.app_id.clone().unwrap_or_default(),
+                title: w.title.clone().unwrap_or_default(),
+                workspace: workspace_name(w.workspace_id),
+                focused: w.is_focused,
+            })
+            .collect();
+        if let Some(i) = toplevels.iter().position(|t| t.focused) {
+            let focused = toplevels.remove(i);
+            toplevels.push(focused);
+        }
+        CompositorState { workspaces, window, toplevels }
     }
 }
 
@@ -212,6 +258,60 @@ mod tests {
         assert!(!e.workspaces[2].visible, "only one active workspace per output");
         assert!(e.workspaces[0].visible, "the other output keeps its own");
         assert_eq!(after(13).workspaces[2].windows, 1);
+    }
+
+    /// (selector, class, title, workspace, focused) of each toplevel.
+    fn toplevels(e: &CompositorState) -> Vec<(String, String, String, String, bool)> {
+        e.toplevels.iter().map(|t| (t.selector.clone(), t.class.clone(), t.title.clone(), t.workspace.clone(), t.focused)).collect()
+    }
+
+    fn t(selector: &str, class: &str, title: &str, workspace: &str, focused: bool) -> (String, String, String, String, bool) {
+        (selector.into(), class.into(), title.into(), workspace.into(), focused)
+    }
+
+    #[test]
+    fn toplevels_most_recent_first_focused_last() {
+        assert_eq!(
+            toplevels(&after(3)),
+            [
+                t("id:12", "firefox", "Page web — Mozilla Firefox", "web", false),
+                t("id:13", "firefox", "Autre page — Mozilla Firefox", "web", false),
+                t("id:11", "Alacritty", "~/projets — zsh", "1", true),
+            ],
+            "workspace by name, else its index"
+        );
+        let order = |n: usize| after(n).toplevels.iter().map(|t| t.selector.clone()).collect::<Vec<_>>();
+        assert_eq!(order(9), ["id:11", "id:13", "id:12"], "focus moved to 12");
+        assert_eq!(order(11), ["id:12", "id:11", "id:13", "id:14"], "a new focused window: 12, focused before it, first");
+        assert_eq!(order(13), ["id:12", "id:11", "id:14"], "13 closed");
+        assert_eq!(after(11).toplevels[3].workspace, "2", "unnamed workspace: its idx");
+    }
+
+    #[test]
+    fn two_focus_changes_list_the_previous_window_first() {
+        let mut m = Model::default();
+        let window =
+            |id: u64, focused: bool| format!(r#"{{"id":{id},"title":"w{id}","app_id":"foot","workspace_id":1,"is_focused":{focused}}}"#);
+        m.apply_line(&format!(r#"{{"WindowsChanged":{{"windows":[{},{},{}]}}}}"#, window(1, true), window(2, false), window(3, false)))
+            .unwrap();
+        let order = |m: &Model| m.state().toplevels.iter().map(|t| t.selector.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&m), ["id:2", "id:3", "id:1"], "never focused: by id; the focused one last");
+        m.apply_line(r#"{"WindowFocusChanged":{"id":3}}"#).unwrap();
+        m.apply_line(r#"{"WindowFocusChanged":{"id":2}}"#).unwrap();
+        assert_eq!(order(&m), ["id:3", "id:1", "id:2"], "3 had focus just before 2: first (alt-tab), not by id");
+        m.apply_line(&format!(r#"{{"WindowOpenedOrChanged":{{"window":{}}}}}"#, window(1, true))).unwrap();
+        assert_eq!(order(&m), ["id:2", "id:3", "id:1"], "focus through WindowOpenedOrChanged too");
+        m.apply_line(r#"{"WindowClosed":{"id":2}}"#).unwrap();
+        m.apply_line(r#"{"WindowFocusChanged":{"id":99}}"#).unwrap();
+        assert_eq!(order(&m), ["id:1", "id:3"], "closed and unknown ids are not kept");
+    }
+
+    #[test]
+    fn a_window_on_an_unknown_workspace_is_listed_without_one() {
+        let mut m = Model::default();
+        m.apply_line(r#"{"WindowsChanged":{"windows":[{"id":5,"title":"x","app_id":"foot","workspace_id":99,"is_focused":false}]}}"#)
+            .unwrap();
+        assert_eq!(toplevels(&m.state()), [t("id:5", "foot", "x", "", false)]);
     }
 
     #[test]
