@@ -36,10 +36,12 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |
-| Launcher, closed (socket only, nothing else resident) | +0 MB | one listening fd; no thread, timer or keyboard exists while closed |
-| Launcher, open (typed query, keyboard bound) | +1.9–2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs` |
-| Launcher, open latency | ≈ 2.0 ms median (max 4.3–4.5 ms) | request accepted → first frame committed, 20 opens |
-| Launcher, 100,000-line dmenu | +6.1–6.3 MB open, back to +0.3–0.4 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel |
+| Launcher feature, linked in but never opened (no `launcher` in `modules` even) | +0.3–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus `libxkbcommon.so` itself (≈ 60 KB of it, `/proc/<pid>/smaps`); measured `c256d33` vs this delivery, release, back to back — a real cost, not "noise" |
+| Launcher, closed (socket only, nothing else resident) on top of that | +0 MB | no thread, timer or keyboard exists while closed |
+| Launcher, open (typed query, keyboard bound) | +1.8–1.9 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs` |
+| Launcher, open latency | ≈ 2.7–3.0 ms median (max 4.6–5.3 ms) | request accepted → first frame committed, 20 opens |
+| Launcher, 50 open/close cycles | +0.1–0.3 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle |
+| Launcher, 100,000-line dmenu | +6.2–6.3 MB open, back to +0.3 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
@@ -147,7 +149,8 @@ A line of monospace characters on a solid background, modules separated by
 
 ![The alpheus bar, sample data, real font, built-in Catppuccin Mocha palette (zoomed ×2, split in two halves)](docs/images/bar.png)
 
-Shipped: **workspaces** (one dot per window, empty workspace dimmed, urgent
+Shipped: **launcher** (an icon that opens it, first module by default),
+**workspaces** (one dot per window, empty workspace dimmed, urgent
 in red, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **volume** (gauge, wheel ±5 %, right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its

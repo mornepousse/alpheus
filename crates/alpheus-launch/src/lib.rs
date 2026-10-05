@@ -41,7 +41,11 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --help]
   -h, --help              show this help
 
 Exit codes: 0 done or chosen, 1 menu cancelled, 2 error (another menu open,
-bad usage, no answer), 3 alpheus-demon not running (launcher unreachable).
+bad usage, no answer, the bar restarting mid-request), 3 alpheus-demon not
+running (launcher unreachable).
+
+--dmenu waits for a choice with no timeout of its own: as long as the
+person takes to pick a line, however long that is.
 ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]

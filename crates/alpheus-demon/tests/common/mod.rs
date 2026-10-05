@@ -3,6 +3,18 @@
 //! launched with its log. Nothing touches Mae's session: a temporary run
 //! directory, a cleared environment, neither WAYLAND_DISPLAY nor the
 //! session's signature.
+//!
+//! **Assumes NixOS.** `coreutils_dir()` (below) needs `cat` — and with it
+//! `sleep`/`mv`, the fake programs' other tools — to resolve, through
+//! `$PATH` and symlinks, into one shared coreutils derivation directory
+//! that also carries nothing session-specific (no `wm-set`, no
+//! `systemd-run`): true of any Nix-managed machine (`cat`, `sleep`, `mv`
+//! all come from the same `coreutils` package, one `/nix/store/…/bin`), not
+//! guaranteed on a distribution that splits these tools across separate
+//! packages or directories (e.g. a minimal busybox `/bin`). This harness
+//! has only ever run on Mae's NixOS workstation; a non-NixOS contributor
+//! hitting `coreutils_dir`'s assertions should read them as "this harness
+//! doesn't know your distribution's layout yet", not as a daemon bug.
 #![allow(dead_code)]
 
 use alpheus_commun::launcher_ipc::{Reply, Request, socket_path};
