@@ -23,9 +23,11 @@ pub enum Key {
     Escape,
     Tab,
     BackTab,
+    /// No binding (the preview panel always shows, nothing left to toggle — Mae, 2026-10-05):
+    /// `translate` still reports it, `model.rs` ignores it, so a future rebind needs only one
+    /// side changed.
     Left,
     Right,
-    CtrlSpace,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -37,9 +39,15 @@ pub struct Mods {
 }
 
 /// xkb keysym (already layout-resolved by xkbcommon) + its text → Key.
-/// Ctrl+n/p/u/w/Space/Enter by keysym; Shift+Tab or ISO_Left_Tab → BackTab;
+/// Ctrl+n/p/u/w/Enter by keysym; Shift+Tab or ISO_Left_Tab → BackTab;
 /// KP_Enter = Enter; printable text without Ctrl/Alt/Logo → Char (control
 /// characters never); anything else → None.
+///
+/// The Ctrl shortcuts match the *Latin* keysyms (`key::n`/`key::N`, …) deliberately, the same
+/// way the Dvorak case below does: Ctrl+letter is conventionally bound to the Latin letter's
+/// keysym on Linux regardless of the active layout (xkbcommon's own "Ctrl falls back to the
+/// ASCII keysym" behaviour). A layout that does not follow this convention would miss these
+/// shortcuts; nothing here can detect that without more context than a pure function has.
 pub fn translate(sym: Keysym, utf8: Option<&str>, mods: Mods) -> Option<Key> {
     let raw = sym.raw();
     if mods.ctrl && !mods.alt && !mods.logo {
@@ -48,7 +56,6 @@ pub fn translate(sym: Keysym, utf8: Option<&str>, mods: Mods) -> Option<Key> {
             key::p | key::P => Some(Key::CtrlP),
             key::u | key::U => Some(Key::CtrlU),
             key::w | key::W => Some(Key::CtrlW),
-            key::space => Some(Key::CtrlSpace),
             key::Return | key::KP_Enter => Some(Key::CtrlEnter),
             _ => None,
         };
@@ -133,10 +140,10 @@ mod tests {
             assert_eq!(translate(Keysym::from_char(c), Some(&control), CTRL), Some(k), "Ctrl+{c}");
             assert_eq!(translate(Keysym::from_char(c.to_ascii_uppercase()), None, Mods { shift: true, ..CTRL }), Some(k), "Ctrl+Shift+{c}");
         }
-        assert_eq!(translate(sym(key::space), Some(" "), CTRL), Some(Key::CtrlSpace));
         assert_eq!(translate(sym(key::Return), None, CTRL), Some(Key::CtrlEnter));
         assert_eq!(translate(sym(key::KP_Enter), None, CTRL), Some(Key::CtrlEnter));
         assert_eq!(translate(Keysym::from_char('x'), Some("\u{18}"), CTRL), None, "an unbound Ctrl+key does nothing");
+        assert_eq!(translate(sym(key::space), Some(" "), CTRL), None, "Ctrl+Space: unbound (the preview toggle it drove is gone)");
         assert_eq!(translate(sym(key::Down), None, CTRL), Some(Key::Down), "Ctrl does not block navigation");
     }
 

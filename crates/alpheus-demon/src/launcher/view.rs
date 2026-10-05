@@ -43,7 +43,8 @@ impl BoxLayout {
 /// columns = BOX_COLUMNS (+ PREVIEW_COLUMNS + 1 when `preview` and the output has room), never more than
 /// output_columns - 2 nor less than MIN_COLUMNS (or the output width if smaller); list_rows =
 /// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (task 12
-/// passes `!script`, once per open); `render` fills it only when `Launcher::preview_visible`.
+/// passes `!script`, once per open); `render` always fills a reserved panel with the selected
+/// result (Mae, 2026-10-05 — there is no more toggle to gate it on).
 pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: bool, preview: bool) -> BoxLayout {
     let room = output_columns.saturating_sub(2);
     let wide = BOX_COLUMNS + PREVIEW_COLUMNS + 1;
@@ -536,9 +537,9 @@ mod tests {
 
     /// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
     /// selection moves, and the panel — once reserved — always shows the selected result; it
-    /// is never blank while one exists, whatever `Left`/`Right`/`Ctrl+Space` were last pressed
-    /// (the toggle still runs, `Launcher::preview_visible` still answers as before — task 8's
-    /// contract, untouched here — but the view no longer reads it to decide whether to fill).
+    /// is never blank while one exists. `Left`/`Right` (the model's own fix round removed the
+    /// toggle they used to drive, along with `Ctrl+Space`) are still recognised keys, now
+    /// simply ignored — pressing them changes nothing here either.
     #[test]
     fn the_panel_always_shows_the_selected_result() {
         let blank = " ".repeat(usize::from(PREVIEW_COLUMNS));
@@ -554,7 +555,7 @@ mod tests {
         let (b3, rows) = draw(&mut l, 120);
         assert_eq!(b3, b, "never narrower");
         assert!(panel(&rows, &b).iter().any(|t| t.contains("File Manager")), "no actions: still filled\n{}", snapshot(&rows));
-        l.key(Key::Left); // previously hid the preview; it must keep showing it now
+        l.key(Key::Left); // ignored now (it used to hide the preview)
         let (b4, rows) = draw(&mut l, 120);
         assert_eq!(b4, b, "still the same box");
         assert!(panel(&rows, &b).iter().any(|t| t.contains("File Manager")), "Left no longer blanks it\n{}", snapshot(&rows));
@@ -706,8 +707,7 @@ mod tests {
     #[test]
     fn narrow_output_drops_the_preview_and_truncates() {
         let mut l = launcher();
-        keys(&mut l, &[Key::Tab, Key::End]);
-        assert!(l.preview_visible());
+        keys(&mut l, &[Key::Tab, Key::End]); // a result selected: the panel would fill if there were room
         let (b, rows) = draw(&mut l, 40);
         assert_eq!((b.columns, b.preview_columns), (38, 0));
         insta::assert_snapshot!("narrow", snapshot(&rows));
@@ -754,17 +754,12 @@ mod tests {
         let lines = hostile.to_vec();
         for columns in [24u16, 40, 61, 99, 200] {
             for mode_keys in [&[][..], &[Key::Tab][..], &[Key::Tab, Key::Tab][..], &[Key::BackTab][..]] {
-                for preview in [false, true] {
-                    let mut l = Launcher::for_apps(LauncherConfig::default(), w.clone(), History::empty(200), NOW);
-                    l.set_catalog(c.clone());
-                    keys(&mut l, mode_keys);
-                    if preview {
-                        l.key(Key::CtrlSpace);
-                    }
-                    for _ in 0..l.results.len() {
-                        check(&mut l, columns);
-                        l.key(Key::Down);
-                    }
+                let mut l = Launcher::for_apps(LauncherConfig::default(), w.clone(), History::empty(200), NOW);
+                l.set_catalog(c.clone());
+                keys(&mut l, mode_keys);
+                for _ in 0..l.results.len() {
+                    check(&mut l, columns);
+                    l.key(Key::Down);
                 }
             }
             let mut s = Launcher::for_script(LauncherConfig::default(), Some(hostile[1].clone()), lines.clone());

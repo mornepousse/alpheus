@@ -1,8 +1,8 @@
 //! The launcher's state and every key rule, pure (spec § 2): the query,
 //! the mode (and the prefixes that jump to one), the selection and the
-//! visible window of results, the preview, what Enter and Ctrl+Enter
-//! activate. Wayland (task 12) feeds it keys and clicks and applies the
-//! `Outcome`; nothing here touches the session.
+//! visible window of results, what Enter and Ctrl+Enter activate.
+//! Wayland (task 12) feeds it keys and clicks and applies the `Outcome`;
+//! nothing here touches the session.
 
 use crate::compositor::Toplevel;
 use crate::launcher::config::LauncherConfig;
@@ -11,14 +11,6 @@ use crate::launcher::input::Key;
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::scan::Catalog;
 use std::path::PathBuf;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Preview {
-    /// Shown only for an app with desktop actions (Mae, Q5).
-    Auto,
-    Shown,
-    Hidden,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activation {
@@ -51,6 +43,16 @@ pub enum Outcome {
     Activate(Activation),
 }
 
+/// A `Source`'s stable identity (`Launcher::identity`), private: how the selection survives a
+/// refilter without pinning it to an index that a reshuffle can hand to a different item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Identity {
+    Window(String),
+    App(String),
+    Command(String),
+    Line(usize),
+}
+
 pub struct Launcher {
     pub config: LauncherConfig,
     pub mode: Mode,
@@ -58,12 +60,17 @@ pub struct Launcher {
     pub selected: usize,
     /// First visible result row.
     pub top: usize,
-    pub preview: Preview,
     /// Shown on the help line in the error style until the next key.
     pub message: Option<String>,
     pub prompt: Option<String>,
+    /// Changed only through `set_catalog`: assigning it directly would leave the ranker's
+    /// per-catalog facts (and the selection) stale — same reason as `windows` below.
     pub catalog: Option<Catalog>,
+    /// Changed only through `set_windows`: a direct assignment skips `ranker.forget_windows()`
+    /// and the identity-preserving reselection `set_windows` does (`Launcher::identity`).
     pub windows: Vec<Toplevel>,
+    /// Script mode only: set once by `for_script`, never mutated afterward (no `set_lines` —
+    /// the dmenu line list is fixed for the life of one open).
     pub lines: Vec<String>,
     /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
@@ -88,7 +95,6 @@ impl Launcher {
             query: String::new(),
             selected: 0,
             top: 0,
-            preview: Preview::Auto,
             message: None,
             prompt: None,
             catalog: None,
@@ -128,17 +134,35 @@ impl Launcher {
         self.mode == Mode::Script
     }
 
-    /// Refilters; keeps the selected Source if still present, else 0.
+    /// Refilters; keeps the selection on the same item if it is still present (by identity,
+    /// not by its old index — see `identity`), else 0.
     pub fn set_catalog(&mut self, catalog: Catalog) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.catalog = Some(catalog);
         self.ranker.forget();
-        self.refilter_keeping_selection();
+        self.refilter_keeping(kept);
     }
 
     pub fn set_windows(&mut self, windows: Vec<Toplevel>) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
         self.windows = windows;
-        self.ranker.forget();
-        self.refilter_keeping_selection();
+        self.ranker.forget_windows();
+        self.refilter_keeping(kept);
+    }
+
+    /// What makes a result the "same" one across a refilter, independent of its numeric index:
+    /// a window by its `Toplevel::selector` (a window's index shifts whenever another window
+    /// opens or closes before it in the list), an app by its `DesktopEntry::id`, a command by
+    /// its name; a dmenu line has no identity beyond its position (the list never changes while
+    /// the launcher is open), so it keeps the old rule. Read from `self.windows`/`self.catalog`
+    /// as they are *now*: called both before and after `set_windows`/`set_catalog` replace them.
+    fn identity(&self, source: Source) -> Option<Identity> {
+        Some(match source {
+            Source::Window(i) => Identity::Window(self.windows.get(i)?.selector.clone()),
+            Source::App(i) => Identity::App(self.catalog.as_ref()?.apps.get(i)?.id.clone()),
+            Source::Command(i) => Identity::Command(self.catalog.as_ref()?.commands.get(i)?.clone()),
+            Source::Line(i) => Identity::Line(i),
+        })
     }
 
     /// Rows the view shows (PageUp/PageDown step, `top` clamping).
@@ -195,15 +219,10 @@ impl Launcher {
             Key::End => self.move_by(i64::MAX / 2),
             Key::Tab => self.switch_mode(self.mode.next()),
             Key::BackTab => self.switch_mode(self.mode.previous()),
-            Key::Right | Key::CtrlSpace => {
-                self.preview = if self.preview_visible() { Preview::Hidden } else { Preview::Shown };
-                Outcome::Redraw
-            }
-            Key::Left => {
-                let was_visible = self.preview_visible();
-                self.preview = Preview::Hidden;
-                if was_visible { Outcome::Redraw } else { Outcome::Nothing }
-            }
+            // No binding: the preview panel they used to toggle always shows now (view.rs,
+            // 2026-10-05) — ignored rather than removed from `Key`, so a future rebind needs
+            // no change to `input.rs`.
+            Key::Left | Key::Right => Outcome::Nothing,
             Key::Escape => Outcome::Close,
             Key::Enter => self.primary(),
             Key::CtrlEnter => self.secondary(),
@@ -269,10 +288,12 @@ impl Launcher {
         self.top = 0;
     }
 
-    fn refilter_keeping_selection(&mut self) {
-        let kept = self.selected_hit().map(|h| h.source);
+    /// Re-ranks, then puts the selection back on `kept` (captured by the caller *before*
+    /// replacing the list it identifies into — see `set_catalog`/`set_windows`) if it is still
+    /// among the results, else 0.
+    fn refilter_keeping(&mut self, kept: Option<Identity>) {
         self.rank();
-        self.selected = kept.and_then(|s| self.results.iter().position(|h| h.source == s)).unwrap_or(0);
+        self.selected = kept.and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id))).unwrap_or(0);
         self.keep_visible();
     }
 
@@ -347,15 +368,18 @@ impl Launcher {
         }
     }
 
-    /// Click on result `index` (absolute index into `results`): select then activate.
+    /// Click on result `index` (absolute index into `results`): select then activate. Like
+    /// `key`, turns a `Nothing` into a `Redraw` when it clears a message — otherwise the error
+    /// line would linger after a click that already invalidated it.
     pub fn click(&mut self, index: usize, secondary: bool) -> Outcome {
         if index >= self.results.len() {
             return Outcome::Nothing;
         }
-        self.message = None;
+        let had_message = self.message.take().is_some();
         self.selected = index;
         self.keep_visible();
-        if secondary { self.secondary() } else { self.primary() }
+        let o = if secondary { self.secondary() } else { self.primary() };
+        if had_message && o == Outcome::Nothing { Outcome::Redraw } else { o }
     }
 
     pub fn click_mode(&mut self, m: Mode) -> Outcome {
@@ -372,15 +396,6 @@ impl Launcher {
 
     pub fn selected_hit(&self) -> Option<Hit> {
         self.results.get(self.selected).copied()
-    }
-
-    /// Auto: shown iff the selected hit is an App with at least one action.
-    pub fn preview_visible(&self) -> bool {
-        match self.preview {
-            Preview::Shown => true,
-            Preview::Hidden => false,
-            Preview::Auto => matches!(self.selected_hit(), Some(Hit { source: Source::App(i), .. }) if self.app_has_actions(i)),
-        }
     }
 
     pub fn show_message(&mut self, m: String) {
@@ -574,22 +589,16 @@ mod tests {
         assert!(s.is_script());
     }
 
+    /// The preview panel always shows the selected result now (view.rs, Mae 2026-10-05): the
+    /// `Left`/`Right` keys that used to toggle it are ignored — recognised by `input.rs`, but
+    /// a no-op here, not even clearing a message (plain `Outcome::Nothing`, nothing to redraw).
     #[test]
-    fn preview_opens_by_itself_for_apps_with_actions_and_toggles() {
+    fn left_and_right_are_ignored() {
         let mut l = launcher();
         l.key(Key::Tab); // Apps: Files, Firefox, Fish
-        assert!(!l.preview_visible(), "Files has no action");
-        l.key(Key::Down);
-        assert!(l.preview_visible(), "Firefox has actions: Auto shows it");
-        assert_eq!(l.key(Key::Right), Outcome::Redraw);
-        assert!(!l.preview_visible(), "Right toggles it off");
-        l.key(Key::CtrlSpace);
-        assert!(l.preview_visible(), "Ctrl+Space toggles it on");
-        l.key(Key::Up);
-        assert!(l.preview_visible(), "Shown stays shown");
-        assert_eq!(l.key(Key::Left), Outcome::Redraw);
-        assert!(!l.preview_visible());
-        assert_eq!(l.key(Key::Left), Outcome::Nothing, "already hidden");
+        assert_eq!(l.key(Key::Right), Outcome::Nothing);
+        assert_eq!(l.key(Key::Left), Outcome::Nothing);
+        assert_eq!((l.mode, l.selected), (Mode::Apps, 0), "nothing else changed either");
     }
 
     #[test]
@@ -694,6 +703,40 @@ mod tests {
         assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(2)));
     }
 
+    /// The selection is kept by identity (`Toplevel::selector`), not by its old index: a
+    /// window opening before the selected one shifts every later window's index by one, which
+    /// an index-based `Source::Window(2)` comparison would silently land on the wrong window.
+    #[test]
+    fn a_window_inserted_before_the_selected_one_keeps_it_selected() {
+        let mut l = launcher();
+        l.key(Key::Down);
+        l.key(Key::Down); // Window(2), "notes" (selector "id:3")
+        let mut w = windows();
+        w.insert(0, window("id:0", "foot", "zzz-new"));
+        l.set_windows(w);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(3)), "shifted by the insertion, but still \"notes\"");
+    }
+
+    /// `set_windows` must call `ranker.forget_windows()`, not the full `forget()`: a title
+    /// edit with the window count unchanged still has to refresh `window_name_rank` (the tie
+    /// break below), without re-walking the whole history for the catalog's own frecency.
+    /// Both windows share a class so their class score ties exactly: only the name decides.
+    #[test]
+    fn a_title_change_refreshes_the_name_order_with_the_same_window_count() {
+        let mut l = Launcher::for_apps(
+            LauncherConfig::default(),
+            vec![window("id:1", "term", "bbb-window"), window("id:2", "term", "aaa-window")],
+            History::empty(200),
+            NOW,
+        );
+        typed(&mut l, "term");
+        assert_eq!(sources(&l), [Source::Window(1), Source::Window(0)], "aaa-window ranks first by name");
+        let mut w = l.windows.clone();
+        w[1].title = "zzz-window".into();
+        l.set_windows(w);
+        assert_eq!(sources(&l), [Source::Window(0), Source::Window(1)], "same count: the renamed window now sorts after its new title");
+    }
+
     #[test]
     fn a_window_list_change_refreshes_what_each_window_belongs_to() {
         let mut l = launcher();
@@ -736,5 +779,21 @@ mod tests {
         assert_eq!(l.key(Key::Up), Outcome::Redraw, "nothing moved, but the message goes");
         assert_eq!(l.message, None);
         assert_eq!(l.key(Key::Up), Outcome::Nothing);
+    }
+
+    /// `click`, like `key`, must turn a `Nothing` into a `Redraw` when it clears a message:
+    /// otherwise the error line would linger on screen until some other key is pressed, even
+    /// though the click itself already invalidated it. A blank query in Commands mode gives a
+    /// click that selects a real row yet still activates nothing (`primary`'s own `Shell`
+    /// branch, blank text: Review the brief's Enter rule) — the one way to reach `Nothing`
+    /// from `click` without the index guard itself already rejecting it.
+    #[test]
+    fn clicking_clears_a_message_and_redraws_even_when_nothing_else_changes() {
+        let mut l = launcher();
+        typed(&mut l, ">"); // Commands mode
+        typed(&mut l, "  "); // blank query: still lists every command (the empty-query order)
+        l.show_message("oops".into());
+        assert_eq!(l.click(0, false), Outcome::Redraw, "nothing to run on a blank query, but the message still clears");
+        assert_eq!(l.message, None);
     }
 }

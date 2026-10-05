@@ -378,9 +378,9 @@ impl Ranker {
         let mut hits = if pattern.atoms.is_empty() { self.everything(q, &prepared) } else { self.matching(q, &prepared, &pattern) };
         self.prepared = Some(prepared);
         hits.truncate(MAX_RESULTS);
-        // A catalog scan can make `hits` grow past MAX_RESULTS before the truncate above
-        // (Script mode lists every dmenu line uncapped): nothing resident should keep that
-        // backing allocation past this call.
+        // Many windows open can make `hits` grow past MAX_RESULTS before the truncate above
+        // (`everything()`'s windows loop lists every one, uncapped): nothing resident should
+        // keep that backing allocation past this call.
         hits.shrink_to_fit();
         hits
     }
@@ -407,7 +407,7 @@ impl Ranker {
                 let i = i as usize;
                 Hit { source: Source::Command(i), score: 0, frecency: pr.command_frecency[i] }
             })),
-            Mode::Script => hits.extend((0..q.lines.len()).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 })),
+            Mode::Script => hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 })),
             Mode::Windows => {}
         }
         hits
@@ -927,14 +927,31 @@ mod tests {
 
     #[test]
     fn rank_does_not_keep_a_catalog_sized_allocation_after_truncation() {
-        // Script mode lists the dmenu lines as given, uncapped before the final truncate
-        // (fix #1 only bounds the apps/commands empty-query orders): the realistic case
-        // where `hits` grows well past MAX_RESULTS before being cut down to size.
+        // Windows: `everything()` still cannot bound this one while building it (every window
+        // gets a `Hit` unconditionally — there is no frecency-ordered index to slice the way
+        // apps/commands/lines now have, Script lines included since the fix below). `rank()`'s
+        // own `shrink_to_fit()` is what keeps a session with many windows open from carrying a
+        // 20,000-entry allocation after every keystroke.
+        let mut l = Lists::new();
+        l.windows = (0..20_000).map(|i| window(&format!("id:{i}"), "x", &format!("win-{i:05}"))).collect();
+        let hits = Ranker::new().rank(&l.query(Mode::Windows, ""));
+        assert_eq!(hits.len(), MAX_RESULTS);
+        assert!(hits.capacity() <= MAX_RESULTS, "capacity {} must not carry the 20,000-window scan", hits.capacity());
+    }
+
+    /// Review Focus 4: dmenu lines must not rebuild `everything()`'s old behaviour of
+    /// collecting every line before the final truncate — `.take(remaining)` bounds the
+    /// `Vec` from the first push, so this is observable on `everything()` alone, before
+    /// `rank()`'s `shrink_to_fit()` ever runs (which the test above still needs, for windows).
+    #[test]
+    fn everything_bounds_script_lines_without_building_the_whole_list() {
         let mut l = Lists::new();
         l.lines = (0..20_000).map(|i| format!("line-{i:05}")).collect();
-        let hits = Ranker::new().rank(&l.query(Mode::Script, ""));
+        let q = l.query(Mode::Script, "");
+        let pr = Prepared::new(&q);
+        let hits = Ranker::new().everything(&q, &pr);
         assert_eq!(hits.len(), MAX_RESULTS);
-        assert!(hits.capacity() <= MAX_RESULTS, "capacity {} must not carry the 20,000-line scan", hits.capacity());
+        assert!(hits.capacity() <= MAX_RESULTS, "capacity {} must not have built all 20,000 lines", hits.capacity());
     }
 
     /// splitmix64: deterministic, no new dependency, good enough spread for a test fixture.
@@ -956,11 +973,14 @@ mod tests {
 
     /// The optimized path (precomputed `name_rank`, `select_nth_unstable_by` then a partial
     /// sort) must produce exactly the same order as an obviously-correct full sort over the
-    /// same hits, even on a large list with heavy ties in score, frecency and name.
+    /// same hits, even on a large list with heavy ties in score, frecency and name, mixed
+    /// case and accents (Review Focus 3: a `fold_cow` bug that mistakes "no ASCII uppercase"
+    /// for "nothing to fold" must be caught here too — on a tied list is exactly where it
+    /// would bite — not only by the small dedicated `fold_cow_matches_fold_key_…` test).
     #[test]
     fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
         let mut rng = Lcg(0x5EED_C0FF_EEEE_1234);
-        let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+        let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "École", "ÉCOLE", "Ångström", "ZEBRA"];
         let commands: Vec<String> =
             (0..4_000u64).map(|i| format!("{}-{}", words[rng.below(words.len() as u64) as usize], i % 12)).collect();
         let hits: Vec<Hit> = (0..commands.len())
@@ -997,6 +1017,73 @@ mod tests {
         });
         expected.truncate(MAX_RESULTS);
 
-        assert_eq!(actual, expected);
+        assert_eq!(actual, expected, "a large, mixed-case/accented, heavily tied command list");
+
+        // Mode::All through the real `rank()` pipeline, mixing windows and apps (not
+        // synthetic Hits built by hand this time): every score, exact flag and frecency
+        // comes from the production path; only the name tie-break is recomputed
+        // independently of `name_rank`/`fold_cow`, against the real `name()`/`is_exact()`.
+        let apps: Vec<DesktopEntry> = (0..120u64)
+            .map(|i| {
+                let w = words[rng.below(words.len() as u64) as usize];
+                app(&format!("app{i}.desktop"), &format!("{w}-{}", i % 12), None, &[], &format!("prog{i}"))
+            })
+            .collect();
+        let windows: Vec<Toplevel> = (0..40u64)
+            .map(|i| {
+                let w = words[rng.below(words.len() as u64) as usize];
+                window(&format!("id:{i}"), "unlinked", &format!("{w}-{}", i % 12))
+            })
+            .collect();
+        let empty_history = History::empty(0);
+        let q2 = Query {
+            text: "a",
+            mode: Mode::All,
+            apps: &apps,
+            commands: &[],
+            windows: &windows,
+            lines: &[],
+            history: &empty_history,
+            now: NOW,
+        };
+        let mut ranker = Ranker::new();
+        let actual2 = ranker.rank(&q2);
+        let pr2 = Prepared::new(&q2);
+        let mut expected2 = actual2.clone();
+        expected2.sort_by(|a, b| {
+            (b.score / SCORE_BUCKET)
+                .cmp(&(a.score / SCORE_BUCKET))
+                .then_with(|| is_exact(&q2, &pr2, b.source, "a").cmp(&is_exact(&q2, &pr2, a.source, "a")))
+                .then(b.frecency.cmp(&a.frecency))
+                .then(kind(a.source).cmp(&kind(b.source)))
+                .then_with(|| cmp_ci(name(&q2, a.source), name(&q2, b.source)))
+                .then(index(a.source).cmp(&index(b.source)))
+        });
+        assert_eq!(actual2, expected2, "All mode, mixing windows and apps, through rank()");
+
+        // Empty query: `everything()`'s precomputed `apps_empty_order` (also built from
+        // `name_ranks`/`fold_cow`) must match a reference order too — windows as given
+        // (`everything()` never sorts them), then apps by frecency then name.
+        let q3 = Query {
+            text: "",
+            mode: Mode::All,
+            apps: &apps,
+            commands: &[],
+            windows: &windows,
+            lines: &[],
+            history: &empty_history,
+            now: NOW,
+        };
+        let actual3 = ranker.rank(&q3);
+        let (app_frecency, _) = empty_history.frecency_maps(NOW);
+        let fre = |i: usize| app_frecency.get(apps[i].id.as_str()).copied().unwrap_or(0);
+        let mut expected_apps: Vec<usize> = (0..apps.len()).collect();
+        expected_apps.sort_by(|&a, &b| fre(b).cmp(&fre(a)).then_with(|| cmp_ci(&apps[a].name, &apps[b].name)).then(a.cmp(&b)));
+        let expected3: Vec<Source> = (0..windows.len()).map(Source::Window).chain(expected_apps.into_iter().map(Source::App)).collect();
+        assert_eq!(
+            actual3.iter().map(|h| h.source).collect::<Vec<_>>(),
+            expected3,
+            "empty query: windows as given, then apps by frecency then name"
+        );
     }
 }
