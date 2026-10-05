@@ -4,7 +4,7 @@
 //! no thread of its own (libdbus has none): a method call waits for its
 //! reply at most `TIMEOUT`, `next_signal` sleeps on the socket with no
 //! timeout at all — nothing wakes the thread while the bus is quiet.
-//! Replies are read in place with libdbus's iterators: a property the bar
+//! Replies are read in place with libdbus's iterators: a type the bar
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
@@ -14,7 +14,7 @@ use dbus::Message;
 use dbus::arg::{ArgType, Iter};
 use dbus::channel::{BusType, Channel};
 use dbus::message::MessageType;
-use dbus::strings::{ErrorName, Path};
+use dbus::strings::{ErrorName, Path, Signature};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::RawFd;
@@ -80,9 +80,25 @@ fn error(e: dbus::Error) -> io::Error {
 /// The signature of the argument at `it`, "" past the last one: dbus
 /// 0.9.12's `Iter::signature` panics there (`Signature::new(…).unwrap()` on
 /// an empty string) — an empty or short body, which any local process may
-/// send the bar as a unicast signal.
-fn sig(it: &mut Iter<'_>) -> String {
-    if it.arg_type() == ArgType::Invalid { String::new() } else { it.signature().to_string() }
+/// send the bar as a unicast signal. Returns the `Signature` itself, not a
+/// `String`: comparing it against a literal (`&*sig(it) == "a{sv}"`) goes
+/// through its `Deref<Target = str>`, no copy beyond the one
+/// `Iter::signature` already makes.
+fn sig(it: &mut Iter<'_>) -> Signature<'static> {
+    if it.arg_type() == ArgType::Invalid {
+        // SAFETY: "\0" is a validly NUL-terminated (empty) string; it never
+        // reaches libdbus's own validator, which would reject it as "not a
+        // complete type" — exactly the panic this guard exists to avoid.
+        unsafe { Signature::from_slice_unchecked("\0") }
+    } else {
+        it.signature()
+    }
+}
+
+/// A `Path`'s string, with the one allocation `into_cstring` already makes
+/// (`Path::to_string()` goes through `Display`, which copies again).
+fn path_string(p: Path<'_>) -> String {
+    p.into_cstring().into_string().unwrap_or_default()
 }
 
 /// One property (`v` points inside its variant), reduced to what the bar
@@ -101,10 +117,10 @@ pub fn prop(v: &mut Iter<'_>) -> Prop {
         ArgType::UInt64 => int(v.get::<u64>().and_then(|n| i64::try_from(n).ok())),
         ArgType::Double => v.get::<f64>().map(Prop::Float).unwrap_or(Prop::Other),
         ArgType::String => v.get::<&str>().map(|s| Prop::Str(s.to_string())).unwrap_or(Prop::Other),
-        ArgType::ObjectPath => v.get::<Path>().map(|p| Prop::Path(p.to_string())).unwrap_or(Prop::Other),
+        ArgType::ObjectPath => v.get::<Path>().map(|p| Prop::Path(path_string(p))).unwrap_or(Prop::Other),
         ArgType::Array => match &*sig(v) {
-            "ao" => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.iter().map(|p| p.to_string()).collect())).unwrap_or(Prop::Other),
-            "ay" => v.get::<Vec<u8>>().map(Prop::Bytes).unwrap_or(Prop::Other),
+            "ao" => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.into_iter().map(path_string).collect())).unwrap_or(Prop::Other),
+            "ay" => v.get::<&[u8]>().map(|b| Prop::Bytes(b.to_vec())).unwrap_or(Prop::Other),
             _ => Prop::Other,
         },
         ArgType::Variant => v.recurse(ArgType::Variant).map(|mut inner| prop(&mut inner)).unwrap_or(Prop::Other),
@@ -112,24 +128,21 @@ pub fn prop(v: &mut Iter<'_>) -> Prop {
     }
 }
 
-/// `a{sv}` at `it`: each key with its value, still unread (`f` decides).
-fn each_entry<T>(it: &mut Iter<'_>, mut f: impl FnMut(&str, &mut Iter<'_>) -> T) -> io::Result<Vec<T>> {
+/// `a{sv}` at `it`: each property, inserted directly into the map (no
+/// intermediate `Vec`).
+fn props(it: &mut Iter<'_>) -> io::Result<Props> {
     if &*sig(it) != "a{sv}" {
         return Err(unexpected("not a{sv}"));
     }
-    let mut out = Vec::new();
-    let Some(mut entries) = it.recurse(ArgType::Array) else { return Ok(out) };
+    let mut out = BTreeMap::new();
+    let Some(mut entries) = it.recurse(ArgType::Array) else { return Ok(Props(out)) };
     while let Some(mut entry) = entries.recurse(ArgType::DictEntry) {
         let key: &str = entry.read().map_err(|e| unexpected(&e.to_string()))?;
         let mut value = entry.recurse(ArgType::Variant).ok_or_else(|| unexpected("a property without a variant"))?;
-        out.push(f(key, &mut value));
+        out.insert(key.to_string(), prop(&mut value));
         entries.next();
     }
-    Ok(out)
-}
-
-fn props(it: &mut Iter<'_>) -> io::Result<Props> {
-    Ok(Props(each_entry(it, |k, v| (k.to_string(), prop(v)))?.into_iter().collect()))
+    Ok(Props(out))
 }
 
 /// A `GetAll` reply (`a{sv}`).
@@ -160,16 +173,23 @@ pub fn objects_reply(m: &Message) -> io::Result<Objects> {
                 interfaces.next();
             }
         }
-        objects.insert(path.to_string(), read);
+        objects.insert(path_string(path), read);
         paths.next();
     }
     Ok(objects)
 }
 
-/// A reply carrying object paths (`ao`): `EnumerateDevices`.
+/// A reply carrying object paths (`ao`): `EnumerateDevices`. The signature
+/// is checked first: dbus 0.9.12's `Vec<T>::get` stops silently at the
+/// first mismatching element, so a reply typed `as`/`ai`/`a{sv}`… would
+/// otherwise read back as "no devices" instead of the outage it is.
 pub fn paths_reply(m: &Message) -> io::Result<Vec<String>> {
-    let v: Vec<Path> = m.read1().map_err(|e| unexpected(&e.to_string()))?;
-    Ok(v.iter().map(|p| p.to_string()).collect())
+    let mut it = m.iter_init();
+    if &*sig(&mut it) != "ao" {
+        return Err(unexpected("not ao"));
+    }
+    let v: Vec<Path> = it.read().map_err(|e| unexpected(&e.to_string()))?;
+    Ok(v.into_iter().map(path_string).collect())
 }
 
 /// The keys of the `a{sv}` (or `a{sa{sv}}`) at `it`, values skipped.
@@ -512,5 +532,14 @@ mod tests {
         assert!(get_all_reply(&empty).is_err());
         assert!(objects_reply(&empty).is_err());
         assert!(paths_reply(&empty).is_err());
+    }
+
+    #[test]
+    fn paths_reply_requires_ao() {
+        // dbus 0.9.12's `Vec<T>::get` stops silently at the first
+        // mismatching element: without the signature guard, a reply typed
+        // `as` would read back as an empty `Vec<Path>` — "no devices" —
+        // instead of the outage it actually is.
+        assert!(paths_reply(&recorded(r#"{"type":"as","data":[["x"]]}"#)).is_err());
     }
 }
