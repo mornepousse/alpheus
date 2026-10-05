@@ -14,10 +14,10 @@ use alpheus_commun::launcher_ipc::{
     MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, Reply, Request, decode_reply, encode_request, split_lines,
 };
 use std::ffi::OsString;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const EXIT_OK: i32 = 0;
 /// dmenu cancelled (fuzzel's contract).
@@ -124,18 +124,18 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
         }
         _ => ClientError::Protocol(format!("cannot reach the launcher socket {}: {e}", socket.display())),
     })?;
-    // dmenu waits for the person, as long as it takes; toggle/close are answered at once.
+    // dmenu waits for the person, as long as it takes; toggle/close must be answered
+    // within CLIENT_REPLY_TIMEOUT, as one total deadline (not a per-read allowance
+    // that a daemon trickling one byte at a time could restart forever).
     let timeout = match request {
         Request::Dmenu { .. } => None,
         Request::Toggle | Request::Close => Some(CLIENT_REPLY_TIMEOUT),
     };
-    stream
-        .set_read_timeout(timeout)
-        .and_then(|()| stream.set_write_timeout(timeout))
-        .map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
+    stream.set_write_timeout(timeout).map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
+    let deadline = timeout.map(|t| Instant::now() + t);
     let sent = stream.write_all(&encode_request(request));
     let mut answer = Vec::new();
-    let read = (&mut stream).take((MAX_HEADER + MAX_DMENU_BYTES + 1) as u64).read_to_end(&mut answer);
+    let read = read_reply(&mut stream, &mut answer, deadline);
     // A daemon that refuses early (request too large) answers before we finished sending.
     if let Ok(reply) = decode_reply(&answer) {
         return Ok(reply);
@@ -144,11 +144,43 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
         return Err(ClientError::Protocol(format!("cannot send the request: {e}")));
     }
     match read {
-        Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+        Err(e) if e.kind() == ErrorKind::TimedOut => {
             Err(ClientError::Protocol(format!("no answer from alpheus-demon within {} s", CLIENT_REPLY_TIMEOUT.as_secs())))
         }
         Err(e) => Err(ClientError::Protocol(format!("cannot read the answer: {e}"))),
-        Ok(_) => decode_reply(&answer).map_err(|e| ClientError::Protocol(format!("unexpected answer from alpheus-demon: {e}"))),
+        Ok(()) => decode_reply(&answer).map_err(|e| ClientError::Protocol(format!("unexpected answer from alpheus-demon: {e}"))),
+    }
+}
+
+/// Reads the reply into `answer`, bounded to `MAX_HEADER + MAX_DMENU_BYTES + 1` bytes
+/// (enough to tell an oversized or malformed answer apart without ever reading an
+/// unbounded stream). With a `deadline`, the whole loop is given up on as a single total
+/// budget: the remaining time is recomputed before every read, so a daemon trickling
+/// bytes just under a per-read timeout cannot stall the client past it. `deadline: None`
+/// (dmenu) waits for the person, however long that takes.
+fn read_reply(stream: &mut UnixStream, answer: &mut Vec<u8>, deadline: Option<Instant>) -> io::Result<()> {
+    const BOUND: usize = MAX_HEADER + MAX_DMENU_BYTES + 1;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        if answer.len() >= BOUND {
+            return Ok(());
+        }
+        if let Some(dl) = deadline {
+            let remaining = dl.checked_duration_since(Instant::now()).filter(|d| !d.is_zero());
+            let Some(remaining) = remaining else {
+                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
+            };
+            stream.set_read_timeout(Some(remaining))?;
+        }
+        let want = chunk.len().min(BOUND - answer.len());
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) => return Ok(()),
+            Ok(n) => answer.extend_from_slice(&chunk[..n]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 
