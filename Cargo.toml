@@ -20,6 +20,8 @@ unicode-normalization = "0.1"
 cosmic-text = "0.12"
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
 insta = "1"
+# Fuzzy matching of the launcher (Helix's matcher, fzf scoring). Daemon only.
+nucleo-matcher = "0.3"
 # System D-Bus (NetworkManager, UPower, BlueZ), blocking API on one thread.
 # Decided by Mae on 2026-10-04 (≈ 2.4 MB PSS measured). Daemon only.
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }

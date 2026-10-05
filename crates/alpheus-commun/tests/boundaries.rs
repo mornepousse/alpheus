@@ -122,6 +122,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     assert!(result.is_err(), "the pin check must reject blocking 1.7.0");
 }
 
+#[test]
+fn nucleo_stays_in_the_daemon() {
+    let g = graph();
+    assert!(closure(&g, "alpheus-demon").contains("nucleo-matcher"), "the launcher ranks with nucleo-matcher");
+    for p in ["alpheus-commun", "alpheus", "alpheus-launch"] {
+        assert!(!closure(&g, p).contains("nucleo-matcher"), "{p} pulls in nucleo-matcher");
+    }
+}
+
 /// `alpheus-launch` runs on every key press and in every script menu: std
 /// and alpheus-commun only — no Wayland, no fonts, no TUI, no D-Bus, no
 /// matcher, no keyboard library (Global Constraints of the launcher plan).
