@@ -53,7 +53,9 @@ fn frecency_of(u: &Use, now: u64) -> u32 {
 }
 
 fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= ID_MAX && !id.contains(['\t', '\n', '\r'])
+    // U+FFFD is what lossy UTF-8 decoding leaves behind for invalid bytes (see `load`):
+    // an id carrying it came from a corrupted line, not a real entry.
+    !id.is_empty() && id.len() <= ID_MAX && !id.contains(['\t', '\n', '\r']) && !id.contains('\u{FFFD}')
 }
 
 impl History {
@@ -193,7 +195,6 @@ pub fn history_path(state_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::launcher::config::HISTORY_MAX;
     use crate::launcher::testing::TempDir;
     use std::os::unix::fs::PermissionsExt;
 
@@ -280,9 +281,20 @@ mod tests {
 
     #[test]
     fn a_new_id_evicts_the_lowest_frecency_when_full() {
-        let mut h = History::parse(&format!("{}\t1\tapp:stale\n{}\t3\tapp:fresh\n", NOW - 90 * DAY, NOW), 2, NOW);
+        // The stale (lowest-frecency) entry comes second in the file, not first: a FIFO
+        // ("drop the oldest slot") eviction would wrongly keep it and drop "app:fresh" instead.
+        let mut h = History::parse(&format!("{}\t3\tapp:fresh\n{}\t1\tapp:stale\n", NOW, NOW - 90 * DAY), 2, NOW);
         h.record("cmd:new", NOW);
-        assert_eq!(ids(&h), ["app:fresh", "cmd:new"]);
+        assert_eq!(ids(&h), ["app:fresh", "cmd:new"], "the lowest-frecency entry goes, not the first one in the file");
+    }
+
+    #[test]
+    fn a_tied_frecency_falls_back_to_the_older_last() {
+        // Both entries score the same frecency (count 1, age under an hour: weight 100); only
+        // `last` tells them apart, and the older one is the one that must go.
+        let mut h = History::parse(&format!("{}\t1\tapp:newer\n{}\t1\tapp:older\n", NOW, NOW - 10), 2, NOW);
+        h.record("cmd:new", NOW);
+        assert_eq!(ids(&h), ["app:newer", "cmd:new"], "tied frecency: the older last loses the tie-break");
     }
 
     #[test]
@@ -293,6 +305,15 @@ mod tests {
             h.record(bad, NOW);
         }
         assert!(h.entries().is_empty(), "{:?}", h.entries());
+    }
+
+    #[test]
+    fn an_id_with_the_replacement_character_is_refused() {
+        let d = dir("replacement");
+        // \xe9 alone is not valid UTF-8; from_utf8_lossy turns it into a single U+FFFD.
+        fs::write(history_path(&d), b"5\t1\tapp:caf\xe9.desktop\n").unwrap();
+        let (h, w) = History::load(&history_path(&d), 200, NOW);
+        assert_eq!((ids(&h), w), (vec![], None), "the id decoded with a replacement character is skipped, not kept lossily");
     }
 
     #[test]

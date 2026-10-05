@@ -95,6 +95,9 @@ impl LauncherConfig {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
             }
         }
+        if r.focus.first().is_some_and(|p| p.contains("{window}")) {
+            return Err("focus[0] (the program) must not contain \"{window}\" (it names the compositor binary, not a window)".into());
+        }
         if !r.focus.iter().any(|a| a.contains("{window}")) {
             return Err("focus must contain \"{window}\" (the window to focus)".into());
         }
@@ -181,6 +184,7 @@ mod tests {
             ("terminal = [\" \", \"-e\"]", "terminal empty"),
             ("focus = []", "focus empty"),
             ("focus = [\"wm-set\", \"focus-window\"]", "{window}"),
+            ("focus = [\"{window}\"]", "focus[0]"),
             ("rows = 2", "rows 2 out of range"),
             ("rows = 31", "rows 31 out of range"),
             ("rows = -1", "expected u16"),
