@@ -9,20 +9,33 @@ with modern features.
 
 ## Memory
 
-Resident memory measured as PSS (`/proc/<pid>/smaps_rollup`), release
-builds. Updated with every delivery.
+How much RAM a desktop shell keeps resident, measured as PSS
+(`/proc/<pid>/smaps_rollup`) on the author's laptop (Hyprland, three
+outputs). alpheus figures are release builds. Updated with every delivery.
+
+### Compared with other shells
+
+| Shell | Toolkit | Resident memory | What it covers |
+|---|---|---:|---|
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 61 MB** | bar (≈ 13 MB) + mako, swayosd, swaybg still borrowed (≈ 48 MB) |
+| **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
+| waybar + mako + swayosd + swaybg | GTK / C | ≈ 120 MB | bar, notifications, OSD, wallpaper |
+| HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
+| Wayle | Rust, GTK4 | ≈ 168 MB | bar, panels |
+| ashell + swaync | Rust, iced | ≈ 194 MB | bar, notifications |
+| DankMaterialShell (trimmed) | Quickshell (QML) | ≈ 512 MB | full shell, sound/visualizer/weather/temperatures off |
+| DankMaterialShell | Quickshell (QML) | ≈ 537 MB | full shell |
+| Caelestia | Quickshell (QML) | ≈ 730 MB | full shell |
+
+### alpheus, component by component
 
 | Component | Memory | Notes |
 |---|---:|---|
-| **alpheus bar daemon**, all modules, 3 outputs — at start | **≈ 7.9 MB** | headless sway test, `tests/memory.rs` |
-| **alpheus bar daemon** — after 8,300 events and 5 plug cycles | **≈ 9.7 MB** | stable, 0 wake-ups at rest, 8 threads |
+| Bar daemon, all modules, 3 outputs — at start | ≈ 7.9 MB | headless sway test, `tests/memory.rs` |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.7 MB | stable, 0 wake-ups at rest, 8 threads |
 | `pw-dump` child (sound source) | ≈ 3.5 MB | silent at rest |
 | **alpheus total today** | **≈ 13 MB** | bar + sound source |
-| Still borrowed in hybrid mode: mako / swaybg / swayosd | 2.3 / 1.7 / 44 MB | swayosd and mako to be replaced by alpheus (OSD, toasts) |
-| alpheus total budget (bar, launcher, notifications, OSD, wallpaper) | ≤ 120 MB | |
-| *For comparison* — DankMaterialShell (Quickshell) | ≈ 530 MB | measured on the author's laptop |
-| *For comparison* — Caelestia (Quickshell) | ≈ 730 MB | idem |
-| *For comparison* — waybar + mako + swayosd + swaybg | ≈ 120 MB | idem |
+| Borrowed for now: mako / swaybg / swayosd | 2.3 / 1.7 / 44 MB | to be replaced by alpheus toasts and OSD |
 
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
