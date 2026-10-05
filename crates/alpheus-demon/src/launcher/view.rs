@@ -486,10 +486,10 @@ mod tests {
     fn all_mode_lists_apps_then_windows() {
         let mut l = launcher();
         let (b, rows) = draw(&mut l, 100);
-        // The window `for_apps` started on stays selected by identity once the catalog
-        // arrives (Mae, 2026-10-05: apps now list before it), so the panel still fills with
-        // its preview even though it is no longer the first row.
-        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the selected window's preview");
+        // The user hasn't moved the selection yet, so the catalog's arrival (inside
+        // `launcher()`) put it back on top (Mae, 2026-10-05): the first app, not the window
+        // `for_apps` started on. The panel still fills with its preview either way.
+        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the selected app's preview");
         insta::assert_snapshot!("all", snapshot(&rows));
     }
 
@@ -548,7 +548,8 @@ mod tests {
         let blank = " ".repeat(usize::from(PREVIEW_COLUMNS));
         let mut l = launcher();
         let (b, rows) = draw(&mut l, 120);
-        assert!(panel(&rows, &b).iter().any(|t| t.contains("~/projects")), "a window selected: its title\n{}", snapshot(&rows));
+        // Not moved yet: the top app (Alacritty), not the window `for_apps` started on.
+        assert!(panel(&rows, &b).iter().any(|t| t.contains("Terminal")), "an app selected: its generic name\n{}", snapshot(&rows));
         assert!(!panel(&rows, &b).iter().all(|t| *t == blank), "never blank while a result is selected");
         keys(&mut l, &[Key::Tab, Key::End]); // Apps: Firefox, with actions
         let (b2, rows) = draw(&mut l, 120);
@@ -572,7 +573,10 @@ mod tests {
         // the left also shows app names, which would make a substring check on the whole
         // snapshot pass even if the preview picked the wrong text entirely.
         let mut l = launcher();
-        let (b, rows) = draw(&mut l, 120); // the Alacritty window: its class is also an app's id
+        // Not moved yet: the top app is selected first (Alacritty). Past the 4 apps, the
+        // Alacritty window: its class is also an app's id.
+        keys(&mut l, &[Key::Down, Key::Down, Key::Down, Key::Down]);
+        let (b, rows) = draw(&mut l, 120);
         let text = panel(&rows, &b);
         assert!(text.iter().any(|t| t.contains("~/projects — zsh")), "the full title\n{}", snapshot(&rows));
         assert!(text.iter().any(|t| t.contains("Alacritty")), "linked to the Alacritty app by class\n{}", snapshot(&rows));
@@ -591,7 +595,9 @@ mod tests {
         });
         let mut l2 = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
         l2.set_catalog(catalog());
-        keys(&mut l2, &[Key::Down, Key::Down]); // the third window: "Mystery", linked to no app
+        // Not moved yet: past the 4 apps and the first 2 windows, the third: "Mystery", linked
+        // to no app.
+        keys(&mut l2, &[Key::Down, Key::Down, Key::Down, Key::Down, Key::Down, Key::Down]);
         let (b, rows) = draw(&mut l2, 120);
         let text = panel(&rows, &b);
         assert!(text.iter().any(|t| t.contains("unknown-app")), "no linked app: the class itself\n{}", snapshot(&rows));
