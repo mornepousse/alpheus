@@ -85,12 +85,15 @@ pub struct Launcher {
     /// empty query goes back to All.
     by_prefix: bool,
     list_rows: usize,
-    /// Whether the user has moved the selection since open: a navigation key, a wheel
-    /// scroll, or a typed character that changed the results. Until then, a catalog or
-    /// window update puts the selection back on top instead of carrying it along by
-    /// identity (Mae, 2026-10-05): the catalog arrives after the first window has been
-    /// auto-selected, and a hasty Enter must not land on that window once apps outrank
-    /// it. Once the user has moved, `identity` keeps tracking their choice as before.
+    /// Whether the user has navigated the selection since the last query or mode change: an
+    /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
+    /// (`move_by`). Set back to false by every `refilter()` — a typed character, Backspace,
+    /// Ctrl+U, Ctrl+W, Tab/BackTab, a prefix jump (Mae, 2026-10-05): the selection is on top
+    /// unless the user navigated since the last query or mode change. Until then, a catalog
+    /// or window update puts the selection back on top instead of carrying it along by
+    /// identity: the catalog arrives after the first window has been auto-selected, and a
+    /// hasty Enter must not land on that window once apps outrank it. Once `moved` is set,
+    /// `identity` keeps tracking the user's choice as before, until the next refilter.
     moved: bool,
 }
 
@@ -190,14 +193,9 @@ impl Launcher {
         let page = self.list_rows as i64;
         match k {
             Key::Char(c) => {
-                let before = self.results.clone();
                 self.query.push(c);
                 self.take_prefix();
-                let o = self.query_changed();
-                if self.results != before {
-                    self.moved = true;
-                }
-                o
+                self.query_changed()
             }
             Key::Backspace => {
                 if self.query.pop().is_some() {
@@ -295,11 +293,15 @@ impl Launcher {
         self.results = self.ranker.rank(&q);
     }
 
-    /// New results, selection back on the first one.
+    /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
+    /// Ctrl+W, Tab/BackTab and a prefix jump all go through here: each one resets `moved`
+    /// (Mae, 2026-10-05) — the selection is on top unless the user navigated since the last
+    /// query or mode change.
     fn refilter(&mut self) {
         self.rank();
         self.selected = 0;
         self.top = 0;
+        self.moved = false;
     }
 
     /// Re-ranks. Before the user has moved the selection (`self.moved`), a catalog or window
@@ -328,11 +330,14 @@ impl Launcher {
         self.top = self.top.min(last_top);
     }
 
+    /// Arrow keys, PageUp/PageDown, Home/End and the wheel (`scroll`) all land here: the only
+    /// keys that set `moved` (Mae, 2026-10-05), and only when there is something to navigate —
+    /// an empty list leaves `moved` untouched.
     fn move_by(&mut self, delta: i64) -> Outcome {
-        self.moved = true;
         if self.results.is_empty() {
             return Outcome::Nothing;
         }
+        self.moved = true;
         let last = self.results.len() as i64 - 1;
         let to = (self.selected as i64).saturating_add(delta).clamp(0, last) as usize;
         if to == self.selected {
@@ -530,26 +535,49 @@ mod tests {
         assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "moved already: kept by identity, as before");
     }
 
-    /// Typing counts too, but only when it actually reshuffles the results (brief: "a typed
-    /// character that changed the results"). Discriminates from a reset-to-top by giving the
-    /// selected window a new, non-zero position after the update: a third window sorts before
-    /// it once it arrives, so "kept by identity" and "back to the top" name different windows.
+    /// Typing never counts as moved, even when it reshuffles the results (Mae, 2026-10-05):
+    /// only navigation does. Discriminates from "kept by identity" by giving the selected
+    /// window a new, non-zero position after the update: a third window sorts before it once
+    /// it arrives, so "kept by identity" and "back to the top" name different windows.
     #[test]
-    fn typing_that_changes_the_results_also_counts_as_moved() {
+    fn typing_does_not_count_as_moved_an_update_still_lands_on_top() {
         let w1 = window("a", "term", "abc-zzz");
         let w2 = window("b", "term", "abc-aaa");
         let mut l = Launcher::for_apps(LauncherConfig::default(), vec![w1.clone(), w2.clone()], History::empty(200), NOW);
         typed(&mut l, "abc");
         assert_eq!(sources(&l), [Source::Window(1), Source::Window(0)], "abc-aaa ranks first by name");
-        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)));
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "typing selects the new top result");
         let w3 = window("c", "term", "abc-000");
         l.set_windows(vec![w1, w2, w3]);
         assert_eq!(sources(&l), [Source::Window(2), Source::Window(1), Source::Window(0)], "abc-000 now ranks first");
         assert_eq!(
             l.selected_hit().map(|h| h.source),
-            Some(Source::Window(1)),
-            "typing already counted as moved: identity kept (abc-aaa), not reset to the new top"
+            Some(Source::Window(2)),
+            "typing never counts as moved: the update lands back on the new top, not kept by identity"
         );
+    }
+
+    /// Down pins a window; then typing refilters — which resets `moved` — so a catalog that
+    /// arrives afterwards lands back on top, not on the window the Down had pinned.
+    #[test]
+    fn down_then_typing_then_a_catalog_update_gives_the_top_result() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert_eq!(l.key(Key::Down), Outcome::Redraw);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "Down pins the second window");
+        typed(&mut l, "f");
+        l.set_catalog(catalog());
+        assert_eq!(l.selected, 0, "typing reset `moved`: the catalog update lands on top, not on the pinned window");
+    }
+
+    /// `move_by` must not set `moved` on an empty list: there is nothing to navigate to, and a
+    /// stray `moved = true` would make the very next catalog update keep a now-meaningless
+    /// selection index instead of landing on top.
+    #[test]
+    fn up_on_an_empty_list_does_not_set_moved() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), vec![], History::empty(200), NOW);
+        assert!(l.results.is_empty(), "no windows, no catalog yet");
+        assert_eq!(l.key(Key::Up), Outcome::Nothing);
+        assert!(!l.moved, "nothing to navigate: moved must stay false");
     }
 
     #[test]

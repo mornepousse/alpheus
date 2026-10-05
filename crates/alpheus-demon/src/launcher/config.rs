@@ -2,6 +2,10 @@
 //! launcher (nothing kept while it is closed). Absent: defaults, no message.
 //! Invalid: defaults and one line in the daemon's log. Never an abort.
 //!
+//! `terminal` and `terminal_hold` are separate keys, one per flag style a terminal emulator
+//! needs (plain vs. held-open): neither is derived from the other, so switching away from foot
+//! means setting both.
+//!
 //! ```toml
 //! terminal = ["foot", "-e"]                        # Terminal=true apps, plain (no hold)
 //! terminal_hold = ["foot", "--hold", "-e"]          # a command or typed shell text, Enter (stays open)

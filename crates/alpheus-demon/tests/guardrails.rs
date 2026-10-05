@@ -542,7 +542,10 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     let path_dirs = [bin.clone()];
-    let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window", "htop", "nvim"];
+    let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window"];
+    // Ctrl+Enter on a command: detached, bare — never through `sh`, and (Mae, 2026-10-05) never
+    // reachable outside the Commands mode, since a command is only ever a result there.
+    let detached_commands = ["htop", "nvim"];
     // Enter on a command: held open in the terminal (`terminal_hold`, Mae 2026-10-05).
     let terminal_hold_commands = ["foot --hold -e htop", "foot --hold -e nvim"];
     let focus = ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"];
@@ -595,6 +598,9 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                         panic!("the focus template wrapped or altered: {c}")
                     } else if apps.contains(&unwrapped) {
                         "program"
+                    } else if detached_commands.contains(&unwrapped) {
+                        assert_eq!(mode, Mode::Commands, "a detached $PATH command outside the Commands mode: {c}");
+                        "detached command"
                     } else if terminal_hold_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
                         "terminal hold command"
@@ -615,6 +621,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     for expected in [
         ("program", true),
         ("program", false),
+        ("detached command", false),
         ("terminal hold command", true),
         ("shell", true),
         ("terminal hold shell", false),

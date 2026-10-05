@@ -15,7 +15,7 @@ expression: snapshot(&rows)
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
-│ enter run in terminal · ctrl+enter run in background · … │                                    │
+│ enter terminal · ctrl+enter bg · tab mode · esc close    │                                    │
 ╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
 
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
@@ -31,5 +31,5 @@ m..........................................................m....................
 m..........................................................m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m
-m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.m....................................m
+m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm....m....................................m
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

@@ -188,7 +188,7 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
 fn help_text(l: &Launcher) -> &'static str {
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
-        Mode::Commands => "enter run in terminal · ctrl+enter run in background · tab mode · esc close",
+        Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
         _ => "enter open · ctrl+enter action · tab mode · esc close",
     }
 }
@@ -720,6 +720,26 @@ mod tests {
         let (b, rows) = draw(&mut l, 40);
         assert_eq!((b.columns, b.preview_columns), (38, 0));
         insta::assert_snapshot!("narrow", snapshot(&rows));
+    }
+
+    /// The help line must still read in full in the narrow box (no preview panel reserved,
+    /// `BOX_COLUMNS` — the floor a wide, preview-reserving box also shrinks to when there
+    /// isn't room for the panel): the Commands help line used to be longer than what
+    /// `render`'s `truncate` leaves it, silently losing its tail (Mae, 2026-10-05).
+    #[test]
+    fn every_mode_help_line_fits_the_narrow_box() {
+        let mut l = launcher();
+        let b = layout(200, 40, l.config.rows, false, false);
+        assert_eq!(b.columns, BOX_COLUMNS, "a wide enough output: the narrow (non-preview) box");
+        let limit = usize::from(b.pane_end().saturating_sub(3));
+        for mode in [Mode::All, Mode::Apps, Mode::Windows, Mode::Commands] {
+            l.mode = mode;
+            let text = help_text(&l);
+            assert!(text.chars().count() <= limit, "{mode:?}: {text:?} is {} chars, limit {limit}", text.chars().count());
+        }
+        let s = Launcher::for_script(LauncherConfig::default(), None, vec![]);
+        let text = help_text(&s);
+        assert!(text.chars().count() <= limit, "Script: {text:?} is {} chars, limit {limit}", text.chars().count());
     }
 
     #[test]
