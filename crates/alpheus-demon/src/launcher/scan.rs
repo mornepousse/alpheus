@@ -10,7 +10,8 @@ use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,6 +26,9 @@ pub const MAX_DEPTH: usize = 4;
 /// Directory entries looked at per applications dir, whatever their kind
 /// (bounds a pathological tree: thousands of other files, deep subdirectories).
 const MAX_FILES_PER_DIR: usize = 4 * MAX_APPS;
+/// Directory entries looked at per $PATH dir, whatever their kind (bounds a pathological
+/// directory of mostly-non-executable files: the budget below is on commands actually found).
+const MAX_ENTRIES_PER_PATH_DIR: usize = 4 * MAX_COMMANDS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanEnv {
@@ -100,7 +104,14 @@ fn desktop_files(dir: &Path, budget: usize) -> (Vec<PathBuf>, usize) {
             return;
         }
         let Ok(entries) = fs::read_dir(d) else { return };
-        for e in entries.flatten() {
+        // Sorted by file name so that, when two paths reach the same inode (a symlinked
+        // subdirectory alias), the first one in that order always claims it — independent of
+        // readdir's own order, which is unspecified. Bounded by the remaining budget: a
+        // pathological directory is never fully materialized just to be sorted.
+        let remaining = w.budget.saturating_sub(w.looked);
+        let mut entries: Vec<_> = entries.flatten().take(remaining).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
             if w.looked >= w.budget {
                 return;
             }
@@ -170,21 +181,33 @@ fn scan_apps_capped(env: &ScanEnv, max_apps: usize, entries_per_dir: usize) -> V
     apps
 }
 
+/// A regular file the caller can actually execute, checked with `access(2)` rather than the
+/// mode bits: a mode bit set for some other category (or a root-owned file whose only exec bit
+/// belongs to its owner) does not mean this process can run it.
 fn is_executable_file(p: &Path) -> bool {
-    fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    if !fs::metadata(p).is_ok_and(|m| m.is_file()) {
+        return false;
+    }
+    let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else { return false };
+    // SAFETY: `c` is a valid NUL-terminated string for the lifetime of this call; access(2)
+    // only reads it and does not retain the pointer.
+    unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
 }
 
 /// Dot files are skipped (NixOS wrappers' `.foo-wrapped`), as are names that are not UTF-8.
 pub fn scan_commands(path_dirs: &[PathBuf]) -> Vec<String> {
-    scan_commands_capped(path_dirs, MAX_COMMANDS)
+    scan_commands_capped(path_dirs, MAX_COMMANDS, MAX_ENTRIES_PER_PATH_DIR)
 }
 
-/// `scan_commands` with its limit injected (tests use a small one).
-fn scan_commands_capped(path_dirs: &[PathBuf], max: usize) -> Vec<String> {
+/// `scan_commands` with its limits injected (tests use small ones).
+fn scan_commands_capped(path_dirs: &[PathBuf], max: usize, entries_per_dir: usize) -> Vec<String> {
     let mut seen = HashSet::new();
     'dirs: for dir in path_dirs {
         let Ok(entries) = fs::read_dir(dir) else { continue };
-        for e in entries.flatten() {
+        for (looked, e) in entries.flatten().enumerate() {
+            if looked >= entries_per_dir {
+                break;
+            }
             let Ok(name) = e.file_name().into_string() else { continue };
             if name.starts_with('.') || seen.contains(&name) || !is_executable_file(&e.path()) {
                 continue;
@@ -254,7 +277,7 @@ fn spawn_with(env: ScanEnv, run_scan: fn(&ScanEnv) -> Catalog, deliver: impl FnO
 mod tests {
     use super::*;
     use crate::launcher::testing::TempDir;
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::sync::{Mutex, mpsc};
     use std::time::{Duration, Instant};
 
@@ -396,6 +419,47 @@ mod tests {
     }
 
     #[test]
+    fn a_non_utf8_override_is_ignored() {
+        let (r, env) = tree("non-utf8");
+        fs::write(r.join("user/applications/org.example.Terminal.desktop"), b"[Desktop Entry]\nName=\xff\nExec=x\n").unwrap();
+        let apps = scan_apps(&env);
+        let terminal = apps.iter().find(|a| a.id == "org.example.Terminal.desktop").expect("a non-UTF-8 override counts as absent");
+        assert_eq!((terminal.name.as_str(), terminal.path.starts_with(r.join("system"))), ("Example Terminal (system)", true));
+    }
+
+    /// The case above also lacks `Type=`, so it is masked whether or not the bytes are read as
+    /// UTF-8 (`parse` itself rejects a missing `Type`). This one is otherwise a complete,
+    /// showable entry: only its invalid byte distinguishes the two readings.
+    #[test]
+    fn a_non_utf8_name_in_an_otherwise_valid_override_is_ignored() {
+        let (r, env) = tree("non-utf8-valid");
+        fs::write(r.join("user/applications/org.example.Terminal.desktop"), b"[Desktop Entry]\nType=Application\nName=\xff\nExec=x\n")
+            .unwrap();
+        let apps = scan_apps(&env);
+        let terminal = apps.iter().find(|a| a.id == "org.example.Terminal.desktop").expect("a non-UTF-8 override counts as absent");
+        assert_eq!((terminal.name.as_str(), terminal.path.starts_with(r.join("system"))), ("Example Terminal (system)", true));
+    }
+
+    /// Two symlinks in the same applications dir resolving to the same subdirectory (an alias):
+    /// the `seen` dedup by (dev, ino) walks that directory once, through whichever symlink is
+    /// visited first. Sorting by file name before walking makes that choice (and hence the
+    /// resulting id) independent of readdir's own order.
+    #[test]
+    fn two_aliases_to_the_same_subdirectory_give_a_stable_id() {
+        let r = temp("aliases");
+        let apps_dir = r.join("applications");
+        let real = apps_dir.join("real");
+        fs::create_dir_all(&real).unwrap();
+        fs::write(real.join("app.desktop"), "[Desktop Entry]\nType=Application\nName=Aliased App\nExec=aliased-app\n").unwrap();
+        // Created in an order that does not match the expected (sorted) walk order, so a
+        // dependency on readdir order would likely show up as the wrong id picked.
+        symlink(&real, apps_dir.join("zzz-alias")).unwrap();
+        symlink(&real, apps_dir.join("aaa-alias")).unwrap();
+        let env = ScanEnv { app_dirs: vec![apps_dir], path_dirs: vec![], locale: None, desktops: vec![] };
+        assert_eq!(ids(&scan_apps(&env)), ["aaa-alias-app.desktop"], "the alphabetically-first alias claims the id");
+    }
+
+    #[test]
     fn symlink_loops_and_unreadable_dirs_do_not_abort_the_scan() {
         let (r, env) = tree("loops");
         let before = scan_apps(&env).len();
@@ -431,7 +495,7 @@ mod tests {
         for i in 0..8 {
             executable(&bin.join(format!("cmd-{i}")));
         }
-        assert_eq!(scan_commands_capped(std::slice::from_ref(&bin), 5).len(), 5);
+        assert_eq!(scan_commands_capped(std::slice::from_ref(&bin), 5, MAX_ENTRIES_PER_PATH_DIR).len(), 5);
         assert_eq!(scan_commands(&[bin]).len(), 8);
     }
 
@@ -463,6 +527,50 @@ mod tests {
         executable(&b.join("tool"));
         executable(&b.join("other"));
         assert_eq!(scan_commands(&[a, b, r.join("missing")]), ["linked", "other", "tool"]);
+    }
+
+    /// Through `scan_commands_capped` with a small limit: the real one (80,000 entries) would
+    /// write that many files per test run.
+    #[test]
+    fn the_path_scan_looks_at_a_bounded_number_of_entries_per_dir() {
+        let r = temp("path-budget");
+        let bin = r.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for i in 0..10 {
+            executable(&bin.join(format!("cmd-{i}")));
+        }
+        assert_eq!(scan_commands_capped(std::slice::from_ref(&bin), MAX_COMMANDS, 5).len(), 5, "only the first 5 entries looked at");
+        assert_eq!(scan_commands_capped(&[bin], MAX_COMMANDS, MAX_ENTRIES_PER_PATH_DIR).len(), 10);
+    }
+
+    /// A root-owned 0700 file the caller cannot run is not constructible in these tests (we do
+    /// not run as a second, unprivileged user against a root-owned file); this covers the
+    /// ordinary case of a file the caller owns, gated by whether it has an owner-exec bit at all.
+    #[test]
+    fn is_executable_file_respects_the_owner_exec_bit() {
+        let r = temp("access-owner");
+        let file = r.join("script");
+        fs::write(&file, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!is_executable_file(&file), "0600: no exec bit at all");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(is_executable_file(&file), "0700: the owner can execute");
+    }
+
+    /// Unlike `0o600` vs `0o700` above, this tells `access(2)` apart from a bare mode-bits
+    /// check: as the file's owner, POSIX `access()` consults only the owner's permission bits,
+    /// so a file executable for "other" but not for its owner must still read as not executable
+    /// — the same category of mistake as the root-owned case the fix targets, reproduced
+    /// without needing a second uid.
+    #[test]
+    fn is_executable_file_checks_the_callers_own_category_not_any_bit() {
+        let r = temp("access-category");
+        let file = r.join("other-only");
+        fs::write(&file, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o001)).unwrap();
+        if !running_as_root() {
+            assert!(!is_executable_file(&file), "executable for \"other\" only, but we are its owner");
+        }
     }
 
     #[test]
