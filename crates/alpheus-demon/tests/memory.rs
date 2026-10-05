@@ -17,7 +17,10 @@
 
 mod common;
 
-use common::{Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, start_daemon_with};
+use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use common::{Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, launcher, start_daemon_with, wtype, wtype_spawn};
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 const DELAY: Duration = Duration::from_secs(10);
@@ -76,9 +79,200 @@ fn pump(hypr: &FakeHyprland, duration: Duration, n: &mut u64) {
 fn start(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, pw_dump: PwDump) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, outputs);
     let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml, system_bus: Some(&bus.address), pw_dump });
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml, system_bus: Some(&bus.address), pw_dump, ..DaemonOptions::default() });
     assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
     (sway, hypr, d)
+}
+
+/// ≈ 300 synthetic applications, each with an action: the size of a real
+/// desktop's catalog (Mae's has about that many). Synthetic only (no capture).
+fn many_apps() -> Vec<(String, String)> {
+    (0..300)
+        .map(|i| {
+            (
+                format!("alpheus-synthetic-{i}.desktop"),
+                format!(
+                    "[Desktop Entry]\nType=Application\nName=Synthetic app {i}\nGenericName=Generic thing {i}\nKeywords=one;two;three;\nExec=synthetic-{i} %U\nActions=new;\n\n[Desktop Action new]\nName=New window\nExec=synthetic-{i} --new\n"
+                ),
+            )
+        })
+        .collect()
+}
+
+fn start_launcher(name: &str, bus: &PrivateBus, bar_toml: Option<&str>, apps: &[(String, String)]) -> (Sway, FakeHyprland, Daemon) {
+    let files: Vec<(&str, &str)> = apps.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let options = DaemonOptions { bar_toml, system_bus: Some(&bus.address), desktop_files: &files, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// Open, then close, through the socket like Mod+Space: the n-th open and
+/// the n-th close (of any reason).
+fn cycle(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+}
+
+/// Open through the socket, close with a real Escape typed by wtype: the
+/// keyboard is bound (keymap, compose table), and the key that closes arms
+/// sctk's repeat timer (task 12, note 2) — what toggle cycles never touch.
+fn key_cycle(sway: &Sway, d: &Daemon, n: usize) {
+    assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    assert!(wtype(sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+    let log = d.log();
+    let last = log.iter().rev().find(|l| l.contains("launcher closed ("));
+    assert!(last.is_some_and(|l| l.contains("(escape)")), "closed by the key, not otherwise: {last:?}");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_open_latency_under_20ms() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("latency");
+    let (sway, _hypr, d) = start_launcher("latency", &bus, None, &many_apps());
+    std::thread::sleep(Duration::from_secs(2));
+    let mut us = Vec::new();
+    for n in 1..=20 {
+        cycle(&sway, &d, n);
+        us.push(d.last_open_latency_us().expect("the latency is logged"));
+    }
+    us.sort_unstable();
+    let (median, max) = (us[us.len() / 2], us[us.len() - 1]);
+    eprintln!("launcher open latency, 20 opens (request accepted → first frame committed): median {median} µs, max {max} µs; {us:?}");
+    assert!(median < 20_000, "median {median} µs >= 20 ms: report to Mae with these figures");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_open_close_cycles_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("cycles");
+    let (sway, _hypr, d) = start_launcher("cycles", &bus, None, &many_apps());
+    std::thread::sleep(Duration::from_secs(3)); // startup settled, as in pss_under_30mb_and_stable
+    let closed = d.pss_kb();
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
+    // Typed: the keyboard is bound and its keymap and compose table are
+    // compiled — part of what an open launcher costs, measured with it.
+    // One continuous wtype invocation, not two: on headless sway
+    // (WLR_LIBINPUT_NO_DEVICES=1) the seat's only keyboard capability is
+    // wtype's own virtual keyboard, gone the moment its process exits — a
+    // second, separate wtype call would find the launcher already closed
+    // (the first process exiting looks exactly like the keyboard being
+    // unplugged, `new_capability`/`remove_capability` in wayland.rs). One
+    // process, two `-s` delays, keeps that one virtual keyboard alive from
+    // the typing through to the Escape that closes the launcher.
+    let typing = wtype_spawn(&sway, &["-s", "300", "synth", "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500)); // after "synth" is typed, well before Escape fires
+    let open = d.pss_kb();
+    // Still well inside the delay before Escape: the launcher must still be
+    // open when this PSS was read, or it is not measuring what it claims to.
+    assert_eq!(d.count("launcher closed ("), 0, "launcher closed before the 'open' PSS was read: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    // Baseline after one warm-up cycle: the bar's bounded glyph cache now
+    // holds the box's glyphs (same convention as pss_under_30mb_and_stable).
+    let baseline = d.pss_kb();
+    // 50 cycles, 17 of them closed by a typed Escape (a keyboard bound and
+    // released each time), the others by Mod+Space's toggle.
+    for n in 2..=51 {
+        if n % 3 == 0 { key_cycle(&sway, &d, n) } else { cycle(&sway, &d, n) }
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.pss_kb();
+    eprintln!(
+        "launcher PSS: closed {closed} KB, open {open} KB (+{} KB), after one cycle {baseline} KB, after 50 more {end} KB",
+        open.saturating_sub(closed)
+    );
+    assert!(open <= closed + 6 * 1024, "open costs {} KB > 6 MB: report to Mae, never absorb", open - closed);
+    assert!(end <= baseline + 1024, "50 open/close cycles grew PSS: {baseline} -> {end} KB");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_launcher_cycle() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("launcher-rest");
+    let (sway, _hypr, d) = start_launcher("launcher-rest", &bus, Some(AT_REST), &[]);
+    std::thread::sleep(Duration::from_secs(2));
+    let threads = d.threads();
+    // Closed by a typed Escape: a key that closes arms sctk's repeat timer
+    // after the keyboard is released (task 12, note 2); it must fire once
+    // and go, never keep re-arming.
+    key_cycle(&sway, &d, 1);
+    // A script menu whose client goes away: its watch must go with it.
+    let mut client = UnixStream::connect(socket_path(&sway.runtime)).unwrap();
+    client.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()] })).unwrap();
+    assert!(d.wait_for_count("launcher shown on", 2, DELAY), "{:?}", d.log());
+    drop(client);
+    assert!(d.wait_for("launcher closed (close)", DELAY), "{:?}", d.log());
+    // Past REQUEST_DEADLINE: a timer that keeps re-arming, a keyboard repeat
+    // or a watch left behind shows up below as wake-ups.
+    std::thread::sleep(Duration::from_secs(3));
+    let before = d.wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.wakeups().saturating_sub(before);
+    eprintln!("wake-ups at rest after a launcher cycle (5 s): {delta}; threads {} (before the cycle: {threads})", d.threads());
+    assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the launcher was used");
+    assert_eq!(d.threads(), threads, "no thread left by the launcher");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_threads_back_to_baseline() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("launcher-threads");
+    let (sway, _hypr, d) = start_launcher("launcher-threads", &bus, Some(AT_REST), &many_apps());
+    std::thread::sleep(Duration::from_secs(2));
+    let before = d.threads();
+    cycle(&sway, &d, 1);
+    let t = Instant::now();
+    while d.threads() != before {
+        assert!(t.elapsed() < Duration::from_secs(1), "{} threads 1 s after close, {before} before open", d.threads());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Controller carry (task 1 review): a dmenu of 100,000 short lines, open
+/// PSS and its value 1 s after cancel — printed, no assertion (the budgets
+/// above already cover growth and the 6 MB open margin on a realistic
+/// catalog; this is the worst-case dmenu size, reported for the README).
+/// The request itself goes through `alpheus_launch::exchange` on its own
+/// thread, exactly as the shipped client would send it; a typed Escape
+/// cancels it, as a person would.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn large_dmenu_pss_is_reported() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("large-dmenu");
+    let (sway, _hypr, d) = start_launcher("large-dmenu", &bus, None, &[]);
+    std::thread::sleep(Duration::from_secs(2));
+    let closed = d.pss_kb();
+    let socket = socket_path(&sway.runtime);
+    let lines: Vec<String> = (0..100_000).map(|i| format!("entry-{i}")).collect();
+    let menu = std::thread::spawn(move || alpheus_launch::exchange(&socket, &Request::Dmenu { prompt: None, lines }));
+    assert!(d.wait_for("launcher shown on", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // ranked and drawn
+    let open = d.pss_kb();
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert_eq!(menu.join().unwrap(), Ok(Reply::Cancelled));
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let after = d.pss_kb();
+    eprintln!(
+        "large dmenu (100,000 lines) PSS: {closed} KB closed, {open} KB open (+{} KB), {after} KB 1 s after cancel (+{} KB vs closed)",
+        open.saturating_sub(closed),
+        after.saturating_sub(closed)
+    );
 }
 
 #[test]
@@ -136,7 +330,11 @@ fn startup_pss_per_source() {
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
-        ("everything", "\"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\""),
+        ("+ launcher", "\"launcher\", \"workspaces\", \"window\", \"clock\""),
+        (
+            "everything",
+            "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\"",
+        ),
     ];
     let mut report = Vec::new();
     for (i, (what, modules)) in cases.iter().enumerate() {

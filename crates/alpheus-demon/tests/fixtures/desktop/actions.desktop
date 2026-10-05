@@ -1,0 +1,26 @@
+[Desktop Entry]
+Type=Application
+Name=Example Browser
+GenericName=Web browser
+Exec=example-browser %u
+Actions=new-window;new-private-window;missing-group;no-exec;bad-exec;
+
+[Desktop Action new-private-window]
+Name=New private window
+Name[fr]=Nouvelle fenêtre privée
+Exec=example-browser --private-window %u
+
+[Desktop Action new-window]
+Name=New window
+Exec=example-browser --new-window %u
+
+[Desktop Action no-exec]
+Name=No exec
+
+[Desktop Action bad-exec]
+Name=Bad exec
+Exec=example-browser %z
+
+[Desktop Action unlisted]
+Name=Unlisted
+Exec=example-browser --unlisted

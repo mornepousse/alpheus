@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 /// `panic!("{}", x)` (the common case) give `&str` or `String`; anything
 /// else (a value that doesn't implement `Display`) stays anonymous rather
 /// than wrongly trying to show it.
-fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
+pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = p.downcast_ref::<&str>() {
         s.to_string()
     } else if let Some(s) = p.downcast_ref::<String>() {

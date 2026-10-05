@@ -1,0 +1,2 @@
+Name=Example Mail (broken override: no group header)
+Exec=example-mail

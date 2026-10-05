@@ -44,7 +44,7 @@ fn neighbor<'a>(bar: &'a Bar, output: &str, next: bool) -> Option<&'a Workspace>
 /// single pass over `template` (the bar.toml text, never the
 /// already-substituted result): a value that would literally contain a
 /// placeholder (unlikely, but possible) is never run back through the mill.
-fn substitute(template: &str, values: &[(&str, &str)]) -> String {
+pub(crate) fn substitute(template: &str, values: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     'next: while let Some(i) = rest.find('{') {
@@ -88,6 +88,8 @@ fn tab(m: ModuleId) -> Option<&'static str> {
 
 fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
     match (m, b) {
+        // Opens the launcher inside the daemon (`toggles_launcher`): no command.
+        (ModuleId::Launcher, _) => None,
         // -l 1.0: never beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
@@ -122,6 +124,12 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
         }
         Target::Module(m) => module_command(bar, *m, b),
     }
+}
+
+/// Left click on the launcher button: the daemon toggles its launcher
+/// itself, nothing is run.
+pub fn toggles_launcher(target: &Target, b: Button) -> bool {
+    b == Button::Left && *target == Target::Module(ModuleId::Launcher)
 }
 
 /// Runs the command without waiting for it; a failure goes to the log.
@@ -213,13 +221,14 @@ mod tests {
     #[test]
     fn click_chain_coordinate_cell_zone_command() {
         let b = bar();
-        let g = b.grid("HDMI-A-1", 100); // "4" in cells 5 to 13
+        let g = b.grid("HDMI-A-1", 100); // launcher button in cell 1, "4" in cells 9 to 17
         // 8 px advance at scale 1, 16 px at scale 2: same cell.
-        assert_eq!(click(&b, "HDMI-A-1", &g, 52.0, 1, 8.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
-        assert_eq!(click(&b, "HDMI-A-1", &g, 52.0, 2, 16.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+        assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 1, 8.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+        assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 2, 16.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
         assert_eq!(click(&b, "HDMI-A-1", &g, 4.0, 1, 8.0, Button::Left), None, "margin");
+        assert_eq!(click(&b, "HDMI-A-1", &g, 12.0, 1, 8.0, Button::Left), None, "launcher button: no command");
         assert_eq!(click(&b, "HDMI-A-1", &g, 400.0, 1, 8.0, Button::Left), None, "title");
-        assert_eq!(click(&b, "HDMI-A-1", &g, 52.0, 1, 8.0, Button::WheelDown), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+        assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 1, 8.0, Button::WheelDown), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
     }
 
     fn bar() -> Bar {
@@ -386,6 +395,21 @@ mod tests {
             "only {{tab}} is a placeholder here"
         );
         assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Left), argv(&["foot", "htop"]));
+    }
+
+    #[test]
+    fn only_a_left_click_on_the_launcher_button_toggles_the_launcher() {
+        let b = full();
+        let l = Target::Module(ModuleId::Launcher);
+        assert!(toggles_launcher(&l, Button::Left));
+        for other in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert!(!toggles_launcher(&l, other), "{other:?}");
+            assert_eq!(command(&b, "eDP-1", &l, other), None, "{other:?}");
+        }
+        assert_eq!(command(&b, "eDP-1", &l, Button::Left), None, "the daemon opens it itself: no command");
+        for t in [Target::Module(ModuleId::Volume), Target::Module(ModuleId::Clock), workspace("1", "eDP-1")] {
+            assert!(!toggles_launcher(&t, Button::Left), "{t:?}");
+        }
     }
 
     #[test]

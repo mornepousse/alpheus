@@ -2,5 +2,5 @@
 source: crates/alpheus-demon/src/layout.rs
 expression: snapshot(&g)
 ---
-  2·  4!····+  5      │ Sun 4 Oct 14:05 
-.AAAAeeeeeeeeemmm....mmmmmmmmmmmmmGGGGG.
+ 󰍉 │  2·  4!····+  5  │ Sun 4 Oct 14:05 
+..mmmAAAAeeeeeeeeemmmmmmmmmmmmmmmmGGGGG.

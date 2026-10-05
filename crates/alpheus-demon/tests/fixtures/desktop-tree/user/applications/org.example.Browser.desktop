@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Example Browser
+Exec=example-browser %u
+NoDisplay=true

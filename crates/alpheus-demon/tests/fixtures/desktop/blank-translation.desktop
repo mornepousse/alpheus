@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Files
+Name[fr]=
+Comment=Manage your files
+Comment[fr]=
+Exec=example-files

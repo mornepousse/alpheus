@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Example Desktop Tool
+Exec=example-desktop-tool
+OnlyShowIn=GNOME;KDE;

@@ -186,14 +186,24 @@ fn unblock_signals() -> std::io::Result<()> {
 /// lets `do_exec` proceed. Runs between fork and exec: only async-signal-safe
 /// calls (sigprocmask via `unblock_signals`, fork, `_exit`); stdio, process
 /// group and the rest of `Command`'s setup already happened before this
-/// closure runs, and both forked copies inherit them identically.
+/// closure runs, and both forked copies inherit them identically. The
+/// grandchild then calls `setsid`: its own session (spec of the launcher,
+/// § 1, "fully detached, own session"), so no terminal or session leader of
+/// ours can ever send it SIGHUP. It is not a group leader (the intermediate
+/// is), so `setsid` cannot fail with EPERM; async-signal-safe.
 fn detach() -> std::io::Result<()> {
     unblock_signals()?;
-    // SAFETY: fork(2) and _exit(2) are async-signal-safe; nothing allocates
-    // and no `Drop` runs between the fork and the `_exit`/return below.
+    // SAFETY: fork(2), setsid(2) and _exit(2) are async-signal-safe; nothing
+    // allocates and no `Drop` runs between the fork and the `_exit`/return below.
     match unsafe { libc::fork() } {
         -1 => Err(std::io::Error::last_os_error()),
-        0 => Ok(()),                    // grandchild: proceed to exec `prog`.
+        0 => {
+            // Grandchild: its own session, then proceed to exec `prog`.
+            if unsafe { libc::setsid() } == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
         _ => unsafe { libc::_exit(0) }, // intermediate: nothing left to do.
     }
 }
@@ -206,11 +216,14 @@ fn detach() -> std::io::Result<()> {
 /// nearest subreaper) the instant the intermediate exits (see `detach`), so
 /// no zombie is ever left for alpheus to clean up, and nothing of ours keeps
 /// running once `prog` has started — a click never leaves a resident reaper
-/// thread behind for as long as the program runs. Same guarantees as the
-/// pre-double-fork implementation: own process group, signal mask unblocked,
-/// stdio nulled, not killed by `kill_running` (never registered in
-/// `Running`: a spawned program outlives the daemon, e.g. the lock screen
-/// must survive alpheus restarting).
+/// thread behind for as long as the program runs. The grandchild's
+/// protection is now its own session (`setsid` in `detach`), not merely a
+/// process group as before the double fork; the intermediate below still
+/// gets its own process group, though it only lives long enough to fork
+/// again and exit. Signal mask unblocked, stdio nulled, not killed by
+/// `kill_running` (never registered in `Running`: a spawned program
+/// outlives the daemon, e.g. the lock screen must survive alpheus
+/// restarting).
 fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
     let mut command = Command::new(prog);
     command
@@ -218,11 +231,12 @@ fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // Separate process group: closing alpheus's window (SIGHUP to
-        // the terminal's group) does not kill the lock screen.
+        // The intermediate's own process group (it only lives long enough
+        // to fork again and exit; the grandchild's protection is its own
+        // session instead, via setsid in `detach`).
         .process_group(0);
     // SAFETY: `detach` runs in the child between fork and exec and only
-    // makes async-signal-safe calls (sigprocmask, fork, _exit).
+    // makes async-signal-safe calls (sigprocmask, fork, setsid, _exit).
     unsafe { command.pre_exec(detach) };
     let mut intermediate = command.spawn().map_err(io_err)?;
     let pid = intermediate.id();
@@ -585,6 +599,30 @@ mod tests {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("the program is still running");
         let ppid: u32 = status.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok()).unwrap();
         assert_ne!(ppid, std::process::id(), "the spawned program is our own child: not detached");
+    }
+
+    /// Session id of process `pid`: field 6 of /proc/<pid>/stat, counted
+    /// after the command name's closing parenthesis (a name may hold spaces).
+    fn session_of(pid: i32) -> i32 {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).expect("process gone");
+        let after = &stat[stat.rfind(')').unwrap() + 2..];
+        after.split(' ').nth(3).unwrap().parse().unwrap()
+    }
+
+    /// The program `spawn` starts leads its own session (`setsid` in the
+    /// grandchild): neither our session nor our terminal's, so closing
+    /// whatever started alpheus never sends it SIGHUP.
+    #[test]
+    fn spawned_child_has_its_own_session() {
+        let f = std::env::temp_dir().join(format!("alpheus-spawn-{}-session", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("echo $$ > {}; sleep 1", f.display());
+        exec().spawn("sh", &["-c", &script]).unwrap();
+        let pid = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        let ours = session_of(std::process::id() as i32);
+        assert_eq!(session_of(pid), pid, "the program leads its own session");
+        assert_ne!(session_of(pid), ours, "not in our session");
     }
 
     /// `spawn`'s own child (the intermediate — see `detach`) must be reaped

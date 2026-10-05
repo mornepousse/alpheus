@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Example Editor
+GenericName=Text editor
+Comment=Edit plain text files
+Icon=example-editor
+Exec=example-editor %F
+Keywords=text;notes;
+Terminal=false
+StartupWMClass=ExampleEditor
+Categories=Utility;TextEditor;

@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Quoted
+Exec="/opt/Example App/bin/example" --title "Hello \\"World\\"" --price "\\$5" --path "C:\\\\tmp" %u

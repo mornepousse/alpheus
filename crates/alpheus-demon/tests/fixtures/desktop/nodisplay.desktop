@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Example Helper
+Exec=example-helper %u
+NoDisplay=true
+MimeType=x-scheme-handler/example;

@@ -5,13 +5,18 @@
 
 use crate::actions::{self, Button, Wheel};
 use crate::grid::Grid;
+use crate::launch::Mail;
+use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
 use crate::state::Bar;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
+use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
+use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -24,12 +29,14 @@ use smithay_client_toolkit::shm::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
 };
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::log::write as log;
 
@@ -87,6 +94,17 @@ fn log_text(name: &str, id: u32) -> String {
 
 fn log_name(name: &str, output: &wl_output::WlOutput) -> String {
     log_text(name, output.id().protocol_id())
+}
+
+/// Whether `seat` is the one the bar tracks (`App::seat`): the same check
+/// repeated in `new_capability`, `remove_capability` and `remove_seat` — on
+/// a multi-seat session, only a change on OUR seat is ours to react to, a
+/// capability lost or gained on another seat is not (review items M3/M4,
+/// final review slice 3). Generic over `PartialEq`, like `should_restore`
+/// below: a `wl_seat::WlSeat` cannot be instantiated outside a real
+/// connection, so this stays testable without Wayland.
+pub(crate) fn tracks_seat<T: PartialEq>(tracked: &Option<T>, seat: &T) -> bool {
+    tracked.as_ref() == Some(seat)
 }
 
 /// Should the bar be restored on `output` after the compositor closed its
@@ -182,6 +200,47 @@ fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, St
         .map_err(|e| e.to_string())
 }
 
+/// Which of `buffers` to paint a `w` × `h` physical frame into, allocating
+/// from `pool` when `plan_buffer` says so; None on an allocation failure
+/// (logged). Shared by the bar's surfaces and the launcher's box.
+pub(crate) fn pick_buffer(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut SlotPool, w: u32, h: u32) -> Option<usize> {
+    let states: Vec<((u32, u32), bool)> = buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
+    match plan_buffer(&states, (w, h)) {
+        BufferPlan::Resize => {
+            buffers.clear();
+            match new_buffer(pool, w, h) {
+                Ok(buffer) => buffers.push((buffer, w, h)),
+                Err(err) => {
+                    log(&format!("buffer {w}×{h}: {err}"));
+                    return None;
+                }
+            }
+            Some(0)
+        }
+        BufferPlan::Grow => {
+            match new_buffer(pool, w, h) {
+                Ok(buffer) => buffers.push((buffer, w, h)),
+                Err(err) => {
+                    log(&format!("buffer {w}×{h}: {err}"));
+                    return None;
+                }
+            }
+            // Two buffers are enough to alternate forever in steady state
+            // (see `BufferPlan`'s doc): a third was only ever allocated
+            // because neither existing one was free yet. Drop the oldest
+            // rather than let the list grow without bound in a pathological
+            // case (a compositor slower still to release) — safe even if
+            // it's still busy (`Buffer`'s own drop defers its destruction to
+            // the eventual release).
+            while buffers.len() > 2 {
+                buffers.remove(0);
+            }
+            Some(buffers.len() - 1)
+        }
+        BufferPlan::Reuse(i) => Some(i),
+    }
+}
+
 struct Surface {
     output: wl_output::WlOutput,
     name: String,
@@ -206,19 +265,19 @@ struct Surface {
 
 pub struct App {
     registry: RegistryState,
-    outputs: OutputState,
-    seats: SeatState,
-    shm: Shm,
-    compositor: CompositorState,
-    layers: LayerShell,
+    pub(crate) outputs: OutputState,
+    pub(crate) seats: SeatState,
+    pub(crate) shm: Shm,
+    pub(crate) compositor: CompositorState,
+    pub(crate) layers: LayerShell,
     pool: SlotPool,
     surfaces: Vec<Surface>,
-    pointer: Option<ThemedPointer>,
-    wheel: Wheel,
+    pub(crate) pointer: Option<ThemedPointer>,
+    pub(crate) wheel: Wheel,
     pub bar: Bar,
-    palette: Palette,
-    fonts: Fonts,
-    exec: Arc<dyn Executor>,
+    pub(crate) palette: Palette,
+    pub(crate) fonts: Fonts,
+    pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
     /// Raised by a message that changed the display (channel, clock):
     /// redrawn exactly once after `loop.dispatch()` returns, not on every
@@ -234,6 +293,33 @@ pub struct App {
     /// `pending_restores`), so a paired `output_destroyed` of the SAME
     /// batch is taken into account instead of racing it.
     pending_restore: Vec<wl_output::WlOutput>,
+    /// First seat announced: the launcher binds its keyboard on it while open.
+    pub(crate) seat: Option<wl_seat::WlSeat>,
+    /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
+    /// scrims to their output (no full-output buffer).
+    pub(crate) viewporter: Option<WpViewporter>,
+    /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
+    /// connections, the dmenu client watch.
+    pub loop_handle: Option<LoopHandle<'static, App>>,
+    /// The launcher while open; None at rest (nothing of it resident).
+    pub(crate) launcher: Option<OpenLauncher>,
+    /// Bumped at each open: a scan result from an older open is ignored.
+    pub(crate) launcher_generation: u64,
+    /// The loop's mailbox (launch.rs sets it): a scan posts its catalog there.
+    pub(crate) mail: Option<channel::Sender<Mail>>,
+    /// Raised by a `Msg::Compositor` message, consumed once per
+    /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
+    /// are fed at most once per pass, never once per message — a burst
+    /// (e.g. niri) can carry several in the same pass, and `set_windows` is
+    /// not cheap.
+    windows_dirty: bool,
+    /// When the scan `spawn_scan` currently allows (at most one at a time)
+    /// was started; `None` once it has delivered. Lets a refusal while
+    /// reopening (`host::launcher_open_apps`) tell a quick reopen (wait
+    /// quietly, adopt that scan's result) from one that has run
+    /// suspiciously long (show the message after all) — task 13 fix round,
+    /// review item 1.
+    pub(crate) scan_started: Option<Instant>,
 }
 
 impl App {
@@ -249,6 +335,8 @@ impl App {
         let layers = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell unavailable: {e}"))?;
         let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm: {e}"))?;
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
+        // Optional: without it, the launcher has no click-outside scrim (logged at open).
+        let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
         Ok(App {
             registry: RegistryState::new(globals),
             outputs: OutputState::new(globals, qh),
@@ -268,6 +356,14 @@ impl App {
             dirty: false,
             awaiting_configure: Vec::new(),
             pending_restore: Vec::new(),
+            seat: None,
+            viewporter,
+            loop_handle: None,
+            launcher: None,
+            launcher_generation: 0,
+            mail: None,
+            windows_dirty: false,
+            scan_started: None,
         })
     }
 
@@ -356,41 +452,7 @@ impl App {
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
         }
-        let states: Vec<((u32, u32), bool)> = s.buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
-        let used = match plan_buffer(&states, (w, h)) {
-            BufferPlan::Resize => {
-                s.buffers.clear();
-                match new_buffer(pool, w, h) {
-                    Ok(buffer) => s.buffers.push((buffer, w, h)),
-                    Err(err) => {
-                        log(&format!("buffer {w}×{h}: {err}"));
-                        return;
-                    }
-                }
-                0
-            }
-            BufferPlan::Grow => {
-                match new_buffer(pool, w, h) {
-                    Ok(buffer) => s.buffers.push((buffer, w, h)),
-                    Err(err) => {
-                        log(&format!("buffer {w}×{h}: {err}"));
-                        return;
-                    }
-                }
-                // Two buffers are enough to alternate forever in steady
-                // state (see `BufferPlan`'s doc): a third was only ever
-                // allocated because neither existing one was free yet.
-                // Drop the oldest rather than let the list grow without
-                // bound in a pathological case (a compositor slower still
-                // to release) — safe even if it's still busy (`Buffer`'s
-                // own drop defers its destruction to the eventual release).
-                while s.buffers.len() > 2 {
-                    s.buffers.remove(0);
-                }
-                s.buffers.len() - 1
-            }
-            BufferPlan::Reuse(i) => i,
-        };
+        let Some(used) = pick_buffer(&mut s.buffers, pool, w, h) else { return };
         // Expected to succeed (`plan_buffer` already checked free-ness for
         // `Reuse`, and a buffer fresh out of `new_buffer` is always
         // inactive): `None` here is defensive, never seen in practice.
@@ -409,19 +471,59 @@ impl App {
         s.last = Some(grid);
     }
 
-    fn click(&mut self, i: usize, x: f64, b: Button) {
+    /// `launcher_was_open`: whether the launcher was open right before this
+    /// press (`pointer_frame` already closed it, as a click outside, before
+    /// calling here): the same press must not reopen it (`toggles_launcher`).
+    fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
-        let s = &self.surfaces[i];
-        let Some(grid) = &s.last else { return };
-        if let Some(argv) = actions::click(&self.bar, &s.name, grid, x, e, advance, b) {
-            actions::run(self.exec.as_ref(), &argv);
+        let toggles = {
+            let Some(grid) = &self.surfaces[i].last else { return };
+            grid.target_at(painter::column_under(x, e, advance)).is_some_and(|t| actions::toggles_launcher(t, b))
+        };
+        match decide_click(toggles, launcher_was_open) {
+            ClickDecision::ToggleLauncher => self.launcher_toggle(qh),
+            ClickDecision::Nothing => {}
+            ClickDecision::RunBarAction => {
+                let s = &self.surfaces[i];
+                let Some(grid) = &s.last else { return };
+                if let Some(argv) = actions::click(&self.bar, &s.name, grid, x, e, advance, b) {
+                    actions::run(self.exec.as_ref(), &argv);
+                }
+            }
         }
+    }
+}
+
+/// What a press on the bar does, decided purely (tested without Wayland):
+/// the launcher button toggles the launcher, UNLESS this very press just
+/// closed it as a click outside (`pointer_frame` closes before calling
+/// `click`) — then it is swallowed instead of reopening it. Anywhere else,
+/// the bar's own action (`actions::click`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickDecision {
+    ToggleLauncher,
+    Nothing,
+    RunBarAction,
+}
+
+fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecision {
+    match (toggles_launcher, launcher_was_open) {
+        (true, false) => ClickDecision::ToggleLauncher,
+        (true, true) => ClickDecision::Nothing,
+        (false, _) => ClickDecision::RunBarAction,
     }
 }
 
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): a panic inside `launcher_scale` must never make a
+        // BAR surface's own scale change look handled.
+        if self.launcher_owns_box(surface) {
+            self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
+            return;
+        }
         if let Some(i) = self.index(surface) {
             if self.surfaces[i].scale != f {
                 self.surfaces[i].scale = f;
@@ -442,6 +544,9 @@ impl OutputHandler for App {
     }
 
     fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        // Hot-plugged while the launcher is open: it gets a scrim too, so a
+        // click on it closes the launcher like any output already shown had.
+        self.launcher_guarded("output added", |app| app.launcher_output_added(qh, output.clone()));
         self.place(qh, output);
     }
 
@@ -458,6 +563,7 @@ impl OutputHandler for App {
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -476,6 +582,14 @@ impl OutputHandler for App {
 
 impl LayerShellHandler for App {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): same reasoning as `scale_factor_changed`. Checked
+        // before the bar's own restore logic below even gets a chance to
+        // read: a launcher surface never goes through it.
+        if self.launcher_owns_surface(layer.wl_surface()) {
+            self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
+            return; // a launcher surface: the bar's restore logic is not involved
+        }
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
         // on, never a stop here. But if the output still exists (see
@@ -512,6 +626,12 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): same reasoning as `scale_factor_changed`.
+        if self.launcher_owns_surface(layer.wl_surface()) {
+            self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
+            return;
+        }
         let Some(i) = self.index(layer.wl_surface()) else { return };
         // First configure of THIS surface: the restore (if there was one
         // pending) succeeded, the output can again be restored in the
@@ -534,9 +654,16 @@ impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
     }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.seat.is_none() {
+            self.seat = Some(seat);
+        }
+    }
 
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
         if c == Capability::Pointer && self.pointer.is_none() {
             let surface = self.compositor.create_surface(qh);
             match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
@@ -544,20 +671,47 @@ impl SeatHandler for App {
                 Err(e) => log(&format!("pointer unavailable: {e}")),
             }
         }
-    }
-
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, c: Capability) {
-        if c == Capability::Pointer {
-            self.pointer = None;
+        // A keyboard appearing while the launcher is open (virtual keyboard, a
+        // keyboard plugged in): bind it now. At rest: nothing is bound. On a
+        // multi-seat session, only the seat the bar already tracks
+        // (`self.seat`) is ours — a keyboard on another seat is not. Guarded
+        // (review item M6, final review slice 3): a launcher error here must
+        // close the launcher, never take the bar down with it.
+        if c == Capability::Keyboard && self.launcher_is_open() && tracks_seat(&self.seat, &seat) {
+            self.launcher_guarded("keyboard added", |app| app.launcher_bind_keyboard(qh, &seat));
         }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
+        if c == Capability::Pointer {
+            self.pointer = None;
+        }
+        // Same multi-seat check as `new_capability`: another seat losing its
+        // keyboard must not forget about ours. Guarded, same reason as above.
+        if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
+            self.launcher_guarded("keyboard removed", |app| app.launcher_release_keyboard());
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if tracks_seat(&self.seat, &seat) {
+            self.seat = None;
+            // The seat itself is gone, not just one of its capabilities: any
+            // keyboard bound through it (the launcher's, while open) goes
+            // with it — `remove_capability` alone never fires for this case
+            // (review item M3, final review slice 3). Guarded, same reason
+            // as `new_capability`/`remove_capability` above.
+            self.launcher_guarded("seat removed", |app| app.launcher_release_keyboard());
+        }
+    }
 }
 
 impl PointerHandler for App {
-    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
+            if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
             let Some(i) = self.index(&ev.surface) else { continue };
             match &ev.kind {
                 PointerEventKind::Enter { .. } => {
@@ -566,13 +720,21 @@ impl PointerHandler for App {
                     }
                 }
                 PointerEventKind::Press { button, .. } => {
+                    // A click on the bar while the launcher is open is a click
+                    // outside it: close first, then the bar's own action — but
+                    // the same press must not then reopen it through the
+                    // launcher button (`click`'s `launcher_was_open`).
+                    let was_open = self.launcher_is_open();
+                    if was_open {
+                        self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
+                    }
                     if let Some(b) = actions::button(*button) {
-                        self.click(i, ev.position.0, b);
+                        self.click(qh, i, ev.position.0, b, was_open);
                     }
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        self.click(i, ev.position.0, b);
+                        self.click(qh, i, ev.position.0, b, false);
                     }
                     // End of gesture (notched wheel released, touchpad
                     // lifted): nothing to carry over to the next gesture.
@@ -608,6 +770,10 @@ delegate_shm!(App);
 delegate_layer!(App);
 delegate_seat!(App);
 delegate_pointer!(App);
+delegate_keyboard!(App);
+// wp_viewporter and wp_viewport have no events.
+delegate_noop!(App: ignore WpViewporter);
+delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
 
 impl crate::launch::DeferredRedraw for App {
@@ -622,9 +788,26 @@ impl crate::launch::DeferredRedraw for App {
     }
 }
 
+impl crate::launch::WindowsFeed for App {
+    fn windows_dirty_mut(&mut self) -> &mut bool {
+        &mut self.windows_dirty
+    }
+    fn feed_windows_now(&mut self) {
+        self.launcher_windows_changed();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launcher_button_click_toggles_unless_this_press_just_closed_it() {
+        assert_eq!(decide_click(true, false), ClickDecision::ToggleLauncher);
+        assert_eq!(decide_click(true, true), ClickDecision::Nothing, "the same press that closed it as a click outside must not reopen it");
+        assert_eq!(decide_click(false, true), ClickDecision::RunBarAction, "elsewhere on the bar: its own action");
+        assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
+    }
 
     #[test]
     fn buffer_size_accounts_for_scale() {
@@ -677,6 +860,16 @@ mod tests {
         let target = target_pool(sum * POOL_OVERSIZE_FACTOR + 1, &[small, large]);
         assert_eq!(target, Some(sum * 2));
         assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
+    }
+
+    /// Review items M3/M4, final review slice 3: the same check used by
+    /// `new_capability`, `remove_capability` and `remove_seat` to tell our
+    /// seat apart from any other on a multi-seat session.
+    #[test]
+    fn tracks_seat_only_matches_the_tracked_one() {
+        assert!(tracks_seat(&Some(1), &1), "the tracked seat");
+        assert!(!tracks_seat(&Some(1), &2), "a different seat");
+        assert!(!tracks_seat(&None, &1), "no seat tracked at all");
     }
 
     #[test]
