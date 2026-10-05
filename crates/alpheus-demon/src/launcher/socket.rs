@@ -203,6 +203,15 @@ impl Conn {
         self.received
     }
 
+    /// When this connection was accepted: the latency the daemon logs
+    /// (spec § 3, "open latency < 20 ms") starts here, not once the request
+    /// has been read — a slow or large request must count against the
+    /// budget too, not be hidden by starting the clock late (task 13 fix
+    /// round, review item 4).
+    pub fn accepted_at(&self) -> Instant {
+        self.accepted_at
+    }
+
     pub fn expired(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.accepted_at) >= REQUEST_DEADLINE
     }
@@ -215,6 +224,17 @@ impl Conn {
     /// Keeps the connection for a dmenu answer.
     pub fn into_pending(self) -> Pending {
         Pending { stream: self.stream }
+    }
+
+    /// A Conn and the client's end, for unit tests (no listening socket, no
+    /// `connect` — the guardrail that keeps every compositor connection in
+    /// `src/sources/` greps for that literal text anywhere in `src/`, so
+    /// test code here uses `UnixStream::pair` instead, like `Pending::pair`
+    /// below).
+    #[cfg(test)]
+    pub(crate) fn pair() -> (Conn, UnixStream) {
+        let (ours, theirs) = UnixStream::pair().expect("socketpair");
+        (Conn { stream: ours, decoder: RequestDecoder::new(), accepted_at: Instant::now(), received: 0 }, theirs)
     }
 }
 
@@ -263,6 +283,22 @@ mod tests {
         assert!(peer_allowed(1000, 1000));
         assert!(!peer_allowed(0, 1000), "not even root: the socket is the user's");
         assert!(!peer_allowed(1001, 1000));
+    }
+
+    /// Review item 4: `accepted_at` must be the moment the connection was
+    /// taken, fixed from then on — not recomputed later (e.g. once the
+    /// request has been read). The daemon's open-latency log (spec § 3)
+    /// relies on it covering "request accepted → first frame" in full,
+    /// including however long the read itself then takes.
+    #[test]
+    fn accepted_at_is_fixed_at_construction_not_recomputed_later() {
+        let (conn, _client) = Conn::pair();
+        let at = conn.accepted_at();
+        // Real time passes between construction and whenever something
+        // finally asks for `accepted_at` again.
+        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(conn.accepted_at(), at, "the same value every time, not Instant::now() recomputed on each call");
+        assert!(Instant::now() > at, "sanity: time actually did pass");
     }
 
     #[test]

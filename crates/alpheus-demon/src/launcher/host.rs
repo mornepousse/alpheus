@@ -23,7 +23,16 @@ use smithay_client_toolkit::reexports::calloop::{Interest, Mode, PostAction};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::io;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long a scan `spawn_scan` refused (`WouldBlock`) must have been
+/// running before a reopen shows the "could not scan" message instead of
+/// waiting quietly for it (review item 1): a normal scan finishes well
+/// under this (bounded file counts and depth, task 5); one still going past
+/// it is more likely stuck (a hung NFS/FUSE mount) than merely slow, and
+/// the daemon's own `REQUEST_DEADLINE` already uses the same order of
+/// magnitude for "too long" elsewhere on this socket.
+const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 
 fn guarded_with<R>(what: &str, f: impl FnOnce() -> R, log: &mut dyn FnMut(&str)) -> Option<R> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
@@ -79,9 +88,30 @@ pub fn open_after(open: Option<bool>, action: &Action) -> Option<bool> {
     }
 }
 
-/// A finished scan is for the open launcher only if its generation is the open one's.
-pub fn catalog_is_current(open_generation: Option<u64>, generation: u64) -> bool {
-    open_generation == Some(generation)
+/// A finished scan is for the open launcher if its generation is the open
+/// one's (the normal case), or — a quick reopen while the previous open's
+/// scan is still running (review item 1): `spawn_scan` allows only one scan
+/// at a time, so a reopen whose own attempt was refused (`WouldBlock`,
+/// `launcher_open_apps`) never starts a second one — if the open launcher
+/// has not received a catalog of its own yet, whatever arrives next can
+/// only be that same in-flight scan's answer, whichever generation it
+/// carries.
+pub fn catalog_is_current(open: Option<(u64, bool)>, generation: u64) -> bool {
+    match open {
+        Some((g, has_catalog)) => g == generation || !has_catalog,
+        None => false,
+    }
+}
+
+/// Whether a scan refusal (`spawn_scan`'s `Err`) is shown as an error in the
+/// box: any refusal other than `WouldBlock`, right away — `WouldBlock` only
+/// once the scan it is waiting on has been running at least `SCAN_STUCK_AFTER`
+/// (`running_for`, `None` when no scan is known to be in flight at all).
+/// A quick close-then-reopen while a normal scan is still finishing must
+/// look like nothing happened, not like a failure; one that has run
+/// suspiciously long deserves to say so (review item 1).
+pub(crate) fn scan_refusal_is_an_error(kind: io::ErrorKind, running_for: Option<Duration>) -> bool {
+    kind != io::ErrorKind::WouldBlock || running_for.is_some_and(|d| d >= SCAN_STUCK_AFTER)
 }
 
 /// launcher.toml from `config_dir`: absent → defaults silently, invalid → defaults + one `log` call.
@@ -130,7 +160,13 @@ impl App {
 
     /// After a panic: the model may be in any state, so it is never called
     /// again — only dropped, itself guarded (a second panic must not take
-    /// the bar down either).
+    /// the bar down either). Caveat `guarded` cannot cover: if
+    /// `reply_on_close` panics here AND `OpenLauncher`'s `Drop` (run right
+    /// after, dropping `open` at the end of this closure) ALSO panics while
+    /// the first one is still unwinding, that is a panic during unwind —
+    /// Rust aborts the process then, past any `catch_unwind`. Not expected
+    /// (`Drop` only releases local resources: the keyboard, the client
+    /// watch), so not specially guarded against.
     fn launcher_fail(&mut self) {
         let Some(open) = self.launcher.take() else { return };
         let _ = guarded("close", move || {
@@ -155,7 +191,10 @@ impl App {
     }
 
     fn request_now(&mut self, qh: &QueueHandle<App>, request: Request, conn: Conn) {
-        let requested_at = Instant::now();
+        // The connection's own accepted_at, not "now": the open latency the
+        // daemon logs (spec § 3) covers request accepted → first frame, not
+        // just the part after this request was fully read (review item 4).
+        let requested_at = conn.accepted_at();
         let open = self.launcher.as_ref().map(|o| o.model.is_script());
         match decide(request, open) {
             (Action::OpenScript { prompt, lines }, _) => {
@@ -169,11 +208,10 @@ impl App {
             }
             (action, reply) => {
                 // Answered first: alpheus-launch returns at once, whatever the
-                // opening then costs.
-                match reply {
-                    Some(r) => conn.reply(&r),
-                    None => drop(conn),
-                }
+                // opening then costs. `decide` never pairs anything but
+                // OpenScript (matched above) with None (review item 6: this
+                // used to match `reply` with an unreachable `None` arm).
+                conn.reply(&reply.expect("decide: only OpenScript answers None, matched above"));
                 match action {
                     Action::OpenApps => self.launcher_open_apps(qh, requested_at),
                     Action::Close(reason) => self.launcher_close(reason),
@@ -209,38 +247,67 @@ impl App {
             }
             None => History::empty(0),
         };
-        // The scan's environment first: its $PATH is also the one activation
-        // checks programs against (RunContext::path_dirs, via
+        // The scan's environment, read once: its $PATH is also the one
+        // activation checks programs against (RunContext::path_dirs, via
         // `open.model.path_dirs` — the single copy, task 13), so the
         // launcher never says "found" for a list and "missing" for a
-        // launch.
+        // launch. Set on the model BEFORE `launcher_open`, which then keeps
+        // it as is for the app launcher (review item 6: this used to read
+        // the environment a second time, inside `launcher_open`, only to
+        // overwrite it with the same value right back here).
         let env = ScanEnv::from_env(|k| std::env::var_os(k));
-        let model = Launcher::for_apps(config, self.launcher_toplevels(), history, now);
+        let mut model = Launcher::for_apps(config, self.launcher_toplevels(), history, now);
+        model.path_dirs = env.path_dirs.clone();
         self.launcher_open(qh, model, None, requested_at);
         let Some(open) = self.launcher.as_mut() else { return };
-        open.model.path_dirs = env.path_dirs.clone();
         let generation = open.generation;
         let Some(tx) = self.mail.clone() else { return };
-        if let Err(e) = scan::spawn_scan(env, move |catalog| {
+        // How long the scan this reopen is about to wait on (if refused) has
+        // already been running: computed BEFORE `spawn_scan`, which is the
+        // one call that would start a brand new one (review item 1).
+        let running_for = self.scan_started.map(|t| t.elapsed());
+        match scan::spawn_scan(env, move |catalog| {
             let _ = tx.send(Mail::Catalog { generation, catalog });
         }) {
-            // A previous scan is still stuck (e.g. a hung mount): the box
-            // keeps the windows and history it already has, a message
-            // replaces the (empty) catalog, one log line — never closed,
-            // never retried in a loop.
-            log(&format!("launcher scan: {e}"));
-            if let Some(open) = self.launcher.as_mut() {
-                open.model.set_catalog(Catalog::default());
-                open.model.show_message(scan_failure_message(&e));
+            Ok(()) => self.scan_started = Some(Instant::now()),
+            Err(e) if !scan_refusal_is_an_error(e.kind(), running_for) => {
+                // A quick reopen while the previous open's scan is still
+                // running (`spawn_scan` allows only one at a time): no
+                // second scan started, no message shown — the box keeps the
+                // windows and history it already has, and will adopt that
+                // scan's catalog whenever it arrives (`catalog_is_current`),
+                // whatever generation it carries. Nothing to redraw either:
+                // nothing changed yet.
+                log("launcher scan: a scan is already running, waiting for it");
             }
-            self.launcher_redraw();
+            Err(e) => {
+                // Either a genuine refusal (not WouldBlock), or a scan that
+                // has been stuck long enough to call it so (e.g. a hung
+                // mount): the box keeps the windows and history it already
+                // has, a message replaces the (empty) catalog, one log
+                // line — never closed, never retried in a loop.
+                log(&format!("launcher scan: {e}"));
+                if let Some(open) = self.launcher.as_mut() {
+                    open.model.set_catalog(Catalog::default());
+                    open.model.show_message(scan_failure_message(&e));
+                }
+                self.launcher_redraw();
+            }
         }
     }
 
     pub fn launcher_catalog(&mut self, generation: u64, catalog: Catalog) {
+        // At most one scan runs at a time (`scan::spawn_scan`): whatever
+        // arrives here, the one it was in flight for is now done.
+        self.scan_started = None;
         self.launcher_guarded("catalog", move |app| {
-            if !catalog_is_current(app.launcher.as_ref().map(|o| o.generation), generation) {
-                return; // closed, or reopened since: a stale scan
+            let open = app.launcher.as_ref().map(|o| (o.generation, o.model.catalog.is_some()));
+            if !catalog_is_current(open, generation) {
+                // Closed, or reopened and already fed its own: a stale scan
+                // — give its pages back, nothing to hold onto it for.
+                drop(catalog);
+                crate::memory::release_memory();
+                return;
             }
             if let Some(open) = app.launcher.as_mut() {
                 open.model.set_catalog(catalog);
@@ -361,10 +428,23 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_catalog_is_ignored() {
-        assert!(catalog_is_current(Some(3), 3));
-        assert!(!catalog_is_current(Some(3), 2), "a scan from a previous open (closed and reopened since) is stale");
+    fn a_stale_catalog_is_ignored_once_the_open_launcher_has_its_own() {
+        assert!(catalog_is_current(Some((3, true)), 3), "its own, matching generation");
+        assert!(!catalog_is_current(Some((3, true)), 2), "already fed its own: a scan from a previous open is stale");
         assert!(!catalog_is_current(None, 3), "closed: nobody to give it to");
+    }
+
+    /// Review item 1: closed and reopened (generation 3) while the previous
+    /// open's scan (generation 2) is still running — `spawn_scan` refused a
+    /// second one (`WouldBlock`, `launcher_open_apps`), so generation 3 has
+    /// no scan of its own in flight. Whatever catalog arrives next is
+    /// adopted, whichever generation it carries: `spawn_scan` allows only
+    /// one scan at a time, so it can only be that same in-flight one.
+    #[test]
+    fn a_quick_reopen_during_a_scan_adopts_the_in_flight_catalog() {
+        assert!(catalog_is_current(Some((3, false)), 2), "no catalog of its own yet: adopts the in-flight scan's result");
+        assert!(catalog_is_current(Some((3, false)), 99), "whatever generation it carries");
+        assert!(catalog_is_current(Some((3, false)), 3), "its own generation too, obviously");
     }
 
     #[test]
@@ -433,9 +513,37 @@ mod tests {
         assert!(windows_changed(&[], &a), "windows appearing for the first time: a real change");
     }
 
+    /// Review item 8: this used to only check `scan_failure_message`'s
+    /// format string, which says nothing about WHEN a scan refusal is shown
+    /// at all. Renamed to be honest about that, kept for the format string
+    /// itself; the actual behaviour (box stays open, no retry, shown only
+    /// when warranted) is `scan_refusal_is_an_error`, tested below.
     #[test]
-    fn a_busy_scan_shows_a_message_instead_of_closing() {
+    fn scan_failure_message_formats_the_io_error() {
         let e = io::Error::new(io::ErrorKind::WouldBlock, "the previous scan is still running");
         assert_eq!(scan_failure_message(&e), "could not scan applications: the previous scan is still running");
+    }
+
+    #[test]
+    fn a_quick_reopen_during_a_scan_shows_no_error() {
+        let busy = io::ErrorKind::WouldBlock;
+        assert!(!scan_refusal_is_an_error(busy, None), "no scan known to be running yet: wait quietly");
+        assert!(
+            !scan_refusal_is_an_error(busy, Some(SCAN_STUCK_AFTER - Duration::from_millis(1))),
+            "still well within a normal scan's time: not an error"
+        );
+    }
+
+    #[test]
+    fn a_scan_stuck_long_enough_is_shown_as_an_error() {
+        let busy = io::ErrorKind::WouldBlock;
+        assert!(scan_refusal_is_an_error(busy, Some(SCAN_STUCK_AFTER)), "run for SCAN_STUCK_AFTER: likely a hung mount");
+        assert!(scan_refusal_is_an_error(busy, Some(SCAN_STUCK_AFTER + Duration::from_secs(60))));
+    }
+
+    #[test]
+    fn any_other_scan_refusal_is_always_an_error() {
+        assert!(scan_refusal_is_an_error(io::ErrorKind::Other, None), "not WouldBlock: shown right away, whatever `running_for`");
+        assert!(scan_refusal_is_an_error(io::ErrorKind::PermissionDenied, Some(Duration::ZERO)));
     }
 }

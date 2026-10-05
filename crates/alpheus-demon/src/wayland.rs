@@ -36,6 +36,7 @@ use smithay_client_toolkit::{
     registry_handlers,
 };
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::log::write as log;
 
@@ -301,6 +302,13 @@ pub struct App {
     /// (e.g. niri) can carry several in the same pass, and `set_windows` is
     /// not cheap.
     windows_dirty: bool,
+    /// When the scan `spawn_scan` currently allows (at most one at a time)
+    /// was started; `None` once it has delivered. Lets a refusal while
+    /// reopening (`host::launcher_open_apps`) tell a quick reopen (wait
+    /// quietly, adopt that scan's result) from one that has run
+    /// suspiciously long (show the message after all) — task 13 fix round,
+    /// review item 1.
+    pub(crate) scan_started: Option<Instant>,
 }
 
 impl App {
@@ -344,6 +352,7 @@ impl App {
             launcher_generation: 0,
             mail: None,
             windows_dirty: false,
+            scan_started: None,
         })
     }
 
@@ -497,7 +506,11 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
 
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
-        if self.launcher_guarded("scale", |app| app.launcher_scale(surface, f)).unwrap_or(true) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): a panic inside `launcher_scale` must never make a
+        // BAR surface's own scale change look handled.
+        if self.launcher_owns_box(surface) {
+            self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
             return;
         }
         if let Some(i) = self.index(surface) {
@@ -581,7 +594,10 @@ impl LayerShellHandler for App {
         // check, a compositor that closed the surface in a loop within one
         // batch (a bug, a protocol violation) could mark the same output
         // more than once before `restore_pending` ever runs.
-        if self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface())).unwrap_or(true) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): same reasoning as `scale_factor_changed`.
+        if self.launcher_owns_surface(layer.wl_surface()) {
+            self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
             return; // a launcher surface: the bar's restore logic is not involved
         }
         if let Some(i) = self.index(layer.wl_surface()) {
@@ -594,7 +610,10 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
-        if self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size)).unwrap_or(true) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): same reasoning as `scale_factor_changed`.
+        if self.launcher_owns_surface(layer.wl_surface()) {
+            self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
             return;
         }
         let Some(i) = self.index(layer.wl_surface()) else { return };

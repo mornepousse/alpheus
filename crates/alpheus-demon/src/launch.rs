@@ -215,12 +215,15 @@ fn launcher_socket_outcome<T, E: std::fmt::Display>(r: Result<T, E>) -> (Option<
 }
 
 /// A dmenu request may have buffered up to `MAX_DMENU_BYTES` (4 MiB) before
-/// being decoded: its pages are given back to the allocator as soon as it
-/// is consumed (worst case, every one of `MAX_CONNECTIONS` at once: 32 MiB)
-/// — a toggle/close never buffers more than its tiny header, nothing to
-/// release there.
-fn releases_memory_once_consumed(request: &Request) -> bool {
-    matches!(request, Request::Dmenu { .. })
+/// being decoded: once it reached `RELEASE_AFTER`, its pages are given back
+/// to the allocator as soon as it is consumed (worst case, every one of
+/// `MAX_CONNECTIONS` at once: 32 MiB) — a toggle/close never buffers more
+/// than its tiny header, nothing to release there. A small dmenu line list
+/// is not worth a `malloc_trim` either (it walks the whole heap): task 13
+/// fix round, review item 3 — this used to run after EVERY dmenu request,
+/// whatever its size.
+fn releases_memory_once_consumed(request: &Request, buffered: usize) -> bool {
+    matches!(request, Request::Dmenu { .. }) && buffered >= RELEASE_AFTER
 }
 
 /// Whether a newly accepted connection is refused for being the
@@ -347,10 +350,13 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 return Ok(PostAction::Continue);
             }
             Progress::Ready(request) => {
-                // A dmenu request may have buffered up to 4 MiB: give the
-                // pages back as soon as it is consumed, whatever the daemon
-                // then decides to do with it (opened, or Busy).
-                if releases_memory_once_consumed(&request) {
+                // A dmenu request may have buffered up to 4 MiB: once it
+                // reached RELEASE_AFTER, give the pages back as soon as it
+                // is consumed, whatever the daemon then decides to do with
+                // it (opened, or Busy). Read before `conn` is handed to
+                // `launcher_request`, which consumes it.
+                let buffered = conn.received();
+                if releases_memory_once_consumed(&request, buffered) {
                     crate::memory::release_memory();
                 }
                 state.launcher_request(&q, request, conn)
@@ -761,10 +767,14 @@ mod tests {
     }
 
     #[test]
-    fn only_a_dmenu_request_releases_memory_once_consumed() {
-        assert!(releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }));
-        assert!(!releases_memory_once_consumed(&Request::Toggle), "a tiny header: nothing to release");
-        assert!(!releases_memory_once_consumed(&Request::Close));
+    fn only_a_large_dmenu_request_releases_memory_once_consumed() {
+        assert!(releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }, RELEASE_AFTER), "reached the threshold");
+        assert!(
+            !releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }, RELEASE_AFTER - 1),
+            "a small dmenu list: not worth a malloc_trim (it walks the whole heap)"
+        );
+        assert!(!releases_memory_once_consumed(&Request::Toggle, RELEASE_AFTER), "a tiny header: nothing to release");
+        assert!(!releases_memory_once_consumed(&Request::Close, RELEASE_AFTER));
     }
 
     #[test]

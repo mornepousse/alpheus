@@ -131,6 +131,17 @@ pub(crate) fn plan_configure(asked: (u32, u32), configured: (u32, u32)) -> Optio
     ((w, h) != asked).then_some((w, h))
 }
 
+/// Whether a surface event belongs to the launcher: pure past the two
+/// identity checks (`is_box`, `is_scrim`), which are plain `WlSurface`
+/// equality and never panic — computed by the caller BEFORE any guard runs,
+/// so a panic inside launcher code can never make a bar surface's own
+/// configure/scale/closed event look like "handled here, skip the bar"
+/// (task 13 fix round, review item 2: `wayland.rs` used to decide ownership
+/// from the guarded call's own result, `.unwrap_or(true)`).
+pub(crate) fn owns_surface(open: bool, is_box: bool, is_scrim: bool) -> bool {
+    open && (is_box || is_scrim)
+}
+
 /// The open layout refitted inside a size the compositor imposed (logical
 /// px): its cells are the room, `view::layout`'s 1-cell margins given back.
 pub(crate) fn layout_within(size: (u32, u32), model: &Launcher, advance_phys: f32, row_height: u32, scale: i32) -> BoxLayout {
@@ -296,12 +307,17 @@ impl App {
         let row_height = self.bar.config.height * scale as u32;
         let advance = self.fonts.advance(scale);
         let (columns, rows) = output_cells(output_size.0, output_size.1, advance, row_height, scale);
-        // The scan's $PATH, read now (env only, no filesystem walk): lets the
-        // preview show a command's full path from the first frame. The
-        // single copy lives on the model (`Launcher::path_dirs`, read by
-        // both the preview and `RunContext`): `launcher_open_apps` (host.rs)
-        // overwrites it with the exact environment the scan itself used.
-        model.path_dirs = open_path_dirs(model.is_script(), |k| std::env::var_os(k));
+        // The single copy of the scan's $PATH lives on the model
+        // (`Launcher::path_dirs`, read by both the preview and
+        // `RunContext`). For the app launcher, `launcher_open_apps`
+        // (host.rs) already set it, on `model`, from the one `ScanEnv` it
+        // reads for the scan itself — read a second time here, it would
+        // just be overwritten with the same value a few lines later (task
+        // 13 fix round, review item 6). A script menu runs nothing through
+        // $PATH: reset to empty, cheaply (no environment read).
+        if model.is_script() {
+            model.path_dirs = open_path_dirs(true, |k| std::env::var_os(k));
+        }
         // Once per open: the box keeps this size whatever gets selected.
         let layout = open_layout(columns, rows, &model);
         model.set_list_rows(layout.list_rows as usize);
@@ -574,7 +590,30 @@ impl App {
         true
     }
 
-    /// A configure for a launcher surface; false: not ours.
+    /// Whether `surface` is the open launcher's box: checked outside any
+    /// guard (`owns_surface`), so `scale_factor_changed` (wayland.rs) can
+    /// decide which side handles the event before any launcher code,
+    /// panicking or not, ever runs.
+    pub(crate) fn launcher_owns_box(&self, surface: &wl_surface::WlSurface) -> bool {
+        let is_box = self.launcher.as_ref().is_some_and(|o| o.box_layer.wl_surface() == surface);
+        owns_surface(self.launcher.is_some(), is_box, false)
+    }
+
+    /// Whether `surface` is the open launcher's box OR one of its scrims
+    /// (both receive `configure`/`closed`): same reasoning as
+    /// `launcher_owns_box`.
+    pub(crate) fn launcher_owns_surface(&self, surface: &wl_surface::WlSurface) -> bool {
+        let Some(open) = self.launcher.as_ref() else { return false };
+        let is_box = open.box_layer.wl_surface() == surface;
+        let is_scrim = open.scrims.iter().any(|s| s.layer.wl_surface() == surface);
+        owns_surface(true, is_box, is_scrim)
+    }
+
+    /// A configure for a launcher surface. The caller (`configure`,
+    /// wayland.rs) now checks `launcher_owns_surface` first and only calls
+    /// this once it is already known to be ours; the bool return (false:
+    /// not ours) is kept as a cheap internal cross-check, no longer
+    /// load-bearing for routing.
     pub(crate) fn launcher_configured(&mut self, surface: &wl_surface::WlSurface, size: (u32, u32)) -> bool {
         let height = self.bar.config.height;
         let App { launcher, fonts, .. } = self;
@@ -601,7 +640,9 @@ impl App {
         true
     }
 
-    /// The compositor closed a launcher surface; false: not ours.
+    /// The compositor closed a launcher surface. Same note as
+    /// `launcher_configured`: the caller (`closed`, wayland.rs) checks
+    /// `launcher_owns_surface` first.
     pub(crate) fn launcher_layer_closed(&mut self, surface: &wl_surface::WlSurface) -> bool {
         let Some(open) = self.launcher.as_mut() else { return false };
         if open.box_layer.wl_surface() == surface {
@@ -623,7 +664,9 @@ impl App {
         }
     }
 
-    /// Scale change of the box: repaint (and resize) at the new scale; false: not ours.
+    /// Scale change of the box: repaint (and resize) at the new scale. Same
+    /// note as `launcher_configured`: the caller (`scale_factor_changed`,
+    /// wayland.rs) checks `launcher_owns_box` first.
     pub(crate) fn launcher_scale(&mut self, surface: &wl_surface::WlSurface, factor: i32) -> bool {
         let Some(open) = self.launcher.as_mut() else { return false };
         if open.box_layer.wl_surface() != surface {
@@ -825,5 +868,16 @@ mod tests {
             "the app launcher: $PATH, split and kept in order"
         );
         assert_eq!(open_path_dirs(true, var), Vec::<PathBuf>::new(), "a script menu runs nothing: no $PATH needed");
+    }
+
+    /// Task 13 fix round, review item 2: ownership of a surface event is
+    /// decided from `open`/`is_box`/`is_scrim` alone — computed outside any
+    /// guard — never from whether launcher code then panics.
+    #[test]
+    fn owns_surface_requires_an_open_launcher_and_a_matching_identity() {
+        assert!(!owns_surface(false, true, true), "closed: never ours, whatever the identity checks say");
+        assert!(owns_surface(true, true, false), "the box");
+        assert!(owns_surface(true, false, true), "a scrim");
+        assert!(!owns_surface(true, false, false), "open, but neither surface matches: the bar's own");
     }
 }
