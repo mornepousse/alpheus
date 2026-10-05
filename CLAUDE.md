@@ -47,6 +47,11 @@ breakdown), then the spec of the sub-project currently in progress in
   research first), then bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
+- **Style and themes, for all of alpheus (future, Mae 2026-10-05)**: the flat
+  dark look gets tiresome over time — study a richer style (borders, accents,
+  depth, transparency, light variants…) and **preset colour themes** for
+  users who don't follow their wallpaper (matugen stays the default for Mae).
+  Lightness rules apply: a theme costs nothing when unused.
 - **Prior art first**: before designing each part, study how other bars and
   shells do it (i3status-rust, ironbar, ashell, cosmic-applets, waybar,
   Noctalia/DMS…), one research agent per domain; reuse ideas and signal
