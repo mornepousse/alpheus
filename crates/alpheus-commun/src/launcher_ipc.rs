@@ -64,9 +64,14 @@ impl fmt::Display for IpcError {
 /// Wire format (all text UTF-8):
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>\n" <prompt bytes> <body bytes>
-/// body = lines joined by '\n' (no trailing '\n'). Lines must not contain
-/// '\n' themselves (`split_lines` guarantees it); sizes are the caller's to
-/// check against the MAX_* limits (the decoder refuses what exceeds them).
+/// body = lines joined by '\n' (no trailing '\n'). Lines are expected not to
+/// contain '\n' themselves (`split_lines` guarantees it), but this is not
+/// enforced here: a line that does is split consistently with decoding, not
+/// refused, because the wire format has no other way to tell "one line
+/// holding a newline" from "two lines" — the same rule the decoder already
+/// applies (and the decoder also drops the empty lines this can produce,
+/// the dmenu rule). Sizes are the caller's to check against the MAX_*
+/// limits (the decoder refuses what exceeds them).
 pub fn encode_request(r: &Request) -> Vec<u8> {
     match r {
         Request::Toggle => format!("{MAGIC} toggle\n").into_bytes(),
@@ -99,6 +104,9 @@ pub struct RequestDecoder {
     /// '\n' seen in the dmenu body so far (lines = newlines + 1).
     newlines: usize,
     done: bool,
+    /// Set to the first error `feed` ever returned; once set, every later
+    /// `feed` call returns it again without touching any other state.
+    poisoned: Option<IpcError>,
 }
 
 impl RequestDecoder {
@@ -109,7 +117,26 @@ impl RequestDecoder {
     /// Ok(Some) once a whole request arrived (extra bytes after it → Malformed);
     /// Ok(None): need more. Limits checked as soon as the header is known; the
     /// line count, which only the body reveals, as the body arrives.
+    ///
+    /// **After an `Err`, the decoder is poisoned and must be discarded** (or
+    /// treated as permanently failed): every later `feed` call returns the
+    /// same error again and never yields a request, even if the bytes that
+    /// follow would otherwise complete a valid one. A connection that sends
+    /// something malformed does not get a second chance mid-stream.
     pub fn feed(&mut self, bytes: &[u8]) -> Result<Option<Request>, IpcError> {
+        if let Some(e) = &self.poisoned {
+            return Err(e.clone());
+        }
+        match self.feed_inner(bytes) {
+            Err(e) => {
+                self.poisoned = Some(e.clone());
+                Err(e)
+            }
+            ok => ok,
+        }
+    }
+
+    fn feed_inner(&mut self, bytes: &[u8]) -> Result<Option<Request>, IpcError> {
         if self.done {
             return if bytes.is_empty() { Ok(None) } else { Err(IpcError::Malformed("bytes after the request".into())) };
         }
@@ -169,7 +196,9 @@ impl RequestDecoder {
                 };
                 data.drain(..prompt_len);
                 let body = text(data, "dmenu input")?;
-                let lines = if body.is_empty() { Vec::new() } else { body.split('\n').map(str::to_string).collect() };
+                // The dmenu rule: a blank line carries nothing, so it is dropped
+                // rather than turned into an empty entry (matches fuzzel/wofi).
+                let lines = body.split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect();
                 Ok(Some(Request::Dmenu { prompt, lines }))
             }
         }
@@ -494,5 +523,42 @@ mod tests {
     #[test]
     fn socket_path_joins_the_name() {
         assert_eq!(socket_path(Path::new("/run/user/1000")), Path::new("/run/user/1000/alpheus-launcher.sock"));
+    }
+
+    #[test]
+    fn the_decoder_is_poisoned_after_a_malformed_header() {
+        let mut d = RequestDecoder::new();
+        assert!(matches!(d.feed(b"alpheus-launcher/1\n"), Err(IpcError::Malformed(_))));
+        // The second call completes what would otherwise be a valid "toggle" request
+        // if the decoder kept going; it must not, because the connection already
+        // sent something malformed.
+        assert!(!matches!(d.feed(b" toggle\n"), Ok(Some(Request::Toggle))), "poisoned decoder must not yield a request");
+        assert!(d.feed(b" toggle\n").is_err(), "poisoned decoder keeps refusing");
+    }
+
+    #[test]
+    fn the_decoder_is_poisoned_after_a_dmenu_overflow() {
+        let mut d = RequestDecoder::new();
+        assert_eq!(d.feed(format!("{MAGIC} dmenu - 1\n").as_bytes()), Ok(None));
+        assert!(matches!(d.feed(b"ab"), Err(IpcError::Malformed(_))), "bytes after the request");
+        assert!(d.feed(b"c").is_err(), "poisoned decoder keeps refusing");
+        assert!(d.feed(&[]).is_err(), "poisoned decoder refuses even an empty feed");
+    }
+
+    #[test]
+    fn empty_dmenu_lines_are_dropped() {
+        // The dmenu rule: a line holding nothing is not a line.
+        let r = Request::Dmenu { prompt: None, lines: vec![String::new()] };
+        assert_eq!(
+            decode(&encode_request(&r)),
+            Ok(Some(Request::Dmenu { prompt: None, lines: vec![] })),
+            "vec![\"\"] round-trips to vec![]"
+        );
+
+        // A hostile body with blank lines in the middle: fed directly, bypassing encode_request.
+        let body = "a\n\nb\n";
+        let mut d = RequestDecoder::new();
+        assert_eq!(d.feed(format!("{MAGIC} dmenu - {}\n", body.len()).as_bytes()), Ok(None));
+        assert_eq!(d.feed(body.as_bytes()), Ok(Some(Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()] })));
     }
 }
