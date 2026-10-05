@@ -81,7 +81,7 @@ fn every_click_on_a_full_bar_stays_on_the_allowlist() {
         "alpheus-toggle network",
         "alpheus-toggle bluetooth",
         "alpheus-toggle home",
-        "alacritty -e btop",
+        "foot -e btop",
         "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",

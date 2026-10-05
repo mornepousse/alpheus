@@ -16,7 +16,7 @@
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! [actions]                                     # clicks on the system modules
 //! open_tab = ["alpheus-toggle", "{tab}"]        # {tab}: home, sound, network, bluetooth
-//! resources = ["alacritty", "-e", "btop"]
+//! resources = ["foot", "-e", "btop"]
 //! [resources]
 //! interval = 2                                  # seconds between readings, 1 to 60
 //! graph = 20                                    # cells of CPU history, 0 to 60 (0: no graph)
@@ -142,7 +142,8 @@ pub struct ActionsConfig {
     /// not a neutral default yet: see the portability step (CLAUDE.md).
     pub open_tab: Vec<String>,
     /// Left click on the resources: a system monitor. Default: btop in
-    /// alacritty (Mae's terminal; portability step, as above).
+    /// foot (Mae's decision, 2026-10-05: lightness — foot measures ≈ 9.9 MB
+    /// PSS against ≈ 92.6 MB for alacritty, for the same TUI).
     pub resources: Vec<String>,
 }
 
@@ -150,7 +151,7 @@ impl Default for ActionsConfig {
     fn default() -> Self {
         ActionsConfig {
             open_tab: ["alpheus-toggle", "{tab}"].map(String::from).to_vec(),
-            resources: ["alacritty", "-e", "btop"].map(String::from).to_vec(),
+            resources: ["foot", "-e", "btop"].map(String::from).to_vec(),
         }
     }
 }
@@ -385,7 +386,7 @@ mod tests {
     fn actions_and_resources_defaults_and_settings() {
         let d = BarConfig::default();
         assert_eq!(d.actions.open_tab, ["alpheus-toggle", "{tab}"]);
-        assert_eq!(d.actions.resources, ["alacritty", "-e", "btop"]);
+        assert_eq!(d.actions.resources, ["foot", "-e", "btop"]);
         assert_eq!((d.resources.interval, d.resources.graph, d.resources.sensor.as_str()), (2, 20, ""));
         let text = "[actions]\nopen_tab = [\"my-panel\", \"--tab\", \"{tab}\"]\nresources = [\"foot\", \"htop\"]\n[resources]\ninterval = 5\ngraph = 0\nsensor = \"k10temp\"\n";
         let c = BarConfig::from_text(text).unwrap();

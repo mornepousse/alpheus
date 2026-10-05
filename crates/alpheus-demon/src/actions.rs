@@ -371,7 +371,7 @@ mod tests {
             }
         }
         let r = Target::Module(ModuleId::Resources);
-        assert_eq!(command(&b, "eDP-1", &r, Button::Left), argv(&["alacritty", "-e", "btop"]));
+        assert_eq!(command(&b, "eDP-1", &r, Button::Left), argv(&["foot", "-e", "btop"]));
         assert_eq!(command(&b, "eDP-1", &r, Button::Right), None);
     }
 
