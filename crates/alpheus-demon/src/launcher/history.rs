@@ -5,7 +5,7 @@
 //! "<last>\t<count>\t<id>", bounded, written atomically.
 
 use super::config::HISTORY_MAX;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -129,6 +129,25 @@ impl History {
         self.entries.iter().find(|u| u.id == id).map_or(0, |u| frecency_of(u, now))
     }
 
+    /// Frecency of every entry, split by its "app:"/"cmd:" prefix and keyed by the id with
+    /// that prefix stripped (borrowed from the entry: no `format!`). Built once from the
+    /// at most `limit` entries (≤ 200 in practice), so a catalog of thousands of apps and
+    /// commands looks each one up in a `HashMap` instead of formatting a key and scanning
+    /// the history for every one of them.
+    pub fn frecency_maps(&self, now: u64) -> (HashMap<&str, u32>, HashMap<&str, u32>) {
+        let mut apps = HashMap::new();
+        let mut commands = HashMap::new();
+        for u in &self.entries {
+            let f = frecency_of(u, now);
+            if let Some(id) = u.id.strip_prefix("app:") {
+                apps.insert(id, f);
+            } else if let Some(name) = u.id.strip_prefix("cmd:") {
+                commands.insert(name, f);
+            }
+        }
+        (apps, commands)
+    }
+
     pub fn entries(&self) -> &[Use] {
         &self.entries
     }
@@ -220,6 +239,23 @@ mod tests {
     fn weight_buckets() {
         let ages = [0, HOUR - 1, HOUR, DAY - 1, DAY, 7 * DAY - 1, 7 * DAY, 30 * DAY - 1, 30 * DAY, 400 * DAY];
         assert_eq!(ages.map(weight), [100, 100, 70, 70, 50, 50, 30, 30, 10, 10]);
+    }
+
+    #[test]
+    fn frecency_maps_split_by_prefix_without_formatting_a_key() {
+        let text = format!(
+            "{}\t3\tapp:recent.desktop\n{}\t20\tapp:old-favourite.desktop\n{}\t2000\tcmd:busy\n",
+            NOW - 60,
+            NOW - 60 * DAY,
+            NOW - 60
+        );
+        let h = History::parse(&text, 10, NOW);
+        let (apps, commands) = h.frecency_maps(NOW);
+        assert_eq!(apps.get("recent.desktop"), Some(&300));
+        assert_eq!(apps.get("old-favourite.desktop"), Some(&200));
+        assert_eq!(apps.get("never.desktop"), None);
+        assert_eq!(commands.get("busy"), Some(&100_000));
+        assert!(!commands.contains_key("recent.desktop"), "an app id never leaks into the commands map");
     }
 
     #[test]

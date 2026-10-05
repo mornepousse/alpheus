@@ -6,10 +6,12 @@
 
 use crate::compositor::Toplevel;
 use crate::launcher::desktop::DesktopEntry;
-use crate::launcher::history::{History, app_key, command_key};
+use crate::launcher::history::History;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
+use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -96,39 +98,175 @@ pub struct Ranker {
     /// again after `forget`: a keystroke never walks the history for 20,000
     /// commands nor matches every window against every app.
     prepared: Option<Prepared>,
-    /// How many times `Prepared` was computed (tests only).
+    /// How many times the whole `Prepared` (catalog + windows) was computed from scratch
+    /// (tests only).
     #[cfg(test)]
     preparations: usize,
+    /// How many times only the window → app links were refreshed, catalog kept (tests only).
+    #[cfg(test)]
+    window_preparations: usize,
 }
 
-/// Per-list facts, indexed like the lists of the `Query` they came from.
+/// Per-list facts, indexed like the lists of the `Query` they came from. Windows are tracked
+/// separately from the catalog (apps, commands, lines): a title change, or a window opening
+/// or closing, is common while the launcher is open and must not re-walk the history or
+/// re-sort thousands of commands (`Ranker::forget_windows`).
 struct Prepared {
-    /// Lengths of apps, commands, windows, and `now`: a mismatch recomputes
-    /// (a stale fact never indexes out of range).
-    key: (usize, usize, usize, u64),
+    /// Lengths of apps, commands and lines, and `now`: a mismatch recomputes the catalog (a
+    /// stale fact never indexes out of range).
+    catalog_key: (usize, usize, usize, u64),
+    /// Last length the window facts were built for; a mismatch refreshes them even without
+    /// an explicit `forget_windows` (the same "never a stale index" guarantee as the catalog).
+    windows_len: usize,
+    /// Set by `forget_windows`: refreshed at the next `rank` even though the length matches
+    /// (a window's title changed, not its count).
+    windows_stale: bool,
     app_frecency: Vec<u32>,
     /// Binary of each app's Exec (`exec_program`).
     programs: Vec<Option<String>>,
     command_frecency: Vec<u32>,
-    /// `app_for_window` of each window.
+    /// Position of each app/command/line in case-insensitive name order (ties by index):
+    /// precomputed once so the per-keystroke comparator compares integers, never names.
+    app_name_rank: Vec<u32>,
+    command_name_rank: Vec<u32>,
+    line_name_rank: Vec<u32>,
+    /// Apps, then commands, in empty-query order (frecency desc, name, index): built once per
+    /// catalog so an empty query is a slice of this, not a fresh sort.
+    apps_empty_order: Vec<u32>,
+    commands_empty_order: Vec<u32>,
+    /// Lower-folded id/last-segment/StartupWMClass/program → first app with that key, built
+    /// once from the apps (depends on apps alone, kept across a window-only refresh): the
+    /// window → app link is then one lookup per window, not a scan of every app.
+    class_index: HashMap<String, usize>,
+    /// `app_for_window` of each window, via `class_index`.
     window_apps: Vec<Option<usize>>,
+    window_name_rank: Vec<u32>,
 }
 
 impl Prepared {
     fn new(q: &Query) -> Prepared {
+        let (app_map, command_map) = q.history.frecency_maps(q.now);
+        let app_frecency: Vec<u32> = q.apps.iter().map(|e| app_map.get(e.id.as_str()).copied().unwrap_or(0)).collect();
+        let programs: Vec<Option<String>> = q.apps.iter().map(|e| exec_program(&e.exec)).collect();
+        let command_frecency: Vec<u32> = q.commands.iter().map(|c| command_map.get(c.as_str()).copied().unwrap_or(0)).collect();
+        let app_name_rank = name_ranks(q.apps.len(), |i| q.apps[i].name.as_str());
+        let command_name_rank = name_ranks(q.commands.len(), |i| q.commands[i].as_str());
+        let line_name_rank = name_ranks(q.lines.len(), |i| q.lines[i].as_str());
+        let apps_empty_order = order_by_frecency(q.apps.len(), &app_frecency, &app_name_rank);
+        let commands_empty_order = order_by_frecency(q.commands.len(), &command_frecency, &command_name_rank);
+        let class_index = build_class_index(q.apps, &programs);
+        let window_apps: Vec<Option<usize>> = q.windows.iter().map(|w| lookup_class(&class_index, &w.class)).collect();
+        let window_name_rank = name_ranks(q.windows.len(), |i| q.windows[i].title.as_str());
         Prepared {
-            key: (q.apps.len(), q.commands.len(), q.windows.len(), q.now),
-            app_frecency: q.apps.iter().map(|e| q.history.frecency(&app_key(&e.id), q.now)).collect(),
-            programs: q.apps.iter().map(|e| exec_program(&e.exec)).collect(),
-            command_frecency: q.commands.iter().map(|c| q.history.frecency(&command_key(c), q.now)).collect(),
-            window_apps: q.windows.iter().map(|w| app_for_window(q.apps, &w.class)).collect(),
+            catalog_key: (q.apps.len(), q.commands.len(), q.lines.len(), q.now),
+            windows_len: q.windows.len(),
+            windows_stale: false,
+            app_frecency,
+            programs,
+            command_frecency,
+            app_name_rank,
+            command_name_rank,
+            line_name_rank,
+            apps_empty_order,
+            commands_empty_order,
+            class_index,
+            window_apps,
+            window_name_rank,
         }
+    }
+
+    /// Only the window → app links and their name order, reusing `class_index` (apps did not
+    /// change): a title edit or a window opening/closing never re-walks the history.
+    fn refresh_windows(&mut self, q: &Query) {
+        self.window_apps = q.windows.iter().map(|w| lookup_class(&self.class_index, &w.class)).collect();
+        self.window_name_rank = name_ranks(q.windows.len(), |i| q.windows[i].title.as_str());
+        self.windows_len = q.windows.len();
+        self.windows_stale = false;
     }
 
     /// A window's frecency is its app's.
     fn window_frecency(&self, i: usize) -> u32 {
         self.window_apps[i].map_or(0, |a| self.app_frecency[a])
     }
+}
+
+/// Position of each of the `len` items (named by `name`) in case-insensitive name order,
+/// ties broken by index: computed once per `Prepared` so sorting compares two `u32`s instead
+/// of calling `cmp_ci` on every comparison. The fold key is also computed only once per item
+/// (`sort_unstable_by` on a `(key, index)` pair, not `cmp_ci` recomputed at every comparison a
+/// plain `sort_by` would make) and borrows rather than allocates whenever a name already has
+/// no uppercase letter (most commands): for a 20,000-command catalog the difference is an
+/// order of magnitude (measured: ≈ 35 ms down to ≈ 1.6 ms, release; see the task's perf report).
+fn name_ranks<'a>(len: usize, name: impl Fn(usize) -> &'a str) -> Vec<u32> {
+    let mut keyed: Vec<(Cow<'a, str>, u32)> = (0..len).map(|i| (fold_cow(name(i)), i as u32)).collect();
+    keyed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut rank = vec![0u32; len];
+    for (r, (_, i)) in keyed.into_iter().enumerate() {
+        rank[i as usize] = r as u32;
+    }
+    rank
+}
+
+/// `fold_key`, but borrowing instead of allocating when `s` has no uppercase letter to fold
+/// (a plain command name, most of the time): the allocation that a 20,000-item sort can't
+/// amortize away, skipped for the common case instead.
+fn fold_cow(s: &str) -> Cow<'_, str> {
+    // Every byte ASCII (so no accent can be hiding in a multi-byte sequence) and already
+    // lower: nothing folding would change.
+    if s.bytes().all(|b| b.is_ascii() && !b.is_ascii_uppercase()) { Cow::Borrowed(s) } else { Cow::Owned(fold_key(s)) }
+}
+
+/// Indices `0..len`, ordered as an empty query lists them: frecency descending, then name,
+/// then index. Built once per catalog (`Prepared`): an empty-query keystroke then costs
+/// O(results shown), not a fresh O(n log n) sort.
+fn order_by_frecency(len: usize, frecency: &[u32], name_rank: &[u32]) -> Vec<u32> {
+    let mut order: Vec<u32> = (0..len as u32).collect();
+    // Unstable: fine, since (frecency, name_rank, index) is already a strict total order (the
+    // index on its own tells any two elements apart) — one less pass than a stable sort needs.
+    order.sort_unstable_by(|&a, &b| {
+        frecency[b as usize].cmp(&frecency[a as usize]).then(name_rank[a as usize].cmp(&name_rank[b as usize])).then(a.cmp(&b))
+    });
+    order
+}
+
+/// Lower-folded id / last dot-segment / StartupWMClass / program → first app with that key, in
+/// app order (first match wins, as `app_for_window`'s `position` would find). Built once per
+/// catalog (apps alone), reused for every window and across a window-only refresh.
+fn build_class_index(apps: &[DesktopEntry], programs: &[Option<String>]) -> HashMap<String, usize> {
+    let mut index = HashMap::new();
+    let mut keys: Vec<&str> = Vec::with_capacity(4);
+    for (i, e) in apps.iter().enumerate() {
+        let id = e.id.strip_suffix(".desktop").unwrap_or(&e.id);
+        let last = id.rsplit('.').next().unwrap_or(id);
+        keys.clear();
+        keys.extend(e.startup_wm_class.as_deref());
+        keys.push(id);
+        keys.push(last);
+        keys.extend(programs[i].as_deref());
+        // id and its last dot-segment are often the same string (no dots in the id, the
+        // common case): fold and insert each distinct key once, not up to four times.
+        keys.sort_unstable();
+        keys.dedup();
+        for key in &keys {
+            index.entry(fold_key(key)).or_insert(i);
+        }
+    }
+    index
+}
+
+/// Case folded the way `cmp_ci` compares (full Unicode, not just ASCII), as an owned `String`
+/// fit for a sort key or a `HashMap`, not just a comparator. The common case (an ASCII
+/// command or id) takes the much cheaper byte-wise lowercasing; `char::to_lowercase` maps
+/// every ASCII letter to itself, so the two agree whenever `s.is_ascii()`.
+fn fold_key(s: &str) -> String {
+    if s.is_ascii() { s.to_ascii_lowercase() } else { s.chars().flat_map(char::to_lowercase).collect() }
+}
+
+fn lookup_class(index: &HashMap<String, usize>, class: &str) -> Option<usize> {
+    if class.is_empty() {
+        return None;
+    }
+    index.get(&fold_key(class)).copied()
 }
 
 impl Default for Ranker {
@@ -176,13 +314,24 @@ impl Ranker {
             prepared: None,
             #[cfg(test)]
             preparations: 0,
+            #[cfg(test)]
+            window_preparations: 0,
         }
     }
 
-    /// The lists changed (a catalog arrived, the window list moved): the
-    /// per-list facts are computed again at the next `rank`.
+    /// The catalog changed (a scan arrived): every per-list fact, windows included, is
+    /// computed again at the next `rank`.
     pub fn forget(&mut self) {
         self.prepared = None;
+    }
+
+    /// Only the windows changed (one opened or closed, a title changed): the window → app
+    /// links and their name order are refreshed at the next `rank`, the app and command
+    /// frecency (already computed from up to 24,000 catalog entries) are kept.
+    pub fn forget_windows(&mut self) {
+        if let Some(p) = &mut self.prepared {
+            p.windows_stale = true;
+        }
     }
 
     fn score(&mut self, p: &Pattern, text: &str) -> Option<u32> {
@@ -200,9 +349,9 @@ impl Ranker {
     }
 
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
-        let key = (q.apps.len(), q.commands.len(), q.windows.len(), q.now);
-        let prepared = match self.prepared.take() {
-            Some(p) if p.key == key => p,
+        let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.now);
+        let mut prepared = match self.prepared.take() {
+            Some(p) if p.catalog_key == catalog_key => p,
             _ => {
                 #[cfg(test)]
                 {
@@ -211,6 +360,13 @@ impl Ranker {
                 Prepared::new(q)
             }
         };
+        if prepared.windows_stale || prepared.windows_len != q.windows.len() {
+            #[cfg(test)]
+            {
+                self.window_preparations += 1;
+            }
+            prepared.refresh_windows(q);
+        }
         let pattern = if q.mode == Mode::Script {
             // dmenu lines are plain text: "!", "^", "'" and "$" are
             // characters to find, not fzf operators.
@@ -221,11 +377,16 @@ impl Ranker {
         let mut hits = if pattern.atoms.is_empty() { self.everything(q, &prepared) } else { self.matching(q, &prepared, &pattern) };
         self.prepared = Some(prepared);
         hits.truncate(MAX_RESULTS);
+        // A catalog scan can make `hits` grow past MAX_RESULTS before the truncate above
+        // (Script mode lists every dmenu line uncapped): nothing resident should keep that
+        // backing allocation past this call.
+        hits.shrink_to_fit();
         hits
     }
 
-    /// Empty query: windows in the compositor's order, then apps (or
-    /// commands) by frecency then name, or the dmenu lines as given.
+    /// Empty query: windows in the compositor's order, then apps (or commands) by frecency
+    /// then name — sliced from `Prepared`'s precomputed order (O(results shown), not a fresh
+    /// sort), or the dmenu lines as given.
     fn everything(&mut self, q: &Query, pr: &Prepared) -> Vec<Hit> {
         let mut hits = Vec::new();
         if matches!(q.mode, Mode::All | Mode::Windows) {
@@ -233,24 +394,20 @@ impl Ranker {
                 hits.push(Hit { source: Source::Window(i), score: 0, frecency: pr.window_frecency(i) });
             }
         }
-        let start = hits.len();
+        // The final `rank` truncates to MAX_RESULTS anyway: never build more of the
+        // precomputed order than could survive that truncation.
+        let remaining = MAX_RESULTS.saturating_sub(hits.len());
         match q.mode {
-            Mode::All | Mode::Apps => {
-                hits.extend((0..q.apps.len()).map(|i| Hit { source: Source::App(i), score: 0, frecency: pr.app_frecency[i] }))
-            }
-            Mode::Commands => {
-                hits.extend((0..q.commands.len()).map(|i| Hit { source: Source::Command(i), score: 0, frecency: pr.command_frecency[i] }))
-            }
+            Mode::All | Mode::Apps => hits.extend(pr.apps_empty_order.iter().take(remaining).map(|&i| {
+                let i = i as usize;
+                Hit { source: Source::App(i), score: 0, frecency: pr.app_frecency[i] }
+            })),
+            Mode::Commands => hits.extend(pr.commands_empty_order.iter().take(remaining).map(|&i| {
+                let i = i as usize;
+                Hit { source: Source::Command(i), score: 0, frecency: pr.command_frecency[i] }
+            })),
             Mode::Script => hits.extend((0..q.lines.len()).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 })),
             Mode::Windows => {}
-        }
-        if q.mode != Mode::Script {
-            hits[start..].sort_by(|a, b| {
-                b.frecency
-                    .cmp(&a.frecency)
-                    .then_with(|| cmp_ci(name(q, a.source), name(q, b.source)))
-                    .then(index(a.source).cmp(&index(b.source)))
-            });
         }
         hits
     }
@@ -292,41 +449,82 @@ impl Ranker {
                 }
             }
         }
-        // A name typed whole ("ls") comes before the longer names it also
-        // matches ("lsblk", however often used) within its bucket; a window
-        // whose app is named so too (it takes its app's score).
-        let typed = q.text.trim();
-        let is_typed = |text: &str| cmp_ci(text, typed) == Ordering::Equal;
-        let exact = |s: Source| match s {
-            Source::Window(i) => is_typed(&q.windows[i].title) || pr.window_apps[i].is_some_and(|a| is_typed(&q.apps[a].name)),
-            _ => is_typed(name(q, s)),
-        };
-        hits.sort_by(|a, b| {
-            (b.score / SCORE_BUCKET)
-                .cmp(&(a.score / SCORE_BUCKET))
-                .then_with(|| exact(b.source).cmp(&exact(a.source)))
-                .then(b.frecency.cmp(&a.frecency))
-                .then(kind(a.source).cmp(&kind(b.source)))
-                .then_with(|| cmp_ci(name(q, a.source), name(q, b.source)))
-                .then(index(a.source).cmp(&index(b.source)))
-        });
-        hits
+        finish(hits, q, pr)
     }
 }
 
+/// Sorts (score bucket desc, a name typed in full first, frecency desc, kind, name, index) and
+/// keeps only the top `MAX_RESULTS`: `select_nth_unstable_by` partitions the top results, then
+/// only those are sorted — the comparator never calls `cmp_ci` or the typed-whole check itself
+/// (both precomputed once per hit, not once per comparison), and the result is rebuilt into a
+/// right-sized `Vec` (never keeps a catalog-sized allocation around).
+fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
+    // A name typed whole ("ls") comes before the longer names it also matches ("lsblk",
+    // however often used) within its bucket; a window whose app is named so too (it takes
+    // its app's score).
+    let typed = q.text.trim();
+    let exact: Vec<bool> = hits.iter().map(|h| is_exact(q, pr, h.source, typed)).collect();
+    let name_rank = |s: Source| -> u32 {
+        match s {
+            Source::App(i) => pr.app_name_rank[i],
+            Source::Window(i) => pr.window_name_rank[i],
+            Source::Command(i) => pr.command_name_rank[i],
+            Source::Line(i) => pr.line_name_rank[i],
+        }
+    };
+    let cmp = |&ia: &usize, &ib: &usize| -> Ordering {
+        let (a, b) = (hits[ia], hits[ib]);
+        (b.score / SCORE_BUCKET)
+            .cmp(&(a.score / SCORE_BUCKET))
+            .then_with(|| exact[ib].cmp(&exact[ia]))
+            .then(b.frecency.cmp(&a.frecency))
+            .then(kind(a.source).cmp(&kind(b.source)))
+            .then_with(|| name_rank(a.source).cmp(&name_rank(b.source)))
+            .then(index(a.source).cmp(&index(b.source)))
+    };
+    let mut order: Vec<usize> = (0..hits.len()).collect();
+    if order.len() > MAX_RESULTS {
+        order.select_nth_unstable_by(MAX_RESULTS, cmp);
+        order.truncate(MAX_RESULTS);
+    }
+    order.sort_by(cmp);
+    order.into_iter().map(|i| hits[i]).collect()
+}
+
+/// Whether `s`'s own name is `typed`, case- and accent-folded the way nucleo's Smart
+/// normalization treats a needle without accents ("cafe" typed whole matches "Café"); a
+/// window takes its app's name too (the app's score and frecency, above, are shared the
+/// same way).
+fn is_exact(q: &Query, pr: &Prepared, s: Source, typed: &str) -> bool {
+    match s {
+        Source::Window(i) => folded_eq(&q.windows[i].title, typed) || pr.window_apps[i].is_some_and(|a| folded_eq(&q.apps[a].name, typed)),
+        _ => folded_eq(name(q, s), typed),
+    }
+}
+
+fn folded_eq(a: &str, b: &str) -> bool {
+    a.chars().map(fold).eq(b.chars().map(fold))
+}
+
+/// Case- and accent-fold a character the way nucleo's `Normalization::Smart` +
+/// `CaseMatching::Smart` do once both apply (`chars::normalize` then `chars::to_lower_case`),
+/// so `é` and `e` compare equal here exactly as they do inside the matcher.
+fn fold(c: char) -> char {
+    nucleo_matcher::chars::to_lower_case(nucleo_matcher::chars::normalize(c))
+}
+
 /// First app whose StartupWMClass, id without ".desktop", last dot-segment of
-/// that id, or Exec program basename equals `class` case-insensitively.
+/// that id, or Exec program basename equals `class` case-insensitively (full Unicode case
+/// folding, not just ASCII: a class in Cyrillic or accented Latin still matches).
 pub fn app_for_window(apps: &[DesktopEntry], class: &str) -> Option<usize> {
     if class.is_empty() {
         return None;
     }
+    let eq = |a: &str| cmp_ci(a, class) == Ordering::Equal;
     apps.iter().position(|e| {
         let id = e.id.strip_suffix(".desktop").unwrap_or(&e.id);
         let last = id.rsplit('.').next().unwrap_or(id);
-        e.startup_wm_class.as_deref().is_some_and(|c| c.eq_ignore_ascii_case(class))
-            || id.eq_ignore_ascii_case(class)
-            || last.eq_ignore_ascii_case(class)
-            || exec_program(&e.exec).is_some_and(|p| p.eq_ignore_ascii_case(class))
+        e.startup_wm_class.as_deref().is_some_and(eq) || eq(id) || eq(last) || exec_program(&e.exec).is_some_and(|p| eq(&p))
     })
 }
 
@@ -647,5 +845,138 @@ mod tests {
         assert_eq!(exec_program("\"/opt/a\\\"b/c\\\"d\"").as_deref(), Some("c\"d"));
         assert_eq!(exec_program(""), None);
         assert_eq!(exec_program("/usr/bin/"), None);
+    }
+
+    // --- Performance round (delivery 3): precomputed orders, select_nth_unstable_by, a
+    // frecency map and a window → app index, plus two minor correctness fixes. ---
+
+    #[test]
+    fn fold_cow_matches_fold_key_even_without_an_ascii_uppercase_letter() {
+        // "École": a capital letter that is not in the ASCII range at all — the fast
+        // "no ASCII uppercase" check must not mistake that for "nothing to fold".
+        assert_eq!(fold_cow("École"), fold_key("École"), "a capital letter can sit on a non-ASCII byte too");
+    }
+
+    #[test]
+    fn a_dmenu_line_longer_than_nucleos_matrix_limit_does_not_panic() {
+        let mut l = Lists::new();
+        let long = "a".repeat(5_000);
+        l.lines = vec![long, "other".into()];
+        assert_eq!(l.sources(Mode::Script, "aaaa"), [Source::Line(0)], "scores the long line without panicking");
+    }
+
+    #[test]
+    fn name_typed_whole_folds_accents_like_nucleo() {
+        let mut l = Lists::new();
+        l.commands = vec!["cafeteria".into(), "café".into()];
+        assert_eq!(
+            l.sources(Mode::Commands, "cafe"),
+            [Source::Command(1), Source::Command(0)],
+            "café, typed whole with its accent folded, beats the longer name"
+        );
+    }
+
+    #[test]
+    fn app_for_window_class_match_is_unicode_case_insensitive() {
+        let mut a = apps();
+        a.push(DesktopEntry { startup_wm_class: Some("Éditeur".into()), ..app("ed.desktop", "Editeur", None, &[], "ed") });
+        assert_eq!(app_for_window(&a, "éditeur"), Some(5), "É and é fold the same, not just ASCII letters");
+    }
+
+    #[test]
+    fn forget_windows_refreshes_links_without_recomputing_the_catalog() {
+        let mut l = Lists::new();
+        l.windows = vec![window("id:1", "firefox", "Mail")];
+        l.commands = vec!["awk".into(), "btop".into()];
+        l.history = history(&[("app:org.mozilla.firefox.desktop", 1), ("cmd:btop", 1)]);
+        let mut r = Ranker::new();
+        r.rank(&l.query(Mode::All, ""));
+        assert_eq!((r.preparations, r.window_preparations), (1, 0), "built fresh, windows included");
+
+        // The window's class now names a different app ("Files"), itself with no history:
+        // only `forget_windows` tells the Ranker its window → app link is stale.
+        l.windows = vec![window("id:1", "org.gnome.Nautilus", "Docs")];
+        r.forget_windows();
+        let hits = r.rank(&l.query(Mode::All, ""));
+        assert_eq!((r.preparations, r.window_preparations), (1, 1), "catalog kept, only the window link refreshed");
+        assert_eq!(hits[0], Hit { source: Source::Window(0), score: 0, frecency: 0 }, "no longer linked to Firefox's frecency");
+
+        r.rank(&l.query(Mode::All, ""));
+        assert_eq!((r.preparations, r.window_preparations), (1, 1), "a second rank reuses what was just refreshed");
+    }
+
+    #[test]
+    fn rank_does_not_keep_a_catalog_sized_allocation_after_truncation() {
+        // Script mode lists the dmenu lines as given, uncapped before the final truncate
+        // (fix #1 only bounds the apps/commands empty-query orders): the realistic case
+        // where `hits` grows well past MAX_RESULTS before being cut down to size.
+        let mut l = Lists::new();
+        l.lines = (0..20_000).map(|i| format!("line-{i:05}")).collect();
+        let hits = Ranker::new().rank(&l.query(Mode::Script, ""));
+        assert_eq!(hits.len(), MAX_RESULTS);
+        assert!(hits.capacity() <= MAX_RESULTS, "capacity {} must not carry the 20,000-line scan", hits.capacity());
+    }
+
+    /// splitmix64: deterministic, no new dependency, good enough spread for a test fixture.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next_u64(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next_u64() % n
+        }
+    }
+
+    /// The optimized path (precomputed `name_rank`, `select_nth_unstable_by` then a partial
+    /// sort) must produce exactly the same order as an obviously-correct full sort over the
+    /// same hits, even on a large list with heavy ties in score, frecency and name.
+    #[test]
+    fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
+        let mut rng = Lcg(0x5EED_C0FF_EEEE_1234);
+        let words = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"];
+        let commands: Vec<String> =
+            (0..4_000u64).map(|i| format!("{}-{}", words[rng.below(words.len() as u64) as usize], i % 12)).collect();
+        let hits: Vec<Hit> = (0..commands.len())
+            .map(|i| Hit { source: Source::Command(i), score: rng.below(12) as u32 * SCORE_BUCKET, frecency: rng.below(40) as u32 })
+            .collect();
+        let typed = commands[17].clone();
+        let history = History::empty(0);
+        let q = Query {
+            text: &typed,
+            mode: Mode::Commands,
+            apps: &[],
+            commands: &commands,
+            windows: &[],
+            lines: &[],
+            history: &history,
+            now: 0,
+        };
+        let pr = Prepared::new(&q);
+
+        let actual = finish(hits.clone(), &q, &pr);
+
+        // Reference: reads names and the typed-whole check directly, never through the
+        // precomputed `name_rank`/`exact` arrays this test exists to validate.
+        let typed_trimmed = typed.trim();
+        let mut expected = hits;
+        expected.sort_by(|a, b| {
+            let (Source::Command(ia), Source::Command(ib)) = (a.source, b.source) else { unreachable!() };
+            (b.score / SCORE_BUCKET)
+                .cmp(&(a.score / SCORE_BUCKET))
+                .then_with(|| folded_eq(&commands[ib], typed_trimmed).cmp(&folded_eq(&commands[ia], typed_trimmed)))
+                .then(b.frecency.cmp(&a.frecency))
+                .then_with(|| cmp_ci(&commands[ia], &commands[ib]))
+                .then(ia.cmp(&ib))
+        });
+        expected.truncate(MAX_RESULTS);
+
+        assert_eq!(actual, expected);
     }
 }
