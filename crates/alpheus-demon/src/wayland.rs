@@ -5,13 +5,17 @@
 
 use crate::actions::{self, Button, Wheel};
 use crate::grid::Grid;
+use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
 use crate::state::Bar;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
+use smithay_client_toolkit::reexports::calloop::LoopHandle;
+use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
+use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -24,7 +28,8 @@ use smithay_client_toolkit::shm::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
+    delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -182,6 +187,47 @@ fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, St
         .map_err(|e| e.to_string())
 }
 
+/// Which of `buffers` to paint a `w` × `h` physical frame into, allocating
+/// from `pool` when `plan_buffer` says so; None on an allocation failure
+/// (logged). Shared by the bar's surfaces and the launcher's box.
+pub(crate) fn pick_buffer(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut SlotPool, w: u32, h: u32) -> Option<usize> {
+    let states: Vec<((u32, u32), bool)> = buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
+    match plan_buffer(&states, (w, h)) {
+        BufferPlan::Resize => {
+            buffers.clear();
+            match new_buffer(pool, w, h) {
+                Ok(buffer) => buffers.push((buffer, w, h)),
+                Err(err) => {
+                    log(&format!("buffer {w}×{h}: {err}"));
+                    return None;
+                }
+            }
+            Some(0)
+        }
+        BufferPlan::Grow => {
+            match new_buffer(pool, w, h) {
+                Ok(buffer) => buffers.push((buffer, w, h)),
+                Err(err) => {
+                    log(&format!("buffer {w}×{h}: {err}"));
+                    return None;
+                }
+            }
+            // Two buffers are enough to alternate forever in steady state
+            // (see `BufferPlan`'s doc): a third was only ever allocated
+            // because neither existing one was free yet. Drop the oldest
+            // rather than let the list grow without bound in a pathological
+            // case (a compositor slower still to release) — safe even if
+            // it's still busy (`Buffer`'s own drop defers its destruction to
+            // the eventual release).
+            while buffers.len() > 2 {
+                buffers.remove(0);
+            }
+            Some(buffers.len() - 1)
+        }
+        BufferPlan::Reuse(i) => Some(i),
+    }
+}
+
 struct Surface {
     output: wl_output::WlOutput,
     name: String,
@@ -206,19 +252,19 @@ struct Surface {
 
 pub struct App {
     registry: RegistryState,
-    outputs: OutputState,
-    seats: SeatState,
-    shm: Shm,
-    compositor: CompositorState,
-    layers: LayerShell,
+    pub(crate) outputs: OutputState,
+    pub(crate) seats: SeatState,
+    pub(crate) shm: Shm,
+    pub(crate) compositor: CompositorState,
+    pub(crate) layers: LayerShell,
     pool: SlotPool,
     surfaces: Vec<Surface>,
-    pointer: Option<ThemedPointer>,
-    wheel: Wheel,
+    pub(crate) pointer: Option<ThemedPointer>,
+    pub(crate) wheel: Wheel,
     pub bar: Bar,
-    palette: Palette,
-    fonts: Fonts,
-    exec: Arc<dyn Executor>,
+    pub(crate) palette: Palette,
+    pub(crate) fonts: Fonts,
+    pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
     /// Raised by a message that changed the display (channel, clock):
     /// redrawn exactly once after `loop.dispatch()` returns, not on every
@@ -234,6 +280,18 @@ pub struct App {
     /// `pending_restores`), so a paired `output_destroyed` of the SAME
     /// batch is taken into account instead of racing it.
     pending_restore: Vec<wl_output::WlOutput>,
+    /// First seat announced: the launcher binds its keyboard on it while open.
+    pub(crate) seat: Option<wl_seat::WlSeat>,
+    /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
+    /// scrims to their output (no full-output buffer).
+    pub(crate) viewporter: Option<WpViewporter>,
+    /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
+    /// connections, the dmenu client watch.
+    pub loop_handle: Option<LoopHandle<'static, App>>,
+    /// The launcher while open; None at rest (nothing of it resident).
+    pub(crate) launcher: Option<OpenLauncher>,
+    /// Bumped at each open: a scan result from an older open is ignored.
+    pub(crate) launcher_generation: u64,
 }
 
 impl App {
@@ -249,6 +307,8 @@ impl App {
         let layers = LayerShell::bind(globals, qh).map_err(|e| format!("layer-shell unavailable: {e}"))?;
         let shm = Shm::bind(globals, qh).map_err(|e| format!("wl_shm: {e}"))?;
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
+        // Optional: without it, the launcher has no click-outside scrim (logged at open).
+        let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
         Ok(App {
             registry: RegistryState::new(globals),
             outputs: OutputState::new(globals, qh),
@@ -268,6 +328,11 @@ impl App {
             dirty: false,
             awaiting_configure: Vec::new(),
             pending_restore: Vec::new(),
+            seat: None,
+            viewporter,
+            loop_handle: None,
+            launcher: None,
+            launcher_generation: 0,
         })
     }
 
@@ -356,41 +421,7 @@ impl App {
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
         }
-        let states: Vec<((u32, u32), bool)> = s.buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
-        let used = match plan_buffer(&states, (w, h)) {
-            BufferPlan::Resize => {
-                s.buffers.clear();
-                match new_buffer(pool, w, h) {
-                    Ok(buffer) => s.buffers.push((buffer, w, h)),
-                    Err(err) => {
-                        log(&format!("buffer {w}×{h}: {err}"));
-                        return;
-                    }
-                }
-                0
-            }
-            BufferPlan::Grow => {
-                match new_buffer(pool, w, h) {
-                    Ok(buffer) => s.buffers.push((buffer, w, h)),
-                    Err(err) => {
-                        log(&format!("buffer {w}×{h}: {err}"));
-                        return;
-                    }
-                }
-                // Two buffers are enough to alternate forever in steady
-                // state (see `BufferPlan`'s doc): a third was only ever
-                // allocated because neither existing one was free yet.
-                // Drop the oldest rather than let the list grow without
-                // bound in a pathological case (a compositor slower still
-                // to release) — safe even if it's still busy (`Buffer`'s
-                // own drop defers its destruction to the eventual release).
-                while s.buffers.len() > 2 {
-                    s.buffers.remove(0);
-                }
-                s.buffers.len() - 1
-            }
-            BufferPlan::Reuse(i) => i,
-        };
+        let Some(used) = pick_buffer(&mut s.buffers, pool, w, h) else { return };
         // Expected to succeed (`plan_buffer` already checked free-ness for
         // `Reuse`, and a buffer fresh out of `new_buffer` is always
         // inactive): `None` here is defensive, never seen in practice.
@@ -422,6 +453,9 @@ impl App {
 
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
+        if self.launcher_scale(surface, f) {
+            return;
+        }
         if let Some(i) = self.index(surface) {
             if self.surfaces[i].scale != f {
                 self.surfaces[i].scale = f;
@@ -458,6 +492,7 @@ impl OutputHandler for App {
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.launcher_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -502,6 +537,9 @@ impl LayerShellHandler for App {
         // check, a compositor that closed the surface in a loop within one
         // batch (a bug, a protocol violation) could mark the same output
         // more than once before `restore_pending` ever runs.
+        if self.launcher_layer_closed(layer.wl_surface()) {
+            return; // a launcher surface: the bar's restore logic is not involved
+        }
         if let Some(i) = self.index(layer.wl_surface()) {
             let output = self.remove(i);
             let already_pending = self.pending_restore.contains(&output);
@@ -512,6 +550,9 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
+        if self.launcher_configured(layer.wl_surface(), c.new_size) {
+            return;
+        }
         let Some(i) = self.index(layer.wl_surface()) else { return };
         // First configure of THIS surface: the restore (if there was one
         // pending) succeeded, the output can again be restored in the
@@ -534,9 +575,16 @@ impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {
         &mut self.seats
     }
-    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.seat.is_none() {
+            self.seat = Some(seat);
+        }
+    }
 
     fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
+        if self.seat.is_none() {
+            self.seat = Some(seat.clone());
+        }
         if c == Capability::Pointer && self.pointer.is_none() {
             let surface = self.compositor.create_surface(qh);
             match self.seats.get_pointer_with_theme(qh, &seat, self.shm.wl_shm(), surface, ThemeSpec::default()) {
@@ -544,20 +592,35 @@ impl SeatHandler for App {
                 Err(e) => log(&format!("pointer unavailable: {e}")),
             }
         }
+        // A keyboard appearing while the launcher is open (virtual keyboard, a
+        // keyboard plugged in): bind it now. At rest: nothing is bound.
+        if c == Capability::Keyboard && self.launcher_is_open() {
+            self.launcher_bind_keyboard(qh, &seat);
+        }
     }
 
     fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, c: Capability) {
         if c == Capability::Pointer {
             self.pointer = None;
         }
+        if c == Capability::Keyboard {
+            self.launcher_release_keyboard();
+        }
     }
 
-    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
+        if self.seat.as_ref() == Some(&seat) {
+            self.seat = None;
+        }
+    }
 }
 
 impl PointerHandler for App {
     fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
+            if self.launcher_pointer(conn, ev) {
+                continue;
+            }
             let Some(i) = self.index(&ev.surface) else { continue };
             match &ev.kind {
                 PointerEventKind::Enter { .. } => {
@@ -566,6 +629,11 @@ impl PointerHandler for App {
                     }
                 }
                 PointerEventKind::Press { button, .. } => {
+                    // A click on the bar while the launcher is open is a click
+                    // outside it: close first, then the bar's own action.
+                    if self.launcher_is_open() {
+                        self.launcher_close(CloseReason::ClickOutside);
+                    }
                     if let Some(b) = actions::button(*button) {
                         self.click(i, ev.position.0, b);
                     }
@@ -608,6 +676,10 @@ delegate_shm!(App);
 delegate_layer!(App);
 delegate_seat!(App);
 delegate_pointer!(App);
+delegate_keyboard!(App);
+// wp_viewporter and wp_viewport have no events.
+delegate_noop!(App: ignore WpViewporter);
+delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
 
 impl crate::launch::DeferredRedraw for App {

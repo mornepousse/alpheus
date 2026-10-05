@@ -47,6 +47,9 @@
           tests = [ "alpheus-demon" ];
           description = "Démon résident d'alpheus : la barre (layer-shell, Hyprland et niri)";
           env.ALPHEUS_POLICES = polices pkgs;
+          # libxkbcommon: the launcher's keyboard (sctk's "xkbcommon" feature), found through pkg-config.
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.libxkbcommon ];
         };
         alpheus-launch = paquet pkgs {
           pname = "alpheus-launch";
@@ -68,7 +71,18 @@
         default = pkgs.mkShell {
           # sway : compositeur sans tête des tests ignorés du démon.
           # dbus : dbus-daemon privé des tests ignorés du démon (jamais le bus de session ni le bus système).
-          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.sway pkgs.dbus ];
+          # pkg-config, libxkbcommon: the daemon links libxkbcommon (launcher keyboard).
+          packages = [
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.clippy
+            pkgs.rustfmt
+            pkgs.rust-analyzer
+            pkgs.sway
+            pkgs.dbus
+            pkgs.pkg-config
+            pkgs.libxkbcommon
+          ];
           ALPHEUS_POLICES = polices pkgs;
         };
       });

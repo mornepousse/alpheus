@@ -18,7 +18,10 @@ ratatui = "0.30"
 unicode-width = "0.2"
 unicode-normalization = "0.1"
 cosmic-text = "0.12"
-smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
+# "xkbcommon": keymaps for the launcher's keyboard (layout-aware keys,
+# Dvorak), repeat on calloop. Links the system libxkbcommon; the keyboard
+# object and its keymap exist only while the launcher is open.
+smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop", "xkbcommon"] }
 insta = "1"
 # Fuzzy matching of the launcher (Helix's matcher, fzf scoring). Daemon only.
 nucleo-matcher = "0.3"

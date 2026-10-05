@@ -234,7 +234,7 @@ pub fn run() -> i32 {
             return 1;
         }
     };
-    let mut event_loop: EventLoop<App> = match EventLoop::try_new() {
+    let mut event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
             log(&format!("event loop: {e}"));
@@ -242,6 +242,7 @@ pub fn run() -> i32 {
         }
     };
     let handle = event_loop.handle();
+    state.loop_handle = Some(handle.clone());
     if WaylandSource::new(conn.clone(), file).insert(handle.clone()).is_err() {
         log("Wayland source: could not insert");
         return 1;
