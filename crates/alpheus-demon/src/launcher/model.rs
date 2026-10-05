@@ -85,6 +85,13 @@ pub struct Launcher {
     /// empty query goes back to All.
     by_prefix: bool,
     list_rows: usize,
+    /// Whether the user has moved the selection since open: a navigation key, a wheel
+    /// scroll, or a typed character that changed the results. Until then, a catalog or
+    /// window update puts the selection back on top instead of carrying it along by
+    /// identity (Mae, 2026-10-05): the catalog arrives after the first window has been
+    /// auto-selected, and a hasty Enter must not land on that window once apps outrank
+    /// it. Once the user has moved, `identity` keeps tracking their choice as before.
+    moved: bool,
 }
 
 impl Launcher {
@@ -108,6 +115,7 @@ impl Launcher {
             ranker: Ranker::new(),
             by_prefix: false,
             list_rows,
+            moved: false,
         }
     }
 
@@ -182,9 +190,14 @@ impl Launcher {
         let page = self.list_rows as i64;
         match k {
             Key::Char(c) => {
+                let before = self.results.clone();
                 self.query.push(c);
                 self.take_prefix();
-                self.query_changed()
+                let o = self.query_changed();
+                if self.results != before {
+                    self.moved = true;
+                }
+                o
             }
             Key::Backspace => {
                 if self.query.pop().is_some() {
@@ -289,12 +302,19 @@ impl Launcher {
         self.top = 0;
     }
 
-    /// Re-ranks, then puts the selection back on `kept` (captured by the caller *before*
-    /// replacing the list it identifies into — see `set_catalog`/`set_windows`) if it is still
-    /// among the results, else 0.
+    /// Re-ranks. Before the user has moved the selection (`self.moved`), a catalog or window
+    /// update always lands back on top (index 0): the default selection is a placeholder, not
+    /// a choice, and must not survive apps outranking the window it happened to start on
+    /// (Mae, 2026-10-05). Once the user has moved, puts the selection back on `kept` (captured
+    /// by the caller *before* replacing the list it identifies into — see
+    /// `set_catalog`/`set_windows`) if it is still among the results, else 0.
     fn refilter_keeping(&mut self, kept: Option<Identity>) {
         self.rank();
-        self.selected = kept.and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id))).unwrap_or(0);
+        self.selected = if self.moved {
+            kept.and_then(|id| self.results.iter().position(|h| self.identity(h.source).as_ref() == Some(&id))).unwrap_or(0)
+        } else {
+            0
+        };
         self.keep_visible();
     }
 
@@ -309,6 +329,7 @@ impl Launcher {
     }
 
     fn move_by(&mut self, delta: i64) -> Outcome {
+        self.moved = true;
         if self.results.is_empty() {
             return Outcome::Nothing;
         }
@@ -484,6 +505,53 @@ mod tests {
         assert!(!l.is_script());
     }
 
+    /// The bug Mae hit (2026-10-05): the catalog arrives after the first window has been
+    /// auto-selected; without this fix, identity-preserving reselection kept that window
+    /// selected even though apps now rank above it, so a hasty Enter focused a window instead
+    /// of launching the most-used app.
+    #[test]
+    fn a_catalog_arriving_before_the_user_moves_selects_the_top_result() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)), "windows only: the first one");
+        l.set_catalog(catalog());
+        assert_eq!(
+            l.selected_hit().map(|h| h.source),
+            Some(Source::App(1)),
+            "apps now rank above windows (empty query): the top one, not the window kept by identity"
+        );
+    }
+
+    #[test]
+    fn once_the_user_has_moved_a_catalog_update_keeps_the_chosen_item() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert_eq!(l.key(Key::Down), Outcome::Redraw);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)));
+        l.set_catalog(catalog());
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)), "moved already: kept by identity, as before");
+    }
+
+    /// Typing counts too, but only when it actually reshuffles the results (brief: "a typed
+    /// character that changed the results"). Discriminates from a reset-to-top by giving the
+    /// selected window a new, non-zero position after the update: a third window sorts before
+    /// it once it arrives, so "kept by identity" and "back to the top" name different windows.
+    #[test]
+    fn typing_that_changes_the_results_also_counts_as_moved() {
+        let w1 = window("a", "term", "abc-zzz");
+        let w2 = window("b", "term", "abc-aaa");
+        let mut l = Launcher::for_apps(LauncherConfig::default(), vec![w1.clone(), w2.clone()], History::empty(200), NOW);
+        typed(&mut l, "abc");
+        assert_eq!(sources(&l), [Source::Window(1), Source::Window(0)], "abc-aaa ranks first by name");
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(1)));
+        let w3 = window("c", "term", "abc-000");
+        l.set_windows(vec![w1, w2, w3]);
+        assert_eq!(sources(&l), [Source::Window(2), Source::Window(1), Source::Window(0)], "abc-000 now ranks first");
+        assert_eq!(
+            l.selected_hit().map(|h| h.source),
+            Some(Source::Window(1)),
+            "typing already counted as moved: identity kept (abc-aaa), not reset to the new top"
+        );
+    }
+
     #[test]
     fn typing_filters_resets_the_selection_and_clears_the_message() {
         let mut l = launcher();
@@ -554,7 +622,7 @@ mod tests {
     #[test]
     fn moving_clamps_without_wrapping_and_keeps_the_selection_visible() {
         let mut l = launcher(); // 3 apps + 3 windows
-        l.key(Key::Home); // the top result (the default selection quirk above picks a window instead)
+        l.key(Key::Home); // already the top result since the catalog arrived untouched; explicit here
         l.set_list_rows(2);
         assert_eq!(l.key(Key::Up), Outcome::Nothing, "no wrap at the top");
         assert_eq!(l.key(Key::CtrlP), Outcome::Nothing);
@@ -612,9 +680,10 @@ mod tests {
     #[test]
     fn enter_activates_the_selection_escape_closes() {
         let mut l = launcher();
-        // Default selection: the window `for_apps` started on, kept by identity through
-        // `set_catalog` even though apps now list before it (Mae, 2026-10-05).
-        assert_eq!(l.key(Key::Enter), activate(Activation::Window(0)));
+        // Default selection: the top result once the catalog arrives — the window
+        // `for_apps` started on is not kept, since the user hasn't moved yet
+        // (Mae, 2026-10-05, "until the user moves, the selection stays on top").
+        assert_eq!(l.key(Key::Enter), activate(Activation::App { index: 1, action: None }), "Files, the top app");
         l.key(Key::Tab);
         l.key(Key::Down);
         assert_eq!(l.key(Key::Enter), activate(Activation::App { index: 0, action: None }), "Firefox, main Exec");
