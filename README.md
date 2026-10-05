@@ -17,7 +17,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 61 MB** | bar (≈ 13 MB) + mako, swayosd, swaybg still borrowed (≈ 48 MB) |
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 71 MB** | bar ≈ 14 MB + mako, swayosd, swaybg still borrowed ≈ 57 MB |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 120 MB | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
@@ -33,9 +33,11 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 |---|---:|---|
 | Bar daemon, all modules, 3 outputs — at start | ≈ 7.9 MB | headless sway test, `tests/memory.rs` |
 | Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.7 MB | stable, 0 wake-ups at rest, 8 threads |
-| `pw-dump` child (sound source) | ≈ 3.5 MB | silent at rest |
-| **alpheus total today** | **≈ 13 MB** | bar + sound source |
-| Borrowed for now: mako / swaybg / swayosd | 2.3 / 1.7 / 44 MB | to be replaced by alpheus toasts and OSD |
+| Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
+| `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
+| **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |
+| Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
+| Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
@@ -59,7 +61,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 
 | Feature | **alpheus** | DMS | Noctalia | ashell | waybar stack¹ |
 |---|---|---|---|---|---|
-| **Resident memory** | **≈ 13 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 120 MB |
+| **Resident memory** | **≈ 14 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 120 MB |
 | **Bar** | | | | | |
 | Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Clock | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -73,7 +75,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
-| Control center (quick settings) | ✅ TUI | ✅ | ✅ | ➖ | ❌ |
+| Control center (quick settings) | ✅ TUI (≈ 2 MB + terminal, only while open) | ✅ | ✅ | ➖ | ❌ |
 | Power menu | ✅ TUI | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ➖ TUI + nmtui, bluetui, wiremix | ✅ | ➖ | ✅ | ❌ |
@@ -86,8 +88,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
-| Notification toasts | 🚧 | ✅ | ✅ | ✅ | ✅ |
-| OSD (volume, brightness) | 🚧 | ✅ | ✅ | ✅ | ✅ |
+| Notification toasts | 🚧 (mako ≈ 6.6 MB until then) | ✅ | ✅ | ✅ | ✅ |
+| OSD (volume, brightness) | 🚧 (swayosd ≈ 49.5 MB until then) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ follows it | ✅ | ✅ | ❌ | ❌ |
 | Themes and presets, richer style | 🚧 | ✅ | ✅ | ➖ | ➖ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
