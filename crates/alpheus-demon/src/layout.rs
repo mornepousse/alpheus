@@ -139,7 +139,7 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Volume => segments::volume(&bar.sound),
         ModuleId::Network => segments::network(&bar.network),
         ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth),
-        ModuleId::Battery => segments::battery(&bar.battery),
+        ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery),
         ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources),
         // Deliveries 4 and 5: not shown yet.
         ModuleId::Media | ModuleId::Tray | ModuleId::Notifications => None,
@@ -208,8 +208,9 @@ mod tests {
     use super::*;
     use crate::clock::LocalTime;
     use crate::compositor::{Window, example};
-    use crate::config::BarConfig;
+    use crate::config::{BarConfig, BatteryConfig, BatteryVisibility};
     use crate::state::Msg;
+    use crate::system::{Peripheral, PeripheralKind, PowerState};
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -306,6 +307,19 @@ mod tests {
         assert!(t.ends_with(" │  2·  4!····+  5  "), "free space before the last module: {t}");
         b.config.clock.date = String::new();
         assert!(b.grid("HDMI-A-1", 60).text().starts_with(" 14:05"));
+    }
+
+    #[test]
+    fn battery_config_reaches_the_segment() {
+        // `bar.config.battery` (bar.toml's `[battery]`) must be the one
+        // `grid()` actually hands to `segments::battery`, not a default
+        // built on the fly.
+        let mut b = bar();
+        let mouse = Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(80), low: false };
+        b.apply(Msg::Battery(Some(PowerState { laptop: None, peripherals: vec![mouse] })));
+        assert!(b.grid("HDMI-A-1", 100).text().contains('%'), "default [battery] peripherals = \"always\": shown");
+        b.config.battery = BatteryConfig { peripherals: BatteryVisibility::Never, ..BatteryConfig::default() };
+        assert!(!b.grid("HDMI-A-1", 100).text().contains('%'), "[battery] peripherals = \"never\": hidden");
     }
 
     #[test]

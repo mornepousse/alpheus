@@ -21,6 +21,9 @@
 //! interval = 2                                  # seconds between readings, 1 to 60
 //! graph = 20                                    # cells of CPU history, 0 to 60 (0: no graph)
 //! sensor = ""                                   # hwmon name or thermal zone type; "": automatic
+//! [battery]
+//! peripherals = "always"                        # "always" | "low" | "never": peripherals with a real percentage
+//! coarse = "low"                                # "always" | "low" | "never": peripherals with only a coarse level
 //! ```
 
 use crate::clock;
@@ -173,6 +176,36 @@ impl Default for ResourcesConfig {
     }
 }
 
+/// How a battery segment shows up (spec Q, Mae 2026-10-05): every peripheral
+/// with a real percentage defaults to "always" (today's behaviour); one that
+/// only reports a coarse UPower `BatteryLevel` defaults to "low" (today's
+/// behaviour: hidden unless Low, Critical or Action).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BatteryVisibility {
+    Always,
+    Low,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct BatteryConfig {
+    /// Peripherals with a real percentage (spec Q7's default: always shown,
+    /// error tint below 20 %).
+    pub peripherals: BatteryVisibility,
+    /// Peripherals that only report a coarse level: "always" shows the bare
+    /// icon (error tint when low, normal otherwise), "low" (default) shows
+    /// it only when Low, Critical or Action, "never" hides it.
+    pub coarse: BatteryVisibility,
+}
+
+impl Default for BatteryConfig {
+    fn default() -> Self {
+        BatteryConfig { peripherals: BatteryVisibility::Always, coarse: BatteryVisibility::Low }
+    }
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -185,6 +218,7 @@ pub struct BarConfig {
     pub workspaces: WorkspacesConfig,
     pub actions: ActionsConfig,
     pub resources: ResourcesConfig,
+    pub battery: BatteryConfig,
 }
 
 impl Default for BarConfig {
@@ -197,6 +231,7 @@ impl Default for BarConfig {
             workspaces: WorkspacesConfig::default(),
             actions: ActionsConfig::default(),
             resources: ResourcesConfig::default(),
+            battery: BatteryConfig::default(),
         }
     }
 }
@@ -222,6 +257,8 @@ struct Raw {
     actions: ActionsConfig,
     #[serde(default)]
     resources: ResourcesConfig,
+    #[serde(default)]
+    battery: BatteryConfig,
 }
 
 impl BarConfig {
@@ -281,6 +318,7 @@ impl BarConfig {
             workspaces: b.workspaces,
             actions: b.actions,
             resources: b.resources,
+            battery: b.battery,
         })
     }
 }
@@ -367,5 +405,25 @@ mod tests {
         assert!(err("[resources]\nperiod = 2").contains("period"), "unknown key refused");
         let c = BarConfig::from_text("[resources]\ninterval = 60\ngraph = 60").unwrap();
         assert_eq!((c.resources.interval, c.resources.graph), (60, GRAPH_MAX), "bounds included");
+    }
+
+    #[test]
+    fn battery_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert_eq!((d.battery.peripherals, d.battery.coarse), (BatteryVisibility::Always, BatteryVisibility::Low));
+        let text = "[battery]\nperipherals = \"low\"\ncoarse = \"never\"\n";
+        let c = BarConfig::from_text(text).unwrap();
+        assert_eq!((c.battery.peripherals, c.battery.coarse), (BatteryVisibility::Low, BatteryVisibility::Never));
+        let text = "[battery]\nperipherals = \"never\"\ncoarse = \"always\"\n";
+        let c = BarConfig::from_text(text).unwrap();
+        assert_eq!((c.battery.peripherals, c.battery.coarse), (BatteryVisibility::Never, BatteryVisibility::Always));
+    }
+
+    #[test]
+    fn battery_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("[battery]\nperipherals = \"sometimes\"").contains("sometimes"));
+        assert!(err("[battery]\ncoarse = \"soon\"").contains("soon"));
+        assert!(err("[battery]\nshown = true").contains("shown"), "unknown key refused");
     }
 }

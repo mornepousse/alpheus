@@ -116,6 +116,10 @@ date = "%a %e %b"   # empty = no date
 
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
+
+[battery]
+peripherals = "always"   # "always" | "low" | "never": peripherals with a real percentage
+coarse = "low"           # "always" | "low" | "never": peripherals with only a coarse level
 ```
 
 Modules not yet shipped are accepted and ignored: a `bar.toml` written
