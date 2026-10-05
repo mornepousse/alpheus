@@ -371,6 +371,51 @@ fn the_only_stream_is_pw_dump_monitor() {
     }
 }
 
+/// Nothing of the launcher is resident at rest (spec § 3, Global
+/// Constraints): every place in the daemon that can start a thread, arm a
+/// timer, watch a file descriptor or bind a keyboard is in this table with
+/// the reason it does not run at rest. A new one fails until it is added —
+/// and justified — here. Production code only (comments included: never
+/// write these tokens in a comment).
+#[test]
+fn nothing_resident_while_the_launcher_is_closed() {
+    const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
+    const ALLOWED: &[(&str, &str, usize)] = &[
+        // The bar's clock and resources timers; the launcher's request
+        // deadline, armed per connection and removed once it is read; the
+        // listener's resume, armed only after an accept() error.
+        ("launch.rs", "Timer::", 4),
+        // The bar's signal guard.
+        ("launch.rs", "thread::Builder", 1),
+        // The launcher's listening socket (its fd: the one thing at rest),
+        // and one watch per connection being read.
+        ("launch.rs", "Generic::new", 2),
+        // A dmenu client's hang-up watch: only while its menu is open.
+        ("launcher/host.rs", "Generic::new", 1),
+        // The scan: started at open, ends once its catalog is delivered.
+        ("launcher/scan.rs", "thread::Builder", 1),
+        // The keyboard: bound while open, released at close.
+        ("launcher/surface.rs", "get_keyboard", 1),
+        // The bar's sources (compositor, sound; D-Bus).
+        ("sources/dbus/mod.rs", "thread::Builder", 1),
+        ("sources/mod.rs", "thread::Builder", 1),
+    ];
+    let mut found: Vec<(String, &str, usize)> = Vec::new();
+    for (p, t) in source_files() {
+        let prod = production_code(&t);
+        for token in TOKENS {
+            let n = prod.matches(token).count();
+            if n > 0 {
+                found.push((relative_path(&p), token, n));
+            }
+        }
+    }
+    found.sort();
+    let mut expected: Vec<(String, &str, usize)> = ALLOWED.iter().map(|(f, t, n)| (f.to_string(), *t, *n)).collect();
+    expected.sort();
+    assert_eq!(found, expected, "a thread, timer, fd watch or keyboard outside the reviewed list");
+}
+
 /// D-Bus only in src/sources/ (like the compositor's sockets), through one
 /// file, which can only call read methods; no word of a method that changes
 /// anything in the D-Bus sources.

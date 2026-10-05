@@ -5,12 +5,13 @@
 
 use crate::actions::{self, Button, Wheel};
 use crate::grid::Grid;
+use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
 use crate::state::Bar;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
-use smithay_client_toolkit::reexports::calloop::LoopHandle;
+use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
@@ -292,6 +293,14 @@ pub struct App {
     pub(crate) launcher: Option<OpenLauncher>,
     /// Bumped at each open: a scan result from an older open is ignored.
     pub(crate) launcher_generation: u64,
+    /// The loop's mailbox (launch.rs sets it): a scan posts its catalog there.
+    pub(crate) mail: Option<channel::Sender<Mail>>,
+    /// Raised by a `Msg::Compositor` message, consumed once per
+    /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
+    /// are fed at most once per pass, never once per message — a burst
+    /// (e.g. niri) can carry several in the same pass, and `set_windows` is
+    /// not cheap.
+    windows_dirty: bool,
 }
 
 impl App {
@@ -333,6 +342,8 @@ impl App {
             loop_handle: None,
             launcher: None,
             launcher_generation: 0,
+            mail: None,
+            windows_dirty: false,
         })
     }
 
@@ -440,20 +451,53 @@ impl App {
         s.last = Some(grid);
     }
 
-    fn click(&mut self, i: usize, x: f64, b: Button) {
+    /// `launcher_was_open`: whether the launcher was open right before this
+    /// press (`pointer_frame` already closed it, as a click outside, before
+    /// calling here): the same press must not reopen it (`toggles_launcher`).
+    fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
-        let s = &self.surfaces[i];
-        let Some(grid) = &s.last else { return };
-        if let Some(argv) = actions::click(&self.bar, &s.name, grid, x, e, advance, b) {
-            actions::run(self.exec.as_ref(), &argv);
+        let toggles = {
+            let Some(grid) = &self.surfaces[i].last else { return };
+            grid.target_at(painter::column_under(x, e, advance)).is_some_and(|t| actions::toggles_launcher(t, b))
+        };
+        match decide_click(toggles, launcher_was_open) {
+            ClickDecision::ToggleLauncher => self.launcher_toggle(qh),
+            ClickDecision::Nothing => {}
+            ClickDecision::RunBarAction => {
+                let s = &self.surfaces[i];
+                let Some(grid) = &s.last else { return };
+                if let Some(argv) = actions::click(&self.bar, &s.name, grid, x, e, advance, b) {
+                    actions::run(self.exec.as_ref(), &argv);
+                }
+            }
         }
+    }
+}
+
+/// What a press on the bar does, decided purely (tested without Wayland):
+/// the launcher button toggles the launcher, UNLESS this very press just
+/// closed it as a click outside (`pointer_frame` closes before calling
+/// `click`) — then it is swallowed instead of reopening it. Anywhere else,
+/// the bar's own action (`actions::click`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickDecision {
+    ToggleLauncher,
+    Nothing,
+    RunBarAction,
+}
+
+fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecision {
+    match (toggles_launcher, launcher_was_open) {
+        (true, false) => ClickDecision::ToggleLauncher,
+        (true, true) => ClickDecision::Nothing,
+        (false, _) => ClickDecision::RunBarAction,
     }
 }
 
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
-        if self.launcher_scale(surface, f) {
+        if self.launcher_guarded("scale", |app| app.launcher_scale(surface, f)).unwrap_or(true) {
             return;
         }
         if let Some(i) = self.index(surface) {
@@ -492,7 +536,7 @@ impl OutputHandler for App {
     }
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        self.launcher_output_gone(&output);
+        self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -537,7 +581,7 @@ impl LayerShellHandler for App {
         // check, a compositor that closed the surface in a loop within one
         // batch (a bug, a protocol violation) could mark the same output
         // more than once before `restore_pending` ever runs.
-        if self.launcher_layer_closed(layer.wl_surface()) {
+        if self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface())).unwrap_or(true) {
             return; // a launcher surface: the bar's restore logic is not involved
         }
         if let Some(i) = self.index(layer.wl_surface()) {
@@ -550,7 +594,7 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
-        if self.launcher_configured(layer.wl_surface(), c.new_size) {
+        if self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size)).unwrap_or(true) {
             return;
         }
         let Some(i) = self.index(layer.wl_surface()) else { return };
@@ -616,9 +660,9 @@ impl SeatHandler for App {
 }
 
 impl PointerHandler for App {
-    fn pointer_frame(&mut self, conn: &Connection, _: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
+    fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
-            if self.launcher_pointer(conn, ev) {
+            if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
                 continue;
             }
             let Some(i) = self.index(&ev.surface) else { continue };
@@ -630,17 +674,20 @@ impl PointerHandler for App {
                 }
                 PointerEventKind::Press { button, .. } => {
                     // A click on the bar while the launcher is open is a click
-                    // outside it: close first, then the bar's own action.
-                    if self.launcher_is_open() {
-                        self.launcher_close(CloseReason::ClickOutside);
+                    // outside it: close first, then the bar's own action — but
+                    // the same press must not then reopen it through the
+                    // launcher button (`click`'s `launcher_was_open`).
+                    let was_open = self.launcher_is_open();
+                    if was_open {
+                        self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
                     if let Some(b) = actions::button(*button) {
-                        self.click(i, ev.position.0, b);
+                        self.click(qh, i, ev.position.0, b, was_open);
                     }
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        self.click(i, ev.position.0, b);
+                        self.click(qh, i, ev.position.0, b, false);
                     }
                     // End of gesture (notched wheel released, touchpad
                     // lifted): nothing to carry over to the next gesture.
@@ -694,9 +741,26 @@ impl crate::launch::DeferredRedraw for App {
     }
 }
 
+impl crate::launch::WindowsFeed for App {
+    fn windows_dirty_mut(&mut self) -> &mut bool {
+        &mut self.windows_dirty
+    }
+    fn feed_windows_now(&mut self) {
+        self.launcher_windows_changed();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launcher_button_click_toggles_unless_this_press_just_closed_it() {
+        assert_eq!(decide_click(true, false), ClickDecision::ToggleLauncher);
+        assert_eq!(decide_click(true, true), ClickDecision::Nothing, "the same press that closed it as a click outside must not reopen it");
+        assert_eq!(decide_click(false, true), ClickDecision::RunBarAction, "elsewhere on the bar: its own action");
+        assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
+    }
 
     #[test]
     fn buffer_size_accounts_for_scale() {

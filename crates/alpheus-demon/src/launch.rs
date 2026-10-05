@@ -6,6 +6,10 @@
 use crate::clock;
 use crate::clock::LocalTime;
 use crate::config::{BarConfig, ModuleId, ResourcesConfig};
+use crate::launcher::host::guarded;
+use crate::launcher::scan::Catalog;
+use crate::launcher::socket::{Conn, MAX_CONNECTIONS, Progress, REQUEST_DEADLINE, Server};
+use crate::launcher::surface::CloseReason;
 use crate::lock;
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
@@ -15,15 +19,19 @@ use crate::sources::resources;
 use crate::state::{Bar, Msg};
 use crate::wayland::App;
 use alpheus_commun::exec::{Executor, SystemExecutor};
+use alpheus_commun::launcher_ipc::{self, Reply, Request};
 use alpheus_commun::theme::Palette;
 use alpheus_commun::{paths, shutdown};
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
-use smithay_client_toolkit::reexports::calloop::{EventLoop, channel};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, LoopHandle, Mode, PostAction, RegistrationToken, channel};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
-use smithay_client_toolkit::reexports::client::Connection;
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
+use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
+use std::cell::{Cell, RefCell};
 use std::io;
 use std::path::Path;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -32,10 +40,19 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static FINISHED: AtomicBool = AtomicBool::new(false);
 /// Grace period left for the loop to exit on its own after a signal.
 const GRACE: Duration = Duration::from_secs(1);
+/// How long the listener rests after an accept() error that stays pending.
+const ACCEPT_PAUSE: Duration = Duration::from_secs(1);
+/// A failed request that buffered at least this much gives its pages back.
+const RELEASE_AFTER: usize = 1 << 20;
 
 /// Mail received by the loop from the other threads.
 pub enum Mail {
     Bar(Msg),
+    /// A finished scan; ignored unless `generation` is the open launcher's.
+    Catalog {
+        generation: u64,
+        catalog: Catalog,
+    },
     Stop,
 }
 
@@ -94,6 +111,33 @@ pub fn on_message(target: &mut impl DeferredRedraw, m: Msg, now: impl Fn() -> Lo
 pub fn after_dispatch(target: &mut impl DeferredRedraw) {
     if std::mem::take(target.dirty_mut()) {
         target.redraw_now();
+    }
+}
+
+/// Mirrors `DeferredRedraw` for the launcher's windows (task 13, carried
+/// review): `Launcher::set_windows` rebuilds the ranker's per-window facts
+/// and refilters, so it is not free — a burst of several `Msg::Compositor`
+/// messages in the same `dispatch()` pass (niri can send several at once)
+/// must feed an open launcher at most once, not once per message.
+pub trait WindowsFeed {
+    fn windows_dirty_mut(&mut self) -> &mut bool;
+    fn feed_windows_now(&mut self);
+}
+
+/// Called by the mail callback on every `Msg::Compositor`: only raises the
+/// flag, never feeds right away.
+pub fn note_compositor_message(target: &mut impl WindowsFeed, m: &Msg) {
+    if matches!(m, Msg::Compositor(_)) {
+        *target.windows_dirty_mut() = true;
+    }
+}
+
+/// Called once after `loop.dispatch()` returns (alongside `after_dispatch`):
+/// feeds the launcher's windows if the flag was raised by the batch just
+/// processed, and lowers it in every case.
+pub fn after_dispatch_windows(target: &mut impl WindowsFeed) {
+    if std::mem::take(target.windows_dirty_mut()) {
+        target.feed_windows_now();
     }
 }
 
@@ -160,6 +204,197 @@ fn exit_code(dispatch_failure: bool) -> i32 {
     if dispatch_failure { 1 } else { 0 }
 }
 
+/// What `run` does with the launcher socket's bind result: kept (Some) when
+/// it succeeds; logged and dropped (None) when it fails — a socket is
+/// optional (spec § 3): never a reason to refuse to start the bar.
+fn launcher_socket_outcome<T, E: std::fmt::Display>(r: Result<T, E>) -> (Option<T>, Option<String>) {
+    match r {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(format!("launcher socket: {e} — the bar runs without a launcher"))),
+    }
+}
+
+/// A dmenu request may have buffered up to `MAX_DMENU_BYTES` (4 MiB) before
+/// being decoded: its pages are given back to the allocator as soon as it
+/// is consumed (worst case, every one of `MAX_CONNECTIONS` at once: 32 MiB)
+/// — a toggle/close never buffers more than its tiny header, nothing to
+/// release there.
+fn releases_memory_once_consumed(request: &Request) -> bool {
+    matches!(request, Request::Dmenu { .. })
+}
+
+/// Whether a newly accepted connection is refused for being the
+/// `MAX_CONNECTIONS + 1`th at once (spec § 3): `watch_connection`'s only
+/// stateful decision, pulled out so it is tested without a socket.
+fn too_many_connections(inflight: usize) -> bool {
+    inflight >= MAX_CONNECTIONS
+}
+
+/// One pass of the level-triggered listener: takes every pending
+/// connection. An error (EMFILE, ENFILE, ENOBUFS…) stays pending and would
+/// wake the loop again at once: Disable instead (the caller re-enables it
+/// after ACCEPT_PAUSE), logged once until accept() works again.
+fn drain_listener<C>(
+    mut accept: impl FnMut() -> io::Result<Option<C>>,
+    mut take: impl FnMut(C),
+    failing: &Cell<bool>,
+    log: &mut dyn FnMut(&str),
+) -> PostAction {
+    loop {
+        match accept() {
+            Ok(Some(c)) => {
+                if failing.replace(false) {
+                    log("launcher socket: accepting again");
+                }
+                take(c);
+            }
+            Ok(None) => return PostAction::Continue,
+            Err(e) => {
+                if !failing.replace(true) {
+                    log(&format!("launcher socket: accept: {e} — paused, retried every {} s", ACCEPT_PAUSE.as_secs()));
+                }
+                return PostAction::Disable;
+            }
+        }
+    }
+}
+
+/// `Conn::read` behind the error boundary: a hostile request hitting a bug
+/// in the decoder fails that connection, never the bar.
+fn guarded_progress(read: impl FnOnce() -> Progress) -> Progress {
+    guarded("socket read", read).unwrap_or_else(|| Progress::Failed("internal error".to_string()))
+}
+
+/// A reply behind the error boundary (the encoder is launcher code too).
+fn reply_guarded(conn: Conn, r: &Reply) {
+    let _ = guarded("socket reply", move || conn.reply(r));
+}
+
+/// The launcher's listening socket on the loop. Level-triggered: every
+/// pending connection is accepted; one refused (another uid) leaves the
+/// rest for the next pass. The closure holds the server only weakly: `run`
+/// owns it, so its Drop (unlinking the socket file) runs when `run` returns
+/// even if the loop's sources keep each other alive through handle clones.
+fn watch_launcher_socket(handle: &LoopHandle<'static, App>, server: &Rc<Server>, qh: QueueHandle<App>) -> io::Result<()> {
+    let fd = server.fd().try_clone_to_owned()?;
+    let server: Weak<Server> = Rc::downgrade(server);
+    let inflight = Rc::new(Cell::new(0usize));
+    let failing = Cell::new(false);
+    let me: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
+    let token = handle
+        .insert_source(Generic::new(fd, Interest::READ, Mode::Level), {
+            let me = me.clone();
+            move |_, _, state: &mut App| {
+                let Some(server) = server.upgrade() else { return Ok(PostAction::Remove) };
+                let action =
+                    drain_listener(|| server.accept(), |conn| watch_connection(state, conn, &qh, &inflight), &failing, &mut |m| log(m));
+                if action == PostAction::Disable {
+                    resume_listener_later(state, me.get());
+                }
+                Ok(action)
+            }
+        })
+        .map_err(|e| io::Error::other(e.error.to_string()))?;
+    me.set(Some(token));
+    Ok(())
+}
+
+/// Re-enables the paused listener after ACCEPT_PAUSE: a one-shot timer that
+/// exists only after an accept() error (never at rest).
+fn resume_listener_later(state: &App, listener: Option<RegistrationToken>) {
+    let (Some(handle), Some(token)) = (state.loop_handle.clone(), listener) else { return };
+    let h = handle.clone();
+    let timer = handle.insert_source(Timer::from_duration(ACCEPT_PAUSE), move |_, _, _: &mut App| {
+        if let Err(e) = h.enable(&token) {
+            log(&format!("launcher socket: not resumed: {e}"));
+        }
+        TimeoutAction::Drop
+    });
+    if let Err(e) = timer {
+        log(&format!("launcher socket: resume timer: {} — the launcher stays off until the bar restarts", e.error));
+    }
+}
+
+/// One accepted connection: read when readable; once whole, answered or
+/// handed to the launcher. Its deadline (REQUEST_DEADLINE) is a timer that
+/// exists only while the connection is being read.
+fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight: &Rc<Cell<usize>>) {
+    if too_many_connections(inflight.get()) {
+        log("launcher socket: too many connections at once, one refused");
+        reply_guarded(conn, &Reply::Error("too many connections".to_string()));
+        return;
+    }
+    let Some(handle) = state.loop_handle.clone() else { return };
+    let fd = match conn.fd().try_clone_to_owned() {
+        Ok(fd) => fd,
+        Err(e) => {
+            log(&format!("launcher socket: {e}"));
+            return;
+        }
+    };
+    let slot = Rc::new(RefCell::new(Some(conn)));
+    let deadline: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
+    inflight.set(inflight.get() + 1);
+    let (s, d, n, h, q) = (slot.clone(), deadline.clone(), inflight.clone(), handle.clone(), qh.clone());
+    let read = handle.insert_source(Generic::new(fd, Interest::READ, Mode::Level), move |_, _, state: &mut App| {
+        // Taken by the deadline already: the socket was shut down, this is its hang-up.
+        let Some(mut conn) = s.borrow_mut().take() else { return Ok(PostAction::Remove) };
+        // Hostile bytes are decoded here, outside launcher_request's guard:
+        // behind the error boundary too.
+        match guarded_progress(|| conn.read()) {
+            Progress::Pending => {
+                *s.borrow_mut() = Some(conn);
+                return Ok(PostAction::Continue);
+            }
+            Progress::Ready(request) => {
+                // A dmenu request may have buffered up to 4 MiB: give the
+                // pages back as soon as it is consumed, whatever the daemon
+                // then decides to do with it (opened, or Busy).
+                if releases_memory_once_consumed(&request) {
+                    crate::memory::release_memory();
+                }
+                state.launcher_request(&q, request, conn)
+            }
+            Progress::Failed(m) => {
+                log(&format!("launcher socket: {m}"));
+                let buffered = conn.received();
+                reply_guarded(conn, &Reply::Error(m));
+                if buffered >= RELEASE_AFTER {
+                    // A refused multi-MB request: its buffer is freed, give the pages back.
+                    crate::memory::release_memory();
+                }
+            }
+        }
+        if let Some(t) = d.take() {
+            h.remove(t);
+        }
+        n.set(n.get() - 1);
+        Ok(PostAction::Remove)
+    });
+    if let Err(e) = read {
+        log(&format!("launcher socket: {}", e.error));
+        inflight.set(inflight.get() - 1);
+        return;
+    }
+    let n = inflight.clone();
+    let timer = handle.insert_source(Timer::from_duration(REQUEST_DEADLINE), move |_, _, _: &mut App| {
+        if let Some(conn) = slot.borrow_mut().take() {
+            log("launcher socket: request not complete in time, dropped");
+            let buffered = conn.received();
+            reply_guarded(conn, &Reply::Error("request deadline passed".to_string()));
+            n.set(n.get() - 1);
+            if buffered >= RELEASE_AFTER {
+                crate::memory::release_memory();
+            }
+        }
+        TimeoutAction::Drop
+    });
+    match timer {
+        Ok(t) => deadline.set(Some(t)),
+        Err(e) => log(&format!("launcher socket: deadline timer: {}", e.error)),
+    }
+}
+
 pub fn run() -> i32 {
     // Caps glibc's malloc arenas before any thread starts (startup budget,
     // 15 MB, step 6): otherwise the sound, D-Bus and zbus threads would each
@@ -187,6 +422,16 @@ pub fn run() -> i32 {
             return 1;
         }
     };
+    // The launcher's socket, right after the lock: the lock guarantees no
+    // other daemon owns it, so a leftover file is stale (Server::bind). The
+    // real $XDG_RUNTIME_DIR, never a /tmp fallback (`paths::runtime_dir`).
+    // Owned here (the loop only holds a Weak): dropped when `run` returns,
+    // which unlinks the socket file whatever the loop's sources keep alive.
+    let (launcher_server, warning) = launcher_socket_outcome(Server::bind(&launcher_ipc::socket_path(&paths::runtime_dir())));
+    if let Some(w) = &warning {
+        log(w);
+    }
+    let launcher_server: Option<Rc<Server>> = launcher_server.map(Rc::new);
     let (config, palette, warnings) = settings(&paths::config_dir());
     for a in &warnings {
         log(a);
@@ -248,13 +493,20 @@ pub fn run() -> i32 {
         return 1;
     }
     let (tx, rx) = channel::channel::<Mail>();
+    state.mail = Some(tx.clone());
     // Each callback (channel, clock) only raises the `dirty` flag (see
     // `DeferredRedraw`): neither one draws. A burst of several messages
     // (e.g. niri, which sends several at once) handled in the same
     // `dispatch()` pass thus redraws only once, after the `while` loop,
-    // instead of once per message.
+    // instead of once per message. A `Msg::Compositor` among them also
+    // raises `WindowsFeed`'s flag, fed to an open launcher at most once the
+    // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
-        channel::Event::Msg(Mail::Bar(m)) => on_message(state, m, || LocalTime::now().0),
+        channel::Event::Msg(Mail::Bar(m)) => {
+            note_compositor_message(state, &m);
+            on_message(state, m, || LocalTime::now().0);
+        }
+        channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format
@@ -292,6 +544,12 @@ pub fn run() -> i32 {
         let tx = tx.clone();
         sources::dbus::start(want.dbus.clone(), move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()));
     }
+    if let Some(server) = &launcher_server {
+        match watch_launcher_socket(&handle, server, qh.clone()) {
+            Ok(()) => log("launcher socket ready"),
+            Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
+        }
+    }
     // Guard thread: waits for a signal without running, asks the loop to
     // stop, forces an exit if it doesn't finish within the grace period.
     let guard = std::thread::Builder::new().name("guard".into()).spawn(move || {
@@ -316,13 +574,21 @@ pub fn run() -> i32 {
             break;
         }
         after_dispatch(&mut state);
+        after_dispatch_windows(&mut state);
         // After the whole batch (so any `output_destroyed` paired with a
         // `closed` of this same batch has already run): places the bar
         // back on outputs `closed` marked for restoration and that are
         // still known now (see `App::restore_pending`'s doc).
         state.restore_pending(&qh);
     }
+    // A script still waiting gets "cancelled" (exit 1), not a cut connection.
+    // Guarded like every launcher entry point: a launcher bug must not turn a
+    // clean stop into a crash.
+    state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
     drop(state); // surfaces destroyed
+    // The socket file goes now (Server's Drop), not with the loop: the
+    // loop's sources may keep each other alive through LoopHandle clones.
+    drop(launcher_server);
     let _ = conn.flush();
     FINISHED.store(true, Ordering::SeqCst);
     log("shutdown");
@@ -483,5 +749,105 @@ mod tests {
         assert_eq!(c, BarConfig::default());
         assert!(w.iter().any(|m| m.contains("bar.toml")) && w.iter().any(|m| m.contains("colors.toml")), "{w:?}");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_socket_bind_failure_is_logged_and_the_bar_runs_without_a_launcher() {
+        assert_eq!(launcher_socket_outcome(Ok::<_, &str>(5)), (Some(5), None));
+        assert_eq!(
+            launcher_socket_outcome(Err::<u8, _>("EACCES")),
+            (None, Some("launcher socket: EACCES — the bar runs without a launcher".to_string()))
+        );
+    }
+
+    #[test]
+    fn only_a_dmenu_request_releases_memory_once_consumed() {
+        assert!(releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }));
+        assert!(!releases_memory_once_consumed(&Request::Toggle), "a tiny header: nothing to release");
+        assert!(!releases_memory_once_consumed(&Request::Close));
+    }
+
+    #[test]
+    fn max_connections_is_enforced() {
+        assert!(!too_many_connections(MAX_CONNECTIONS - 1), "room for one more");
+        assert!(too_many_connections(MAX_CONNECTIONS), "already at the limit: the next one is refused");
+        assert!(too_many_connections(MAX_CONNECTIONS + 1));
+    }
+
+    /// accept() keeps failing (EMFILE: the error stays pending on a
+    /// level-triggered source): the listener pauses instead of spinning,
+    /// and says so once, not once per pass.
+    #[test]
+    fn a_failing_accept_pauses_the_listener_and_logs_once() {
+        let failing = Cell::new(false);
+        let mut lines = Vec::new();
+        for _ in 0..3 {
+            let mut calls = 0;
+            let action = drain_listener(
+                || {
+                    calls += 1;
+                    Err::<Option<u8>, _>(io::Error::from_raw_os_error(libc::EMFILE))
+                },
+                |_| panic!("nothing was accepted"),
+                &failing,
+                &mut |m| lines.push(m.to_string()),
+            );
+            assert_eq!(action, PostAction::Disable, "a pending error must not spin the loop");
+            assert_eq!(calls, 1, "no retry within the same pass");
+        }
+        assert_eq!(lines.len(), 1, "logged once while it keeps failing: {lines:?}");
+        assert!(lines[0].contains("paused"), "{lines:?}");
+        // It recovers: everything pending is taken, the failure is forgotten.
+        let mut queue = vec![Ok(None), Ok(Some(2u8)), Ok(Some(1))];
+        let mut taken = Vec::new();
+        let action = drain_listener(|| queue.pop().unwrap(), |c| taken.push(c), &failing, &mut |m| lines.push(m.to_string()));
+        assert_eq!((action, taken), (PostAction::Continue, vec![1, 2]));
+        assert!(!failing.get());
+        assert_eq!(lines.len(), 2, "one line when it accepts again: {lines:?}");
+    }
+
+    /// A hostile request that hits a bug in the decoder: the connection
+    /// fails, the bar does not.
+    #[test]
+    fn a_panic_while_reading_a_request_is_a_failed_request() {
+        let progress = guarded_progress(|| panic!("decoder bug"));
+        assert!(matches!(progress, Progress::Failed(ref m) if m == "internal error"), "{progress:?}");
+        assert!(matches!(guarded_progress(|| Progress::Pending), Progress::Pending));
+    }
+
+    /// Mirrors `a_burst_of_messages_redraws_only_once`, for the launcher's
+    /// windows: a burst of several `Msg::Compositor` messages in the same
+    /// `dispatch()` pass must feed the launcher once, never once per
+    /// message; a pass with none at all must not feed it again on a stale
+    /// flag.
+    struct WindowsCounter {
+        dirty: bool,
+        feeds: u32,
+    }
+
+    impl WindowsFeed for WindowsCounter {
+        fn windows_dirty_mut(&mut self) -> &mut bool {
+            &mut self.dirty
+        }
+        fn feed_windows_now(&mut self) {
+            self.feeds += 1;
+        }
+    }
+
+    #[test]
+    fn a_burst_of_compositor_messages_feeds_the_launcher_once() {
+        let mut c = WindowsCounter { dirty: false, feeds: 0 };
+        for i in 0..9 {
+            let m = if i % 2 == 0 { Msg::Compositor(Some(example())) } else { Msg::Clock(BEFORE) };
+            note_compositor_message(&mut c, &m);
+        }
+        after_dispatch_windows(&mut c);
+        assert_eq!(c.feeds, 1, "a burst of several compositor messages: one re-rank, not N");
+        assert!(!c.dirty, "the flag drops back down after the feed");
+        // No compositor message in this pass: the stale flag from the
+        // previous pass must not still be set, and nothing is fed again.
+        note_compositor_message(&mut c, &Msg::Clock(BEFORE));
+        after_dispatch_windows(&mut c);
+        assert_eq!(c.feeds, 1, "nothing compositor-related this pass: no re-rank");
     }
 }

@@ -223,10 +223,6 @@ pub struct OpenLauncher {
     pub requested_at: Instant,
     pub spawner: Spawner,
     pub history_path: Option<PathBuf>,
-    /// The scan's $PATH (`open_path_dirs`; empty for a script menu, which
-    /// runs nothing): `RunContext::path_dirs`, so a missing program is
-    /// reported in the box, and the preview can show a command's full path.
-    pub path_dirs: Vec<PathBuf>,
     box_layer: LayerSurface,
     scrims: Vec<Scrim>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -254,10 +250,9 @@ pub struct OpenLauncher {
 }
 
 impl OpenLauncher {
-    // Not called yet: task 13 watches a dmenu client's socket (hung up early
-    // → close) and registers it here; `client_watch`'s own `Drop` already
-    // removes it, proving the wiring, once that call site exists.
-    #[allow(dead_code)]
+    /// Called by `host.rs`'s `launcher_watch_client` once the dmenu client's
+    /// hang-up watch is registered on the loop; `client_watch`'s own `Drop`
+    /// removes it when the launcher closes.
     pub(crate) fn set_client_watch(&mut self, handle: LoopHandle<'static, App>, token: RegistrationToken) {
         self.client_watch = Some((handle, token));
     }
@@ -302,9 +297,11 @@ impl App {
         let advance = self.fonts.advance(scale);
         let (columns, rows) = output_cells(output_size.0, output_size.1, advance, row_height, scale);
         // The scan's $PATH, read now (env only, no filesystem walk): lets the
-        // preview show a command's full path from the first frame.
-        let path_dirs = open_path_dirs(model.is_script(), |k| std::env::var_os(k));
-        model.path_dirs = path_dirs.clone();
+        // preview show a command's full path from the first frame. The
+        // single copy lives on the model (`Launcher::path_dirs`, read by
+        // both the preview and `RunContext`): `launcher_open_apps` (host.rs)
+        // overwrites it with the exact environment the scan itself used.
+        model.path_dirs = open_path_dirs(model.is_script(), |k| std::env::var_os(k));
         // Once per open: the box keeps this size whatever gets selected.
         let layout = open_layout(columns, rows, &model);
         model.set_list_rows(layout.list_rows as usize);
@@ -335,7 +332,6 @@ impl App {
             requested_at,
             spawner: run::spawner(&paths::runtime_dir()),
             history_path,
-            path_dirs,
             box_layer,
             scrims,
             keyboard: None,
@@ -474,12 +470,16 @@ impl App {
             Outcome::Activate(a) => {
                 let App { launcher, exec, .. } = self;
                 let Some(open) = launcher.as_mut() else { return };
+                // Cloned out: `perform` needs `&mut open.model`, which the
+                // single source of truth (`Launcher::path_dirs`, task 13)
+                // would otherwise keep borrowed immutably for `ctx`.
+                let path_dirs = open.model.path_dirs.clone();
                 let ctx = RunContext {
                     exec: exec.as_ref(),
                     spawner: open.spawner,
                     history_path: open.history_path.as_deref(),
                     // The scan's $PATH: a program missing from it is reported in the box (task 10).
-                    path_dirs: &open.path_dirs,
+                    path_dirs: &path_dirs,
                 };
                 match run::perform(&mut open.model, a, &ctx) {
                     Err(m) => {
@@ -507,7 +507,9 @@ impl App {
         if open.keyboard.is_some() {
             return;
         }
-        let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| app.launcher_key(event));
+        let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
+            app.launcher_guarded("key", move |a| a.launcher_key(event));
+        });
         if let Ok(k) = self.seats.get_keyboard_with_repeat(qh, seat, None, handle, repeat) {
             open.keyboard = Some(k);
         }
@@ -652,18 +654,18 @@ impl KeyboardHandler for App {
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
         if self.launcher.as_ref().is_some_and(|o| o.box_layer.wl_surface() == surface) {
-            self.launcher_close(CloseReason::FocusLost);
+            self.launcher_guarded("focus", |app| app.launcher_close(CloseReason::FocusLost));
         }
     }
 
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.launcher_key(event);
+        self.launcher_guarded("key", move |app| app.launcher_key(event));
     }
 
     /// wl_keyboard v10 repeats (compositor-side); calloop repeats go through
     /// the callback given at bind time, to the same place.
     fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.launcher_key(event);
+        self.launcher_guarded("key", move |app| app.launcher_key(event));
     }
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
