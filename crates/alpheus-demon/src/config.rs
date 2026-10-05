@@ -4,26 +4,26 @@
 //!
 //! ```toml
 //! modules = ["launcher", "workspaces", "window", "clock"]   # order and presence, left to right
-//! height = 22                                   # logical px
+//! height = 22                                               # logical px
 //! [font]
-//! family = "JetBrainsMono Nerd Font Mono"       # absent: a monospace font from the system
+//! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
 //! size = 14.0
-//! fallback = []                                 # e.g. ["Noto Color Emoji"]: loaded in addition, on demand
+//! fallback = []                                             # e.g. ["Noto Color Emoji"]: loaded in addition, on demand
 //! [clock]
 //! format = "%H:%M"
-//! date = "%a %e %b"                             # "": no date
+//! date = "%a %e %b"                                         # "": no date
 //! [workspaces]
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
-//! [actions]                                     # clicks on the system modules
-//! open_tab = ["alpheus-toggle", "{tab}"]        # {tab}: home, sound, network, bluetooth
+//! [actions]                                                 # clicks on the system modules
+//! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth
 //! resources = ["foot", "-e", "btop"]
 //! [resources]
-//! interval = 2                                  # seconds between readings, 1 to 60
-//! graph = 20                                    # cells of CPU history, 0 to 60 (0: no graph)
-//! sensor = ""                                   # hwmon name or thermal zone type; "": automatic
+//! interval = 2                                              # seconds between readings, 1 to 60
+//! graph = 20                                                # cells of CPU history, 0 to 60 (0: no graph)
+//! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
 //! [battery]
-//! peripherals = "always"                        # "always" | "low" | "never": peripherals with a real percentage
-//! coarse = "low"                                # "always" | "low" | "never": peripherals with only a coarse level
+//! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
+//! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
 //! ```
 
 use crate::clock;

@@ -275,17 +275,23 @@ impl Model {
                 }
             }
             Event::Focus(a) => {
+                let focus_changed = self.active != *a;
                 self.active = a.clone();
                 // Most recently focused first, like focusHistoryID at the next
                 // reread: the launcher lists the previous window first.
-                if let Some(i) = a.as_ref().and_then(|a| self.snapshot.clients.iter().position(|c| &c.address == a)) {
-                    let c = self.snapshot.clients.remove(i);
-                    self.snapshot.clients.insert(0, c);
-                }
-                match a {
-                    Some(a) if self.urgent.remove(a) => Effect::Changed,
-                    _ => Effect::Nothing, // the title arrives through `activewindow`
-                }
+                let order_changed = match a.as_ref().and_then(|a| self.snapshot.clients.iter().position(|c| &c.address == a)) {
+                    Some(i) if i != 0 => {
+                        let c = self.snapshot.clients.remove(i);
+                        self.snapshot.clients.insert(0, c);
+                        true
+                    }
+                    _ => false,
+                };
+                let urgency_cleared = a.as_ref().is_some_and(|a| self.urgent.remove(a));
+                // The window's title, if it changed, arrives through
+                // `activewindow`: only the toplevel order and the `focused`
+                // flag are this event's business.
+                if focus_changed || order_changed || urgency_cleared { Effect::Changed } else { Effect::Nothing }
             }
             Event::Title { address, title } => {
                 // Any window's title is kept for the launcher's list, silently:
@@ -467,17 +473,50 @@ mod tests {
     #[test]
     fn focus_moves_the_window_last_without_a_reread() {
         let mut m = model_from_fixture();
-        assert_eq!(m.apply(&Event::Focus(Some("583d9c701c60".into()))), Effect::Nothing);
+        assert_eq!(m.apply(&Event::Focus(Some("583d9c701c60".into()))), Effect::Changed, "the order changed: published without a reread");
         let e = m.state();
         let order: Vec<&str> = e.toplevels.iter().map(|t| t.selector.as_str()).collect();
         assert_eq!(order, ["address:0x583d9c60da90", "address:0x583d9d5fd540", "address:0x583d9c701c60"], "previously focused first");
         assert!(e.toplevels[2].focused && !e.toplevels[0].focused);
         // A second focus change: the window focused just before comes first
         // (alt-tab), not the snapshot's old order.
-        assert_eq!(m.apply(&Event::Focus(Some("583d9d5fd540".into()))), Effect::Nothing);
+        assert_eq!(m.apply(&Event::Focus(Some("583d9d5fd540".into()))), Effect::Changed);
         let e = m.state();
         let order: Vec<&str> = e.toplevels.iter().map(|t| t.selector.as_str()).collect();
         assert_eq!(order, ["address:0x583d9c701c60", "address:0x583d9c60da90", "address:0x583d9d5fd540"], "most recent first");
+        // Focusing the same window again: neither the order nor the focus
+        // moves, so nothing is published.
+        assert_eq!(m.apply(&Event::Focus(Some("583d9d5fd540".into()))), Effect::Nothing, "already focused and already first: no change");
+    }
+
+    #[test]
+    fn a_focus_change_between_same_titled_windows_is_published() {
+        // Two windows sharing class and title (e.g. two Firefox tabs with
+        // the same page title): `ActiveWindow` alone cannot tell them apart,
+        // so `Focus` must be the one that notices the order and the
+        // `focused` flag moved.
+        let clients = r#"[
+            {"address": "0x1a", "mapped": true, "workspace": {"id": 1, "name": "1"}, "class": "firefox", "title": "same", "focusHistoryID": 0},
+            {"address": "0x1b", "mapped": true, "workspace": {"id": 1, "name": "1"}, "class": "firefox", "title": "same", "focusHistoryID": 1}
+        ]"#;
+        let monitors = r#"[{"name": "eDP-1", "focused": true, "activeWorkspace": {"id": 1, "name": "1"}}]"#;
+        let workspaces = r#"[{"id": 1, "name": "1", "monitor": "eDP-1", "windows": 2}]"#;
+        let active = r#"{"address": "0x1a", "class": "firefox", "title": "same"}"#;
+        let s = Snapshot::parse(&Responses { monitors, workspaces, clients, active }).unwrap();
+        let mut m = Model::default();
+        m.set_snapshot(s);
+        let e = m.state();
+        assert_eq!(
+            toplevels(&e),
+            [("address:0x1b", "firefox", "same", "1", false), ("address:0x1a", "firefox", "same", "1", true)],
+            "0x1a focused (focusHistoryID 0), listed last"
+        );
+
+        assert_eq!(m.apply(&Event::Focus(Some("1b".into()))), Effect::Changed, "alt-tab to the other, identically titled window");
+        let e = m.state();
+        assert_eq!(toplevels(&e), [("address:0x1a", "firefox", "same", "1", false), ("address:0x1b", "firefox", "same", "1", true)]);
+
+        assert_eq!(m.apply(&Event::Focus(Some("1b".into()))), Effect::Nothing, "already focused: nothing moved");
     }
 
     #[test]
