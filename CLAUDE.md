@@ -46,25 +46,38 @@ breakdown), then the spec of the sub-project currently in progress in
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
-  **implemented**: a centred Overlay box inside the daemon (apps, windows,
-  `$PATH` commands, script mode), `alpheus-launch` (toggle, close,
-  `--dmenu` with fuzzel's exit codes, plus 3 = daemon unreachable, the
-  only code that makes nixos-config fall back to fuzzel) on an
-  owner-only socket, nucleo
+  **implemented and reviewed** (per-task reviews plus a final whole-branch
+  review in three slices): a centred Overlay box inside the daemon (apps,
+  windows, `$PATH` commands, script mode), click-outside scrims on the
+  box's own Overlay layer (not Top — Hyprland draws Top under a
+  fullscreen window, so a scrim there would never catch a click while Mae
+  is in a game), `alpheus-launch` (toggle, close, `--dmenu` with fuzzel's
+  exit codes, plus 3 = daemon unreachable, the only code that makes
+  nixos-config fall back to fuzzel) on an owner-only socket, nucleo
   ranking plus frecency, `.desktop` files and `$PATH` rescanned on a
   short-lived thread at each open, launches in a `systemd-run --user
   --scope` (detached fallback), keyboard bound only while open
-  (libxkbcommon now linked). Measured in **release** (headless sway, 300
-  synthetic apps, several runs): open latency median 1963–2020 µs
-  (max 4252–4477 µs), open +1929–1966 KB PSS over closed, 50 cycles
-  +104–304 KB across runs, 0 wake-ups in 5 s at rest after use, plan 1
-  modules + launcher: 6738–6912 KB, close to plan 1 alone (6464–6738 KB
-  across the same runs) — nothing is resident while the launcher is
-  closed but the listening socket fd, so this gap is startup noise, not a
-  real cost (8466–8562 KB with every module). A 100,000-line dmenu peaks
-  at +6216–6316 KB over closed, back down to +308–400 KB one second after
-  a cancel. nixos-config switch (task 15) and Mae's real trial (task 16)
-  pending.
+  (libxkbcommon now linked). A bar fix landed alongside it: with no
+  active window, the right-hand modules now stay right instead of
+  collapsing left (611f103). Measured in **release** (headless sway, 300
+  synthetic apps, several runs): open latency median 2.7–3.0 ms
+  (max 4.6–5.3 ms), open +1.8–1.9 MB PSS over closed, 50 cycles
+  +0.1–0.3 MB, 0 wake-ups in 5 s at rest after use. A 100,000-line dmenu
+  peaks at +6.2–6.3 MB over closed, back down to +0.3 MB one second after
+  a cancel. The daemon's own baseline also grew +0.3–0.7 MB over the
+  delivery before this one (plan 1 alone: +524–540 KB; every module:
+  +552–724 KB; binary +528 KiB, 5.06 → 5.58 MiB), measured `c256d33` vs
+  this delivery back to back in release: a bigger statically-linked
+  binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus
+  `libxkbcommon.so` itself — confirmed via `ldd` and `/proc/<pid>/smaps`
+  that only ≈ 60 KB of that growth is the library's own mapping, the rest
+  the larger binary. A real one-time cost of the feature, present even
+  with `launcher` left out of `modules`, not "startup noise". nixos-config
+  switch done (`lanceur-alpheus` merged into Mae's nixos-config); Mae
+  using the alpheus launcher daily since 2026-10-05 (her own feedback
+  folded in: held terminal on Enter, detached on Ctrl+Enter, apps before
+  windows on an empty query); merge of `feat/launcher-1` into alpheus
+  `main` pending her go.
 - Next, in order: bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
