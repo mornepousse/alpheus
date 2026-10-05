@@ -120,6 +120,9 @@ fn groups(text: &str) -> Result<(Group<'_>, HashMap<&str, Group<'_>>), String> {
         Action(&'t str),
         Ignored,
     }
+    // Some editors and the Windows notepad.exe write a leading byte-order mark; strip it once,
+    // at the very start of the file, so it does not break the first group header's "[...]".
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     let mut main: Option<Group> = None;
     let mut actions: HashMap<&str, Group> = HashMap::new();
     let mut current = In::Ignored;
@@ -225,10 +228,13 @@ fn list(raw: &str) -> Vec<String> {
     items
 }
 
+/// A blank value (after trimming) is skipped in favour of the next candidate key: a present
+/// but empty `Name[fr]=` must not make an otherwise valid entry disappear ("missing Name").
 fn localized<'t>(g: &Group<'t>, locale: Option<&Locale>, key: &str) -> Option<&'t str> {
+    let non_blank = |v: &&str| !v.trim().is_empty();
     match locale {
-        Some(l) => l.keys(key).iter().find_map(|k| g.get(k.as_str()).copied()),
-        None => g.get(key).copied(),
+        Some(l) => l.keys(key).iter().find_map(|k| g.get(k.as_str()).copied().filter(non_blank)),
+        None => g.get(key).copied().filter(non_blank),
     }
 }
 
@@ -322,7 +328,12 @@ pub struct ExecContext<'a> {
 /// then field codes, outside quotes and inside double quotes alike:
 /// %f %F %u %U and deprecated %d %D %n %N %v %m → removed (no file passed);
 /// %i → "--icon" + icon when icon is Some, removed otherwise; %c → name; %k → path; %% → "%";
-/// any other %x → Err. An argument that was only removed codes (quoted or not) disappears.
+/// any other %x, and a lone trailing `%`, are rejected (`Err`) — unlike GLib, which silently
+/// drops an unknown or malformed field code and runs whatever argument is left. The launcher
+/// is strict here on purpose: a misinterpreted field code could launch the wrong command, so
+/// the whole file is treated as invalid instead (the scan skips it and logs it, rather than
+/// risk running something other than what was asked for).
+/// An argument that was only removed codes (quoted or not) disappears.
 /// The spec forbids field codes inside quotes; real files have them and GLib expands them
 /// there too. `%i` must be an unquoted argument of its own.
 pub fn exec_argv(exec: &str, ctx: &ExecContext) -> Result<Vec<String>, BadExec> {
@@ -518,6 +529,11 @@ mod tests {
         }
         assert_eq!(fr.keys("Name"), ["Name[fr_FR@euro]", "Name[fr_FR]", "Name[fr@euro]", "Name[fr]", "Name"]);
         assert_eq!(Locale::parse("fr").unwrap().keys("Name"), ["Name[fr]", "Name"]);
+        assert_eq!(
+            Locale::parse("sr@latin").unwrap().keys("Name"),
+            ["Name[sr@latin]", "Name[sr]", "Name"],
+            "a modifier with no country still gets its own key, before the plain lang key"
+        );
         let vars =
             |pairs: &'static [(&'static str, &'static str)]| move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
         assert_eq!(
@@ -625,7 +641,7 @@ mod tests {
                 exec: "example-browser --private-window %u".into(),
             },
         ];
-        assert_eq!(e.actions, expected, "missing group, missing Exec and unlisted groups skipped");
+        assert_eq!(e.actions, expected, "missing group, missing Exec, invalid Exec and unlisted groups skipped");
         let fr = Locale::parse("fr_FR").unwrap();
         assert_eq!(shown("actions.desktop", &penv(Some(&fr), &[], &any_program)).actions[1].name, "Nouvelle fenêtre privée");
     }
@@ -701,6 +717,38 @@ mod tests {
         let text = "[Desktop Entry]\r\nType=Application\r\nName = Spaced \r\nExec=x\r\n\r\n[X-Vendor Extras]\r\nName=Vendor\r\n[Desktop Entry]\r\nName=Second\r\n";
         let Ok(Verdict::Show(e)) = inline(text, &plain_env()) else { panic!("not shown") };
         assert_eq!((e.name.as_str(), e.exec.as_str()), ("Spaced", "x"));
+    }
+
+    #[test]
+    fn blank_translations_fall_back_to_the_next_candidate() {
+        let fr = Locale::parse("fr").unwrap();
+        let e = shown("blank-translation.desktop", &penv(Some(&fr), &[], &any_program));
+        assert_eq!(e.name, "Files", "an empty Name[fr]= is skipped, not kept as a blank name");
+        assert_eq!(e.comment.as_deref(), Some("Manage your files"), "same for Comment[fr]=");
+    }
+
+    #[test]
+    fn is_true_accepts_1() {
+        let mut g: Group = Group::new();
+        g.insert("Terminal", "1");
+        assert!(is_true(&g, "Terminal"));
+        g.insert("Terminal", "true");
+        assert!(is_true(&g, "Terminal"));
+        g.insert("Terminal", "yes");
+        assert!(!is_true(&g, "Terminal"));
+    }
+
+    #[test]
+    fn escaped_semicolon_is_literal_only_in_lists() {
+        assert_eq!(escaped(';', false), None, "outside a list, \\; is not a recognized escape");
+        assert_eq!(escaped(';', true), Some(';'));
+    }
+
+    #[test]
+    fn a_leading_bom_is_stripped() {
+        let text = "\u{FEFF}[Desktop Entry]\nType=Application\nName=With BOM\nExec=x\n";
+        let Ok(Verdict::Show(e)) = inline(text, &plain_env()) else { panic!("not shown") };
+        assert_eq!(e.name, "With BOM");
     }
 
     #[test]
