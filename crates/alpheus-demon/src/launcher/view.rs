@@ -5,9 +5,10 @@
 //! (controls become spaces, wide characters are never cut): the painter
 //! copies it, tests snapshot it.
 
+use crate::compositor::Toplevel;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
-use crate::launcher::matching::{Mode, Source, exec_program};
+use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
 
 pub const BOX_COLUMNS: u16 = 60;
@@ -98,7 +99,12 @@ fn tail(s: &str, max: u16) -> String {
         return s.to_string();
     }
     let reversed: String = s.chars().rev().collect();
-    let kept: String = truncate(&reversed, max).trim_end_matches('…').chars().rev().collect();
+    let cut = truncate(&reversed, max);
+    // Exactly the one ellipsis `truncate` just appended (Review Focus 6): `s` may
+    // legitimately end with its own "…", right where the cut falls — `trim_end_matches`
+    // would eat that one too.
+    let stripped = cut.strip_suffix('…').unwrap_or(&cut);
+    let kept: String = stripped.chars().rev().collect();
     format!("…{kept}")
 }
 
@@ -127,6 +133,13 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     g.write(x, end, " ", Style::INVERTED);
 }
 
+/// A window's title, or its class when the title is empty — or, Review Focus 3, made only of
+/// zero-width characters (a lone bidi mark, a combining mark with nothing to combine with):
+/// `text_width` sees that as nothing to show, where `str::is_empty`/`trim` would not.
+fn window_title(w: &Toplevel) -> &str {
+    if text_width(&w.title) == 0 { &w.class } else { &w.title }
+}
+
 /// (icon, name, kind) of a result.
 fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
     let apps = l.catalog.as_ref().map(|c| &c.apps[..]).unwrap_or(&[]);
@@ -138,8 +151,7 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         }
         Source::Window(i) => {
             let w = &l.windows[i];
-            let name = if w.title.trim().is_empty() { w.class.clone() } else { w.title.clone() };
-            (Some(icons::glyph(&w.class)), name, format!("window · {}", w.workspace))
+            (Some(icons::glyph(&w.class)), window_title(w).to_string(), format!("window · {}", w.workspace))
         }
         Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
@@ -159,7 +171,11 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         x = g.write(x, end, &c.to_string(), pick(Style::ACCENT));
         x = g.write(x, end, " ", pick(Style::NORMAL));
     }
-    let kind = truncate(&kind, KIND_MAX);
+    // Review Focus 5: at the minimum width, KIND_MAX alone can still reach past the icon
+    // (whose space `x` already claimed) into the frame — clamped so the kind column never
+    // starts to the left of where the icon ends.
+    let max_kind = KIND_MAX.min(end.saturating_sub(x).saturating_sub(2));
+    let kind = truncate(&kind, max_kind);
     let kind_width = text_width(&kind);
     let name_end = if kind_width > 0 { end.saturating_sub(kind_width + 2) } else { end.saturating_sub(1) };
     g.write(x, name_end, &truncate(&name, name_end.saturating_sub(x)), pick(Style::NORMAL));
@@ -176,12 +192,18 @@ fn help_text(l: &Launcher) -> &'static str {
     }
 }
 
-/// Greedy word wrap to `width` cells, words too long cut with "…".
+/// Greedy word wrap to `width` cells, words too long cut with "…". A word that `split_whitespace`
+/// handed us but that displays as nothing (a lone bidi mark between two spaces, Review Focus 4)
+/// is skipped outright: kept, it would still occupy a word slot and force a separating space
+/// around something invisible — a double space, or a "blank" line made only of such marks.
 fn wrap(text: &str, width: u16) -> Vec<String> {
     let mut lines = Vec::new();
     let mut line = String::new();
     for word in text.split_whitespace() {
         let word = truncate(word, width);
+        if text_width(&word) == 0 {
+            continue;
+        }
         if !line.is_empty() && text_width(&line) + 1 + text_width(&word) > width {
             lines.push(std::mem::take(&mut line));
         }
@@ -196,13 +218,33 @@ fn wrap(text: &str, width: u16) -> Vec<String> {
     lines
 }
 
-/// The preview's lines for the selected result, each with its style.
-fn preview_lines(l: &Launcher, width: u16) -> Vec<(String, Style)> {
+/// `wrap`, but kept to at most `budget` lines: the last kept line ends with "…" when more
+/// would have followed (Review Focus 1). Used for the parts of the preview that can grow
+/// without bound (a comment, a window title) so what comes after — the actions, the "enter"
+/// hint — is never pushed off the panel and silently dropped.
+fn capped_wrap(text: &str, width: u16, budget: usize) -> Vec<String> {
+    let mut lines = wrap(text, width);
+    if lines.len() > budget {
+        lines.truncate(budget);
+        if let Some(last) = lines.last_mut() {
+            if !last.ends_with('…') {
+                last.push('…');
+            }
+        }
+    }
+    lines
+}
+
+/// The preview's lines for the selected result, each with its style — always something
+/// (Mae, 2026-10-05): an app shows its name, generic name, description and binary even
+/// without actions; a window its full title, its app, its workspace and what Enter does; a
+/// command its name and path; a script line nothing (script mode reserves no panel, so
+/// `render` never calls this for it). `budget` is how many rows the panel actually has: the
+/// one part that can grow without bound (a comment, a window title) is capped so the fixed
+/// part after it — the actions, the "enter" hint — is never silently pushed off (Review Focus 1).
+fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     let Some(hit) = l.selected_hit() else { return out };
-    let push_wrapped = |out: &mut Vec<(String, Style)>, text: &str, style: Style| {
-        out.extend(wrap(text, width).into_iter().map(|t| (t, style)));
-    };
     match hit.source {
         Source::App(i) => {
             let Some(e) = l.catalog.as_ref().and_then(|c| c.apps.get(i)) else { return out };
@@ -210,32 +252,50 @@ fn preview_lines(l: &Launcher, width: u16) -> Vec<(String, Style)> {
             if let Some(g) = &e.generic_name {
                 out.push((g.clone(), Style::NORMAL));
             }
-            if let Some(c) = &e.comment {
-                out.push((String::new(), Style::NORMAL));
-                push_wrapped(&mut out, c, Style::NORMAL);
-            }
-            out.push((String::new(), Style::NORMAL));
+            let mut tail = Vec::new();
+            tail.push((String::new(), Style::NORMAL));
             if let Some(p) = exec_program(&e.exec) {
-                out.push((format!("exec: {p}"), Style::MUTED));
+                tail.push((format!("exec: {p}"), Style::MUTED));
             }
             for a in &e.actions {
-                out.push((format!("· {}", a.name), Style::NORMAL));
+                tail.push((format!("· {}", a.name), Style::NORMAL));
             }
+            if let Some(c) = &e.comment {
+                out.push((String::new(), Style::NORMAL));
+                let comment_budget = budget.saturating_sub(out.len() + tail.len());
+                out.extend(capped_wrap(c, width, comment_budget).into_iter().map(|t| (t, Style::NORMAL)));
+            }
+            out.extend(tail);
         }
         Source::Window(i) => {
             let w = &l.windows[i];
-            out.push((w.class.clone(), Style::BOLD_ACCENT));
-            out.push((format!("workspace {}", w.workspace), Style::MUTED));
-            out.push((String::new(), Style::NORMAL));
-            push_wrapped(&mut out, &w.title, Style::NORMAL);
+            let app_name = l
+                .catalog
+                .as_ref()
+                .and_then(|c| app_for_window(&c.apps, &w.class))
+                .and_then(|a| l.catalog.as_ref().map(|c| c.apps[a].name.clone()));
+            let tail = [
+                (app_name.unwrap_or_else(|| w.class.clone()), Style::MUTED),
+                (format!("window · workspace {}", w.workspace), Style::MUTED),
+                (String::new(), Style::NORMAL),
+                ("enter  focus".to_string(), Style::NORMAL),
+            ];
+            let title_budget = budget.saturating_sub(tail.len());
+            out.extend(capped_wrap(window_title(w), width, title_budget).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+            out.extend(tail);
         }
         Source::Command(i) => {
             if let Some(c) = l.catalog.as_ref().and_then(|c| c.commands.get(i)) {
                 out.push((c.clone(), Style::BOLD_ACCENT));
-                out.push(("command on $PATH".into(), Style::MUTED));
+                let path = command_path(&l.path_dirs, c).map(|p| p.display().to_string()).unwrap_or_else(|| "command on $PATH".into());
+                out.push((path, Style::MUTED));
+                // Review the real model (task 8, `Launcher::primary`): a selected $PATH
+                // command's Enter runs it directly (`terminal: false`); only Ctrl+Enter
+                // wraps it in the terminal. The hint names what Enter actually does.
+                out.push(("enter  run".to_string(), Style::NORMAL));
             }
         }
-        Source::Line(i) => push_wrapped(&mut out, &l.lines[i], Style::NORMAL),
+        Source::Line(i) => out.extend(wrap(&l.lines[i], width).into_iter().map(|t| (t, Style::NORMAL))),
     }
     out
 }
@@ -272,14 +332,24 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Vec<Grid> {
     };
     rows.push(g);
     rows.push(frame(b, '╰', '╯', '┴'));
-    // The panel is reserved for the whole open (task 12, Mae 2026-10-05):
-    // blank while the selection has nothing to preview or it was toggled
-    // off, never a narrower box.
-    if b.preview_columns > 0 && l.preview_visible() {
+    // The panel is reserved for the whole open (task 12, Mae 2026-10-05: the box never
+    // changes width with the selection) and, once reserved, always shows the selected
+    // result (Mae, 2026-10-05, after seeing the real rendering: never blank while one
+    // exists — `preview_lines` picks the content, `capped_wrap` keeps it inside `budget`).
+    if b.preview_columns > 0 {
         let (start, stop) = (end + 2, b.columns.saturating_sub(2));
-        let lines = preview_lines(l, stop.saturating_sub(start));
+        let interior_rows = rows.len() - 2;
+        let lines = preview_lines(l, stop.saturating_sub(start), interior_rows);
+        // A safety net, not the common path (`capped_wrap` already fits the one part that can
+        // grow without bound to `interior_rows`): a fixed tail longer than the panel itself —
+        // many `.desktop` Actions at the smallest `rows` configuration — can still overflow it;
+        // marks the cut on the last visible line rather than dropping it silently.
+        let overflow = lines.len() > interior_rows;
         let last = rows.len() - 1;
-        for (row, (text, style)) in rows[1..last].iter_mut().zip(lines) {
+        for (i, (row, (mut text, style))) in rows[1..last].iter_mut().zip(lines).enumerate() {
+            if overflow && i + 1 == interior_rows && !text.ends_with('…') {
+                text.push('…');
+            }
             row.write(start, stop, &truncate(&text, stop.saturating_sub(start)), style);
         }
     }
@@ -415,7 +485,7 @@ mod tests {
     fn all_mode_lists_windows_then_apps() {
         let mut l = launcher();
         let (b, rows) = draw(&mut l, 100);
-        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, blank: a window selected");
+        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the first window's preview");
         insta::assert_snapshot!("all", snapshot(&rows));
     }
 
@@ -458,30 +528,179 @@ mod tests {
         insta::assert_snapshot!("script", snapshot(&rows));
     }
 
-    /// Mae, 2026-10-05: the box never changes width as the selection moves;
-    /// the panel is blank when there is nothing to preview.
+    /// Helper shared with other tests: the preview panel's text, one entry per interior row.
+    fn panel(rows: &[Grid], b: &BoxLayout) -> Vec<String> {
+        let start = usize::from(b.columns - b.preview_columns - 1);
+        rows[1..rows.len() - 1].iter().map(|r| r.text().chars().skip(start).take(usize::from(b.preview_columns)).collect()).collect()
+    }
+
+    /// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
+    /// selection moves, and the panel — once reserved — always shows the selected result; it
+    /// is never blank while one exists, whatever `Left`/`Right`/`Ctrl+Space` were last pressed
+    /// (the toggle still runs, `Launcher::preview_visible` still answers as before — task 8's
+    /// contract, untouched here — but the view no longer reads it to decide whether to fill).
     #[test]
-    fn the_panel_is_blank_when_there_is_nothing_to_preview() {
-        let panel = |rows: &[Grid], b: &BoxLayout| -> Vec<String> {
-            let start = usize::from(b.columns - b.preview_columns - 1);
-            rows[1..rows.len() - 1].iter().map(|r| r.text().chars().skip(start).take(usize::from(b.preview_columns)).collect()).collect()
-        };
+    fn the_panel_always_shows_the_selected_result() {
         let blank = " ".repeat(usize::from(PREVIEW_COLUMNS));
         let mut l = launcher();
         let (b, rows) = draw(&mut l, 120);
-        assert!(panel(&rows, &b).iter().all(|t| *t == blank), "a window selected (Auto): blank\n{}", snapshot(&rows));
+        assert!(panel(&rows, &b).iter().any(|t| t.contains("~/projects")), "a window selected: its title\n{}", snapshot(&rows));
+        assert!(!panel(&rows, &b).iter().all(|t| *t == blank), "never blank while a result is selected");
         keys(&mut l, &[Key::Tab, Key::End]); // Apps: Firefox, with actions
         let (b2, rows) = draw(&mut l, 120);
         assert_eq!(b2, b, "the same box");
         assert!(panel(&rows, &b).iter().any(|t| t.contains("New Private Window")), "{}", snapshot(&rows));
-        l.key(Key::Left); // hidden
+        keys(&mut l, &[Key::Up]); // Files, no actions: still shows its own info
         let (b3, rows) = draw(&mut l, 120);
-        assert_eq!(b3, b, "toggled off: the same box, never narrower");
-        assert!(panel(&rows, &b).iter().all(|t| *t == blank), "toggled off: blank\n{}", snapshot(&rows));
+        assert_eq!(b3, b, "never narrower");
+        assert!(panel(&rows, &b).iter().any(|t| t.contains("File Manager")), "no actions: still filled\n{}", snapshot(&rows));
+        l.key(Key::Left); // previously hid the preview; it must keep showing it now
+        let (b4, rows) = draw(&mut l, 120);
+        assert_eq!(b4, b, "still the same box");
+        assert!(panel(&rows, &b).iter().any(|t| t.contains("File Manager")), "Left no longer blanks it\n{}", snapshot(&rows));
+    }
+
+    /// Review Focus: via the ranker's window → app link (`matching::app_for_window`) when the
+    /// window's class names a known app, or the class itself otherwise.
+    #[test]
+    fn window_preview_names_its_app_via_the_class_link_or_the_class_itself() {
+        // Scoped to the preview panel itself (`panel`, not the whole box): the result list on
+        // the left also shows app names, which would make a substring check on the whole
+        // snapshot pass even if the preview picked the wrong text entirely.
         let mut l = launcher();
-        l.key(Key::CtrlSpace); // shown on a window
+        let (b, rows) = draw(&mut l, 120); // the Alacritty window: its class is also an app's id
+        let text = panel(&rows, &b);
+        assert!(text.iter().any(|t| t.contains("~/projects — zsh")), "the full title\n{}", snapshot(&rows));
+        assert!(text.iter().any(|t| t.contains("Alacritty")), "linked to the Alacritty app by class\n{}", snapshot(&rows));
+        l.key(Key::Down); // the firefox window: class "firefox" links to the Firefox app
+        let (b, rows) = draw(&mut l, 120);
+        let text = panel(&rows, &b);
+        assert!(text.iter().any(|t| t.contains("Firefox")), "its app's name, not the raw class \"firefox\"\n{}", snapshot(&rows));
+        assert!(!text.iter().any(|t| t.trim() == "firefox"), "not the raw lower-case class\n{}", snapshot(&rows));
+        let mut w = windows();
+        w.push(Toplevel {
+            selector: "id:9".into(),
+            class: "unknown-app".into(),
+            title: "Mystery".into(),
+            workspace: "9".into(),
+            focused: false,
+        });
+        let mut l2 = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
+        l2.set_catalog(catalog());
+        keys(&mut l2, &[Key::Down, Key::Down]); // the third window: "Mystery", linked to no app
+        let (b, rows) = draw(&mut l2, 120);
+        let text = panel(&rows, &b);
+        assert!(text.iter().any(|t| t.contains("unknown-app")), "no linked app: the class itself\n{}", snapshot(&rows));
+    }
+
+    /// Mae, 2026-10-05: "its description and binary" even without a `.desktop` Action.
+    #[test]
+    fn apps_mode_preview_without_actions_still_shows_description_and_binary() {
+        let mut c = catalog();
+        c.apps[1].comment = Some("Browse and manage the files on this computer".into()); // Files: no actions
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        l.set_catalog(c);
+        keys(&mut l, &[Key::Tab, Key::Down, Key::Down]); // Apps: Alacritty, btop++, Files
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::App(1)), "Files");
         let (_, rows) = draw(&mut l, 120);
-        assert!(panel(&rows, &b).iter().any(|t| t.contains("workspace 3")), "asked for: the window's preview\n{}", snapshot(&rows));
+        insta::assert_snapshot!("apps_preview_no_actions", snapshot(&rows));
+    }
+
+    /// Review Focus 1: the comment is capped, not the actions — a long comment loses its own
+    /// tail (ending with "…") rather than pushing "exec:" and the actions off the panel.
+    #[test]
+    fn a_long_comment_is_capped_so_the_actions_stay_visible() {
+        let mut c = catalog();
+        c.apps[0].comment = Some("word ".repeat(60)); // Firefox: many more wrapped lines than the panel has rows
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        l.set_catalog(c);
+        keys(&mut l, &[Key::Tab, Key::End]); // Apps: Firefox (last, alphabetically)
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::App(0)));
+        let (b, rows) = draw(&mut l, 120);
+        let text = panel(&rows, &b);
+        assert!(text.iter().any(|t| t.contains("New Private Window")), "the action stays visible\n{}", snapshot(&rows));
+        assert!(text.iter().any(|t| t.contains("exec: firefox")), "exec stays visible too\n{}", snapshot(&rows));
+        assert!(text.iter().any(|t| t.trim_end().ends_with('…')), "the comment's cut is marked\n{}", snapshot(&rows));
+    }
+
+    /// Review Focus 1, the render-level safety net: `capped_wrap` only bounds the one part of
+    /// the preview that can grow without limit (a comment, a title); a *fixed* tail longer
+    /// than the panel itself — many `.desktop` Actions at the smallest `rows` configuration —
+    /// is not something it caps. `render`'s own check must still mark that cut, not drop it
+    /// silently.
+    #[test]
+    fn an_overflowing_fixed_tail_is_marked_not_dropped_silently() {
+        let mut c = catalog();
+        c.apps[0].actions =
+            (0..10).map(|i| DesktopAction { key: format!("a{i}"), name: format!("Action {i}"), exec: "x".into() }).collect();
+        // interior_rows at its minimum (4): far fewer than the 10 actions alone.
+        let config = LauncherConfig { rows: 1, ..LauncherConfig::default() };
+        let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+        l.set_catalog(c);
+        keys(&mut l, &[Key::Tab, Key::End]); // Apps: Firefox (last, alphabetically), now 10 actions
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::App(0)));
+        let (b, rows) = draw(&mut l, 120);
+        let text = panel(&rows, &b);
+        assert!(text.iter().any(|t| t.trim_end().ends_with('…')), "the overflow is marked\n{}", snapshot(&rows));
+    }
+
+    /// Review Focus 5: at the minimum width, a long kind must not overwrite the icon.
+    #[test]
+    fn the_kind_column_never_overwrites_the_icon_at_minimum_width() {
+        let mut w = windows();
+        w[0].workspace = "many-many-many-characters".into(); // "window · many-many-…" would reach past the icon
+        let mut l = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
+        l.set_catalog(catalog());
+        let (b, rows) = draw(&mut l, MIN_COLUMNS);
+        let row = &rows[usize::from(b.list_top)];
+        let icon = icons::glyph(&l.windows[0].class);
+        assert_eq!(row.text().chars().nth(2), Some(icon), "the icon must survive the kind column: {:?}", row.text());
+    }
+
+    /// Review Focus 3: a title made only of zero-width characters (bidi marks here) is as
+    /// empty as `""` would be — it must fall back to the class, like `describe` already does
+    /// for a truly empty title.
+    #[test]
+    fn a_title_made_only_of_zero_width_characters_falls_back_to_the_class() {
+        let mut w = windows();
+        w[0].title = "\u{200e}\u{200f}\u{2066}\u{2069}".into();
+        let mut l = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
+        l.set_catalog(catalog());
+        let (b, rows) = draw(&mut l, 100);
+        let row = &rows[usize::from(b.list_top)];
+        assert!(row.text().contains("Alacritty"), "falls back to the class: {:?}", row.text());
+    }
+
+    /// Review Focus 6: `s`'s own trailing ellipsis, right at the cut point, must survive —
+    /// only the one `tail` itself adds should ever be stripped.
+    #[test]
+    fn tail_strips_exactly_one_ellipsis_not_the_users_own() {
+        let s = format!("{}…AAA", "X".repeat(10));
+        assert_eq!(tail(&s, 5), "……AAA");
+    }
+
+    /// Review Focus 4: a "word" that displays as nothing must not force a space around it,
+    /// nor stand as a line on its own.
+    #[test]
+    fn wrap_skips_zero_width_words() {
+        assert_eq!(wrap("foo \u{200e} bar", 10), vec!["foo bar".to_string()]);
+        assert_eq!(wrap("\u{200e} \u{200f}", 10), Vec::<String>::new(), "only invisible words: no blank line");
+    }
+
+    #[test]
+    fn commands_mode_preview_shows_the_full_path_when_known() {
+        let dir = crate::launcher::testing::TempDir::new("view-command-path");
+        std::fs::write(dir.join("btop"), b"").unwrap();
+        let mut l = launcher();
+        l.path_dirs = vec![dir.to_path_buf()];
+        typed(&mut l, ">top");
+        let (_, rows) = draw(&mut l, 100);
+        let text = snapshot(&rows);
+        let expected = dir.join("btop").display().to_string();
+        assert!(!text.contains("command on $PATH"), "a real path was resolved\n{text}");
+        // The panel is only ~34 cells wide: a long $TMPDIR path is truncated, but its
+        // prefix (well under that width) must still appear verbatim.
+        assert!(text.contains(&expected[..20.min(expected.len())]), "{text}\nexpected a prefix of {expected:?}");
     }
 
     #[test]
@@ -564,6 +783,11 @@ mod tests {
                 let t = r.text();
                 assert!(t.starts_with(['│', '╭', '╰']) && t.ends_with(['│', '╮', '╯']), "frame broken at {columns}: {t:?}");
             }
+            // Review Focus 2: every field this fixture makes hostile (window class, title and
+            // workspace; command names; action names; app name, generic name and comment; the
+            // dmenu prompt and its lines) is covered right here, not only by the six now-redundant
+            // single-field tests this replaces.
+            assert_no_raw_hostile_characters(&rows);
         }
     }
 
@@ -618,80 +842,16 @@ mod tests {
     /// control characters (`\n`, `\r`, `\t`, other C0/C1) and bidi override marks neutralised
     /// before a row is shaped — never shown literally, never breaking the row's width. The
     /// mechanism lives in `Grid::write` (controls become spaces; zero-width marks, including
-    /// bidi overrides, are dropped); these tests pin it down per source, so a regression there
-    /// is caught close to the source instead of only by the combinatorial `hostile_names…` test.
+    /// bidi overrides, are dropped). Review Focus 2: `hostile_names_never_misalign_the_box`'s
+    /// `check` now asserts this too, for every field its fixture makes hostile at once (window
+    /// class/title/workspace, command names, action names, app name/generic name/comment, the
+    /// dmenu prompt and its lines) — so the six single-field tests this helper used to serve
+    /// are redundant and were folded into that one combinatorial test.
     fn assert_no_raw_hostile_characters(rows: &[Grid]) {
         const HOSTILE: [char; 6] = ['\n', '\r', '\t', '\u{202e}', '\u{200e}', '\u{2066}'];
         for r in rows {
             let t = r.text();
             assert!(!t.contains(HOSTILE), "a control character or bidi override leaked into a row: {t:?}");
         }
-    }
-
-    #[test]
-    fn dmenu_prompt_neutralises_control_and_bidi_characters() {
-        let hostile = "nmap:\n\t\u{202e}\r ".to_string();
-        let mut l = Launcher::for_script(LauncherConfig::default(), Some(hostile), vec!["a".into()]);
-        let (_, rows) = draw(&mut l, 100);
-        assert_no_raw_hostile_characters(&rows);
-    }
-
-    #[test]
-    fn dmenu_lines_neutralise_control_and_bidi_characters() {
-        let hostile = "Scan\n\trapide\u{202e}evil\r".to_string();
-        let mut l = Launcher::for_script(LauncherConfig::default(), None, vec![hostile]);
-        let (_, rows) = draw(&mut l, 100);
-        assert_no_raw_hostile_characters(&rows);
-    }
-
-    #[test]
-    fn app_name_neutralises_control_and_bidi_characters() {
-        let hostile = "Mal\nware\t\u{202e}\revil".to_string();
-        let mut c = catalog();
-        c.apps.push(app("hostile.desktop", &hostile, None, "x"));
-        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
-        l.set_catalog(c);
-        keys(&mut l, &[Key::Tab]); // Apps mode: the hostile entry is listed
-        let (_, rows) = draw(&mut l, 100);
-        assert_no_raw_hostile_characters(&rows);
-    }
-
-    #[test]
-    fn app_generic_name_neutralises_control_and_bidi_characters() {
-        let hostile = "Gen\nre\t\u{202e}\rkind".to_string();
-        let mut c = catalog();
-        c.apps.push(app("hostile.desktop", "Hostile", Some(&hostile), "x"));
-        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
-        l.set_catalog(c);
-        keys(&mut l, &[Key::Tab]);
-        let (_, rows) = draw(&mut l, 100);
-        assert_no_raw_hostile_characters(&rows);
-    }
-
-    #[test]
-    fn app_comment_neutralises_control_and_bidi_characters() {
-        let hostile = "Com\nment\t\u{202e}\rtext".to_string();
-        let mut c = catalog();
-        let mut e = app("hostile.desktop", "Hostile", None, "x");
-        e.comment = Some(hostile);
-        e.actions = vec![DesktopAction { key: "a".into(), name: "Action".into(), exec: "x".into() }];
-        c.apps.push(e);
-        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
-        l.set_catalog(c);
-        keys(&mut l, &[Key::Tab, Key::End]); // "Hostile" sorts after every other app: selected
-        assert!(l.preview_visible(), "it has an action: Auto shows the preview");
-        let (_, rows) = draw(&mut l, 120);
-        assert_no_raw_hostile_characters(&rows);
-    }
-
-    #[test]
-    fn window_title_neutralises_control_and_bidi_characters() {
-        let hostile = "Term\n\t\u{202e}\rtitle".to_string();
-        let mut w = windows();
-        w.push(Toplevel { selector: "id:9".into(), class: "foot".into(), title: hostile, workspace: "1".into(), focused: false });
-        let mut l = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
-        l.set_catalog(catalog());
-        let (_, rows) = draw(&mut l, 100);
-        assert_no_raw_hostile_characters(&rows);
     }
 }

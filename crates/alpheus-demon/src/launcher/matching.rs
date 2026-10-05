@@ -12,6 +12,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -528,6 +529,14 @@ pub fn app_for_window(apps: &[DesktopEntry], class: &str) -> Option<usize> {
     })
 }
 
+/// Full path of a $PATH command, the first of `path_dirs` where it is an actual file ("btop"
+/// → the first ".../btop" found); None when it is not there (removed since the scan, or
+/// `path_dirs` not known yet — the preview then falls back to naming $PATH alone). Resolved
+/// at preview time, not kept: the catalog's `commands` are names only (spec § 1).
+pub fn command_path(path_dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    path_dirs.iter().map(|d| d.join(name)).find(|p| p.is_file())
+}
+
 /// Basename of the first argv word of an Exec value ("env FOO=1 bar" →
 /// "env"; quotes honoured).
 pub fn exec_program(exec: &str) -> Option<String> {
@@ -834,6 +843,17 @@ mod tests {
         assert_eq!(app_for_window(&a, "vscodium-window"), Some(5), "StartupWMClass");
         assert_eq!(app_for_window(&a, "unknown"), None);
         assert_eq!(app_for_window(&a, ""), None, "an empty class matches nothing");
+    }
+
+    #[test]
+    fn command_path_finds_the_first_dir_that_has_it() {
+        let dir = crate::launcher::testing::TempDir::new("command-path");
+        std::fs::write(dir.join("btop"), b"").unwrap();
+        let empty = crate::launcher::testing::TempDir::new("command-path-empty");
+        let dirs = [empty.to_path_buf(), dir.to_path_buf()];
+        assert_eq!(command_path(&dirs, "btop").as_deref(), Some(dir.join("btop").as_path()), "skips the empty dir, finds it in the next");
+        assert_eq!(command_path(&dirs, "missing"), None, "not in any dir");
+        assert_eq!(command_path(&[], "btop"), None, "no dirs at all");
     }
 
     #[test]

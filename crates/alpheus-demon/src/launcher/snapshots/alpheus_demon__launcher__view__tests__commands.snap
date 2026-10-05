@@ -3,9 +3,9 @@ source: crates/alpheus-demon/src/launcher/view.rs
 expression: snapshot(&rows)
 ---
 ╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
-│ All  Apps  Windows  Commands                             │                                    │
-│ ❯ top                                                    │                                    │
-│ 󰆍 btop                                           command │                                    │
+│ All  Apps  Windows  Commands                             │ btop                               │
+│ ❯ top                                                    │ command on $PATH                   │
+│ 󰆍 btop                                           command │ enter  run                         │
 │ 󰆍 htop                                           command │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
@@ -19,8 +19,8 @@ expression: snapshot(&rows)
 ╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
 
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
-mmmmmmmmmmmmmmmmmmmmmAAAAAAAAAA............................m....................................m
-m.G....A...................................................m....................................m
+mmmmmmmmmmmmmmmmmmmmmAAAAAAAAAA............................m.GGGG...............................m
+m.G....A...................................................m.mmmmmmmmmmmmmmmm...................m
 mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm....................................m
 m.a................................................mmmmmmm.m....................................m
 m..........................................................m....................................m

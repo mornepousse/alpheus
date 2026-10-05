@@ -3,11 +3,11 @@ source: crates/alpheus-demon/src/launcher/view.rs
 expression: snapshot(&rows)
 ---
 ╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
-│ All  Apps  Windows  Commands                             │                                    │
-│ ❯                                                        │                                    │
-│ 󰆍 ~/projects — zsh                            window · 3 │                                    │
+│ All  Apps  Windows  Commands                             │ ~/projects — zsh                   │
+│ ❯                                                        │ Alacritty                          │
+│ 󰆍 ~/projects — zsh                            window · 3 │ window · workspace 3               │
 │ 󰈹 Web page — Mozilla Firefox                  window · 2 │                                    │
-│                                                          │                                    │
+│                                                          │ enter  focus                       │
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
@@ -19,9 +19,9 @@ expression: snapshot(&rows)
 ╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
 
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
-mmmmmmmmmmmmAAAAAAAAAmmmmmmmmmm............................m....................................m
-m.G.A......................................................m....................................m
-mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm....................................m
+mmmmmmmmmmmmAAAAAAAAAmmmmmmmmmm............................m.GGGGGGGGGGGGGGGG...................m
+m.G.A......................................................m.mmmmmmmmm..........................m
+mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm.mmmmmmmmmmmmmmmmmmmm...............m
 m.a.............................................mmmmmmmmmm.m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m

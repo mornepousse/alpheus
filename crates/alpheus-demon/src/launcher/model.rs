@@ -10,6 +10,7 @@ use crate::launcher::history::History;
 use crate::launcher::input::Key;
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::scan::Catalog;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Preview {
@@ -64,6 +65,10 @@ pub struct Launcher {
     pub catalog: Option<Catalog>,
     pub windows: Vec<Toplevel>,
     pub lines: Vec<String>,
+    /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
+    /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
+    /// preview falls back to naming $PATH alone.
+    pub path_dirs: Vec<PathBuf>,
     pub history: History,
     pub now: u64,
     pub results: Vec<Hit>,
@@ -89,6 +94,7 @@ impl Launcher {
             catalog: None,
             windows: Vec::new(),
             lines: Vec::new(),
+            path_dirs: Vec::new(),
             history: History::empty(0),
             now: 0,
             results: Vec::new(),
