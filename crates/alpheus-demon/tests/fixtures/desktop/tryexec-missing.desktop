@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Example Optional Tool
+TryExec=example-not-installed
+Exec=example-not-installed --run

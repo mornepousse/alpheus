@@ -156,12 +156,35 @@ fn connection_allowed_anywhere_in_sources_not_just_hypr_and_niri() {
     assert!(!compositor_connection_allowed("painter.rs"));
 }
 
+/// Words that must appear nowhere in the daemon's sources (compared
+/// lowercased): ways to write to the compositor. `keyword` stays a bare word
+/// (Hyprland's request socket takes `keyword general:gaps_in 0` as one
+/// string, not only `hyprctl`'s argv), and the `.desktop` key `Keywords`
+/// (read by the launcher) is erased before the search instead.
+const FORBIDDEN_WORDS: [&str; 6] = ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"];
+
+/// First forbidden word found in `text`, compared lowercased, `keywords` erased.
+fn forbidden_word(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase().replace("keywords", "");
+    FORBIDDEN_WORDS.into_iter().find(|w| lower.contains(w))
+}
+
+#[test]
+fn the_keywords_key_passes_but_the_keyword_command_does_not() {
+    assert_eq!(forbidden_word(r#"localized(&main, env.locale, "Keywords")"#), None);
+    assert_eq!(forbidden_word("pub keywords: Vec<String>, // localized list"), None);
+    assert_eq!(forbidden_word("keyword general:gaps_in 0"), Some("keyword"), "the socket request, unquoted");
+    assert_eq!(forbidden_word(r#"format!("keyword {k} {v}")"#), Some("keyword"));
+    assert_eq!(forbidden_word(r#"exec.spawn("wm", &["Keyword", "general:gaps_in", "0"])"#), Some("keyword"), "case does not hide it");
+    assert_eq!(forbidden_word("keywords; keyword x"), Some("keyword"), "a Keywords nearby does not hide it");
+    assert_eq!(forbidden_word("set DPMS off"), Some("dpms"));
+}
+
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in source_files() {
-        let lower = t.to_lowercase();
-        for word in ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"] {
-            assert!(!lower.contains(word), "\"{word}\" in {}", p.display());
+        if let Some(word) = forbidden_word(&t) {
+            panic!("\"{word}\" in {}", p.display());
         }
         let name = relative_path(&p);
         if t.contains(".socket.sock") {

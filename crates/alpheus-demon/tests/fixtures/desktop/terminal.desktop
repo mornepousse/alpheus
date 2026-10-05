@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Example Monitor
+GenericName=System monitor
+Exec=example-top
+Terminal=true

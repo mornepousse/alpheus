@@ -4,6 +4,7 @@
 //! matching, model, view), the Wayland side last.
 
 pub mod config;
+pub mod desktop;
 pub mod history;
 
 /// Test helpers shared by the launcher's modules.
