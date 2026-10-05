@@ -22,3 +22,6 @@ zbus.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
+# The bridge's library: end-to-end tests drive the daemon exactly as the
+# binary would (exchange, run), without building a second binary.
+alpheus-launch = { path = "../alpheus-launch" }

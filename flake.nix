@@ -82,6 +82,8 @@
             pkgs.dbus
             pkgs.pkg-config
             pkgs.libxkbcommon
+            # wtype: virtual keyboard for the launcher's ignored end-to-end tests (headless sway only).
+            pkgs.wtype
           ];
           ALPHEUS_POLICES = polices pkgs;
         };

@@ -43,8 +43,25 @@ breakdown), then the spec of the sub-project currently in progress in
   (1.7 keeps an idle thread waking every 500 ms; a test guards it). Real
   trial on Mae's laptop pending (plan task 18). Possible later memory win:
   replacing zbus with rustbus (≈ −1.4 MB, measured), not needed for now.
-- Next, in order: the **app launcher** (integrated in alpheus; prior-art
-  research first), then bar step 4 (tray and menus), step 5 (media,
+- **Launcher delivery 1** (the core; spec
+  [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
+  plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
+  **implemented**: a centred Overlay box inside the daemon (apps, windows,
+  `$PATH` commands, script mode), `alpheus-launch` (toggle, close,
+  `--dmenu` with fuzzel's exit codes, plus 3 = daemon unreachable, the
+  only code that makes nixos-config fall back to fuzzel) on an
+  owner-only socket, nucleo
+  ranking plus frecency, `.desktop` files and `$PATH` rescanned on a
+  short-lived thread at each open, launches in a `systemd-run --user
+  --scope` (detached fallback), keyboard bound only while open
+  (libxkbcommon now linked). Measured in **release** (headless sway, 300
+  synthetic apps): open latency median 1963 µs (max 4477 µs), open
+  +1929 KB PSS over closed, 50 cycles +108 KB, 0 wake-ups in 5 s at rest
+  after use, startup PSS 6738 KB with the launcher module alone (8562 KB
+  with every module). A 100,000-line dmenu peaks at +6316 KB over closed,
+  back down to +308 KB one second after a cancel. nixos-config switch
+  (task 15) and Mae's real trial (task 16) pending.
+- Next, in order: bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
 - **Style and themes, for all of alpheus (future, Mae 2026-10-05)**: the flat

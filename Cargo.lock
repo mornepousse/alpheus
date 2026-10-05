@@ -42,6 +42,7 @@ name = "alpheus-demon"
 version = "0.1.0"
 dependencies = [
  "alpheus-commun",
+ "alpheus-launch",
  "cosmic-text",
  "insta",
  "libc",

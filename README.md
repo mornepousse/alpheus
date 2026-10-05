@@ -31,11 +31,15 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules, 3 outputs — at start | ≈ 7.9 MB | headless sway test, `tests/memory.rs` |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.7 MB | stable, 0 wake-ups at rest, 8 threads |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.8 MB | headless sway test, `tests/memory.rs` |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 10.1 MB | stable, 0 wake-ups at rest, 8 threads |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |
+| Launcher, closed (socket only, nothing else resident) | +0 MB | one listening fd; no thread, timer or keyboard exists while closed |
+| Launcher, open (typed query, keyboard bound) | +1.9–2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs` |
+| Launcher, open latency | ≈ 2.0 ms median (max 4.5 ms) | request accepted → first frame committed, 20 opens |
+| Launcher, 100,000-line dmenu | +6.3 MB open, back to +0.3 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
@@ -82,8 +86,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Notification center, history | 🚧 with the toasts | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
 | **Launcher** | | | | | |
-| Apps, run command, window switcher | 🚧 launcher 1 | ✅ | ➖ | ❌ | ➖ |
-| Script/dmenu mode | 🚧 launcher 1 | ➖ | ➖ | ❌ | ✅ |
+| Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
+| Script/dmenu mode | ✅ (fuzzel's exit codes) | ➖ | ➖ | ❌ | ✅ |
 | Calculator, units, currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
@@ -153,16 +157,37 @@ of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: an integrated **app launcher**, then the system tray (app
-icons and menus), now-playing and notifications, the OSD, notification
-toasts.
+Coming next: the system tray (app icons and menus), now-playing and
+notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8 MB of
-memory at start and ≈ 10 MB under load, on three outputs. The compositor
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.8 MB of
+memory at start and ≈ 10.1 MB under load, on three outputs. The compositor
 is only **read** (Hyprland or niri event stream); switching workspace goes
 through a configurable command. Sound comes from `pw-dump`, network,
 battery and Bluetooth from D-Bus (read-only), resources from `/proc`.
+
+### The launcher
+
+A centred box (apps, open windows, `$PATH` commands, a script/dmenu mode
+for shell scripts), opened and closed by the daemon itself — nothing of
+it stays resident while closed, not even a thread.
+
+![The alpheus launcher, All mode, sample data (fictional apps and windows), built-in Catppuccin Mocha palette, zoomed ×2](docs/images/launcher.png)
+
+`Tab`/`Shift+Tab` switches modes (All, Apps, Windows, Commands); typing
+ranks results with [nucleo](https://github.com/helix-editor/nucleo)
+(Helix's fuzzy matcher) plus frecency (most-used first on an empty
+query). `Enter` runs a command or typed shell text in a held terminal
+(stays open to read the output); `Ctrl+Enter` runs it detached. `alpheus-launch`
+bridges to it over an owner-only socket (`toggle`, `close`, `--dmenu`
+with fuzzel's exit codes, plus exit code 3 — daemon unreachable — the
+only case where a script falls back to another menu). Measured in
+**release** (headless sway, 300 synthetic apps): opening costs ≈ 1.9–2.1 MB
+of PSS over closed, median open latency ≈ 2.0 ms, 50 open/close cycles
+grow PSS by well under the 1 MB budget (measured 108–304 KB across runs),
+0 wake-ups in 5 s at rest after use. A 100,000-line dmenu peaks at
++6.3 MB and drops back to +0.3 MB a second after it is cancelled.
 
 ## Build
 
@@ -189,11 +214,14 @@ back to default values with a warning, never a crash.
   Bluetooth).
 - `displays.toml`: screen profiles, written by the Displays tab.
 - `bar.toml`: the bar.
+- `launcher.toml`: the launcher (terminal command, result rows, history
+  size, mode prefixes, the focus command); read fresh at each open,
+  nothing kept while it is closed.
 
 ```toml
 # bar.toml — default values
-modules = ["workspaces", "window", "media", "volume", "network", "bluetooth",
-           "battery", "resources", "tray", "notifications", "clock"]
+modules = ["launcher", "workspaces", "window", "media", "volume", "network",
+           "bluetooth", "battery", "resources", "tray", "notifications", "clock"]
 height = 22
 
 [font]
