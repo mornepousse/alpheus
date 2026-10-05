@@ -214,11 +214,19 @@ pub(crate) fn battery(feed: &Feed<PowerState>) -> Option<Segment> {
         };
         pieces.push(piece(format!("{} {}%", battery_icon(b), b.percent), style));
     }
-    // Every peripheral, always (Q7); red when low.
+    // Every peripheral with a real percentage, always (Q7), red when low; a
+    // coarse `BatteryLevel` (Mae, 2026-10-05) is hidden, except Low or
+    // Critical, shown as the bare icon in the error tint.
     for p in &state.peripherals {
         let space = if pieces.is_empty() { "" } else { " " };
-        let style = if p.percent < LOW { Style::ERROR } else { Style::NORMAL };
-        pieces.push(piece(format!("{space}{} {}%", peripheral_icon(p.kind), p.percent), style));
+        match p.percent {
+            Some(percent) => {
+                let style = if percent < LOW { Style::ERROR } else { Style::NORMAL };
+                pieces.push(piece(format!("{space}{} {percent}%", peripheral_icon(p.kind)), style));
+            }
+            None if p.low => pieces.push(piece(format!("{space}{}", peripheral_icon(p.kind)), Style::ERROR)),
+            None => {}
+        }
     }
     if pieces.is_empty() {
         return None;
@@ -474,9 +482,32 @@ mod tests {
     fn peripheral_tint_boundary_at_19_and_20() {
         // Same threshold as the laptop battery (Q7), on each peripheral
         // independently: the first (19 %) errs, the second (20 %) doesn't.
-        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent };
+        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
         let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(19), mouse(20)] });
         assert_eq!(draw(&battery(&s).unwrap()).1, "eeeee......");
+    }
+
+    #[test]
+    fn a_coarse_peripheral_is_hidden_unless_low_or_critical() {
+        // Mae, 2026-10-05: BatteryLevel not None means Percentage is not to
+        // be trusted (UPower's own words). Hidden, except Low/Critical
+        // (`low`), shown as the bare icon in the error tint.
+        let coarse = |low| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low };
+        let s = |peripherals| Feed::Ready(PowerState { laptop: None, peripherals });
+        assert!(battery(&s(vec![coarse(false)])).is_none(), "hidden: no percentage and not low");
+        assert_eq!(draw(&battery(&s(vec![coarse(true)])).unwrap()), ("\u{f037d}".into(), "e".into()), "low: bare icon, error tint");
+        // Alongside a laptop battery and a real-percentage peripheral.
+        let laptop = Some(Battery { percent: 93, charge: Charge::Charging });
+        let real = Peripheral { kind: PeripheralKind::Keyboard, name: "Clavier".into(), percent: Some(80), low: false };
+        assert_eq!(
+            draw(&battery(&s2(laptop, vec![real, coarse(true)])).unwrap()),
+            ("\u{f008b} 93% \u{f030c} 80% \u{f037d}".into(), "aaaaa......ee".into()),
+            "a coarse Low peripheral keeps its place after a real one"
+        );
+
+        fn s2(laptop: Option<Battery>, peripherals: Vec<Peripheral>) -> Feed<PowerState> {
+            Feed::Ready(PowerState { laptop, peripherals })
+        }
     }
 
     #[test]
@@ -489,7 +520,7 @@ mod tests {
 
     #[test]
     fn peripherals_after_the_battery_hidden_without_anything_to_show() {
-        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent };
+        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
         let s = |laptop, peripherals| Feed::Ready(PowerState { laptop, peripherals });
         let charging = Some(Battery { percent: 93, charge: Charge::Charging });
         assert_eq!(

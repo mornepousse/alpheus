@@ -75,11 +75,20 @@ pub enum PeripheralKind {
 }
 
 /// A device with its own battery known to UPower (a mouse on its receiver…).
+/// Some peripherals (Logitech's HID++ receivers among them) only report a
+/// coarse `BatteryLevel` — their `Percentage` is not to be trusted ("should
+/// be ignored", UPower's own words) — so the charge is one or the other,
+/// never both (Mae, 2026-10-05).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Peripheral {
     pub kind: PeripheralKind,
     pub name: String,
-    pub percent: u8,
+    /// A real, numeric reading: shown always, red below `LOW` (Q7).
+    /// `None`: only a coarse level is known — hidden unless `low`.
+    pub percent: Option<u8>,
+    /// The coarse level is Low or Critical: shown as the bare icon in the
+    /// error tint, no number. Meaningless when `percent` is `Some`.
+    pub low: bool,
 }
 
 /// `laptop: None` and no peripheral: nothing to show (a desktop, or no UPower).

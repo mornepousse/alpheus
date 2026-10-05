@@ -34,6 +34,30 @@ fn percent(p: &Props) -> u8 {
     p.float("Percentage").unwrap_or(0.0).round().clamp(0.0, 100.0) as u8
 }
 
+// UpDeviceLevel (up-types.h): BatteryLevel only ever carries Unknown, None,
+// Low, Critical, Normal, High or Full. None means Percentage is a real
+// reading (every laptop battery and most peripherals report it, explicitly
+// or by leaving the property at its default); the others mean Percentage
+// "should be ignored" (confirmed on Mae's workstation, 2026-10-05: a
+// Logitech G602 reports Percentage 100 and BatteryLevel 8/Full).
+const LEVEL_NONE: i64 = 1;
+const LEVEL_LOW: i64 = 3;
+const LEVEL_CRITICAL: i64 = 4;
+
+/// A peripheral's charge from its `BatteryLevel`: `(percent, low)`. The
+/// property absent reads as `None`, same as an explicit `LEVEL_NONE` (e.g.
+/// the fake bus's other fixtures, and UPower's own default for a device
+/// that doesn't support it): `Percentage` is trusted. Any other level is
+/// too coarse for a number — kept only when Low or Critical (Mae,
+/// 2026-10-05): the bar then shows the icon alone, in the error tint.
+fn peripheral_charge(p: &Props) -> (Option<u8>, bool) {
+    match p.int("BatteryLevel") {
+        None | Some(LEVEL_NONE) => (Some(percent(p)), false),
+        Some(LEVEL_LOW | LEVEL_CRITICAL) => (None, true),
+        Some(_) => (None, false),
+    }
+}
+
 fn kind(t: i64) -> PeripheralKind {
     match t {
         MOUSE => PeripheralKind::Mouse,
@@ -61,7 +85,8 @@ pub fn read(bus: &mut dyn Bus) -> io::Result<PowerState> {
         if p.str("NativePath").is_some_and(|n| n.starts_with("/org/bluez/")) {
             continue;
         }
-        peripherals.push(Peripheral { kind: kind(t), name: p.str("Model").unwrap_or("").to_string(), percent: percent(&p) });
+        let (percent, low) = peripheral_charge(&p);
+        peripherals.push(Peripheral { kind: kind(t), name: p.str("Model").unwrap_or("").to_string(), percent, low });
     }
     peripherals.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(PowerState { laptop, peripherals })
@@ -77,14 +102,45 @@ mod tests {
 
     #[test]
     fn the_workstation_battery_charging_and_its_mouse() {
+        // The recorded mouse is the real G602 case (Mae, 2026-10-05):
+        // Percentage 100 but BatteryLevel 8 (Full) — a coarse reading,
+        // hidden (no `low`).
         let mut bus = FakeBus::workstation();
         assert_eq!(
             read(&mut bus).unwrap(),
             PowerState {
                 laptop: Some(Battery { percent: 92, charge: Charge::Charging }),
-                peripherals: vec![Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: 100 }],
+                peripherals: vec![Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low: false }],
             }
         );
+    }
+
+    #[test]
+    fn a_coarse_battery_level_hides_the_percentage_low_and_critical_keep_it_as_a_bare_flag() {
+        let mut bus = FakeBus::workstation();
+        for (level, expected) in [
+            (0, (None, false)),      // Unknown
+            (1, (Some(100), false)), // None: Percentage trusted
+            (2, (None, false)),      // Discharging (coarse, not low)
+            (3, (None, true)),       // Low
+            (4, (None, true)),       // Critical
+            (5, (None, false)),      // Action
+            (6, (None, false)),      // Normal
+            (7, (None, false)),      // High
+            (8, (None, false)),      // Full
+        ] {
+            bus.props_mut(MOUSE, DEVICE).0.insert("BatteryLevel".into(), Prop::Int(level));
+            let p = &read(&mut bus).unwrap().peripherals[0];
+            assert_eq!((p.percent, p.low), expected, "BatteryLevel {level}");
+        }
+    }
+
+    #[test]
+    fn battery_level_absent_trusts_the_percentage() {
+        let mut bus = FakeBus::workstation();
+        bus.props_mut(MOUSE, DEVICE).0.remove("BatteryLevel");
+        let p = &read(&mut bus).unwrap().peripherals[0];
+        assert_eq!((p.percent, p.low), (Some(100), false));
     }
 
     #[test]

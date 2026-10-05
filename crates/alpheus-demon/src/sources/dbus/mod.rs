@@ -92,8 +92,10 @@ const NM_ACTIVE_PROPS: [&str; 1] = ["State"];
 /// below by `upower_device_ignored` regardless of which property changed).
 /// `Model`: a peripheral's name (`upower::read`'s `Peripheral::name`) —
 /// missing from this list (re-review, follow-up): a rename wouldn't have
-/// re-read it until something else happened to change too.
-const UPOWER_PROPS: [&str; 6] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model"];
+/// re-read it until something else happened to change too. `BatteryLevel`
+/// (Mae, 2026-10-05): a coarse-reporting peripheral (a Logitech HID++
+/// receiver…) going Low or Critical, or recovering from it, must re-read.
+const UPOWER_PROPS: [&str; 7] = ["Percentage", "State", "IsPresent", "Type", "PowerSupply", "Model", "BatteryLevel"];
 /// BlueZ: the properties the bar reads, by interface.
 const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
 // Deviation from the brief's Device1{Connected, Alias, Name} (reported):
@@ -564,9 +566,11 @@ mod tests {
     }
 
     fn workstation_battery() -> PowerState {
+        // The recorded mouse is the real G602 case: BatteryLevel 8 (Full),
+        // its Percentage not trusted — hidden (Mae, 2026-10-05).
         PowerState {
             laptop: Some(Battery { percent: 92, charge: Charge::Charging }),
-            peripherals: vec![Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: 100 }],
+            peripherals: vec![Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low: false }],
         }
     }
 
@@ -848,6 +852,7 @@ mod tests {
         assert_eq!(changed_up(&["Capacity"]), None);
         assert_eq!(changed_up(&["Type"]), Some(Domain::Battery));
         assert_eq!(changed_up(&["Model"]), Some(Domain::Battery), "a peripheral's name, read into Peripheral::name");
+        assert_eq!(changed_up(&["BatteryLevel"]), Some(Domain::Battery), "a coarse-reporting peripheral going Low or Critical");
         // BlueZ's adapter: Powered only.
         let changed_adapter = |names: &[&str]| {
             with_names(signal("/org/bluez/hci0", PROPERTIES, "PropertiesChanged", Some("org.bluez.Adapter1")), names).domain()
