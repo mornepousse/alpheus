@@ -12,9 +12,9 @@
       # il renommerait le processus (.alpheus-demon-wrapped) et
       # `pkill -x alpheus-demon` ne le trouverait plus (même piège que waybar).
       polices = pkgs: "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/JetBrainsMono";
-      paquet = pkgs: { pname, tests, description, env ? { } }:
+      paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ] }:
         pkgs.rustPlatform.buildRustPackage {
-          inherit pname env;
+          inherit pname env nativeBuildInputs buildInputs;
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
@@ -45,6 +45,12 @@
           tests = [ "alpheus-demon" ];
           description = "Démon résident d'alpheus : la barre (layer-shell, Hyprland et niri)";
           env.ALPHEUS_POLICES = polices pkgs;
+          # The system bus through dbus-rs: libdbus, found with pkg-config.
+          # This nixpkgs' dbus; nixos-config makes the alpheus input follow
+          # the system's nixpkgs (inputs.nixpkgs.follows), so the daemon maps
+          # the same libdbus store path as the rest of the session (shared pages).
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [ pkgs.dbus ];
         };
       });
 
@@ -59,9 +65,10 @@
 
       devShells = pour (pkgs: {
         default = pkgs.mkShell {
-          # sway : compositeur sans tête des tests ignorés du démon.
-          # dbus : dbus-daemon privé des tests ignorés du démon (jamais le bus de session ni le bus système).
-          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.sway pkgs.dbus ];
+          # sway: the headless compositor of the daemon's ignored tests.
+          # dbus: the private dbus-daemon of the daemon's ignored tests (never the session or the system bus).
+          # pkg-config + dbus: libdbus, linked by the daemon through dbus-rs.
+          packages = [ pkgs.cargo pkgs.rustc pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.sway pkgs.dbus pkgs.pkg-config ];
           ALPHEUS_POLICES = polices pkgs;
         };
       });

@@ -9,6 +9,7 @@ description = "alpheus's resident daemon: the bar"
 [dependencies]
 alpheus-commun.workspace = true
 cosmic-text.workspace = true
+dbus.workspace = true
 libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

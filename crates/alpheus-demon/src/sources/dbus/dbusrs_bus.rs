@@ -1,0 +1,366 @@
+//! The system bus through dbus-rs (the `dbus` crate over libdbus): the
+//! ONLY file of the daemon that knows the D-Bus library
+//! (tests/guardrails.rs). This first part is the codec: call messages, and
+//! replies and signals read in place with libdbus's iterators — a property
+//! the bar doesn't read is skipped, never decoded.
+
+use super::props::{Objects, Prop, Props};
+use super::{Signal, UPOWER, bluez};
+use dbus::Message;
+use dbus::arg::{ArgType, Iter};
+use dbus::strings::Path;
+use std::collections::BTreeMap;
+use std::io;
+
+const DBUS: &str = "org.freedesktop.DBus";
+
+/// Every method the daemon may call: reads, and the subscription to
+/// signals (`Hello` is libdbus's own, sent once when connecting).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    GetNameOwner,
+    AddMatch,
+    GetAll,
+    GetManagedObjects,
+    EnumerateDevices,
+}
+
+impl Method {
+    pub const ALL: [Method; 5] =
+        [Method::GetNameOwner, Method::AddMatch, Method::GetAll, Method::GetManagedObjects, Method::EnumerateDevices];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Method::GetNameOwner => "GetNameOwner",
+            Method::AddMatch => "AddMatch",
+            Method::GetAll => "GetAll",
+            Method::GetManagedObjects => "GetManagedObjects",
+            Method::EnumerateDevices => "EnumerateDevices",
+        }
+    }
+
+    fn interface(self) -> &'static str {
+        match self {
+            Method::GetNameOwner | Method::AddMatch => DBUS,
+            Method::GetAll => "org.freedesktop.DBus.Properties",
+            Method::GetManagedObjects => "org.freedesktop.DBus.ObjectManager",
+            Method::EnumerateDevices => UPOWER,
+        }
+    }
+}
+
+fn unexpected(what: &str) -> io::Error {
+    io::Error::other(format!("unexpected reply: {what}"))
+}
+
+/// The signature of the argument at `it`, "" past the last one: dbus
+/// 0.9.12's `Iter::signature` panics there (`Signature::new(…).unwrap()` on
+/// an empty string) — an empty or short body, which any local process may
+/// send the bar as a unicast signal.
+fn sig(it: &mut Iter<'_>) -> String {
+    if it.arg_type() == ArgType::Invalid { String::new() } else { it.signature().to_string() }
+}
+
+/// One property (`v` points inside its variant), reduced to what the bar
+/// reads (same mapping as the busctl fixtures' `props::busctl`): only these
+/// types are ever decoded.
+pub fn prop(v: &mut Iter<'_>) -> Prop {
+    let int = |n: Option<i64>| n.map(Prop::Int).unwrap_or(Prop::Other);
+    match v.arg_type() {
+        ArgType::Boolean => v.get::<bool>().map(Prop::Bool).unwrap_or(Prop::Other),
+        ArgType::Byte => int(v.get::<u8>().map(i64::from)),
+        ArgType::Int16 => int(v.get::<i16>().map(i64::from)),
+        ArgType::UInt16 => int(v.get::<u16>().map(i64::from)),
+        ArgType::Int32 => int(v.get::<i32>().map(i64::from)),
+        ArgType::UInt32 => int(v.get::<u32>().map(i64::from)),
+        ArgType::Int64 => int(v.get::<i64>()),
+        ArgType::UInt64 => int(v.get::<u64>().and_then(|n| i64::try_from(n).ok())),
+        ArgType::Double => v.get::<f64>().map(Prop::Float).unwrap_or(Prop::Other),
+        ArgType::String => v.get::<&str>().map(|s| Prop::Str(s.to_string())).unwrap_or(Prop::Other),
+        ArgType::ObjectPath => v.get::<Path>().map(|p| Prop::Path(p.to_string())).unwrap_or(Prop::Other),
+        ArgType::Array => match &*sig(v) {
+            "ao" => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.iter().map(|p| p.to_string()).collect())).unwrap_or(Prop::Other),
+            "ay" => v.get::<Vec<u8>>().map(Prop::Bytes).unwrap_or(Prop::Other),
+            _ => Prop::Other,
+        },
+        ArgType::Variant => v.recurse(ArgType::Variant).map(|mut inner| prop(&mut inner)).unwrap_or(Prop::Other),
+        _ => Prop::Other,
+    }
+}
+
+/// `a{sv}` at `it`: each key with its value, still unread (`f` decides).
+fn each_entry<T>(it: &mut Iter<'_>, mut f: impl FnMut(&str, &mut Iter<'_>) -> T) -> io::Result<Vec<T>> {
+    if &*sig(it) != "a{sv}" {
+        return Err(unexpected("not a{sv}"));
+    }
+    let mut out = Vec::new();
+    let Some(mut entries) = it.recurse(ArgType::Array) else { return Ok(out) };
+    while let Some(mut entry) = entries.recurse(ArgType::DictEntry) {
+        let key: &str = entry.read().map_err(|e| unexpected(&e.to_string()))?;
+        let mut value = entry.recurse(ArgType::Variant).ok_or_else(|| unexpected("a property without a variant"))?;
+        out.push(f(key, &mut value));
+        entries.next();
+    }
+    Ok(out)
+}
+
+fn props(it: &mut Iter<'_>) -> io::Result<Props> {
+    Ok(Props(each_entry(it, |k, v| (k.to_string(), prop(v)))?.into_iter().collect()))
+}
+
+/// A `GetAll` reply (`a{sv}`).
+pub fn get_all_reply(m: &Message) -> io::Result<Props> {
+    props(&mut m.iter_init())
+}
+
+/// A `GetManagedObjects` reply (`a{oa{sa{sv}}}`), keeping only the
+/// interfaces the readers (bluez.rs) ever look at: Introspectable, Media1,
+/// LEAdvertisingManager1… are skipped, never decoded.
+pub fn objects_reply(m: &Message) -> io::Result<Objects> {
+    const READ: [&str; 3] = [bluez::ADAPTER, bluez::DEVICE, bluez::BATTERY];
+    let mut it = m.iter_init();
+    if &*sig(&mut it) != "a{oa{sa{sv}}}" {
+        return Err(unexpected("not a{oa{sa{sv}}}"));
+    }
+    let mut objects = Objects::new();
+    let Some(mut paths) = it.recurse(ArgType::Array) else { return Ok(objects) };
+    while let Some(mut entry) = paths.recurse(ArgType::DictEntry) {
+        let path: Path = entry.read().map_err(|e| unexpected(&e.to_string()))?;
+        let mut read = BTreeMap::new();
+        if let Some(mut interfaces) = entry.recurse(ArgType::Array) {
+            while let Some(mut i) = interfaces.recurse(ArgType::DictEntry) {
+                let name: &str = i.read().map_err(|e| unexpected(&e.to_string()))?;
+                if READ.contains(&name) {
+                    read.insert(name.to_string(), props(&mut i)?);
+                }
+                interfaces.next();
+            }
+        }
+        objects.insert(path.to_string(), read);
+        paths.next();
+    }
+    Ok(objects)
+}
+
+/// A reply carrying object paths (`ao`): `EnumerateDevices`.
+pub fn paths_reply(m: &Message) -> io::Result<Vec<String>> {
+    let v: Vec<Path> = m.read1().map_err(|e| unexpected(&e.to_string()))?;
+    Ok(v.iter().map(|p| p.to_string()).collect())
+}
+
+/// The keys of the `a{sv}` (or `a{sa{sv}}`) at `it`, values skipped.
+fn keys(it: &mut Iter<'_>) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(mut entries) = it.recurse(ArgType::Array) {
+        while let Some(mut entry) = entries.recurse(ArgType::DictEntry) {
+            if let Some(k) = entry.get::<&str>() {
+                out.push(k.to_string());
+            }
+            entries.next();
+        }
+    }
+    out
+}
+
+/// What `Signal::domain` needs from a received signal: its path, interface
+/// and member, and the first string argument and the names of the few
+/// members it reads. A body that doesn't parse gives nothing (the signal
+/// counts). Changed values are never decoded.
+pub fn signal(m: &Message) -> Signal {
+    let member = m.member().map(|x| x.to_string()).unwrap_or_default();
+    let mut it = m.iter_init();
+    let (arg0, names) = match member.as_str() {
+        "NameOwnerChanged" => (it.get::<&str>().map(String::from), Vec::new()),
+        "PropertiesChanged" if &*sig(&mut it) == "s" => {
+            let interface = it.get::<&str>().map(String::from);
+            it.next();
+            if &*sig(&mut it) != "a{sv}" {
+                (None, Vec::new())
+            } else {
+                let mut names = keys(&mut it);
+                it.next();
+                names.extend(it.get::<Vec<String>>().unwrap_or_default());
+                (interface, names)
+            }
+        }
+        "InterfacesAdded" if &*sig(&mut it) == "o" => {
+            it.next();
+            (None, if &*sig(&mut it) == "a{sa{sv}}" { keys(&mut it) } else { Vec::new() })
+        }
+        "InterfacesRemoved" => (None, m.read2::<Path, Vec<String>>().map(|(_, i)| i).unwrap_or_default()),
+        // logind's bool argument, kept as "true"/"false": `Signal::is_wake` reads it.
+        "PrepareForSleep" => (it.get::<bool>().map(|b| b.to_string()), Vec::new()),
+        _ => (None, Vec::new()),
+    };
+    Signal {
+        path: m.path().map(|p| p.to_string()).unwrap_or_default(),
+        interface: m.interface().map(|i| i.to_string()).unwrap_or_default(),
+        member,
+        arg0,
+        names,
+    }
+}
+
+/// The message of a call, never allowed to auto-start its destination: a
+/// second lock on D-Bus activation, besides calling unique names only.
+pub fn message(destination: &str, path: &str, m: Method, arg: Option<&str>) -> io::Result<Message> {
+    let mut msg = Message::new_method_call(destination, path, m.interface(), m.name()).map_err(io::Error::other)?;
+    msg.set_auto_start(false);
+    Ok(match arg {
+        Some(a) => msg.append1(a),
+        None => msg,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sources::dbus::busctl_wire::push_reply;
+    use crate::sources::dbus::props::busctl;
+
+    /// A message carrying a recorded reply, as the service would send it.
+    fn recorded(json: &str) -> Message {
+        let mut m = Message::new_method_call(":1.10", "/", "org.example.Test", "Get").unwrap();
+        push_reply(&mut m, json);
+        m
+    }
+
+    #[test]
+    fn every_recorded_reply_decodes_like_busctl() {
+        const GET_ALL: [&str; 9] = [
+            include_str!("../../../tests/fixtures/dbus-nm-root.json"),
+            include_str!("../../../tests/fixtures/dbus-nm-active-10.json"),
+            include_str!("../../../tests/fixtures/dbus-nm-active-9.json"),
+            include_str!("../../../tests/fixtures/dbus-nm-active-3.json"),
+            include_str!("../../../tests/fixtures/dbus-nm-active-2.json"),
+            include_str!("../../../tests/fixtures/dbus-upower-display.json"),
+            include_str!("../../../tests/fixtures/dbus-upower-bat0.json"),
+            include_str!("../../../tests/fixtures/dbus-upower-mouse.json"),
+            include_str!("../../../tests/fixtures/dbus-upower-ac.json"),
+        ];
+        for json in GET_ALL {
+            assert_eq!(get_all_reply(&recorded(json)).unwrap(), busctl::get_all(json), "{json}");
+        }
+        let devices = include_str!("../../../tests/fixtures/dbus-upower-devices.json");
+        assert_eq!(paths_reply(&recorded(devices)).unwrap(), busctl::paths(devices));
+        let bluez = include_str!("../../../tests/fixtures/dbus-bluez-objects.json");
+        let mut expected = busctl::objects(bluez);
+        for interfaces in expected.values_mut() {
+            interfaces.retain(|i, _| [bluez::ADAPTER, bluez::DEVICE, bluez::BATTERY].contains(&i.as_str()));
+        }
+        assert_eq!(objects_reply(&recorded(bluez)).unwrap(), expected);
+    }
+
+    #[test]
+    fn values_converted_to_props() {
+        let p = get_all_reply(&recorded(
+            r#"{"type":"a{sv}","data":[{"On":{"type":"b","data":true},"N":{"type":"u","data":42},"Y":{"type":"y","data":72},
+            "T":{"type":"t","data":1791131213},"Big":{"type":"t","data":18446744073709551615},"P":{"type":"d","data":92.5},
+            "S":{"type":"s","data":"MON_WIFI_1"},"O":{"type":"o","data":"/a"},"L":{"type":"ao","data":["/a","/b"]},
+            "B":{"type":"ay","data":[77,79]},"V":{"type":"v","data":{"type":"d","data":0.5}},"Strs":{"type":"as","data":["a","b"]}}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(p.0["On"], Prop::Bool(true));
+        assert_eq!(p.0["N"], Prop::Int(42));
+        assert_eq!(p.0["Y"], Prop::Int(72));
+        assert_eq!(p.0["T"], Prop::Int(1_791_131_213));
+        assert_eq!(p.0["Big"], Prop::Other, "beyond i64: never read");
+        assert_eq!(p.0["P"], Prop::Float(92.5));
+        assert_eq!(p.0["S"], Prop::Str("MON_WIFI_1".into()));
+        assert_eq!(p.0["O"], Prop::Path("/a".into()));
+        assert_eq!(p.0["L"], Prop::Paths(vec!["/a".into(), "/b".into()]));
+        assert_eq!(p.0["B"], Prop::Bytes(b"MO".to_vec()));
+        assert_eq!(p.0["V"], Prop::Float(0.5), "a variant inside a variant");
+        assert_eq!(p.0["Strs"], Prop::Other);
+        assert!(get_all_reply(&recorded(r#"{"type":"ao","data":[["/a"]]}"#)).is_err(), "not a dictionary: an error, not empty props");
+    }
+
+    #[test]
+    fn every_call_is_flagged_no_auto_start() {
+        for m in Method::ALL {
+            assert!(!message(":1.10", "/", m, None).unwrap().get_auto_start(), "{m:?}");
+        }
+    }
+
+    fn received(interface: &str, member: &str, path: &str, json_args: &[&str]) -> Signal {
+        let mut m = Message::new_signal(path, interface, member).unwrap();
+        for a in json_args {
+            push_reply(&mut m, a);
+        }
+        signal(&m)
+    }
+
+    #[test]
+    fn signals_carry_what_domain_needs() {
+        let s = received(
+            "org.freedesktop.DBus.Properties",
+            "PropertiesChanged",
+            "/org/bluez/hci0/dev_AA",
+            &[
+                r#"{"type":"s","data":["org.bluez.Device1"]}"#,
+                r#"{"type":"a{sv}","data":[{"RSSI":{"type":"n","data":-60}}]}"#,
+                r#"{"type":"as","data":[["Alias"]]}"#,
+            ],
+        );
+        assert_eq!(
+            (s.path.as_str(), s.member.as_str(), s.arg0.as_deref()),
+            ("/org/bluez/hci0/dev_AA", "PropertiesChanged", Some("org.bluez.Device1"))
+        );
+        let mut names = s.names.clone();
+        names.sort();
+        assert_eq!(names, ["Alias", "RSSI"]);
+        let wake =
+            received("org.freedesktop.login1.Manager", "PrepareForSleep", "/org/freedesktop/login1", &[r#"{"type":"b","data":[false]}"#]);
+        assert!(wake.is_wake());
+        let removed = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesRemoved",
+            "/",
+            &[r#"{"type":"o","data":["/org/bluez/hci0"]}"#, r#"{"type":"as","data":[["org.bluez.Adapter1"]]}"#],
+        );
+        assert_eq!(removed.names, ["org.bluez.Adapter1"]);
+        let added = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesAdded",
+            "/",
+            &[
+                r#"{"type":"o","data":["/org/bluez/hci0/dev_AA"]}"#,
+                r#"{"type":"a{sa{sv}}","data":[{"org.bluez.Battery1":{"Percentage":{"type":"y","data":72}}}]}"#,
+            ],
+        );
+        assert_eq!(added.names, ["org.bluez.Battery1"]);
+        let owner = received(
+            "org.freedesktop.DBus",
+            "NameOwnerChanged",
+            "/org/freedesktop/DBus",
+            &[r#"{"type":"s","data":["org.bluez"]}"#, r#"{"type":"s","data":[""]}"#, r#"{"type":"s","data":[":1.12"]}"#],
+        );
+        assert_eq!(owner.arg0.as_deref(), Some("org.bluez"));
+        let odd = received("org.freedesktop.DBus.Properties", "PropertiesChanged", "/x", &[r#"{"type":"u","data":[42]}"#]);
+        assert_eq!((odd.arg0, odd.names.len()), (None, 0), "a body that doesn't parse gives nothing (the signal counts)");
+        // Empty or cut bodies (any local process may send the bar a unicast
+        // signal): nothing, never a panic of the D-Bus thread.
+        let nothing = |s: Signal| (s.arg0, s.names);
+        for (interface, member) in [
+            ("org.freedesktop.DBus", "NameOwnerChanged"),
+            ("org.freedesktop.DBus.Properties", "PropertiesChanged"),
+            ("org.freedesktop.DBus.ObjectManager", "InterfacesAdded"),
+            ("org.freedesktop.DBus.ObjectManager", "InterfacesRemoved"),
+            ("org.freedesktop.login1.Manager", "PrepareForSleep"),
+        ] {
+            assert_eq!(nothing(received(interface, member, "/x", &[])), (None, vec![]), "{member} with an empty body");
+        }
+        let cut = received("org.freedesktop.DBus.Properties", "PropertiesChanged", "/x", &[r#"{"type":"s","data":["org.bluez.Device1"]}"#]);
+        assert_eq!(nothing(cut), (None, vec![]), "PropertiesChanged with its interface only");
+        let cut = received("org.freedesktop.DBus.ObjectManager", "InterfacesAdded", "/", &[r#"{"type":"o","data":["/org/bluez/hci0"]}"#]);
+        assert_eq!(nothing(cut), (None, vec![]), "InterfacesAdded with its path only");
+    }
+
+    #[test]
+    fn empty_replies_are_errors() {
+        let empty = Message::new_method_call(":1.10", "/", "org.example.Test", "Get").unwrap();
+        assert!(get_all_reply(&empty).is_err());
+        assert!(objects_reply(&empty).is_err());
+        assert!(paths_reply(&empty).is_err());
+    }
+}

@@ -6,11 +6,15 @@
 //! name, which D-Bus activation would use to start it.
 
 pub mod bluez;
+pub mod dbusrs_bus;
 pub mod network;
 pub mod props;
 pub mod upower;
 pub mod zbus_bus;
 
+#[cfg(test)]
+#[path = "../../../tests/support/busctl_wire.rs"]
+mod busctl_wire;
 #[cfg(test)]
 pub mod fake;
 
