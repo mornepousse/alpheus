@@ -51,6 +51,58 @@ particular), a misplaced power-off can freeze the machine.
 > `shell-ctl`…); making them optional, with a neutral fallback, is the next
 > step before use elsewhere.
 
+## Features compared
+
+The roadmap's yardstick: what DankMaterialShell and Noctalia offer, within a
+fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide ·
+❌ out of scope by design · ➖ partial or through another tool.
+
+| Feature | **alpheus** | DMS | Noctalia | ashell | waybar stack¹ |
+|---|---|---|---|---|---|
+| **Resident memory** | **≈ 13 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 120 MB |
+| **Bar** | | | | | |
+| Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
+| Clock | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Calendar popup | 🚧 bar 4 | ✅ | ➖ | ✅ | ✅ |
+| Volume, network, Bluetooth, battery | ✅ | ✅ | ✅ | ✅ | ✅ |
+| CPU, memory, temperature | ✅ | ✅ | ➖ | ✅ | ✅ |
+| System tray (icons and menus) | 🚧 bar 4 | ✅ | ✅ | ✅ | ✅ |
+| Media (MPRIS) | 🚧 bar 5 | ✅ | ✅ | ✅ | ✅ |
+| Notification counter, do-not-disturb | 🚧 bar 5 | ✅ | ✅ | ➖ | ➖ |
+| Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
+| Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
+| Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
+| **Panels** | | | | | |
+| Control center (quick settings) | ✅ TUI | ✅ | ✅ | ➖ | ❌ |
+| Power menu | ✅ TUI | ✅ | ✅ | ✅ | ❌ |
+| Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
+| Network, Bluetooth, per-app audio | ➖ TUI + nmtui, bluetui, wiremix | ✅ | ➖ | ✅ | ❌ |
+| Notification center, history | 🚧 with the toasts | ✅ | ✅ | ➖ | ➖ |
+| USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
+| **Launcher** | | | | | |
+| Apps, run command, window switcher | 🚧 launcher 1 | ✅ | ➖ | ❌ | ➖ |
+| Script/dmenu mode | 🚧 launcher 1 | ➖ | ➖ | ❌ | ✅ |
+| Calculator, units, currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
+| System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
+| Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
+| **Other** | | | | | |
+| Notification toasts | 🚧 | ✅ | ✅ | ✅ | ✅ |
+| OSD (volume, brightness) | 🚧 | ✅ | ✅ | ✅ | ✅ |
+| Colours from the wallpaper (matugen) | ✅ follows it | ✅ | ✅ | ❌ | ❌ |
+| Themes and presets, richer style | 🚧 | ✅ | ✅ | ➖ | ➖ |
+| Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
+| Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
+| Settings GUI | ➖ TUI + TOML | ✅ | ✅ | ❌ | ❌ |
+| Dock, desktop widgets | 💭 | ➖ | ✅ | ❌ | ❌ |
+| Screenshots, recording | 💭 | ➖ | ➖ | ❌ | ❌ |
+| Idle and power management | ❌ left to hypridle (DisplayLink safety) | ✅ | ✅ | ✅ | ➖ |
+| Compositors | Hyprland, niri | 7 | 6 | wlroots | wlroots |
+| Extensions | script mode, no plugin API | ✅ | ✅ ~100 | ❌ | ➖ |
+
+¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. Other shells'
+features from their documentation (October 2026); memory measured on the
+author's laptop.
+
 ## What's in the repository
 
 A Cargo workspace of three crates:

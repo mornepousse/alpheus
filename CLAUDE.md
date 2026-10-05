@@ -52,6 +52,11 @@ breakdown), then the spec of the sub-project currently in progress in
   depth, transparency, light variants…) and **preset colour themes** for
   users who don't follow their wallpaper (matugen stays the default for Mae).
   Lightness rules apply: a theme costs nothing when unused.
+- **README tables are the yardstick (Mae, 2026-10-05)**: the README keeps a
+  memory comparison (alpheus vs other shells, then alpheus per component)
+  and a feature comparison (alpheus vs DMS, Noctalia, ashell, waybar stack)
+  that guides the roadmap. Update both with every delivery (real release
+  measurements; ✅/🚧/💭/❌ statuses).
 - **Prior art first**: before designing each part, study how other bars and
   shells do it (i3status-rust, ironbar, ashell, cosmic-applets, waybar,
   Noctalia/DMS…), one research agent per domain; reuse ideas and signal
