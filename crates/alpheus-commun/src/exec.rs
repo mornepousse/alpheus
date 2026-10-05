@@ -566,34 +566,25 @@ mod tests {
 
     /// The grandchild that actually execs `prog` is never our child (it is
     /// reparented to init, or the nearest subreaper, the instant the
-    /// intermediate exits): it still runs (writes its marker file), and
-    /// never lingers as a zombie under its own PID.
+    /// intermediate exits): it still runs (writes its marker file) and its
+    /// parent is not us.
     #[test]
-    fn spawned_child_runs_and_leaves_no_zombie() {
+    fn spawned_child_runs_detached_from_us() {
+        // Reaping an orphan is the job of whatever adopts it (init or a
+        // subreaper such as `systemd --user`); some environments have none
+        // that reaps (the Nix build sandbox), so a zombie there says nothing
+        // about us. What spawn guarantees is that the program runs and is NOT
+        // our child: we never accumulate zombies ourselves.
         let f = std::env::temp_dir().join(format!("alpheus-spawn-{}-detach", std::process::id()));
         let _ = std::fs::remove_file(&f);
-        let script = format!("echo $$ > {}", f.display());
+        let script = format!("echo $$ > {}; sleep 1", f.display());
         exec().spawn("sh", &["-c", &script]).unwrap();
         let pid = pid_written(&f);
         let _ = std::fs::remove_file(&f);
         assert!(pid > 1);
-        // `sh -c "echo $$ > f"` ends right after writing: give it a moment,
-        // then check it is gone or at least never a zombie — nothing of
-        // ours reaps it (we never see its PID), so a lingering zombie here
-        // would mean it is NOT reparented to a reaper, i.e. the double fork
-        // did not detach it.
-        let t = Instant::now();
-        loop {
-            match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-                Err(_) => break, // reaped by its new parent: no zombie.
-                Ok(st) => {
-                    let state = st.rsplit_once(')').and_then(|(_, r)| r.trim_start().chars().next());
-                    assert_ne!(state, Some('Z'), "grandchild {pid} is a zombie (not reparented to a reaper)");
-                    assert!(t.elapsed() < Duration::from_secs(2), "grandchild {pid} never disappeared");
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).expect("the program is still running");
+        let ppid: u32 = status.lines().find_map(|l| l.strip_prefix("PPid:")).and_then(|v| v.trim().parse().ok()).unwrap();
+        assert_ne!(ppid, std::process::id(), "the spawned program is our own child: not detached");
     }
 
     /// `spawn`'s own child (the intermediate — see `detach`) must be reaped
