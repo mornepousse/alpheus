@@ -216,11 +216,14 @@ fn detach() -> std::io::Result<()> {
 /// nearest subreaper) the instant the intermediate exits (see `detach`), so
 /// no zombie is ever left for alpheus to clean up, and nothing of ours keeps
 /// running once `prog` has started — a click never leaves a resident reaper
-/// thread behind for as long as the program runs. Same guarantees as the
-/// pre-double-fork implementation: own process group, signal mask unblocked,
-/// stdio nulled, not killed by `kill_running` (never registered in
-/// `Running`: a spawned program outlives the daemon, e.g. the lock screen
-/// must survive alpheus restarting).
+/// thread behind for as long as the program runs. The grandchild's
+/// protection is now its own session (`setsid` in `detach`), not merely a
+/// process group as before the double fork; the intermediate below still
+/// gets its own process group, though it only lives long enough to fork
+/// again and exit. Signal mask unblocked, stdio nulled, not killed by
+/// `kill_running` (never registered in `Running`: a spawned program
+/// outlives the daemon, e.g. the lock screen must survive alpheus
+/// restarting).
 fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
     let mut command = Command::new(prog);
     command
@@ -228,11 +231,12 @@ fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // Separate process group: closing alpheus's window (SIGHUP to
-        // the terminal's group) does not kill the lock screen.
+        // The intermediate's own process group (it only lives long enough
+        // to fork again and exit; the grandchild's protection is its own
+        // session instead, via setsid in `detach`).
         .process_group(0);
     // SAFETY: `detach` runs in the child between fork and exec and only
-    // makes async-signal-safe calls (sigprocmask, fork, _exit).
+    // makes async-signal-safe calls (sigprocmask, fork, setsid, _exit).
     unsafe { command.pre_exec(detach) };
     let mut intermediate = command.spawn().map_err(io_err)?;
     let pid = intermediate.id();

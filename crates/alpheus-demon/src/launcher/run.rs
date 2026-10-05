@@ -56,9 +56,11 @@ pub fn focus_argv(template: &[String], selector: &str) -> Vec<String> {
     template.iter().map(|a| substitute(a, &[("{window}", selector)])).collect()
 }
 
-/// ["sh", "-c", text], prefixed by `terminal` when Some.
+/// ["sh", "-c", "--", text], prefixed by `terminal` when Some: typed text
+/// starting with `-` or `+` would otherwise be read by `sh` as an option (a
+/// controller decision, not something `sh` does on its own).
 pub fn shell_argv(text: &str, terminal: Option<&[String]>) -> Vec<String> {
-    let shell = ["sh", "-c", text].map(String::from);
+    let shell = ["sh", "-c", "--", text].map(String::from);
     terminal.unwrap_or(&[]).iter().cloned().chain(shell).collect()
 }
 
@@ -67,8 +69,8 @@ pub struct RunContext<'a> {
     pub spawner: Spawner,
     /// None: history disabled or no state dir.
     pub history_path: Option<&'a Path>,
-    /// The `$PATH` the scan used (`ScanEnv::path_dirs`): a program is
-    /// looked up there before it is started.
+    /// The `$PATH` the scan used (`ScanEnv::path_dirs`; task 12 keeps it in `OpenLauncher`):
+    /// a program is looked up there before it is started.
     pub path_dirs: &'a [PathBuf],
 }
 
@@ -109,6 +111,9 @@ fn launch(ctx: &RunContext, argv: Vec<String>) -> Result<(), String> {
             log("systemd-run not found: launching detached");
             spawn(ctx.exec, &argv).map_err(|e| failure(&program, e))
         }
+        // Any other failure wrapping in a scope: systemd-run itself is the
+        // program that failed to run, not the app it was asked to start.
+        Err(e) if ctx.spawner == Spawner::SystemdScope => Err(failure("systemd-run", e)),
         Err(e) => Err(failure(&program, e)),
     }
 }
@@ -124,10 +129,12 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
     }
 }
 
-/// Spawns through the executor (systemd-run NotFound → retried Detached), records history
-/// (apps under app_key, actions under their app, commands under command_key; Shell and windows
-/// never recorded) then saves it (a save error is logged, not shown). Err(message) on a spawn
-/// failure: the caller shows it in the box and stays open.
+/// Looks the program up in `path_dirs` (argv[0] after the terminal is prepended; windows
+/// excepted), spawns through the executor (systemd-run NotFound → retried Detached), records
+/// history (apps under app_key, actions under their app, commands under command_key; Shell and
+/// windows never recorded) then saves it (a save error is logged, not shown; no fsync on the event
+/// loop). Err(message) on a missing program or a spawn failure: the caller shows it in the box
+/// and stays open.
 pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match a {
@@ -167,6 +174,7 @@ mod tests {
     use crate::launcher::desktop::DesktopAction;
     use crate::launcher::history::History;
     use crate::launcher::scan::Catalog;
+    use crate::launcher::testing::TempDir;
     use alpheus_commun::exec::fake::FakeExecutor;
     use std::path::PathBuf;
 
@@ -217,17 +225,12 @@ mod tests {
         l
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-run-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
-
-    /// A directory of executable stubs (never run: the executor is fake).
-    fn stubs(name: &str, programs: &[&str]) -> PathBuf {
+    /// A directory of executable stubs (never run: the executor is fake);
+    /// removed when the returned guard drops, so a test run leaves nothing
+    /// in /tmp (unlike a plain `std::env::temp_dir()` join with no cleanup).
+    fn stubs(name: &str, programs: &[&str]) -> TempDir {
         use std::os::unix::fs::PermissionsExt;
-        let d = temp_dir(name);
+        let d = TempDir::new(&format!("run-{name}"));
         for p in programs {
             std::fs::write(d.join(p), "#!/bin/sh\n").unwrap();
             std::fs::set_permissions(d.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -235,14 +238,15 @@ mod tests {
         d
     }
 
-    /// The $PATH of these tests: every program they launch, created once.
-    fn path_dirs() -> &'static [PathBuf] {
-        static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
-        DIRS.get_or_init(|| vec![stubs("bin", &["firefox", "foot", "nautilus", "htop", "nvim", "sh"])])
+    /// The `$PATH` of these tests: every program they may launch. `name`
+    /// disambiguates the temporary directory from other tests running in
+    /// the same process (shared `name`s would race on the same path).
+    fn bin(name: &str) -> TempDir {
+        stubs(name, &["firefox", "foot", "nautilus", "htop", "nvim", "sh"])
     }
 
-    fn ctx<'a>(exec: &'a FakeExecutor, spawner: Spawner, history: Option<&'a Path>) -> RunContext<'a> {
-        RunContext { exec, spawner, history_path: history, path_dirs: path_dirs() }
+    fn ctx<'a>(exec: &'a FakeExecutor, spawner: Spawner, history: Option<&'a Path>, path_dirs: &'a [PathBuf]) -> RunContext<'a> {
+        RunContext { exec, spawner, history_path: history, path_dirs }
     }
 
     fn app(index: usize, action: Option<usize>) -> Activation {
@@ -255,7 +259,7 @@ mod tests {
 
     #[test]
     fn spawner_follows_the_user_manager_s_socket() {
-        let d = temp_dir("spawner");
+        let d = TempDir::new("run-spawner");
         assert_eq!(spawner(&d), Spawner::Detached);
         std::fs::create_dir_all(d.join("systemd")).unwrap();
         std::fs::write(d.join("systemd/private"), "").unwrap();
@@ -273,8 +277,13 @@ mod tests {
         assert_eq!(focus_argv(&template, "address:0x583d9c60da90"), v(&["wm-set", "focus-window", "address:0x583d9c60da90"]));
         assert_eq!(focus_argv(&template, "id:12"), v(&["wm-set", "focus-window", "id:12"]));
         assert_eq!(focus_argv(&v(&["my-focus", "--id={window}"]), "x{window}"), v(&["my-focus", "--id=x{window}"]), "single pass");
-        assert_eq!(shell_argv("ls -la | wc -l", None), v(&["sh", "-c", "ls -la | wc -l"]), "one argument, the shell parses it");
-        assert_eq!(shell_argv("htop", Some(&v(&["foot", "-e"]))), v(&["foot", "-e", "sh", "-c", "htop"]));
+        assert_eq!(shell_argv("ls -la | wc -l", None), v(&["sh", "-c", "--", "ls -la | wc -l"]), "one argument, the shell parses it");
+        assert_eq!(shell_argv("htop", Some(&v(&["foot", "-e"]))), v(&["foot", "-e", "sh", "-c", "--", "htop"]));
+        assert_eq!(
+            shell_argv("-v foo", None),
+            v(&["sh", "-c", "--", "-v foo"]),
+            "typed text starting with - is not read by sh as an option"
+        );
     }
 
     #[test]
@@ -303,49 +312,70 @@ mod tests {
 
     #[test]
     fn an_app_starts_in_its_scope_or_detached() {
+        let bin = bin("app-starts");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
         f.ok(&format!("{SCOPE} firefox"), "");
         let mut l = launcher();
-        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::SystemdScope, None)), Ok(Done::Close));
+        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::SystemdScope, None, &dirs)), Ok(Done::Close));
         let f2 = FakeExecutor::new();
         f2.ok("firefox --new-window", "");
-        assert_eq!(perform(&mut l, app(0, Some(0)), &ctx(&f2, Spawner::Detached, None)), Ok(Done::Close));
+        assert_eq!(perform(&mut l, app(0, Some(0)), &ctx(&f2, Spawner::Detached, None, &dirs)), Ok(Done::Close));
         assert_eq!((f.calls(), f2.calls()), (vec![format!("{SCOPE} firefox")], vec!["firefox --new-window".to_string()]));
         let f3 = FakeExecutor::new();
         f3.ok(&format!("{SCOPE} foot -e btop"), "");
-        assert_eq!(perform(&mut l, app(1, None), &ctx(&f3, Spawner::SystemdScope, None)), Ok(Done::Close), "Terminal=true");
+        assert_eq!(perform(&mut l, app(1, None), &ctx(&f3, Spawner::SystemdScope, None, &dirs)), Ok(Done::Close), "Terminal=true");
     }
 
     #[test]
     fn without_systemd_run_the_app_is_retried_detached() {
+        let bin = bin("without-systemd-run");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new(); // systemd-run not programmed: NotFound
         f.ok("firefox", "");
         let mut l = launcher();
-        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::SystemdScope, None)), Ok(Done::Close));
+        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::SystemdScope, None, &dirs)), Ok(Done::Close));
         assert_eq!(f.calls(), [format!("{SCOPE} firefox"), "firefox".to_string()]);
     }
 
     #[test]
+    fn a_systemd_run_failure_other_than_not_found_names_systemd_run() {
+        let bin = bin("systemd-run-failure");
+        let dirs = [bin.to_path_buf()];
+        let f = FakeExecutor::new();
+        f.respond(&format!("{SCOPE} firefox"), Err(ExecError::Io("permission denied".into())));
+        let mut l = launcher();
+        assert_eq!(
+            perform(&mut l, app(0, None), &ctx(&f, Spawner::SystemdScope, None, &dirs)),
+            Err("systemd-run: permission denied".to_string()),
+            "systemd-run itself failed, not firefox"
+        );
+    }
+
+    #[test]
     fn a_spawn_failure_is_an_error_message_and_nothing_is_recorded() {
-        let d = temp_dir("failure");
+        let d = TempDir::new("run-failure-state");
         let h = d.join("launcher-history");
+        let bin = bin("failure");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new(); // firefox not programmed: NotFound
         let mut l = launcher();
-        let r = perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, Some(&h)));
+        let r = perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, Some(&h), &dirs));
         assert_eq!(r, Err("firefox: program not found".to_string()));
         assert_eq!(l.message, None, "the caller shows it, not perform");
         assert!(!h.exists() && l.history.entries().is_empty(), "a failed launch is not a use");
         f.respond("firefox", Err(ExecError::Io("permission denied".into())));
-        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, None)), Err("firefox: permission denied".to_string()));
+        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, None, &dirs)), Err("firefox: permission denied".to_string()));
     }
 
     #[test]
     fn a_missing_program_is_reported_before_systemd_run() {
-        let d = temp_dir("missing");
+        let d = TempDir::new("run-missing");
         let h = d.join("launcher-history");
-        let only_htop = [stubs("missing-bin", &["htop"])];
+        let missing_bin = stubs("missing-bin", &["htop"]);
+        let only_htop = [missing_bin.to_path_buf()];
         let f = FakeExecutor::new();
-        for c in ["firefox", "foot -e btop", "foot -e htop", "/opt/none/abs", "sh -c ls"] {
+        for c in ["firefox", "foot -e btop", "foot -e htop", "/opt/none/abs", "sh -c -- ls"] {
             f.ok(&format!("{SCOPE} {c}"), ""); // systemd-run itself would start: the failure would come later, unseen
         }
         let c = RunContext { exec: &f, spawner: Spawner::SystemdScope, history_path: Some(&h), path_dirs: &only_htop };
@@ -364,31 +394,38 @@ mod tests {
 
     #[test]
     fn windows_are_focused_through_the_template_never_in_a_scope() {
+        let bin = bin("windows-focus");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
         f.ok("wm-set focus-window address:0x583d9c60da90", "");
         f.ok("wm-set focus-window id:12", "");
-        let d = temp_dir("focus");
+        let d = TempDir::new("run-focus");
         let h = d.join("launcher-history");
         let mut l = launcher();
         for i in [0, 1] {
-            assert_eq!(perform(&mut l, Activation::Window(i), &ctx(&f, Spawner::SystemdScope, Some(&h))), Ok(Done::Close));
+            assert_eq!(perform(&mut l, Activation::Window(i), &ctx(&f, Spawner::SystemdScope, Some(&h), &dirs)), Ok(Done::Close));
         }
         assert_eq!(f.calls(), ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"]);
         assert!(!h.exists(), "windows are never recorded");
         let f = FakeExecutor::new();
-        assert_eq!(perform(&mut l, Activation::Window(0), &ctx(&f, Spawner::Detached, None)), Err("wm-set: program not found".to_string()));
+        assert_eq!(
+            perform(&mut l, Activation::Window(0), &ctx(&f, Spawner::Detached, None, &dirs)),
+            Err("wm-set: program not found".to_string())
+        );
     }
 
     #[test]
     fn commands_and_the_shell() {
+        let bin = bin("commands");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
-        for c in ["htop", "foot -e htop", "sh -c htop -d 5", "foot -e sh -c htop -d 5"] {
+        for c in ["htop", "foot -e htop", "sh -c -- htop -d 5", "foot -e sh -c -- htop -d 5"] {
             f.ok(&format!("{SCOPE} {c}"), "");
         }
-        let d = temp_dir("commands");
+        let d = TempDir::new("run-commands-state");
         let h = d.join("launcher-history");
         let mut l = launcher();
-        let c = ctx(&f, Spawner::SystemdScope, Some(&h));
+        let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
         assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: false }, &c), Ok(Done::Close));
         assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: true }, &c), Ok(Done::Close));
         assert_eq!(perform(&mut l, Activation::Shell { text: "htop -d 5".into(), terminal: false }, &c), Ok(Done::Close));
@@ -398,8 +435,8 @@ mod tests {
             [
                 format!("{SCOPE} htop"),
                 format!("{SCOPE} foot -e htop"),
-                format!("{SCOPE} sh -c htop -d 5"),
-                format!("{SCOPE} foot -e sh -c htop -d 5")
+                format!("{SCOPE} sh -c -- htop -d 5"),
+                format!("{SCOPE} foot -e sh -c -- htop -d 5")
             ],
             "a $PATH command in the terminal: its name as argv, never sh -c"
         );
@@ -413,43 +450,50 @@ mod tests {
     fn script_mode_replies_without_running_anything() {
         let f = FakeExecutor::new();
         let mut l = Launcher::for_script(LauncherConfig::default(), None, v(&["a"]));
-        assert_eq!(perform(&mut l, Activation::Choose("a".into()), &ctx(&f, Spawner::SystemdScope, None)), Ok(Done::Reply("a".into())));
+        assert_eq!(
+            perform(&mut l, Activation::Choose("a".into()), &ctx(&f, Spawner::SystemdScope, None, &[])),
+            Ok(Done::Reply("a".into()))
+        );
         assert!(f.calls().is_empty());
     }
 
     #[test]
     fn apps_and_their_actions_are_recorded_under_the_app() {
+        let bin = bin("history");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
         f.ok("firefox", "");
         f.ok("firefox --private-window", "");
-        let d = temp_dir("history");
+        let d = TempDir::new("run-history-state");
         let h = d.join("state/launcher-history");
         let mut l = launcher();
-        let c = ctx(&f, Spawner::Detached, Some(&h));
+        let c = ctx(&f, Spawner::Detached, Some(&h), &dirs);
         perform(&mut l, app(0, None), &c).unwrap();
         perform(&mut l, app(0, Some(1)), &c).unwrap();
         assert_eq!(std::fs::read_to_string(&h).unwrap(), format!("{NOW}\t2\tapp:org.mozilla.firefox.desktop\n"));
         let mut off = launcher();
-        perform(&mut off, app(0, None), &ctx(&f, Spawner::Detached, None)).unwrap();
+        perform(&mut off, app(0, None), &ctx(&f, Spawner::Detached, None, &dirs)).unwrap();
         assert!(off.history.entries().is_empty(), "no history path: nothing recorded");
     }
 
     #[test]
     fn a_history_save_error_does_not_fail_the_launch() {
+        let bin = bin("save-error");
+        let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
         f.ok("firefox", "");
-        let d = temp_dir("save-error");
+        let d = TempDir::new("run-save-error-state");
         std::fs::write(d.join("file"), "").unwrap();
         let h = d.join("file/launcher-history"); // a file where a directory should be
         let mut l = launcher();
-        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, Some(&h))), Ok(Done::Close));
+        assert_eq!(perform(&mut l, app(0, None), &ctx(&f, Spawner::Detached, Some(&h), &dirs)), Ok(Done::Close));
     }
 
     #[test]
     fn a_stale_index_is_refused_without_running_anything() {
         let f = FakeExecutor::new();
         let mut l = launcher();
-        let c = ctx(&f, Spawner::Detached, None);
+        let c = ctx(&f, Spawner::Detached, None, &[]);
         for a in [app(9, None), Activation::Command { index: 9, terminal: false }, Activation::Window(9)] {
             assert!(perform(&mut l, a, &c).unwrap_err().contains("list changed"));
         }

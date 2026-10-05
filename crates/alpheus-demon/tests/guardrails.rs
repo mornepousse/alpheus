@@ -432,6 +432,17 @@ fn eprint_forbidden_outside_tests() {
     }
 }
 
+/// Removes `path` (recursively) when dropped, even if the holder's scope
+/// ends through a panic: unlike a plain `remove_dir_all` call at the bottom
+/// of a test function, which an earlier `assert!` failure would skip.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&str, &str)]) -> DesktopEntry {
     DesktopEntry {
         id: id.into(),
@@ -473,9 +484,12 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     };
     let windows = vec![toplevel("address:0x583d9c60da90"), toplevel("id:12")];
     // Every program the fixture may start, as executable stubs on a $PATH of
-    // its own (never run: the executor is fake).
+    // its own (never run: the executor is fake). `_bin_guard` removes the
+    // directory when this function returns, even if an assertion below
+    // panics first.
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
+    let _bin_guard = RemoveOnDrop(bin.clone());
     for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh"] {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
@@ -508,6 +522,18 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             outcomes.push((typed.key(Key::Enter), mode));
             outcomes.push((typed.key(Key::CtrlEnter), mode));
+            if mode == Mode::All {
+                // The prefix route into Commands mode (Global Constraints:
+                // `>` by default): starting in All and typing the prefix
+                // switches mode exactly like click_mode, so typed shell
+                // text after it reaches `sh` too — tagged Commands below,
+                // the mode it actually ran in by the time Enter fired.
+                let mut via_prefix = fresh();
+                for c in ">ls -la".chars() {
+                    via_prefix.key(Key::Char(c));
+                }
+                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands));
+            }
             for (o, mode) in outcomes {
                 let Outcome::Activate(a) = o else { continue };
                 let fake = FakeExecutor::new();
@@ -525,7 +551,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     } else if terminal_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
                         "terminal command"
-                    } else if let Some(text) = unwrapped.strip_prefix("sh -c ").or_else(|| unwrapped.strip_prefix("foot -e sh -c ")) {
+                    } else if let Some(text) = unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot -e sh -c -- ")) {
                         assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
                         assert_eq!(text, "ls -la", "only typed text goes through the shell: {c}");
                         if unwrapped.starts_with("sh") { "shell" } else { "terminal shell" }
@@ -543,5 +569,4 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
-    let _ = std::fs::remove_dir_all(&bin);
 }
