@@ -1,6 +1,8 @@
 //! alpheus's directories, shared by the TUI and the daemon: configuration
-//! (~/.config/alpheus) and runtime ($XDG_RUNTIME_DIR).
+//! (~/.config/alpheus), runtime ($XDG_RUNTIME_DIR) and state
+//! ($XDG_STATE_HOME/alpheus: the launcher's history).
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 
 pub fn config_dir() -> PathBuf {
@@ -16,4 +18,44 @@ pub fn runtime_dir() -> PathBuf {
         .map(PathBuf::from)
         // SAFETY: getuid(2) cannot fail.
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
+}
+
+/// $XDG_STATE_HOME/alpheus, else ~/.local/state/alpheus, else .local/state/alpheus.
+pub fn state_dir() -> PathBuf {
+    state_dir_from(|k| std::env::var_os(k))
+}
+
+/// `state_dir` with the environment injected. An empty or relative
+/// $XDG_STATE_HOME is ignored, as the XDG Base Directory spec requires.
+fn state_dir_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
+    var("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| var("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(|| PathBuf::from(".local/state"))
+        .join("alpheus")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn vars(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(*v))
+    }
+
+    #[test]
+    fn state_dir_prefers_xdg_state_home() {
+        assert_eq!(state_dir_from(vars(&[("XDG_STATE_HOME", "/x/state"), ("HOME", "/home/u")])), Path::new("/x/state/alpheus"));
+    }
+
+    #[test]
+    fn state_dir_falls_back_to_home_then_relative() {
+        let home = Path::new("/home/u/.local/state/alpheus");
+        assert_eq!(state_dir_from(vars(&[("HOME", "/home/u")])), home);
+        assert_eq!(state_dir_from(vars(&[("XDG_STATE_HOME", ""), ("HOME", "/home/u")])), home, "empty: ignored");
+        assert_eq!(state_dir_from(vars(&[("XDG_STATE_HOME", "rel/state"), ("HOME", "/home/u")])), home, "relative: ignored");
+        assert_eq!(state_dir_from(vars(&[])), Path::new(".local/state/alpheus"));
+    }
 }
