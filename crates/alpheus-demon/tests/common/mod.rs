@@ -488,6 +488,8 @@ impl PrivateBus {
             return Ok(child);
         }
         // Never leaked: killed and waited on before the caller panics.
+        // SAFETY: kill(2) towards the group this child received at launch
+        // (`process_group(0)` above), not reaped yet: still ours.
         unsafe { libc::kill(-pid, libc::SIGKILL) };
         let _ = child.wait();
         Err((pid, line))

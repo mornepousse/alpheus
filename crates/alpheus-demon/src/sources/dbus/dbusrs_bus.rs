@@ -146,22 +146,15 @@ fn error(e: dbus::Error) -> io::Error {
     io::Error::new(kind, format!("{name}: {}", e.message().unwrap_or("")))
 }
 
-/// The signature of the argument at `it`, "" past the last one: dbus
-/// 0.9.12's `Iter::signature` panics there (`Signature::new(…).unwrap()` on
+/// The signature of the argument at `it`, `None` past the last one: dbus
+/// 0.9.12's `Iter::signature` panics there (`Signature::new("").unwrap()` on
 /// an empty string) — an empty or short body, which any local process may
 /// send the bar as a unicast signal. Returns the `Signature` itself, not a
-/// `String`: comparing it against a literal (`&*sig(it) == "a{sv}"`) goes
-/// through its `Deref<Target = str>`, no copy beyond the one
-/// `Iter::signature` already makes.
-fn sig(it: &mut Iter<'_>) -> Signature<'static> {
-    if it.arg_type() == ArgType::Invalid {
-        // SAFETY: "\0" is a validly NUL-terminated (empty) string; it never
-        // reaches libdbus's own validator, which would reject it as "not a
-        // complete type" — exactly the panic this guard exists to avoid.
-        unsafe { Signature::from_slice_unchecked("\0") }
-    } else {
-        it.signature()
-    }
+/// `String`: comparing it against a literal (`sig(it).as_deref() ==
+/// Some("a{sv}")`) goes through its `Deref<Target = str>`, no copy beyond
+/// the one `Iter::signature` already makes.
+fn sig(it: &mut Iter<'_>) -> Option<Signature<'static>> {
+    if it.arg_type() == ArgType::Invalid { None } else { Some(it.signature()) }
 }
 
 /// A `Path`'s string, with the one allocation `into_cstring` already makes
@@ -187,9 +180,9 @@ pub fn prop(v: &mut Iter<'_>) -> Prop {
         ArgType::Double => v.get::<f64>().map(Prop::Float).unwrap_or(Prop::Other),
         ArgType::String => v.get::<&str>().map(|s| Prop::Str(s.to_string())).unwrap_or(Prop::Other),
         ArgType::ObjectPath => v.get::<Path>().map(|p| Prop::Path(path_string(p))).unwrap_or(Prop::Other),
-        ArgType::Array => match &*sig(v) {
-            "ao" => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.into_iter().map(path_string).collect())).unwrap_or(Prop::Other),
-            "ay" => v.get::<&[u8]>().map(|b| Prop::Bytes(b.to_vec())).unwrap_or(Prop::Other),
+        ArgType::Array => match sig(v).as_deref() {
+            Some("ao") => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.into_iter().map(path_string).collect())).unwrap_or(Prop::Other),
+            Some("ay") => v.get::<&[u8]>().map(|b| Prop::Bytes(b.to_vec())).unwrap_or(Prop::Other),
             _ => Prop::Other,
         },
         ArgType::Variant => v.recurse(ArgType::Variant).map(|mut inner| prop(&mut inner)).unwrap_or(Prop::Other),
@@ -200,7 +193,7 @@ pub fn prop(v: &mut Iter<'_>) -> Prop {
 /// `a{sv}` at `it`: each property, inserted directly into the map (no
 /// intermediate `Vec`).
 fn props(it: &mut Iter<'_>) -> io::Result<Props> {
-    if &*sig(it) != "a{sv}" {
+    if sig(it).as_deref() != Some("a{sv}") {
         return Err(unexpected("not a{sv}"));
     }
     let mut out = BTreeMap::new();
@@ -225,7 +218,7 @@ pub fn get_all_reply(m: &Message) -> io::Result<Props> {
 pub fn objects_reply(m: &Message) -> io::Result<Objects> {
     const READ: [&str; 3] = [bluez::ADAPTER, bluez::DEVICE, bluez::BATTERY];
     let mut it = m.iter_init();
-    if &*sig(&mut it) != "a{oa{sa{sv}}}" {
+    if sig(&mut it).as_deref() != Some("a{oa{sa{sv}}}") {
         return Err(unexpected("not a{oa{sa{sv}}}"));
     }
     let mut objects = Objects::new();
@@ -254,7 +247,7 @@ pub fn objects_reply(m: &Message) -> io::Result<Objects> {
 /// otherwise read back as "no devices" instead of the outage it is.
 pub fn paths_reply(m: &Message) -> io::Result<Vec<String>> {
     let mut it = m.iter_init();
-    if &*sig(&mut it) != "ao" {
+    if sig(&mut it).as_deref() != Some("ao") {
         return Err(unexpected("not ao"));
     }
     let v: Vec<Path> = it.read().map_err(|e| unexpected(&e.to_string()))?;
@@ -284,10 +277,10 @@ pub fn signal(m: &Message) -> Signal {
     let mut it = m.iter_init();
     let (arg0, names) = match member.as_str() {
         "NameOwnerChanged" => (it.get::<&str>().map(String::from), Vec::new()),
-        "PropertiesChanged" if &*sig(&mut it) == "s" => {
+        "PropertiesChanged" if sig(&mut it).as_deref() == Some("s") => {
             let interface = it.get::<&str>().map(String::from);
             it.next();
-            if &*sig(&mut it) != "a{sv}" {
+            if sig(&mut it).as_deref() != Some("a{sv}") {
                 (None, Vec::new())
             } else {
                 let mut names = keys(&mut it);
@@ -296,9 +289,9 @@ pub fn signal(m: &Message) -> Signal {
                 (interface, names)
             }
         }
-        "InterfacesAdded" if &*sig(&mut it) == "o" => {
+        "InterfacesAdded" if sig(&mut it).as_deref() == Some("o") => {
             it.next();
-            (None, if &*sig(&mut it) == "a{sa{sv}}" { keys(&mut it) } else { Vec::new() })
+            (None, if sig(&mut it).as_deref() == Some("a{sa{sv}}") { keys(&mut it) } else { Vec::new() })
         }
         "InterfacesRemoved" => (None, m.read2::<Path, Vec<String>>().map(|(_, i)| i).unwrap_or_default()),
         // logind's bool argument, kept as "true"/"false": `Signal::is_wake` reads it.

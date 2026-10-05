@@ -343,7 +343,18 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `message`, from a `Method`");
     assert_eq!(prod.matches(".send(").count(), 1, "the only other message sent: the refusal of a call to the bar");
     assert_eq!(prod.matches(".error(").count(), 1, "that refusal is an error reply");
-    for never in ["new_signal(", "method_return(", "request_name", "RequestName", ".add_match(", "Crossroads"] {
+    for never in [
+        "new_signal(",
+        "method_return(",
+        "request_name",
+        "RequestName",
+        ".add_match(",
+        "Crossroads",
+        "Message::signal(",
+        "Message::method_call(",
+        "call_with_args(",
+        "return_with_args(",
+    ] {
         assert!(!prod.contains(never), "{never} in dbusrs_bus.rs: the bar emits, owns and serves nothing");
     }
     for (_, rule) in MATCH_RULES {
@@ -356,11 +367,33 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
-/// Whether `text` names the crate `krate` as a path root (`dbus::…`), not
-/// as a module further down a path (`sources::dbus::…`, `dbusrs_bus::…`).
+/// Whether `text` names the crate `krate`: as a path root (`dbus::…`,
+/// including the explicit absolute form `::dbus::…`), an `extern crate`
+/// declaration, or a `use … as` rename — never as a module further down
+/// someone else's path (`sources::dbus::…`, `dbusrs_bus::…`) (fix round,
+/// review item 5: `::dbus::`, `use dbus as`, `extern crate dbus` were
+/// previously missed).
 fn uses_crate(text: &str, krate: &str) -> bool {
+    let ident = |c: char| c == '_' || c.is_alphanumeric();
+    // A path root: nothing identifier-like precedes it — except the
+    // explicit absolute-path `::`, which is a root too (`::dbus::…`), not a
+    // continuation of someone else's path (`sources::dbus::…`).
+    let root = |before: &str| match before.strip_suffix("::") {
+        Some(rest) => !rest.ends_with(ident),
+        None => !before.ends_with(ident),
+    };
     let needle = format!("{krate}::");
-    text.match_indices(&needle).any(|(i, _)| !text[..i].ends_with(|c: char| c == ':' || c == '_' || c.is_alphanumeric()))
+    if text.match_indices(&needle).any(|(i, _)| root(&text[..i])) {
+        return true;
+    }
+    // `extern crate dbus;` / `extern crate dbus as d;`: a word boundary
+    // after the name, so `dbus_other` doesn't match.
+    let extern_needle = format!("extern crate {krate}");
+    if text.match_indices(&extern_needle).any(|(i, _)| !text[i + extern_needle.len()..].starts_with(ident)) {
+        return true;
+    }
+    // `use dbus as d;`: the crate pulled in under another name.
+    text.contains(&format!("use {krate} as "))
 }
 
 #[test]
@@ -370,6 +403,11 @@ fn uses_crate_tells_the_crate_from_a_module_path() {
     assert!(!uses_crate("use crate::sources::dbus::props;", "dbus"));
     assert!(!uses_crate("dbusrs_bus::DbusRsBus::system", "dbus"));
     assert!(!uses_crate("libdbus::x", "dbus"));
+    assert!(uses_crate("use ::dbus::Message;", "dbus"), "the explicit absolute path is still the crate root");
+    assert!(!uses_crate("use crate::sources::dbus::props as p;", "dbus"), "a module path, even renamed, is not the crate");
+    assert!(uses_crate("use dbus as d;", "dbus"), "a rename still pulls in the crate");
+    assert!(uses_crate("extern crate dbus;", "dbus"));
+    assert!(!uses_crate("extern crate dbus_other;", "dbus"), "a different crate sharing the prefix");
 }
 
 /// `eprintln!`/`eprint!` panic if the other end of standard error is closed

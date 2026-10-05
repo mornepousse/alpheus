@@ -191,19 +191,35 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
 /// and staying alive — unlike the real binary, which exits on its own on
 /// every failure we could otherwise produce here, leaving nothing to prove
 /// the fix against.
+// No dbus-daemon involved (`fake-dbus-daemon.sh` stands in for it): this
+// test needs no `#[ignore]` (fix round, review item 3).
 #[test]
-#[ignore = "dbus-daemon (nix develop)"]
 fn a_failed_readiness_read_kills_and_waits_the_child_never_leaking_it() {
     let directory = std::env::temp_dir().join(format!("alpheus-spawn-fail-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     let fake = directory.join("fake-dbus-daemon.sh");
+    // `fs::write` opens, writes and closes the file before `set_permissions`
+    // and, further below, before the child ever execs it: no fd of ours
+    // stays open for writing into it, so the exec never meets ETXTBSY.
     std::fs::write(&fake, "#!/bin/sh\necho not-the-real-address\nexec sleep 100\n").unwrap();
     std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
     let address = "unix:path=/nonexistent/whatever-address";
     let (pid, line) = PrivateBus::spawn_never_ready_for_test(fake.to_str().unwrap(), &directory, address).unwrap_err();
     assert!(!line.starts_with(address), "the fake never prints the real address: {line:?}");
-    assert!(!process_alive(pid), "pid {pid}: the failed child must be killed and reaped, never leaked");
+    assert!(!process_alive(pid), "pid {pid}: the failed child must be killed, never leaked running");
+    // Proves the WAIT, not just the kill (fix round, review item 3): a
+    // killed-but-never-waited child stays a zombie in /proc/<pid> (state
+    // 'Z', which `process_alive` above already treats as "not alive") for
+    // as long as this test binary runs — nobody else reaps it. Only `wait`
+    // removes it from /proc entirely.
+    let reaped = (0..100).any(|i| {
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        std::fs::metadata(format!("/proc/{pid}")).is_err()
+    });
+    assert!(reaped, "pid {pid}: still in /proc after the call returned — killed but never waited, a zombie leaked");
     let _ = std::fs::remove_dir_all(&directory);
 }
 
@@ -219,6 +235,11 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     let silent = Peer::connect(&b); // receives the call, never replies
     let name = silent.name.clone();
     let (tx, rx) = mpsc::channel();
+    // A second channel for `next_signal`'s own `io::ErrorKind` (fix round,
+    // review item 2): sent as itself, never wrapped in `Some(...)` — the
+    // loop below only ever exits through its `Err` arm, so wrapping it in
+    // an `Option` made the old `kind.is_some()` assertion unfalsifiable.
+    let (tx2, rx2) = mpsc::channel();
     std::thread::spawn(move || {
         let t = Instant::now();
         let call_result = bus.get_all(&name, "/", "org.example.Nothing");
@@ -232,7 +253,7 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
                 Err(e) => break e.kind(),
             }
         };
-        let _ = tx.send((Some(next_kind), t.elapsed()));
+        let _ = tx2.send((next_kind, t.elapsed()));
     });
     let call = silent.next_call().expect("the call reaches the peer");
     assert_eq!(call.member().as_deref(), Some("GetAll"));
@@ -242,6 +263,6 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     assert_ne!(kind, Some(io::ErrorKind::NotFound), "a disconnect mid-call is an outage, not an absence: {kind:?}");
     assert!(kind.is_some(), "the call must fail, not silently succeed");
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
-    let (next_kind, _) = rx.recv_timeout(Duration::from_secs(5)).expect("next_signal must also return");
-    assert!(next_kind.is_some(), "next_signal must be Err once the bus is gone");
+    let (next_kind, _) = rx2.recv_timeout(Duration::from_secs(5)).expect("next_signal must also return");
+    assert_ne!(next_kind, io::ErrorKind::NotFound, "next_signal after a disconnect must be an outage, not an absence: {next_kind:?}");
 }

@@ -368,13 +368,19 @@ fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut Domai
 }
 
 /// Reads every domain in `domains` into `s`; the first real failure (not an
-/// absence), if any. Used both for the initial state and for logind's
+/// absence), if any — unless a later failure is the bus itself going away
+/// (`Outage::Bus`, fix round, review item 6): that one always wins over an
+/// earlier `Outage::Domain`, stale the moment the connection itself is
+/// gone. Used both for the initial state and for logind's
 /// `PrepareForSleep(false)`, which re-reads all of them at once.
 fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemState, log_state: &mut DomainLog) -> Option<io::Error> {
-    let mut failed = None;
+    let mut failed: Option<io::Error> = None;
     for d in domains {
         if let Err(e) = read(bus, *d, s, log_state) {
-            failed.get_or_insert(e);
+            let already_bus = failed.as_ref().is_some_and(|f| outage_of(f) == Outage::Bus);
+            if failed.is_none() || (!already_bus && outage_of(&e) == Outage::Bus) {
+                failed = Some(e);
+            }
         }
     }
     failed
@@ -1052,6 +1058,23 @@ mod tests {
         let e = read(&mut bus, Domain::Network, &mut s, &mut DomainLog::default()).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(outage_of(&e), Outage::Bus, "a bus disconnect blanks every domain, not just this one");
+    }
+
+    /// Fix round, review item 6: within one `read_all` call, a `Bus` outage
+    /// must win over a `Domain` outage that came earlier — `DOMAINS` reads
+    /// Network before Battery, so Network's own ordinary timeout is seen
+    /// first, then the bus itself goes away while Battery is read. The
+    /// whole call must still report `Outage::Bus` (nothing can be trusted
+    /// any more), not the earlier, now stale, `Outage::Domain(Network)`.
+    #[test]
+    fn a_bus_outage_later_in_read_all_overrides_an_earlier_domain_outage() {
+        let mut bus = FakeBus::workstation();
+        bus.failing.insert(network::PATH.into()); // Network: an ordinary timeout
+        bus.disconnecting.insert(upower::DISPLAY_DEVICE.into()); // Battery: the bus itself gone
+        let mut s = SystemState { network: None, bluetooth: None, battery: None };
+        let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default()).expect("both reads failed");
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(outage_of(&e), Outage::Bus, "the later bus outage must win over the earlier domain one");
     }
 
     #[test]
