@@ -7,11 +7,25 @@ Rust: what DankMaterialShell or Noctalia bring (bar, centralized settings,
 notifications, OSD), **without their weight**. Aimed at modest hardware
 with modern features.
 
-| | Resident memory |
-|---|---|
-| DankMaterialShell (Quickshell) | ≈ 530 MB |
-| **alpheus bar, 3 screens** | **≈ 13 MB** (measured, stable) |
-| alpheus total budget (bar, notifications, OSD, wallpaper) | ≤ 120 MB |
+## Memory
+
+Resident memory measured as PSS (`/proc/<pid>/smaps_rollup`), release
+builds. Updated with every delivery.
+
+| Component | Memory | Notes |
+|---|---:|---|
+| **alpheus bar daemon**, all modules, 3 outputs — at start | **≈ 7.9 MB** | headless sway test, `tests/memory.rs` |
+| **alpheus bar daemon** — after 8,300 events and 5 plug cycles | **≈ 9.7 MB** | stable, 0 wake-ups at rest, 8 threads |
+| `pw-dump` child (sound source) | ≈ 3.5 MB | silent at rest |
+| **alpheus total today** | **≈ 13 MB** | bar + sound source |
+| Still borrowed in hybrid mode: mako / swaybg / swayosd | 2.3 / 1.7 / 44 MB | swayosd and mako to be replaced by alpheus (OSD, toasts) |
+| alpheus total budget (bar, launcher, notifications, OSD, wallpaper) | ≤ 120 MB | |
+| *For comparison* — DankMaterialShell (Quickshell) | ≈ 530 MB | measured on the author's laptop |
+| *For comparison* — Caelestia (Quickshell) | ≈ 730 MB | idem |
+| *For comparison* — waybar + mako + swayosd + swaybg | ≈ 120 MB | idem |
+
+The control center (`alpheus`, TUI) is not resident: it opens on demand
+and exits.
 
 Hyprland and niri. Mouse and keyboard everywhere.
 
