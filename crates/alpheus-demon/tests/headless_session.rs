@@ -4,7 +4,10 @@
 
 mod common;
 
-use common::{FakeHyprland, SIGNATURE, Sway, process_alive, start_daemon, wait_for_pid_file};
+use common::{
+    DaemonOptions, FakeHyprland, PrivateBus, SIGNATURE, Sway, Workstation, process_alive, start_daemon, start_daemon_with,
+    wait_for_pid_file,
+};
 use std::time::Duration;
 
 const DELAY: Duration = Duration::from_secs(10);
@@ -117,4 +120,26 @@ fn pw_dump_ends_with_a_clean_shutdown() {
     d.signal(libc::SIGTERM);
     assert_eq!(d.exit(Duration::from_millis(1500)), Some(0), "clean exit, code 0: {:?}", d.log());
     dies_within_2_s(pid);
+}
+
+/// The daemon reads the system bus where `DBUS_SYSTEM_BUS_ADDRESS` points
+/// (libdbus reads it): pointing at a path where nothing listens (the
+/// harness's default), the D-Bus source is down — had it fallen back to the
+/// machine's /run/dbus/system_bus_socket, it would be up; pointing at a
+/// private bus serving the recorded workstation, it is up.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_system_bus_address_is_honoured() {
+    let sway = Sway::start("bus-nowhere", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon(&sway);
+    assert!(d.wait_for("D-Bus source down", DELAY), "no bus where the address points: {:?}", d.log());
+    let bus = PrivateBus::start("bus-address");
+    let _workstation = Workstation::serve(&bus);
+    let sway2 = Sway::start("bus-private", 1);
+    let _hypr2 = FakeHyprland::start(&sway2.runtime, SIGNATURE);
+    let d2 = start_daemon_with(&sway2, &DaemonOptions { system_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d2.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d2.log());
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(d2.log().iter().all(|l| !l.contains("source down")), "the private bus reached: {:?}", d2.log());
 }

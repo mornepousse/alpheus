@@ -1,18 +1,29 @@
-//! The system bus through dbus-rs (the `dbus` crate over libdbus): the
-//! ONLY file of the daemon that knows the D-Bus library
-//! (tests/guardrails.rs). This first part is the codec: call messages, and
-//! replies and signals read in place with libdbus's iterators — a property
-//! the bar doesn't read is skipped, never decoded.
+//! The system bus through dbus-rs (the `dbus` crate over libdbus, its
+//! blocking `Channel`): the ONLY file of the daemon that knows the D-Bus
+//! library (tests/guardrails.rs). One connection, on the D-Bus thread, and
+//! no thread of its own (libdbus has none): a method call waits for its
+//! reply at most `TIMEOUT`, `next_signal` sleeps on the socket with no
+//! timeout at all — nothing wakes the thread while the bus is quiet.
+//! Replies are read in place with libdbus's iterators: a property the bar
+//! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
-use super::{Signal, UPOWER, bluez};
+use super::zbus_bus::{LOGIN1_RULE, MATCH_RULES, kind_of};
+use super::{Bus, Domain, Signal, UPOWER, bluez, upower};
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
-use dbus::strings::Path;
+use dbus::channel::{BusType, Channel};
+use dbus::message::MessageType;
+use dbus::strings::{ErrorName, Path};
 use std::collections::BTreeMap;
 use std::io;
+use std::os::fd::RawFd;
+use std::time::Duration;
 
 const DBUS: &str = "org.freedesktop.DBus";
+const DBUS_PATH: &str = "/org/freedesktop/DBus";
+/// A service that doesn't answer blocks this thread at most this long.
+pub const TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Every method the daemon may call: reads, and the subscription to
 /// signals (`Hello` is libdbus's own, sent once when connecting).
@@ -51,6 +62,19 @@ impl Method {
 
 fn unexpected(what: &str) -> io::Error {
     io::Error::other(format!("unexpected reply: {what}"))
+}
+
+/// A failed call, by the D-Bus error libdbus reports: an absence
+/// (`kind_of`), a timeout (`NoReply`), the connection gone
+/// (`Disconnected`), or anything else — an outage.
+fn error(e: dbus::Error) -> io::Error {
+    let name = e.name().unwrap_or("");
+    let kind = match name {
+        "org.freedesktop.DBus.Error.NoReply" | "org.freedesktop.DBus.Error.Timeout" => io::ErrorKind::TimedOut,
+        "org.freedesktop.DBus.Error.Disconnected" => io::ErrorKind::UnexpectedEof,
+        _ => kind_of(name),
+    };
+    io::Error::new(kind, format!("{name}: {}", e.message().unwrap_or("")))
 }
 
 /// The signature of the argument at `it`, "" past the last one: dbus
@@ -212,6 +236,111 @@ pub fn message(destination: &str, path: &str, m: Method, arg: Option<&str>) -> i
     })
 }
 
+/// The answer to a method call addressed to the bar: nobody may call it.
+pub fn refusal(call: &Message) -> Message {
+    let name = ErrorName::from("org.freedesktop.DBus.Error.UnknownMethod");
+    call.error(&name, c"the bar answers no call")
+}
+
+pub struct DbusRsBus {
+    channel: Channel,
+}
+
+impl DbusRsBus {
+    /// The system bus — libdbus reads `$DBUS_SYSTEM_BUS_ADDRESS`, else the
+    /// standard socket — subscribed to the signals of `domains` only.
+    pub fn system(domains: &[Domain]) -> io::Result<DbusRsBus> {
+        Self::subscribe(Channel::get_private(BusType::System).map_err(error)?, domains)
+    }
+
+    /// The bus at `address` (tests: a private dbus-daemon).
+    pub fn at(address: &str, domains: &[Domain]) -> io::Result<DbusRsBus> {
+        let mut channel = Channel::open_private(address).map_err(error)?;
+        channel.register().map_err(error)?;
+        Self::subscribe(channel, domains)
+    }
+
+    /// Connecting and `Hello` are blocking (libdbus's own deadlines); then
+    /// the match rules, each with `TIMEOUT`.
+    fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
+        let bus = DbusRsBus { channel };
+        for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
+            bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(rule))?;
+        }
+        // Not tied to one Domain: a resume re-reads every domain in `domains`.
+        if !domains.is_empty() {
+            bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(LOGIN1_RULE))?;
+        }
+        Ok(bus)
+    }
+
+    /// This connection's unique name on the bus.
+    pub fn unique_name(&self) -> &str {
+        self.channel.unique_name().unwrap_or("")
+    }
+
+    /// For tests only: the connection's socket, which the private bus test
+    /// checks is close-on-exec (libdbus opens it with SOCK_CLOEXEC).
+    pub fn socket_fd(&mut self) -> RawFd {
+        self.channel.set_watch_enabled(true);
+        let fd = self.channel.watch().fd;
+        self.channel.set_watch_enabled(false);
+        fd
+    }
+
+    /// The only way out of this file: a `Method`, never a free method name.
+    fn call(&self, destination: &str, path: &str, m: Method, arg: Option<&str>) -> io::Result<Message> {
+        self.channel.send_with_reply_and_block(message(destination, path, m, arg)?, TIMEOUT).map_err(error)
+    }
+}
+
+impl Bus for DbusRsBus {
+    fn owner(&mut self, service: &str) -> io::Result<Option<String>> {
+        match self.call(DBUS, DBUS_PATH, Method::GetNameOwner, Some(service)) {
+            Ok(m) => m.read1::<&str>().map(|s| Some(s.to_string())).map_err(|e| unexpected(&e.to_string())),
+            // NameHasNoOwner: nobody runs it — and asking the bus driver
+            // never starts it.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props> {
+        get_all_reply(&self.call(destination, path, Method::GetAll, Some(interface))?)
+    }
+
+    fn managed_objects(&mut self, destination: &str) -> io::Result<Objects> {
+        objects_reply(&self.call(destination, "/", Method::GetManagedObjects, None)?)
+    }
+
+    fn enumerate_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        paths_reply(&self.call(destination, upower::PATH, Method::EnumerateDevices, None)?)
+    }
+
+    fn next_signal(&mut self) -> io::Result<Signal> {
+        loop {
+            while let Some(m) = self.channel.pop_message() {
+                match m.msg_type() {
+                    MessageType::Signal if m.interface().is_some_and(|i| &*i == "org.freedesktop.DBus.Local") => {
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+                    }
+                    MessageType::Signal => return Ok(signal(&m)),
+                    // Refused at once, never left queued (the queue would only grow).
+                    MessageType::MethodCall if !m.get_no_reply() => {
+                        let _ = self.channel.send(refusal(&m));
+                    }
+                    // A late reply (its call already timed out): dropped.
+                    _ => {}
+                }
+            }
+            // None: asleep on the socket until the bus sends something.
+            if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
+                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +402,27 @@ mod tests {
         assert_eq!(p.0["V"], Prop::Float(0.5), "a variant inside a variant");
         assert_eq!(p.0["Strs"], Prop::Other);
         assert!(get_all_reply(&recorded(r#"{"type":"ao","data":[["/a"]]}"#)).is_err(), "not a dictionary: an error, not empty props");
+    }
+
+    #[test]
+    fn errors_are_told_by_their_name() {
+        let kind = |name: &str| error(dbus::Error::new_custom(name, "text")).kind();
+        assert_eq!(kind("org.freedesktop.DBus.Error.UnknownObject"), io::ErrorKind::NotFound);
+        assert_eq!(kind("org.freedesktop.DBus.Error.ServiceUnknown"), io::ErrorKind::NotFound);
+        assert_eq!(kind("org.freedesktop.DBus.Error.NoReply"), io::ErrorKind::TimedOut, "a silent service: an outage");
+        assert_eq!(kind("org.freedesktop.DBus.Error.Disconnected"), io::ErrorKind::UnexpectedEof);
+        assert_eq!(kind("org.freedesktop.DBus.Error.FileNotFound"), io::ErrorKind::Other, "no socket: an outage, not an absence");
+        assert_eq!(kind("org.freedesktop.DBus.Error.AccessDenied"), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn a_call_to_the_bar_is_answered_with_an_error() {
+        let mut call = Message::new_method_call(":1.10", "/", "org.freedesktop.DBus.Peer", "Ping").unwrap();
+        call.set_serial(7); // as received: libdbus aborts on a reply to serial 0
+        let r = refusal(&call);
+        assert_eq!(r.msg_type(), MessageType::Error);
+        assert_eq!(r.read1::<&str>().unwrap(), "the bar answers no call");
+        assert_eq!(r.get_reply_serial(), Some(7));
     }
 
     #[test]

@@ -422,15 +422,32 @@ impl PrivateBus {
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         let address = format!("unix:path={}", directory.join("bus").display());
-        let child = Self::spawn(&address);
+        let child = Self::spawn(&directory, &address);
         PrivateBus { child, address, directory }
     }
 
-    fn spawn(address: &str) -> Child {
+    /// A minimal configuration of our own, never the system's session.conf:
+    /// no `<standard_session_servicedirs/>` nor any `<servicedir>`, so nothing
+    /// can ever be activated on this bus; every client may own names and
+    /// send to anyone (the test peers stand in for system services).
+    fn config(directory: &Path, address: &str) -> PathBuf {
+        let path = directory.join("bus.conf");
+        let text = format!(
+            "<!DOCTYPE busconfig PUBLIC \"-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN\"\n \
+             \"http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd\">\n\
+             <busconfig><type>session</type><listen>{address}</listen>\
+             <policy context=\"default\"><allow send_destination=\"*\" eavesdrop=\"true\"/>\
+             <allow eavesdrop=\"true\"/><allow own=\"*\"/></policy></busconfig>\n"
+        );
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    fn spawn(directory: &Path, address: &str) -> Child {
         let mut command = Command::new("dbus-daemon");
         command
-            .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
-            .arg(format!("--address={address}"))
+            .args(["--nofork", "--nopidfile", "--print-address=1"])
+            .arg(format!("--config-file={}", Self::config(directory, address).display()))
             .env_clear()
             .env("PATH", env::var_os("PATH").unwrap_or_default())
             .stdin(Stdio::null())
@@ -458,7 +475,7 @@ impl PrivateBus {
     pub fn restart(&mut self) {
         self.kill();
         let _ = fs::remove_file(self.directory.join("bus")); // left behind by a SIGKILL
-        self.child = Self::spawn(&self.address);
+        self.child = Self::spawn(&self.directory, &self.address);
     }
 
     /// Kills it right away (a system bus going away).
@@ -476,5 +493,108 @@ impl Drop for PrivateBus {
     fn drop(&mut self) {
         self.kill();
         let _ = fs::remove_dir_all(&self.directory);
+    }
+}
+
+/// Another client of a `PrivateBus` (stands in for NetworkManager, logind,
+/// a silent service…), on dbus-rs like the daemon. Test code only: it may
+/// own names, emit signals and call anything — the daemon may not.
+pub struct Peer {
+    pub channel: dbus::channel::Channel,
+    /// Its unique name (":1.N").
+    pub name: String,
+}
+
+impl Peer {
+    pub fn connect(bus: &PrivateBus) -> Peer {
+        let mut channel = dbus::channel::Channel::open_private(&bus.address).unwrap();
+        channel.register().unwrap();
+        let name = channel.unique_name().unwrap().to_string();
+        Peer { channel, name }
+    }
+
+    /// Calls and waits for the reply (5 s at most).
+    pub fn call(&self, msg: dbus::Message) -> Result<dbus::Message, dbus::Error> {
+        self.channel.send_with_reply_and_block(msg, Duration::from_secs(5))
+    }
+
+    /// Takes `name` on the bus (RequestName, flags 0), as a service would.
+    pub fn own(&self, name: &str) {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName")
+            .unwrap()
+            .append2(name, 0u32);
+        assert_eq!(self.call(m).unwrap().read1::<u32>().unwrap(), 1, "primary owner of {name}");
+    }
+
+    /// Broadcasts a signal whose only argument is `arg`.
+    pub fn emit<A: dbus::arg::Append>(&self, path: &str, interface: &str, member: &str, arg: A) {
+        self.channel.send(dbus::Message::new_signal(path, interface, member).unwrap().append1(arg)).unwrap();
+        self.channel.flush();
+    }
+
+    /// The next method call addressed to this peer; None once the bus is gone.
+    pub fn next_call(&self) -> Option<dbus::Message> {
+        loop {
+            match self.channel.blocking_pop_message(Duration::from_secs(3600)) {
+                Ok(Some(m)) if m.msg_type() == dbus::message::MessageType::MethodCall => return Some(m),
+                Ok(_) if self.channel.is_connected() => continue,
+                _ => return None,
+            }
+        }
+    }
+}
+
+#[path = "../support/busctl_wire.rs"]
+pub mod busctl_wire;
+
+const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+
+/// The workstation recorded on 2026-10-04 (tests/fixtures/dbus-*.json,
+/// anonymized), served on a private bus by one `Peer` owning
+/// NetworkManager's, UPower's and BlueZ's names: what `FakeBus::workstation`
+/// is to the unit tests, over the wire. An object the recording doesn't
+/// have gets `UnknownObject`, as `FakeBus` answers NotFound.
+pub struct Workstation;
+
+impl Workstation {
+    pub fn serve(bus: &PrivateBus) -> Workstation {
+        let peer = Peer::connect(bus);
+        for name in ["org.freedesktop.NetworkManager", "org.freedesktop.UPower", "org.bluez"] {
+            peer.own(name);
+        }
+        let read = |file: &str| fs::read_to_string(format!("{FIXTURES}/{file}")).unwrap();
+        let mut replies: Vec<((String, &str), String)> = vec![
+            (("/org/freedesktop/NetworkManager".into(), "GetAll"), read("dbus-nm-root.json")),
+            (("/org/freedesktop/UPower".into(), "EnumerateDevices"), read("dbus-upower-devices.json")),
+            (("/".into(), "GetManagedObjects"), read("dbus-bluez-objects.json")),
+        ];
+        for n in [10, 9, 3, 2] {
+            replies.push((
+                (format!("/org/freedesktop/NetworkManager/ActiveConnection/{n}"), "GetAll"),
+                read(&format!("dbus-nm-active-{n}.json")),
+            ));
+        }
+        for (device, file) in
+            [("DisplayDevice", "display"), ("battery_BAT0", "bat0"), ("battery_hidpp_battery_1", "mouse"), ("line_power_AC", "ac")]
+        {
+            replies.push(((format!("/org/freedesktop/UPower/devices/{device}"), "GetAll"), read(&format!("dbus-upower-{file}.json"))));
+        }
+        thread::spawn(move || {
+            while let Some(call) = peer.next_call() {
+                let path = call.path().map(|p| p.to_string()).unwrap_or_default();
+                let member = call.member().map(|m| m.to_string()).unwrap_or_default();
+                let reply = match replies.iter().find(|((p, m), _)| *p == path && *m == member) {
+                    Some((_, json)) => {
+                        let mut r = call.method_return();
+                        busctl_wire::push_reply(&mut r, json);
+                        r
+                    }
+                    None => call.error(&"org.freedesktop.DBus.Error.UnknownObject".into(), c"not in the recording"),
+                };
+                let _ = peer.channel.send(reply);
+                peer.channel.flush();
+            }
+        });
+        Workstation
     }
 }
