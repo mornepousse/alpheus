@@ -1,0 +1,35 @@
+---
+source: crates/alpheus-demon/src/launcher/view.rs
+expression: snapshot(&rows)
+---
+╭────────────────────────────────────╮
+│ All  Apps  Windows  Commands       │
+│ ❯                                  │
+│ 󰆍 Alacritty               Terminal │
+│ 󰣆 btop++               application │
+│ 󰉋 Files               File Manager │
+│ 󰈹 Firefox              Web Browser │
+│                                    │
+│                                    │
+│                                    │
+│                                    │
+│                                    │
+│                                    │
+│ enter open · ctrl+enter action · … │
+╰────────────────────────────────────╯
+
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+mmmmmmAAAAAAmmmmmmmmmmmmmmmmmmm......m
+m.G.A................................m
+m.a.........................mmmmmmmm.m
+m.a......................mmmmmmmmmmm.m
+m.a.....................mmmmmmmmmmmm.m
+mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm
+m....................................m
+m....................................m
+m....................................m
+m....................................m
+m....................................m
+m....................................m
+m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.m
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

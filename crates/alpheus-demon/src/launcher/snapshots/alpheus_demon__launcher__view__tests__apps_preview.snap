@@ -1,0 +1,35 @@
+---
+source: crates/alpheus-demon/src/launcher/view.rs
+expression: snapshot(&rows)
+---
+╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
+│ All  Apps  Windows  Commands                             │ Firefox                            │
+│ ❯                                                        │ Web Browser                        │
+│ 󰆍 Alacritty                                     Terminal │                                    │
+│ 󰣆 btop++                                     application │ Browse the World Wide Web with a   │
+│ 󰉋 Files                                     File Manager │ fast, private and free browser     │
+│ 󰈹 Firefox                                    Web Browser │                                    │
+│                                                          │ exec: firefox                      │
+│                                                          │ · New Window                       │
+│                                                          │ · New Private Window               │
+│                                                          │                                    │
+│                                                          │                                    │
+│                                                          │                                    │
+│ enter open · ctrl+enter action · tab mode · esc close    │                                    │
+╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
+
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+mmmmmmAAAAAAmmmmmmmmmmmmmmmmmmm............................m.GGGGGGG............................m
+m.G.A......................................................m....................................m
+m.a...............................................mmmmmmmm.m....................................m
+m.a............................................mmmmmmmmmmm.m....................................m
+m.a...........................................mmmmmmmmmmmm.m....................................m
+mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm....................................m
+m..........................................................m.mmmmmmmmmmmmm......................m
+m..........................................................m....................................m
+m..........................................................m....................................m
+m..........................................................m....................................m
+m..........................................................m....................................m
+m..........................................................m....................................m
+m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm....m....................................m
+mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

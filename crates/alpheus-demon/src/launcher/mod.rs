@@ -10,6 +10,7 @@ pub mod input;
 pub mod matching;
 pub mod model;
 pub mod scan;
+pub mod view;
 
 /// Test helpers shared by the launcher's modules.
 #[cfg(test)]
