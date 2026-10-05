@@ -23,6 +23,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
 | Wayle | Rust, GTK4 | ≈ 168 MB | bar, panels |
 | ashell + swaync | Rust, iced | ≈ 194 MB | bar, notifications |
+| Noctalia 4.7 | Quickshell (QML) | ≈ 517 MB | full shell (v5, a native C++ rewrite released in September 2026, not measured yet) |
 | DankMaterialShell (trimmed) | Quickshell (QML) | ≈ 512 MB | full shell, sound/visualizer/weather/temperatures off |
 | DankMaterialShell | Quickshell (QML) | ≈ 537 MB | full shell |
 | Caelestia | Quickshell (QML) | ≈ 730 MB | full shell |
