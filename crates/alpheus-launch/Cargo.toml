@@ -1,0 +1,11 @@
+[package]
+name = "alpheus-launch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Bridge to alpheus's launcher: toggle, close, dmenu-style menus (talks to alpheus-demon over a Unix socket)"
+
+# std + alpheus-commun only: no Wayland, no fonts (tests/boundaries.rs in alpheus-commun).
+[dependencies]
+alpheus-commun.workspace = true

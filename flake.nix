@@ -12,9 +12,11 @@
       # il renommerait le processus (.alpheus-demon-wrapped) et
       # `pkill -x alpheus-demon` ne le trouverait plus (même piège que waybar).
       polices = pkgs: "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/JetBrainsMono";
-      paquet = pkgs: { pname, tests, description, env ? { } }:
+      # nativeBuildInputs / buildInputs: system libraries a package links
+      # (the daemon's libxkbcommon, launcher plan task 12); empty by default.
+      paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ] }:
         pkgs.rustPlatform.buildRustPackage {
-          inherit pname env;
+          inherit pname env nativeBuildInputs buildInputs;
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
@@ -45,6 +47,11 @@
           tests = [ "alpheus-demon" ];
           description = "Démon résident d'alpheus : la barre (layer-shell, Hyprland et niri)";
           env.ALPHEUS_POLICES = polices pkgs;
+        };
+        alpheus-launch = paquet pkgs {
+          pname = "alpheus-launch";
+          tests = [ "alpheus-launch" "alpheus-commun" ];
+          description = "Bridge to alpheus's launcher: toggle, close, dmenu-style menus";
         };
       });
 

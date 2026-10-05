@@ -121,3 +121,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     });
     assert!(result.is_err(), "the pin check must reject blocking 1.7.0");
 }
+
+/// `alpheus-launch` runs on every key press and in every script menu: std
+/// and alpheus-commun only — no Wayland, no fonts, no TUI, no D-Bus, no
+/// matcher, no keyboard library (Global Constraints of the launcher plan).
+#[test]
+fn alpheus_launch_stays_tiny() {
+    let g = graph();
+    let direct: Vec<&str> = g["alpheus-launch"].iter().map(String::as_str).collect();
+    assert_eq!(direct, ["alpheus-commun"], "alpheus-launch's direct dependencies");
+    let f = closure(&g, "alpheus-launch");
+    for forbidden in [
+        "wayland-client",
+        "smithay-client-toolkit",
+        "cosmic-text",
+        "ratatui",
+        "crossterm",
+        "zbus",
+        "nucleo-matcher",
+        "xkbcommon",
+        "xkeysym",
+    ] {
+        assert!(!f.contains(forbidden), "alpheus-launch pulls in {forbidden}");
+    }
+}
