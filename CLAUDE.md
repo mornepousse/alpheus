@@ -55,12 +55,16 @@ breakdown), then the spec of the sub-project currently in progress in
   short-lived thread at each open, launches in a `systemd-run --user
   --scope` (detached fallback), keyboard bound only while open
   (libxkbcommon now linked). Measured in **release** (headless sway, 300
-  synthetic apps): open latency median 1963 µs (max 4477 µs), open
-  +1929 KB PSS over closed, 50 cycles +108 KB, 0 wake-ups in 5 s at rest
-  after use, startup PSS 6738 KB with the launcher module alone (8562 KB
-  with every module). A 100,000-line dmenu peaks at +6316 KB over closed,
-  back down to +308 KB one second after a cancel. nixos-config switch
-  (task 15) and Mae's real trial (task 16) pending.
+  synthetic apps, several runs): open latency median 1963–2020 µs
+  (max 4252–4477 µs), open +1929–1966 KB PSS over closed, 50 cycles
+  +104–304 KB across runs, 0 wake-ups in 5 s at rest after use, plan 1
+  modules + launcher: 6738–6912 KB, close to plan 1 alone (6464–6738 KB
+  across the same runs) — nothing is resident while the launcher is
+  closed but the listening socket fd, so this gap is startup noise, not a
+  real cost (8466–8562 KB with every module). A 100,000-line dmenu peaks
+  at +6216–6316 KB over closed, back down to +308–400 KB one second after
+  a cancel. nixos-config switch (task 15) and Mae's real trial (task 16)
+  pending.
 - Next, in order: bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.

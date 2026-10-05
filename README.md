@@ -31,15 +31,15 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.8 MB | headless sway test, `tests/memory.rs` |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 10.1 MB | stable, 0 wake-ups at rest, 8 threads |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.8–9.1 MB | headless sway test, `tests/memory.rs` |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 10.1–10.3 MB | stable, 0 wake-ups at rest, 8 threads |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |
 | Launcher, closed (socket only, nothing else resident) | +0 MB | one listening fd; no thread, timer or keyboard exists while closed |
 | Launcher, open (typed query, keyboard bound) | +1.9–2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs` |
-| Launcher, open latency | ≈ 2.0 ms median (max 4.5 ms) | request accepted → first frame committed, 20 opens |
-| Launcher, 100,000-line dmenu | +6.3 MB open, back to +0.3 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel |
+| Launcher, open latency | ≈ 2.0 ms median (max 4.3–4.5 ms) | request accepted → first frame committed, 20 opens |
+| Launcher, 100,000-line dmenu | +6.1–6.3 MB open, back to +0.3–0.4 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
@@ -145,7 +145,7 @@ automatic rollback after 15 s if not confirmed).
 A line of monospace characters on a solid background, modules separated by
 `│`, active item in inverted accent color.
 
-![The alpheus bar, sample data, real font and matugen colours (zoomed ×2, split in two halves)](docs/images/bar.png)
+![The alpheus bar, sample data, real font, built-in Catppuccin Mocha palette (zoomed ×2, split in two halves)](docs/images/bar.png)
 
 Shipped: **workspaces** (one dot per window, empty workspace dimmed, urgent
 in red, click to go there, wheel to move to the next one), **active
@@ -161,11 +161,12 @@ Coming next: the system tray (app icons and menus), now-playing and
 notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.8 MB of
-memory at start and ≈ 10.1 MB under load, on three outputs. The compositor
-is only **read** (Hyprland or niri event stream); switching workspace goes
-through a configurable command. Sound comes from `pw-dump`, network,
-battery and Bluetooth from D-Bus (read-only), resources from `/proc`.
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.8–9.1 MB
+of memory at start and ≈ 10.1–10.3 MB under load, on three outputs. The
+compositor is only **read** (Hyprland or niri event stream); switching
+workspace goes through a configurable command. Sound comes from
+`pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
+resources from `/proc`.
 
 ### The launcher
 
@@ -185,9 +186,9 @@ with fuzzel's exit codes, plus exit code 3 — daemon unreachable — the
 only case where a script falls back to another menu). Measured in
 **release** (headless sway, 300 synthetic apps): opening costs ≈ 1.9–2.1 MB
 of PSS over closed, median open latency ≈ 2.0 ms, 50 open/close cycles
-grow PSS by well under the 1 MB budget (measured 108–304 KB across runs),
+grow PSS by well under the 1 MB budget (measured 104–304 KB across runs),
 0 wake-ups in 5 s at rest after use. A 100,000-line dmenu peaks at
-+6.3 MB and drops back to +0.3 MB a second after it is cancelled.
++6.1–6.3 MB and drops back to +0.3–0.4 MB a second after it is cancelled.
 
 ## Build
 

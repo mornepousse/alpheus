@@ -284,7 +284,12 @@ pub fn start_daemon(sway: &Sway) -> Daemon {
 fn coreutils_dir() -> PathBuf {
     let path = env::var_os("PATH").unwrap_or_default();
     let cat = env::split_paths(&path).map(|d| d.join("cat")).find(|p| p.is_file()).expect("cat on PATH");
-    fs::canonicalize(&cat).unwrap().parent().unwrap().to_path_buf()
+    let dir = fs::canonicalize(&cat).unwrap().parent().unwrap().to_path_buf();
+    // The whole point of this directory is to carry nothing the launcher
+    // could activate on the session: assert it, don't just assume it.
+    assert!(!dir.join("systemd-run").exists(), "coreutils dir {} also has systemd-run", dir.display());
+    assert!(!dir.join("wm-set").exists(), "coreutils dir {} also has wm-set", dir.display());
+    dir
 }
 
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
@@ -353,8 +358,12 @@ pub fn wtype(sway: &Sway, args: &[&str]) -> std::process::ExitStatus {
 /// instance) between typing and a later key, while keeping the launcher's keyboard
 /// bound throughout, has to use one continuous wtype invocation (several `-s`
 /// delays) and this spawn, never two separate `wtype` calls.
-pub fn wtype_spawn(sway: &Sway, args: &[&str]) -> Child {
-    Command::new("wtype")
+///
+/// Returns a guard, not the raw `Child`: a test that panics (an assertion
+/// between the spawn and the explicit `wait()`) must still not leave a
+/// `wtype` process running against the headless compositor.
+pub fn wtype_spawn(sway: &Sway, args: &[&str]) -> WtypeChild {
+    let child = Command::new("wtype")
         .args(args)
         .env_clear()
         .env("PATH", env::var_os("PATH").unwrap_or_default())
@@ -363,7 +372,28 @@ pub fn wtype_spawn(sway: &Sway, args: &[&str]) -> Child {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .expect("wtype not found: run these tests inside `nix develop`")
+        .expect("wtype not found: run these tests inside `nix develop`");
+    WtypeChild(Some(child))
+}
+
+/// A spawned `wtype` process: killed and waited on drop if never explicitly
+/// `wait()`-ed, so a panic anywhere in a test using it never leaks the
+/// process into the headless compositor.
+pub struct WtypeChild(Option<Child>);
+
+impl WtypeChild {
+    pub fn wait(mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.take().unwrap().wait()
+    }
+}
+
+impl Drop for WtypeChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 /// A program that writes its argv to <runtime>/launched-<name> and exits.

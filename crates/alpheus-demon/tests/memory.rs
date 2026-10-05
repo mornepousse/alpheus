@@ -170,9 +170,12 @@ fn launcher_open_close_cycles_no_growth() {
     // unplugged, `new_capability`/`remove_capability` in wayland.rs). One
     // process, two `-s` delays, keeps that one virtual keyboard alive from
     // the typing through to the Escape that closes the launcher.
-    let mut typing = wtype_spawn(&sway, &["-s", "300", "synth", "-s", "1000", "-k", "Escape"]);
-    std::thread::sleep(Duration::from_millis(600)); // after "synth" is typed, before Escape fires
+    let typing = wtype_spawn(&sway, &["-s", "300", "synth", "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500)); // after "synth" is typed, well before Escape fires
     let open = d.pss_kb();
+    // Still well inside the delay before Escape: the launcher must still be
+    // open when this PSS was read, or it is not measuring what it claims to.
+    assert_eq!(d.count("launcher closed ("), 0, "launcher closed before the 'open' PSS was read: {:?}", d.log());
     assert!(typing.wait().unwrap().success());
     assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1));
