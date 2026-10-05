@@ -25,7 +25,8 @@ use smithay_client_toolkit::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::SeatError;
+use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardError, KeyboardHandler, Keysym, Modifiers, RawModifiers};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerSurface};
@@ -131,6 +132,19 @@ pub(crate) fn plan_configure(asked: (u32, u32), configured: (u32, u32)) -> Optio
     ((w, h) != asked).then_some((w, h))
 }
 
+/// Bytes the box's shared-memory pool must carry: two buffers of its own
+/// frame (`pick_buffer` alternates between them so a redraw never waits on
+/// the compositor still holding the previous one), plus a small, fixed
+/// share per output for that output's scrim — a 1×1 buffer, a handful of
+/// real bytes, rounded up generously for wl_shm's own per-slot bookkeeping.
+/// The box and every scrim share this one pool (`Scrim::show`'s `pool`
+/// argument is `OpenLauncher::pool`, the same value): sizing it for the box
+/// alone left a scrim with nowhere to allocate its buffer on a multi-output
+/// session.
+pub(crate) fn pool_size(frame_bytes: usize, outputs: usize) -> usize {
+    2 * frame_bytes + 64 * outputs
+}
+
 /// Whether a surface event belongs to the launcher: pure past the two
 /// identity checks (`is_box`, `is_scrim`), which are plain `WlSurface`
 /// equality and never panic — computed by the caller BEFORE any guard runs,
@@ -147,6 +161,32 @@ pub(crate) fn owns_surface(open: bool, is_box: bool, is_scrim: bool) -> bool {
 pub(crate) fn layout_within(size: (u32, u32), model: &Launcher, advance_phys: f32, row_height: u32, scale: i32) -> BoxLayout {
     let (columns, rows) = output_cells(size.0, size.1, advance_phys, row_height, scale);
     open_layout(columns.saturating_add(2), rows, model)
+}
+
+/// What a scale change recomputes the box's layout within: the
+/// compositor's own last-imposed size (`plan_configure`), if there is one —
+/// it is a logical size, unaffected by scale, so it must survive a scale
+/// change untouched rather than be recomputed from the whole output again —
+/// otherwise the open layout refitted to the whole output, same math
+/// `launcher_resize` always used before this size was tracked. Returns the
+/// recomputed layout and the logical size it should be shown at.
+pub(crate) fn resized_layout(
+    imposed: Option<(u32, u32)>,
+    output_size: (u32, u32),
+    model: &Launcher,
+    advance_phys: f32,
+    row_height: u32,
+    scale: i32,
+) -> (BoxLayout, (u32, u32)) {
+    match imposed {
+        Some(size) => (layout_within(size, model, advance_phys, row_height, scale), size),
+        None => {
+            let (columns, rows) = output_cells(output_size.0, output_size.1, advance_phys, row_height, scale);
+            let layout = open_layout(columns, rows, model);
+            let size = box_size(&layout, advance_phys, row_height, scale);
+            (layout, size)
+        }
+    }
 }
 
 /// Some(path) unless the history is disabled (`history = 0`).
@@ -175,6 +215,15 @@ pub(crate) fn reply_on_close(reply: Option<Pending>, reason: CloseReason) {
 /// is read for it.
 pub(crate) fn open_path_dirs(script: bool, var: impl Fn(&str) -> Option<OsString>) -> Vec<PathBuf> {
     if script { Vec::new() } else { ScanEnv::from_env(var).path_dirs }
+}
+
+/// Whether a failed keyboard bind is worth a log line: `UnsupportedCapability`
+/// just means the seat has no keyboard yet — `launcher_bind_keyboard` is
+/// retried once the capability appears (`SeatHandler`'s capability-added
+/// event, wayland.rs) — expected and routine, not worth a line every time it
+/// happens. Anything else (a dead seat, a protocol error) is.
+pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
+    !matches!(e, KeyboardError::Seat(SeatError::UnsupportedCapability(_)))
 }
 
 /// A transparent 1×1 surface covering one output (outside the bar's
@@ -246,6 +295,10 @@ pub struct OpenLauncher {
     layout: BoxLayout,
     /// Logical size of the box (asked, or imposed by a configure).
     size: (u32, u32),
+    /// The compositor's own last-imposed size (`plan_configure`), if any:
+    /// kept across scale changes (`resized_layout`), since it is a logical
+    /// size the compositor dictates, unaffected by scale.
+    imposed_size: Option<(u32, u32)>,
     /// Some: the focused output, found by name; None: the compositor's choice.
     output: Option<wl_output::WlOutput>,
     output_name: Option<String>,
@@ -323,10 +376,16 @@ impl App {
         model.set_list_rows(layout.list_rows as usize);
         let size = box_size(&layout, advance, row_height, scale);
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
-        let pool = match SlotPool::new(bytes.max(4096), &self.shm) {
+        let outputs = self.outputs.outputs().count();
+        let pool = match SlotPool::new(pool_size(bytes, outputs).max(4096), &self.shm) {
             Ok(p) => p,
             Err(e) => {
                 log(&format!("launcher: no shared buffer ({e}), not opened"));
+                // Nothing was actually opened, but the failed attempt may
+                // still have allocated scratch (the model it was handed,
+                // the matcher's matrices): give it back right away rather
+                // than wait for a close that will never happen.
+                crate::memory::release_memory();
                 if let Some(p) = reply {
                     p.reply(&Reply::Error(format!("the launcher could not open: {e}")));
                 }
@@ -356,6 +415,7 @@ impl App {
             buffers: Vec::new(),
             layout,
             size,
+            imposed_size: None,
             output: named,
             output_name,
             output_size,
@@ -371,24 +431,44 @@ impl App {
     }
 
     fn launcher_scrims(&mut self, qh: &QueueHandle<App>) -> Vec<Scrim> {
-        let Some(viewporter) = self.viewporter.as_ref() else {
+        if self.viewporter.is_none() {
             log("launcher: no wp_viewporter, a click outside will not close it");
             return Vec::new();
-        };
-        let mut scrims = Vec::new();
-        for output in self.outputs.outputs() {
-            let surface = self.compositor.create_surface(qh);
-            let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some(SCRIM_NAMESPACE), Some(&output));
-            layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-            // 0: placed beside the bar's exclusive zone, never over the bar.
-            layer.set_exclusive_zone(0);
-            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-            layer.set_size(0, 0);
-            let viewport = viewporter.get_viewport(layer.wl_surface(), qh, ());
-            layer.commit();
-            scrims.push(Scrim { output, layer, viewport, buffer: None });
         }
-        scrims
+        let outputs: Vec<_> = self.outputs.outputs().collect();
+        outputs.into_iter().filter_map(|output| self.make_scrim(qh, output)).collect()
+    }
+
+    /// One output's scrim; None without `wp_viewporter` (already logged once
+    /// at open by `launcher_scrims` — a hot-plugged output stays silent
+    /// about it too, nothing new to say).
+    fn make_scrim(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput) -> Option<Scrim> {
+        let viewporter = self.viewporter.as_ref()?;
+        let surface = self.compositor.create_surface(qh);
+        let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some(SCRIM_NAMESPACE), Some(&output));
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        // 0: placed beside the bar's exclusive zone, never over the bar.
+        layer.set_exclusive_zone(0);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.set_size(0, 0);
+        let viewport = viewporter.get_viewport(layer.wl_surface(), qh, ());
+        layer.commit();
+        Some(Scrim { output, layer, viewport, buffer: None })
+    }
+
+    /// A new output while the launcher is open: it gets a scrim of its own,
+    /// same as every output already had at open — a click outside the box
+    /// must close it on a hot-plugged screen too, not only on the ones that
+    /// existed when it was opened. Closed: nothing to do, no surface created
+    /// for an output the launcher may never even be open to see.
+    pub(crate) fn launcher_output_added(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput) {
+        if !self.launcher_is_open() {
+            return;
+        }
+        let Some(scrim) = self.make_scrim(qh, output) else { return };
+        if let Some(open) = self.launcher.as_mut() {
+            open.scrims.push(scrim);
+        }
     }
 
     /// Drops everything; a waiting dmenu client gets Reply::Cancelled (unless already answered).
@@ -424,11 +504,10 @@ impl App {
         let e = open.scale.max(1);
         let advance = fonts.advance(e);
         let row_height = height * e as u32;
-        let (columns, rows) = output_cells(open.output_size.0, open.output_size.1, advance, row_height, e);
-        let layout = open_layout(columns, rows, &open.model);
+        let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e);
         open.model.set_list_rows(layout.list_rows as usize);
         open.layout = layout;
-        match plan_redraw(open.size, box_size(&layout, advance, row_height, e), open.configured) {
+        match plan_redraw(open.size, wanted, open.configured) {
             Redraw::Wait => {}
             Redraw::Resize(w, h) => {
                 open.size = (w, h);
@@ -526,8 +605,10 @@ impl App {
         let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
             app.launcher_guarded("key", move |a| a.launcher_key(event));
         });
-        if let Ok(k) = self.seats.get_keyboard_with_repeat(qh, seat, None, handle, repeat) {
-            open.keyboard = Some(k);
+        match self.seats.get_keyboard_with_repeat(qh, seat, None, handle, repeat) {
+            Ok(k) => open.keyboard = Some(k),
+            Err(e) if should_log_keyboard_error(&e) => log(&format!("launcher keyboard: {e}")),
+            Err(_) => {}
         }
     }
 
@@ -628,6 +709,7 @@ impl App {
                 open.model.set_list_rows(layout.list_rows as usize);
                 open.layout = layout;
                 open.size = imposed;
+                open.imposed_size = Some(imposed);
             }
             open.configured = true;
             open.last = None;
@@ -814,6 +896,37 @@ mod tests {
         let (w, h) = box_size(&b, 8.25, 22, 1);
         assert!(w <= 400 && h <= 200, "never painted past the configured size: {w} × {h}");
         assert!(b.list_rows >= 1);
+    }
+
+    #[test]
+    fn pool_size_carries_two_frames_and_a_scrim_share_per_output() {
+        assert_eq!(pool_size(1000, 0), 2000, "no scrim at all: just the two box buffers");
+        assert_eq!(pool_size(1000, 3), 2000 + 192, "one 64-byte share per output's scrim");
+    }
+
+    #[test]
+    fn a_scale_change_keeps_a_compositor_imposed_size_untouched() {
+        // Without an imposed size: the whole output, same as before this was tracked.
+        let (free, free_size) = resized_layout(None, (1920, 1080), &apps(), 8.25, 22, 1);
+        assert_eq!(free_size, box_size(&free, 8.25, 22, 1), "no constraint: sized from the output alone");
+        // With one: the imposed logical size wins outright, whatever the output is —
+        // a scale change must not quietly widen the box back out past what the
+        // compositor already dictated.
+        let (within, wanted) = resized_layout(Some((400, 200)), (1920, 1080), &apps(), 8.25, 22, 1);
+        assert_eq!(wanted, (400, 200), "the compositor's own size, unaffected by the output");
+        assert_eq!(within, layout_within((400, 200), &apps(), 8.25, 22, 1), "the same refit a configure already uses");
+    }
+
+    #[test]
+    fn keyboard_errors_are_logged_except_an_unsupported_capability() {
+        assert!(
+            !should_log_keyboard_error(&KeyboardError::Seat(SeatError::UnsupportedCapability(
+                smithay_client_toolkit::seat::Capability::Keyboard
+            ))),
+            "no keyboard yet: launcher_bind_keyboard retries once the capability appears, nothing to log every time"
+        );
+        assert!(should_log_keyboard_error(&KeyboardError::InvalidKeymap));
+        assert!(should_log_keyboard_error(&KeyboardError::Seat(SeatError::DeadObject)));
     }
 
     #[test]

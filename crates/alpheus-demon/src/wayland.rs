@@ -533,6 +533,9 @@ impl OutputHandler for App {
     }
 
     fn new_output(&mut self, _: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        // Hot-plugged while the launcher is open: it gets a scrim too, so a
+        // click on it closes the launcher like any output already shown had.
+        self.launcher_guarded("output added", |app| app.launcher_output_added(qh, output.clone()));
         self.place(qh, output);
     }
 
@@ -568,6 +571,14 @@ impl OutputHandler for App {
 
 impl LayerShellHandler for App {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // Ownership decided first, outside any guard (task 13 fix round,
+        // review item 2): same reasoning as `scale_factor_changed`. Checked
+        // before the bar's own restore logic below even gets a chance to
+        // read: a launcher surface never goes through it.
+        if self.launcher_owns_surface(layer.wl_surface()) {
+            self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
+            return; // a launcher surface: the bar's restore logic is not involved
+        }
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
         // on, never a stop here. But if the output still exists (see
@@ -594,12 +605,6 @@ impl LayerShellHandler for App {
         // check, a compositor that closed the surface in a loop within one
         // batch (a bug, a protocol violation) could mark the same output
         // more than once before `restore_pending` ever runs.
-        // Ownership decided first, outside any guard (task 13 fix round,
-        // review item 2): same reasoning as `scale_factor_changed`.
-        if self.launcher_owns_surface(layer.wl_surface()) {
-            self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
-            return; // a launcher surface: the bar's restore logic is not involved
-        }
         if let Some(i) = self.index(layer.wl_surface()) {
             let output = self.remove(i);
             let already_pending = self.pending_restore.contains(&output);
@@ -656,17 +661,21 @@ impl SeatHandler for App {
             }
         }
         // A keyboard appearing while the launcher is open (virtual keyboard, a
-        // keyboard plugged in): bind it now. At rest: nothing is bound.
-        if c == Capability::Keyboard && self.launcher_is_open() {
+        // keyboard plugged in): bind it now. At rest: nothing is bound. On a
+        // multi-seat session, only the seat the bar already tracks
+        // (`self.seat`) is ours — a keyboard on another seat is not.
+        if c == Capability::Keyboard && self.launcher_is_open() && self.seat.as_ref() == Some(&seat) {
             self.launcher_bind_keyboard(qh, &seat);
         }
     }
 
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, c: Capability) {
+    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat, c: Capability) {
         if c == Capability::Pointer {
             self.pointer = None;
         }
-        if c == Capability::Keyboard {
+        // Same multi-seat check as `new_capability`: another seat losing its
+        // keyboard must not forget about ours.
+        if c == Capability::Keyboard && self.seat.as_ref() == Some(&seat) {
             self.launcher_release_keyboard();
         }
     }

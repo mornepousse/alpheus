@@ -256,6 +256,7 @@ mod tests {
         assert_eq!(apps.get("never.desktop"), None);
         assert_eq!(commands.get("busy"), Some(&100_000));
         assert!(!commands.contains_key("recent.desktop"), "an app id never leaks into the commands map");
+        assert!(!apps.contains_key("busy"), "a command id never leaks into the apps map");
     }
 
     #[test]

@@ -101,7 +101,19 @@ pub struct Server {
 }
 
 impl Server {
-    /// Removes a stale file (the instance lock guarantees no other daemon), binds, chmod 0600, non-blocking.
+    /// Removes a stale file (the instance lock guarantees no other daemon),
+    /// binds, chmod 0600, non-blocking.
+    ///
+    /// Between the bind call below and the `set_permissions` call right
+    /// after it, the socket briefly exists with whatever mode the umask
+    /// gives it, not yet 0600. The first barrier against that window is not
+    /// this chmod at all: it is `$XDG_RUNTIME_DIR` itself, always created
+    /// 0700 by the session (systemd-logind or equivalent) — no other user
+    /// can even look up the path to reach the socket file during the
+    /// window, whatever its own mode says. The chmod below narrows it
+    /// further, for the owner's other processes and defense in depth, but
+    /// the directory is what makes the window harmless rather than merely
+    /// short.
     pub fn bind(path: &Path) -> io::Result<Server> {
         match std::fs::remove_file(path) {
             Ok(()) => {}
@@ -120,7 +132,8 @@ impl Server {
         self.listener.as_fd()
     }
 
-    /// Ok(None): nothing pending (EAGAIN). A peer with another uid is dropped (logged) → Ok(None).
+    /// Ok(None): nothing taken this time (EAGAIN, refused peer, aborted
+    /// client); the caller must stay level-triggered.
     pub fn accept(&self) -> io::Result<Option<Conn>> {
         let stream = match self.listener.accept() {
             Ok((s, _)) => s,

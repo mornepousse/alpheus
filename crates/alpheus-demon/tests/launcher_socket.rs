@@ -6,13 +6,43 @@
 
 use alpheus_commun::launcher_ipc::{MAX_DMENU_BYTES, Reply, Request, decode_reply, encode_request};
 use alpheus_demon::launcher::socket::{Conn, Progress, REPLY_TIMEOUT, REQUEST_DEADLINE, Server};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::Shutdown;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::os::unix::fs::{FileTypeExt, PermissionsExt};
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
+
+/// Bounds a socket's own blocking receive calls (`accept`, `read`) at the
+/// kernel level: a mutation that drops a `set_nonblocking` call turns
+/// `accept`/`read` genuinely blocking, and without this, a single such
+/// syscall would never return — the polling loops below (`accepted`,
+/// `until_done`) never even get a chance to check their own wall-clock
+/// budget, and the whole suite hangs rather than failing. With
+/// `SO_RCVTIMEO` set, the same genuinely blocking call instead returns
+/// `EAGAIN`/`EWOULDBLOCK` once the timeout elapses — exactly the error a
+/// correctly non-blocking socket already returns immediately — which
+/// `not_blocking` below turns into a clean, bounded failure instead of a
+/// silent, slow pass. It never affects a correctly non-blocking socket,
+/// which already returns immediately regardless of this setting.
+fn set_rcvtimeo(fd: BorrowedFd<'_>, dur: Duration) {
+    let tv = libc::timeval { tv_sec: dur.as_secs() as libc::time_t, tv_usec: dur.subsec_micros() as libc::suseconds_t };
+    // SAFETY: setsockopt(2) reads exactly `size_of::<timeval>()` bytes from
+    // `&tv`, a valid, live `timeval` owned by this frame; `fd` is open for
+    // the whole call.
+    let r = unsafe {
+        libc::setsockopt(
+            fd.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_RCVTIMEO,
+            (&raw const tv).cast(),
+            std::mem::size_of::<libc::timeval>() as libc::socklen_t,
+        )
+    };
+    assert_eq!(r, 0, "setsockopt(SO_RCVTIMEO): {}", io::Error::last_os_error());
+}
 
 /// A temporary 0700 directory, removed on drop.
 struct Dir(PathBuf);
@@ -35,11 +65,34 @@ fn sock(d: &Dir) -> PathBuf {
     d.0.join("launcher.sock")
 }
 
+/// Kernel-level ceiling for the two watchdogs below: a genuinely blocking
+/// `accept`/`read` still returns well before `accepted`/`until_done`'s own
+/// 2 s wall-clock budget runs out, so a mutation shows up as a `not_blocking`
+/// failure, not as the outer "never accepted"/"never completed" one.
+const WATCHDOG: Duration = Duration::from_millis(300);
+
+/// A correctly non-blocking `accept`/`read` that has nothing to give
+/// returns in well under a millisecond: no syscall wait, just `EAGAIN`.
+/// Anything close to `WATCHDOG` means the call actually blocked — `set_nonblocking`
+/// missing somewhere — and `SO_RCVTIMEO` (`set_rcvtimeo`, set on every fd
+/// these tests touch) is the only reason it returned at all instead of
+/// hanging the whole suite. The margin is generous (a fifth of `WATCHDOG`)
+/// for a loaded test machine (nice -19, shared CPU), while staying far
+/// under the genuinely-blocked case.
+fn not_blocking<T>(call: impl FnOnce() -> T) -> T {
+    let t = Instant::now();
+    let r = call();
+    assert!(t.elapsed() < WATCHDOG / 5, "a call that must be non-blocking took {:?}: a set_nonblocking call is missing", t.elapsed());
+    r
+}
+
 /// The listener is non-blocking: retries until the client's connection shows up.
 fn accepted(server: &Server) -> Conn {
+    set_rcvtimeo(server.fd(), WATCHDOG);
     let t = Instant::now();
     loop {
-        if let Some(c) = server.accept().unwrap() {
+        if let Some(c) = not_blocking(|| server.accept().unwrap()) {
+            set_rcvtimeo(c.fd(), WATCHDOG);
             return c;
         }
         assert!(t.elapsed() < Duration::from_secs(2), "no connection accepted");
@@ -50,7 +103,7 @@ fn accepted(server: &Server) -> Conn {
 fn until_done(conn: &mut Conn) -> Progress {
     let t = Instant::now();
     loop {
-        match conn.read() {
+        match not_blocking(|| conn.read()) {
             Progress::Pending => {
                 assert!(t.elapsed() < Duration::from_secs(2), "request never completed");
                 thread::sleep(Duration::from_millis(5));
@@ -89,11 +142,37 @@ fn a_stale_file_is_replaced() {
     assert!(fs::metadata(sock(&d)).unwrap().file_type().is_socket());
 }
 
+/// The realistic case `a_stale_file_is_replaced` only approximates with a
+/// plain text file: a daemon killed without running its own `Drop` (SIGKILL,
+/// a crash) leaves behind a real socket inode, still bound, with nothing
+/// listening on it any more. `Server::bind` must replace it just the same.
+#[test]
+fn a_stale_socket_left_by_a_dead_listener_is_replaced() {
+    let d = dir("stale-socket");
+    let path = sock(&d);
+    {
+        // Simulates the previous daemon's listener: a `UnixListener` whose
+        // `Drop` (unlike `Server`'s) never unlinks its path.
+        let _dead = UnixListener::bind(&path).unwrap();
+    }
+    assert!(fs::metadata(&path).unwrap().file_type().is_socket(), "setup: a real socket file is left behind");
+    let server = Server::bind(&path).unwrap();
+    let mut c = client(&path);
+    c.write_all(&encode_request(&Request::Toggle)).unwrap();
+    let mut conn = accepted(&server);
+    assert!(matches!(until_done(&mut conn), Progress::Ready(Request::Toggle)), "the new listener actually serves connections");
+}
+
 #[test]
 fn accept_returns_none_when_nobody_waits() {
     let d = dir("idle");
     let server = Server::bind(&sock(&d)).unwrap();
-    assert!(server.accept().unwrap().is_none(), "EAGAIN is not an error");
+    // Nobody ever connects here: unlike every other test, there is no later
+    // `accepted()` call to set this up, so it is done directly — a listener
+    // left genuinely blocking (`set_nonblocking` dropped) would otherwise
+    // wait forever, since nothing will ever show up to unblock it.
+    set_rcvtimeo(server.fd(), WATCHDOG);
+    assert!(not_blocking(|| server.accept().unwrap()).is_none(), "EAGAIN is not an error");
 }
 
 #[test]
@@ -107,7 +186,7 @@ fn a_request_sent_byte_by_byte_arrives_whole() {
     for (i, b) in bytes.iter().enumerate() {
         c.write_all(&[*b]).unwrap();
         if i + 1 < bytes.len() {
-            assert!(matches!(conn.read(), Progress::Pending), "byte {i}: not a whole request yet");
+            assert!(matches!(not_blocking(|| conn.read()), Progress::Pending), "byte {i}: not a whole request yet");
         }
     }
     match until_done(&mut conn) {
@@ -139,7 +218,7 @@ fn received_counts_the_bytes_read() {
     c.write_all(b"alpheus-la").unwrap();
     let t = Instant::now();
     while conn.received() < 10 {
-        assert!(matches!(conn.read(), Progress::Pending), "not a whole request yet");
+        assert!(matches!(not_blocking(|| conn.read()), Progress::Pending), "not a whole request yet");
         assert!(t.elapsed() < Duration::from_secs(2), "the bytes never arrived");
         thread::sleep(Duration::from_millis(5));
     }
