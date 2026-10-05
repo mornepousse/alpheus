@@ -75,6 +75,14 @@ breakdown), then the spec of the sub-project currently in progress in
   old-school **screensaver** (visuals only). Guardrail unchanged: alpheus
   never handles sleep or `dpms` — locking and blanking stay triggered by
   hypridle/swayidle, and the DisplayLink power-off risk stays out of scope.
+  How Mae's setup does it today (nixos-config `home/hypr/hypridle.conf`):
+  hypridle (ext-idle-notify) dims at 3 min, `loginctl lock-session` at
+  5 min (→ hyprlock), and at 10 min runs `idle-dpms`, which **skips**
+  `dpms off` whenever `/sys/devices/evdi/count` > 0 (DisplayLink docked)
+  and otherwise calls `wm-set dpms off`; resume is `wm-set dpms on`. So the
+  safe path is: hypridle stays the trigger, alpheus plugs in as commands
+  (`lock_cmd` → the alpheus lock, a listener → the screensaver). Replacing
+  hypridle itself would mean reusing that evdi check — Mae's decision.
 - **Style and themes, for all of alpheus (future, Mae 2026-10-05)**: the flat
   dark look gets tiresome over time — study a richer style (borders, accents,
   depth, transparency, light variants…) and **preset colour themes** for
