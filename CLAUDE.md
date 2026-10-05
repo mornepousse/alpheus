@@ -35,14 +35,17 @@ breakdown), then the spec of the sub-project currently in progress in
   19 tasks) **implemented and merged** on 2026-10-05 after per-task reviews,
   a whole-D-Bus review, two whole-branch reviews and an optimisation round.
   Sound via a supervised `pw-dump -m -N -R` child; NetworkManager, UPower
-  and BlueZ through one read-only zbus connection (allowlisted signals, no
+  and BlueZ through one read-only D-Bus connection (allowlisted signals, no
   activation, per-domain outages); resources from `/proc` and `/sys` every
   2 s. Measured in **release** (the budget tests refuse debug builds):
   startup ≈ 7.9 MB PSS, steady ≈ 9.7 MB, **0 wake-ups at rest**, 8 threads.
-  The transitive crate `blocking` is pinned to 1.6.x in `Cargo.lock`
-  (1.7 keeps an idle thread waking every 500 ms; a test guards it). Real
-  trial on Mae's laptop pending (plan task 18). Possible later memory win:
-  replacing zbus with rustbus (≈ −1.4 MB, measured), not needed for now.
+  Tray plan 1 ([`docs/plans/2026-10-05-alpheus-tray-plan-1.md`](docs/plans/2026-10-05-alpheus-tray-plan-1.md),
+  branch `feat/tray`) moved that connection to **dbus-rs** 0.9 over the
+  system libdbus: zbus, its async stack and `blocking` left the tree (a
+  boundary test guards it); same harness before/after, libdbus shared with
+  the session as installed: startup ≈ 8.4 → 7.0 MB PSS, steady ≈ 9.7 →
+  8.3 MB, 8 → 6 threads (the D-Bus source costs exactly one), 0 wake-ups.
+  Real trial on Mae's session pending (plan task 5).
 - Next, in order: the **app launcher** (integrated in alpheus; prior-art
   research first), then bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then

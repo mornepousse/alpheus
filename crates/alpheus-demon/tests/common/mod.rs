@@ -258,6 +258,13 @@ pub fn start_daemon(sway: &Sway) -> Daemon {
     start_daemon_with(sway, &DaemonOptions::default())
 }
 
+/// The daemon under test: this build's, or the binary named by
+/// `ALPHEUS_DEMON_UNDER_TEST` — to measure another build (the commit before
+/// a change) on exactly the same harness.
+pub fn daemon_binary() -> PathBuf {
+    env::var_os("ALPHEUS_DEMON_UNDER_TEST").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_alpheus-demon")))
+}
+
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     if let Some(text) = o.bar_toml {
@@ -267,7 +274,7 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let bin = fake_pw_dump(sway, o.pw_dump);
     let path = env::join_paths(std::iter::once(bin).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default()))).unwrap();
     let no_bus = format!("unix:path={}", sway.runtime.join("no-system-bus").display());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_alpheus-demon"))
+    let mut child = Command::new(daemon_binary())
         .env_clear()
         .env("PATH", path)
         .env("HOME", &sway.runtime)

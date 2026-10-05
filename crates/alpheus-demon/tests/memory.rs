@@ -17,7 +17,7 @@
 
 mod common;
 
-use common::{Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, start_daemon_with};
+use common::{Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, start_daemon_with};
 use std::time::{Duration, Instant};
 
 const DELAY: Duration = Duration::from_secs(10);
@@ -86,6 +86,7 @@ fn start(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, pw_
 fn pss_under_30mb_and_stable() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("memory");
+    let _workstation = Workstation::serve(&bus);
     let (sway, hypr, d) = start("memory", 3, &bus, Some("[resources]\ninterval = 1\n"), PwDump::Busy);
     // 3 s: startup is over (fonts, pw-dump's first array, the D-Bus initial
     // state, their release_memory): `initial` is a settled figure, which the
@@ -131,6 +132,7 @@ fn pss_under_30mb_and_stable() {
 fn startup_pss_per_source() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("per-source");
+    let _workstation = Workstation::serve(&bus);
     let cases = [
         ("plan 1", "\"workspaces\", \"window\", \"clock\""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
@@ -156,6 +158,7 @@ fn startup_pss_per_source() {
 fn at_rest_no_wakeups() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("rest");
+    let _workstation = Workstation::serve(&bus);
     let (_sway, _hypr, d) = start("rest", 3, &bus, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2)); // end of startup
     let before = d.wakeups();
@@ -236,4 +239,25 @@ fn no_thread_leak_across_system_bus_restarts() {
     eprintln!("threads: {before} before, {after} after two system bus restarts");
     assert_eq!(after, before, "a reconnection leaves no thread behind");
     assert!(after <= 12, "{after} threads");
+}
+
+/// The D-Bus source costs exactly one thread, its own (`D-Bus`): no
+/// executor, reactor or pool thread behind it (zbus had two, plus
+/// `blocking`'s). Same bar but for the three D-Bus modules, on the same
+/// recorded workstation.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_d_bus_source_costs_one_thread() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("one-thread");
+    let _workstation = Workstation::serve(&bus);
+    let without = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let with = "modules = [\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"]\n";
+    let (_s1, _h1, a) = start("one-thread-a", 1, &bus, Some(without), PwDump::Silent);
+    let (_s2, _h2, b) = start("one-thread-b", 1, &bus, Some(with), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(3)); // both settled, the D-Bus initial state read
+    assert!(b.log().iter().all(|l| !l.contains("source down")), "the D-Bus source up: {:?}", b.log());
+    let (ta, tb) = (a.threads(), b.threads());
+    eprintln!("threads: {ta} without the D-Bus modules, {tb} with them");
+    assert_eq!(tb, ta + 1, "the D-Bus source must cost its own thread and nothing else");
 }
