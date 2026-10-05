@@ -13,7 +13,7 @@ use dbus::Message;
 use dbus::arg::{ArgType, Iter};
 use dbus::channel::{BusType, Channel};
 use dbus::message::MessageType;
-use dbus::strings::{ErrorName, Path, Signature};
+use dbus::strings::{BusName, ErrorName, Interface, Path, Signature};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::RawFd;
@@ -144,6 +144,19 @@ fn error(e: dbus::Error) -> io::Error {
         _ => kind_of(name),
     };
     io::Error::new(kind, format!("{name}: {}", e.message().unwrap_or("")))
+}
+
+/// A failed call's outcome, `error` reduced further by whether the
+/// connection itself is still there afterwards. A disconnect while a call
+/// is outstanding can complete it with `NoReply` — the same error name a
+/// silent-but-alive service's timeout also uses (`errors_are_told_by_their_name`)
+/// — which `error` alone would read back as `TimedOut`, an outage
+/// `read_all` would blame on just that one domain (`Outage::Domain`).
+/// `connected` wins over the error's own name: not connected always means
+/// `UnexpectedEof`, so `read_all` reports `Outage::Bus` instead — the
+/// whole state is stale, not just this call's.
+fn call_error(e: dbus::Error, connected: bool) -> io::Error {
+    if connected { error(e) } else { io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed mid-call") }
 }
 
 /// The signature of the argument at `it`, `None` past the last one: dbus
@@ -309,8 +322,16 @@ pub fn signal(m: &Message) -> Signal {
 
 /// The message of a call, never allowed to auto-start its destination: a
 /// second lock on D-Bus activation, besides calling unique names only.
+/// `Message::new_method_call` takes its arguments through `Into<BusName>` /
+/// `Into<Path>` / `Into<Interface>`, whose `&str` impl *unwraps* (dbus-rs
+/// 0.9.12, `strings.rs`): validating here first turns a malformed
+/// `destination` or `path` into an `io::Error`, never a panic of the D-Bus
+/// thread.
 pub fn message(destination: &str, path: &str, m: Method, arg: Option<&str>) -> io::Result<Message> {
-    let mut msg = Message::new_method_call(destination, path, m.interface(), m.name()).map_err(io::Error::other)?;
+    let destination = BusName::new(destination).map_err(io::Error::other)?;
+    let path = Path::new(path).map_err(io::Error::other)?;
+    let interface = Interface::new(m.interface()).map_err(io::Error::other)?;
+    let mut msg = Message::new_method_call(destination, path, interface, m.name()).map_err(io::Error::other)?;
     msg.set_auto_start(false);
     Ok(match arg {
         Some(a) => msg.append1(a),
@@ -357,12 +378,17 @@ impl DbusRsBus {
     }
 
     /// This connection's unique name on the bus.
+    // Test-only: used by `tests/dbus_private_bus.rs` to address a call at
+    // the bar itself (a call it must refuse). No production code reads it.
+    #[doc(hidden)]
     pub fn unique_name(&self) -> &str {
         self.channel.unique_name().unwrap_or("")
     }
 
     /// For tests only: the connection's socket, which the private bus test
     /// checks is close-on-exec (libdbus opens it with SOCK_CLOEXEC).
+    // Test-only: see above.
+    #[doc(hidden)]
     pub fn socket_fd(&mut self) -> RawFd {
         self.channel.set_watch_enabled(true);
         let fd = self.channel.watch().fd;
@@ -372,7 +398,9 @@ impl DbusRsBus {
 
     /// The only way out of this file: a `Method`, never a free method name.
     fn call(&self, destination: &str, path: &str, m: Method, arg: Option<&str>) -> io::Result<Message> {
-        self.channel.send_with_reply_and_block(message(destination, path, m, arg)?, TIMEOUT).map_err(error)
+        self.channel
+            .send_with_reply_and_block(message(destination, path, m, arg)?, TIMEOUT)
+            .map_err(|e| call_error(e, self.channel.is_connected()))
     }
 }
 
@@ -515,6 +543,32 @@ mod tests {
         assert_eq!(r.msg_type(), MessageType::Error);
         assert_eq!(r.read1::<&str>().unwrap(), "the bar answers no call");
         assert_eq!(r.get_reply_serial(), Some(7));
+    }
+
+    /// The private-bus test (`tests/dbus_private_bus.rs`,
+    /// `a_disconnect_mid_call_is_an_outage_never_an_absence`) kills the
+    /// whole bus mid-call and always observes libdbus complete the pending
+    /// call with `Disconnected` (measured: sub-millisecond, every run) —
+    /// already `UnexpectedEof` through `error` alone, so that test cannot
+    /// by itself prove the `connected` check in `call_error` does anything.
+    /// This test pins down the specific case the check exists for: a
+    /// disconnect completing the call with `NoReply` instead (the name a
+    /// silent-but-alive service's own timeout also uses) must still read
+    /// back as `UnexpectedEof`, because `connected` is false — never the
+    /// `TimedOut` that name would otherwise give.
+    #[test]
+    fn a_mid_call_disconnect_tagged_no_reply_is_still_unexpected_eof() {
+        let e = dbus::Error::new_custom("org.freedesktop.DBus.Error.NoReply", "Connection was disconnected before a reply was received");
+        assert_eq!(call_error(e, false).kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn message_rejects_an_invalid_path_without_panicking() {
+        // "not a path": no leading '/' — `Path::new` rejects it; the old
+        // `Into<Path>` conversion would instead unwrap and panic the
+        // D-Bus thread.
+        let err = message(":1.10", "not a path", Method::GetNameOwner, None).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
     }
 
     #[test]

@@ -40,6 +40,12 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
+> **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
+> into (≈ 14 MB) and the hybrid-mode comparison in the shells table
+> (≈ 71 MB) predate the move from zbus to dbus-rs (tray plan 1, step 1):
+> they were measured before the switch. They will be re-measured at Mae's
+> real-world trial of this branch.
+
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
 

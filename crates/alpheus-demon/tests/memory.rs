@@ -245,16 +245,24 @@ fn no_thread_leak_across_system_bus_restarts() {
 /// `timeout` elapses: a bounded wait for "settled" instead of a fixed
 /// sleep, which either undershoots (flaky on a loaded machine) or
 /// overshoots (slow on every run alike) a one-off delay.
+/// Stable means 3 equal consecutive readings, 100 ms apart, never trusted
+/// before 500 ms have passed: a single repeat (the old rule) could land on
+/// a transient plateau mid-startup (a thread about to spawn, between two
+/// polls) and report that count as final.
 fn wait_for_stable_threads(d: &Daemon, timeout: Duration) -> usize {
+    const MIN_WAIT: Duration = Duration::from_millis(500);
+    const STABLE_READINGS: u32 = 3;
     let t = Instant::now();
     let mut last = d.threads();
+    let mut streak = 1;
     loop {
         std::thread::sleep(Duration::from_millis(100));
         let now = d.threads();
-        if now == last || t.elapsed() >= timeout {
+        streak = if now == last { streak + 1 } else { 1 };
+        last = now;
+        if (streak >= STABLE_READINGS && t.elapsed() >= MIN_WAIT) || t.elapsed() >= timeout {
             return now;
         }
-        last = now;
     }
 }
 

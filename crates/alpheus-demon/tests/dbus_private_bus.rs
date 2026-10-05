@@ -260,8 +260,12 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     // The bus goes away with the call still unanswered: never replied.
     b.kill();
     let (kind, elapsed) = rx.recv_timeout(Duration::from_secs(5)).expect("the call must return");
-    assert_ne!(kind, Some(io::ErrorKind::NotFound), "a disconnect mid-call is an outage, not an absence: {kind:?}");
-    assert!(kind.is_some(), "the call must fail, not silently succeed");
+    // Measured every run: killing the whole private bus mid-call makes
+    // libdbus complete the pending call with `Disconnected`, not
+    // `NoReply` (`call_error`'s unit test, dbusrs_bus.rs, pins down the
+    // `NoReply` case this assertion alone cannot reach) — `UnexpectedEof`
+    // either way, never an absence.
+    assert_eq!(kind, Some(io::ErrorKind::UnexpectedEof), "a disconnect mid-call must be tagged UnexpectedEof: {kind:?}");
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     let (next_kind, _) = rx2.recv_timeout(Duration::from_secs(5)).expect("next_signal must also return");
     assert_ne!(next_kind, io::ErrorKind::NotFound, "next_signal after a disconnect must be an outage, not an absence: {next_kind:?}");
