@@ -1,10 +1,14 @@
 //! From state to a screen's grid. Each module produces a segment; segments
 //! are laid out left to right in bar.toml order, separated by "│". The
-//! window module is elastic: it takes the free space (without it, the free
-//! space precedes the last module). Narrow screen: modules disappear by
-//! priority (resources, media, title, then Bluetooth, network, volume,
-//! battery, and last the launcher button); workspaces and the clock always
-//! stay.
+//! window module is elastic: it takes the free space. With no active
+//! window, the window module has no segment at all (no empty "│ │"), but
+//! the free space still goes where it sits in the configured order — just
+//! before the segment that follows it — so the right-hand modules stay
+//! right-aligned instead of collapsing left; only with the window module
+//! absent from the configuration entirely does the free space fall back to
+//! preceding the last module. Narrow screen: modules disappear by priority
+//! (resources, media, title, then Bluetooth, network, volume, battery, and
+//! last the launcher button); workspaces and the clock always stay.
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
@@ -175,23 +179,52 @@ impl Bar {
             }
             segs.retain(|s| s.module != removed);
         }
-        lay_out(&segs, columns)
+        let gap_at = self.window_gap(&segs);
+        lay_out(&segs, columns, gap_at)
+    }
+
+    /// When the window module is configured but has no segment (no active
+    /// window: `window()` returned `None`, so nothing in `segs` is elastic),
+    /// the index in `segs` where its free space belongs: just before the
+    /// segment that follows it in the configured module order, counting
+    /// only modules that actually survived into `segs` (narrow screens may
+    /// have dropped others along the way). `None` when the window module is
+    /// absent from the configuration entirely (the old "before the last
+    /// segment" rule applies then) or when it does have a segment (its own
+    /// elasticity handles the free space).
+    fn window_gap(&self, segs: &[Segment]) -> Option<usize> {
+        if segs.iter().any(|s| s.module == ModuleId::Window) {
+            return None;
+        }
+        let window_pos = self.config.modules.iter().position(|m| *m == ModuleId::Window)?;
+        let before = &self.config.modules[..window_pos];
+        Some(segs.iter().filter(|s| before.contains(&s.module)).count())
     }
 }
 
-pub(crate) fn lay_out(segs: &[Segment], columns: u16) -> Grid {
+pub(crate) fn lay_out(segs: &[Segment], columns: u16, gap_at: Option<usize>) -> Grid {
     let mut g = Grid::empty(columns);
     let end = columns.saturating_sub(MARGIN);
     let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(2 * MARGIN + separators(segs.len()), u16::saturating_add);
     let free = columns.saturating_sub(fixed);
-    // Without an elastic segment, the free space precedes the last segment.
-    let space_before = if segs.iter().any(|s| s.elastic) || segs.len() < 2 { None } else { Some(segs.len() - 1) };
+    let has_elastic = segs.iter().any(|s| s.elastic);
+    // Without an elastic segment, the free space goes where `gap_at` says
+    // (the absent window module's configured position), or, lacking that,
+    // before the last segment.
+    let space_before = if has_elastic || segs.len() < 2 {
+        None
+    } else {
+        match gap_at {
+            Some(i) if i < segs.len() => Some(i),
+            _ => Some(segs.len() - 1),
+        }
+    };
     let mut x = MARGIN;
     for (i, s) in segs.iter().enumerate() {
+        if space_before == Some(i) {
+            x = x.saturating_add(free);
+        }
         if i > 0 {
-            if space_before == Some(i) {
-                x = x.saturating_add(free);
-            }
             x = g.write(x, end, SEPARATOR, Style::MUTED);
         }
         let limit = if s.elastic { x.saturating_add(free).min(end) } else { end };
@@ -221,7 +254,7 @@ mod tests {
     use crate::compositor::{Window, example};
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
     use crate::state::Msg;
-    use crate::system::{Peripheral, PeripheralKind, PowerState};
+    use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -421,5 +454,115 @@ mod tests {
 
         // While waiting or down, "…" / "–" stay shown for both modules
         // (covered by `waiting_and_down`), never removed.
+    }
+
+    /// Launcher, workspaces, window, volume, network, battery, clock — the
+    /// module set from Mae's bug report (mae-feedback.md item 3): with no
+    /// active window, the only elastic segment vanishes, and the free
+    /// space it used to carry must keep tracking its slot in the order.
+    fn bar_with_right_modules() -> Bar {
+        let mut b = bar();
+        b.config.modules = vec![
+            ModuleId::Launcher,
+            ModuleId::Workspaces,
+            ModuleId::Window,
+            ModuleId::Volume,
+            ModuleId::Network,
+            ModuleId::Battery,
+            ModuleId::Clock,
+        ];
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 55, muted: false }) })));
+        b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
+        b.apply(Msg::Battery(Some(PowerState {
+            laptop: Some(Battery { percent: 80, charge: Charge::Discharging }),
+            peripherals: Vec::new(),
+        })));
+        b
+    }
+
+    /// The column of `target`'s first cell, and the text from there to the
+    /// end of the grid (by cell, not by byte: a column does not line up
+    /// with a byte offset into `Grid::text()` once a wide character has
+    /// been written before it).
+    fn tail_from(g: &Grid, target: &Target) -> (u16, String) {
+        let start = (0..g.width()).find(|&x| g.target_at(x) == Some(target)).expect("segment not found");
+        let tail = g.cells()[start as usize..].iter().filter(|c| c.ch != crate::grid::CONT).map(|c| c.ch).collect();
+        (start, tail)
+    }
+
+    #[test]
+    fn with_no_active_window_the_right_hand_modules_stay_right() {
+        let b = bar_with_right_modules(); // bar() already sets an active window (example())
+        let volume = Target::Module(ModuleId::Volume);
+
+        let with_window = b.grid("HDMI-A-1", 100);
+        let (start_with, tail_with) = tail_from(&with_window, &volume);
+
+        let mut b2 = bar_with_right_modules();
+        let mut e = example();
+        e.window = None;
+        b2.apply(Msg::Compositor(Some(e)));
+        let without_window = b2.grid("HDMI-A-1", 100);
+        let (start_without, tail_without) = tail_from(&without_window, &volume);
+
+        assert_eq!(without_window.width(), with_window.width());
+        assert_eq!(start_without, start_with, "volume starts at the same column either way: {}", without_window.text());
+        assert_eq!(tail_without, tail_with, "volume…clock, right-aligned exactly as with a window");
+        assert_eq!(
+            without_window.text().matches('│').count(),
+            with_window.text().matches('│').count() - 1,
+            "one separator fewer: no empty window segment ({})",
+            without_window.text()
+        );
+        insta::assert_snapshot!("no_active_window_right_modules", snapshot(&without_window));
+    }
+
+    #[test]
+    fn narrow_screen_keeps_the_gap_at_the_window_slot_as_modules_are_removed() {
+        // Narrow screens drop modules by priority (REMOVAL: here, network
+        // is the first of this module set to go) on top of the window
+        // module already having no segment. The free space must keep
+        // tracking the window's configured slot through that shrinking,
+        // not fall back to "before the last segment" as soon as anything
+        // else disappears.
+        let mut b = bar_with_right_modules();
+        let mut e = example();
+        e.window = None;
+        b.apply(Msg::Compositor(Some(e)));
+
+        let narrow = (20..100)
+            .rev()
+            .find(|&w| {
+                let t = b.grid("HDMI-A-1", w).text();
+                !t.contains(crate::segments::WIFI) && t.contains('%')
+            })
+            .expect("no width drops exactly the network module while keeping volume and battery");
+        let got = b.grid("HDMI-A-1", narrow);
+        assert_eq!(
+            got.text().matches('│').count(),
+            4,
+            "launcher, workspaces, volume, battery, clock (network dropped, window absent): {}",
+            got.text()
+        );
+
+        // Same surviving modules, built directly without the window module
+        // in the configuration at all: the old "before the last segment"
+        // fallback applies there. The fix's gap must land somewhere else
+        // (right after workspaces), not degrade back to that fallback the
+        // moment a second module is also missing.
+        let mut reference = b.clone();
+        reference.config.modules = vec![ModuleId::Launcher, ModuleId::Workspaces, ModuleId::Volume, ModuleId::Battery, ModuleId::Clock];
+        let old_rule = reference.grid("HDMI-A-1", narrow);
+
+        let volume = Target::Module(ModuleId::Volume);
+        let (vol_at_got, _) = tail_from(&got, &volume);
+        let (vol_at_old_rule, _) = tail_from(&old_rule, &volume);
+        assert!(
+            vol_at_got > vol_at_old_rule,
+            "volume still pushed right by the gap at the window's slot, not stuck against workspaces like the old-rule fallback: got {} vs old-rule {} ({})",
+            vol_at_got,
+            vol_at_old_rule,
+            got.text()
+        );
     }
 }

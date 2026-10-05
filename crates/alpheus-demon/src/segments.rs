@@ -305,7 +305,7 @@ mod tests {
     /// A segment alone, laid out: its text (margins removed) and one style code per cell.
     fn draw(s: &Segment) -> (String, String) {
         let w = s.width();
-        let g = lay_out(std::slice::from_ref(s), w + 2);
+        let g = lay_out(std::slice::from_ref(s), w + 2, None);
         (g.text()[1..].trim_end().to_string(), g.styles()[1..1 + w as usize].to_string())
     }
 
