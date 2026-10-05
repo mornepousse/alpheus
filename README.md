@@ -59,19 +59,28 @@ automatic rollback after 15 s if not confirmed).
 A line of monospace characters on a solid background, modules separated by
 `│`, active item in inverted accent color.
 
+![The alpheus bar, sample data, real font and matugen colours (zoomed ×2, split in two halves)](docs/images/bar.png)
+
 Shipped: **workspaces** (one dot per window, empty workspace dimmed, urgent
 in red, click to go there, wheel to move to the next one), **active
-window** (app icon and title), **clock**. One bar per screen, screens
-plugged and unplugged are tracked live. On a narrow screen, secondary
-modules disappear; workspaces and the clock remain.
+window** (app icon and title), **volume** (gauge, wheel ±5 %, right click
+mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
+battery), **battery** (laptop and peripherals), **resources** (CPU graph,
+memory, temperature), **clock**. Clicking a module opens the matching tab
+of the control center. One bar per screen, screens plugged and unplugged
+are tracked live. On a narrow screen, secondary modules disappear;
+workspaces and the clock remain.
 
-Coming next, in order: sound, network, Bluetooth, battery, resources; then
-system tray (app icons and menus); then now-playing and notifications.
-Then the OSD, then notification toasts.
+Coming next: an integrated **app launcher**, then the system tray (app
+icons and menus), now-playing and notifications, the OSD, notification
+toasts.
 
-The bar only wakes up once a minute and on events. The compositor is only
-**read** (Hyprland or niri event stream); switching workspace goes through
-a configurable command.
+At rest the bar never wakes up except for its timers (the clock, and the
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8 MB of
+memory at start and ≈ 10 MB under load, on three outputs. The compositor
+is only **read** (Hyprland or niri event stream); switching workspace goes
+through a configurable command. Sound comes from `pw-dump`, network,
+battery and Bluetooth from D-Bus (read-only), resources from `/proc`.
 
 ## Build
 
