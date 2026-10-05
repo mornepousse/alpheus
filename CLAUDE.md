@@ -42,9 +42,12 @@ breakdown), then the spec of the sub-project currently in progress in
   Tray plan 1 ([`docs/plans/2026-10-05-alpheus-tray-plan-1.md`](docs/plans/2026-10-05-alpheus-tray-plan-1.md),
   branch `feat/tray`) moved that connection to **dbus-rs** 0.9 over the
   system libdbus: zbus, its async stack and `blocking` left the tree (a
-  boundary test guards it); same harness before/after, libdbus shared with
-  the session as installed: startup ≈ 8.4 → 7.0 MB PSS, steady ≈ 9.7 →
-  8.3 MB, 8 → 6 threads (the D-Bus source costs exactly one), 0 wake-ups.
+  boundary test guards it); same harness before/after — the budget tests
+  now serve the recorded NetworkManager/UPower/BlueZ replies on the private
+  bus, which is why "before" measures ≈ 8.4 MB here rather than delivery 3's
+  7.9 MB above — libdbus shared with the session as installed: startup
+  ≈ 8.4 → 7.0 MB PSS, steady ≈ 9.7 → 8.3 MB, 8 → 6 threads (the D-Bus source
+  costs exactly one), 0 wake-ups.
   Real trial on Mae's session pending (plan task 5).
 - Next, in order: the **app launcher** (integrated in alpheus; prior-art
   research first), then bar step 4 (tray and menus), step 5 (media,

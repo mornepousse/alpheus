@@ -33,7 +33,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Component | Memory | Notes |
 |---|---:|---|
 | Bar daemon, all modules, 3 outputs — at start | ≈ 7.0 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session (≈ 7.3 MB with its own, unshared copy) |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.3 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread, ≈ −1.4 MB vs zbus; ≈ 8.6 MB with an unshared libdbus) |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.3 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread, ≈ −1.4 MB vs zbus (−1.1 MB with an unshared libdbus)) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |

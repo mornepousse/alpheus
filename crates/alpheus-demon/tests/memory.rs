@@ -241,6 +241,23 @@ fn no_thread_leak_across_system_bus_restarts() {
     assert!(after <= 12, "{after} threads");
 }
 
+/// Polls `d.threads()` every 100 ms until two consecutive reads agree, or
+/// `timeout` elapses: a bounded wait for "settled" instead of a fixed
+/// sleep, which either undershoots (flaky on a loaded machine) or
+/// overshoots (slow on every run alike) a one-off delay.
+fn wait_for_stable_threads(d: &Daemon, timeout: Duration) -> usize {
+    let t = Instant::now();
+    let mut last = d.threads();
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let now = d.threads();
+        if now == last || t.elapsed() >= timeout {
+            return now;
+        }
+        last = now;
+    }
+}
+
 /// The D-Bus source costs exactly one thread, its own (`D-Bus`): no
 /// executor, reactor or pool thread behind it (zbus had two, plus
 /// `blocking`'s). Same bar but for the three D-Bus modules, on the same
@@ -255,9 +272,11 @@ fn the_d_bus_source_costs_one_thread() {
     let with = "modules = [\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"]\n";
     let (_s1, _h1, a) = start("one-thread-a", 1, &bus, Some(without), PwDump::Silent);
     let (_s2, _h2, b) = start("one-thread-b", 1, &bus, Some(with), PwDump::Silent);
-    std::thread::sleep(Duration::from_secs(3)); // both settled, the D-Bus initial state read
+    // Bounded poll instead of a fixed sleep: both settled once their thread
+    // count stops changing (the D-Bus initial state read adds nothing further).
+    let ta = wait_for_stable_threads(&a, Duration::from_secs(5));
+    let tb = wait_for_stable_threads(&b, Duration::from_secs(5));
     assert!(b.log().iter().all(|l| !l.contains("source down")), "the D-Bus source up: {:?}", b.log());
-    let (ta, tb) = (a.threads(), b.threads());
     eprintln!("threads: {ta} without the D-Bus modules, {tb} with them");
     assert_eq!(tb, ta + 1, "the D-Bus source must cost its own thread and nothing else");
 }
