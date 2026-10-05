@@ -225,6 +225,53 @@ fn compositor_sockets_opened_only_in_sources() {
     }
 }
 
+/// Mae, 2026-10-05: the launcher's click-outside scrims must keep working
+/// even over a fullscreen game (Hyprland draws its Top layer BENEATH a
+/// fullscreen window — a scrim there would never see the click). Both the
+/// scrims and the box now share the Overlay layer (`surface::scrim_layer`);
+/// within one layer, wlr-layer-shell stacks surfaces by creation order, so
+/// the box must be created AFTER its scrims, not before, or it ends up
+/// stacked beneath them instead of above (review item M2, final review
+/// slice 3). No fake layer-shell exists to exercise the real stacking end to
+/// end, so this checks the one thing that would actually regress it: the two
+/// calls swapped back.
+#[test]
+fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "pub fn launcher_open(");
+    let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
+    let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
+    assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
+}
+
+/// Review item M6, final review slice 3: every seat/keyboard entry point
+/// into launcher code goes through `launcher_guarded`, same as every other
+/// one (host.rs's module doc) — a panic there must close the launcher,
+/// never take the bar down with it. No fake Wayland seat or keyboard exists
+/// to call these trait methods directly in a unit test, so this checks the
+/// one thing that would actually regress it: the guard call disappearing
+/// from the body.
+#[test]
+fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let wayland_prod = production_code(wayland);
+    for (func, call) in [
+        ("fn new_capability(", "launcher_bind_keyboard"),
+        ("fn remove_capability(", "launcher_release_keyboard"),
+        ("fn remove_seat(", "launcher_release_keyboard"),
+    ] {
+        let body = function_body(&wayland_prod, func);
+        assert!(body.contains(call), "{func} must still call {call}: {body}");
+        assert!(body.contains("launcher_guarded("), "{func} must guard its launcher call: {body}");
+    }
+    let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs").1;
+    let surface_prod = production_code(surface);
+    let modifiers = function_body(&surface_prod, "fn update_modifiers(");
+    assert!(modifiers.contains("launcher_guarded("), "update_modifiers must guard its launcher call: {modifiers}");
+}
+
 /// The launcher socket (spec § 3): bound in exactly one place, its file
 /// name only ever built by `launcher_ipc::socket_path` (never spelled out,
 /// so it cannot drift between the daemon and alpheus-launch).
@@ -243,11 +290,15 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
-/// The socket accepts exactly toggle, close and dmenu (spec § 1): this match
-/// has no wildcard, so a fourth request does not compile until this
-/// guardrail (and the review that goes with it) is updated.
+/// Not a behavioural test of the socket itself: this match has no wildcard,
+/// so it is an exhaustive-match tripwire — a fourth `Request` variant stops
+/// THIS FILE compiling until the match below (and the review that goes with
+/// it) is updated, before it could ever reach the socket unexamined (review
+/// item M6, final review slice 1: renamed from
+/// `the_socket_accepts_exactly_three_requests`, which claimed to test the
+/// socket's own behaviour when it only guards this match's exhaustiveness).
 #[test]
-fn the_socket_accepts_exactly_three_requests() {
+fn adding_a_request_variant_must_update_this_exhaustive_match() {
     use alpheus_commun::launcher_ipc::Request;
     fn verb(r: &Request) -> &'static str {
         match r {
@@ -320,6 +371,36 @@ fn production_code(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The brace-matched body of the first function in `text` whose signature
+/// starts with `signature` (e.g. `"fn new_capability("`): same brace-counting
+/// approach as `production_code`, reused here to pull out one function's own
+/// text instead of stripping every test item.
+fn function_body<'a>(text: &'a str, signature: &str) -> &'a str {
+    let at = text.find(signature).unwrap_or_else(|| panic!("{signature} not found"));
+    let open = text[at..].find('{').map(|o| at + o).expect("a function has a body");
+    let mut depth = 0u32;
+    for (j, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[open..open + j + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{signature}: body never closes");
+}
+
+#[test]
+fn function_body_extracts_the_brace_matched_body() {
+    let text = "fn a() { 1 }\nfn b() {\n    if true { 2 } else { 3 }\n}\n";
+    assert_eq!(function_body(text, "fn a("), "{ 1 }");
+    assert_eq!(function_body(text, "fn b("), "{\n    if true { 2 } else { 3 }\n}");
 }
 
 #[test]

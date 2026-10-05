@@ -69,8 +69,11 @@ pub struct RunContext<'a> {
     pub spawner: Spawner,
     /// None: history disabled or no state dir.
     pub history_path: Option<&'a Path>,
-    /// The `$PATH` the scan used (`ScanEnv::path_dirs`; task 12 keeps it in `OpenLauncher`):
-    /// a program is looked up there before it is started.
+    /// The `$PATH` the scan used (`ScanEnv::path_dirs`), kept as the single copy on
+    /// `Launcher::path_dirs` and cloned out by the caller for this borrow (review item M5,
+    /// final review slice 1: this used to say "task 12 keeps it in `OpenLauncher`", stale since
+    /// the model, not `OpenLauncher`, became the single source of truth): a program is looked
+    /// up there before it is started.
     pub path_dirs: &'a [PathBuf],
 }
 

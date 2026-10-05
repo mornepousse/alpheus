@@ -263,11 +263,18 @@ fn spawn_with(env: ScanEnv, run_scan: fn(&ScanEnv) -> Catalog, deliver: impl FnO
     }
     let running = Running;
     std::thread::Builder::new().name(SCAN_THREAD.into()).spawn(move || {
-        let _running = running;
         let catalog = catch_unwind(AssertUnwindSafe(|| run_scan(&env))).unwrap_or_else(|p| {
             log(&format!("launcher scan failed: {}", panic_text(&*p)));
             Catalog::default()
         });
+        // Cleared BEFORE `deliver`, not after (review item M1, final review
+        // slice 1): `deliver` hands the catalog to the event loop (a channel
+        // send), which may already be processed — and so may trigger a
+        // reopen that calls `spawn_scan` again — before this thread's own
+        // stack unwinds. A reopen racing that delivery must see SCAN_RUNNING
+        // already clear and start a fresh scan of its own, not WouldBlock on
+        // a scan that, by the time `deliver` runs, has nothing left to give it.
+        drop(running);
         deliver(catalog);
     })?;
     Ok(())
@@ -643,6 +650,32 @@ mod tests {
     fn stuck_scan(_: &ScanEnv) -> Catalog {
         drop(GATE.lock().unwrap_or_else(|p| p.into_inner()));
         Catalog::default()
+    }
+
+    /// Review item M1, final review slice 1: `SCAN_RUNNING` must be cleared
+    /// BEFORE `deliver` runs, not after — simulated here by having `deliver`
+    /// itself try to start a second scan, exactly like a reopen racing the
+    /// first scan's own delivery. Before the fix, `_running`'s drop was the
+    /// closure's own last statement (after `deliver` returned), so this
+    /// nested attempt would see SCAN_RUNNING still set and be refused
+    /// (WouldBlock) even though the outer scan has nothing left to give it.
+    #[test]
+    fn scan_running_clears_before_deliver_so_a_racing_reopen_is_never_stuck() {
+        let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
+        let empty = || ScanEnv { app_dirs: vec![], path_dirs: vec![], locale: None, desktops: vec![] };
+        let (result_tx, result_rx) = mpsc::channel();
+        let (inner_tx, inner_rx) = mpsc::channel();
+        spawn_with(empty(), scan, move |_catalog| {
+            let started_again = spawn_with(empty(), scan, move |c| inner_tx.send(c).unwrap());
+            result_tx.send(started_again.is_ok()).unwrap();
+        })
+        .unwrap();
+        assert!(
+            result_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "a reopen racing the catalog's delivery must see SCAN_RUNNING already clear, not WouldBlock"
+        );
+        assert_eq!(inner_rx.recv_timeout(Duration::from_secs(5)).unwrap(), Catalog::default());
+        assert!(no_scan_thread_within(Duration::from_secs(1)));
     }
 
     #[test]

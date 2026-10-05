@@ -204,7 +204,9 @@ impl RequestDecoder {
         }
     }
 
-    /// Bytes buffered so far (memory guard tests).
+    /// Bytes buffered so far: test-only (the memory-guard tests below),
+    /// never read by the daemon itself (review item M5, final review
+    /// slice 1).
     pub fn buffered(&self) -> usize {
         self.buf.len()
     }

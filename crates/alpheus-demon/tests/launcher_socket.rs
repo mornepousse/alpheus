@@ -175,6 +175,51 @@ fn accept_returns_none_when_nobody_waits() {
     assert!(not_blocking(|| server.accept().unwrap()).is_none(), "EAGAIN is not an error");
 }
 
+/// Review item M3, final review slice 1: `Server::accept` is wired to
+/// `peer_allowed` through `accept_with`, which lets a test fake a
+/// mismatched peer uid without a second real uid to connect from (`peer_uid`
+/// itself calls `getsockopt(SO_PEERCRED)`, unfakeable here).
+#[test]
+fn accept_with_refuses_a_mismatched_peer_uid() {
+    let d = dir("peer-uid-mismatch");
+    let server = Server::bind(&sock(&d)).unwrap();
+    set_rcvtimeo(server.fd(), WATCHDOG);
+    let mut c = client(&sock(&d));
+    c.write_all(&encode_request(&Request::Toggle)).unwrap();
+    let t = Instant::now();
+    loop {
+        let r = not_blocking(|| server.accept_with(|_| Ok(4242), 1000).unwrap());
+        assert!(r.is_none(), "a mismatched peer uid must never be accepted");
+        if t.elapsed() > Duration::from_millis(200) {
+            break; // plenty of time for the kernel to have delivered the pending connection
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    drop(c);
+}
+
+/// Same wiring, the other way: a peer uid matching `our_uid` is let through
+/// (`peer_allowed`'s own logic, now proven reached through `accept_with`,
+/// not just tested in isolation).
+#[test]
+fn accept_with_allows_a_matching_peer_uid() {
+    let d = dir("peer-uid-match");
+    let server = Server::bind(&sock(&d)).unwrap();
+    set_rcvtimeo(server.fd(), WATCHDOG);
+    let mut c = client(&sock(&d));
+    c.write_all(&encode_request(&Request::Toggle)).unwrap();
+    let t = Instant::now();
+    let mut conn = loop {
+        if let Some(conn) = not_blocking(|| server.accept_with(|_| Ok(1000), 1000).unwrap()) {
+            break conn;
+        }
+        assert!(t.elapsed() < Duration::from_secs(2), "never accepted");
+        thread::sleep(Duration::from_millis(5));
+    };
+    set_rcvtimeo(conn.fd(), WATCHDOG);
+    assert!(matches!(until_done(&mut conn), Progress::Ready(Request::Toggle)));
+}
+
 #[test]
 fn a_request_sent_byte_by_byte_arrives_whole() {
     let d = dir("bytes");

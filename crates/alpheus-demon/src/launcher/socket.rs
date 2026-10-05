@@ -58,6 +58,12 @@ fn describe(e: &IpcError) -> String {
     match e {
         IpcError::TooLarge(what) => format!("request too large ({what})"),
         IpcError::Malformed(m) => format!("malformed request: {m}"),
+        // Unreachable today: `RequestDecoder::feed` never returns this
+        // variant (only `decode_reply`, the CLIENT's own decoder, does) —
+        // a truncated request simply reads as `Progress::Pending`, waiting
+        // for more bytes, until EOF turns it into `Malformed` above. Kept so
+        // the match stays exhaustive if `feed` ever learns to detect a
+        // truncated request itself (review item M5, final review slice 1).
         IpcError::Truncated => "truncated request".to_string(),
     }
 }
@@ -135,6 +141,16 @@ impl Server {
     /// Ok(None): nothing taken this time (EAGAIN, refused peer, aborted
     /// client); the caller must stay level-triggered.
     pub fn accept(&self) -> io::Result<Option<Conn>> {
+        // SAFETY: getuid(2) cannot fail.
+        self.accept_with(peer_uid, unsafe { libc::getuid() })
+    }
+
+    /// `accept` with the peer's uid lookup and our own uid injected: lets a
+    /// test exercise the refusal path with a fake, mismatched peer, without
+    /// a second real uid to connect from (`peer_uid` itself calls
+    /// `getsockopt(SO_PEERCRED)`, unfakeable from inside a test) — review
+    /// item M3, final review slice 1.
+    pub fn accept_with(&self, peer_uid_fn: impl Fn(&UnixStream) -> io::Result<u32>, our_uid: u32) -> io::Result<Option<Conn>> {
         let stream = match self.listener.accept() {
             Ok((s, _)) => s,
             // ECONNABORTED: that one client gave up before the accept; the
@@ -146,10 +162,8 @@ impl Server {
             // caller pauses the listener (launch.rs, `drain_listener`).
             Err(e) => return Err(e),
         };
-        // SAFETY: getuid(2) cannot fail.
-        let ours = unsafe { libc::getuid() };
-        match peer_uid(&stream) {
-            Ok(uid) if peer_allowed(uid, ours) => {}
+        match peer_uid_fn(&stream) {
+            Ok(uid) if peer_allowed(uid, our_uid) => {}
             Ok(uid) => {
                 log(&format!("launcher socket: peer uid {uid} refused"));
                 return Ok(None);

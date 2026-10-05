@@ -96,6 +96,17 @@ fn log_name(name: &str, output: &wl_output::WlOutput) -> String {
     log_text(name, output.id().protocol_id())
 }
 
+/// Whether `seat` is the one the bar tracks (`App::seat`): the same check
+/// repeated in `new_capability`, `remove_capability` and `remove_seat` — on
+/// a multi-seat session, only a change on OUR seat is ours to react to, a
+/// capability lost or gained on another seat is not (review items M3/M4,
+/// final review slice 3). Generic over `PartialEq`, like `should_restore`
+/// below: a `wl_seat::WlSeat` cannot be instantiated outside a real
+/// connection, so this stays testable without Wayland.
+pub(crate) fn tracks_seat<T: PartialEq>(tracked: &Option<T>, seat: &T) -> bool {
+    tracked.as_ref() == Some(seat)
+}
+
 /// Should the bar be restored on `output` after the compositor closed its
 /// surface (`LayerShellHandler::closed`)? Yes if this output is still among
 /// `known`: some compositors close the SURFACE without ever destroying the
@@ -663,9 +674,11 @@ impl SeatHandler for App {
         // A keyboard appearing while the launcher is open (virtual keyboard, a
         // keyboard plugged in): bind it now. At rest: nothing is bound. On a
         // multi-seat session, only the seat the bar already tracks
-        // (`self.seat`) is ours — a keyboard on another seat is not.
-        if c == Capability::Keyboard && self.launcher_is_open() && self.seat.as_ref() == Some(&seat) {
-            self.launcher_bind_keyboard(qh, &seat);
+        // (`self.seat`) is ours — a keyboard on another seat is not. Guarded
+        // (review item M6, final review slice 3): a launcher error here must
+        // close the launcher, never take the bar down with it.
+        if c == Capability::Keyboard && self.launcher_is_open() && tracks_seat(&self.seat, &seat) {
+            self.launcher_guarded("keyboard added", |app| app.launcher_bind_keyboard(qh, &seat));
         }
     }
 
@@ -674,15 +687,21 @@ impl SeatHandler for App {
             self.pointer = None;
         }
         // Same multi-seat check as `new_capability`: another seat losing its
-        // keyboard must not forget about ours.
-        if c == Capability::Keyboard && self.seat.as_ref() == Some(&seat) {
-            self.launcher_release_keyboard();
+        // keyboard must not forget about ours. Guarded, same reason as above.
+        if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
+            self.launcher_guarded("keyboard removed", |app| app.launcher_release_keyboard());
         }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, seat: wl_seat::WlSeat) {
-        if self.seat.as_ref() == Some(&seat) {
+        if tracks_seat(&self.seat, &seat) {
             self.seat = None;
+            // The seat itself is gone, not just one of its capabilities: any
+            // keyboard bound through it (the launcher's, while open) goes
+            // with it — `remove_capability` alone never fires for this case
+            // (review item M3, final review slice 3). Guarded, same reason
+            // as `new_capability`/`remove_capability` above.
+            self.launcher_guarded("seat removed", |app| app.launcher_release_keyboard());
         }
     }
 }
@@ -841,6 +860,16 @@ mod tests {
         let target = target_pool(sum * POOL_OVERSIZE_FACTOR + 1, &[small, large]);
         assert_eq!(target, Some(sum * 2));
         assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
+    }
+
+    /// Review items M3/M4, final review slice 3: the same check used by
+    /// `new_capability`, `remove_capability` and `remove_seat` to tell our
+    /// seat apart from any other on a multi-seat session.
+    #[test]
+    fn tracks_seat_only_matches_the_tracked_one() {
+        assert!(tracks_seat(&Some(1), &1), "the tracked seat");
+        assert!(!tracks_seat(&Some(1), &2), "a different seat");
+        assert!(!tracks_seat(&None, &1), "no seat tracked at all");
     }
 
     #[test]

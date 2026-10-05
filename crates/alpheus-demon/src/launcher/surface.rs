@@ -189,6 +189,32 @@ pub(crate) fn resized_layout(
     }
 }
 
+/// The order `launcher_open` follows when its pool allocation fails: the
+/// reply (if a client is waiting) goes out first; `model` — an argument,
+/// otherwise alive until `launcher_open` itself returns — is dropped next,
+/// since the failed attempt may still have allocated scratch (the ranker's
+/// matrices, a catalog); `release` (`crate::memory::release_memory`,
+/// malloc_trim) runs LAST, so it actually sees those pages freed instead of
+/// running while `model` still holds them (review item M1, final review
+/// slice 3: this used to call `release_memory` BEFORE `model` was dropped).
+/// Pulled out so the order itself is tested, without a real pool, model or
+/// `Pending`.
+pub(crate) fn pool_failure_order(reply: impl FnOnce(), drop_model: impl FnOnce(), release: impl FnOnce()) {
+    reply();
+    drop_model();
+    release();
+}
+
+/// Whether a newly announced output should get a scrim of its own: only
+/// while the launcher is open (closed: nothing to catch a click outside
+/// of) AND only with `wp_viewporter` (`make_scrim`'s own early return
+/// already covers it, this is the decision pulled out in front of it) —
+/// review item M5, final review slice 3. Pulled out so it is tested without
+/// a real output or viewporter.
+pub(crate) fn adds_scrim(open: bool, has_viewporter: bool) -> bool {
+    open && has_viewporter
+}
+
 /// Some(path) unless the history is disabled (`history = 0`).
 pub(crate) fn history_path_for(config: &LauncherConfig, state_dir: &Path) -> Option<PathBuf> {
     (config.history > 0).then(|| history::history_path(state_dir))
@@ -224,6 +250,17 @@ pub(crate) fn open_path_dirs(script: bool, var: impl Fn(&str) -> Option<OsString
 /// happens. Anything else (a dead seat, a protocol error) is.
 pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
     !matches!(e, KeyboardError::Seat(SeatError::UnsupportedCapability(_)))
+}
+
+/// Which wlr-layer-shell layer a scrim uses: `Layer::Overlay`, the SAME
+/// layer as the box — not `Layer::Top`, which Hyprland draws BENEATH a
+/// fullscreen window (Mae, 2026-10-05: she plays fullscreen games on
+/// Hyprland). A scrim on Top would then never see a click at all, silently
+/// breaking "click outside" the moment a game is focused — review item M2,
+/// final review slice 3. Pulled out as its own function so the choice is a
+/// tested value, not just a literal buried in `make_scrim`.
+fn scrim_layer() -> Layer {
+    Layer::Overlay
 }
 
 /// A transparent 1×1 surface covering one output (outside the bar's
@@ -381,23 +418,35 @@ impl App {
             Ok(p) => p,
             Err(e) => {
                 log(&format!("launcher: no shared buffer ({e}), not opened"));
-                // Nothing was actually opened, but the failed attempt may
-                // still have allocated scratch (the model it was handed,
-                // the matcher's matrices): give it back right away rather
-                // than wait for a close that will never happen.
-                crate::memory::release_memory();
-                if let Some(p) = reply {
-                    p.reply(&Reply::Error(format!("the launcher could not open: {e}")));
-                }
+                let message = format!("the launcher could not open: {e}");
+                pool_failure_order(
+                    || {
+                        if let Some(p) = reply {
+                            p.reply(&Reply::Error(message));
+                        }
+                    },
+                    || drop(model),
+                    crate::memory::release_memory,
+                );
                 return;
             }
         };
+        // Scrims created BEFORE the box (Mae, 2026-10-05 — review item M2,
+        // final review slice 3): both now live on `scrim_layer()`, the SAME
+        // layer as the box, instead of the scrims' former `Layer::Top` —
+        // Hyprland draws the Top layer BENEATH a fullscreen window, so a
+        // scrim there would never catch a click while Mae is in a
+        // fullscreen game, and "click outside" would silently stop working.
+        // Within one layer, wlr-layer-shell stacks surfaces by creation
+        // order: created last, the box ends up on top of its own scrims, so
+        // a click actually reaches it instead of being swallowed by a scrim
+        // stacked above it.
+        let scrims = self.launcher_scrims(qh);
         let surface = self.compositor.create_surface(qh);
         let box_layer = self.layers.create_layer_surface(qh, surface, Layer::Overlay, Some(NAMESPACE), named.as_ref());
         box_layer.set_size(size.0, size.1);
         box_layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         box_layer.commit();
-        let scrims = self.launcher_scrims(qh);
         self.launcher_generation += 1;
         let history_path = history_path_for(&model.config, &paths::state_dir());
         self.launcher = Some(OpenLauncher {
@@ -445,7 +494,7 @@ impl App {
     fn make_scrim(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput) -> Option<Scrim> {
         let viewporter = self.viewporter.as_ref()?;
         let surface = self.compositor.create_surface(qh);
-        let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some(SCRIM_NAMESPACE), Some(&output));
+        let layer = self.layers.create_layer_surface(qh, surface, scrim_layer(), Some(SCRIM_NAMESPACE), Some(&output));
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         // 0: placed beside the bar's exclusive zone, never over the bar.
         layer.set_exclusive_zone(0);
@@ -462,7 +511,7 @@ impl App {
     /// existed when it was opened. Closed: nothing to do, no surface created
     /// for an output the launcher may never even be open to see.
     pub(crate) fn launcher_output_added(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput) {
-        if !self.launcher_is_open() {
+        if !adds_scrim(self.launcher_is_open(), self.viewporter.is_some()) {
             return;
         }
         let Some(scrim) = self.make_scrim(qh, output) else { return };
@@ -806,9 +855,15 @@ impl KeyboardHandler for App {
         _: RawModifiers,
         _: u32,
     ) {
-        if let Some(open) = self.launcher.as_mut() {
-            open.mods = Mods { ctrl: m.ctrl, shift: m.shift, alt: m.alt, logo: m.logo };
-        }
+        // Guarded (review item M6, final review slice 3): every other
+        // launcher entry point reached from a Wayland callback already is
+        // (spec § 3) — this one wasn't, so a panic here would have taken the
+        // bar down with it instead of just closing the launcher.
+        self.launcher_guarded("modifiers", |app| {
+            if let Some(open) = app.launcher.as_mut() {
+                open.mods = Mods { ctrl: m.ctrl, shift: m.shift, alt: m.alt, logo: m.logo };
+            }
+        });
     }
 }
 
@@ -896,6 +951,40 @@ mod tests {
         let (w, h) = box_size(&b, 8.25, 22, 1);
         assert!(w <= 400 && h <= 200, "never painted past the configured size: {w} × {h}");
         assert!(b.list_rows >= 1);
+    }
+
+    /// Review item M1, final review slice 3: `release_memory` must run only
+    /// after `model` is already gone, not before — otherwise malloc_trim
+    /// sees nothing new to give back.
+    #[test]
+    fn pool_failure_order_replies_then_drops_the_model_then_releases_memory() {
+        let order: std::cell::RefCell<Vec<&str>> = std::cell::RefCell::new(Vec::new());
+        pool_failure_order(|| order.borrow_mut().push("reply"), || order.borrow_mut().push("drop"), || order.borrow_mut().push("release"));
+        assert_eq!(
+            order.into_inner(),
+            ["reply", "drop", "release"],
+            "the model must be gone before release_memory runs, so it actually frees pages"
+        );
+    }
+
+    /// Review item M2, final review slice 3: the scrims must share the
+    /// box's layer (Overlay), not Top — Hyprland draws Top beneath a
+    /// fullscreen window, which would let a click through to the game
+    /// instead of closing the launcher.
+    #[test]
+    fn scrims_share_the_box_s_overlay_layer_not_top() {
+        assert_eq!(scrim_layer(), Layer::Overlay);
+    }
+
+    /// Review item M5, final review slice 3: a hot-plugged output only gets
+    /// a scrim while the launcher is actually open, and only with
+    /// `wp_viewporter` available.
+    #[test]
+    fn adds_scrim_needs_both_an_open_launcher_and_wp_viewporter() {
+        assert!(adds_scrim(true, true));
+        assert!(!adds_scrim(false, true), "closed: nothing to catch a click outside of");
+        assert!(!adds_scrim(true, false), "no wp_viewporter: make_scrim already returns None either way");
+        assert!(!adds_scrim(false, false));
     }
 
     #[test]

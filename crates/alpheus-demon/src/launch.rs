@@ -48,7 +48,12 @@ const RELEASE_AFTER: usize = 1 << 20;
 /// Mail received by the loop from the other threads.
 pub enum Mail {
     Bar(Msg),
-    /// A finished scan; ignored unless `generation` is the open launcher's.
+    /// A finished scan: adopted by the open launcher if `generation` is its
+    /// own, OR if it has no catalog of its own yet — a reopen racing a
+    /// still-running scan (`scan::catalog_is_current`); otherwise a stale
+    /// scan from a launcher already closed or already fed, ignored (review
+    /// item M5, final review slice 1: this used to say "ignored unless
+    /// generation is the open launcher's", true only for the common case).
     Catalog {
         generation: u64,
         catalog: Catalog,
@@ -233,6 +238,20 @@ fn too_many_connections(inflight: usize) -> bool {
     inflight >= MAX_CONNECTIONS
 }
 
+/// One more connection tracked: the increment half of `watch_connection`'s
+/// inflight bookkeeping, pulled out (alongside `untrack_connection`) so the
+/// count itself — not just the cap check above — is tested without a
+/// socket or calloop (review item M3, final review slice 1).
+fn track_connection(inflight: &Cell<usize>) {
+    inflight.set(inflight.get() + 1);
+}
+
+/// The matching decrement, whatever ends the connection (answered, failed,
+/// expired, or a source that never even got registered).
+fn untrack_connection(inflight: &Cell<usize>) {
+    inflight.set(inflight.get().saturating_sub(1));
+}
+
 /// One pass of the level-triggered listener: takes every pending
 /// connection. An error (EMFILE, ENFILE, ENOBUFS…) stays pending and would
 /// wake the loop again at once: Disable instead (the caller re-enables it
@@ -337,7 +356,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
     };
     let slot = Rc::new(RefCell::new(Some(conn)));
     let deadline: Rc<Cell<Option<RegistrationToken>>> = Rc::new(Cell::new(None));
-    inflight.set(inflight.get() + 1);
+    track_connection(inflight);
     let (s, d, n, h, q) = (slot.clone(), deadline.clone(), inflight.clone(), handle.clone(), qh.clone());
     let read = handle.insert_source(Generic::new(fd, Interest::READ, Mode::Level), move |_, _, state: &mut App| {
         // Taken by the deadline already: the socket was shut down, this is its hang-up.
@@ -374,12 +393,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
         if let Some(t) = d.take() {
             h.remove(t);
         }
-        n.set(n.get() - 1);
+        untrack_connection(&n);
         Ok(PostAction::Remove)
     });
     if let Err(e) = read {
         log(&format!("launcher socket: {}", e.error));
-        inflight.set(inflight.get() - 1);
+        untrack_connection(inflight);
         return;
     }
     let n = inflight.clone();
@@ -388,7 +407,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
             log("launcher socket: request not complete in time, dropped");
             let buffered = conn.received();
             reply_guarded(conn, &Reply::Error("request deadline passed".to_string()));
-            n.set(n.get() - 1);
+            untrack_connection(&n);
             if buffered >= RELEASE_AFTER {
                 crate::memory::release_memory();
             }
@@ -782,6 +801,27 @@ mod tests {
         assert!(!too_many_connections(MAX_CONNECTIONS - 1), "room for one more");
         assert!(too_many_connections(MAX_CONNECTIONS), "already at the limit: the next one is refused");
         assert!(too_many_connections(MAX_CONNECTIONS + 1));
+    }
+
+    /// The inflight count itself, not just the cap check above: tracked and
+    /// released in lockstep, whatever the reason a connection ends (review
+    /// item M3, final review slice 1).
+    #[test]
+    fn inflight_is_tracked_and_released_in_lockstep() {
+        let inflight = Cell::new(0usize);
+        for i in 1..=MAX_CONNECTIONS {
+            assert!(!too_many_connections(inflight.get()), "room for the {i}th connection");
+            track_connection(&inflight);
+            assert_eq!(inflight.get(), i);
+        }
+        assert!(too_many_connections(inflight.get()), "at the cap: the next one is refused");
+        untrack_connection(&inflight);
+        assert_eq!(inflight.get(), MAX_CONNECTIONS - 1, "one released");
+        assert!(!too_many_connections(inflight.get()), "room again");
+        for _ in 0..MAX_CONNECTIONS {
+            untrack_connection(&inflight);
+        }
+        assert_eq!(inflight.get(), 0, "never goes negative: saturating");
     }
 
     /// accept() keeps failing (EMFILE: the error stays pending on a
