@@ -225,6 +225,41 @@ fn compositor_sockets_opened_only_in_sources() {
     }
 }
 
+/// The launcher socket (spec § 3): bound in exactly one place, its file
+/// name only ever built by `launcher_ipc::socket_path` (never spelled out,
+/// so it cannot drift between the daemon and alpheus-launch).
+#[test]
+fn the_launcher_socket_is_bound_only_in_socket_rs() {
+    let mut binds = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if prod.contains("UnixListener::bind") {
+            assert_eq!(name, "launcher/socket.rs", "a listening socket bound in {name}");
+            binds += prod.matches("UnixListener::bind").count();
+        }
+        assert!(!t.contains("alpheus-launcher.sock"), "socket name spelled out in {name}: use launcher_ipc::socket_path");
+    }
+    assert_eq!(binds, 1, "the launcher socket is bound once");
+}
+
+/// The socket accepts exactly toggle, close and dmenu (spec § 1): this match
+/// has no wildcard, so a fourth request does not compile until this
+/// guardrail (and the review that goes with it) is updated.
+#[test]
+fn the_socket_accepts_exactly_three_requests() {
+    use alpheus_commun::launcher_ipc::Request;
+    fn verb(r: &Request) -> &'static str {
+        match r {
+            Request::Toggle => "toggle",
+            Request::Close => "close",
+            Request::Dmenu { .. } => "dmenu",
+        }
+    }
+    let all = [Request::Toggle, Request::Close, Request::Dmenu { prompt: None, lines: vec![] }];
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu"]);
+}
+
 /// Production code of a file: everything EXCEPT the item that follows each
 /// `#[cfg(test)]` (a function, a `mod tests { … }` module, a fixture module
 /// like `sources/hypr.rs::fake`…, or a brace-less one like

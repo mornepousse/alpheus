@@ -11,6 +11,7 @@ pub mod matching;
 pub mod model;
 pub mod run;
 pub mod scan;
+pub mod socket;
 pub mod view;
 
 /// Test helpers shared by the launcher's modules.
