@@ -68,6 +68,13 @@ breakdown), then the spec of the sub-project currently in progress in
 - Next, in order: bar step 4 (tray and menus), step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
+- **Later, goal "replace as many costly pieces as possible" (Mae,
+  2026-10-05)**: a **lock screen** replacing hyprlock (measure hyprlock's
+  memory first; `ext-session-lock-v1`; its own process, so a crash never
+  unlocks the session; prior-art research first) and, as a bonus, an
+  old-school **screensaver** (visuals only). Guardrail unchanged: alpheus
+  never handles sleep or `dpms` — locking and blanking stay triggered by
+  hypridle/swayidle, and the DisplayLink power-off risk stays out of scope.
 - **Style and themes, for all of alpheus (future, Mae 2026-10-05)**: the flat
   dark look gets tiresome over time — study a richer style (borders, accents,
   depth, transparency, light variants…) and **preset colour themes** for
