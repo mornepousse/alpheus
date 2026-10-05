@@ -43,6 +43,8 @@ fn percent(p: &Props) -> u8 {
 const LEVEL_NONE: i64 = 1;
 const LEVEL_LOW: i64 = 3;
 const LEVEL_CRITICAL: i64 = 4;
+/// Below Critical: the level at which the system takes action.
+const LEVEL_ACTION: i64 = 5;
 
 /// A peripheral's charge from its `BatteryLevel`: `(percent, low)`. The
 /// property absent reads as `None`, same as an explicit `LEVEL_NONE` (e.g.
@@ -53,7 +55,7 @@ const LEVEL_CRITICAL: i64 = 4;
 fn peripheral_charge(p: &Props) -> (Option<u8>, bool) {
     match p.int("BatteryLevel") {
         None | Some(LEVEL_NONE) => (Some(percent(p)), false),
-        Some(LEVEL_LOW | LEVEL_CRITICAL) => (None, true),
+        Some(LEVEL_LOW | LEVEL_CRITICAL | LEVEL_ACTION) => (None, true),
         Some(_) => (None, false),
     }
 }
@@ -124,7 +126,7 @@ mod tests {
             (2, (None, false)),      // Discharging (coarse, not low)
             (3, (None, true)),       // Low
             (4, (None, true)),       // Critical
-            (5, (None, false)),      // Action
+            (5, (None, true)),       // Action (below Critical)
             (6, (None, false)),      // Normal
             (7, (None, false)),      // High
             (8, (None, false)),      // Full
