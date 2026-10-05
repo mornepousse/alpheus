@@ -6,6 +6,7 @@
 pub mod config;
 pub mod desktop;
 pub mod history;
+pub mod scan;
 
 /// Test helpers shared by the launcher's modules.
 #[cfg(test)]

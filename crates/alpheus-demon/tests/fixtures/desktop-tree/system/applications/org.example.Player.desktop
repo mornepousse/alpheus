@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=example player
+Exec=example-player %U
