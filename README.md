@@ -96,7 +96,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Dock, desktop widgets | 💭 | ➖ | ✅ | ❌ | ❌ |
 | Screenshots, recording | 💭 | ➖ | ➖ | ❌ | ❌ |
 | Idle and power management | ❌ left to hypridle (DisplayLink safety) | ✅ | ✅ | ✅ | ➖ |
-| Compositors | Hyprland, niri | 7 | 6 | wlroots | wlroots |
+| Shows on (layer-shell compositors: Hyprland, niri, sway, river, labwc…) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Workspaces and windows read from | Hyprland, niri | 7 compositors | 6 compositors | Hyprland, niri, sway | many (one module each) |
 | Extensions | script mode, no plugin API | ✅ | ✅ ~100 | ❌ | ➖ |
 
 ¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. Other shells'
