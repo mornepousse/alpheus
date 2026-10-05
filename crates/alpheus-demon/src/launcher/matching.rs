@@ -385,30 +385,39 @@ impl Ranker {
         hits
     }
 
-    /// Empty query: windows in the compositor's order, then apps (or commands) by frecency
-    /// then name — sliced from `Prepared`'s precomputed order (O(results shown), not a fresh
-    /// sort), or the dmenu lines as given.
+    /// Empty query: apps (or commands) by frecency then name first — sliced from `Prepared`'s
+    /// precomputed order (O(results shown), not a fresh sort) — then open windows in the
+    /// compositor's order (Mae, 2026-10-05: an empty query is about what you launch most, not
+    /// about what happens to be open right now), or the dmenu lines as given.
     fn everything(&mut self, q: &Query, pr: &Prepared) -> Vec<Hit> {
         let mut hits = Vec::new();
+        if matches!(q.mode, Mode::All | Mode::Apps) {
+            // The final `rank` truncates to MAX_RESULTS anyway: never build more of the
+            // precomputed order than could survive that truncation.
+            let remaining = MAX_RESULTS.saturating_sub(hits.len());
+            hits.extend(pr.apps_empty_order.iter().take(remaining).map(|&i| {
+                let i = i as usize;
+                Hit { source: Source::App(i), score: 0, frecency: pr.app_frecency[i] }
+            }));
+        }
         if matches!(q.mode, Mode::All | Mode::Windows) {
             for i in 0..q.windows.len() {
                 hits.push(Hit { source: Source::Window(i), score: 0, frecency: pr.window_frecency(i) });
             }
         }
-        // The final `rank` truncates to MAX_RESULTS anyway: never build more of the
-        // precomputed order than could survive that truncation.
-        let remaining = MAX_RESULTS.saturating_sub(hits.len());
         match q.mode {
-            Mode::All | Mode::Apps => hits.extend(pr.apps_empty_order.iter().take(remaining).map(|&i| {
-                let i = i as usize;
-                Hit { source: Source::App(i), score: 0, frecency: pr.app_frecency[i] }
-            })),
-            Mode::Commands => hits.extend(pr.commands_empty_order.iter().take(remaining).map(|&i| {
-                let i = i as usize;
-                Hit { source: Source::Command(i), score: 0, frecency: pr.command_frecency[i] }
-            })),
-            Mode::Script => hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 })),
-            Mode::Windows => {}
+            Mode::Commands => {
+                let remaining = MAX_RESULTS.saturating_sub(hits.len());
+                hits.extend(pr.commands_empty_order.iter().take(remaining).map(|&i| {
+                    let i = i as usize;
+                    Hit { source: Source::Command(i), score: 0, frecency: pr.command_frecency[i] }
+                }));
+            }
+            Mode::Script => {
+                let remaining = MAX_RESULTS.saturating_sub(hits.len());
+                hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 }));
+            }
+            Mode::All | Mode::Apps | Mode::Windows => {}
         }
         hits
     }
@@ -806,8 +815,8 @@ mod tests {
         l.history = history(&[("app:Alacritty.desktop", 1), ("cmd:cat", 1)]);
         assert_eq!(
             l.sources(Mode::All, ""),
-            [Source::Window(0), Source::Window(1), Source::App(2), Source::App(4), Source::App(1), Source::App(0), Source::App(3)],
-            "windows as given, then apps by frecency then name (Café Noir, Files, Firefox, VSCodium)"
+            [Source::App(2), Source::App(4), Source::App(1), Source::App(0), Source::App(3), Source::Window(0), Source::Window(1)],
+            "apps by frecency then name (Alacritty, Café Noir, Files, Firefox, VSCodium), then windows as given"
         );
         assert_eq!(l.sources(Mode::Windows, ""), [Source::Window(0), Source::Window(1)]);
         assert_eq!(l.sources(Mode::Commands, ""), [Source::Command(2), Source::Command(0), Source::Command(1)]);
@@ -919,7 +928,8 @@ mod tests {
         r.forget_windows();
         let hits = r.rank(&l.query(Mode::All, ""));
         assert_eq!((r.preparations, r.window_preparations), (1, 1), "catalog kept, only the window link refreshed");
-        assert_eq!(hits[0], Hit { source: Source::Window(0), score: 0, frecency: 0 }, "no longer linked to Firefox's frecency");
+        let window_hit = hits.iter().find(|h| matches!(h.source, Source::Window(_))).copied().unwrap();
+        assert_eq!(window_hit, Hit { source: Source::Window(0), score: 0, frecency: 0 }, "no longer linked to Firefox's frecency");
 
         r.rank(&l.query(Mode::All, ""));
         assert_eq!((r.preparations, r.window_preparations), (1, 1), "a second rank reuses what was just refreshed");
@@ -1079,11 +1089,11 @@ mod tests {
         let fre = |i: usize| app_frecency.get(apps[i].id.as_str()).copied().unwrap_or(0);
         let mut expected_apps: Vec<usize> = (0..apps.len()).collect();
         expected_apps.sort_by(|&a, &b| fre(b).cmp(&fre(a)).then_with(|| cmp_ci(&apps[a].name, &apps[b].name)).then(a.cmp(&b)));
-        let expected3: Vec<Source> = (0..windows.len()).map(Source::Window).chain(expected_apps.into_iter().map(Source::App)).collect();
+        let expected3: Vec<Source> = expected_apps.into_iter().map(Source::App).chain((0..windows.len()).map(Source::Window)).collect();
         assert_eq!(
             actual3.iter().map(|h| h.source).collect::<Vec<_>>(),
             expected3,
-            "empty query: windows as given, then apps by frecency then name"
+            "empty query: apps by frecency then name, then windows as given"
         );
     }
 }

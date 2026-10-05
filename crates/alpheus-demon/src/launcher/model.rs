@@ -20,13 +20,14 @@ pub enum Activation {
         action: Option<usize>,
     },
     Window(usize),
-    /// A $PATH command, by itself (never through `sh -c`); terminal: inside
-    /// the configured terminal (Ctrl+Enter).
+    /// A $PATH command, by itself (never through `sh -c`); terminal: held open in the
+    /// configured terminal (Enter, `terminal_hold`); false: detached, no terminal (Ctrl+Enter).
     Command {
         index: usize,
         terminal: bool,
     },
-    /// Typed text run through `sh -c` (Commands mode only); terminal: inside the configured terminal.
+    /// Typed text run through `sh -c` (Commands mode only); terminal: held open in the
+    /// configured terminal (Enter, `terminal_hold`); false: detached, no terminal (Ctrl+Enter).
     Shell {
         text: String,
         terminal: bool,
@@ -334,6 +335,9 @@ impl Launcher {
         }
     }
 
+    /// Enter: opens an app, focuses a window, picks a dmenu line — and, for a command or typed
+    /// shell text, runs it held open in the configured terminal (`terminal_hold`, Mae
+    /// 2026-10-05: the command's output stays on screen after it exits).
     fn primary(&self) -> Outcome {
         let hit = self.selected_hit();
         match self.mode {
@@ -342,24 +346,27 @@ impl Launcher {
                 _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose(self.query.clone())),
                 _ => Outcome::Nothing,
             },
-            Mode::Commands if hit.is_none() || self.query.contains(char::is_whitespace) => self.shell(false),
+            Mode::Commands if hit.is_none() || self.query.contains(char::is_whitespace) => self.shell(true),
             _ => match hit.map(|h| h.source) {
                 Some(Source::App(index)) => Outcome::Activate(Activation::App { index, action: None }),
                 Some(Source::Window(i)) => Outcome::Activate(Activation::Window(i)),
-                Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: false }),
+                Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: true }),
                 Some(Source::Line(i)) => Outcome::Activate(Activation::Choose(self.lines[i].clone())),
                 None => Outcome::Nothing,
             },
         }
     }
 
+    /// Ctrl+Enter: an app's first `.desktop` action (or its main Exec without one), a window as
+    /// Enter — and, for a command or typed shell text, runs it detached with no terminal at all
+    /// (Mae 2026-10-05).
     fn secondary(&self) -> Outcome {
         let hit = self.selected_hit().map(|h| h.source);
         match (self.mode, hit) {
             (Mode::Commands, Some(Source::Command(index))) if !self.query.contains(char::is_whitespace) => {
-                Outcome::Activate(Activation::Command { index, terminal: true })
+                Outcome::Activate(Activation::Command { index, terminal: false })
             }
-            (Mode::Commands, _) => self.shell(true),
+            (Mode::Commands, _) => self.shell(false),
             (_, Some(Source::App(index))) => {
                 let action = self.app_has_actions(index).then_some(0);
                 Outcome::Activate(Activation::App { index, action })
@@ -546,7 +553,8 @@ mod tests {
 
     #[test]
     fn moving_clamps_without_wrapping_and_keeps_the_selection_visible() {
-        let mut l = launcher(); // 3 windows + 3 apps
+        let mut l = launcher(); // 3 apps + 3 windows
+        l.key(Key::Home); // the top result (the default selection quirk above picks a window instead)
         l.set_list_rows(2);
         assert_eq!(l.key(Key::Up), Outcome::Nothing, "no wrap at the top");
         assert_eq!(l.key(Key::CtrlP), Outcome::Nothing);
@@ -604,6 +612,8 @@ mod tests {
     #[test]
     fn enter_activates_the_selection_escape_closes() {
         let mut l = launcher();
+        // Default selection: the window `for_apps` started on, kept by identity through
+        // `set_catalog` even though apps now list before it (Mae, 2026-10-05).
         assert_eq!(l.key(Key::Enter), activate(Activation::Window(0)));
         l.key(Key::Tab);
         l.key(Key::Down);
@@ -621,7 +631,10 @@ mod tests {
         assert_eq!(l.key(Key::CtrlEnter), activate(Activation::App { index: 0, action: Some(0) }));
         l.key(Key::Up); // Files
         assert_eq!(l.key(Key::CtrlEnter), activate(Activation::App { index: 1, action: None }));
-        l.key(Key::BackTab); // All: windows first
+        l.key(Key::BackTab); // All: apps first (default selection), then windows
+        for _ in 0..3 {
+            l.key(Key::Down); // past the 3 apps
+        }
         assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Window(0)), "a window: as Enter");
     }
 
@@ -630,18 +643,22 @@ mod tests {
         let mut l = launcher();
         typed(&mut l, ">");
         typed(&mut l, "hto");
-        assert_eq!(l.key(Key::Enter), activate(Activation::Command { index: 2, terminal: false }), "htop selected");
+        assert_eq!(l.key(Key::Enter), activate(Activation::Command { index: 2, terminal: true }), "htop selected: held in the terminal");
         assert_eq!(
             l.key(Key::CtrlEnter),
-            activate(Activation::Command { index: 2, terminal: true }),
-            "in the terminal, by itself: never through sh -c"
+            activate(Activation::Command { index: 2, terminal: false }),
+            "detached, by itself: never through sh -c"
         );
         typed(&mut l, "p -d 5");
-        assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: "htop -d 5".into(), terminal: false }), "whitespace: the shell");
-        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Shell { text: "htop -d 5".into(), terminal: true }));
+        assert_eq!(
+            l.key(Key::Enter),
+            activate(Activation::Shell { text: "htop -d 5".into(), terminal: true }),
+            "whitespace: the shell, held in the terminal"
+        );
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Shell { text: "htop -d 5".into(), terminal: false }), "detached");
         l.key(Key::CtrlU);
         typed(&mut l, "zzzz");
-        assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: "zzzz".into(), terminal: false }), "no selection: the shell");
+        assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: "zzzz".into(), terminal: true }), "no selection: the shell");
         l.key(Key::CtrlU);
         typed(&mut l, "  ");
         assert_eq!(l.key(Key::Enter), Outcome::Nothing, "blanks only: nothing to run");
@@ -695,6 +712,8 @@ mod tests {
     #[test]
     fn a_window_list_change_keeps_the_selected_window() {
         let mut l = launcher();
+        l.key(Key::Tab);
+        l.key(Key::Tab); // Windows mode: only windows listed
         l.key(Key::Down);
         l.key(Key::Down); // Window(2), "notes"
         let mut w = windows();
@@ -709,6 +728,8 @@ mod tests {
     #[test]
     fn a_window_inserted_before_the_selected_one_keeps_it_selected() {
         let mut l = launcher();
+        l.key(Key::Tab);
+        l.key(Key::Tab); // Windows mode: only windows listed
         l.key(Key::Down);
         l.key(Key::Down); // Window(2), "notes" (selector "id:3")
         let mut w = windows();
@@ -756,9 +777,9 @@ mod tests {
     #[test]
     fn clicks_and_wheel() {
         let mut l = launcher();
-        assert_eq!(l.click(4, false), activate(Activation::App { index: 0, action: None }), "result 4: Firefox (All, empty query)");
-        assert_eq!(l.selected, 4);
-        assert_eq!(l.click(4, true), activate(Activation::App { index: 0, action: Some(0) }), "secondary click: its action");
+        assert_eq!(l.click(1, false), activate(Activation::App { index: 0, action: None }), "result 1: Firefox (All, empty query)");
+        assert_eq!(l.selected, 1);
+        assert_eq!(l.click(1, true), activate(Activation::App { index: 0, action: Some(0) }), "secondary click: its action");
         assert_eq!(l.click(99, false), Outcome::Nothing, "below the last result");
         assert_eq!(l.click_mode(Mode::Commands), Outcome::Redraw);
         assert_eq!(l.mode, Mode::Commands);
@@ -774,6 +795,7 @@ mod tests {
     #[test]
     fn a_message_lasts_until_the_next_key() {
         let mut l = launcher();
+        l.key(Key::Home); // the top result, whatever it is (ignores the default-selection quirk below)
         l.show_message("firefox: not found".into());
         assert_eq!(l.message.as_deref(), Some("firefox: not found"));
         assert_eq!(l.key(Key::Up), Outcome::Redraw, "nothing moved, but the message goes");

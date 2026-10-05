@@ -188,7 +188,7 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
 fn help_text(l: &Launcher) -> &'static str {
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
-        Mode::Commands => "enter run · ctrl+enter terminal · tab mode · esc close",
+        Mode::Commands => "enter run in terminal · ctrl+enter run in background · tab mode · esc close",
         _ => "enter open · ctrl+enter action · tab mode · esc close",
     }
 }
@@ -290,10 +290,10 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push((c.clone(), Style::BOLD_ACCENT));
                 let path = command_path(&l.path_dirs, c).map(|p| p.display().to_string()).unwrap_or_else(|| "command on $PATH".into());
                 out.push((path, Style::MUTED));
-                // Review the real model (task 8, `Launcher::primary`): a selected $PATH
-                // command's Enter runs it directly (`terminal: false`); only Ctrl+Enter
-                // wraps it in the terminal. The hint names what Enter actually does.
-                out.push(("enter  run".to_string(), Style::NORMAL));
+                // The real model (`Launcher::primary`/`secondary`, Mae 2026-10-05): Enter holds
+                // it open in the configured terminal; Ctrl+Enter runs it detached, no terminal.
+                out.push(("enter  run in terminal".to_string(), Style::NORMAL));
+                out.push(("ctrl+enter  run in background".to_string(), Style::NORMAL));
             }
         }
         Source::Line(i) => out.extend(wrap(&l.lines[i], width).into_iter().map(|t| (t, Style::NORMAL))),
@@ -483,10 +483,13 @@ mod tests {
     }
 
     #[test]
-    fn all_mode_lists_windows_then_apps() {
+    fn all_mode_lists_apps_then_windows() {
         let mut l = launcher();
         let (b, rows) = draw(&mut l, 100);
-        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the first window's preview");
+        // The window `for_apps` started on stays selected by identity once the catalog
+        // arrives (Mae, 2026-10-05: apps now list before it), so the panel still fills with
+        // its preview even though it is no longer the first row.
+        assert_eq!((b.columns, b.preview_columns), (97, PREVIEW_COLUMNS), "the panel reserved, filled: the selected window's preview");
         insta::assert_snapshot!("all", snapshot(&rows));
     }
 

@@ -508,8 +508,9 @@ fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&s
 /// Enter and Ctrl+Enter, typed shell text, under both spawners — only runs
 /// the shapes of the allowlist (Global Constraints): an app's argv, alone
 /// or in its systemd scope, after the terminal for Terminal=true; a $PATH
-/// command; `sh -c` only from the Commands mode; the focus template, never
-/// wrapped. And each shape is reached.
+/// command, alone (Ctrl+Enter, detached) or held in the terminal (Enter,
+/// `terminal_hold`); `sh -c` only from the Commands mode, alone or held the
+/// same way; the focus template, never wrapped. And each shape is reached.
 #[test]
 fn every_launcher_activation_stays_on_the_allowlist() {
     let catalog = Catalog {
@@ -542,7 +543,8 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     }
     let path_dirs = [bin.clone()];
     let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window", "htop", "nvim"];
-    let terminal_commands = ["foot -e htop", "foot -e nvim"];
+    // Enter on a command: held open in the terminal (`terminal_hold`, Mae 2026-10-05).
+    let terminal_hold_commands = ["foot --hold -e htop", "foot --hold -e nvim"];
     let focus = ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"];
     let scope = format!("{} ", SYSTEMD_RUN.join(" "));
     let mut seen = Vec::new();
@@ -593,13 +595,15 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                         panic!("the focus template wrapped or altered: {c}")
                     } else if apps.contains(&unwrapped) {
                         "program"
-                    } else if terminal_commands.contains(&unwrapped) {
+                    } else if terminal_hold_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
-                        "terminal command"
-                    } else if let Some(text) = unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot -e sh -c -- ")) {
+                        "terminal hold command"
+                    } else if let Some(text) =
+                        unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
+                    {
                         assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
                         assert_eq!(text, "ls -la", "only typed text goes through the shell: {c}");
-                        if unwrapped.starts_with("sh") { "shell" } else { "terminal shell" }
+                        if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
                     } else {
                         panic!("command outside the allowlist: {c}")
                     };
@@ -608,9 +612,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
         }
     }
-    for expected in
-        [("program", true), ("program", false), ("terminal command", true), ("shell", true), ("terminal shell", false), ("focus", false)]
-    {
+    for expected in [
+        ("program", true),
+        ("program", false),
+        ("terminal hold command", true),
+        ("shell", true),
+        ("terminal hold shell", false),
+        ("focus", false),
+    ] {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");

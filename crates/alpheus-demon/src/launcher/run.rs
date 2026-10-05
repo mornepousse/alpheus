@@ -148,13 +148,13 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
         }
         Activation::Command { index, terminal } => {
             let name = l.catalog.as_ref().and_then(|c| c.commands.get(index)).ok_or_else(gone)?.clone();
-            // By itself, never through `sh -c`: the terminal runs the name as its argv.
-            let terminal = if terminal { &l.config.terminal[..] } else { &[] };
+            // By itself, never through `sh -c`: the held terminal runs the name as its argv.
+            let terminal = if terminal { &l.config.terminal_hold[..] } else { &[] };
             launch(ctx, terminal.iter().cloned().chain([name.clone()]).collect())?;
             remember(l, ctx, &command_key(&name));
         }
         Activation::Shell { text, terminal } => {
-            let terminal = terminal.then_some(&l.config.terminal[..]);
+            let terminal = terminal.then_some(&l.config.terminal_hold[..]);
             launch(ctx, shell_argv(&text, terminal))?;
         }
         Activation::Window(i) => {
@@ -375,7 +375,7 @@ mod tests {
         let missing_bin = stubs("missing-bin", &["htop"]);
         let only_htop = [missing_bin.to_path_buf()];
         let f = FakeExecutor::new();
-        for c in ["firefox", "foot -e btop", "foot -e htop", "/opt/none/abs", "sh -c -- ls"] {
+        for c in ["firefox", "foot -e btop", "foot --hold -e htop", "/opt/none/abs", "sh -c -- ls"] {
             f.ok(&format!("{SCOPE} {c}"), ""); // systemd-run itself would start: the failure would come later, unseen
         }
         let c = RunContext { exec: &f, spawner: Spawner::SystemdScope, history_path: Some(&h), path_dirs: &only_htop };
@@ -419,13 +419,15 @@ mod tests {
         let bin = bin("commands");
         let dirs = [bin.to_path_buf()];
         let f = FakeExecutor::new();
-        for c in ["htop", "foot -e htop", "sh -c -- htop -d 5", "foot -e sh -c -- htop -d 5"] {
+        for c in ["htop", "foot --hold -e htop", "sh -c -- htop -d 5", "foot --hold -e sh -c -- htop -d 5"] {
             f.ok(&format!("{SCOPE} {c}"), "");
         }
         let d = TempDir::new("run-commands-state");
         let h = d.join("launcher-history");
         let mut l = launcher();
         let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
+        // terminal: true held the running command open on screen (Enter); false: detached, no
+        // terminal at all (Ctrl+Enter) — Mae, 2026-10-05.
         assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: false }, &c), Ok(Done::Close));
         assert_eq!(perform(&mut l, Activation::Command { index: 0, terminal: true }, &c), Ok(Done::Close));
         assert_eq!(perform(&mut l, Activation::Shell { text: "htop -d 5".into(), terminal: false }, &c), Ok(Done::Close));
@@ -434,11 +436,11 @@ mod tests {
             f.calls(),
             [
                 format!("{SCOPE} htop"),
-                format!("{SCOPE} foot -e htop"),
+                format!("{SCOPE} foot --hold -e htop"),
                 format!("{SCOPE} sh -c -- htop -d 5"),
-                format!("{SCOPE} foot -e sh -c -- htop -d 5")
+                format!("{SCOPE} foot --hold -e sh -c -- htop -d 5")
             ],
-            "a $PATH command in the terminal: its name as argv, never sh -c"
+            "a $PATH command held in the terminal: its name as argv, never sh -c"
         );
         let text = std::fs::read_to_string(&h).unwrap();
         assert!(text.contains("\t2\tcmd:htop\n"), "{text:?}");

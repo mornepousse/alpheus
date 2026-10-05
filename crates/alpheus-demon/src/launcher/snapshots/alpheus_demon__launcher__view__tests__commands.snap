@@ -5,8 +5,8 @@ expression: snapshot(&rows)
 ╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
 │ All  Apps  Windows  Commands                             │ btop                               │
 │ ❯ top                                                    │ command on $PATH                   │
-│ 󰆍 btop                                           command │ enter  run                         │
-│ 󰆍 htop                                           command │                                    │
+│ 󰆍 btop                                           command │ enter  run in terminal             │
+│ 󰆍 htop                                           command │ ctrl+enter  run in background      │
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
@@ -15,7 +15,7 @@ expression: snapshot(&rows)
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
-│ enter run · ctrl+enter terminal · tab mode · esc close   │                                    │
+│ enter run in terminal · ctrl+enter run in background · … │                                    │
 ╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
 
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
@@ -31,5 +31,5 @@ m..........................................................m....................
 m..........................................................m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m
-m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm...m....................................m
+m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.m....................................m
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm

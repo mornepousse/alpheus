@@ -3,7 +3,8 @@
 //! Invalid: defaults and one line in the daemon's log. Never an abort.
 //!
 //! ```toml
-//! terminal = ["foot", "-e"]                   # Terminal=true apps, Ctrl+Enter in Commands
+//! terminal = ["foot", "-e"]                        # Terminal=true apps, plain (no hold)
+//! terminal_hold = ["foot", "--hold", "-e"]          # a command or typed shell text, Enter (stays open)
 //! rows = 10                                        # result rows, 3 to 30
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
@@ -35,7 +36,11 @@ impl Default for Prefixes {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LauncherConfig {
+    /// `Terminal=true` apps: never held (the app manages its own terminal's lifetime).
     pub terminal: Vec<String>,
+    /// A $PATH command or typed shell text, Enter (spec § 1): held open after the command
+    /// exits, so its output stays readable. Ctrl+Enter never uses this (it runs detached).
+    pub terminal_hold: Vec<String>,
     pub rows: u16,
     /// Entries kept; 0 disables the history (never read, never written).
     pub history: usize,
@@ -47,6 +52,7 @@ impl Default for LauncherConfig {
     fn default() -> Self {
         LauncherConfig {
             terminal: vec!["foot".into(), "-e".into()],
+            terminal_hold: vec!["foot".into(), "--hold".into(), "-e".into()],
             rows: 10,
             history: 200,
             prefixes: Prefixes::default(),
@@ -59,6 +65,7 @@ impl Default for LauncherConfig {
 #[serde(default, deny_unknown_fields)]
 struct Raw {
     terminal: Vec<String>,
+    terminal_hold: Vec<String>,
     rows: u16,
     history: usize,
     prefixes: Prefixes,
@@ -68,7 +75,7 @@ struct Raw {
 impl Default for Raw {
     fn default() -> Self {
         let d = LauncherConfig::default();
-        Raw { terminal: d.terminal, rows: d.rows, history: d.history, prefixes: d.prefixes, focus: d.focus }
+        Raw { terminal: d.terminal, terminal_hold: d.terminal_hold, rows: d.rows, history: d.history, prefixes: d.prefixes, focus: d.focus }
     }
 }
 
@@ -85,12 +92,13 @@ impl LauncherConfig {
         }
     }
 
-    /// Validation: terminal and focus non-empty with a non-blank program; focus contains "{window}";
-    /// rows in ROWS_MIN..=ROWS_MAX; history ≤ HISTORY_MAX; prefixes non-empty, not starting with
-    /// whitespace, neither one a prefix of the other (equal included).
+    /// Validation: terminal, terminal_hold and focus non-empty with a non-blank program; focus
+    /// contains "{window}"; rows in ROWS_MIN..=ROWS_MAX; history ≤ HISTORY_MAX; prefixes
+    /// non-empty, not starting with whitespace, neither one a prefix of the other (equal
+    /// included).
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
-        for (key, command) in [("terminal", &r.terminal), ("focus", &r.focus)] {
+        for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
             }
@@ -121,7 +129,14 @@ impl LauncherConfig {
         if c.starts_with(w.as_str()) || w.starts_with(c.as_str()) {
             return Err(format!("prefixes.commands {c:?} and prefixes.windows {w:?}: a query starting with both is ambiguous"));
         }
-        Ok(LauncherConfig { terminal: r.terminal, rows: r.rows, history: r.history, prefixes: r.prefixes, focus: r.focus })
+        Ok(LauncherConfig {
+            terminal: r.terminal,
+            terminal_hold: r.terminal_hold,
+            rows: r.rows,
+            history: r.history,
+            prefixes: r.prefixes,
+            focus: r.focus,
+        })
     }
 }
 
@@ -148,6 +163,7 @@ mod tests {
         assert_eq!(w, None);
         assert_eq!(c, LauncherConfig::default());
         assert_eq!(c.terminal, ["foot", "-e"]);
+        assert_eq!(c.terminal_hold, ["foot", "--hold", "-e"]);
         assert_eq!((c.rows, c.history), (10, 200));
         assert_eq!((c.prefixes.commands.as_str(), c.prefixes.windows.as_str()), (">", "w "));
         assert_eq!(c.focus, ["wm-set", "focus-window", "{window}"]);
@@ -155,12 +171,13 @@ mod tests {
 
     #[test]
     fn settings_are_read() {
-        let text = "terminal = [\"foot\"]\nrows = 6\nhistory = 0\nfocus = [\"my-wm\", \"focus\", \"--window={window}\"]\n[prefixes]\ncommands = \"!\"\nwindows = \"win:\"\n";
+        let text = "terminal = [\"foot\"]\nterminal_hold = [\"foot\", \"--hold\"]\nrows = 6\nhistory = 0\nfocus = [\"my-wm\", \"focus\", \"--window={window}\"]\n[prefixes]\ncommands = \"!\"\nwindows = \"win:\"\n";
         let (_dir, p) = file("ok", text);
         let (c, w) = LauncherConfig::load(&p);
         assert_eq!(w, None);
         let expected = LauncherConfig {
             terminal: vec!["foot".into()],
+            terminal_hold: vec!["foot".into(), "--hold".into()],
             rows: 6,
             history: 0,
             prefixes: Prefixes { commands: "!".into(), windows: "win:".into() },
@@ -174,6 +191,7 @@ mod tests {
         let c = LauncherConfig::from_text("rows = 5\n[prefixes]\ncommands = \"$\"\n").unwrap();
         assert_eq!((c.rows, c.history, c.prefixes.commands.as_str(), c.prefixes.windows.as_str()), (5, 200, "$", "w "));
         assert_eq!((c.terminal, c.focus), (LauncherConfig::default().terminal, LauncherConfig::default().focus));
+        assert_eq!(c.terminal_hold, LauncherConfig::default().terminal_hold);
         assert_eq!(LauncherConfig::from_text("").unwrap(), LauncherConfig::default());
     }
 
@@ -182,6 +200,8 @@ mod tests {
         for (text, needle) in [
             ("terminal = []", "terminal empty"),
             ("terminal = [\" \", \"-e\"]", "terminal empty"),
+            ("terminal_hold = []", "terminal_hold empty"),
+            ("terminal_hold = [\" \", \"-e\"]", "terminal_hold empty"),
             ("focus = []", "focus empty"),
             ("focus = [\"wm-set\", \"focus-window\"]", "{window}"),
             ("focus = [\"{window}\"]", "focus[0]"),

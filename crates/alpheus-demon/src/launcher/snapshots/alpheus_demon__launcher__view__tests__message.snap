@@ -5,12 +5,12 @@ expression: snapshot(&rows)
 ╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
 │ All  Apps  Windows  Commands                             │ ~/projects — zsh                   │
 │ ❯                                                        │ Alacritty                          │
-│ 󰆍 ~/projects — zsh                            window · 3 │ window · workspace 3               │
-│ 󰈹 Web page — Mozilla Firefox                  window · 2 │                                    │
-│ 󰆍 Alacritty                                     Terminal │ enter  focus                       │
+│ 󰆍 Alacritty                                     Terminal │ window · workspace 3               │
 │ 󰣆 btop++                                     application │                                    │
-│ 󰉋 Files                                     File Manager │                                    │
+│ 󰉋 Files                                     File Manager │ enter  focus                       │
 │ 󰈹 Firefox                                    Web Browser │                                    │
+│ 󰆍 ~/projects — zsh                            window · 3 │                                    │
+│ 󰈹 Web page — Mozilla Firefox                  window · 2 │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
 │                                                          │                                    │
@@ -21,12 +21,12 @@ expression: snapshot(&rows)
 mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
 mAAAAAmmmmmmmmmmmmmmmmmmmmmmmmm............................m.GGGGGGGGGGGGGGGG...................m
 m.G.A......................................................m.mmmmmmmmm..........................m
-mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm.mmmmmmmmmmmmmmmmmmmm...............m
-m.a.............................................mmmmmmmmmm.m....................................m
-m.a...............................................mmmmmmmm.m....................................m
+m.a...............................................mmmmmmmm.m.mmmmmmmmmmmmmmmmmmmm...............m
 m.a............................................mmmmmmmmmmm.m....................................m
 m.a...........................................mmmmmmmmmmmm.m....................................m
 m.a............................................mmmmmmmmmmm.m....................................m
+mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm....................................m
+m.a.............................................mmmmmmmmmm.m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m
 m..........................................................m....................................m
