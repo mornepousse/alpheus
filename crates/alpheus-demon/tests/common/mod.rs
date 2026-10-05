@@ -3,8 +3,21 @@
 //! launched with its log. Nothing touches Mae's session: a temporary run
 //! directory, a cleared environment, neither WAYLAND_DISPLAY nor the
 //! session's signature.
+//!
+//! **Assumes NixOS.** `coreutils_dir()` (below) needs `cat` — and with it
+//! `sleep`/`mv`, the fake programs' other tools — to resolve, through
+//! `$PATH` and symlinks, into one shared coreutils derivation directory
+//! that also carries nothing session-specific (no `wm-set`, no
+//! `systemd-run`): true of any Nix-managed machine (`cat`, `sleep`, `mv`
+//! all come from the same `coreutils` package, one `/nix/store/…/bin`), not
+//! guaranteed on a distribution that splits these tools across separate
+//! packages or directories (e.g. a minimal busybox `/bin`). This harness
+//! has only ever run on Mae's NixOS workstation; a non-NixOS contributor
+//! hitting `coreutils_dir`'s assertions should read them as "this harness
+//! doesn't know your distribution's layout yet", not as a daemon bug.
 #![allow(dead_code)]
 
+use alpheus_commun::launcher_ipc::{Reply, Request, socket_path};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -146,6 +159,20 @@ pub struct FakeHyprland {
 
 impl FakeHyprland {
     pub fn start(runtime: &Path, signature: &str) -> FakeHyprland {
+        Self::start_with(runtime, signature, &[])
+    }
+
+    /// The fixtures with their outputs renamed after headless sway's
+    /// (eDP-1 → HEADLESS-1, HDMI-A-1 → HEADLESS-2, DVI-I-1 → HEADLESS-3):
+    /// the fixture's focused workspace is on HDMI-A-1, so the focused output
+    /// exists on the test's compositor — HEADLESS-2.
+    pub fn start_on_headless(runtime: &Path, signature: &str) -> FakeHyprland {
+        Self::start_with(runtime, signature, &[("eDP-1", "HEADLESS-1"), ("HDMI-A-1", "HEADLESS-2"), ("DVI-I-1", "HEADLESS-3")])
+    }
+
+    fn start_with(runtime: &Path, signature: &str, renames: &[(&str, &str)]) -> FakeHyprland {
+        let rename = |text: &str| renames.iter().fold(text.to_string(), |t, (from, to)| t.replace(from, to));
+        let [monitors, workspaces, clients, active] = [MONITORS, WORKSPACES, CLIENTS, ACTIVE].map(rename);
         let directory = runtime.join("hypr").join(signature);
         fs::create_dir_all(&directory).unwrap();
         let l1 = UnixListener::bind(directory.join(".socket.sock")).unwrap();
@@ -155,10 +182,10 @@ impl FakeHyprland {
                 let mut buf = [0u8; 256];
                 let n = c.read(&mut buf).unwrap_or(0);
                 let rep = match &buf[..n] {
-                    b"j/monitors" => MONITORS,
-                    b"j/workspaces" => WORKSPACES,
-                    b"j/clients" => CLIENTS,
-                    b"j/activewindow" => ACTIVE,
+                    b"j/monitors" => monitors.as_str(),
+                    b"j/workspaces" => workspaces.as_str(),
+                    b"j/clients" => clients.as_str(),
+                    b"j/activewindow" => active.as_str(),
                     _ => "unknown request",
                 };
                 let _ = c.write_all(rep.as_bytes());
@@ -208,11 +235,15 @@ pub struct DaemonOptions<'a> {
     /// where no bus listens (the D-Bus modules show "–").
     pub system_bus: Option<&'a str>,
     pub pw_dump: PwDump,
+    /// Written to $XDG_CONFIG_HOME/alpheus/launcher.toml when given.
+    pub launcher_toml: Option<&'a str>,
+    /// Extra .desktop files written to $XDG_DATA_HOME/applications: (file name, content).
+    pub desktop_files: &'a [(&'a str, &'a str)],
 }
 
 impl Default for DaemonOptions<'_> {
     fn default() -> Self {
-        DaemonOptions { bar_toml: None, system_bus: None, pw_dump: PwDump::Silent }
+        DaemonOptions { bar_toml: None, system_bus: None, pw_dump: PwDump::Silent, launcher_toml: None, desktop_files: &[] }
     }
 }
 
@@ -265,14 +296,41 @@ pub fn daemon_binary() -> PathBuf {
     env::var_os("ALPHEUS_DEMON_UNDER_TEST").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_alpheus-demon")))
 }
 
+/// The directory of the real `cat`, symlinks resolved: on NixOS a
+/// coreutils-only store path. The fake programs need cat, sleep, mv; the
+/// session's profile (wm-set, systemd-run, real applications) stays out of
+/// the daemon's PATH, so no launcher activation can ever reach it.
+fn coreutils_dir() -> PathBuf {
+    let path = env::var_os("PATH").unwrap_or_default();
+    let cat = env::split_paths(&path).map(|d| d.join("cat")).find(|p| p.is_file()).expect("cat on PATH");
+    let dir = fs::canonicalize(&cat).unwrap().parent().unwrap().to_path_buf();
+    // The whole point of this directory is to carry nothing the launcher
+    // could activate on the session: assert it, don't just assume it.
+    assert!(!dir.join("systemd-run").exists(), "coreutils dir {} also has systemd-run", dir.display());
+    assert!(!dir.join("wm-set").exists(), "coreutils dir {} also has wm-set", dir.display());
+    dir
+}
+
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
+    fs::create_dir_all(config.join("alpheus")).unwrap();
     if let Some(text) = o.bar_toml {
-        fs::create_dir_all(config.join("alpheus")).unwrap();
         fs::write(config.join("alpheus/bar.toml"), text).unwrap();
     }
+    if let Some(text) = o.launcher_toml {
+        fs::write(config.join("alpheus/launcher.toml"), text).unwrap();
+    }
+    // The launcher's sources, all temporary: never the machine's
+    // applications nor its history.
+    let data_home = sway.runtime.join("data");
+    fs::create_dir_all(data_home.join("applications")).unwrap();
+    for (name, text) in o.desktop_files {
+        fs::write(data_home.join("applications").join(name), text).unwrap();
+    }
+    let data_dirs = sway.runtime.join("data-system");
+    fs::create_dir_all(&data_dirs).unwrap();
     let bin = fake_pw_dump(sway, o.pw_dump);
-    let path = env::join_paths(std::iter::once(bin).chain(env::split_paths(&env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let path = env::join_paths([bin, coreutils_dir()]).unwrap();
     let no_bus = format!("unix:path={}", sway.runtime.join("no-system-bus").display());
     let mut child = Command::new(daemon_binary())
         .env_clear()
@@ -280,6 +338,9 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
         .env("HOME", &sway.runtime)
         .env("XDG_RUNTIME_DIR", &sway.runtime)
         .env("XDG_CONFIG_HOME", &config)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_DATA_DIRS", &data_dirs)
+        .env("XDG_STATE_HOME", sway.runtime.join("state"))
         .env("WAYLAND_DISPLAY", &sway.wayland)
         .env("HYPRLAND_INSTANCE_SIGNATURE", SIGNATURE)
         // Never the machine's system bus: a private one, or none at all.
@@ -298,6 +359,75 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
         }
     });
     Daemon { child, log }
+}
+
+/// One request on the daemon's launcher socket (this test's runtime dir).
+pub fn launcher(sway: &Sway, request: &Request) -> Reply {
+    alpheus_launch::exchange(&socket_path(&sway.runtime), request).unwrap_or_else(|e| panic!("launcher {request:?}: {e:?}"))
+}
+
+/// wtype against the headless compositor only (WAYLAND_DISPLAY = sway.wayland).
+pub fn wtype(sway: &Sway, args: &[&str]) -> std::process::ExitStatus {
+    wtype_spawn(sway, args).wait().expect("wtype not found: run these tests inside `nix develop`")
+}
+
+/// Like `wtype`, but does not wait: on headless sway (`WLR_LIBINPUT_NO_DEVICES=1`),
+/// the seat's only keyboard capability is wtype's own virtual keyboard, gone the
+/// moment its process exits — so a test that must do something (read PSS, for
+/// instance) between typing and a later key, while keeping the launcher's keyboard
+/// bound throughout, has to use one continuous wtype invocation (several `-s`
+/// delays) and this spawn, never two separate `wtype` calls.
+///
+/// Returns a guard, not the raw `Child`: a test that panics (an assertion
+/// between the spawn and the explicit `wait()`) must still not leave a
+/// `wtype` process running against the headless compositor.
+pub fn wtype_spawn(sway: &Sway, args: &[&str]) -> WtypeChild {
+    let child = Command::new("wtype")
+        .args(args)
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("XDG_RUNTIME_DIR", &sway.runtime)
+        .env("WAYLAND_DISPLAY", &sway.wayland)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("wtype not found: run these tests inside `nix develop`");
+    WtypeChild(Some(child))
+}
+
+/// A spawned `wtype` process: killed and waited on drop if never explicitly
+/// `wait()`-ed, so a panic anywhere in a test using it never leaks the
+/// process into the headless compositor.
+pub struct WtypeChild(Option<Child>);
+
+impl WtypeChild {
+    pub fn wait(mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.take().unwrap().wait()
+    }
+}
+
+impl Drop for WtypeChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// A program that writes its argv to <runtime>/launched-<name> and exits.
+pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let marker = sway.runtime.join(format!("launched-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake application of the launcher tests: records its arguments, nothing else.\nprintf '%s\\n' \"$@\" > '{0}.tmp' && mv '{0}.tmp' '{0}'\n",
+        marker.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
 }
 
 /// Is `pid` alive? A zombie (waiting to be reaped) counts as dead.
@@ -348,6 +478,30 @@ impl Daemon {
 
     pub fn log(&self) -> Vec<String> {
         self.log.lock().unwrap().clone()
+    }
+
+    /// Log lines containing `pattern`.
+    pub fn count(&self, pattern: &str) -> usize {
+        self.log.lock().unwrap().iter().filter(|l| l.contains(pattern)).count()
+    }
+
+    /// Waits for at least `n` log lines containing `pattern`.
+    pub fn wait_for_count(&self, pattern: &str, n: usize, timeout: Duration) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < timeout {
+            if self.count(pattern) >= n {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// µs from the last "launcher shown … in N µs" line.
+    pub fn last_open_latency_us(&self) -> Option<u64> {
+        let log = self.log.lock().unwrap();
+        let line = log.iter().rev().find(|l| l.contains("launcher shown on"))?;
+        line.rsplit_once(" in ")?.1.strip_suffix(" µs")?.trim().parse().ok()
     }
 
     /// PSS in KB (/proc/<pid>/smaps_rollup).

@@ -7,6 +7,7 @@ pub mod backends;
 pub mod config;
 pub mod displays;
 pub mod exec;
+pub mod launcher_ipc;
 pub mod paths;
 pub mod shutdown;
 pub mod theme;

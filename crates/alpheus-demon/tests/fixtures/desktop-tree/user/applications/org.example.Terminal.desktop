@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Example Terminal (user)
+Exec=example-terminal --profile user

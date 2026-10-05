@@ -1,0 +1,15 @@
+# Synthetic fixture: localized keys, value escapes, a repeated key.
+[Desktop Entry]
+Type=Application
+Name=Files
+Name[fr]=Fichiers
+Name[fr_FR]=Fichiers (France)
+Name[de]=Dateien
+GenericName=File manager
+GenericName[fr]=Gestionnaire de fichiers
+Keywords=folder;manager;
+Keywords[fr]=dossier;gestionnaire\;fichiers;explorateur\sde\sfichiers;
+Comment=Line one\nLine two\twith tab\\backslash and\rreturn
+Exec=example-files %U
+
+Name=A repeated key is ignored

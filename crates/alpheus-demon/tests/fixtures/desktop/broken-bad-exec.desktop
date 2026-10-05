@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Bad field code
+Exec=example-bad %z

@@ -10,6 +10,7 @@ pub mod config;
 pub mod grid;
 pub mod icons;
 pub mod launch;
+pub mod launcher;
 pub mod layout;
 pub mod lock;
 pub mod log;

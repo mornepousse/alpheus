@@ -11,6 +11,23 @@ pub struct CompositorState {
     pub workspaces: Vec<Workspace>,
     /// Window that has focus, if any.
     pub window: Option<Window>,
+    /// Mapped windows; the focused one LAST (the first is the previously
+    /// focused one, alt-tab style). Read by the launcher's window list.
+    pub toplevels: Vec<Toplevel>,
+}
+
+/// One mapped window, as the launcher lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toplevel {
+    /// What the `focus` template's {window} becomes: "address:0x583d9c60da90"
+    /// (Hyprland), "id:12" (niri) — the selectors `wm-set focus-window` takes.
+    pub selector: String,
+    /// Hyprland class / niri app_id.
+    pub class: String,
+    pub title: String,
+    /// Workspace name as the bar shows it.
+    pub workspace: String,
+    pub focused: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +61,11 @@ impl CompositorState {
         let a: Vec<&Workspace> = self.workspaces.iter().filter(|w| w.output == output).collect();
         if a.is_empty() { self.workspaces.iter().collect() } else { a }
     }
+
+    /// Output of the focused workspace, if any: where the launcher opens.
+    pub fn focused_output(&self) -> Option<&str> {
+        self.workspaces.iter().find(|w| w.focused).map(|w| w.output.as_str())
+    }
 }
 
 /// Reference state for tests: three screens, an urgent workspace with six
@@ -59,6 +81,13 @@ pub(crate) fn example() -> CompositorState {
         visible,
         focused,
     };
+    let t = |selector: &str, class: &str, title: &str, workspace: &str, focused: bool| Toplevel {
+        selector: selector.into(),
+        class: class.into(),
+        title: title.into(),
+        workspace: workspace.into(),
+        focused,
+    };
     CompositorState {
         workspaces: vec![
             w("1", "1", "eDP-1", 0, false, true, false),
@@ -69,6 +98,11 @@ pub(crate) fn example() -> CompositorState {
             w("web", "name:web", "DVI-I-1", 1, false, false, false),
         ],
         window: Some(Window { class: "firefox".into(), title: "Web page — Mozilla Firefox".into() }),
+        toplevels: vec![
+            t("address:0x5a00000000a1", "Alacritty", "~/projects — zsh", "3", false),
+            t("address:0x5a00000000a2", "org.gnome.Nautilus", "Documents", "4", false),
+            t("address:0x5a00000000a3", "firefox", "Web page — Mozilla Firefox", "2", true),
+        ],
     }
 }
 
@@ -84,5 +118,17 @@ mod tests {
         assert_eq!(names("DVI-I-1"), ["3", "web"]);
         assert_eq!(names(""), ["1", "2", "4", "5", "3", "web"]);
         assert_eq!(names("HEADLESS-1"), ["1", "2", "4", "5", "3", "web"]);
+    }
+
+    #[test]
+    fn focused_output_follows_the_focused_workspace() {
+        let mut e = example();
+        assert_eq!(e.focused_output(), Some("HDMI-A-1"));
+        for w in &mut e.workspaces {
+            w.focused = false;
+        }
+        assert_eq!(e.focused_output(), None, "no focused workspace: the compositor picks");
+        e.workspaces[4].focused = true;
+        assert_eq!(e.focused_output(), Some("DVI-I-1"));
     }
 }

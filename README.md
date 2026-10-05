@@ -32,19 +32,27 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules, 3 outputs — at start | ≈ 7.0 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session (≈ 7.3 MB with its own, unshared copy) |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.3 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread, ≈ −1.4 MB vs zbus (−1.1 MB with an unshared libdbus)) |
-| Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 7.8 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; `feat/tray` (dbus-rs) merged with `feat/launcher-1`, measured together |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.6 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher adds no thread while closed) |
+| Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
-| **alpheus resident total, live** | **≈ 14 MB** | bar + sound source |
+| **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
+| Launcher feature, linked in but never opened (no `launcher` in `modules` even) | +0.3–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus `libxkbcommon.so` itself (≈ 60 KB of it, `/proc/<pid>/smaps`); measured `c256d33` vs the launcher delivery, release, back to back — a real cost, not "noise" |
+| Launcher, closed (socket only, nothing else resident) on top of that | +0 MB | no thread, timer or keyboard exists while closed |
+| Launcher, open (typed query, keyboard bound) | ≈ +2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs`, with dbus-rs |
+| Launcher, open latency | ≈ 2.9 ms median (max 5.7 ms) | request accepted → first frame committed, 20 opens, with dbus-rs |
+| Launcher, 50 open/close cycles | ≈ +0.3 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
+| Launcher, 100,000-line dmenu | ≈ +6.0 MB open, back to +0.3 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
-> (≈ 71 MB) predate the move from zbus to dbus-rs (tray plan 1, step 1):
-> they were measured before the switch. They will be re-measured at Mae's
-> real-world trial of this branch.
+> (≈ 71 MB) predate both the move from zbus to dbus-rs (tray plan 1, step 1)
+> and the launcher merge (`feat/launcher-1` into `feat/tray`): they were
+> measured before either. The headless sway rows above are now measured
+> with both deliveries together; the live rows will be re-measured at
+> Mae's real-world trial of this branch (tray plan 1, task 5).
 
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
@@ -89,8 +97,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Notification center, history | 🚧 with the toasts | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
 | **Launcher** | | | | | |
-| Apps, run command, window switcher | 🚧 launcher 1 | ✅ | ➖ | ❌ | ➖ |
-| Script/dmenu mode | 🚧 launcher 1 | ➖ | ➖ | ❌ | ✅ |
+| Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
+| Script/dmenu mode | ✅ (fuzzel's exit codes) | ➖ | ➖ | ❌ | ✅ |
 | Calculator, units, currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
@@ -148,9 +156,10 @@ automatic rollback after 15 s if not confirmed).
 A line of monospace characters on a solid background, modules separated by
 `│`, active item in inverted accent color.
 
-![The alpheus bar, sample data, real font and matugen colours (zoomed ×2, split in two halves)](docs/images/bar.png)
+![The alpheus bar, sample data, real font, built-in Catppuccin Mocha palette (zoomed ×2, split in two halves)](docs/images/bar.png)
 
-Shipped: **workspaces** (one dot per window, empty workspace dimmed, urgent
+Shipped: **launcher** (an icon that opens it, first module by default),
+**workspaces** (one dot per window, empty workspace dimmed, urgent
 in red, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **volume** (gauge, wheel ±5 %, right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
@@ -160,16 +169,38 @@ of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: an integrated **app launcher**, then the system tray (app
-icons and menus), now-playing and notifications, the OSD, notification
-toasts.
+Coming next: the system tray (app icons and menus), now-playing and
+notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8 MB of
-memory at start and ≈ 10 MB under load, on three outputs. The compositor
-is only **read** (Hyprland or niri event stream); switching workspace goes
-through a configurable command. Sound comes from `pw-dump`, network,
-battery and Bluetooth from D-Bus (read-only), resources from `/proc`.
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.8–9.1 MB
+of memory at start and ≈ 10.1–10.3 MB under load, on three outputs. The
+compositor is only **read** (Hyprland or niri event stream); switching
+workspace goes through a configurable command. Sound comes from
+`pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
+resources from `/proc`.
+
+### The launcher
+
+A centred box (apps, open windows, `$PATH` commands, a script/dmenu mode
+for shell scripts), opened and closed by the daemon itself — nothing of
+it stays resident while closed, not even a thread.
+
+![The alpheus launcher, All mode, sample data (fictional apps and windows), built-in Catppuccin Mocha palette, zoomed ×2](docs/images/launcher.png)
+
+`Tab`/`Shift+Tab` switches modes (All, Apps, Windows, Commands); typing
+ranks results with [nucleo](https://github.com/helix-editor/nucleo)
+(Helix's fuzzy matcher) plus frecency (most-used first on an empty
+query). `Enter` runs a command or typed shell text in a held terminal
+(stays open to read the output); `Ctrl+Enter` runs it detached. `alpheus-launch`
+bridges to it over an owner-only socket (`toggle`, `close`, `--dmenu`
+with fuzzel's exit codes, plus exit code 3 — daemon unreachable — the
+only case where a script falls back to another menu). Measured in
+**release** (headless sway, 300 synthetic apps): opening costs ≈ 1.9–2.1 MB
+of PSS over closed, median open latency ≈ 2.0 ms, 50 open/close cycles
+grow PSS by well under the 1 MB budget (measured 104–304 KB across runs),
+0 wake-ups in 5 s at rest after use. A 100,000-line dmenu peaks at
++6.1–6.3 MB and drops back to +0.3–0.4 MB a second after it is cancelled.
 
 ## Build
 
@@ -196,11 +227,14 @@ back to default values with a warning, never a crash.
   Bluetooth).
 - `displays.toml`: screen profiles, written by the Displays tab.
 - `bar.toml`: the bar.
+- `launcher.toml`: the launcher (terminal command, result rows, history
+  size, mode prefixes, the focus command); read fresh at each open,
+  nothing kept while it is closed.
 
 ```toml
 # bar.toml — default values
-modules = ["workspaces", "window", "media", "volume", "network", "bluetooth",
-           "battery", "resources", "tray", "notifications", "clock"]
+modules = ["launcher", "workspaces", "window", "media", "volume", "network",
+           "bluetooth", "battery", "resources", "tray", "notifications", "clock"]
 height = 22
 
 [font]

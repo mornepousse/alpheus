@@ -1,0 +1,6 @@
+Name=No group
+Exec=example-orphan
+[Desktop Entry]
+Type=Application
+Name=Too late
+Exec=example-orphan

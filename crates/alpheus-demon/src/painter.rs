@@ -343,6 +343,17 @@ impl Fonts {
         }
     }
 
+    /// Paints rows top to bottom; each row is `row_height` physical px (the
+    /// bar's height × scale: the line metrics `set_scale` measured). Only
+    /// whole rows that fit in `px` are painted; nothing past them is touched.
+    pub fn paint_rows(&mut self, rows: &[Grid], palette: &Palette, px: &mut [u8], width: u32, row_height: u32, scale: i32) {
+        let band = width as usize * row_height as usize * 4;
+        for (i, row) in rows.iter().enumerate() {
+            let Some(slice) = px.get_mut(i * band..(i + 1) * band) else { return };
+            self.paint(row, palette, slice, width, row_height, scale);
+        }
+    }
+
     /// `shape`'s result for (`ch`, `bold`) at the current scale, memoized:
     /// cosmic-text otherwise reshapes the exact same glyph on every cell,
     /// column and redraw it appears in. Bounded like `cache` (`MAX_CACHE`):
@@ -498,6 +509,43 @@ mod tests {
         let after = t1.elapsed() / ITERATIONS;
         eprintln!("paint: {before:?}/call reshaping every glyph, {after:?}/call with the shaping memo");
         assert!(after < before, "the memo should speed up a repeated paint: before {before:?}, after {after:?}");
+    }
+
+    /// The launcher box: one Grid per row, each painted in its own band of
+    /// `row_height` lines, nothing written past `rows.len()` bands.
+    #[test]
+    fn paint_rows_paints_each_row_in_its_band_and_nothing_below() {
+        let mut p = fonts();
+        let pal = Palette::default();
+        let av = p.advance(1);
+        let cols = 4u16;
+        let (w, rh) = ((av * cols as f32).ceil() as u32, DEFAULT_HEIGHT);
+        let mut rows = vec![Grid::empty(cols), Grid::empty(cols), Grid::empty(cols)];
+        rows[1].write(0, cols, "    ", Style::INVERTED);
+        let mut px = vec![0x11u8; (w * rh * 4) as usize * 4]; // room for 4 rows, 3 painted
+        p.paint_rows(&rows, &pal, &mut px, w, rh, 1);
+        let at = |x: u32, y: u32| {
+            let o = ((y * w + x) * 4) as usize;
+            Rgb(px[o + 2], px[o + 1], px[o])
+        };
+        assert_eq!(at(1, rh / 2), pal.bg, "row 0: plain background");
+        assert_eq!(at(1, rh + rh / 2), pal.accent, "row 1 painted in its own band");
+        assert_eq!(at(1, 2 * rh + rh / 2), pal.bg, "row 2");
+        assert!(px[(3 * rh * w * 4) as usize..].iter().all(|b| *b == 0x11), "exactly rows.len() × row_height lines written");
+    }
+
+    #[test]
+    fn paint_rows_with_a_short_buffer_paints_whole_rows_only() {
+        let mut p = fonts();
+        let pal = Palette::default();
+        let av = p.advance(1);
+        let (w, rh) = ((av * 4.0).ceil() as u32, DEFAULT_HEIGHT);
+        let rows = vec![Grid::empty(4), Grid::empty(4)];
+        let band = (w * rh * 4) as usize;
+        let mut px = vec![0x11u8; band + band / 2]; // one row and a half
+        p.paint_rows(&rows, &pal, &mut px, w, rh, 1);
+        assert_ne!(&px[..3], &[0x11, 0x11, 0x11], "the first row is painted");
+        assert!(px[band..].iter().all(|b| *b == 0x11), "no partial row, no panic");
     }
 
     #[test]

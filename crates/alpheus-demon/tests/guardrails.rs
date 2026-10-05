@@ -7,8 +7,16 @@
 
 use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_demon::actions::{Button, command, run};
-use alpheus_demon::compositor::{CompositorState, Window, Workspace};
+use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
 use alpheus_demon::config::BarConfig;
+use alpheus_demon::launcher::config::LauncherConfig;
+use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
+use alpheus_demon::launcher::history::History;
+use alpheus_demon::launcher::input::Key;
+use alpheus_demon::launcher::matching::Mode;
+use alpheus_demon::launcher::model::{Launcher, Outcome};
+use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
+use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
@@ -25,6 +33,7 @@ fn every_click_only_runs_the_workspace_command() {
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
+        toplevels: vec![],
     })));
     let fake = FakeExecutor::new();
     for output in ["eDP-1", "HDMI-A-1"] {
@@ -51,6 +60,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Compositor(Some(CompositorState {
         workspaces: vec![workspace("1", "eDP-1", 1, true), workspace("2", "eDP-1", 0, false), workspace("3", "HDMI-A-1", 2, true)],
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
+        toplevels: vec![],
     })));
     b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }) })));
     b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
@@ -156,12 +166,35 @@ fn connection_allowed_anywhere_in_sources_not_just_hypr_and_niri() {
     assert!(!compositor_connection_allowed("painter.rs"));
 }
 
+/// Words that must appear nowhere in the daemon's sources (compared
+/// lowercased): ways to write to the compositor. `keyword` stays a bare word
+/// (Hyprland's request socket takes `keyword general:gaps_in 0` as one
+/// string, not only `hyprctl`'s argv), and the `.desktop` key `Keywords`
+/// (read by the launcher) is erased before the search instead.
+const FORBIDDEN_WORDS: [&str; 6] = ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"];
+
+/// First forbidden word found in `text`, compared lowercased, `keywords` erased.
+fn forbidden_word(text: &str) -> Option<&'static str> {
+    let lower = text.to_lowercase().replace("keywords", "");
+    FORBIDDEN_WORDS.into_iter().find(|w| lower.contains(w))
+}
+
+#[test]
+fn the_keywords_key_passes_but_the_keyword_command_does_not() {
+    assert_eq!(forbidden_word(r#"localized(&main, env.locale, "Keywords")"#), None);
+    assert_eq!(forbidden_word("pub keywords: Vec<String>, // localized list"), None);
+    assert_eq!(forbidden_word("keyword general:gaps_in 0"), Some("keyword"), "the socket request, unquoted");
+    assert_eq!(forbidden_word(r#"format!("keyword {k} {v}")"#), Some("keyword"));
+    assert_eq!(forbidden_word(r#"exec.spawn("wm", &["Keyword", "general:gaps_in", "0"])"#), Some("keyword"), "case does not hide it");
+    assert_eq!(forbidden_word("keywords; keyword x"), Some("keyword"), "a Keywords nearby does not hide it");
+    assert_eq!(forbidden_word("set DPMS off"), Some("dpms"));
+}
+
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in source_files() {
-        let lower = t.to_lowercase();
-        for word in ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"] {
-            assert!(!lower.contains(word), "\"{word}\" in {}", p.display());
+        if let Some(word) = forbidden_word(&t) {
+            panic!("\"{word}\" in {}", p.display());
         }
         let name = relative_path(&p);
         if t.contains(".socket.sock") {
@@ -190,6 +223,92 @@ fn compositor_sockets_opened_only_in_sources() {
             assert!(!t.contains(pattern) || compositor_connection_allowed(&name), "\"{pattern}\" outside src/sources/: {name}");
         }
     }
+}
+
+/// Mae, 2026-10-05: the launcher's click-outside scrims must keep working
+/// even over a fullscreen game (Hyprland draws its Top layer BENEATH a
+/// fullscreen window — a scrim there would never see the click). Both the
+/// scrims and the box now share the Overlay layer (`surface::scrim_layer`);
+/// within one layer, wlr-layer-shell stacks surfaces by creation order, so
+/// the box must be created AFTER its scrims, not before, or it ends up
+/// stacked beneath them instead of above (review item M2, final review
+/// slice 3). No fake layer-shell exists to exercise the real stacking end to
+/// end, so this checks the one thing that would actually regress it: the two
+/// calls swapped back.
+#[test]
+fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "pub fn launcher_open(");
+    let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
+    let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
+    assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
+}
+
+/// Review item M6, final review slice 3: every seat/keyboard entry point
+/// into launcher code goes through `launcher_guarded`, same as every other
+/// one (host.rs's module doc) — a panic there must close the launcher,
+/// never take the bar down with it. No fake Wayland seat or keyboard exists
+/// to call these trait methods directly in a unit test, so this checks the
+/// one thing that would actually regress it: the guard call disappearing
+/// from the body.
+#[test]
+fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let wayland_prod = production_code(wayland);
+    for (func, call) in [
+        ("fn new_capability(", "launcher_bind_keyboard"),
+        ("fn remove_capability(", "launcher_release_keyboard"),
+        ("fn remove_seat(", "launcher_release_keyboard"),
+    ] {
+        let body = function_body(&wayland_prod, func);
+        assert!(body.contains(call), "{func} must still call {call}: {body}");
+        assert!(body.contains("launcher_guarded("), "{func} must guard its launcher call: {body}");
+    }
+    let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs").1;
+    let surface_prod = production_code(surface);
+    let modifiers = function_body(&surface_prod, "fn update_modifiers(");
+    assert!(modifiers.contains("launcher_guarded("), "update_modifiers must guard its launcher call: {modifiers}");
+}
+
+/// The launcher socket (spec § 3): bound in exactly one place, its file
+/// name only ever built by `launcher_ipc::socket_path` (never spelled out,
+/// so it cannot drift between the daemon and alpheus-launch).
+#[test]
+fn the_launcher_socket_is_bound_only_in_socket_rs() {
+    let mut binds = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if prod.contains("UnixListener::bind") {
+            assert_eq!(name, "launcher/socket.rs", "a listening socket bound in {name}");
+            binds += prod.matches("UnixListener::bind").count();
+        }
+        assert!(!t.contains("alpheus-launcher.sock"), "socket name spelled out in {name}: use launcher_ipc::socket_path");
+    }
+    assert_eq!(binds, 1, "the launcher socket is bound once");
+}
+
+/// Not a behavioural test of the socket itself: this match has no wildcard,
+/// so it is an exhaustive-match tripwire — a fourth `Request` variant stops
+/// THIS FILE compiling until the match below (and the review that goes with
+/// it) is updated, before it could ever reach the socket unexamined (review
+/// item M6, final review slice 1: renamed from
+/// `the_socket_accepts_exactly_three_requests`, which claimed to test the
+/// socket's own behaviour when it only guards this match's exhaustiveness).
+#[test]
+fn adding_a_request_variant_must_update_this_exhaustive_match() {
+    use alpheus_commun::launcher_ipc::Request;
+    fn verb(r: &Request) -> &'static str {
+        match r {
+            Request::Toggle => "toggle",
+            Request::Close => "close",
+            Request::Dmenu { .. } => "dmenu",
+        }
+    }
+    let all = [Request::Toggle, Request::Close, Request::Dmenu { prompt: None, lines: vec![] }];
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -254,6 +373,36 @@ fn production_code(text: &str) -> String {
     out
 }
 
+/// The brace-matched body of the first function in `text` whose signature
+/// starts with `signature` (e.g. `"fn new_capability("`): same brace-counting
+/// approach as `production_code`, reused here to pull out one function's own
+/// text instead of stripping every test item.
+fn function_body<'a>(text: &'a str, signature: &str) -> &'a str {
+    let at = text.find(signature).unwrap_or_else(|| panic!("{signature} not found"));
+    let open = text[at..].find('{').map(|o| at + o).expect("a function has a body");
+    let mut depth = 0u32;
+    for (j, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[open..open + j + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("{signature}: body never closes");
+}
+
+#[test]
+fn function_body_extracts_the_brace_matched_body() {
+    let text = "fn a() { 1 }\nfn b() {\n    if true { 2 } else { 3 }\n}\n";
+    assert_eq!(function_body(text, "fn a("), "{ 1 }");
+    assert_eq!(function_body(text, "fn b("), "{\n    if true { 2 } else { 3 }\n}");
+}
+
 #[test]
 fn production_code_strips_each_item_following_cfg_test() {
     let text = "fn x() {}\n#[cfg(test)]\nfn helper() { eprintln!(\"x\"); }\nfn y() {}\n#[cfg(test)]\nmod tests {\n    fn z() { eprintln!(\"ok\"); }\n}\n";
@@ -301,6 +450,51 @@ fn the_only_stream_is_pw_dump_monitor() {
             assert!(["sources/sound.rs", "nonblocking.rs"].contains(&name.as_str()), "a stream started in {name}");
         }
     }
+}
+
+/// Nothing of the launcher is resident at rest (spec § 3, Global
+/// Constraints): every place in the daemon that can start a thread, arm a
+/// timer, watch a file descriptor or bind a keyboard is in this table with
+/// the reason it does not run at rest. A new one fails until it is added —
+/// and justified — here. Production code only (comments included: never
+/// write these tokens in a comment).
+#[test]
+fn nothing_resident_while_the_launcher_is_closed() {
+    const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
+    const ALLOWED: &[(&str, &str, usize)] = &[
+        // The bar's clock and resources timers; the launcher's request
+        // deadline, armed per connection and removed once it is read; the
+        // listener's resume, armed only after an accept() error.
+        ("launch.rs", "Timer::", 4),
+        // The bar's signal guard.
+        ("launch.rs", "thread::Builder", 1),
+        // The launcher's listening socket (its fd: the one thing at rest),
+        // and one watch per connection being read.
+        ("launch.rs", "Generic::new", 2),
+        // A dmenu client's hang-up watch: only while its menu is open.
+        ("launcher/host.rs", "Generic::new", 1),
+        // The scan: started at open, ends once its catalog is delivered.
+        ("launcher/scan.rs", "thread::Builder", 1),
+        // The keyboard: bound while open, released at close.
+        ("launcher/surface.rs", "get_keyboard", 1),
+        // The bar's sources (compositor, sound; D-Bus).
+        ("sources/dbus/mod.rs", "thread::Builder", 1),
+        ("sources/mod.rs", "thread::Builder", 1),
+    ];
+    let mut found: Vec<(String, &str, usize)> = Vec::new();
+    for (p, t) in source_files() {
+        let prod = production_code(&t);
+        for token in TOKENS {
+            let n = prod.matches(token).count();
+            if n > 0 {
+                found.push((relative_path(&p), token, n));
+            }
+        }
+    }
+    found.sort();
+    let mut expected: Vec<(String, &str, usize)> = ALLOWED.iter().map(|(f, t, n)| (f.to_string(), *t, *n)).collect();
+    expected.sort();
+    assert_eq!(found, expected, "a thread, timer, fd watch or keyboard outside the reviewed list");
 }
 
 /// D-Bus only in src/sources/ (like the compositor's sockets), through one
@@ -423,4 +617,159 @@ fn eprint_forbidden_outside_tests() {
             assert!(!prod.contains(word), "{word} (panics on EPIPE) in {}: use crate::log::write", p.display());
         }
     }
+}
+
+/// Removes `path` (recursively) when dropped, even if the holder's scope
+/// ends through a panic: unlike a plain `remove_dir_all` call at the bottom
+/// of a test function, which an earlier `assert!` failure would skip.
+struct RemoveOnDrop(PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&str, &str)]) -> DesktopEntry {
+    DesktopEntry {
+        id: id.into(),
+        path: PathBuf::from(format!("/usr/share/applications/{id}")),
+        name: name.into(),
+        generic_name: None,
+        comment: None,
+        keywords: vec![],
+        icon: None,
+        exec: exec.into(),
+        terminal,
+        startup_wm_class: None,
+        actions: actions.iter().map(|(n, e)| DesktopAction { key: n.to_lowercase(), name: n.to_string(), exec: e.to_string() }).collect(),
+    }
+}
+
+/// Every activation the launcher can produce — every result of every mode,
+/// Enter and Ctrl+Enter, typed shell text, under both spawners — only runs
+/// the shapes of the allowlist (Global Constraints): an app's argv, alone
+/// or in its systemd scope, after the terminal for Terminal=true; a $PATH
+/// command, alone (Ctrl+Enter, detached) or held in the terminal (Enter,
+/// `terminal_hold`); `sh -c` only from the Commands mode, alone or held the
+/// same way; the focus template, never wrapped. And each shape is reached.
+#[test]
+fn every_launcher_activation_stays_on_the_allowlist() {
+    let catalog = Catalog {
+        apps: vec![
+            launcher_app("org.mozilla.firefox.desktop", "Firefox", "firefox %u", false, &[("New Window", "firefox --new-window %u")]),
+            launcher_app("btop.desktop", "btop++", "btop", true, &[]),
+            launcher_app("files.desktop", "Files", "nautilus --new-window", false, &[]),
+        ],
+        commands: vec!["htop".into(), "nvim".into()],
+    };
+    let toplevel = |selector: &str| Toplevel {
+        selector: selector.into(),
+        class: "firefox".into(),
+        title: "t".into(),
+        workspace: "1".into(),
+        focused: false,
+    };
+    let windows = vec![toplevel("address:0x583d9c60da90"), toplevel("id:12")];
+    // Every program the fixture may start, as executable stubs on a $PATH of
+    // its own (never run: the executor is fake). `_bin_guard` removes the
+    // directory when this function returns, even if an assertion below
+    // panics first.
+    let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
+    std::fs::create_dir_all(&bin).unwrap();
+    let _bin_guard = RemoveOnDrop(bin.clone());
+    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh"] {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let path_dirs = [bin.clone()];
+    let apps = ["firefox", "firefox --new-window", "foot -e btop", "nautilus --new-window"];
+    // Ctrl+Enter on a command: detached, bare — never through `sh`, and (Mae, 2026-10-05) never
+    // reachable outside the Commands mode, since a command is only ever a result there.
+    let detached_commands = ["htop", "nvim"];
+    // Enter on a command: held open in the terminal (`terminal_hold`, Mae 2026-10-05).
+    let terminal_hold_commands = ["foot --hold -e htop", "foot --hold -e nvim"];
+    let focus = ["wm-set focus-window address:0x583d9c60da90", "wm-set focus-window id:12"];
+    let scope = format!("{} ", SYSTEMD_RUN.join(" "));
+    let mut seen = Vec::new();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for mode in Mode::CYCLE {
+            let fresh = || {
+                let mut l = Launcher::for_apps(LauncherConfig::default(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                l.click_mode(mode);
+                l
+            };
+            let mut outcomes = Vec::new();
+            let n = fresh().results.len();
+            for i in 0..n {
+                for secondary in [false, true] {
+                    outcomes.push((fresh().click(i, secondary), mode));
+                }
+            }
+            let mut typed = fresh();
+            for c in "ls -la".chars() {
+                typed.key(Key::Char(c));
+            }
+            outcomes.push((typed.key(Key::Enter), mode));
+            outcomes.push((typed.key(Key::CtrlEnter), mode));
+            if mode == Mode::All {
+                // The prefix route into Commands mode (Global Constraints:
+                // `>` by default): starting in All and typing the prefix
+                // switches mode exactly like click_mode, so typed shell
+                // text after it reaches `sh` too — tagged Commands below,
+                // the mode it actually ran in by the time Enter fired.
+                let mut via_prefix = fresh();
+                for c in ">ls -la".chars() {
+                    via_prefix.key(Key::Char(c));
+                }
+                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands));
+            }
+            for (o, mode) in outcomes {
+                let Outcome::Activate(a) = o else { continue };
+                let fake = FakeExecutor::new();
+                let mut l = fresh();
+                let _ = perform(&mut l, a, &RunContext { exec: &fake, spawner, history_path: None, path_dirs: &path_dirs });
+                for c in fake.calls() {
+                    assert!(!c.to_lowercase().contains("dpms"), "{c}");
+                    let unwrapped = c.strip_prefix(&scope).unwrap_or(&c);
+                    let shape = if focus.contains(&c.as_str()) {
+                        "focus"
+                    } else if unwrapped.starts_with("wm-set") {
+                        panic!("the focus template wrapped or altered: {c}")
+                    } else if apps.contains(&unwrapped) {
+                        "program"
+                    } else if detached_commands.contains(&unwrapped) {
+                        assert_eq!(mode, Mode::Commands, "a detached $PATH command outside the Commands mode: {c}");
+                        "detached command"
+                    } else if terminal_hold_commands.contains(&unwrapped) {
+                        assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
+                        "terminal hold command"
+                    } else if let Some(text) =
+                        unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
+                    {
+                        assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
+                        assert_eq!(text, "ls -la", "only typed text goes through the shell: {c}");
+                        if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
+                    } else {
+                        panic!("command outside the allowlist: {c}")
+                    };
+                    seen.push((shape, c.starts_with(&scope)));
+                }
+            }
+        }
+    }
+    for expected in [
+        ("program", true),
+        ("program", false),
+        ("detached command", false),
+        ("terminal hold command", true),
+        ("shell", true),
+        ("terminal hold shell", false),
+        ("focus", false),
+    ] {
+        assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
+    }
+    assert!(!seen.contains(&("focus", true)), "focus never in a scope");
 }

@@ -68,7 +68,7 @@ fn the_daemon_does_not_carry_ratatui() {
 fn dbus_stays_in_the_daemon() {
     let g = graph();
     assert!(closure(&g, "alpheus-demon").contains("dbus"), "the daemon reads the system bus");
-    for p in ["alpheus-commun", "alpheus"] {
+    for p in ["alpheus-commun", "alpheus", "alpheus-launch"] {
         assert!(!closure(&g, p).contains("dbus"), "{p} pulls in dbus");
     }
 }
@@ -93,4 +93,38 @@ fn neither_zbus_nor_blocking_is_in_the_daemon() {
 fn the_absence_check_bites_on_a_tree_with_zbus() {
     let tree: BTreeSet<String> = ["dbus", "zbus", "blocking"].map(String::from).into();
     assert_eq!(forbidden_in(&tree), ["zbus", "blocking"]);
+}
+
+#[test]
+fn nucleo_stays_in_the_daemon() {
+    let g = graph();
+    assert!(closure(&g, "alpheus-demon").contains("nucleo-matcher"), "the launcher ranks with nucleo-matcher");
+    for p in ["alpheus-commun", "alpheus", "alpheus-launch"] {
+        assert!(!closure(&g, p).contains("nucleo-matcher"), "{p} pulls in nucleo-matcher");
+    }
+}
+
+/// `alpheus-launch` runs on every key press and in every script menu: std
+/// and alpheus-commun only — no Wayland, no fonts, no TUI, no D-Bus, no
+/// matcher, no keyboard library (Global Constraints of the launcher plan).
+#[test]
+fn alpheus_launch_stays_tiny() {
+    let g = graph();
+    let direct: Vec<&str> = g["alpheus-launch"].iter().map(String::as_str).collect();
+    assert_eq!(direct, ["alpheus-commun"], "alpheus-launch's direct dependencies");
+    let f = closure(&g, "alpheus-launch");
+    for forbidden in [
+        "wayland-client",
+        "smithay-client-toolkit",
+        "cosmic-text",
+        "ratatui",
+        "crossterm",
+        "zbus",
+        "dbus",
+        "nucleo-matcher",
+        "xkbcommon",
+        "xkeysym",
+    ] {
+        assert!(!f.contains(forbidden), "alpheus-launch pulls in {forbidden}");
+    }
 }
