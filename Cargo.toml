@@ -20,10 +20,8 @@ unicode-normalization = "0.1"
 cosmic-text = "0.12"
 smithay-client-toolkit = { version = "0.20", default-features = false, features = ["calloop"] }
 insta = "1"
-# System D-Bus (NetworkManager, UPower, BlueZ), blocking API on one thread.
-# Decided by Mae on 2026-10-04 (≈ 2.4 MB PSS measured). Daemon only.
-zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
-# System D-Bus through dbus-rs over libdbus (tray plan 1): replaces zbus, no thread of its own. Daemon only.
+# System D-Bus (NetworkManager, UPower, BlueZ) through dbus-rs over libdbus, blocking,
+# on the D-Bus thread and no thread of its own (tray plan 1, Mae 2026-10-05). Daemon only.
 dbus = "0.9"
 
 [profile.release]

@@ -140,6 +140,12 @@ fn the_system_bus_address_is_honoured() {
     let _hypr2 = FakeHyprland::start(&sway2.runtime, SIGNATURE);
     let d2 = start_daemon_with(&sway2, &DaemonOptions { system_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d2.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d2.log());
-    std::thread::sleep(Duration::from_secs(3));
-    assert!(d2.log().iter().all(|l| !l.contains("source down")), "the private bus reached: {:?}", d2.log());
+    // A bounded poll (I3 carry-over, tray plan 1 review), not a flat sleep:
+    // fails as soon as "source down" shows up, rather than only finding out
+    // after waiting out a fixed delay.
+    let t = std::time::Instant::now();
+    while t.elapsed() < Duration::from_secs(3) {
+        assert!(d2.log().iter().all(|l| !l.contains("source down")), "the private bus reached: {:?}", d2.log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

@@ -1,5 +1,5 @@
-//! D-Bus property values, reduced to what the bar reads. The zbus layer
-//! (`zbus_bus.rs`) converts into this; the tests build it from busctl's
+//! D-Bus property values, reduced to what the bar reads. The D-Bus layer
+//! (`dbusrs_bus.rs`) converts into this; the tests build it from busctl's
 //! JSON (`busctl --json=short`), the replies recorded on the workstation.
 
 use std::collections::BTreeMap;

@@ -162,7 +162,7 @@ fn exit_code(dispatch_failure: bool) -> i32 {
 
 pub fn run() -> i32 {
     // Caps glibc's malloc arenas before any thread starts (startup budget,
-    // 15 MB, step 6): otherwise the sound, D-Bus and zbus threads would each
+    // 15 MB, step 6): otherwise the sound and D-Bus threads would each
     // get their own arena, whose freed fragments `release_memory`
     // (`malloc_trim`) can't always hand back to the system.
     // SAFETY: mallopt(3) only changes the allocator's configuration; no

@@ -411,7 +411,7 @@ impl Drop for Daemon {
 pub struct PrivateBus {
     child: Child,
     /// `unix:path=…`, without the server's guid: the same address across
-    /// `restart`s (a new daemon has a new guid, which zbus would refuse).
+    /// `restart`s (a new daemon has a new guid, which a client may refuse).
     pub address: String,
     directory: PathBuf,
 }
@@ -444,7 +444,24 @@ impl PrivateBus {
     }
 
     fn spawn(directory: &Path, address: &str) -> Child {
-        let mut command = Command::new("dbus-daemon");
+        match Self::spawn_program("dbus-daemon", directory, address) {
+            Ok(child) => child,
+            Err((pid, line)) => panic!("dbus-daemon (pid {pid}, killed and reaped): {line:?}"),
+        }
+    }
+
+    /// Starts `program` as a dbus-daemon would be, and waits for its
+    /// readiness line (the printed address). Ok: it is ready. Err: the
+    /// child's pid and whatever it printed instead — the child is already
+    /// killed and reaped by then (I3 carry-over, tray plan 1 review): a bare
+    /// `.unwrap()`/`assert!` after spawning used to panic with the child
+    /// still running, leaked (nothing yet holds a `PrivateBus` whose `Drop`
+    /// would otherwise catch it). `program` lets a test exercise this
+    /// failure path without a real dbus-daemon (which exits on its own on
+    /// every failure we could otherwise produce, leaving nothing to prove
+    /// the fix against).
+    fn spawn_program(program: &str, directory: &Path, address: &str) -> Result<Child, (i32, String)> {
+        let mut command = Command::new(program);
         command
             .args(["--nofork", "--nopidfile", "--print-address=1"])
             .arg(format!("--config-file={}", Self::config(directory, address).display()))
@@ -463,11 +480,23 @@ impl PrivateBus {
             });
         }
         let mut child = command.spawn().expect("dbus-daemon not found: run these tests inside `nix develop`");
+        let pid = child.id() as i32;
         // The printed address means it listens.
         let mut line = String::new();
-        BufReader::new(child.stdout.take().unwrap()).read_line(&mut line).unwrap();
-        assert!(line.starts_with(address), "dbus-daemon address: {line:?}");
-        child
+        let _ = BufReader::new(child.stdout.take().unwrap()).read_line(&mut line);
+        if line.starts_with(address) {
+            return Ok(child);
+        }
+        // Never leaked: killed and waited on before the caller panics.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+        let _ = child.wait();
+        Err((pid, line))
+    }
+
+    /// Test-only entry point for `spawn_program`'s failure path (I3
+    /// carry-over, tray plan 1 review): see its doc comment.
+    pub fn spawn_never_ready_for_test(program: &str, directory: &Path, address: &str) -> Result<Child, (i32, String)> {
+        Self::spawn_program(program, directory, address)
     }
 
     /// Kills it and starts a new one at the same address: a system bus

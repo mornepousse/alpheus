@@ -51,6 +51,12 @@ pub struct FakeBus {
     pub props: BTreeMap<(String, String), Props>,
     /// Paths whose GetAll fails with a real error (an outage, not an absence).
     pub failing: BTreeSet<String>,
+    /// Paths whose GetAll fails as the bus itself going away mid-call would
+    /// (`io::ErrorKind::UnexpectedEof`, as `dbusrs_bus::error` maps
+    /// `Disconnected`): distinct from `failing` (a service that just times
+    /// out), to prove a domain's own read failing this way is tagged
+    /// `Outage::Bus`, not `Outage::Domain` (I2 carry-over, tray plan 1).
+    pub disconnecting: BTreeSet<String>,
     pub bluez: Objects,
     pub devices: Vec<String>,
     pub script: VecDeque<Step>,
@@ -64,6 +70,7 @@ impl FakeBus {
             owners: BTreeMap::new(),
             props: BTreeMap::new(),
             failing: BTreeSet::new(),
+            disconnecting: BTreeSet::new(),
             bluez: Objects::new(),
             devices: Vec::new(),
             script: VecDeque::new(),
@@ -141,6 +148,9 @@ impl Bus for FakeBus {
     fn get_all(&mut self, destination: &str, path: &str, interface: &str) -> io::Result<Props> {
         self.calls.push(format!("GetAll {destination} {path} {interface}"));
         self.reach(destination)?;
+        if self.disconnecting.contains(path) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, format!("Disconnected: {path}")));
+        }
         if self.failing.contains(path) {
             return Err(io::Error::other(format!("timeout: {path}")));
         }

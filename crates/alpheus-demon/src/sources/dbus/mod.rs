@@ -10,7 +10,6 @@ pub mod dbusrs_bus;
 pub mod network;
 pub mod props;
 pub mod upower;
-pub mod zbus_bus;
 
 #[cfg(test)]
 #[path = "../../../tests/support/busctl_wire.rs"]
@@ -331,8 +330,11 @@ impl DomainLog {
 
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
 /// domain is now None, tagged `Outage::Domain(d)` (I2, review) so a caller
-/// can blank just that domain rather than the whole state. An absence
-/// (NotFound) also gives None, but is not an error.
+/// can blank just that domain rather than the whole state — unless the
+/// failure is the bus itself going away mid-call (`UnexpectedEof`), tagged
+/// `Outage::Bus` instead (I2 carry-over, tray plan 1 review): nothing can be
+/// trusted then, not just `d`. An absence (NotFound) also gives None, but is
+/// not an error.
 fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut DomainLog) -> io::Result<()> {
     let r = match d {
         Domain::Network => network::read(bus).map(|v| s.network = Some(v)),
@@ -357,7 +359,12 @@ fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut Domai
     if e.kind() == io::ErrorKind::NotFound {
         return Ok(());
     }
-    Err(tag(e, Outage::Domain(d)))
+    // A bus disconnect mid-call (I2 carry-over, tray plan 1 review) is the
+    // whole connection going away, not this domain alone: tagging it
+    // `Outage::Domain(d)` would leave the other domains showing their last
+    // value for a whole backoff round after nothing can be trusted any more.
+    let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(d) };
+    Err(tag(e, outage))
 }
 
 /// Reads every domain in `domains` into `s`; the first real failure (not an
@@ -546,8 +553,9 @@ pub fn start(domains: Vec<Domain>, send: impl Fn(Option<SystemState>) -> bool + 
         // Owned here, across every `run_supervised` round (follow-up,
         // re-review): a domain stuck down must log once, not once per round.
         let mut log_state = DomainLog::default();
-        let run =
-            move |p: &mut dyn FnMut(SystemState) -> bool| session(&mut zbus_bus::ZbusBus::system(&domains)?, &domains, &mut log_state, p);
+        let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
+            session(&mut dbusrs_bus::DbusRsBus::system(&domains)?, &domains, &mut log_state, p)
+        };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });
     if let Err(e) = result {
@@ -1030,6 +1038,22 @@ mod tests {
         assert_eq!(seen[1], None, "the bus itself gone: \"–\" everywhere, untagged errors default to it");
     }
 
+    /// I2 carry-over (tray plan 1 review): a single domain's own read
+    /// failing because the BUS went away mid-call (`UnexpectedEof`, as
+    /// `dbusrs_bus::error` maps `Disconnected`) must be tagged `Outage::Bus`,
+    /// never `Outage::Domain` — otherwise the other domains would keep
+    /// showing their last value for a whole backoff round after the
+    /// connection itself is already gone.
+    #[test]
+    fn a_bus_disconnect_during_a_domains_read_is_tagged_as_a_bus_outage() {
+        let mut bus = FakeBus::workstation();
+        bus.disconnecting.insert(network::PATH.into());
+        let mut s = SystemState { network: None, bluetooth: None, battery: None };
+        let e = read(&mut bus, Domain::Network, &mut s, &mut DomainLog::default()).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(outage_of(&e), Outage::Bus, "a bus disconnect blanks every domain, not just this one");
+    }
+
     #[test]
     fn a_wedged_bluez_leaves_network_and_battery_shown_while_bluetooth_shows_dash() {
         // The scenario named in the review, through the real `session` and
@@ -1093,7 +1117,7 @@ mod tests {
     /// own `if !wanted(&domains) { return; }` guard sits first, synchronously,
     /// in its body, so removing it here wouldn't reliably turn this test red
     /// (the thread it would then spawn runs asynchronously, and its real
-    /// guard calls `ZbusBus::system`, a real system bus connection — forbidden
+    /// guard calls `DbusRsBus::system`, a real system bus connection — forbidden
     /// in a test regardless of how briefly, which is why that mutation was
     /// never run on the real `start`). `wanted_is_false_only_when_no_domain_is_shown`
     /// above is the actual proof; this just confirms `start` is wired to call

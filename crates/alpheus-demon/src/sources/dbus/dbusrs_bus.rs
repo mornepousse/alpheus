@@ -8,7 +8,6 @@
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
-use super::zbus_bus::{LOGIN1_RULE, MATCH_RULES, kind_of};
 use super::{Bus, Domain, Signal, UPOWER, bluez, upower};
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -58,6 +57,76 @@ impl Method {
             Method::EnumerateDevices => UPOWER,
         }
     }
+}
+
+/// The signals the bar listens to, by domain: a connection subscribes to
+/// its domains' rules only. The bus sends us nothing else (but the
+/// NameAcquired every client receives). BlueZ's PropertiesChanged is split
+/// by interface (arg0): a headset's volume (MediaTransport1) or track
+/// (MediaPlayer1) never reaches the daemon.
+pub const MATCH_RULES: [(Domain, &str); 11] = [
+    (
+        Domain::Network,
+        "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+    ),
+    (
+        Domain::Network,
+        "type='signal',sender='org.freedesktop.NetworkManager',path_namespace='/org/freedesktop/NetworkManager/ActiveConnection',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+    ),
+    (
+        Domain::Battery,
+        // Narrowed to the device objects (M5, review): UPower's own root
+        // object never sends PropertiesChanged the bar would read. This
+        // still matches BAT0 and the line power supplies — a path_namespace
+        // can't exclude a few device names — so `Signal::domain` drops
+        // those itself (`upower_device_ignored`).
+        "type='signal',sender='org.freedesktop.UPower',path_namespace='/org/freedesktop/UPower/devices',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+    ),
+    (Domain::Battery, "type='signal',sender='org.freedesktop.UPower',interface='org.freedesktop.UPower'"),
+    (
+        Domain::Bluetooth,
+        "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.bluez.Adapter1'",
+    ),
+    (
+        Domain::Bluetooth,
+        "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.bluez.Device1'",
+    ),
+    (
+        Domain::Bluetooth,
+        "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.bluez.Battery1'",
+    ),
+    (Domain::Bluetooth, "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'"),
+    (
+        Domain::Network,
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.NetworkManager'",
+    ),
+    (
+        Domain::Battery,
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.UPower'",
+    ),
+    (
+        Domain::Bluetooth,
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
+    ),
+];
+
+/// Resuming from sleep (not suspending): every shown domain may have
+/// changed while the machine slept. Added once, regardless of which
+/// domains are shown — `Signal::is_wake` marks it, `session` re-reads all
+/// of `domains`. Reading only: never a call to logind (Suspend, Hibernate,
+/// PowerOff… the guardrail already forbids those words in this directory).
+pub const LOGIN1_RULE: &str = "type='signal',sender='org.freedesktop.login1',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
+
+/// D-Bus errors meaning "nothing there": the service or the object is gone.
+const ABSENT: [&str; 4] = [
+    "org.freedesktop.DBus.Error.ServiceUnknown",
+    "org.freedesktop.DBus.Error.NameHasNoOwner",
+    "org.freedesktop.DBus.Error.UnknownObject",
+    "org.freedesktop.DBus.Error.UnknownMethod",
+];
+
+pub fn kind_of(error_name: &str) -> io::ErrorKind {
+    if ABSENT.contains(&error_name) { io::ErrorKind::NotFound } else { io::ErrorKind::Other }
 }
 
 fn unexpected(what: &str) -> io::Error {
@@ -422,6 +491,16 @@ mod tests {
         assert_eq!(p.0["V"], Prop::Float(0.5), "a variant inside a variant");
         assert_eq!(p.0["Strs"], Prop::Other);
         assert!(get_all_reply(&recorded(r#"{"type":"ao","data":[["/a"]]}"#)).is_err(), "not a dictionary: an error, not empty props");
+    }
+
+    #[test]
+    fn absent_services_and_objects_are_not_found() {
+        for absent in ["ServiceUnknown", "NameHasNoOwner", "UnknownObject", "UnknownMethod"] {
+            assert_eq!(kind_of(&format!("org.freedesktop.DBus.Error.{absent}")), io::ErrorKind::NotFound, "{absent}");
+        }
+        for outage in ["NoReply", "AccessDenied", "Timeout"] {
+            assert_eq!(kind_of(&format!("org.freedesktop.DBus.Error.{outage}")), io::ErrorKind::Other, "{outage}");
+        }
     }
 
     #[test]

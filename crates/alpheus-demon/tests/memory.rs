@@ -93,8 +93,8 @@ fn pss_under_30mb_and_stable() {
     std::thread::sleep(Duration::from_secs(3));
     let initial = d.pss_kb();
     // Fonts: regular + bold ≈ 2 MB (the whole font database: ≈ 47 MB);
-    // plan 1 measured ≈ 12 MB here; zbus (≈ 2.4 MB) and the sound source must
-    // fit in what is left (task 16, budget decisions).
+    // plan 1 measured ≈ 12 MB here; the D-Bus source and the sound source
+    // must fit in what is left (task 16, budget decisions).
     assert!(initial < STARTUP_MAX_KB, "startup: PSS {initial} KB >= 15 MB: run startup_pss_per_source and report to Mae, never raise");
     let mut n = 0;
     pump(&hypr, Duration::from_secs(10), &mut n); // warm-up
@@ -175,8 +175,8 @@ fn at_rest_no_wakeups() {
     assert_eq!((sound, dbus), (0, 0), "a source thread wakes at rest");
     // Plan 1 observed 0 to 2; a 1 Hz tick would add ≈ 5.
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest");
-    // Loop, guard, compositor, one rayon, sound, D-Bus, zbus's executor and
-    // reactor (2 measured, 3 allowed), plus transient command reapers.
+    // Loop, guard, compositor, one rayon, sound, D-Bus (libdbus has no
+    // thread of its own), plus transient command reapers.
     assert!(threads <= 12, "{threads} threads");
 }
 
@@ -206,8 +206,7 @@ fn resources_tick_at_the_configured_interval() {
 }
 
 /// The D-Bus source reconnects after the system bus restarts (dbus.service
-/// restarted, a crash): each reconnection must leave no thread behind
-/// (zbus's per-connection executor ends with its connection).
+/// restarted, a crash): each reconnection must leave no thread behind.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn no_thread_leak_across_system_bus_restarts() {

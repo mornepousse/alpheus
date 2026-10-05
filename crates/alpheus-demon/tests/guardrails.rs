@@ -9,7 +9,7 @@ use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::compositor::{CompositorState, Window, Workspace};
 use alpheus_demon::config::BarConfig;
-use alpheus_demon::sources::dbus::zbus_bus::{LOGIN1_RULE, MATCH_RULES, Method};
+use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
@@ -310,8 +310,8 @@ fn the_only_stream_is_pw_dump_monitor() {
 fn d_bus_is_confined_to_sources_and_read_only() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if t.contains("zbus::") {
-            assert_eq!(name, "sources/dbus/zbus_bus.rs", "zbus used in {name}");
+        if uses_crate(&t, "dbus") {
+            assert_eq!(name, "sources/dbus/dbusrs_bus.rs", "the dbus crate used in {name}");
         }
         if name.starts_with("sources/dbus/") {
             let prod = production_code(&t);
@@ -337,8 +337,15 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     }
     let names: Vec<&str> = Method::ALL.iter().map(|m| m.name()).collect();
     assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices"]);
-    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/zbus_bus.rs").expect("zbus_bus.rs").1;
-    assert_eq!(production_code(&file).matches("call_method(").count(), 1, "every call goes through `call`, which takes a `Method`");
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
+    let prod = production_code(&file);
+    assert_eq!(prod.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
+    assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `message`, from a `Method`");
+    assert_eq!(prod.matches(".send(").count(), 1, "the only other message sent: the refusal of a call to the bar");
+    assert_eq!(prod.matches(".error(").count(), 1, "that refusal is an error reply");
+    for never in ["new_signal(", "method_return(", "request_name", "RequestName", ".add_match(", "Crossroads"] {
+        assert!(!prod.contains(never), "{never} in dbusrs_bus.rs: the bar emits, owns and serves nothing");
+    }
     for (_, rule) in MATCH_RULES {
         assert!(rule.starts_with("type='signal',"), "{rule}");
     }
@@ -347,6 +354,22 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         "the network module is icons only (Q1): no AccessPoint signal is ever read"
     );
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
+}
+
+/// Whether `text` names the crate `krate` as a path root (`dbus::…`), not
+/// as a module further down a path (`sources::dbus::…`, `dbusrs_bus::…`).
+fn uses_crate(text: &str, krate: &str) -> bool {
+    let needle = format!("{krate}::");
+    text.match_indices(&needle).any(|(i, _)| !text[..i].ends_with(|c: char| c == ':' || c == '_' || c.is_alphanumeric()))
+}
+
+#[test]
+fn uses_crate_tells_the_crate_from_a_module_path() {
+    assert!(uses_crate("use dbus::Message;", "dbus"));
+    assert!(uses_crate("fn f(e: dbus::Error) {}", "dbus"));
+    assert!(!uses_crate("use crate::sources::dbus::props;", "dbus"));
+    assert!(!uses_crate("dbusrs_bus::DbusRsBus::system", "dbus"));
+    assert!(!uses_crate("libdbus::x", "dbus"));
 }
 
 /// `eprintln!`/`eprint!` panic if the other end of standard error is closed

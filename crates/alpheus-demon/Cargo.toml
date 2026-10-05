@@ -17,7 +17,6 @@ smithay-client-toolkit.workspace = true
 toml.workspace = true
 unicode-normalization.workspace = true
 unicode-width.workspace = true
-zbus.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
