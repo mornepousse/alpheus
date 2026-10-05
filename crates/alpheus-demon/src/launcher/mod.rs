@@ -6,7 +6,9 @@
 pub mod config;
 pub mod desktop;
 pub mod history;
+pub mod input;
 pub mod matching;
+pub mod model;
 pub mod scan;
 
 /// Test helpers shared by the launcher's modules.

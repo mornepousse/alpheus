@@ -52,6 +52,7 @@ dependencies = [
  "toml",
  "unicode-normalization",
  "unicode-width",
+ "xkeysym",
  "zbus",
 ]
 

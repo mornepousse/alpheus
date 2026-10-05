@@ -1,0 +1,734 @@
+//! The launcher's state and every key rule, pure (spec § 2): the query,
+//! the mode (and the prefixes that jump to one), the selection and the
+//! visible window of results, the preview, what Enter and Ctrl+Enter
+//! activate. Wayland (task 12) feeds it keys and clicks and applies the
+//! `Outcome`; nothing here touches the session.
+
+use crate::compositor::Toplevel;
+use crate::launcher::config::LauncherConfig;
+use crate::launcher::history::History;
+use crate::launcher::input::Key;
+use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
+use crate::launcher::scan::Catalog;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Preview {
+    /// Shown only for an app with desktop actions (Mae, Q5).
+    Auto,
+    Shown,
+    Hidden,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activation {
+    /// action: index into DesktopEntry.actions (None: the main Exec).
+    App {
+        index: usize,
+        action: Option<usize>,
+    },
+    Window(usize),
+    /// A $PATH command, by itself (never through `sh -c`); terminal: inside
+    /// the configured terminal (Ctrl+Enter).
+    Command {
+        index: usize,
+        terminal: bool,
+    },
+    /// Typed text run through `sh -c` (Commands mode only); terminal: inside the configured terminal.
+    Shell {
+        text: String,
+        terminal: bool,
+    },
+    /// Script mode: the chosen line, or the typed text when nothing matched.
+    Choose(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Nothing,
+    Redraw,
+    Close,
+    Activate(Activation),
+}
+
+pub struct Launcher {
+    pub config: LauncherConfig,
+    pub mode: Mode,
+    pub query: String,
+    pub selected: usize,
+    /// First visible result row.
+    pub top: usize,
+    pub preview: Preview,
+    /// Shown on the help line in the error style until the next key.
+    pub message: Option<String>,
+    pub prompt: Option<String>,
+    pub catalog: Option<Catalog>,
+    pub windows: Vec<Toplevel>,
+    pub lines: Vec<String>,
+    pub history: History,
+    pub now: u64,
+    pub results: Vec<Hit>,
+    ranker: Ranker,
+    /// The current mode was entered by typing its prefix: Backspace on the
+    /// empty query goes back to All.
+    by_prefix: bool,
+    list_rows: usize,
+}
+
+impl Launcher {
+    fn new(config: LauncherConfig, mode: Mode) -> Launcher {
+        let list_rows = usize::from(config.rows).max(1);
+        Launcher {
+            config,
+            mode,
+            query: String::new(),
+            selected: 0,
+            top: 0,
+            preview: Preview::Auto,
+            message: None,
+            prompt: None,
+            catalog: None,
+            windows: Vec::new(),
+            lines: Vec::new(),
+            history: History::empty(0),
+            now: 0,
+            results: Vec::new(),
+            ranker: Ranker::new(),
+            by_prefix: false,
+            list_rows,
+        }
+    }
+
+    /// The app launcher: windows at once, apps and commands once the scan
+    /// delivers its catalog (`set_catalog`).
+    pub fn for_apps(config: LauncherConfig, windows: Vec<Toplevel>, history: History, now: u64) -> Launcher {
+        let mut l = Launcher::new(config, Mode::All);
+        l.windows = windows;
+        l.history = history;
+        l.now = now;
+        l.refilter();
+        l
+    }
+
+    /// The dmenu menu: the client's lines, its prompt, no modes, no history.
+    pub fn for_script(config: LauncherConfig, prompt: Option<String>, lines: Vec<String>) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Script);
+        l.prompt = prompt;
+        l.lines = lines;
+        l.refilter();
+        l
+    }
+
+    pub fn is_script(&self) -> bool {
+        self.mode == Mode::Script
+    }
+
+    /// Refilters; keeps the selected Source if still present, else 0.
+    pub fn set_catalog(&mut self, catalog: Catalog) {
+        self.catalog = Some(catalog);
+        self.ranker.forget();
+        self.refilter_keeping_selection();
+    }
+
+    pub fn set_windows(&mut self, windows: Vec<Toplevel>) {
+        self.windows = windows;
+        self.ranker.forget();
+        self.refilter_keeping_selection();
+    }
+
+    /// Rows the view shows (PageUp/PageDown step, `top` clamping).
+    pub fn set_list_rows(&mut self, rows: usize) {
+        self.list_rows = rows.max(1);
+        self.keep_visible();
+    }
+
+    pub fn key(&mut self, k: Key) -> Outcome {
+        let had_message = self.message.take().is_some();
+        let o = self.apply(k);
+        if had_message && o == Outcome::Nothing { Outcome::Redraw } else { o }
+    }
+
+    fn apply(&mut self, k: Key) -> Outcome {
+        let page = self.list_rows as i64;
+        match k {
+            Key::Char(c) => {
+                self.query.push(c);
+                self.take_prefix();
+                self.query_changed()
+            }
+            Key::Backspace => {
+                if self.query.pop().is_some() {
+                    self.query_changed()
+                } else if self.by_prefix {
+                    self.by_prefix = false;
+                    self.mode = Mode::All;
+                    self.query_changed()
+                } else {
+                    Outcome::Nothing
+                }
+            }
+            Key::CtrlU => {
+                if self.query.is_empty() {
+                    return Outcome::Nothing;
+                }
+                self.query.clear();
+                self.query_changed()
+            }
+            Key::CtrlW => {
+                if self.query.is_empty() {
+                    return Outcome::Nothing;
+                }
+                let kept = self.query.trim_end().trim_end_matches(|c: char| !c.is_whitespace()).len();
+                self.query.truncate(kept);
+                self.query_changed()
+            }
+            Key::Up | Key::CtrlP => self.move_by(-1),
+            Key::Down | Key::CtrlN => self.move_by(1),
+            Key::PageUp => self.move_by(-page),
+            Key::PageDown => self.move_by(page),
+            Key::Home => self.move_by(i64::MIN / 2),
+            Key::End => self.move_by(i64::MAX / 2),
+            Key::Tab => self.switch_mode(self.mode.next()),
+            Key::BackTab => self.switch_mode(self.mode.previous()),
+            Key::Right | Key::CtrlSpace => {
+                self.preview = if self.preview_visible() { Preview::Hidden } else { Preview::Shown };
+                Outcome::Redraw
+            }
+            Key::Left => {
+                let was_visible = self.preview_visible();
+                self.preview = Preview::Hidden;
+                if was_visible { Outcome::Redraw } else { Outcome::Nothing }
+            }
+            Key::Escape => Outcome::Close,
+            Key::Enter => self.primary(),
+            Key::CtrlEnter => self.secondary(),
+        }
+    }
+
+    /// In All mode (not already entered by a prefix), a query equal to a
+    /// configured prefix switches to that mode and is consumed.
+    fn take_prefix(&mut self) {
+        if self.mode != Mode::All || self.by_prefix {
+            return;
+        }
+        let p = &self.config.prefixes;
+        let mode = if self.query == p.commands {
+            Mode::Commands
+        } else if self.query == p.windows {
+            Mode::Windows
+        } else {
+            return;
+        };
+        self.mode = mode;
+        self.query.clear();
+        self.by_prefix = true;
+    }
+
+    fn switch_mode(&mut self, m: Mode) -> Outcome {
+        if self.is_script() || m == self.mode {
+            return Outcome::Nothing;
+        }
+        self.mode = m;
+        self.by_prefix = false;
+        self.query_changed()
+    }
+
+    fn query_changed(&mut self) -> Outcome {
+        self.message = None;
+        self.refilter();
+        Outcome::Redraw
+    }
+
+    fn rank(&mut self) {
+        let (apps, commands) = match &self.catalog {
+            Some(c) => (&c.apps[..], &c.commands[..]),
+            None => (&[][..], &[][..]),
+        };
+        let q = Query {
+            text: &self.query,
+            mode: self.mode,
+            apps,
+            commands,
+            windows: &self.windows,
+            lines: &self.lines,
+            history: &self.history,
+            now: self.now,
+        };
+        self.results = self.ranker.rank(&q);
+    }
+
+    /// New results, selection back on the first one.
+    fn refilter(&mut self) {
+        self.rank();
+        self.selected = 0;
+        self.top = 0;
+    }
+
+    fn refilter_keeping_selection(&mut self) {
+        let kept = self.selected_hit().map(|h| h.source);
+        self.rank();
+        self.selected = kept.and_then(|s| self.results.iter().position(|h| h.source == s)).unwrap_or(0);
+        self.keep_visible();
+    }
+
+    fn keep_visible(&mut self) {
+        let last_top = self.results.len().saturating_sub(self.list_rows);
+        if self.selected < self.top {
+            self.top = self.selected;
+        } else if self.selected >= self.top + self.list_rows {
+            self.top = self.selected + 1 - self.list_rows;
+        }
+        self.top = self.top.min(last_top);
+    }
+
+    fn move_by(&mut self, delta: i64) -> Outcome {
+        if self.results.is_empty() {
+            return Outcome::Nothing;
+        }
+        let last = self.results.len() as i64 - 1;
+        let to = (self.selected as i64).saturating_add(delta).clamp(0, last) as usize;
+        if to == self.selected {
+            return Outcome::Nothing;
+        }
+        self.selected = to;
+        self.keep_visible();
+        Outcome::Redraw
+    }
+
+    fn app_has_actions(&self, index: usize) -> bool {
+        self.catalog.as_ref().and_then(|c| c.apps.get(index)).is_some_and(|e| !e.actions.is_empty())
+    }
+
+    /// The query, when it is something to run through the shell.
+    fn shell(&self, terminal: bool) -> Outcome {
+        if self.query.trim().is_empty() {
+            Outcome::Nothing
+        } else {
+            Outcome::Activate(Activation::Shell { text: self.query.clone(), terminal })
+        }
+    }
+
+    fn primary(&self) -> Outcome {
+        let hit = self.selected_hit();
+        match self.mode {
+            Mode::Script => match hit {
+                Some(Hit { source: Source::Line(i), .. }) => Outcome::Activate(Activation::Choose(self.lines[i].clone())),
+                _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose(self.query.clone())),
+                _ => Outcome::Nothing,
+            },
+            Mode::Commands if hit.is_none() || self.query.contains(char::is_whitespace) => self.shell(false),
+            _ => match hit.map(|h| h.source) {
+                Some(Source::App(index)) => Outcome::Activate(Activation::App { index, action: None }),
+                Some(Source::Window(i)) => Outcome::Activate(Activation::Window(i)),
+                Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: false }),
+                Some(Source::Line(i)) => Outcome::Activate(Activation::Choose(self.lines[i].clone())),
+                None => Outcome::Nothing,
+            },
+        }
+    }
+
+    fn secondary(&self) -> Outcome {
+        let hit = self.selected_hit().map(|h| h.source);
+        match (self.mode, hit) {
+            (Mode::Commands, Some(Source::Command(index))) if !self.query.contains(char::is_whitespace) => {
+                Outcome::Activate(Activation::Command { index, terminal: true })
+            }
+            (Mode::Commands, _) => self.shell(true),
+            (_, Some(Source::App(index))) => {
+                let action = self.app_has_actions(index).then_some(0);
+                Outcome::Activate(Activation::App { index, action })
+            }
+            _ => self.primary(),
+        }
+    }
+
+    /// Click on result `index` (absolute index into `results`): select then activate.
+    pub fn click(&mut self, index: usize, secondary: bool) -> Outcome {
+        if index >= self.results.len() {
+            return Outcome::Nothing;
+        }
+        self.message = None;
+        self.selected = index;
+        self.keep_visible();
+        if secondary { self.secondary() } else { self.primary() }
+    }
+
+    pub fn click_mode(&mut self, m: Mode) -> Outcome {
+        if m == Mode::Script {
+            return Outcome::Nothing;
+        }
+        self.switch_mode(m)
+    }
+
+    /// Wheel: moves the selection by `rows`, clamped.
+    pub fn scroll(&mut self, rows: i32) -> Outcome {
+        self.move_by(i64::from(rows))
+    }
+
+    pub fn selected_hit(&self) -> Option<Hit> {
+        self.results.get(self.selected).copied()
+    }
+
+    /// Auto: shown iff the selected hit is an App with at least one action.
+    pub fn preview_visible(&self) -> bool {
+        match self.preview {
+            Preview::Shown => true,
+            Preview::Hidden => false,
+            Preview::Auto => matches!(self.selected_hit(), Some(Hit { source: Source::App(i), .. }) if self.app_has_actions(i)),
+        }
+    }
+
+    pub fn show_message(&mut self, m: String) {
+        self.message = Some(m);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::launcher::desktop::{DesktopAction, DesktopEntry};
+    use std::path::PathBuf;
+
+    const NOW: u64 = 1_800_000_000;
+
+    fn app(id: &str, name: &str, actions: &[&str]) -> DesktopEntry {
+        DesktopEntry {
+            id: id.into(),
+            path: PathBuf::from(format!("/usr/share/applications/{id}")),
+            name: name.into(),
+            generic_name: None,
+            comment: None,
+            keywords: vec![],
+            icon: None,
+            exec: name.to_lowercase(),
+            terminal: false,
+            startup_wm_class: None,
+            actions: actions
+                .iter()
+                .map(|a| DesktopAction { key: a.to_lowercase().replace(' ', "-"), name: a.to_string(), exec: "x".into() })
+                .collect(),
+        }
+    }
+
+    fn catalog() -> Catalog {
+        Catalog {
+            apps: vec![
+                app("org.mozilla.firefox.desktop", "Firefox", &["New Window", "New Private Window"]),
+                app("org.gnome.Nautilus.desktop", "Files", &[]),
+                app("fish.desktop", "Fish", &[]),
+            ],
+            commands: vec!["fd".into(), "fish".into(), "htop".into()],
+        }
+    }
+
+    fn window(selector: &str, class: &str, title: &str) -> Toplevel {
+        Toplevel { selector: selector.into(), class: class.into(), title: title.into(), workspace: "1".into(), focused: false }
+    }
+
+    fn windows() -> Vec<Toplevel> {
+        vec![window("id:1", "foot", "fish shell"), window("id:2", "firefox", "Mail"), window("id:3", "foot", "notes")]
+    }
+
+    fn launcher() -> Launcher {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        l.set_catalog(catalog());
+        l
+    }
+
+    fn typed(l: &mut Launcher, text: &str) {
+        for c in text.chars() {
+            l.key(Key::Char(c));
+        }
+    }
+
+    fn sources(l: &Launcher) -> Vec<Source> {
+        l.results.iter().map(|h| h.source).collect()
+    }
+
+    fn activate(a: Activation) -> Outcome {
+        Outcome::Activate(a)
+    }
+
+    #[test]
+    fn opens_on_windows_before_the_catalog_arrives() {
+        let l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert_eq!((l.mode, l.query.as_str(), l.selected, l.top, l.catalog.is_none()), (Mode::All, "", 0, 0, true));
+        assert_eq!(sources(&l), [Source::Window(0), Source::Window(1), Source::Window(2)]);
+        assert!(!l.is_script());
+    }
+
+    #[test]
+    fn typing_filters_resets_the_selection_and_clears_the_message() {
+        let mut l = launcher();
+        l.key(Key::Down);
+        l.show_message("firefox: not found".into());
+        assert_eq!(l.key(Key::Char('f')), Outcome::Redraw);
+        assert_eq!((l.query.as_str(), l.selected, l.message.as_deref()), ("f", 0, None));
+        typed(&mut l, "iref");
+        assert_eq!(sources(&l), [Source::Window(1), Source::App(0)], "the Firefox window, then the app");
+        assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
+        assert_eq!(l.query, "fire");
+    }
+
+    #[test]
+    fn prefixes_switch_mode_and_backspace_returns_to_all() {
+        let mut l = launcher();
+        assert_eq!(l.key(Key::Char('>')), Outcome::Redraw);
+        assert_eq!((l.mode, l.query.as_str()), (Mode::Commands, ""), "the prefix is consumed");
+        assert_eq!(sources(&l), [Source::Command(0), Source::Command(1), Source::Command(2)]);
+        typed(&mut l, ">");
+        assert_eq!((l.mode, l.query.as_str()), (Mode::Commands, ">"), "no second jump: a plain character now");
+        l.key(Key::Backspace);
+        assert_eq!(l.key(Key::Backspace), Outcome::Redraw);
+        assert_eq!((l.mode, l.query.as_str()), (Mode::All, ""), "Backspace on the empty query after a prefix: back to All");
+        assert_eq!(l.key(Key::Backspace), Outcome::Nothing, "already in All");
+        typed(&mut l, "w");
+        assert_eq!((l.mode, l.query.as_str()), (Mode::All, "w"), "\"w\" alone filters");
+        typed(&mut l, " ");
+        assert_eq!((l.mode, l.query.as_str()), (Mode::Windows, ""), "\"w \" jumps to Windows");
+        l.key(Key::Backspace);
+        l.key(Key::Tab);
+        assert_eq!(l.mode, Mode::Apps);
+        typed(&mut l, ">");
+        assert_eq!((l.mode, l.query.as_str()), (Mode::Apps, ">"), "prefixes only jump from All");
+    }
+
+    #[test]
+    fn configured_prefixes_are_honoured() {
+        let mut config = LauncherConfig::default();
+        config.prefixes.commands = "!".into();
+        config.prefixes.windows = ",".into();
+        let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+        typed(&mut l, ">");
+        assert_eq!((l.mode, l.query.as_str()), (Mode::All, ">"), "the default prefix is no longer one");
+        l.key(Key::CtrlU);
+        typed(&mut l, "!");
+        assert_eq!(l.mode, Mode::Commands);
+        l.key(Key::Backspace);
+        typed(&mut l, ",");
+        assert_eq!(l.mode, Mode::Windows);
+    }
+
+    #[test]
+    fn ctrl_u_clears_and_ctrl_w_deletes_the_last_word() {
+        let mut l = launcher();
+        assert_eq!(l.key(Key::CtrlU), Outcome::Nothing, "already empty");
+        assert_eq!(l.key(Key::CtrlW), Outcome::Nothing);
+        typed(&mut l, "git log  ");
+        assert_eq!(l.key(Key::CtrlW), Outcome::Redraw);
+        assert_eq!(l.query, "git ");
+        l.key(Key::CtrlW);
+        assert_eq!(l.query, "");
+        typed(&mut l, "abc");
+        assert_eq!(l.key(Key::CtrlU), Outcome::Redraw);
+        assert_eq!(l.query, "");
+    }
+
+    #[test]
+    fn moving_clamps_without_wrapping_and_keeps_the_selection_visible() {
+        let mut l = launcher(); // 3 windows + 3 apps
+        l.set_list_rows(2);
+        assert_eq!(l.key(Key::Up), Outcome::Nothing, "no wrap at the top");
+        assert_eq!(l.key(Key::CtrlP), Outcome::Nothing);
+        assert_eq!(l.key(Key::Down), Outcome::Redraw);
+        assert_eq!((l.selected, l.top), (1, 0));
+        l.key(Key::CtrlN);
+        assert_eq!((l.selected, l.top), (2, 1), "scrolled to keep it visible");
+        l.key(Key::PageDown);
+        assert_eq!((l.selected, l.top), (4, 3), "a page = the visible rows");
+        l.key(Key::End);
+        assert_eq!((l.selected, l.top), (5, 4));
+        assert_eq!(l.key(Key::Down), Outcome::Nothing, "no wrap at the bottom");
+        l.key(Key::PageUp);
+        assert_eq!((l.selected, l.top), (3, 3));
+        l.key(Key::Home);
+        assert_eq!((l.selected, l.top), (0, 0));
+        l.set_list_rows(10);
+        l.key(Key::End);
+        assert_eq!((l.selected, l.top), (5, 0), "everything fits: never scrolled");
+    }
+
+    #[test]
+    fn tab_cycles_modes_but_not_in_script_mode() {
+        let mut l = launcher();
+        typed(&mut l, "f");
+        assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+        assert_eq!((l.mode, l.query.as_str()), (Mode::Apps, "f"), "the query is kept");
+        assert_eq!(sources(&l), [Source::App(1), Source::App(0), Source::App(2)]);
+        l.key(Key::Tab);
+        l.key(Key::Tab);
+        assert_eq!(l.mode, Mode::Commands);
+        l.key(Key::Tab);
+        assert_eq!(l.mode, Mode::All, "wraps");
+        l.key(Key::BackTab);
+        assert_eq!(l.mode, Mode::Commands);
+        let mut s = Launcher::for_script(LauncherConfig::default(), None, vec!["a".into()]);
+        assert_eq!(s.key(Key::Tab), Outcome::Nothing);
+        assert_eq!(s.key(Key::BackTab), Outcome::Nothing);
+        assert_eq!(s.click_mode(Mode::Apps), Outcome::Nothing);
+        assert!(s.is_script());
+    }
+
+    #[test]
+    fn preview_opens_by_itself_for_apps_with_actions_and_toggles() {
+        let mut l = launcher();
+        l.key(Key::Tab); // Apps: Files, Firefox, Fish
+        assert!(!l.preview_visible(), "Files has no action");
+        l.key(Key::Down);
+        assert!(l.preview_visible(), "Firefox has actions: Auto shows it");
+        assert_eq!(l.key(Key::Right), Outcome::Redraw);
+        assert!(!l.preview_visible(), "Right toggles it off");
+        l.key(Key::CtrlSpace);
+        assert!(l.preview_visible(), "Ctrl+Space toggles it on");
+        l.key(Key::Up);
+        assert!(l.preview_visible(), "Shown stays shown");
+        assert_eq!(l.key(Key::Left), Outcome::Redraw);
+        assert!(!l.preview_visible());
+        assert_eq!(l.key(Key::Left), Outcome::Nothing, "already hidden");
+    }
+
+    #[test]
+    fn enter_activates_the_selection_escape_closes() {
+        let mut l = launcher();
+        assert_eq!(l.key(Key::Enter), activate(Activation::Window(0)));
+        l.key(Key::Tab);
+        l.key(Key::Down);
+        assert_eq!(l.key(Key::Enter), activate(Activation::App { index: 0, action: None }), "Firefox, main Exec");
+        typed(&mut l, "zzz");
+        assert_eq!(l.key(Key::Enter), Outcome::Nothing, "nothing selected");
+        assert_eq!(l.key(Key::Escape), Outcome::Close);
+    }
+
+    #[test]
+    fn ctrl_enter_runs_the_first_desktop_action_else_the_main_exec() {
+        let mut l = launcher();
+        l.key(Key::Tab);
+        l.key(Key::Down); // Firefox
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::App { index: 0, action: Some(0) }));
+        l.key(Key::Up); // Files
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::App { index: 1, action: None }));
+        l.key(Key::BackTab); // All: windows first
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Window(0)), "a window: as Enter");
+    }
+
+    #[test]
+    fn commands_mode_runs_the_selection_or_the_typed_text() {
+        let mut l = launcher();
+        typed(&mut l, ">");
+        typed(&mut l, "hto");
+        assert_eq!(l.key(Key::Enter), activate(Activation::Command { index: 2, terminal: false }), "htop selected");
+        assert_eq!(
+            l.key(Key::CtrlEnter),
+            activate(Activation::Command { index: 2, terminal: true }),
+            "in the terminal, by itself: never through sh -c"
+        );
+        typed(&mut l, "p -d 5");
+        assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: "htop -d 5".into(), terminal: false }), "whitespace: the shell");
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Shell { text: "htop -d 5".into(), terminal: true }));
+        l.key(Key::CtrlU);
+        typed(&mut l, "zzzz");
+        assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: "zzzz".into(), terminal: false }), "no selection: the shell");
+        l.key(Key::CtrlU);
+        typed(&mut l, "  ");
+        assert_eq!(l.key(Key::Enter), Outcome::Nothing, "blanks only: nothing to run");
+        let mut empty = Launcher::for_apps(LauncherConfig::default(), vec![], History::empty(200), NOW);
+        typed(&mut empty, ">");
+        assert_eq!(empty.key(Key::Enter), Outcome::Nothing, "empty query, no catalog: nothing to run");
+    }
+
+    #[test]
+    fn script_mode_enter_returns_typed_text_when_nothing_matches() {
+        let mut s = Launcher::for_script(LauncherConfig::default(), Some("Target".into()), vec![]);
+        assert_eq!(s.prompt.as_deref(), Some("Target"));
+        assert_eq!(s.key(Key::Enter), Outcome::Nothing, "no line, nothing typed");
+        typed(&mut s, "10.0.0.1");
+        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("10.0.0.1".into())), "free text (tools-menu's prompts)");
+        let mut s = Launcher::for_script(LauncherConfig::default(), None, vec!["alpha".into(), "beta".into()]);
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)]);
+        typed(&mut s, "bet");
+        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("beta".into())), "the matching line, as shown");
+        typed(&mut s, "zzz");
+        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("betzzz".into())), "nothing matches: the typed text");
+        assert_eq!(s.key(Key::CtrlEnter), activate(Activation::Choose("betzzz".into())), "Ctrl+Enter as Enter");
+        assert_eq!(s.key(Key::Escape), Outcome::Close);
+    }
+
+    #[test]
+    fn catalog_arriving_after_typing_refilters_and_clamps() {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        typed(&mut l, "fi");
+        assert_eq!(sources(&l), [Source::Window(0), Source::Window(1)], "windows only before the scan");
+        assert_eq!(l.key(Key::Down), Outcome::Redraw);
+        assert_eq!(l.key(Key::Down), Outcome::Nothing, "two results: clamped");
+        l.key(Key::Up); // back on "fish shell"
+        l.set_catalog(catalog());
+        assert_eq!(l.query, "fi", "typing kept");
+        assert_eq!(l.results.len(), 5, "apps refiltered: {:?}", sources(&l));
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)), "the selected window is still selected");
+        assert_eq!(l.selected, 4, "now below the apps that outrank it: {:?}", sources(&l));
+        l.key(Key::End);
+        let last = l.results.len() - 1;
+        assert_eq!(l.selected, last);
+        l.set_windows(vec![]);
+        assert!(l.selected < l.results.len(), "selection in range after the list shrank");
+        l.set_list_rows(1);
+        l.key(Key::End);
+        l.set_catalog(Catalog::default());
+        assert_eq!((l.selected, l.top), (0, 0), "nothing left: back to the top");
+        assert!(l.results.is_empty());
+    }
+
+    #[test]
+    fn a_window_list_change_keeps_the_selected_window() {
+        let mut l = launcher();
+        l.key(Key::Down);
+        l.key(Key::Down); // Window(2), "notes"
+        let mut w = windows();
+        w[0].title = "fish — vim".into();
+        l.set_windows(w);
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(2)));
+    }
+
+    #[test]
+    fn a_window_list_change_refreshes_what_each_window_belongs_to() {
+        let mut l = launcher();
+        typed(&mut l, "files");
+        assert_eq!(sources(&l), [Source::App(1)], "no window of Files yet");
+        let mut w = windows();
+        w[1].class = "org.gnome.Nautilus".into(); // same length, another app
+        l.set_windows(w);
+        assert_eq!(sources(&l), [Source::Window(1), Source::App(1)], "the window now belongs to Files");
+        let mut c = catalog();
+        c.apps[1].name = "Fichiers".into();
+        c.apps[1].exec = "nautilus".into();
+        l.set_catalog(c);
+        assert!(sources(&l).is_empty(), "a new catalog, same length: matched again ({:?})", sources(&l));
+    }
+
+    #[test]
+    fn clicks_and_wheel() {
+        let mut l = launcher();
+        assert_eq!(l.click(4, false), activate(Activation::App { index: 0, action: None }), "result 4: Firefox (All, empty query)");
+        assert_eq!(l.selected, 4);
+        assert_eq!(l.click(4, true), activate(Activation::App { index: 0, action: Some(0) }), "secondary click: its action");
+        assert_eq!(l.click(99, false), Outcome::Nothing, "below the last result");
+        assert_eq!(l.click_mode(Mode::Commands), Outcome::Redraw);
+        assert_eq!(l.mode, Mode::Commands);
+        assert_eq!(l.click_mode(Mode::Commands), Outcome::Nothing, "already there");
+        assert_eq!(l.click_mode(Mode::Script), Outcome::Nothing, "never into Script");
+        assert_eq!(l.scroll(2), Outcome::Redraw);
+        assert_eq!(l.selected, 2);
+        assert_eq!(l.scroll(10), Outcome::Nothing, "clamped at the last command");
+        l.scroll(-10);
+        assert_eq!(l.selected, 0);
+    }
+
+    #[test]
+    fn a_message_lasts_until_the_next_key() {
+        let mut l = launcher();
+        l.show_message("firefox: not found".into());
+        assert_eq!(l.message.as_deref(), Some("firefox: not found"));
+        assert_eq!(l.key(Key::Up), Outcome::Redraw, "nothing moved, but the message goes");
+        assert_eq!(l.message, None);
+        assert_eq!(l.key(Key::Up), Outcome::Nothing);
+    }
+}
