@@ -1,0 +1,15 @@
+---
+source: crates/alpheus-demon/src/tray/menu.rs
+expression: snapshot(&rows)
+---
+╭──────────╮
+│ ◂ More   │
+│ Settings │
+│ About    │
+╰──────────╯
+
+mmmmmmmmmmmm
+m.m.mmmm...m
+mAAAAAAAAAAm
+m..........m
+mmmmmmmmmmmm

@@ -1,0 +1,23 @@
+---
+source: crates/alpheus-demon/src/tray/menu.rs
+expression: snapshot(&rows)
+---
+╭────────────╮
+│   Open     │
+│ ✓ Mute     │
+│   Low      │
+│ ● High     │
+├────────────┤
+│   Disabled │
+│   More   ▸ │
+╰────────────╯
+
+mmmmmmmmmmmmmm
+mAAAAAAAAAAAAm
+m.a..........m
+m.a..........m
+m.a..........m
+mmmmmmmmmmmmmm
+m.a.mmmmmmmm.m
+m.a........m.m
+mmmmmmmmmmmmmm

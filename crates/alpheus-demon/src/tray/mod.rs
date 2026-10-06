@@ -8,6 +8,7 @@ pub mod bus;
 pub mod codec;
 pub mod host;
 pub mod icons;
+pub mod menu;
 pub mod menu_session;
 pub mod router;
 pub mod watcher;
