@@ -5,11 +5,12 @@
 //! nothing here touches the session.
 
 use crate::compositor::Toplevel;
+use crate::keys::Key;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history::History;
-use crate::launcher::input::Key;
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::scan::Catalog;
+use crate::list;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -190,7 +191,7 @@ impl Launcher {
     }
 
     fn apply(&mut self, k: Key) -> Outcome {
-        let page = self.list_rows as i64;
+        let page = i32::try_from(self.list_rows).unwrap_or(i32::MAX);
         match k {
             Key::Char(c) => {
                 self.query.push(c);
@@ -227,13 +228,13 @@ impl Launcher {
             Key::Down | Key::CtrlN => self.move_by(1),
             Key::PageUp => self.move_by(-page),
             Key::PageDown => self.move_by(page),
-            Key::Home => self.move_by(i64::MIN / 2),
-            Key::End => self.move_by(i64::MAX / 2),
+            Key::Home => self.move_by(i32::MIN),
+            Key::End => self.move_by(i32::MAX),
             Key::Tab => self.switch_mode(self.mode.next()),
             Key::BackTab => self.switch_mode(self.mode.previous()),
             // No binding: the preview panel they used to toggle always shows now (view.rs,
             // 2026-10-05) — ignored rather than removed from `Key`, so a future rebind needs
-            // no change to `input.rs`.
+            // no change to `keys.rs`.
             Key::Left | Key::Right => Outcome::Nothing,
             Key::Escape => Outcome::Close,
             Key::Enter => self.primary(),
@@ -321,25 +322,19 @@ impl Launcher {
     }
 
     fn keep_visible(&mut self) {
-        let last_top = self.results.len().saturating_sub(self.list_rows);
-        if self.selected < self.top {
-            self.top = self.selected;
-        } else if self.selected >= self.top + self.list_rows {
-            self.top = self.selected + 1 - self.list_rows;
-        }
-        self.top = self.top.min(last_top);
+        self.top = list::keep_visible(self.selected, self.top, self.list_rows, self.results.len());
     }
 
     /// Arrow keys, PageUp/PageDown, Home/End and the wheel (`scroll`) all land here: the only
     /// keys that set `moved` (Mae, 2026-10-05), and only when the selection actually changes —
     /// an empty list, or a clamped move at an edge (already the top or bottom result), leaves
-    /// `moved` untouched.
-    fn move_by(&mut self, delta: i64) -> Outcome {
+    /// `moved` untouched. Every result can be selected: `list::step` is a plain clamp here (no
+    /// wrap).
+    fn move_by(&mut self, delta: i32) -> Outcome {
         if self.results.is_empty() {
             return Outcome::Nothing;
         }
-        let last = self.results.len() as i64 - 1;
-        let to = (self.selected as i64).saturating_add(delta).clamp(0, last) as usize;
+        let to = list::step(self.selected, delta, self.results.len(), |_| true);
         if to == self.selected {
             return Outcome::Nothing;
         }
@@ -428,7 +423,7 @@ impl Launcher {
 
     /// Wheel: moves the selection by `rows`, clamped.
     pub fn scroll(&mut self, rows: i32) -> Outcome {
-        self.move_by(i64::from(rows))
+        self.move_by(rows)
     }
 
     pub fn selected_hit(&self) -> Option<Hit> {
@@ -723,7 +718,7 @@ mod tests {
     }
 
     /// The preview panel always shows the selected result now (view.rs, Mae 2026-10-05): the
-    /// `Left`/`Right` keys that used to toggle it are ignored — recognised by `input.rs`, but
+    /// `Left`/`Right` keys that used to toggle it are ignored — recognised by `keys.rs`, but
     /// a no-op here, not even clearing a message (plain `Outcome::Nothing`, nothing to redraw).
     #[test]
     fn left_and_right_are_ignored() {

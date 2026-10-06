@@ -1,6 +1,7 @@
-//! Keys the launcher understands, from what xkbcommon already resolved: a
-//! keysym (layout applied, so Dvorak's letters are Dvorak's) and its text.
-//! Pure: no Wayland here, tests feed keysyms directly.
+//! Keys the daemon's keyboard surfaces understand (the launcher, a tray
+//! menu, the calendar), from what xkbcommon already resolved: a keysym
+//! (layout applied, so Dvorak's letters are Dvorak's) and its text. Pure:
+//! no Wayland here, tests feed keysyms directly.
 
 use xkeysym::{Keysym, key};
 
@@ -23,9 +24,7 @@ pub enum Key {
     Escape,
     Tab,
     BackTab,
-    /// No binding (the preview panel always shows, nothing left to toggle — Mae, 2026-10-05):
-    /// `translate` still reports it, `model.rs` ignores it, so a future rebind needs only one
-    /// side changed.
+    /// The launcher ignores them (model.rs); a tray menu enters a submenu (→) or goes back a level (←).
     Left,
     Right,
 }

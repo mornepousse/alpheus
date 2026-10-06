@@ -7,9 +7,9 @@
 
 use crate::actions::{self, Button};
 use crate::grid::Grid;
+use crate::keys::{self, Mods};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
-use crate::launcher::input::{self, Mods};
 use crate::launcher::model::{Launcher, Outcome};
 use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
@@ -669,7 +669,7 @@ impl App {
 
     pub(crate) fn launcher_key(&mut self, event: KeyEvent) {
         let Some(open) = self.launcher.as_mut() else { return };
-        let Some(key) = input::translate(event.keysym, event.utf8.as_deref(), open.mods) else { return };
+        let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), open.mods) else { return };
         let outcome = open.model.key(key);
         self.launcher_outcome(outcome);
     }

@@ -10,14 +10,13 @@ use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
+use crate::list::{self, Row, tail, wrap};
 
 pub const BOX_COLUMNS: u16 = 60;
 pub const PREVIEW_COLUMNS: u16 = 36;
 pub const MIN_COLUMNS: u16 = 24;
 /// Glyph for $PATH commands (md-console, as in icons.rs).
 pub const COMMAND_ICON: char = '\u{f018d}';
-/// Longest generic name or kind on the right of a result.
-const KIND_MAX: u16 = 20;
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,42 +70,12 @@ fn mode_spans() -> Vec<(Mode, u16, u16)> {
 }
 
 fn frame(b: &BoxLayout, left: char, right: char, cross: char) -> Grid {
-    let mut g = Grid::empty(b.columns);
-    let line = "─".repeat(usize::from(b.columns));
-    g.write(0, b.columns, &line, Style::MUTED);
-    g.write(0, b.columns, &left.to_string(), Style::MUTED);
-    if b.preview_columns > 0 {
-        g.write(b.pane_end(), b.columns, &cross.to_string(), Style::MUTED);
-    }
-    g.write(b.columns.saturating_sub(1), b.columns, &right.to_string(), Style::MUTED);
-    g
+    list::frame(b.columns, left, right, (b.preview_columns > 0).then(|| (b.pane_end(), cross)))
 }
 
 /// An interior row: side frames and the divider, the rest blank.
 fn interior(b: &BoxLayout) -> Grid {
-    let mut g = Grid::empty(b.columns);
-    g.write(0, b.columns, "│", Style::MUTED);
-    if b.preview_columns > 0 {
-        g.write(b.pane_end(), b.columns, "│", Style::MUTED);
-    }
-    g.write(b.columns.saturating_sub(1), b.columns, "│", Style::MUTED);
-    g
-}
-
-/// The end of `s` that fits in `max` cells, "…" first when cut: the
-/// input line keeps showing what is being typed.
-fn tail(s: &str, max: u16) -> String {
-    if text_width(s) <= max {
-        return s.to_string();
-    }
-    let reversed: String = s.chars().rev().collect();
-    let cut = truncate(&reversed, max);
-    // Exactly the one ellipsis `truncate` just appended (Review Focus 6): `s` may
-    // legitimately end with its own "…", right where the cut falls — `trim_end_matches`
-    // would eat that one too.
-    let stripped = cut.strip_suffix('…').unwrap_or(&cut);
-    let kept: String = stripped.chars().rev().collect();
-    format!("…{kept}")
+    list::interior(b.columns, (b.preview_columns > 0).then(|| b.pane_end()))
 }
 
 fn modes_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
@@ -160,29 +129,9 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
 }
 
 fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
-    let (start, end) = (1, b.pane_end());
-    let selected = index == l.selected;
     let (icon, name, kind) = describe(l, l.results[index].source);
-    let pick = |s: Style| if selected { Style::INVERTED } else { s };
-    if selected {
-        g.write(start, end, &" ".repeat(usize::from(end.saturating_sub(start))), Style::INVERTED);
-    }
-    let mut x = start + 1;
-    if let Some(c) = icon {
-        x = g.write(x, end, &c.to_string(), pick(Style::ACCENT));
-        x = g.write(x, end, " ", pick(Style::NORMAL));
-    }
-    // Review Focus 5: at the minimum width, KIND_MAX alone can still reach past the icon
-    // (whose space `x` already claimed) into the frame — clamped so the kind column never
-    // starts to the left of where the icon ends.
-    let max_kind = KIND_MAX.min(end.saturating_sub(x).saturating_sub(2));
-    let kind = truncate(&kind, max_kind);
-    let kind_width = text_width(&kind);
-    let name_end = if kind_width > 0 { end.saturating_sub(kind_width + 2) } else { end.saturating_sub(1) };
-    g.write(x, name_end, &truncate(&name, name_end.saturating_sub(x)), pick(Style::NORMAL));
-    if kind_width > 0 {
-        g.write(end.saturating_sub(kind_width + 1), end, &kind, pick(Style::MUTED));
-    }
+    let row = Row { icon, text: &name, right: &kind, style: Style::NORMAL, selected: index == l.selected };
+    list::row(g, 1, b.pane_end(), &row);
 }
 
 fn help_text(l: &Launcher) -> &'static str {
@@ -194,32 +143,6 @@ fn help_text(l: &Launcher) -> &'static str {
         Mode::Windows => "enter focus · tab mode · esc close",
         Mode::All | Mode::Apps => "enter open · ctrl+enter action · tab mode · esc close",
     }
-}
-
-/// Greedy word wrap to `width` cells, words too long cut with "…". A word that `split_whitespace`
-/// handed us but that displays as nothing (a lone bidi mark between two spaces, Review Focus 4)
-/// is skipped outright: kept, it would still occupy a word slot and force a separating space
-/// around something invisible — a double space, or a "blank" line made only of such marks.
-fn wrap(text: &str, width: u16) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split_whitespace() {
-        let word = truncate(word, width);
-        if text_width(&word) == 0 {
-            continue;
-        }
-        if !line.is_empty() && text_width(&line) + 1 + text_width(&word) > width {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(&word);
-    }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 /// `wrap`, but kept to at most `budget` lines: the last kept line ends with "…" when more
@@ -400,10 +323,10 @@ pub fn snapshot(rows: &[Grid]) -> String {
 mod tests {
     use super::*;
     use crate::compositor::Toplevel;
+    use crate::keys::Key;
     use crate::launcher::config::LauncherConfig;
     use crate::launcher::desktop::{DesktopAction, DesktopEntry};
     use crate::launcher::history::History;
-    use crate::launcher::input::Key;
     use crate::launcher::scan::Catalog;
     use std::path::PathBuf;
 
