@@ -8,7 +8,7 @@
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
 //! size = 14.0
-//! fallback = ["DejaVu Sans Mono"]                           # used only for characters `family` lacks; [] disables it
+//! fallback = ["DejaVu Sans Mono"]                           # used only for characters `family` lacks; setting it replaces this default (list DejaVu to keep it), [] disables it
 //! [clock]
 //! format = "%H:%M"
 //! date = "%a %e %b"                                         # "": no date
