@@ -825,7 +825,22 @@ mod tests {
         assert_eq!((g.target_at(1), g.target_at(2)), (Some(&first), Some(&first)), "both cells of the wide glyph");
         assert_eq!(g.target_at(3), None, "the blank cell");
         assert_eq!(g.target_at(4), Some(&Target::TrayItem(icons[1].key.clone())));
+        assert_eq!(g.target_at(5), None, "the right margin");
         insta::assert_snapshot!("an_override_two_cells_wide", snapshot(&g));
+    }
+
+    #[test]
+    fn a_fallback_letter_can_be_two_cells_wide() {
+        // U+65E5 (日) is both alphanumeric and East Asian wide: a plausible
+        // fallback letter for an unrecognised CJK application, drawn over
+        // two cells, both bold accent like any other letter.
+        let icons = [tray_icon(1, Icon::Letter('日'), Status::Active), tray_icon(2, Icon::Letter('K'), Status::Active)];
+        let s = tray(&icons, &TrayConfig::default()).unwrap();
+        assert_eq!(s.width(), 4, "日 (2 cells) + a blank + K (1 cell)");
+        let g = lay_out(std::slice::from_ref(&s), s.width() + 2, None);
+        let first = Target::TrayItem(icons[0].key.clone());
+        assert_eq!((g.target_at(1), g.target_at(2)), (Some(&first), Some(&first)), "both cells of the wide letter target the item");
+        assert_eq!(&g.styles()[1..3], "GG", "a letter is bold accent, whatever its width");
     }
 
     #[test]
@@ -884,8 +899,13 @@ mod tests {
     #[test]
     fn narrow_output_drops_the_tray_in_order() {
         // Widths measured on this bar (with the launcher button ahead of
-        // the workspaces): every module at 160, resources gone below 153,
-        // the tray below 108, the title below 103.
+        // the workspaces): every module is present at 150 columns and
+        // above; the tray stays down to 108; the title stays down to
+        // 100 — truncated below that, not removed. The window title's
+        // "Web page" mark alone needs at least 11 title cells, so a
+        // narrowing title can lose the mark well before the module
+        // itself is dropped (seen here too, briefly, just under 150);
+        // the widths below are chosen clear of that truncation band.
         const WIDE: u16 = 160;
         const NO_RESOURCES: u16 = 130;
         const NO_TRAY: u16 = 105;

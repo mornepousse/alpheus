@@ -190,12 +190,15 @@ fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>,
         if key.trim() != key {
             return Err(format!("tray.icons.{key:?}: blanks around the key (the needle would never match)"));
         }
+        if key.chars().any(char::is_control) {
+            return Err(format!("tray.icons.{key:?}: a control character in the key (the needle would never match)"));
+        }
         if glyph.chars().any(char::is_control) || !(1..=2).contains(&text_width(&glyph)) {
-            return Err(format!("tray.icons.{key}: expected a glyph of one or two cells, got {glyph:?}"));
+            return Err(format!("tray.icons.{key:?}: expected a glyph of one or two cells, got {glyph:?}"));
         }
         let lower = key.to_lowercase();
         if icons.insert(lower, glyph).is_some() {
-            return Err(format!("tray.icons.{key}: another key differs from it only by case"));
+            return Err(format!("tray.icons.{key:?}: another key differs from it only by case"));
         }
     }
     Ok(icons)
@@ -569,11 +572,12 @@ mod tests {
     #[test]
     fn an_icon_wider_than_two_cells_or_empty_is_an_error() {
         let err = |t: &str| BarConfig::from_text(&format!("[tray.icons]\n{t}\n")).unwrap_err();
-        assert!(err("foo = \"abc\"").contains("tray.icons.foo"), "three cells");
-        assert!(err("foo = \"日a\"").contains("tray.icons.foo"), "a wide character and one more: three cells");
-        assert!(err("foo = \"\"").contains("tray.icons.foo"), "empty");
-        assert!(err("foo = \"\u{301}\"").contains("tray.icons.foo"), "a lone combining mark: no cell");
-        assert!(err("foo = \"a\\u0007\"").contains("tray.icons.foo"), "a control character");
+        // The key is escaped ({key:?}, not {key}): "tray.icons.\"foo\"", not "tray.icons.foo".
+        assert!(err("foo = \"abc\"").contains("tray.icons.\"foo\""), "three cells");
+        assert!(err("foo = \"日a\"").contains("tray.icons.\"foo\""), "a wide character and one more: three cells");
+        assert!(err("foo = \"\"").contains("tray.icons.\"foo\""), "empty");
+        assert!(err("foo = \"\u{301}\"").contains("tray.icons.\"foo\""), "a lone combining mark: no cell");
+        assert!(err("foo = \"a\\u0007\"").contains("tray.icons.\"foo\""), "a control character");
         assert!(err("\"\" = \"x\"").contains("empty key"), "an empty key");
         assert!(err("\" \" = \"x\"").contains("empty key"), "a blank key");
         assert!(err("\" discord\" = \"x\"").contains("blanks around the key"), "a key with blanks around it");
@@ -606,5 +610,23 @@ mod tests {
         assert_eq!(c, BarConfig::default(), "defaults, never one of the two glyphs picked silently");
         assert!(w.is_some_and(|w| w.contains("bar.toml invalid")));
         assert!(BarConfig::from_text("[tray.icons]\ndiscord = \"x\"\nsteam = \"y\"\n").is_ok(), "distinct keys");
+    }
+
+    #[test]
+    fn tray_icons_error_messages_escape_the_key() {
+        // A literal quote stands in for a TOML-escaped control character
+        // (ESC, a newline…): `{key:?}` must escape it, `{key}` would print
+        // it raw and could inject the character straight into the log line.
+        let glyph_err = BarConfig::from_text("[tray.icons]\n'fo\"o' = \"abc\"\n").unwrap_err();
+        assert!(glyph_err.contains("fo\\\"o"), "{glyph_err}");
+        let case_err = BarConfig::from_text("[tray.icons]\n'Fo\"o' = \"x\"\n'fo\"o' = \"y\"\n").unwrap_err();
+        assert!(case_err.contains("fo\\\"o"), "{case_err}");
+    }
+
+    #[test]
+    fn tray_icon_key_with_a_control_character_is_an_error() {
+        let e = BarConfig::from_text("[tray.icons]\n\"a\\u0007b\" = \"x\"\n").unwrap_err();
+        assert!(e.contains("tray.icons.") && e.contains("control character"), "{e}");
+        assert!(BarConfig::from_text("[tray.icons]\ndiscord = \"x\"\n").is_ok(), "an ordinary key still passes");
     }
 }

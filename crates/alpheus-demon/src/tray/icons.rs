@@ -48,8 +48,10 @@ pub struct TrayIcon {
     pub status: Status,
 }
 
-/// The four fields an item is recognised by, in priority order, lower-cased;
-/// absent or empty ones left out.
+/// The four fields an item is recognised by, in priority order, lower-cased
+/// with `str::to_lowercase` — no Unicode normalisation (NFC/NFKC), the same
+/// folding `[tray.icons]` keys get at load (task 7); absent or empty fields
+/// left out.
 fn fields(item: &Item) -> Vec<String> {
     [&item.id, &item.icon_name, &item.tooltip, &item.process]
         .into_iter()
@@ -59,9 +61,14 @@ fn fields(item: &Item) -> Vec<String> {
         .collect()
 }
 
-/// The first needle of `table` found in a field, fields in priority order.
+/// The longest needle of `table` found in a field, fields in priority order:
+/// among several needles matching the same field, the longest (most
+/// specific) one wins — not whichever a `BTreeMap`'s key order happens to
+/// put first (controller decision, `[tray.icons]`'s overrides).
 fn find<'a, G>(fields: &[String], table: impl Iterator<Item = (&'a str, G)> + Clone) -> Option<G> {
-    fields.iter().find_map(|f| table.clone().find(|(needle, _)| f.contains(needle)).map(|(_, g)| g))
+    fields
+        .iter()
+        .find_map(|f| table.clone().filter(|(needle, _)| f.contains(needle)).max_by_key(|(needle, _)| needle.len()).map(|(_, g)| g))
 }
 
 /// Id, IconName, ToolTip title, process name — each lower-cased and matched as
@@ -107,7 +114,19 @@ pub(crate) mod testing {
     use crate::tray::codec::Reply;
     use crate::tray::host::{Host, Item};
     use crate::tray::{Prop, PropValue, Status};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// A temporary /proc root; removed on drop, so a test that panics above
+    /// `host()` (an `unwrap()`, an assertion in the answer loop) still leaves
+    /// nothing behind — modelled on `host.rs`'s own `Proc` guard.
+    pub(crate) struct Proc(pub(crate) PathBuf);
+
+    impl Drop for Proc {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     /// How a fake item answers its first `Get`s.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +199,7 @@ pub(crate) mod testing {
     pub(crate) fn host(fakes: &[Fake]) -> (Host, FakeOutbox) {
         static NEXT: AtomicU32 = AtomicU32::new(0);
         let root = std::env::temp_dir().join(format!("alpheus-{}-tray-proc-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        let _proc = Proc(root.clone());
         for (i, f) in fakes.iter().enumerate() {
             if let Some(comm) = &f.process {
                 let dir = root.join((1000 + i).to_string());
@@ -206,8 +226,9 @@ pub(crate) mod testing {
             }
         }
         out.sent.clear();
-        let _ = std::fs::remove_dir_all(&root);
         (host, out)
+        // `_proc` drops here, removing `root` whether we got here normally
+        // or (were this not the last statement) by an earlier panic.
     }
 
     pub(crate) fn items(fakes: &[Fake]) -> Vec<Item> {
@@ -325,6 +346,32 @@ mod tests {
             assert_eq!(*needle, needle.to_lowercase(), "needles are lower-case");
         }
         assert_eq!(text_width(&UNKNOWN_LETTER.to_string()), 1);
+    }
+
+    #[test]
+    fn the_test_proc_root_is_removed_even_after_a_panic() {
+        use super::testing::Proc;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let root = std::env::temp_dir().join(format!("alpheus-{}-tray-proc-guard-test", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _proc = Proc(root.clone());
+            panic!("a test above host() panicking, e.g. an unwrap() or a failed assertion");
+        }));
+        assert!(result.is_err(), "the panic must still have happened");
+        assert!(!root.exists(), "the guard must remove the proc root even so");
+    }
+
+    #[test]
+    fn the_longest_matching_override_wins() {
+        // "steam" is the alphabetically first key of the two, but
+        // "steamwebhelper" is the more specific (longer) match for this Id —
+        // the longer needle must win, not whichever a BTreeMap iterates first.
+        let overrides = BTreeMap::from([("steam".to_string(), "A".to_string()), ("steamwebhelper".to_string(), "B".to_string())]);
+        let item = one(Fake::new(&[(Prop::Id, "steamwebhelper")]));
+        assert_eq!(icon(&item, &overrides), Icon::Glyph("B".into()));
+        let plain_steam = one(Fake::new(&[(Prop::Id, "steam")]));
+        assert_eq!(icon(&plain_steam, &overrides), Icon::Glyph("A".into()), "only the shorter needle matches here");
     }
 
     /// U+0130 (capital dotted I) lower-cases, with `str::to_lowercase`, to two
