@@ -393,6 +393,9 @@ pub struct App {
     /// menu`) would let that very press reopen what it just closed — a record of it, consulted
     /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
     pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
+    /// Whether the bar's layer surface goes `Exclusive` while a grabbing popup is open
+    /// (`popup::bar_exclusive_during_grab`): decided once at startup from the compositor.
+    pub(crate) exclusive_during_grab: bool,
     /// The bar surface `hover.over`'s icon was last seen on, set by `hover_moved` (which knows the
     /// exact surface `i`); `hover_fire` locates it by this IDENTITY, never by re-deriving the bar
     /// from `Anchor::output` — a name that `update_output` can change, or that two bars could
@@ -477,6 +480,12 @@ impl App {
             key_time: 0,
             menu_asked_at: None,
             recently_closed_menu: None,
+            // Asked of the compositor actually on the other end of the connection (its own
+            // `hyprland_*` globals), never of the environment: an inherited
+            // HYPRLAND_INSTANCE_SIGNATURE would mistake sway for Hyprland.
+            exclusive_during_grab: crate::popup::bar_exclusive_during_grab(
+                globals.contents().with_list(|l| crate::popup::is_hyprland(l.iter().map(|g| g.interface.as_str()))),
+            ),
             hover_surface: None,
             windows_dirty: false,
             scan_started: None,

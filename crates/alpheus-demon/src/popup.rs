@@ -137,6 +137,23 @@ impl PopupClose {
     }
 }
 
+/// Whether the compositor is Hyprland, from the interfaces it advertises: it alone has
+/// `hyprland_*` protocols.
+pub fn is_hyprland<'a>(mut interfaces: impl Iterator<Item = &'a str>) -> bool {
+    interfaces.any(|i| i.starts_with("hyprland_"))
+}
+
+/// Whether the bar's layer surface must go `Exclusive` while one of its popups grabs.
+///
+/// sway (fact check 5) gives a grabbing popup of a layer surface no keyboard unless that layer
+/// surface is `Exclusive`. Hyprland is the other way round: it hands the grab the keyboard by
+/// itself, and before 0.56.2 (hyprwm/Hyprland#15729) an `Exclusive` layer surface swallows the
+/// hit test of its own popups, so every click inside the menu is taken for a click outside and
+/// ends the grab (`xdg_popup.done`) — Mae, Hyprland 0.55.4, 2026-10-06.
+pub fn bar_exclusive_during_grab(on_hyprland: bool) -> bool {
+    !on_hyprland
+}
+
 /// What a popup shows (filled by tasks 16–18); dropped whole on close.
 pub enum PopupBody {
     Menu(Menu),
@@ -268,7 +285,7 @@ impl App {
         // Closing the launcher or a popup never touches `surfaces`: `i` still points at the bar.
         let layer = self.surfaces[i].layer.clone();
         let parent = layer.wl_surface().clone();
-        if grab {
+        if grab && self.exclusive_during_grab {
             // Fact check 5: committed before the popup exists, so the bar's surface holds the
             // keyboard focus while the grab lasts (back to None on close).
             layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
@@ -738,6 +755,19 @@ mod tests {
         assert_eq!(key_to(true, false), KeyTo::Launcher);
         assert_eq!(key_to(false, true), KeyTo::Popup);
         assert_eq!(key_to(false, false), KeyTo::Nobody, "a tooltip, or nothing open: the key goes nowhere");
+    }
+
+    #[test]
+    fn hyprland_is_told_by_its_own_globals() {
+        assert!(is_hyprland(["wl_compositor", "hyprland_focus_grab_manager_v1", "xdg_wm_base"].into_iter()));
+        assert!(!is_hyprland(["wl_compositor", "zwlr_layer_shell_v1", "xdg_wm_base"].into_iter()), "sway");
+        assert!(!is_hyprland(std::iter::empty()));
+    }
+
+    #[test]
+    fn the_bar_goes_exclusive_during_a_grab_except_on_hyprland() {
+        assert!(bar_exclusive_during_grab(false), "sway, niri: the popup gets the keyboard through the bar");
+        assert!(!bar_exclusive_during_grab(true), "Hyprland: Exclusive would make every click in the menu end it");
     }
 
     #[test]
