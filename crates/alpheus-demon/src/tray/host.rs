@@ -93,27 +93,31 @@ impl Item {
         self.dirty.iter().filter(|p| !self.asking.contains(*p))
     }
 
-    /// Stores `v` as `p`; whether anything changed. An empty text is absent.
+    /// Stores `v` as `p`; whether anything changed. An empty text is absent. Compares only the one
+    /// field a property maps to — never the whole item (no clone).
     fn apply(&mut self, p: Prop, v: PropValue) -> bool {
-        let before = self.clone();
+        fn set<T: PartialEq>(field: &mut T, value: T) -> bool {
+            let changed = *field != value;
+            *field = value;
+            changed
+        }
         let text = |v: PropValue| match v {
             PropValue::Text(t) if !t.is_empty() => Some(t),
             _ => None,
         };
         match (p, v) {
-            (Prop::Id, v) => self.id = text(v),
-            (Prop::Title, v) => self.title = text(v),
-            (Prop::IconName, v) => self.icon_name = text(v),
-            (Prop::AttentionIconName, v) => self.attention_icon_name = text(v),
-            (Prop::ToolTip, v) => self.tooltip = text(v),
-            (Prop::Status, PropValue::Status(s)) => self.status = s,
+            (Prop::Id, v) => set(&mut self.id, text(v)),
+            (Prop::Title, v) => set(&mut self.title, text(v)),
+            (Prop::IconName, v) => set(&mut self.icon_name, text(v)),
+            (Prop::AttentionIconName, v) => set(&mut self.attention_icon_name, text(v)),
+            (Prop::ToolTip, v) => set(&mut self.tooltip, text(v)),
+            (Prop::Status, PropValue::Status(s)) => set(&mut self.status, s),
             // "/" and Qt's "/NO_DBUSMENU" (QSystemTrayIcon without a context menu): no dbusmenu object
             // behind them, so a right click sends ContextMenu instead of opening a menu (task 10).
-            (Prop::Menu, PropValue::Path(m)) => self.menu = Some(m).filter(|m| m != "/" && m != "/NO_DBUSMENU"),
-            (Prop::ItemIsMenu, PropValue::Bool(b)) => self.item_is_menu = b,
-            _ => {}
+            (Prop::Menu, PropValue::Path(m)) => set(&mut self.menu, Some(m).filter(|m| m != "/" && m != "/NO_DBUSMENU")),
+            (Prop::ItemIsMenu, PropValue::Bool(b)) => set(&mut self.item_is_menu, b),
+            _ => false,
         }
-        *self != before
     }
 }
 
@@ -219,7 +223,9 @@ impl Host {
             self.add(ItemKey { owner: name.clone(), path }, name, out);
             return;
         }
-        let known = self.items.iter().any(|i| i.service == name && i.key.path == path);
+        // `sender` is the call's real unique name (set by the bus daemon, never spoofable): an item
+        // already known under it, even by a different well-known alias, needs no resolving.
+        let known = self.items.iter().any(|i| (i.service == name || i.key.owner == sender) && i.key.path == path);
         let asked = self.calls.values().any(|p| matches!(p, Pending::Owner { name: n, path: q } if *n == name && *q == path));
         let resolving = self.calls.values().filter(|p| matches!(p, Pending::Owner { .. })).count();
         if !known && !asked && !self.refused(resolving) {
@@ -280,11 +286,18 @@ impl Host {
                     self.register(name, "", out);
                 }
             }
-            (Pending::Owner { name, path }, Ok(Reply::Owner(unique))) => self.add(ItemKey { owner: unique, path }, name, out),
+            // The bus driver answers GetNameOwner("org.freedesktop.DBus") with that very name, not a
+            // unique one: never an owner to key an item on, never a destination to Get from.
+            (Pending::Owner { name, path }, Ok(Reply::Owner(unique))) if unique.starts_with(':') => {
+                self.add(ItemKey { owner: unique, path }, name, out)
+            }
             (Pending::Pid(key), result) => {
                 let Some(index) = self.items.iter().position(|i| i.key == key) else { return };
                 if let Ok(Reply::Pid(pid)) = result {
-                    let comm = std::fs::read_to_string(self.proc_root.join(pid.to_string()).join("comm")).unwrap_or_default();
+                    // Bytes, not a string: a comm with a non-UTF-8 byte (read_to_string would refuse
+                    // the whole file) still yields the letter a clean prefix can give.
+                    let bytes = std::fs::read(self.proc_root.join(pid.to_string()).join("comm")).unwrap_or_default();
+                    let comm = String::from_utf8_lossy(&bytes);
                     self.items[index].process = Some(clean(comm.trim_end_matches('\n'))).filter(|p| !p.is_empty());
                 }
                 // Answered, failed or timed out: no longer awaited (asked once per item).
@@ -349,6 +362,8 @@ impl Host {
                 if let Some(item) = self.items.iter_mut().find(|i| i.key.owner == *sender && i.key.path == *path) {
                     for p in props.iter() {
                         item.dirty.insert(p);
+                        // Named again: this is its fresh chance, not the one that failed.
+                        item.failed.remove(p);
                     }
                 }
             }
@@ -373,12 +388,14 @@ impl Host {
         }
     }
 
-    /// A frame callback came: one Get per dirty property (failed ones included: a signal named them).
+    /// A frame callback came: one Get per dirty property (previously failed ones included: being
+    /// dirty here means a signal cleared `failed` and named them again).
     pub fn on_frame(&mut self, out: &mut dyn Outbox) {
         let mut gets = Vec::new();
         for item in &mut self.items {
             let props: Vec<Prop> = item.to_read().collect();
             for p in props {
+                debug_assert!(!item.failed.contains(p), "a signal clears failed before on_frame re-reads it");
                 item.dirty.remove(p);
                 item.asking.insert(p);
                 gets.push((item.key.clone(), p));
@@ -533,6 +550,18 @@ mod tests {
     }
 
     #[test]
+    fn a_get_name_owner_answer_must_be_a_unique_name() {
+        let (mut h, mut out, _proc) = host("owner-not-unique");
+        h.register("org.freedesktop.DBus", "", &mut out);
+        let id = out.take().into_iter().next().unwrap().0;
+        // The bus driver owns itself literally: it answers GetNameOwner on its own name with that
+        // very name, never a unique one (":1.N").
+        h.answer(id, Ok(Reply::Owner("org.freedesktop.DBus".into())), &mut out);
+        assert!(h.items().is_empty(), "never trusted as an owner");
+        assert!(out.take().is_empty(), "no Get ever reaches the bus driver");
+    }
+
+    #[test]
     fn a_well_known_name_is_resolved_once_then_keyed_by_unique_name() {
         let (mut h, mut out, _proc) = host("resolved");
         h.register(NIMBUS, ":1.7", &mut out);
@@ -545,6 +574,18 @@ mod tests {
         h.register(NIMBUS, ":1.7", &mut out);
         assert!(out.take().is_empty(), "resolved once: a re-registration asks nothing");
         assert_eq!(h.items().len(), 1);
+    }
+
+    #[test]
+    fn a_second_alias_from_the_same_sender_skips_get_name_owner() {
+        let (mut h, mut out, _proc) = host("alias-same-sender");
+        h.register(NIMBUS, ":1.7", &mut out);
+        settle(&mut h, &mut out, nimbus);
+        assert_eq!(h.items().len(), 1);
+        // A different well-known alias, but the same real sender: its owner is already known.
+        h.register("org.kde.StatusNotifierItem-9999-1", ":1.7", &mut out);
+        assert!(out.take().is_empty(), "already known by its unique name: no GetNameOwner");
+        assert_eq!(h.items().len(), 1, "still the one item");
     }
 
     #[test]
@@ -745,6 +786,20 @@ mod tests {
     }
 
     #[test]
+    fn a_bogus_sibling_is_dropped_but_its_owners_rules_stay() {
+        let (mut h, mut out, _proc) = host("bogus-sibling");
+        h.register("/a", ":1.7", &mut out);
+        h.register("/b", ":1.7", &mut out);
+        let calls = settle(&mut h, &mut out, |c| match c {
+            Call::Get { path, .. } if path == "/b" => Err(CallError::Remote("org.freedesktop.DBus.Error.UnknownObject".into())),
+            other => nimbus(other),
+        });
+        assert_eq!(h.items().len(), 1, "/b dropped, /a stays");
+        assert_eq!(h.items()[0].key.path, "/a");
+        assert!(!calls.iter().any(|c| c.method() == Method::RemoveMatch), "the owner still has /a: rules stay");
+    }
+
+    #[test]
     fn the_65th_item_is_refused() {
         let (mut h, mut out, _proc) = host("bounds");
         for n in 1..=MAX_ITEMS + 1 {
@@ -808,6 +863,16 @@ mod tests {
     }
 
     #[test]
+    fn a_non_utf8_comm_still_yields_a_letter() {
+        let (mut h, mut out, proc) = host("non-utf8-comm");
+        fs::write(proc.0.join("4242/comm"), b"ni\xffmbus\n").unwrap();
+        h.register(":1.7", ":1.7", &mut out);
+        settle(&mut h, &mut out, nimbus);
+        let process = h.item(&key(":1.7")).unwrap().process.clone();
+        assert!(process.as_deref().is_some_and(|p| p.starts_with("ni")), "{process:?}");
+    }
+
+    #[test]
     fn an_item_waits_for_its_process_name_before_it_is_shown() {
         let (mut h, mut out, _proc) = host("pid-last");
         h.register(":1.7", ":1.7", &mut out);
@@ -868,10 +933,12 @@ mod tests {
         h.register(":1.7", ":1.7", &mut out);
         settle(&mut h, &mut out, nimbus);
         h.take_changes();
+        h.register(":1.8", ":1.8", &mut out);
+        let in_flight = out.take().first().unwrap().0;
         let c = h.clear();
         assert!(c.redraw && h.items().is_empty());
-        assert_eq!(c.unregistered, [":1.7/StatusNotifierItem"]);
-        assert_eq!(h.items().first().and_then(|i| i.tooltip_text()), None);
+        assert_eq!(c.unregistered, [":1.7/StatusNotifierItem", ":1.8/StatusNotifierItem"]);
+        assert!(!h.owns(in_flight), "a call in flight when the bus closed is forgotten too");
     }
 
     #[test]
