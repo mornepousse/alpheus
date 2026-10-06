@@ -396,6 +396,9 @@ pub struct App {
     /// menu`) would let that very press reopen what it just closed — a record of it, consulted
     /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
     pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
+    /// When the calendar was last closed by `done` (same race as `recently_closed_menu`, on
+    /// Hyprland and niri): a left press on the clock within `RECENT_CLOSE_WINDOW` only closes.
+    pub(crate) recently_closed_calendar: Option<Instant>,
     /// Whether the bar's layer surface goes `Exclusive` while a grabbing popup is open
     /// (`popup::bar_exclusive_during_grab`): decided once at startup from the compositor.
     pub(crate) exclusive_during_grab: bool,
@@ -483,6 +486,7 @@ impl App {
             key_time: 0,
             menu_asked_at: None,
             recently_closed_menu: None,
+            recently_closed_calendar: None,
             // Asked of the compositor actually on the other end of the connection (its own
             // `hyprland_*` globals), never of the environment: an inherited
             // HYPRLAND_INSTANCE_SIGNATURE would mistake sway for Hyprland.
@@ -754,20 +758,26 @@ impl App {
         true
     }
 
-    /// `launcher_was_open`: whether the launcher was open right before this
-    /// press (`pointer_frame` already closed it, as a click outside, before
-    /// calling here): the same press must not reopen it (`toggles_launcher`).
     /// The clock's cells when a left press at `x` lands on them (`[clock] calendar`): the calendar's anchor.
     fn clock_anchor(&mut self, i: usize, x: f64, b: Button) -> Option<PopupAnchor> {
+        if b != Button::Left {
+            return None;
+        }
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
         let s = &self.surfaces[i];
         let zone = s.last.as_ref()?.zone_at(column)?;
-        (b == Button::Left && zone.target == Target::Module(ModuleId::Clock)).then(|| PopupAnchor {
-            output: s.name.clone(),
-            start: zone.start,
-            end: zone.end,
-        })
+        (zone.target == Target::Module(ModuleId::Clock)).then(|| PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end })
+    }
+
+    /// Whether a press of `b` at `x` is the clock's own (no output name cloned).
+    fn on_clock(&mut self, i: usize, x: f64, b: Button) -> bool {
+        if b != Button::Left {
+            return false;
+        }
+        let e = self.surfaces[i].scale;
+        let column = painter::column_under(x, e, self.fonts.advance(e));
+        self.surfaces[i].last.as_ref().and_then(|g| g.zone_at(column)).is_some_and(|z| z.target == Target::Module(ModuleId::Clock))
     }
 
     /// Left press on the clock zone: toggles the calendar under it (a second click closes it).
@@ -788,6 +798,9 @@ impl App {
         }
     }
 
+    /// `launcher_was_open`: whether the launcher was open right before this
+    /// press (`pointer_frame` already closed it, as a click outside, before
+    /// calling here): the same press must not reopen it (`toggles_launcher`).
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
         if let Some(anchor) = self.clock_anchor(i, x, b) {
             self.calendar_toggle(qh, anchor);
@@ -858,6 +871,14 @@ fn closed_recently(record: Option<&(ItemKey, Button, Instant)>, pressed_icon: Op
         && pressed_icon == Some(key)
         && (b == Some(Button::Right) || b == Some(*opened_by))
         && now.duration_since(*at) < RECENT_CLOSE_WINDOW
+}
+
+/// The calendar's version of the race above: `record` is when a compositor `done` closed it. A
+/// press on the clock within `RECENT_CLOSE_WINDOW` of that only closes (returns true: do not
+/// reopen); any press, this one included, consumes the record.
+fn calendar_press(record: &mut Option<Instant>, on_clock: bool, now: Instant) -> bool {
+    let at = record.take();
+    on_clock && at.is_some_and(|at| now.duration_since(at) < RECENT_CLOSE_WINDOW)
 }
 
 /// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
@@ -1144,13 +1165,15 @@ impl PointerHandler for App {
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup —
                     // except the clock's second click: `calendar_toggle` closes its own calendar.
-                    let toggles_calendar = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_)))
-                        && b.is_some_and(|b| self.clock_anchor(i, ev.position.0, b).is_some());
-                    if self.popup.is_some() && !toggles_calendar {
+                    let on_clock = b.is_some_and(|b| self.on_clock(i, ev.position.0, b));
+                    let toggles_calendar = on_clock && matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_)));
+                    if self.popup.is_some() {
                         // Where the compositor delivered it: a press meant for the popup but handed
                         // to the bar (seen on Hyprland) shows here, at a row below the bar's own.
                         log(&format!("popup: press on the bar at ({:.0}, {:.0})", ev.position.0, ev.position.1));
-                        self.popup_close(PopupClose::OutsideClick);
+                        if !toggles_calendar {
+                            self.popup_close(PopupClose::OutsideClick);
+                        }
                     }
                     // A menu asked for but not shown yet dies with any press on the bar (a menu
                     // shown has just ended with its popup).
@@ -1163,7 +1186,8 @@ impl PointerHandler for App {
                     // compositor `done` arriving ahead of the press does), else a quick reopen
                     // on the same icon would be swallowed.
                     self.recently_closed_menu = None;
-                    if only_closes {
+                    let calendar_only_closes = calendar_press(&mut self.recently_closed_calendar, on_clock, Instant::now());
+                    if only_closes || calendar_only_closes {
                         continue; // the menu's own icon: closed, never reopened (Mae)
                     }
                     if let Some(b) = b {
@@ -1623,6 +1647,21 @@ mod tests {
         assert!(!closed_recently(None, Some(&a), Some(Button::Right), t0), "no record: nothing to race against");
         let left_opened = (a.clone(), Button::Left, t0);
         assert!(closed_recently(Some(&left_opened), Some(&a), Some(Button::Left), t0), "the same button that opened it");
+    }
+
+    #[test]
+    fn a_press_on_the_clock_right_after_a_done_closed_calendar_does_not_reopen_it() {
+        let t0 = Instant::now();
+        let mut rec = Some(t0);
+        assert!(calendar_press(&mut rec, true, t0 + Duration::from_millis(50)), "within the window: only closes");
+        assert!(rec.is_none(), "consumed");
+        let mut rec = Some(t0);
+        assert!(!calendar_press(&mut rec, true, t0 + Duration::from_millis(400)), "400 ms later: reopens");
+        let mut rec = Some(t0);
+        assert!(!calendar_press(&mut rec, false, t0), "another press (not the clock) clears it");
+        assert!(rec.is_none());
+        assert!(!calendar_press(&mut rec, true, t0), "the cleared record no longer swallows a clock press");
+        assert!(!calendar_press(&mut None, true, t0), "no record: opens");
     }
 
     /// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current

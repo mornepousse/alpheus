@@ -429,6 +429,10 @@ impl App {
                 self.recently_closed_menu = Some((key, button, Instant::now()));
             }
         }
+        // The same race for the calendar (a left press on the clock only closes, wayland.rs).
+        if why == PopupClose::Dismissed && matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_))) {
+            self.recently_closed_calendar = Some(Instant::now());
+        }
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
