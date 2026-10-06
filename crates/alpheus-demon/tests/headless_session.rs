@@ -536,6 +536,8 @@ fn opening_the_launcher_lets_the_same_tooltip_show_again_after() {
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
+    // Past the toggle debounce: a Toggle right after the open is Hyprland's press-bind refire.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
     // Still resting near the same icon (a different pixel, same cell): before the fix, this was

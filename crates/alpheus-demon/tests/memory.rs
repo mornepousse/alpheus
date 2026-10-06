@@ -117,6 +117,8 @@ fn start_launcher(name: &str, bus: &PrivateBus, bar_toml: Option<&str>, apps: &[
 fn cycle(sway: &Sway, d: &Daemon, n: usize) {
     assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    // Past the toggle debounce: a Toggle right after the open is Hyprland's press-bind refire.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
 }
