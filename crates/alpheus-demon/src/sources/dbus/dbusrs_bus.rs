@@ -166,7 +166,7 @@ fn call_error(e: dbus::Error, connected: bool) -> io::Error {
 /// `String`: comparing it against a literal (`sig(it).as_deref() ==
 /// Some("a{sv}")`) goes through its `Deref<Target = str>`, no copy beyond
 /// the one `Iter::signature` already makes.
-fn sig(it: &mut Iter<'_>) -> Option<Signature<'static>> {
+pub(crate) fn sig(it: &mut Iter<'_>) -> Option<Signature<'static>> {
     if it.arg_type() == ArgType::Invalid { None } else { Some(it.signature()) }
 }
 

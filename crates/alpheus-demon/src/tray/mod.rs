@@ -5,6 +5,7 @@
 //! library.
 
 pub mod bus;
+pub mod codec;
 
 pub const ITEM_INTERFACE: &str = "org.kde.StatusNotifierItem";
 pub const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
