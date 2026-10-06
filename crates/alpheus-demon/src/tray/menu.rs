@@ -62,6 +62,20 @@ fn selectable(n: &MenuNode) -> bool {
     !n.is_separator() && n.is_enabled()
 }
 
+/// `parent`'s visible children, in order (empty when `parent` is unknown).
+fn entries_of(parent: i32, layout: &Layout) -> Vec<&MenuNode> {
+    layout.node(parent).map(|n| n.children.iter().filter(|c| c.is_visible()).collect()).unwrap_or_default()
+}
+
+/// Whether the level entered at `parent` is still alive: it has visible children to list, and its
+/// own entry — among `host`, the entries of the level it was entered from — is still visible (by
+/// construction of `host`) and selectable. The one predicate `enter` and `relayout` both use: the
+/// first refuses to push a level that fails it, the second pops one that no longer passes it.
+fn level_alive(parent: i32, host: &[&MenuNode], layout: &Layout) -> bool {
+    let has_children = layout.node(parent).is_some_and(|n| n.children.iter().any(MenuNode::is_visible));
+    has_children && host.iter().any(|e| e.id == parent && selectable(e))
+}
+
 impl Menu {
     pub fn new() -> Menu {
         Menu { levels: vec![Level { parent: ROOT, selected: None, top: 0 }], rows: usize::MAX }
@@ -87,7 +101,7 @@ impl Menu {
 
     /// The visible entries of the current level (hidden ones skipped), in order.
     pub fn entries<'a>(&self, layout: &'a Layout) -> Vec<&'a MenuNode> {
-        layout.node(self.level().parent).map(|n| n.children.iter().filter(|c| c.is_visible()).collect()).unwrap_or_default()
+        entries_of(self.level().parent, layout)
     }
 
     /// Index of the selected entry in `entries`, if it is still there and selectable.
@@ -155,34 +169,38 @@ impl Menu {
                     _ => MenuAction::Nothing,
                 }
             }
-            Key::Left => {
-                if self.levels.len() > 1 {
-                    self.levels.pop();
-                    MenuAction::Redraw
-                } else {
-                    MenuAction::Nothing
-                }
-            }
+            Key::Left => self.back(),
             Key::Escape => MenuAction::Close,
             _ => MenuAction::Nothing,
         }
     }
 
+    /// Goes back one level, like `←` (Mae, 2026-10-06: also what a press on the `◂ parent` header
+    /// row does). `Nothing` at the root: there is no level left to pop.
+    fn back(&mut self) -> MenuAction {
+        if self.levels.len() > 1 {
+            self.levels.pop();
+            MenuAction::Redraw
+        } else {
+            MenuAction::Nothing
+        }
+    }
+
     /// The entry under content row `row` (frame excluded; the header is no entry).
-    fn entry_at(&self, row: u16, layout: &Layout) -> Option<usize> {
+    fn entry_at(&self, row: u16, entries: &[&MenuNode]) -> Option<usize> {
         let row = usize::from(row).checked_sub(self.header())?;
         if row >= self.entry_rows() {
             return None;
         }
-        let entries = self.entries(layout);
-        let i = self.top(&entries) + row;
+        let i = self.top(entries) + row;
         (i < entries.len()).then_some(i)
     }
 
-    /// Pointer over content row `row` (frame excluded): selects it if selectable.
+    /// Pointer over content row `row` (frame excluded): selects it if selectable. Hovering the
+    /// header (a submenu's `◂ parent` row) selects nothing.
     pub fn hover(&mut self, row: u16, layout: &Layout) -> MenuAction {
         let entries = self.entries(layout);
-        match self.entry_at(row, layout) {
+        match self.entry_at(row, &entries) {
             Some(i) if selectable(entries[i]) && self.selected_index(&entries) != Some(i) => {
                 self.select(&entries, i);
                 MenuAction::Redraw
@@ -191,10 +209,15 @@ impl Menu {
         }
     }
 
-    /// Left press on content row `row`: Click, or Submenu, or Nothing (separator, disabled, header).
+    /// Left press on content row `row`: Click, Submenu, back a level (the header row, Mae
+    /// 2026-10-06 — there is none at the root, so row 0 there is the first entry), or Nothing
+    /// (separator, disabled).
     pub fn press(&mut self, row: u16, layout: &Layout) -> MenuAction {
+        if row == 0 && self.header() == 1 {
+            return self.back();
+        }
         let entries = self.entries(layout);
-        match self.entry_at(row, layout) {
+        match self.entry_at(row, &entries) {
             Some(i) if selectable(entries[i]) => {
                 self.select(&entries, i);
                 Self::choose(entries[i])
@@ -209,9 +232,16 @@ impl Menu {
     }
 
     /// Enters `id`'s level once its children are known (after Submenu, when the layout has them).
+    /// Refused (never pushed) when `id` is not a selectable entry with a submenu of the *current*
+    /// level (`level_alive`): a stale asynchronous `enter` reaching the menu after the user went
+    /// back (or into a different submenu) must not push a level for an id that is no longer, or
+    /// never was, an entry here.
     pub fn enter(&mut self, id: i32, layout: &Layout) -> bool {
-        let known = layout.node(id).is_some_and(|n| n.children.iter().any(MenuNode::is_visible));
-        if !known || self.levels.iter().any(|l| l.parent == id) {
+        if self.levels.iter().any(|l| l.parent == id) {
+            return false;
+        }
+        let host = self.entries(layout);
+        if !level_alive(id, &host, layout) {
             return false;
         }
         self.levels.push(Level { parent: id, selected: None, top: 0 });
@@ -220,16 +250,22 @@ impl Menu {
     }
 
     /// After a layout change: selection kept by entry id, levels whose parent vanished popped.
+    /// A level stays alive by the same `level_alive` predicate `enter` uses to push one, checked
+    /// outward from the root so a level is never kept once the one above it was already popped.
     pub fn relayout(&mut self, layout: &Layout) {
-        // A level stays while its parent is still in the tree with something to list.
-        let alive = self.levels.iter().skip(1).position(|l| layout.node(l.parent).is_none_or(|n| n.children.is_empty()));
-        if let Some(gone) = alive {
-            self.levels.truncate(gone + 1);
+        let mut alive = 1; // the root level is never popped
+        while alive < self.levels.len() {
+            let host = entries_of(self.levels[alive - 1].parent, layout);
+            if !level_alive(self.levels[alive].parent, &host, layout) {
+                break;
+            }
+            alive += 1;
         }
+        self.levels.truncate(alive);
+
         for depth in 0..self.levels.len() {
             let parent = self.levels[depth].parent;
-            let entries: Vec<&MenuNode> =
-                layout.node(parent).map(|n| n.children.iter().filter(|c| c.is_visible()).collect()).unwrap_or_default();
+            let entries = entries_of(parent, layout);
             let kept = self.levels[depth].selected.and_then(|id| entries.iter().position(|e| e.id == id && selectable(e)));
             let index = kept.or_else(|| list::first_selectable(entries.len(), |i| selectable(entries[i])));
             let rows = self.rows.saturating_sub(usize::from(depth > 0)).max(1);
@@ -255,7 +291,14 @@ impl Menu {
         };
         let columns = entry_width.max(header_width).clamp(MENU_MIN_COLUMNS, MENU_MAX_COLUMNS).min(max_columns);
         let content = (self.header() + entries.len().max(1)).min(usize::from(u16::MAX - 2)) as u16;
-        let rows = (content + 2).min(max_rows.max(3));
+        let wanted = content + 2;
+        // Never more than the output allows, even when it offers fewer than 3 rows (there is no
+        // sane menu box below that, but returning more than `max_rows` would be worse: the caller
+        // asked for a hard bound). Inside a submenu, aim for header + one entry + both frames (4)
+        // when the output allows it, so the selection (never on the header) has somewhere to show;
+        // at the root, aim for the usual 3 (one entry + both frames).
+        let floor = (u16::from(self.header() == 1) + 1 + 2).min(max_rows);
+        let rows = wanted.clamp(floor, max_rows);
         (columns, rows)
     }
 
@@ -530,6 +573,33 @@ mod tests {
         assert_eq!(selected_id(&m, &l), Some(9));
     }
 
+    /// A stale asynchronous `enter` reaching the menu after the user went back (or into a
+    /// different submenu) must be refused: `11` was an entry of "More"'s level, not of the root.
+    #[test]
+    fn enter_refuses_an_id_that_is_not_an_entry_of_the_current_level() {
+        let mut l = sample();
+        let mut more = l.node(8).unwrap().clone();
+        more.children = vec![node(9, "Settings"), with(node(11, "Deeper"), |p| p.submenu = Some(true))];
+        assert!(l.graft(more));
+        let mut deeper = l.node(11).unwrap().clone();
+        deeper.children = vec![node(12, "Deepest")];
+        assert!(l.graft(deeper));
+
+        let mut m = open(&l);
+        m.key(Key::End, &l);
+        assert!(m.enter(8, &l), "enters More");
+        m.key(Key::Down, &l);
+        assert!(m.enter(11, &l), "enters Deeper");
+        assert_eq!(m.entries(&l).iter().map(|e| e.id).collect::<Vec<_>>(), [12]);
+
+        assert_eq!(m.key(Key::Left, &l), MenuAction::Redraw, "back to More's level");
+        assert_eq!(m.key(Key::Left, &l), MenuAction::Redraw, "back to the root");
+        assert_eq!(m.entries(&l).len(), 7);
+
+        assert!(!m.enter(11, &l), "11 is no longer an entry of the current (root) level");
+        assert_eq!(m.entries(&l).len(), 7, "stays at the root");
+    }
+
     #[test]
     fn left_goes_back_one_level_escape_closes() {
         let l = fetched();
@@ -574,6 +644,42 @@ mod tests {
         assert_eq!(m.key(Key::Left, &gone), MenuAction::Nothing, "no level left to pop");
     }
 
+    /// `relayout` and `enter` agree on when a level is alive (`level_alive`): a level whose
+    /// children all turned hidden is popped, exactly like one whose parent vanished entirely.
+    #[test]
+    fn relayout_pops_a_level_whose_children_all_turn_hidden() {
+        let l = fetched();
+        let mut m = open(&l);
+        m.key(Key::End, &l);
+        assert!(m.enter(8, &l));
+        assert_eq!(m.entries(&l).len(), 2, "inside More");
+        let mut hidden = fetched();
+        let mut more = hidden.node(8).unwrap().clone();
+        for c in &mut more.children {
+            c.props.visible = Some(false);
+        }
+        assert!(hidden.graft(more));
+        m.relayout(&hidden);
+        assert_eq!(m.entries(&hidden).len(), 7, "back at the root: More has nothing left to show");
+    }
+
+    /// Same predicate, the other half: the level's own entry is still there with visible
+    /// children, but no longer selectable (disabled) — popped all the same.
+    #[test]
+    fn relayout_pops_a_level_whose_own_entry_turns_disabled() {
+        let l = fetched();
+        let mut m = open(&l);
+        m.key(Key::End, &l);
+        assert!(m.enter(8, &l));
+        assert_eq!(m.entries(&l).len(), 2, "inside More");
+        let mut disabled = fetched();
+        let mut more = disabled.node(8).unwrap().clone();
+        more.props.enabled = Some(false);
+        assert!(disabled.graft(more));
+        m.relayout(&disabled);
+        assert_eq!(m.entries(&disabled).len(), 7, "back at the root: More is now disabled");
+    }
+
     /// LayoutUpdated(parent 0): the wiring re-reads the root at depth 1, which announces More
     /// again as a submenu but without its children; task 2's `graft` carries the fetched ones
     /// over, so the open submenu is not popped and keeps its selection.
@@ -605,22 +711,25 @@ mod tests {
         assert_eq!(m.hover(5, &l), MenuAction::Nothing, "nor the disabled entry");
         assert_eq!(selected_id(&m, &l), Some(3));
         assert_eq!(m.press(4, &l), MenuAction::Nothing);
+        assert_eq!(m.press(0, &l), MenuAction::Click(1), "at the root there is no header: row 0 is the first entry");
         assert_eq!(m.press(1, &l), MenuAction::Click(2));
         assert_eq!(m.press(6, &l), MenuAction::Submenu(8));
         assert_eq!(m.press(30, &l), MenuAction::Nothing, "below the entries");
         m.enter(8, &l);
-        assert_eq!(m.press(0, &l), MenuAction::Nothing, "the header is no entry");
+        assert_eq!(m.press(0, &l), MenuAction::Redraw, "a press on the '◂ parent' header goes back one level, like Left");
+        assert_eq!(m.entries(&l).len(), 7, "back at the root");
+        assert!(m.enter(8, &l), "re-enter to keep exercising the submenu below");
         assert_eq!(m.press(2, &l), MenuAction::Click(10));
         assert_eq!(m.scroll(-1, &l), MenuAction::Redraw);
         assert_eq!(selected_id(&m, &l), Some(9), "the wheel moves the selection");
     }
 
-    /// Controller note (carried over from the task 13 review): `list::step` leaves a raw
-    /// `selected >= len` index unchanged when nothing is selectable that way, which would be a
-    /// stale, out-of-range index if `Menu` ever stored one. It never does — the selection is an
-    /// id, re-looked-up in the *current* entries on every call (`selected_index`) — but `relayout`
-    /// must still clamp both the selection and the scroll window when a level shrinks under a
-    /// selection far down the list, never leaving `top` past the new, shorter list either.
+    /// `relayout` keeps both the selection and the scroll window consistent when a level shrinks
+    /// under a selection far down the list. This is not needed to keep `render` from panicking —
+    /// it reads entries with `.get(i)` (never indexes past the end), and `top()` independently
+    /// re-derives a safe scroll window from the *current* `selected_index` on every call,
+    /// regardless of what `relayout` leaves in `level.top` — but without this clamp a stale `top`
+    /// would still render a blank tail until the next key or hover nudged it back into range.
     #[test]
     fn relayout_clamps_selection_and_scroll_window_when_entries_shrink() {
         let l = root((1..=10).map(|i| node(i, &format!("Entry {i}"))).collect());
@@ -637,6 +746,43 @@ mod tests {
         // Rendering must not panic either: a stale `top` would index past the shrunk entries.
         let rows = draw(&mut m, &shrunk, 200, 40);
         assert_eq!(rows.len(), 3, "frame, one entry, frame");
+    }
+
+    #[test]
+    fn size_never_exceeds_a_tiny_output() {
+        let l = sample();
+        let m = open(&l);
+        for &(max_columns, max_rows) in &[(0u16, 40u16), (1, 40), (2, 40), (40, 0), (40, 1), (40, 2), (0, 0), (1, 1)] {
+            let (c, r) = m.size(&l, max_columns, max_rows);
+            assert!(c <= max_columns, "columns {c} > bound {max_columns}");
+            assert!(r <= max_rows, "rows {r} > bound {max_rows}");
+        }
+    }
+
+    #[test]
+    fn render_is_safe_on_a_tiny_output() {
+        let l = sample();
+        let mut m = open(&l);
+        for &(max_columns, max_rows) in &[(0u16, 0u16), (1, 1), (2, 2), (3, 3)] {
+            let (c, r) = m.size(&l, max_columns, max_rows);
+            m.set_rows(usize::from(r.saturating_sub(2)));
+            let rows = m.render(&l, c, r); // must not panic
+            for g in &rows {
+                assert_eq!(g.width(), c);
+            }
+        }
+    }
+
+    #[test]
+    fn size_reserves_header_and_one_entry_row_in_a_submenu_when_the_output_allows_it() {
+        let l = fetched();
+        let mut m = open(&l);
+        m.key(Key::End, &l);
+        assert!(m.enter(8, &l));
+        let (_, rows) = m.size(&l, 200, 40);
+        assert!(rows >= 4, "frame + header + at least one entry + frame: got {rows}");
+        let (_, rows) = m.size(&l, 200, 3);
+        assert_eq!(rows, 3, "the output doesn't allow 4: never exceed the bound either");
     }
 
     #[test]
