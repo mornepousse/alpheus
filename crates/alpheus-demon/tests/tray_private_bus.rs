@@ -1315,3 +1315,50 @@ fn the_menu_closes_when_its_app_leaves() {
     pump.until("closed with its item", |t| t.menu().is_none());
     assert!(pump.outputs.lock().unwrap().iter().any(|o| o.close_menu));
 }
+
+// ---- Gestures (task 10) ----
+
+use alpheus_demon::tray::Gesture;
+
+/// Steam's libappindicator has no Activate (spike § 4): the left click's
+/// UnknownMethod answer opens its menu instead (controller decision 5).
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn steam_left_click_opens_the_menu_over_the_wire() {
+    let bus = PrivateBus::start("tray-steam");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let steam = FakeItem::start(&bus, Spec::steam());
+    pump.until("shown (its process id answered too)", ready_count(1));
+    let key = item_key(&steam.unique, "/org/ayatana/NotificationItem/steam");
+    assert!(pump.with(|t| t.item(&key).is_some_and(|i| i.menu.is_some())), "a Steam-like item with a Menu");
+    let out = pump.with(|t| t.gesture(&key, Gesture::Left, (12, 10)));
+    assert_eq!(out.open_menu, None, "Activate first: its answer decides");
+    let end = Instant::now() + Duration::from_secs(5);
+    while !pump.outputs.lock().unwrap().iter().any(|o| o.open_menu.as_ref() == Some(&key)) {
+        assert!(Instant::now() < end, "never: the menu opened after UnknownMethod");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let activate = steam.wait_call("Activate", Duration::from_secs(1));
+    assert_eq!(activate.as_deref(), Some("org.kde.StatusNotifierItem.Activate(12, 10)"));
+}
+
+/// Qt's QSystemTrayIcon without a context menu says Menu = "/NO_DBUSMENU"
+/// (task 4: no menu): a right click asks the item's own ContextMenu and never
+/// opens an empty dbusmenu.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_qt_item_without_a_menu_gets_context_menu_over_the_wire() {
+    let bus = PrivateBus::start("tray-qt-no-menu");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let kettle = FakeItem::start(&bus, Spec::qt_without_menu());
+    pump.until("shown (its process id answered too)", ready_count(1));
+    let key = item_key(&kettle.unique, "/StatusNotifierItem");
+    assert!(pump.with(|t| t.item(&key).is_some_and(|i| i.menu.is_none())), "/NO_DBUSMENU: no menu");
+    let out = pump.with(|t| t.gesture(&key, Gesture::Right, (30, 4)));
+    assert_eq!(out.open_menu, None, "no menu to open");
+    let context = kettle.wait_call("ContextMenu", Duration::from_secs(2));
+    assert_eq!(context.as_deref(), Some("org.kde.StatusNotifierItem.ContextMenu(30, 4)"));
+    assert!(pump.outputs.lock().unwrap().iter().all(|o| o.open_menu.is_none()), "never a menu");
+}

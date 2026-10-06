@@ -8,6 +8,7 @@ use crate::config::ModuleId;
 use crate::grid::{Grid, Target};
 use crate::painter::column_under;
 use crate::state::{Bar, Feed};
+use crate::tray::{Gesture, Orientation};
 use alpheus_commun::exec::Executor;
 
 use crate::log::write as log;
@@ -150,6 +151,36 @@ pub fn click(bar: &Bar, output: &str, grid: &Grid, x_logical: f64, scale: i32, a
     command(bar, output, grid.target_at(col)?, b)
 }
 
+/// Notch size of `Gesture::Scroll` (controller decision 4: Qt's angle delta,
+/// what Plasma sends).
+pub const SCROLL_NOTCH: i32 = 120;
+
+/// A bar button on a tray icon → its gesture: Left/Right/Middle; WheelUp →
+/// Scroll(+120, Vertical), WheelDown → Scroll(-120, Vertical) (positive for
+/// wheel up, decision 4).
+pub fn tray_gesture(b: Button) -> Gesture {
+    let vertical = |delta| Gesture::Scroll { delta, orientation: Orientation::Vertical };
+    match b {
+        Button::Left => Gesture::Left,
+        Button::Right => Gesture::Right,
+        Button::Middle => Gesture::Middle,
+        Button::WheelUp => vertical(SCROLL_NOTCH),
+        Button::WheelDown => vertical(-SCROLL_NOTCH),
+    }
+}
+
+/// The horizontal wheel (a second `Wheel` fed with the horizontal axis, where
+/// "down" is right): WheelDown (right) → +120, WheelUp (left) → -120,
+/// Horizontal; a click is not a horizontal gesture.
+pub fn tray_horizontal(b: Button) -> Option<Gesture> {
+    let horizontal = |delta| Some(Gesture::Scroll { delta, orientation: Orientation::Horizontal });
+    match b {
+        Button::WheelDown => horizontal(SCROLL_NOTCH),
+        Button::WheelUp => horizontal(-SCROLL_NOTCH),
+        Button::Left | Button::Right | Button::Middle => None,
+    }
+}
+
 /// Continuous scroll (touchpad) that counts as one wheel notch.
 pub const CONTINUOUS_STEP: f64 = 30.0;
 
@@ -219,6 +250,24 @@ mod tests {
     use crate::state::Msg;
     use crate::system::*;
     use alpheus_commun::exec::fake::FakeExecutor;
+
+    #[test]
+    fn wheel_scrolls_vertical_and_horizontal() {
+        let scroll = |delta, orientation| Gesture::Scroll { delta, orientation };
+        assert_eq!(tray_gesture(Button::Left), Gesture::Left);
+        assert_eq!(tray_gesture(Button::Right), Gesture::Right);
+        assert_eq!(tray_gesture(Button::Middle), Gesture::Middle);
+        assert_eq!(tray_gesture(Button::WheelUp), scroll(120, Orientation::Vertical), "wheel up: positive");
+        assert_eq!(tray_gesture(Button::WheelDown), scroll(-120, Orientation::Vertical));
+        assert_eq!(tray_horizontal(Button::WheelDown), Some(scroll(120, Orientation::Horizontal)), "right: positive");
+        assert_eq!(tray_horizontal(Button::WheelUp), Some(scroll(-120, Orientation::Horizontal)));
+        assert_eq!(tray_horizontal(Button::Left), None);
+        // Through the wheel accumulator, as wayland.rs feeds it: Wayland's
+        // positive value120 is down (vertical) or right (horizontal).
+        let mut w = Wheel::default();
+        assert_eq!(w.add(15.0, 0, 120).map(tray_gesture), Some(scroll(-120, Orientation::Vertical)));
+        assert_eq!(w.add(-15.0, 0, -120).and_then(tray_horizontal), Some(scroll(-120, Orientation::Horizontal)));
+    }
 
     #[test]
     fn click_chain_coordinate_cell_zone_command() {

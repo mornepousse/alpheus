@@ -9,10 +9,10 @@
 
 use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus};
 use super::codec::{self, Reply, Signal};
-use super::host::{Host, Item, owner_rule};
+use super::host::{GestureOutcome, Host, Item, owner_rule};
 use super::menu_session::{MenuSession, MenuUpdate};
 use super::watcher::Watcher;
-use super::{ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::log::write as log;
 use dbus::Message;
 use std::collections::HashMap;
@@ -72,6 +72,8 @@ enum Own {
     WatcherItems,
     /// AddMatch, RemoveMatch, RegisterStatusNotifierHost: nothing to read.
     Ignore,
+    /// An Activate sent by `gesture`: its answer may open the item's menu (task 10).
+    Activate(ItemKey),
 }
 
 /// The other watcher's signals, while we are a host only.
@@ -165,6 +167,21 @@ impl Tray {
         self.host.item(key)
     }
 
+    /// Runs the gesture; TrayOutput.open_menu at once (OpenMenu) or when Activate's answer is an
+    /// error reply (`on_readable`). The calls leave at once (flushed).
+    pub fn gesture(&mut self, key: &ItemKey, g: Gesture, at: (i32, i32)) -> TrayOutput {
+        let mut out = TrayOutput::default();
+        match self.host.gesture(key, g, at, &mut self.bus) {
+            GestureOutcome::Nothing => {}
+            GestureOutcome::OpenMenu => out.open_menu = Some(key.clone()),
+            GestureOutcome::Activated(id) => {
+                self.own.insert(id, Own::Activate(key.clone()));
+            }
+        }
+        self.bus.flush();
+        out
+    }
+
     /// After `Incoming::Closed` (`TrayOutput::bus_closed`), this is stale: serving has already
     /// stopped (the watcher is `set_serving(false)`, the host cleared) but `self.role` itself is
     /// left as it was, since nothing reads it afterward — the wiring drops the whole `Tray` the
@@ -250,6 +267,11 @@ impl Tray {
             // stays `Starting` for good; the host's own one-shot ListNames inventory (already
             // issued in `start`) still ran, so items present at startup are still found — an
             // inventory-only host, just never live-updated through a watcher.
+            // An error reply from an item with a menu (Steam has no Activate): its menu instead
+            // (decision 5).
+            (Some(Own::Activate(key)), r) if self.host.opens_menu_after_activate(&key, &r) => {
+                return TrayOutput { open_menu: Some(key), ..TrayOutput::default() };
+            }
             _ => {}
         }
         TrayOutput::default()

@@ -7,7 +7,7 @@
 
 use super::bus::{Call, CallError, CallId, Outbox, Property};
 use super::codec::{Reply, Signal, clean};
-use super::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, ITEM_NAME_PREFIXES, ItemKey, MAX_ITEMS, Prop, PropSet, PropValue, Status};
+use super::{DEFAULT_ITEM_PATH, Gesture, ITEM_INTERFACE, ITEM_NAME_PREFIXES, ItemKey, MAX_ITEMS, Prop, PropSet, PropValue, Status};
 use crate::log::write as log;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -461,6 +461,52 @@ impl Host {
         self.items.clear();
         self.calls.clear();
         changes
+    }
+}
+
+/// What a gesture on a tray icon asks of the wiring (spec § 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GestureOutcome {
+    Nothing,
+    /// Right click with a Menu, or a left click on an ItemIsMenu item.
+    OpenMenu,
+    /// Activate sent: its answer decides (an error reply with a Menu → open the menu, decision 5).
+    Activated(CallId),
+}
+
+impl Host {
+    /// Left → Activate(x, y) (OpenMenu when ItemIsMenu); Right → OpenMenu with a Menu, else
+    /// ContextMenu(x, y); Middle → SecondaryActivate(x, y); Scroll → Scroll(delta, orientation).
+    /// Nothing for an unknown key. Only Activate expects an answer; the others are sent with
+    /// NO_REPLY_EXPECTED (nothing depends on them: no pending call, no timer).
+    pub fn gesture(&mut self, key: &ItemKey, g: Gesture, at: (i32, i32), out: &mut dyn Outbox) -> GestureOutcome {
+        let Some(item) = self.item(key) else { return GestureOutcome::Nothing };
+        let (destination, path, (x, y)) = (key.owner.clone(), key.path.clone(), at);
+        match g {
+            Gesture::Left if !item.item_is_menu => GestureOutcome::Activated(out.call(Call::Activate { destination, path, x, y })),
+            // ItemIsMenu: the item only has a context menu, like a right click.
+            Gesture::Left | Gesture::Right if item.menu.is_some() => GestureOutcome::OpenMenu,
+            Gesture::Left | Gesture::Right => {
+                out.send(Call::ContextMenu { destination, path, x, y });
+                GestureOutcome::Nothing
+            }
+            Gesture::Middle => {
+                out.send(Call::SecondaryActivate { destination, path, x, y });
+                GestureOutcome::Nothing
+            }
+            Gesture::Scroll { delta, orientation } => {
+                out.send(Call::Scroll { destination, path, delta, orientation });
+                GestureOutcome::Nothing
+            }
+        }
+    }
+
+    /// Activate's answer (controller decision 5): a D-Bus error reply (Steam's
+    /// libappindicator has no Activate: UnknownMethod) opens the item's menu when it
+    /// has one; a timeout is not a failure (a slow application may have acted), a
+    /// success needs nothing more.
+    pub(crate) fn opens_menu_after_activate(&self, key: &ItemKey, result: &Result<Reply, CallError>) -> bool {
+        matches!(result, Err(CallError::Remote(_))) && self.item(key).is_some_and(|i| i.menu.is_some())
     }
 }
 
@@ -1014,5 +1060,121 @@ mod tests {
         assert_eq!(i.tooltip_text(), Some("Lumen"));
         i.tooltip = Some("Lumen: 2 unread".into());
         assert_eq!(i.tooltip_text(), Some("Lumen: 2 unread"));
+    }
+}
+
+#[cfg(test)]
+mod gesture_tests {
+    use super::*;
+    use crate::tray::Orientation;
+    use crate::tray::icons::testing::{Fake, host};
+
+    fn key() -> ItemKey {
+        ItemKey { owner: ":1.100".into(), path: "/StatusNotifierItem".into() }
+    }
+
+    const MENU: (Prop, &str) = (Prop::Menu, "/MenuBar");
+
+    #[test]
+    fn left_click_activates_at_the_press_position() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "nimbus"), MENU])]);
+        let GestureOutcome::Activated(id) = h.gesture(&key(), Gesture::Left, (412, 11), &mut out) else { panic!("not activated") };
+        let activate = Call::Activate { destination: ":1.100".into(), path: "/StatusNotifierItem".into(), x: 412, y: 11 };
+        assert_eq!(out.calls, vec![(id, activate)], "one call, to the unique name, at the press position");
+        assert!(out.sent.is_empty());
+    }
+
+    #[test]
+    fn left_click_on_item_is_menu_opens_the_menu() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::ItemIsMenu, "true"), MENU])]);
+        assert_eq!(h.gesture(&key(), Gesture::Left, (5, 5), &mut out), GestureOutcome::OpenMenu);
+        assert!(out.calls.is_empty() && out.sent.is_empty(), "no Activate: the menu instead");
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::ItemIsMenu, "true")])]);
+        assert_eq!(h.gesture(&key(), Gesture::Left, (5, 6), &mut out), GestureOutcome::Nothing);
+        let context = Call::ContextMenu { destination: ":1.100".into(), path: "/StatusNotifierItem".into(), x: 5, y: 6 };
+        assert_eq!(out.sent, vec![context], "ItemIsMenu without a Menu: its own context menu");
+    }
+
+    #[test]
+    fn a_failed_activate_opens_the_menu() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "steam"), (Prop::Menu, "/org/ayatana/NotificationItem/steam/Menu")])]);
+        assert!(matches!(h.gesture(&key(), Gesture::Left, (1, 1), &mut out), GestureOutcome::Activated(_)));
+        let unknown = Err(CallError::Remote("org.freedesktop.DBus.Error.UnknownMethod".into()));
+        assert!(h.opens_menu_after_activate(&key(), &unknown), "Steam: no Activate, its menu instead");
+    }
+
+    #[test]
+    fn a_timed_out_activate_does_not_open_the_menu() {
+        let (h, _) = host(&[Fake::new(&[(Prop::Id, "nimbus"), MENU])]);
+        assert!(!h.opens_menu_after_activate(&key(), &Err(CallError::Timeout)), "a slow app may have acted");
+        assert!(!h.opens_menu_after_activate(&key(), &Ok(Reply::Unit)), "it acted");
+        assert!(!h.opens_menu_after_activate(&key(), &Err(CallError::Disconnected)));
+    }
+
+    #[test]
+    fn a_failed_activate_without_menu_does_nothing() {
+        let (h, _) = host(&[Fake::new(&[(Prop::Id, "quill")])]);
+        let failed = Err(CallError::Remote("org.freedesktop.DBus.Error.UnknownMethod".into()));
+        assert!(!h.opens_menu_after_activate(&key(), &failed));
+    }
+
+    #[test]
+    fn right_click_opens_the_menu_or_context_menu() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "nimbus"), MENU])]);
+        assert_eq!(h.gesture(&key(), Gesture::Right, (30, 4), &mut out), GestureOutcome::OpenMenu);
+        assert!(out.calls.is_empty() && out.sent.is_empty(), "a Menu: never ContextMenu");
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "kettle")])]);
+        assert_eq!(h.gesture(&key(), Gesture::Right, (30, 4), &mut out), GestureOutcome::Nothing);
+        let context = Call::ContextMenu { destination: ":1.100".into(), path: "/StatusNotifierItem".into(), x: 30, y: 4 };
+        assert_eq!((out.calls.len(), out.sent.clone()), (0, vec![context]), "no Menu: ContextMenu, no answer awaited");
+    }
+
+    #[test]
+    fn a_no_dbusmenu_path_means_context_menu() {
+        // Qt's QSystemTrayIcon without a context menu says Menu = "/NO_DBUSMENU" (task 4: no menu).
+        for none in ["/NO_DBUSMENU", "/"] {
+            let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "kettle"), (Prop::Menu, none)])]);
+            assert_eq!(h.gesture(&key(), Gesture::Right, (30, 4), &mut out), GestureOutcome::Nothing, "{none}");
+            let context = Call::ContextMenu { destination: ":1.100".into(), path: "/StatusNotifierItem".into(), x: 30, y: 4 };
+            assert_eq!((out.calls.len(), out.sent.clone()), (0, vec![context]), "{none}: ContextMenu, never an empty menu");
+            let failed = Err(CallError::Remote("org.freedesktop.DBus.Error.UnknownMethod".into()));
+            assert!(!h.opens_menu_after_activate(&key(), &failed), "{none}: no menu to open after a failed Activate");
+        }
+    }
+
+    #[test]
+    fn middle_click_secondary_activate() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "nimbus"), MENU])]);
+        assert_eq!(h.gesture(&key(), Gesture::Middle, (7, 8), &mut out), GestureOutcome::Nothing);
+        let secondary = Call::SecondaryActivate { destination: ":1.100".into(), path: "/StatusNotifierItem".into(), x: 7, y: 8 };
+        assert_eq!((out.calls.len(), out.sent.clone()), (0, vec![secondary]));
+    }
+
+    #[test]
+    fn scroll_sends_its_delta_and_orientation() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "nimbus")])]);
+        for (delta, orientation) in [(120, Orientation::Vertical), (-120, Orientation::Horizontal)] {
+            assert_eq!(h.gesture(&key(), Gesture::Scroll { delta, orientation }, (0, 0), &mut out), GestureOutcome::Nothing);
+        }
+        let path = || "/StatusNotifierItem".to_string();
+        assert_eq!(
+            out.sent,
+            vec![
+                Call::Scroll { destination: ":1.100".into(), path: path(), delta: 120, orientation: Orientation::Vertical },
+                Call::Scroll { destination: ":1.100".into(), path: path(), delta: -120, orientation: Orientation::Horizontal },
+            ]
+        );
+    }
+
+    #[test]
+    fn gestures_on_a_gone_item_do_nothing() {
+        let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "nimbus"), MENU])]);
+        let gone = ItemKey { owner: ":1.999".into(), path: "/StatusNotifierItem".into() };
+        for g in [Gesture::Left, Gesture::Right, Gesture::Middle, Gesture::Scroll { delta: 120, orientation: Orientation::Vertical }] {
+            assert_eq!(h.gesture(&gone, g, (1, 1), &mut out), GestureOutcome::Nothing, "{g:?}");
+        }
+        assert!(out.calls.is_empty() && out.sent.is_empty());
+        let failed = Err(CallError::Remote("org.freedesktop.DBus.Error.UnknownMethod".into()));
+        assert!(!h.opens_menu_after_activate(&gone, &failed), "gone while Activate was pending: nothing");
     }
 }

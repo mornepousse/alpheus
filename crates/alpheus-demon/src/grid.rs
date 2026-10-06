@@ -228,7 +228,12 @@ impl Grid {
     }
 
     pub fn target_at(&self, col: u16) -> Option<&Target> {
-        self.zones.iter().find(|z| (z.start..z.end).contains(&col)).map(|z| &z.target)
+        self.zone_at(col).map(|z| &z.target)
+    }
+
+    /// The zone under `col` (its target and cells: the menu popup's anchor).
+    pub fn zone_at(&self, col: u16) -> Option<&Zone> {
+        self.zones.iter().find(|z| (z.start..z.end).contains(&col))
     }
 
     /// Text of the grid (snapshots), continuations of wide characters omitted.
@@ -245,6 +250,21 @@ impl Grid {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_at_finds_the_icon_cells() {
+        let key = |n: u32| crate::tray::ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let mut g = Grid::empty(10);
+        g.zone(1, 2, Target::TrayItem(key(1)));
+        g.zone(3, 5, Target::TrayItem(key(2))); // a two-cell glyph
+        assert_eq!(g.zone_at(0), None);
+        assert_eq!(g.zone_at(1), Some(&Zone { start: 1, end: 2, target: Target::TrayItem(key(1)) }));
+        assert_eq!(g.zone_at(2), None, "the blank cell between icons");
+        let wide = Zone { start: 3, end: 5, target: Target::TrayItem(key(2)) };
+        assert_eq!((g.zone_at(3), g.zone_at(4)), (Some(&wide), Some(&wide)), "both cells give the whole zone");
+        assert_eq!(g.zone_at(5), None);
+        assert_eq!(g.target_at(4), Some(&Target::TrayItem(key(2))), "target_at agrees");
+    }
 
     #[test]
     fn write_and_styles() {
