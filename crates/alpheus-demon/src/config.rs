@@ -8,7 +8,7 @@
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
 //! size = 14.0
-//! fallback = []                                             # e.g. ["Noto Color Emoji"]: loaded in addition, on demand
+//! fallback = ["DejaVu Sans Mono"]                           # used only for characters `family` lacks; setting it replaces this default (list DejaVu to keep it), [] disables it
 //! [clock]
 //! format = "%H:%M"
 //! date = "%a %e %b"                                         # "": no date
@@ -93,15 +93,22 @@ pub struct FontConfig {
     pub family: String,
     /// Size in logical px.
     pub size: f32,
-    /// Fallback families for missing characters (emoji, CJK…). Empty by
-    /// default: only the regular and bold faces of `family` are loaded
-    /// (≈ 2 MB); each added family costs its own memory (Q11).
+    /// Fallback families for characters `family` lacks (emoji, CJK, odd
+    /// window-title symbols…), tried in order. Defaults to DejaVu Sans
+    /// Mono, a small font (4 faces, only its regular and bold ones ever
+    /// loaded) shipped alongside alpheus specifically to cover the symbols
+    /// a Nerd Font window manager or terminal likes to put in a title (✳,
+    /// ◐◓◑◒…) that JetBrainsMono Nerd Font Mono itself does not have; each
+    /// added or removed family changes memory by its own faces (Q11),
+    /// `[]` disables fallback entirely. A character that still has no
+    /// glyph anywhere (checked family then every fallback) is masked
+    /// rather than drawn as a `.notdef` box (`painter.rs`).
     pub fallback: Vec<String>,
 }
 
 impl Default for FontConfig {
     fn default() -> Self {
-        FontConfig { family: "JetBrainsMono Nerd Font Mono".into(), size: 14.0, fallback: Vec::new() }
+        FontConfig { family: "JetBrainsMono Nerd Font Mono".into(), size: 14.0, fallback: vec!["DejaVu Sans Mono".into()] }
     }
 }
 
@@ -347,7 +354,7 @@ mod tests {
         assert_eq!((c, w), (BarConfig::default(), None));
         let d = BarConfig::default();
         assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Launcher), Some(&ModuleId::Clock)));
-        assert_eq!((d.height, d.font.size, d.font.fallback.len()), (22, 14.0, 0));
+        assert_eq!((d.height, d.font.size, d.font.fallback.as_slice()), (22, 14.0, ["DejaVu Sans Mono".to_string()].as_slice()));
         assert_eq!(d.workspaces.command, ["wm-set", "workspace", "{workspace}", "{output}"]);
     }
 

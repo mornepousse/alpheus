@@ -103,7 +103,8 @@ pub struct PowerState {
 pub struct Sample {
     /// Percent, since the previous reading.
     pub cpu: Option<u8>,
-    /// Memory in use (MemTotal − MemAvailable), in tenths of GiB: 61 = 6.1G (Q5).
+    /// Memory in use like htop (caches left out, shared memory kept; see
+    /// `sources::resources::parse_meminfo`), in tenths of GiB: 61 = 6.1G (Q5).
     pub memory: Option<u16>,
     /// °C.
     pub temperature: Option<i16>,
