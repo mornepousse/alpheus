@@ -165,14 +165,16 @@ impl App {
     /// after, dropping `open` at the end of this closure) ALSO panics while
     /// the first one is still unwinding, that is a panic during unwind —
     /// Rust aborts the process then, past any `catch_unwind`. Not expected
-    /// (`Drop` only releases local resources: the keyboard, the client
-    /// watch), so not specially guarded against.
+    /// (`Drop` only releases local resources: the client watch), so not
+    /// specially guarded against.
     fn launcher_fail(&mut self) {
         let Some(open) = self.launcher.take() else { return };
         let _ = guarded("close", move || {
             let mut open = open;
             reply_on_close(open.reply.take(), CloseReason::Error);
         });
+        // The keyboard is the App's (shared with the popups): released here, the launcher gone.
+        self.keyboard_release();
         log("launcher closed (error)");
         crate::memory::release_memory();
     }

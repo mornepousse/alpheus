@@ -248,30 +248,39 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
 }
 
 /// Review item M6, final review slice 3: every seat/keyboard entry point
-/// into launcher code goes through `launcher_guarded`, same as every other
-/// one (host.rs's module doc) — a panic there must close the launcher,
-/// never take the bar down with it. No fake Wayland seat or keyboard exists
-/// to call these trait methods directly in a unit test, so this checks the
-/// one thing that would actually regress it: the guard call disappearing
-/// from the body.
+/// that can reach launcher code goes through `launcher_guarded` — a panic
+/// there must close the launcher, never take the bar down with it.
+///
+/// Task 15 (popups) moved the keyboard out of `OpenLauncher` into `App`,
+/// shared with a grabbing popup: `new_capability`/`remove_capability`/
+/// `remove_seat` (wayland.rs) now call the shared `keyboard_acquire`/
+/// `keyboard_lost` (popup.rs), which only touch Wayland/seat state, not the
+/// launcher's model — nothing there to guard anymore. The guard moved with
+/// the actual launcher calls: `popup.rs`'s `key_event` (every keypress,
+/// including `update_modifiers`'s own `self.mods` write, touches no
+/// launcher state and needs none either) dispatches to the launcher only
+/// for its `KeyTo::Launcher` branch, guarded there; `leave` still guards its
+/// direct `launcher_close` call. No fake Wayland seat or keyboard exists to
+/// call these trait methods directly in a unit test, so this checks the one
+/// thing that would actually regress it: the guard call disappearing from
+/// the body that still reaches launcher code.
 #[test]
 fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     let files = source_files();
     let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
     let wayland_prod = production_code(wayland);
-    for (func, call) in [
-        ("fn new_capability(", "launcher_bind_keyboard"),
-        ("fn remove_capability(", "launcher_release_keyboard"),
-        ("fn remove_seat(", "launcher_release_keyboard"),
-    ] {
+    for (func, call) in
+        [("fn new_capability(", "keyboard_acquire"), ("fn remove_capability(", "keyboard_lost"), ("fn remove_seat(", "keyboard_lost")]
+    {
         let body = function_body(&wayland_prod, func);
         assert!(body.contains(call), "{func} must still call {call}: {body}");
-        assert!(body.contains("launcher_guarded("), "{func} must guard its launcher call: {body}");
     }
-    let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("surface.rs").1;
-    let surface_prod = production_code(surface);
-    let modifiers = function_body(&surface_prod, "fn update_modifiers(");
-    assert!(modifiers.contains("launcher_guarded("), "update_modifiers must guard its launcher call: {modifiers}");
+    let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
+    let popup_prod = production_code(popup);
+    let key_event = function_body(&popup_prod, "fn key_event(");
+    assert!(key_event.contains("launcher_guarded("), "key_event must guard its launcher call: {key_event}");
+    let leave = function_body(&popup_prod, "fn leave(");
+    assert!(leave.contains("launcher_guarded("), "leave must guard its launcher call: {leave}");
 }
 
 /// The launcher socket (spec § 3): bound in exactly one place, its file
@@ -488,8 +497,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("launcher/host.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
-        // The keyboard: bound while open, released at close.
-        ("launcher/surface.rs", "get_keyboard", 1),
+        // The keyboard, shared by the launcher and the grabbing popups: bound
+        // while one of them is open, released once neither is.
+        ("popup.rs", "get_keyboard", 1),
         // The bar's sources (compositor, sound; D-Bus).
         ("sources/dbus/mod.rs", "thread::Builder", 1),
         ("sources/mod.rs", "thread::Builder", 1),

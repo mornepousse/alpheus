@@ -7,9 +7,11 @@
 use crate::actions::{self, Button, Wheel};
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
+use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
+use crate::popup::{OpenPopup, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
@@ -18,7 +20,7 @@ use alpheus_commun::theme::Palette;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
-use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
@@ -27,6 +29,7 @@ use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shell::xdg::XdgShell;
 use smithay_client_toolkit::shm::{
     Shm, ShmHandler,
     slot::{Buffer, SlotPool},
@@ -34,7 +37,7 @@ use smithay_client_toolkit::shm::{
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
-    delegate_shm,
+    delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -258,14 +261,14 @@ pub(crate) fn pick_buffer(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut Slot
     }
 }
 
-struct Surface {
+pub(crate) struct Surface {
     output: wl_output::WlOutput,
-    name: String,
-    layer: LayerSurface,
+    pub(crate) name: String,
+    pub(crate) layer: LayerSurface,
     /// Logical width given by the compositor (0 before the first configure).
     width: u32,
-    scale: i32,
-    configured: bool,
+    pub(crate) scale: i32,
+    pub(crate) configured: bool,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
@@ -288,7 +291,7 @@ pub struct App {
     pub(crate) compositor: CompositorState,
     pub(crate) layers: LayerShell,
     pool: SlotPool,
-    surfaces: Vec<Surface>,
+    pub(crate) surfaces: Vec<Surface>,
     pub(crate) pointer: Option<ThemedPointer>,
     pub(crate) wheel: Wheel,
     pub bar: Bar,
@@ -339,6 +342,13 @@ pub struct App {
     pub(crate) launcher_generation: u64,
     /// The loop's mailbox (launch.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
+    /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
+    pub(crate) xdg: Option<XdgShell>,
+    /// The open popup (menu, tooltip, calendar); None at rest.
+    pub(crate) popup: Option<OpenPopup>,
+    /// The keyboard, bound only while the launcher or a grabbing popup needs it.
+    pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub(crate) mods: Mods,
     /// Raised by a `Msg::Compositor` message, consumed once per
     /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
     /// are fed at most once per pass, never once per message — a burst
@@ -369,6 +379,8 @@ impl App {
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
         // Optional: without it, the launcher has no click-outside scrim (logged at open).
         let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
+        // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
+        let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
             registry: RegistryState::new(globals),
             outputs: OutputState::new(globals, qh),
@@ -400,6 +412,10 @@ impl App {
             launcher: None,
             launcher_generation: 0,
             mail: None,
+            xdg,
+            popup: None,
+            keyboard: None,
+            mods: Mods::default(),
             windows_dirty: false,
             scan_started: None,
         })
@@ -424,6 +440,9 @@ impl App {
     /// Returns the removed surface's output, so the caller can decide to
     /// restore the bar onto it (see `closed`) if it still exists.
     fn remove(&mut self, i: usize) -> wl_output::WlOutput {
+        // A popup hanging from this bar goes first (its parent must outlive it).
+        let name = self.surfaces[i].name.clone();
+        self.popup_output_gone(&name);
         let s = self.surfaces.remove(i); // the surface is destroyed along with `s`
         log(&format!("bar removed from {}", log_name(&s.name, &s.output)));
         self.shrink_pool_if_needed();
@@ -657,6 +676,9 @@ impl CompositorHandler for App {
             self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
             return;
         }
+        if self.popup_scale(surface, f) {
+            return;
+        }
         if let Some(i) = self.index(surface) {
             if self.surfaces[i].scale != f {
                 self.surfaces[i].scale = f;
@@ -816,14 +838,13 @@ impl SeatHandler for App {
                 Err(e) => log(&format!("pointer unavailable: {e}")),
             }
         }
-        // A keyboard appearing while the launcher is open (virtual keyboard, a
-        // keyboard plugged in): bind it now. At rest: nothing is bound. On a
-        // multi-seat session, only the seat the bar already tracks
-        // (`self.seat`) is ours — a keyboard on another seat is not. Guarded
-        // (review item M6, final review slice 3): a launcher error here must
-        // close the launcher, never take the bar down with it.
-        if c == Capability::Keyboard && self.launcher_is_open() && tracks_seat(&self.seat, &seat) {
-            self.launcher_guarded("keyboard added", |app| app.launcher_bind_keyboard(qh, &seat));
+        // A keyboard appearing while the launcher or a grabbing popup is open
+        // (virtual keyboard, a keyboard plugged in): bind it now. At rest:
+        // nothing is bound (keyboard_acquire checks). On a multi-seat
+        // session, only the seat the bar already tracks (`self.seat`) is
+        // ours — a keyboard on another seat is not.
+        if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
+            self.keyboard_acquire(qh);
         }
     }
 
@@ -832,9 +853,9 @@ impl SeatHandler for App {
             self.pointer = None;
         }
         // Same multi-seat check as `new_capability`: another seat losing its
-        // keyboard must not forget about ours. Guarded, same reason as above.
+        // keyboard must not forget about ours.
         if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
-            self.launcher_guarded("keyboard removed", |app| app.launcher_release_keyboard());
+            self.keyboard_lost();
         }
     }
 
@@ -842,11 +863,10 @@ impl SeatHandler for App {
         if tracks_seat(&self.seat, &seat) {
             self.seat = None;
             // The seat itself is gone, not just one of its capabilities: any
-            // keyboard bound through it (the launcher's, while open) goes
-            // with it — `remove_capability` alone never fires for this case
-            // (review item M3, final review slice 3). Guarded, same reason
-            // as `new_capability`/`remove_capability` above.
-            self.launcher_guarded("seat removed", |app| app.launcher_release_keyboard());
+            // keyboard bound through it (the launcher's, a grabbing popup's,
+            // while open) goes with it — `remove_capability` alone never
+            // fires for this case (review item M3, final review slice 3).
+            self.keyboard_lost();
         }
     }
 }
@@ -855,6 +875,15 @@ impl PointerHandler for App {
     fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
             if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.popup.as_ref().is_some_and(|p| p.wl_surface() == &ev.surface) {
+                if let (PointerEventKind::Enter { .. }, Some(p)) = (&ev.kind, &self.pointer) {
+                    let _ = p.set_cursor(conn, CursorIcon::Default);
+                }
+                if let Some(kind) = popup_pointer_kind(&mut self.wheel, &ev.kind) {
+                    self.popup_pointer_event(&ev.surface, ev.position, kind);
+                }
                 continue;
             }
             let Some(i) = self.index(&ev.surface) else { continue };
@@ -873,6 +902,11 @@ impl PointerHandler for App {
                     let was_open = self.launcher_is_open();
                     if was_open {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
+                    }
+                    // A press on the bar is delivered to it even while one of its popups grabs
+                    // the pointer (same client, fact check 5): it is a click outside that popup.
+                    if self.popup.is_some() {
+                        self.popup_close(PopupClose::OutsideClick);
                     }
                     if let Some(b) = actions::button(*button) {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
@@ -930,10 +964,33 @@ delegate_layer!(App);
 delegate_seat!(App);
 delegate_pointer!(App);
 delegate_keyboard!(App);
+delegate_xdg_shell!(App);
+delegate_xdg_popup!(App);
 // wp_viewporter and wp_viewport have no events.
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
+
+/// A pointer event as the popup sees it; the wheel goes through the bar's `Wheel` (notches).
+fn popup_pointer_kind(wheel: &mut Wheel, kind: &PointerEventKind) -> Option<PopupPointer> {
+    match kind {
+        PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => Some(PopupPointer::Motion),
+        PointerEventKind::Leave { .. } => Some(PopupPointer::Leave),
+        PointerEventKind::Press { button, .. } => actions::button(*button).map(PopupPointer::Press),
+        PointerEventKind::Axis { vertical, .. } => {
+            let step = wheel.add(vertical.absolute, vertical.discrete, vertical.value120);
+            if vertical.stop {
+                wheel.stop();
+            }
+            match step {
+                Some(Button::WheelUp) => Some(PopupPointer::Scroll(-1)),
+                Some(Button::WheelDown) => Some(PopupPointer::Scroll(1)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
 
 impl crate::launch::DeferredRedraw for App {
     fn bar_mut(&mut self) -> &mut Bar {

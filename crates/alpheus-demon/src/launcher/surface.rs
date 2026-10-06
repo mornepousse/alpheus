@@ -1,13 +1,13 @@
 //! The launcher's Wayland side, kept thin. One centred `Overlay` layer
 //! surface with exclusive keyboard focus (the box), one transparent 1×1
 //! "scrim" per output scaled by wp_viewporter to catch a click outside, a
-//! wl_keyboard bound only while open, buffers from a pool of its own.
-//! Everything lives in `OpenLauncher`, dropped whole on close: nothing of
-//! the launcher stays resident (spec § 3).
+//! keyboard that is the App's (shared with the popups, popup.rs), buffers
+//! from a pool of its own. Everything lives in `OpenLauncher`, dropped whole
+//! on close: nothing of the launcher stays resident (spec § 3).
 
 use crate::actions::{self, Button};
 use crate::grid::Grid;
-use crate::keys::{self, Mods};
+use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
 use crate::launcher::model::{Launcher, Outcome};
@@ -17,16 +17,18 @@ use crate::launcher::socket::Pending;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::log::write as log;
 use crate::painter;
+use crate::popup::{PopupClose, box_size, cell_under};
 use crate::state::Feed;
 use crate::wayland::{App, pick_buffer};
 use alpheus_commun::launcher_ipc::Reply;
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, RegistrationToken};
-use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface};
-use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay_client_toolkit::seat::SeatError;
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardError, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::KeyEvent;
+use smithay_client_toolkit::seat::keyboard::KeyboardError;
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerSurface};
@@ -71,28 +73,12 @@ impl CloseReason {
     }
 }
 
-/// Logical px size of the box for a layout: the width rounded UP (never cut
-/// the last column), whole rows of `row_height` physical px.
-pub fn box_size(b: &BoxLayout, advance_phys: f32, row_height: u32, scale: i32) -> (u32, u32) {
-    let e = scale.max(1) as u32;
-    let width_phys = (b.columns as f32 * advance_phys).ceil() as u32;
-    (width_phys.div_ceil(e), (b.rows as u32 * row_height).div_ceil(e))
-}
-
 /// Output grid in cells (for view::layout) from its logical size.
 pub fn output_cells(width: u32, height: u32, advance_phys: f32, row_height: u32, scale: i32) -> (u16, u16) {
     let e = scale.max(1) as u32;
     let columns = painter::columns(width * e, advance_phys);
     let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
     (columns, rows)
-}
-
-/// Pointer position (logical px) → (column, row).
-pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32) -> (u16, u16) {
-    let column = painter::column_under(x, scale, advance_phys);
-    let row =
-        if row_height == 0 || y <= 0.0 { 0 } else { ((y * scale.max(1) as f64) / row_height as f64).floor().min(u16::MAX as f64) as u16 };
-    (column, row)
 }
 
 /// What a redraw does with the box (pure decision).
@@ -183,7 +169,7 @@ pub(crate) fn resized_layout(
         None => {
             let (columns, rows) = output_cells(output_size.0, output_size.1, advance_phys, row_height, scale);
             let layout = open_layout(columns, rows, model);
-            let size = box_size(&layout, advance_phys, row_height, scale);
+            let size = box_size(layout.columns, layout.rows, advance_phys, row_height, scale);
             (layout, size)
         }
     }
@@ -306,12 +292,6 @@ impl Drop for Scrim {
     }
 }
 
-fn release(k: wl_keyboard::WlKeyboard) {
-    if k.version() >= 3 {
-        k.release();
-    }
-}
-
 /// Everything one open launcher holds; dropped whole on close.
 pub struct OpenLauncher {
     pub model: Launcher,
@@ -322,8 +302,6 @@ pub struct OpenLauncher {
     pub history_path: Option<PathBuf>,
     box_layer: LayerSurface,
     scrims: Vec<Scrim>,
-    keyboard: Option<wl_keyboard::WlKeyboard>,
-    mods: Mods,
     /// The box's own pool: dropped with it (a SlotPool never shrinks).
     pool: SlotPool,
     buffers: Vec<(Buffer, u32, u32)>,
@@ -361,12 +339,9 @@ impl OpenLauncher {
 
 impl Drop for OpenLauncher {
     fn drop(&mut self) {
-        // The keyboard goes first: its data (keymap, repeat timer) is dropped
-        // with the object. Then the client watch. Scrims, box and pool follow
-        // as fields (viewports before their surfaces, see Scrim's Drop).
-        if let Some(k) = self.keyboard.take() {
-            release(k);
-        }
+        // The client watch; scrims, box and pool follow as fields (viewports
+        // before their surfaces, see Scrim's Drop). The keyboard is the App's
+        // (shared with the popups): launcher_close releases it.
         if let Some((handle, token)) = self.client_watch.take() {
             handle.remove(token);
         }
@@ -380,6 +355,8 @@ impl App {
         if self.launcher.is_some() {
             self.launcher_close(CloseReason::Replaced);
         }
+        // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
+        self.popup_close(PopupClose::Launcher);
         let wanted = match &self.bar.compositor {
             Feed::Ready(c) => c.focused_output().map(str::to_owned),
             _ => None,
@@ -411,7 +388,7 @@ impl App {
         // Once per open: the box keeps this size whatever gets selected.
         let layout = open_layout(columns, rows, &model);
         model.set_list_rows(layout.list_rows as usize);
-        let size = box_size(&layout, advance, row_height, scale);
+        let size = box_size(layout.columns, layout.rows, advance, row_height, scale);
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let outputs = self.outputs.outputs().count();
         let pool = match SlotPool::new(pool_size(bytes, outputs).max(4096), &self.shm) {
@@ -458,8 +435,6 @@ impl App {
             history_path,
             box_layer,
             scrims,
-            keyboard: None,
-            mods: Mods::default(),
             pool,
             buffers: Vec::new(),
             layout,
@@ -474,9 +449,7 @@ impl App {
             last: None,
             client_watch: None,
         });
-        if let Some(seat) = self.seat.clone() {
-            self.launcher_bind_keyboard(qh, &seat);
-        }
+        self.keyboard_acquire(qh);
     }
 
     fn launcher_scrims(&mut self, qh: &QueueHandle<App>) -> Vec<Scrim> {
@@ -525,6 +498,7 @@ impl App {
         let Some(mut open) = self.launcher.take() else { return };
         reply_on_close(open.reply.take(), reason);
         drop(open);
+        self.keyboard_release();
         log(&format!("launcher closed ({})", reason.text()));
         // The catalog, the matcher's matrices, the box's pool: give the
         // freed pages back (50 open/close cycles stay within 1 MB).
@@ -645,31 +619,9 @@ impl App {
 
     /// Binds the keyboard (with repeat on the event loop) while open; a seat
     /// without a keyboard yet is retried when the capability appears.
-    pub(crate) fn launcher_bind_keyboard(&mut self, qh: &QueueHandle<App>, seat: &wl_seat::WlSeat) {
-        let Some(handle) = self.loop_handle.clone() else { return };
-        let Some(open) = self.launcher.as_mut() else { return };
-        if open.keyboard.is_some() {
-            return;
-        }
-        let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
-            app.launcher_guarded("key", move |a| a.launcher_key(event));
-        });
-        match self.seats.get_keyboard_with_repeat(qh, seat, None, handle, repeat) {
-            Ok(k) => open.keyboard = Some(k),
-            Err(e) if should_log_keyboard_error(&e) => log(&format!("launcher keyboard: {e}")),
-            Err(_) => {}
-        }
-    }
-
-    pub(crate) fn launcher_release_keyboard(&mut self) {
-        if let Some(k) = self.launcher.as_mut().and_then(|o| o.keyboard.take()) {
-            release(k);
-        }
-    }
-
     pub(crate) fn launcher_key(&mut self, event: KeyEvent) {
         let Some(open) = self.launcher.as_mut() else { return };
-        let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), open.mods) else { return };
+        let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), self.mods) else { return };
         let outcome = open.model.key(key);
         self.launcher_outcome(outcome);
     }
@@ -812,61 +764,6 @@ impl App {
     }
 }
 
-impl KeyboardHandler for App {
-    #[allow(clippy::too_many_arguments)]
-    fn enter(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: &wl_surface::WlSurface,
-        _: u32,
-        _: &[u32],
-        _: &[Keysym],
-    ) {
-    }
-
-    fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
-        if self.launcher.as_ref().is_some_and(|o| o.box_layer.wl_surface() == surface) {
-            self.launcher_guarded("focus", |app| app.launcher_close(CloseReason::FocusLost));
-        }
-    }
-
-    fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.launcher_guarded("key", move |app| app.launcher_key(event));
-    }
-
-    /// wl_keyboard v10 repeats (compositor-side); calloop repeats go through
-    /// the callback given at bind time, to the same place.
-    fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.launcher_guarded("key", move |app| app.launcher_key(event));
-    }
-
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
-
-    #[allow(clippy::too_many_arguments)]
-    fn update_modifiers(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_keyboard::WlKeyboard,
-        _: u32,
-        m: Modifiers,
-        _: RawModifiers,
-        _: u32,
-    ) {
-        // Guarded (review item M6, final review slice 3): every other
-        // launcher entry point reached from a Wayland callback already is
-        // (spec § 3) — this one wasn't, so a panic here would have taken the
-        // bar down with it instead of just closing the launcher.
-        self.launcher_guarded("modifiers", |app| {
-            if let Some(open) = app.launcher.as_mut() {
-                open.mods = Mods { ctrl: m.ctrl, shift: m.shift, alt: m.alt, logo: m.logo };
-            }
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -875,32 +772,11 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Read;
 
-    fn layout(columns: u16, rows: u16) -> BoxLayout {
-        BoxLayout { columns, rows, list_top: 3, list_rows: rows.saturating_sub(5), preview_columns: 0 }
-    }
-
-    #[test]
-    fn box_size_rounds_the_width_up_and_keeps_whole_rows() {
-        // Advances chosen exactly representable in binary: the assertions
-        // test the rounding rule, not float noise.
-        assert_eq!(box_size(&layout(60, 15), 8.25, 22, 1), (495, 330));
-        assert_eq!(box_size(&layout(61, 15), 8.125, 22, 1), (496, 330), "495.625 px: the last column is never cut");
-        assert_eq!(box_size(&layout(60, 15), 16.5, 44, 2), (495, 330), "logical px at scale 2");
-        assert_eq!(box_size(&layout(60, 15), 8.25, 22, 0), (495, 330), "scale 0 treated as 1");
-    }
-
     #[test]
     fn output_cells_counts_whole_cells_at_any_scale() {
         assert_eq!(output_cells(1920, 1080, 8.25, 22, 1), (232, 49));
         assert_eq!(output_cells(1920, 1080, 16.5, 44, 2), (232, 49), "same logical size, scale 2");
         assert_eq!(output_cells(1920, 1080, 8.25, 0, 1).1, 0, "no row height: no rows, no division by zero");
-    }
-
-    #[test]
-    fn cell_under_maps_logical_pointer_positions() {
-        assert_eq!(cell_under(100.0, 45.0, 1, 8.25, 22), (12, 2));
-        assert_eq!(cell_under(100.0, 45.0, 2, 16.5, 44), (12, 2), "scale 2: physical cells, logical pointer");
-        assert_eq!(cell_under(-3.0, -1.0, 1, 8.25, 22), (0, 0), "a pointer at the very edge");
     }
 
     #[test]
@@ -946,9 +822,9 @@ mod tests {
         // 495 × 330 logical px at 8.25 px × 22 px cells: exactly 60 × 15 cells.
         let b = layout_within((495, 330), &apps(), 8.25, 22, 1);
         assert_eq!((b.columns, b.rows), (60, 15), "the whole configured size is used");
-        assert_eq!(box_size(&b, 8.25, 22, 1), (495, 330));
+        assert_eq!(box_size(b.columns, b.rows, 8.25, 22, 1), (495, 330));
         let b = layout_within((400, 200), &apps(), 8.25, 22, 1);
-        let (w, h) = box_size(&b, 8.25, 22, 1);
+        let (w, h) = box_size(b.columns, b.rows, 8.25, 22, 1);
         assert!(w <= 400 && h <= 200, "never painted past the configured size: {w} × {h}");
         assert!(b.list_rows >= 1);
     }
@@ -997,7 +873,7 @@ mod tests {
     fn a_scale_change_keeps_a_compositor_imposed_size_untouched() {
         // Without an imposed size: the whole output, same as before this was tracked.
         let (free, free_size) = resized_layout(None, (1920, 1080), &apps(), 8.25, 22, 1);
-        assert_eq!(free_size, box_size(&free, 8.25, 22, 1), "no constraint: sized from the output alone");
+        assert_eq!(free_size, box_size(free.columns, free.rows, 8.25, 22, 1), "no constraint: sized from the output alone");
         // With one: the imposed logical size wins outright, whatever the output is —
         // a scale change must not quietly widen the box back out past what the
         // compositor already dictated.
