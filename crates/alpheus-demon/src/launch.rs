@@ -176,6 +176,20 @@ pub fn resources_period(c: &ResourcesConfig) -> Duration {
     Duration::from_secs(c.interval)
 }
 
+/// `SessionBus::session()` itself found nothing to connect to (spec § 3): the
+/// one case that is really "no session bus".
+fn no_session_bus(e: impl std::fmt::Display) -> String {
+    format!("tray: no session bus ({e})")
+}
+
+/// The connection succeeded, but duplicating its fd for the event loop
+/// failed: a different step than `no_session_bus` (fix round, 2026-10-06 —
+/// the two used to share the same wording, hiding which one actually
+/// failed).
+fn watch_fd_failed(e: impl std::fmt::Display) -> String {
+    format!("tray: connected, but could not watch the session bus's fd ({e})")
+}
+
 /// Connects the tray to the session bus (blocking, once: a local socket,
 /// controller decision 2) and puts its fd in the loop — no thread. No session
 /// bus: one log line, the tray stays empty, never retried (spec § 3).
@@ -183,7 +197,7 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let bus = match SessionBus::session() {
         Ok(b) => b,
         Err(e) => {
-            log(&format!("tray: no session bus ({e})"));
+            log(&no_session_bus(e));
             return;
         }
     };
@@ -191,7 +205,7 @@ fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let fd = match tray.watch_fd() {
         Ok(fd) => fd,
         Err(e) => {
-            log(&format!("tray: no session bus ({e})"));
+            log(&watch_fd_failed(e));
             return;
         }
     };
@@ -674,6 +688,20 @@ mod tests {
 
     const BEFORE: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
     const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
+
+    /// Fix round, 2026-10-06 (reviewer finding 4 on task 11): `watch_fd`
+    /// failing after a successful connection used to log the exact same
+    /// line as `SessionBus::session()` itself failing, hiding which step
+    /// actually broke.
+    #[test]
+    fn watch_fd_failing_says_which_step_broke_not_no_session_bus() {
+        let connect = no_session_bus(std::io::Error::other("boom"));
+        let watch = watch_fd_failed(std::io::Error::other("boom"));
+        assert_ne!(connect, watch, "two different steps must not share one line");
+        assert!(connect.contains("no session bus"), "{connect:?}");
+        assert!(!watch.contains("no session bus"), "the bus did connect: {watch:?}");
+        assert!(watch.contains("fd"), "names the step that failed: {watch:?}");
+    }
 
     #[test]
     fn only_the_sources_the_modules_need() {

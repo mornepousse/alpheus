@@ -1362,3 +1362,44 @@ fn a_qt_item_without_a_menu_gets_context_menu_over_the_wire() {
     assert_eq!(context.as_deref(), Some("org.kde.StatusNotifierItem.ContextMenu(30, 4)"));
     assert!(pump.outputs.lock().unwrap().iter().all(|o| o.open_menu.is_none()), "never a menu");
 }
+
+/// No StatusNotifierItem signal exists for Menu: an item that registered with "/NO_DBUSMENU" and
+/// gains a real one later (Qt apps commonly do, once a context menu is actually built) is only
+/// noticed through a duplicate RegisterStatusNotifierItem (fix round, 2026-10-06).
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_menu_gained_after_registration_is_found_on_a_duplicate_registration() {
+    let bus = PrivateBus::start("tray-menu-gained");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let mut spec = Spec::qt_without_menu();
+    spec.menu = Some(FakeMenu::sample());
+    let kettle = FakeItem::start(&bus, spec);
+    pump.until("shown (its process id answered too)", ready_count(1));
+    let key = item_key(&kettle.unique, "/StatusNotifierItem");
+    assert!(pump.with(|t| t.item(&key).is_some_and(|i| i.menu.is_none())), "/NO_DBUSMENU: no menu yet");
+    kettle.set("Menu", Value::Path("/MenuBar".into()));
+    kettle.register();
+    pump.until("the gained menu re-read", |t| t.item(&key).is_some_and(|i| i.menu.as_deref() == Some("/MenuBar")));
+    assert!(pump.with(|t| t.open_menu(&key)), "the gained menu now opens");
+    pump.until("the layout arrived", |t| t.menu().and_then(|m| m.layout()).is_some());
+}
+
+/// The same duplicate-registration re-read must close a menu already open on a now-stale path
+/// (one the item no longer serves): checked once per routed batch (router.rs).
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_duplicate_registration_closes_the_open_menu_if_its_path_changed() {
+    let bus = PrivateBus::start("tray-menu-path-changed");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let kettle = FakeItem::start(&bus, Spec::qt());
+    pump.until("shown (its process id answered too)", ready_count(1));
+    let key = item_key(&kettle.unique, "/StatusNotifierItem");
+    assert!(pump.with(|t| t.open_menu(&key)));
+    pump.until("open", |t| t.menu().and_then(|m| m.layout()).is_some());
+    kettle.set("Menu", Value::Path("/OtherMenu".into()));
+    kettle.register();
+    pump.until("closed: its menu path changed under it", |t| t.menu().is_none());
+    assert!(pump.outputs.lock().unwrap().iter().any(|o| o.close_menu));
+}

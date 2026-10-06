@@ -209,10 +209,19 @@ impl Tray {
                 }
             }
         }
-        // Its item gone (its application left): the menu closes.
-        if self.menu.as_ref().is_some_and(|m| self.host.item(&m.key).is_none()) {
-            self.close_menu();
-            out.close_menu = true;
+        // Its item gone (its application left), or its path stale (a duplicate registration
+        // re-read Menu and it changed or disappeared — host.rs, fix round 2026-10-06): the menu
+        // closes. No StatusNotifierItem signal exists for Menu, so this is the only place that
+        // notices; checked once per batch, not per event.
+        if let Some(m) = self.menu.as_ref() {
+            let stale = match self.host.item(&m.key) {
+                None => true,
+                Some(item) => item.menu.as_deref() != Some(m.path.as_str()),
+            };
+            if stale {
+                self.close_menu();
+                out.close_menu = true;
+            }
         }
         let changes = self.host.take_changes();
         out.redraw |= changes.redraw;

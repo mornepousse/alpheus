@@ -195,6 +195,19 @@ fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPla
     }
 }
 
+/// Whether a surface may carry the tray's frame request (`tray_sync`):
+/// configured, and currently holding at least one attached buffer from the
+/// live pool — never one `draw()` skipped (not yet sized, an allocation
+/// failure) or whose buffers a pool shrink (`shrink_pool_if_needed`) just
+/// forgot (fix round, 2026-10-06: `s.last` alone can stay stale across a
+/// shrink, while `s.buffers` correctly empties with it). Picking an
+/// ineligible surface would mean the compositor never fires a frame
+/// callback (nothing attached to repaint), blocking `tray_frame_pending`
+/// forever.
+fn eligible_for_frame(configured: bool, has_buffer: bool) -> bool {
+    configured && has_buffer
+}
+
 /// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
 /// `pool` (same format and stride computation everywhere a buffer is
 /// created, whether on first draw, resize, or growing to a second buffer).
@@ -540,7 +553,9 @@ impl App {
         if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
             return;
         }
-        let Some(surface) = self.surfaces.iter().find(|s| s.configured).map(|s| s.layer.wl_surface().clone()) else {
+        let Some(surface) =
+            self.surfaces.iter().find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty())).map(|s| s.layer.wl_surface().clone())
+        else {
             return;
         };
         surface.frame(&self.qh, surface.clone());
@@ -1004,6 +1019,18 @@ mod tests {
         let target = target_pool(sum * POOL_OVERSIZE_FACTOR + 1, &[small, large]);
         assert_eq!(target, Some(sum * 2));
         assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
+    }
+
+    /// Fix round, 2026-10-06 (reviewer findings 2/3 on task 11): a surface
+    /// `draw()` skipped (never sized, an allocation failure) or whose
+    /// buffers a pool shrink just forgot must never carry the tray's frame
+    /// request — the compositor would never fire its callback, blocking
+    /// every later re-read.
+    #[test]
+    fn tray_sync_never_picks_a_surface_with_no_attached_buffer() {
+        assert!(!eligible_for_frame(true, false), "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)");
+        assert!(!eligible_for_frame(false, true), "not configured yet: no commit belongs to it either");
+        assert!(eligible_for_frame(true, true), "configured and holding an attached buffer");
     }
 
     /// Review items M3/M4, final review slice 3: the same check used by

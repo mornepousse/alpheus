@@ -274,7 +274,15 @@ impl Host {
             }
             return;
         }
-        if self.items.iter().any(|i| i.key == key) || self.refused(0) {
+        // A duplicate registration of a known item: real clients re-register on their own (a
+        // reconnect, a retry once a watcher appears) and no StatusNotifierItem signal exists for
+        // Menu — so this is the only chance to notice an item that registered with none (or
+        // "/NO_DBUSMENU") and has since gained a real one (fix round, 2026-10-06).
+        if self.items.iter().any(|i| i.key == key) {
+            self.reread_menu(&key, out);
+            return;
+        }
+        if self.refused(0) {
             return;
         }
         if !self.items.iter().any(|i| i.key.owner == key.owner) {
@@ -289,6 +297,18 @@ impl Host {
         let item = Item::new(key, service);
         self.changes.registered.push(item.watcher_entry());
         self.items.push(item);
+    }
+
+    /// One Get(Menu), with the same deadline as any other property Get; skipped while one is
+    /// already in flight, so a burst of duplicate registrations asks only once.
+    fn reread_menu(&mut self, key: &ItemKey, out: &mut dyn Outbox) {
+        let Some(item) = self.items.iter_mut().find(|i| i.key == *key) else { return };
+        if item.asking.contains(Prop::Menu) {
+            return;
+        }
+        item.asking.insert(Prop::Menu);
+        let get = Call::Get { destination: key.owner.clone(), path: key.path.clone(), property: Property::Item(Prop::Menu) };
+        self.call(get, Pending::Prop(key.clone(), Prop::Menu), out);
     }
 
     fn remove(&mut self, index: usize, out: &mut dyn Outbox) {
@@ -730,6 +750,27 @@ mod tests {
         assert_eq!(gets(&out.take().into_iter().map(|(_, c)| c).collect::<Vec<_>>()).len(), 8);
         assert_eq!(h.items().len(), 1);
         assert_eq!(h.take_changes().registered, [":1.7/StatusNotifierItem"]);
+    }
+
+    #[test]
+    fn a_duplicate_registration_rereads_the_menu() {
+        // No StatusNotifierItem signal exists for Menu: an item that first registered with none
+        // (or "/NO_DBUSMENU") and gains one later is only ever noticed through a duplicate
+        // RegisterStatusNotifierItem (fix round, 2026-10-06).
+        let (mut h, mut out, _proc) = host("reread-menu");
+        h.register(":1.7", ":1.7", &mut out);
+        settle(&mut h, &mut out, nimbus);
+        assert_eq!(h.items()[0].menu.as_deref(), Some("/MenuBar"), "the fake's first answer");
+        h.register(":1.7", ":1.7", &mut out);
+        let calls: Vec<(CallId, Call)> = out.take();
+        let gets: Vec<Prop> = gets(&calls.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>()).into_iter().map(|(_, p)| p).collect();
+        assert_eq!(gets, [Prop::Menu], "one Get, Menu only: {gets:?}");
+        // A second duplicate while the first Get is still in flight asks nothing more.
+        h.register(":1.7", ":1.7", &mut out);
+        assert!(out.take().is_empty(), "already asking: no second Get");
+        let (id, _) = calls[0].clone();
+        h.answer(id, Ok(Reply::Prop(PropValue::Path("/NewMenu".into()))), &mut out);
+        assert_eq!(h.items()[0].menu.as_deref(), Some("/NewMenu"), "the gained menu is applied");
     }
 
     #[test]
