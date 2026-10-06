@@ -47,12 +47,19 @@ pub fn cpu_percent(a: CpuTimes, b: CpuTimes) -> Option<u8> {
 /// KiB in a GiB.
 const GIB_KB: u64 = 1024 * 1024;
 
-/// Memory in use, MemTotal − MemAvailable (MemFree on a kernel without
-/// MemAvailable, pre-3.14), in tenths of GiB, rounded (Q5: shown "10.5G").
+/// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like
+/// `free`'s "used" column (Mae, 2026-10-06: RAM only, caches left out):
+/// MemTotal − MemFree − Buffers − Cached − SReclaimable (SReclaimable absent
+/// on old kernels counts as 0). Without Buffers/Cached, MemTotal −
+/// MemAvailable, then MemTotal − MemFree (pre-3.14 kernels).
 pub fn parse_meminfo(text: &str) -> Option<u16> {
     let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
     let total = field("MemTotal:").filter(|t| *t > 0)?;
-    let available = field("MemAvailable:").or_else(|| field("MemFree:"))?;
+    let free_style = || {
+        let caches = field("Buffers:")? + field("Cached:")? + field("SReclaimable:").unwrap_or(0);
+        Some(field("MemFree:")? + caches)
+    };
+    let available = free_style().or_else(|| field("MemAvailable:")).or_else(|| field("MemFree:"))?;
     let used = total.saturating_sub(available);
     u16::try_from((used * 10 + GIB_KB / 2) / GIB_KB).ok()
 }
@@ -317,17 +324,30 @@ mod tests {
     }
 
     #[test]
-    fn memory_in_use_from_memavailable() {
-        assert_eq!(parse_meminfo(MEMINFO), Some(105), "10.5 GiB in use");
+    fn memory_in_use_like_free_without_cache() {
+        // Mae (2026-10-06): RAM only, like `free`'s "used": MemTotal − MemFree
+        // − Buffers − Cached − SReclaimable = 9618492 kB on the workstation
+        // fixture, 9.2 GiB (MemTotal − MemAvailable would say 10.5).
+        assert_eq!(parse_meminfo(MEMINFO), Some(92), "9.2 GiB in use, caches left out");
         assert_eq!(parse_meminfo("MemTotal: 0 kB\nMemAvailable: 0 kB\n"), None);
         assert_eq!(parse_meminfo(""), None);
     }
 
     #[test]
+    fn memory_falls_back_to_memavailable_without_the_cache_fields() {
+        let partial = "MemTotal: 10485760 kB\nMemFree: 1048576 kB\nMemAvailable: 5242880 kB\n";
+        assert_eq!(parse_meminfo(partial), Some(50), "no Buffers/Cached/SReclaimable: MemTotal − MemAvailable");
+    }
+
+    #[test]
     fn memory_falls_back_to_memfree_without_memavailable() {
         // Pre-3.14 kernels have no MemAvailable at all; same fixture, that
-        // line dropped — matches the 217 already worked out in step 6.
-        let no_available: String = MEMINFO.lines().filter(|l| !l.starts_with("MemAvailable:")).collect::<Vec<_>>().join("\n");
+        // line (and the cache lines) dropped — matches the 217 already worked out in step 6.
+        let no_available: String = MEMINFO
+            .lines()
+            .filter(|l| !["MemAvailable:", "Buffers:", "Cached:", "SReclaimable:"].iter().any(|k| l.starts_with(k)))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(parse_meminfo(&no_available), Some(217), "MemFree instead, old kernels");
         assert_eq!(parse_meminfo("MemTotal: 1000 kB\n"), None, "neither MemAvailable nor MemFree");
     }
@@ -391,9 +411,9 @@ mod tests {
     fn the_reader_first_without_cpu_then_38() {
         let t = workstation("reader");
         let mut r = Reader::new(&t.0, "");
-        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(105), temperature: Some(66) });
+        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(92), temperature: Some(66) });
         put(&t.0, "proc/stat", STAT_B);
-        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(105), temperature: Some(66) });
+        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(92), temperature: Some(66) });
         put(&t.0, "sys/class/hwmon/hwmon9/temp1_input", "-5000\n");
         assert_eq!(r.sample().temperature, Some(-5));
     }
