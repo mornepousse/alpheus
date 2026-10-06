@@ -170,13 +170,23 @@ pub fn tray_gesture(b: Button) -> Gesture {
 }
 
 /// The horizontal wheel (a second `Wheel` fed with the horizontal axis, where
-/// "down" is right): WheelDown (right) → +120, WheelUp (left) → -120,
+/// "down" is right): WheelDown (right) → -120, WheelUp (left) → +120,
 /// Horizontal; a click is not a horizontal gesture.
+///
+/// Flipped from the naive mapping (right = positive) to match what Plasma
+/// actually sends: qtbase negates Wayland's `value120` on both axes
+/// (`qwaylandinputdevice.cpp`, `FrameData::angleDelta()` returns
+/// `-delta120`), and Plasma passes `wheel.angleDelta.x` through unchanged for
+/// its "horizontal" signal — so under Plasma, right is -120 and left is
+/// +120. Vertical is unaffected (up stays +120, matching Qt's own vertical
+/// convention). A libayatana-based tray item that assumes "right = positive"
+/// will read our horizontal scrolls backwards under Plasma too — expected,
+/// not a bug we can fix on our side.
 pub fn tray_horizontal(b: Button) -> Option<Gesture> {
     let horizontal = |delta| Some(Gesture::Scroll { delta, orientation: Orientation::Horizontal });
     match b {
-        Button::WheelDown => horizontal(SCROLL_NOTCH),
-        Button::WheelUp => horizontal(-SCROLL_NOTCH),
+        Button::WheelDown => horizontal(-SCROLL_NOTCH),
+        Button::WheelUp => horizontal(SCROLL_NOTCH),
         Button::Left | Button::Right | Button::Middle => None,
     }
 }
@@ -259,14 +269,14 @@ mod tests {
         assert_eq!(tray_gesture(Button::Middle), Gesture::Middle);
         assert_eq!(tray_gesture(Button::WheelUp), scroll(120, Orientation::Vertical), "wheel up: positive");
         assert_eq!(tray_gesture(Button::WheelDown), scroll(-120, Orientation::Vertical));
-        assert_eq!(tray_horizontal(Button::WheelDown), Some(scroll(120, Orientation::Horizontal)), "right: positive");
-        assert_eq!(tray_horizontal(Button::WheelUp), Some(scroll(-120, Orientation::Horizontal)));
+        assert_eq!(tray_horizontal(Button::WheelDown), Some(scroll(-120, Orientation::Horizontal)), "right: negative, Plasma's convention");
+        assert_eq!(tray_horizontal(Button::WheelUp), Some(scroll(120, Orientation::Horizontal)), "left: positive");
         assert_eq!(tray_horizontal(Button::Left), None);
         // Through the wheel accumulator, as wayland.rs feeds it: Wayland's
         // positive value120 is down (vertical) or right (horizontal).
         let mut w = Wheel::default();
         assert_eq!(w.add(15.0, 0, 120).map(tray_gesture), Some(scroll(-120, Orientation::Vertical)));
-        assert_eq!(w.add(-15.0, 0, -120).and_then(tray_horizontal), Some(scroll(-120, Orientation::Horizontal)));
+        assert_eq!(w.add(-15.0, 0, -120).and_then(tray_horizontal), Some(scroll(120, Orientation::Horizontal)));
     }
 
     #[test]
