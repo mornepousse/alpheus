@@ -69,7 +69,9 @@ fn dbus_stays_in_the_daemon() {
     let g = graph();
     assert!(closure(&g, "alpheus-demon").contains("dbus"), "the daemon reads the system bus");
     for p in ["alpheus-commun", "alpheus", "alpheus-launch"] {
-        assert!(!closure(&g, p).contains("dbus"), "{p} pulls in dbus");
+        for krate in ["dbus", "dbus-crossroads"] {
+            assert!(!closure(&g, p).contains(krate), "{p} pulls in {krate}");
+        }
     }
 }
 

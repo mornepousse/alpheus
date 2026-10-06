@@ -21,6 +21,8 @@ use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method}
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
+use alpheus_demon::tray::WATCHER_NAME;
+use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, message};
 use std::path::{Path, PathBuf};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
@@ -466,6 +468,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // deadline, armed per connection and removed once it is read; the
         // listener's resume, armed only after an accept() error.
         ("launch.rs", "Timer::", 4),
+        // DeadlineTimer::default() and Timer::from_deadline: the tray's call
+        // timeout, armed only while a call is pending (task 1; wired into
+        // the loop at task 11).
+        ("deadline.rs", "Timer::", 2),
         // The bar's signal guard.
         ("launch.rs", "thread::Builder", 1),
         // The launcher's listening socket (its fd: the one thing at rest),
@@ -505,7 +511,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
         if uses_crate(&t, "dbus") {
-            assert_eq!(name, "sources/dbus/dbusrs_bus.rs", "the dbus crate used in {name}");
+            assert!(DBUS_FILES.contains(&name.as_str()), "the dbus crate used in {name}");
         }
         if name.starts_with("sources/dbus/") {
             let prod = production_code(&t);
@@ -559,6 +565,88 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         "the network module is icons only (Q1): no AccessPoint signal is ever read"
     );
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
+}
+
+/// The files that may name the `dbus` crate: the system bus's, and the
+/// tray's four (its connection, codec, watcher and router).
+const DBUS_FILES: [&str; 5] = ["sources/dbus/dbusrs_bus.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+
+/// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
+/// in the watcher only; one place builds a call, from the typed allowlist;
+/// no libdbus session lookup (it could autolaunch `dbus-launch`); no
+/// blocking call nor `RefArg` decoding; the only name ever requested is the
+/// watcher's, with DO_NOT_QUEUE, never replacing its owner.
+#[test]
+fn tray_d_bus_is_confined_and_allowlisted() {
+    let mut built = Vec::new();
+    let mut tray_files = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if uses_crate(&t, "dbus_crossroads") {
+            assert_eq!(name, "tray/watcher.rs", "dbus-crossroads used in {name}");
+        }
+        if !name.starts_with("tray/") {
+            continue;
+        }
+        tray_files += 1;
+        for never in ["BusType::Session", "get_private"] {
+            assert!(!t.contains(never), "{never} in {name}: libdbus's own session lookup may autolaunch a bus");
+        }
+        let prod = production_code(&t);
+        for never in ["send_with_reply_and_block", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"] {
+            assert!(!prod.contains(never), "{never} in {name}");
+        }
+        built.extend(std::iter::repeat_n(name.clone(), prod.matches("Message::new_method_call(").count()));
+    }
+    assert!(tray_files >= 2, "the tray's sources were not found");
+    assert_eq!(built, ["tray/bus.rs"], "every tray call is built by bus::message, from a Call");
+    let names: Vec<&str> = TrayMethod::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "Get",
+            "Activate",
+            "SecondaryActivate",
+            "ContextMenu",
+            "Scroll",
+            "AboutToShow",
+            "GetLayout",
+            "Event",
+            "RequestName",
+            "GetNameOwner",
+            "GetConnectionUnixProcessID",
+            "ListNames",
+            "AddMatch",
+            "RemoveMatch",
+            "RegisterStatusNotifierHost",
+        ]
+    );
+    let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
+    assert_eq!((name.as_str(), flags), (WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE), "the one name, never replacing");
+}
+
+/// The files of the tray, the popups and the calendar: they run on the
+/// bar's loop, never on a thread of their own, and never run a command
+/// (no executor, no `actions::run`; naming `actions::Button`, as the
+/// popups do, is fine): the applications act, the bar only asks them.
+/// Files named before they exist (later tasks) are checked once they do.
+const NO_THREAD_NOR_COMMAND: [&str; 6] = ["tray/", "popup.rs", "calendar.rs", "deadline.rs", "list.rs", "keys.rs"];
+
+#[test]
+fn the_tray_spawns_no_thread() {
+    let mut checked = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !NO_THREAD_NOR_COMMAND.iter().any(|f| if f.ends_with('/') { name.starts_with(f) } else { name == *f }) {
+            continue;
+        }
+        checked += 1;
+        let prod = production_code(&t);
+        for never in ["thread::", "Executor", "actions::run", ".stream(", "Command::new"] {
+            assert!(!prod.contains(never), "{never} in {name}");
+        }
+    }
+    assert!(checked >= 3, "the tray's files were not found");
 }
 
 /// Whether `text` names the crate `krate`: as a path root (`dbus::…`,
