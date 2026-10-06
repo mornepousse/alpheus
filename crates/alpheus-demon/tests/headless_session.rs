@@ -455,3 +455,56 @@ fn a_closed_session_bus_empties_the_tray_once() {
     );
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the daemon alive: {log:?}");
 }
+
+/// A bar with the tray first (its first icon at cell 1, x ≈ 12 px) and the clock last (right end),
+/// on a private session bus; one KDE-like fake item.
+fn tray_bar(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeItem) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = format!("modules = [\"tray\", \"clock\"]\n{extra}");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let item = FakeItem::start(&bus, Spec::kde(1));
+    // Registered, its eight Gets answered, the bar redrawn: well under a second on the private bus.
+    std::thread::sleep(Duration::from_secs(1));
+    (bus, sway, hypr, d, item)
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_tooltip_appears_after_half_a_second_and_goes_on_leave() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip", "");
+    // The virtual pointer first, off the bar (its creation's 300 ms wait must not count as hovering).
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    sway.hover(12, 10);
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
+    assert_eq!(d.count("tooltip shown"), 1);
+    sway.hover(640, 400); // off the bar: its surface's leave
+    assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("tooltip shown"), 1, "nothing shown again off the icons: {:?}", d.log());
+}
+
+/// The hover timer exists only while the pointer rests on an icon: resting on the clock, the
+/// loop sleeps (the window avoids the clock's minute tick).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn no_timer_while_the_pointer_is_elsewhere() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-rest", "");
+    sway.hover(640, 400); // the virtual pointer exists, off the bar
+    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    sway.hover(1260, 10); // the clock, at the right end
+    // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
+    std::thread::sleep(Duration::from_millis(200));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
+}

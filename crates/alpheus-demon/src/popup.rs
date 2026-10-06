@@ -391,12 +391,17 @@ impl App {
 
     /// The pointer on the popup, at cell (`column`, `row`) of its rows.
     pub(crate) fn popup_pointer(&mut self, column: u16, row: u16, kind: PopupPointer) {
-        let _ = (column, row, kind); // read by the bodies' arms (tasks 16–18)
+        let _ = (column, row); // read by the bodies' arms (tasks 17, 18)
         let Some(open) = self.popup.as_ref() else { return };
         match open.body {
             PopupBody::Menu(_) => {}     // task 17
             PopupBody::Calendar(_) => {} // task 18
-            PopupBody::Tooltip(_) => {}  // task 16
+            // A press on the tooltip dismisses it (nothing in it is clickable).
+            PopupBody::Tooltip(_) => {
+                if let PopupPointer::Press(_) = kind {
+                    self.popup_close(PopupClose::HoverEnded);
+                }
+            }
         }
     }
 

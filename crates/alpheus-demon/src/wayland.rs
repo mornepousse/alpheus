@@ -11,8 +11,9 @@ use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
-use crate::popup::{OpenPopup, PopupClose, PopupPointer};
+use crate::popup::{OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
+use crate::tray::hover::{self, Hover, HoverChange};
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
@@ -349,6 +350,11 @@ pub struct App {
     /// The keyboard, bound only while the launcher or a grabbing popup needs it.
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) mods: Mods,
+    /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
+    pub(crate) hover: Hover,
+    pub(crate) hover_timer: DeadlineTimer,
+    /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
+    pub(crate) tooltip_item: Option<ItemKey>,
     /// Raised by a `Msg::Compositor` message, consumed once per
     /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
     /// are fed at most once per pass, never once per message — a burst
@@ -416,6 +422,9 @@ impl App {
             popup: None,
             keyboard: None,
             mods: Mods::default(),
+            hover: Hover::new(),
+            hover_timer: DeadlineTimer::new(),
+            tooltip_item: None,
             windows_dirty: false,
             scan_started: None,
         })
@@ -543,6 +552,11 @@ impl App {
             self.tray = None;
         }
         if out.redraw || out.bus_closed {
+            // The icons may have moved under the pointer: the hover starts over at the next motion
+            // (a tooltip whose item left closes as ItemGone, any other as the hover ends).
+            self.tooltip_item_gone();
+            let c = self.hover.cancel();
+            self.hover_apply(c);
             let shown = match &self.tray {
                 Some(t) => icons::icons(t.items(), &self.bar.config.tray.icons),
                 None => Vec::new(),
@@ -892,9 +906,13 @@ impl PointerHandler for App {
                     if let Some(p) = &self.pointer {
                         let _ = p.set_cursor(conn, CursorIcon::Default);
                     }
+                    self.hover_moved(i, ev.position.0);
                 }
+                PointerEventKind::Motion { .. } => self.hover_moved(i, ev.position.0),
                 PointerEventKind::Press { button, serial, time } => {
                     self.last_press = Some((*serial, *time, ev.position));
+                    let c = self.hover.cancel();
+                    self.hover_apply(c);
                     // A click on the bar while the launcher is open is a click
                     // outside it: close first, then the bar's own action — but
                     // the same press must not then reopen it through the
@@ -937,6 +955,8 @@ impl PointerHandler for App {
                 PointerEventKind::Leave { .. } => {
                     self.wheel.stop();
                     self.hwheel.stop();
+                    let c = self.hover.cancel();
+                    self.hover_apply(c);
                 }
                 _ => {}
             }
@@ -970,6 +990,72 @@ delegate_xdg_popup!(App);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);
+
+impl App {
+    /// The pointer moved on bar `i` at `x`: over a tray icon, the tooltip's timer (only with tooltips on,
+    /// and never while a grabbing popup or the launcher is open: no tooltip could show then).
+    fn hover_moved(&mut self, i: usize, x: f64) {
+        let busy = self.popup.as_ref().is_some_and(|p| p.grab) || self.launcher_is_open();
+        let tooltips = self.bar.config.tray.tooltips && !busy;
+        let e = self.surfaces[i].scale;
+        let column = painter::column_under(x, e, self.fonts.advance(e));
+        let s = &self.surfaces[i];
+        let over = s.last.as_ref().and_then(|g| hover::over(tooltips, g, &s.name, column));
+        let c = self.hover.moved(over, Instant::now());
+        self.hover_apply(c);
+    }
+
+    /// Arm: the timer at that instant (a tooltip shown for another icon goes); Cancel: no timer, no tooltip.
+    pub(crate) fn hover_apply(&mut self, c: HoverChange) {
+        let tooltip_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Tooltip(_)));
+        let deadline = match c {
+            HoverChange::Nothing => return,
+            HoverChange::Arm(at) => Some(at),
+            HoverChange::Cancel => None,
+        };
+        if tooltip_shown {
+            self.popup_close(PopupClose::HoverEnded);
+        }
+        if let Some(handle) = self.loop_handle.clone() {
+            self.hover_timer.sync(&handle, deadline, App::hover_fire);
+        }
+    }
+
+    /// The tooltip's item left the tray: its tooltip goes.
+    fn tooltip_item_gone(&mut self) {
+        let Some(open) = self.popup.as_ref() else { return };
+        if !matches!(open.body, PopupBody::Tooltip(_)) {
+            return;
+        }
+        let gone = match (&self.tray, self.tooltip_item.as_ref()) {
+            (Some(tray), Some(key)) => tray.item(key).is_none(),
+            _ => true,
+        };
+        if gone {
+            self.popup_close(PopupClose::ItemGone);
+        }
+    }
+
+    /// The hover timer fired: the tooltip, unless another popup or the launcher is open.
+    pub(crate) fn hover_fire(app: &mut App, now: Instant) {
+        app.hover_timer.fired();
+        let Some((key, anchor)) = app.hover.fire(now) else { return };
+        if app.popup.is_some() || app.launcher_is_open() {
+            return;
+        }
+        let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };
+        let Some(columns) = app.surfaces.iter().find(|s| s.name == anchor.output).and_then(|s| s.last.as_ref()).map(Grid::width) else {
+            return;
+        };
+        let row = hover::tooltip_row(&text, columns.saturating_sub(2));
+        let qh = app.qh.clone();
+        if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), row.width(), 1, false) {
+            app.tooltip_item = Some(key);
+            app.popup_paint(&[row]);
+            log("tooltip shown");
+        }
+    }
+}
 
 /// A pointer event as the popup sees it; the wheel goes through the bar's `Wheel` (notches).
 fn popup_pointer_kind(wheel: &mut Wheel, kind: &PointerEventKind) -> Option<PopupPointer> {

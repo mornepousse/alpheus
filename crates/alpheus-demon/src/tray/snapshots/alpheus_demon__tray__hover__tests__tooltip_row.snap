@@ -1,0 +1,10 @@
+---
+source: crates/alpheus-demon/src/tray/hover.rs
+expression: "text.join(\"\\n\")"
+---
+" Nimbus — 3 new messages "
+sssssssssssssssssssssssss
+" Kettle Kettle Kettle Kettle… "
+ssssssssssssssssssssssssssssss
+"  "
+ss

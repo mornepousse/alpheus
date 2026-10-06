@@ -489,10 +489,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // bus answers — an unused module costs nothing at runtime, but the
         // call itself is still in the source).
         ("launch.rs", "Generic::new", 3),
-        // `DeadlineTimer::new()`'s own `Timer::` substring (its struct name
-        // contains the token): the tray timer itself is armed only while a
-        // call is pending (task 11).
-        ("wayland.rs", "Timer::", 1),
+        // The tray's DeadlineTimer (task 11), armed only while calls are pending; the tooltip's
+        // (task 16), armed only while the pointer rests on a tray icon.
+        ("wayland.rs", "Timer::", 2),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.

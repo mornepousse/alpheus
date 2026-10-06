@@ -188,6 +188,12 @@ impl Sway {
         self.command(&format!("seat - cursor release {button}"));
     }
 
+    /// `seat - cursor set <x> <y>` only: the pointer rests there (motion, no button).
+    pub fn hover(&self, x: u32, y: u32) {
+        self.ensure_pointer();
+        self.command(&format!("seat - cursor set {x} {y}"));
+    }
+
     /// `seat - cursor set <x> <y>`, then `notches` wheel notches towards
     /// `direction` ("up", "down", "left", "right"). sway's `cursor press
     /// button4…7` scrolls 1/120 of a notch per press, and a release scrolls
