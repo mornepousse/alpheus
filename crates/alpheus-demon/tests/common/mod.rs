@@ -235,6 +235,8 @@ pub struct DaemonOptions<'a> {
     /// where no bus listens (the D-Bus modules show "–").
     pub system_bus: Option<&'a str>,
     pub pw_dump: PwDump,
+    /// `DBUS_SESSION_BUS_ADDRESS`: a `PrivateBus`'s address; None: a path where no bus listens (no tray).
+    pub session_bus: Option<&'a str>,
     /// Written to $XDG_CONFIG_HOME/alpheus/launcher.toml when given.
     pub launcher_toml: Option<&'a str>,
     /// Extra .desktop files written to $XDG_DATA_HOME/applications: (file name, content).
@@ -243,7 +245,14 @@ pub struct DaemonOptions<'a> {
 
 impl Default for DaemonOptions<'_> {
     fn default() -> Self {
-        DaemonOptions { bar_toml: None, system_bus: None, pw_dump: PwDump::Silent, launcher_toml: None, desktop_files: &[] }
+        DaemonOptions {
+            bar_toml: None,
+            system_bus: None,
+            pw_dump: PwDump::Silent,
+            session_bus: None,
+            launcher_toml: None,
+            desktop_files: &[],
+        }
     }
 }
 
@@ -332,6 +341,7 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let bin = fake_pw_dump(sway, o.pw_dump);
     let path = env::join_paths([bin, coreutils_dir()]).unwrap();
     let no_bus = format!("unix:path={}", sway.runtime.join("no-system-bus").display());
+    let no_session_bus = format!("unix:path={}", sway.runtime.join("no-session-bus").display());
     let mut child = Command::new(daemon_binary())
         .env_clear()
         .env("PATH", path)
@@ -345,6 +355,8 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
         .env("HYPRLAND_INSTANCE_SIGNATURE", SIGNATURE)
         // Never the machine's system bus: a private one, or none at all.
         .env("DBUS_SYSTEM_BUS_ADDRESS", o.system_bus.map(String::from).unwrap_or(no_bus))
+        // Never the user's session bus either: a private one, or none (XDG_RUNTIME_DIR is sway's, without a `bus`).
+        .env("DBUS_SESSION_BUS_ADDRESS", o.session_bus.map(String::from).unwrap_or(no_session_bus))
         .env("ALPHEUS_POLICES", env::var_os("ALPHEUS_POLICES").unwrap_or_default())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -738,6 +750,9 @@ impl Peer {
 
 #[path = "../support/busctl_wire.rs"]
 pub mod busctl_wire;
+
+#[path = "../support/sni.rs"]
+pub mod sni;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 

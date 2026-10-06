@@ -157,3 +157,252 @@ fn the_xdg_runtime_bus_socket_is_found() {
     let tray = SessionBus::at(&address).unwrap();
     assert!(tray.unique_name().starts_with(":1."));
 }
+
+// ---- The fakes themselves (task 3), driven by a plain Peer ----
+
+use alpheus_demon::tray::{ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use common::sni::{FakeItem, FakeMenu, FakeWatcher, Registration, Spec, Value};
+use dbus::Message;
+
+/// `method` on `destination` at `path`, waited for at most `timeout`.
+fn ask(
+    peer: &Peer,
+    destination: &str,
+    path: &str,
+    interface: &str,
+    member: &str,
+    args: impl FnOnce(Message) -> Message,
+    timeout: Duration,
+) -> Result<Message, String> {
+    let m = args(Message::new_method_call(destination, path, interface, member).unwrap());
+    peer.channel.send_with_reply_and_block(m, timeout).map_err(|e| e.name().unwrap_or("").to_string())
+}
+
+fn property(peer: &Peer, destination: &str, path: &str, interface: &str, name: &str) -> Result<Message, String> {
+    ask(peer, destination, path, "org.freedesktop.DBus.Properties", "Get", |m| m.append2(interface, name), Duration::from_secs(2))
+}
+
+/// The next signal named `member` the peer receives (it must have a match rule for it).
+fn next_signal(peer: &Peer, member: &str, timeout: Duration) -> Option<Message> {
+    let end = Instant::now() + timeout;
+    while Instant::now() < end {
+        if let Ok(Some(m)) = peer.channel.blocking_pop_message(Duration::from_millis(20))
+            && m.msg_type() == dbus::message::MessageType::Signal
+            && m.member().as_deref() == Some(member)
+        {
+            return Some(m);
+        }
+    }
+    None
+}
+
+fn add_match(peer: &Peer, rule: &str) {
+    let m = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch")
+        .unwrap()
+        .append1(rule);
+    peer.call(m).unwrap();
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn fakes_answer_like_the_apps_they_model() {
+    let bus = PrivateBus::start("fakes-answer");
+    let peer = Peer::connect(&bus);
+    let nimbus = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(1) });
+    let steam = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::steam() });
+    let lumen = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::chromium() });
+    let title = property(&peer, &nimbus.unique, "/StatusNotifierItem", ITEM_INTERFACE, "Title").unwrap();
+    assert_eq!(title.read1::<Variant<String>>().unwrap().0, "Nimbus");
+    let tooltip = property(&peer, &lumen.unique, "/StatusNotifierItem", ITEM_INTERFACE, "ToolTip").unwrap();
+    assert_eq!(tooltip.read1::<Variant<(String, Vec<(i32, i32, Vec<u8>)>, String, String)>>().unwrap().0.2, "Lumen");
+    let steam_path = "/org/ayatana/NotificationItem/steam";
+    assert_eq!(
+        property(&peer, &steam.unique, steam_path, ITEM_INTERFACE, "ToolTip").unwrap_err(),
+        "org.freedesktop.DBus.Error.UnknownProperty"
+    );
+    assert_eq!(
+        property(&peer, &lumen.unique, "/StatusNotifierItem", ITEM_INTERFACE, "IconName").unwrap_err(),
+        "org.freedesktop.DBus.Error.Failed"
+    );
+    let activate = |item: &FakeItem, path: &str| {
+        ask(&peer, &item.unique, path, ITEM_INTERFACE, "Activate", |m| m.append2(3i32, 4i32), Duration::from_secs(2))
+    };
+    assert_eq!(activate(&steam, steam_path).unwrap_err(), "org.freedesktop.DBus.Error.UnknownMethod", "Steam has no Activate");
+    assert!(activate(&nimbus, "/StatusNotifierItem").is_ok());
+    let introspect = ask(
+        &peer,
+        &lumen.unique,
+        "/StatusNotifierItem",
+        "org.freedesktop.DBus.Introspectable",
+        "Introspect",
+        |m| m,
+        Duration::from_secs(2),
+    );
+    assert_eq!(introspect.unwrap_err(), "org.freedesktop.DBus.Error.UnknownMethod", "Chromium is not introspectable");
+    assert_eq!(
+        nimbus.calls(),
+        ["org.freedesktop.DBus.Properties.Get(org.kde.StatusNotifierItem, Title)", "org.kde.StatusNotifierItem.Activate(3, 4)"]
+    );
+    assert!(steam.wait_call("Activate", Duration::from_secs(1)).is_some(), "refused calls are recorded too");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_silent_fake_never_answers() {
+    let bus = PrivateBus::start("fakes-silent");
+    let _watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    let silent = FakeItem::start(&bus, Spec::silent());
+    let started = Instant::now();
+    let r = ask(
+        &peer,
+        &silent.unique,
+        "/StatusNotifierItem",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        |m| m.append2(ITEM_INTERFACE, "Title"),
+        Duration::from_millis(300),
+    );
+    assert_eq!(r.unwrap_err(), "org.freedesktop.DBus.Error.NoReply");
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(silent.calls().is_empty(), "it never even read the call");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_menu_serves_lazy_layouts_and_records_events() {
+    let bus = PrivateBus::start("fakes-menu");
+    let peer = Peer::connect(&bus);
+    add_match(&peer, &format!("type='signal',interface='{MENU_INTERFACE}'"));
+    let lumen = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::chromium() });
+    let menu = "/org/chromium/DbusMenu";
+    let layout = |parent: i32| {
+        let r = ask(
+            &peer,
+            &lumen.unique,
+            menu,
+            MENU_INTERFACE,
+            "GetLayout",
+            |m| m.append3(parent, 1i32, vec!["label"]),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+        let mut it = r.iter_init();
+        it.next();
+        let mut root = it.recurse(dbus::arg::ArgType::Struct).unwrap();
+        let id: i32 = root.read().unwrap();
+        root.next();
+        let mut children = root.recurse(dbus::arg::ArgType::Array).unwrap();
+        let mut n = 0;
+        while children.arg_type() == dbus::arg::ArgType::Variant {
+            n += 1;
+            children.next();
+        }
+        (id, n)
+    };
+    assert_eq!(layout(0), (0, 0), "lazy: nothing before AboutToShow");
+    let about =
+        |id: i32| ask(&peer, &lumen.unique, menu, MENU_INTERFACE, "AboutToShow", |m| m.append1(id), Duration::from_secs(2)).unwrap();
+    assert!(about(0).read1::<bool>().unwrap(), "needUpdate");
+    let updated = next_signal(&peer, "LayoutUpdated", Duration::from_secs(2)).expect("LayoutUpdated follows");
+    assert_eq!(updated.read2::<u32, i32>().unwrap().1, 0);
+    assert_eq!(layout(0), (0, 8), "built now");
+    assert!(!about(0).read1::<bool>().unwrap(), "built once");
+    assert_eq!(layout(8), (8, 2), "the submenu's two children, on demand");
+    let mut event = Message::new_method_call(lumen.unique.as_str(), menu, MENU_INTERFACE, "Event")
+        .unwrap()
+        .append3(9i32, "clicked", Variant(0i32))
+        .append1(77u32);
+    event.set_no_reply(true);
+    peer.channel.send(event).unwrap();
+    peer.channel.flush();
+    assert_eq!(lumen.wait_call("Event", Duration::from_secs(2)).as_deref(), Some("com.canonical.dbusmenu.Event(9, clicked, 0, 77)"));
+    let kettle = FakeItem::start(
+        &bus,
+        Spec { registration: Registration::Never, menu: Some(FakeMenu { answers_event: true, ..FakeMenu::sample() }), ..Spec::qt() },
+    );
+    let answered = ask(
+        &peer,
+        &kettle.unique,
+        "/MenuBar",
+        MENU_INTERFACE,
+        "Event",
+        |m| m.append3(1i32, "clicked", Variant(0i32)).append1(1u32),
+        Duration::from_secs(2),
+    );
+    assert!(answered.is_ok(), "this one answers Event");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_watcher_lists_and_signals() {
+    let bus = PrivateBus::start("fakes-watcher");
+    let watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    add_match(&peer, &format!("type='signal',interface='{WATCHER_INTERFACE}'"));
+    let is_host = || {
+        property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "IsStatusNotifierHostRegistered")
+            .unwrap()
+            .read1::<Variant<bool>>()
+            .unwrap()
+            .0
+    };
+    assert!(!is_host());
+    let lumen = FakeItem::start(&bus, Spec::chromium());
+    assert!(watcher.items().is_empty(), "Chromium gives up without a host");
+    ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        WATCHER_INTERFACE,
+        "RegisterStatusNotifierHost",
+        |m| m.append1(peer.name.as_str()),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert!(next_signal(&peer, "StatusNotifierHostRegistered", Duration::from_secs(2)).is_some());
+    assert_eq!(watcher.hosts(), vec![peer.name.clone()]);
+    assert!(is_host());
+    lumen.register();
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let quill = FakeItem::start(&bus, Spec::ayatana());
+    let expected = [
+        format!("{}/StatusNotifierItem", lumen.unique),
+        "org.kde.StatusNotifierItem-4242-1/StatusNotifierItem".to_string(),
+        format!("{}/org/ayatana/NotificationItem/quill", quill.unique),
+    ];
+    assert_eq!(watcher.items(), expected);
+    let list = property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "RegisteredStatusNotifierItems").unwrap();
+    assert_eq!(list.read1::<Variant<Vec<String>>>().unwrap().0, expected);
+    let registered = next_signal(&peer, "StatusNotifierItemRegistered", Duration::from_secs(2)).unwrap();
+    assert_eq!(registered.read1::<&str>().unwrap(), expected[0]);
+    assert_eq!(
+        property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "ProtocolVersion").unwrap().read1::<Variant<i32>>().unwrap().0,
+        0
+    );
+    nimbus.kill();
+    let unregistered = next_signal(&peer, "StatusNotifierItemUnregistered", Duration::from_secs(2)).expect("its owner left");
+    assert_eq!(unregistered.read1::<&str>().unwrap(), expected[1]);
+    assert_eq!(watcher.items(), [expected[0].clone(), expected[2].clone()]);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_killed_fake_emits_name_owner_changed() {
+    let bus = PrivateBus::start("fakes-killed");
+    let peer = Peer::connect(&bus);
+    add_match(&peer, "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged'");
+    let nimbus = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(2) });
+    let unique = nimbus.unique.clone();
+    nimbus.set("Title", Value::Str("Nimbus 2".into()));
+    nimbus.kill();
+    let mut gone = Vec::new();
+    while let Some(m) = next_signal(&peer, "NameOwnerChanged", Duration::from_secs(1)) {
+        let (name, old, new): (String, String, String) = m.read3().unwrap();
+        if new.is_empty() {
+            gone.push((name, old));
+        }
+    }
+    gone.sort();
+    assert_eq!(gone, [(unique.clone(), unique.clone()), ("org.kde.StatusNotifierItem-4242-2".to_string(), unique)]);
+}
