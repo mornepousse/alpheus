@@ -1097,6 +1097,9 @@ impl PointerHandler for App {
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup.
                     if self.popup.is_some() {
+                        // Where the compositor delivered it: a press meant for the popup but handed
+                        // to the bar (seen on Hyprland) shows here, at a row below the bar's own.
+                        log(&format!("popup: press on the bar at ({:.0}, {:.0})", ev.position.0, ev.position.1));
                         self.popup_close(PopupClose::OutsideClick);
                     }
                     // A menu asked for but not shown yet dies with any press on the bar (a menu

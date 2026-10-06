@@ -797,7 +797,7 @@ fn an_outside_click_closes_the_menu() {
     assert!(d.wait_for_count("menu shown", 2, DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
     sway.click(640, 400, "button1");
-    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (dismissed)", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("tray: menu session closed", 2, DELAY), "{:?}", d.log());
     assert!(item.calls().iter().all(|c| !c.contains("Event")), "nothing clicked: {:?}", item.calls());
 }

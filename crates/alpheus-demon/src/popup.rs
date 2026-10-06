@@ -99,7 +99,10 @@ pub(crate) fn logical_advance(advance_phys: f32, scale: i32) -> f32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PopupClose {
     Escape,
+    /// A press on the bar itself while the popup is open (delivered to the bar, same client).
     OutsideClick,
+    /// The compositor ended the grab (`xdg_popup.done`): a click elsewhere, or its own reasons.
+    Dismissed,
     Activated,
     OutputGone,
     Replaced,
@@ -120,6 +123,7 @@ impl PopupClose {
         match self {
             PopupClose::Escape => "escape",
             PopupClose::OutsideClick => "outside click",
+            PopupClose::Dismissed => "dismissed",
             PopupClose::Activated => "activated",
             PopupClose::OutputGone => "output gone",
             PopupClose::Replaced => "replaced",
@@ -397,7 +401,7 @@ impl App {
         // record of what just closed, by whom it was opened, and when, lets that next press still
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
-        if menu && why == PopupClose::OutsideClick {
+        if menu && why == PopupClose::Dismissed {
             if let (Some((key, _)), Some(button)) = (self.menu_for.clone(), self.menu_opened_by) {
                 self.recently_closed_menu = Some((key, button, Instant::now()));
             }
@@ -661,7 +665,7 @@ impl PopupHandler for App {
 
     fn done(&mut self, _: &Connection, _: &QueueHandle<Self>, popup: &Popup) {
         if self.popup.as_ref().is_some_and(|o| o.popup == *popup) {
-            self.popup_close(PopupClose::OutsideClick);
+            self.popup_close(PopupClose::Dismissed);
         }
     }
 }
@@ -739,12 +743,14 @@ mod tests {
     #[test]
     fn close_reasons_have_texts() {
         use PopupClose::*;
-        let all = [Escape, OutsideClick, Activated, OutputGone, Replaced, ItemGone, Timeout, MenuMoved, Launcher, HoverEnded, Error];
+        let all =
+            [Escape, OutsideClick, Dismissed, Activated, OutputGone, Replaced, ItemGone, Timeout, MenuMoved, Launcher, HoverEnded, Error];
         assert_eq!(
             all.map(PopupClose::text),
             [
                 "escape",
                 "outside click",
+                "dismissed",
                 "activated",
                 "output gone",
                 "replaced",
