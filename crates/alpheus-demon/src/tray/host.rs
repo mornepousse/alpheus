@@ -193,6 +193,10 @@ pub struct Host {
     proc_root: PathBuf,
     changes: Changes,
     refusal_logged: bool,
+    /// Whether a self-registration refusal has already been logged once (task 5 fix round 2
+    /// review): a looping signal from a misbehaving watcher — the same self-naming entry in its
+    /// list on every `NameOwnerChanged`, say — must never flood the log.
+    self_registration_logged: bool,
     /// Our own unique name: never one of the items we host (checked in `add`, on the resolved
     /// owner — task 5 review — so a registration naming our own well-known name, an entry of
     /// another watcher's list, or that watcher's ItemRegistered signal are all caught too, not
@@ -204,7 +208,15 @@ impl Host {
     /// `proc_root`: "/proc" (tests: a temporary directory with <pid>/comm files). `own`: our
     /// connection's unique name, known once at startup (`SessionBus::unique_name`).
     pub fn new(proc_root: PathBuf, own: String) -> Host {
-        Host { items: Vec::new(), calls: HashMap::new(), proc_root, changes: Changes::default(), refusal_logged: false, own }
+        Host {
+            items: Vec::new(),
+            calls: HashMap::new(),
+            proc_root,
+            changes: Changes::default(),
+            refusal_logged: false,
+            self_registration_logged: false,
+            own,
+        }
     }
 
     fn call(&mut self, call: Call, pending: Pending, out: &mut dyn Outbox) {
@@ -256,7 +268,10 @@ impl Host {
         // generalized in task 5's: `key.owner` is always the resolved unique name by this point,
         // whether `register` had it directly or asked GetNameOwner to get it).
         if key.owner == self.own {
-            log(&format!("tray: refusing a registration naming our own unique name ({service:?})"));
+            if !self.self_registration_logged {
+                log(&format!("tray: refusing a registration naming our own unique name ({service:?})"));
+                self.self_registration_logged = true;
+            }
             return;
         }
         if self.items.iter().any(|i| i.key == key) || self.refused(0) {
@@ -611,7 +626,11 @@ mod tests {
         // The bare-unique-name form of `register` calls `add` directly, with no GetNameOwner
         // round trip: this is what a RegisterStatusNotifierItem naming us literally, or an
         // entry already keyed by a unique name in another watcher's list or signal, looks like.
-        h.register(OWN, "whoever-called", &mut out);
+        // `sender` is irrelevant on this path — `add`'s guard checks `key.owner` (the name
+        // itself), never `sender` — so an arbitrary, unrelated value proves that here on purpose
+        // (task 5 fix round 2 review: a prior version of this comment read as if the sender were
+        // part of what gets checked).
+        h.register(OWN, "irrelevant-sender", &mut out);
         assert!(h.items().is_empty());
         assert!(out.take().is_empty(), "nothing asked of our own connection");
     }

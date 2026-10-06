@@ -655,6 +655,7 @@ fn an_icon_pixmap_value_is_available_though_never_read() {
 use alpheus_demon::tray::ItemKey;
 use alpheus_demon::tray::host::Item;
 use alpheus_demon::tray::router::{Role, Tray, TrayOutput};
+use std::collections::HashSet;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -664,6 +665,10 @@ use std::sync::{Arc, Mutex};
 struct Pump {
     tray: Arc<Mutex<Tray>>,
     outputs: Arc<Mutex<Vec<TrayOutput>>>,
+    /// Every item owner `items()` has ever held, even one gone again by the time a test gets to
+    /// look (task 5 fix round 2 review): a self-item added and then removed once its own Gets come
+    /// back as errors is a transient `ready()`/`items().is_empty()` alone cannot see.
+    seen_owners: Arc<Mutex<HashSet<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -674,8 +679,9 @@ impl Pump {
         let fd = tray.watch_fd().unwrap();
         let tray = Arc::new(Mutex::new(tray));
         let outputs = Arc::new(Mutex::new(Vec::new()));
+        let seen_owners = Arc::new(Mutex::new(HashSet::new()));
         let stop = Arc::new(AtomicBool::new(false));
-        let (t, o, s) = (tray.clone(), outputs.clone(), stop.clone());
+        let (t, o, seen, s) = (tray.clone(), outputs.clone(), seen_owners.clone(), stop.clone());
         let thread = thread::spawn(move || {
             while !s.load(Ordering::Relaxed) {
                 let wait = t.lock().unwrap().next_deadline().map(|d| d.saturating_duration_since(Instant::now()));
@@ -688,6 +694,9 @@ impl Pump {
                 if tray.next_deadline().is_some_and(|d| d <= Instant::now()) {
                     out.merge(tray.on_deadline(Instant::now()));
                 }
+                // Snapshotted every iteration, whatever `out` is: a transient item (added, then
+                // removed once its own Gets error out) must still be caught here.
+                seen.lock().unwrap().extend(tray.items().iter().map(|i| i.key.owner.clone()));
                 if out != TrayOutput::default() {
                     let closed = out.bus_closed;
                     o.lock().unwrap().push(out);
@@ -697,11 +706,17 @@ impl Pump {
                 }
             }
         });
-        Pump { tray, outputs, stop, thread: Some(thread) }
+        Pump { tray, outputs, seen_owners, stop, thread: Some(thread) }
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut Tray) -> R) -> R {
         f(&mut self.tray.lock().unwrap())
+    }
+
+    /// Whether `items()` has ever held an item under this owner, even momentarily (see
+    /// `seen_owners`'s doc comment) — stronger than checking `items()` or `ready()` right now.
+    fn ever_saw_owner(&self, owner: &str) -> bool {
+        self.seen_owners.lock().unwrap().contains(owner)
     }
 
     /// Waits until `cond` holds (5 s at most), or panics with `what`.
@@ -1125,6 +1140,13 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
     assert!(reply.is_ok(), "the watcher still answers at once");
     thread::sleep(Duration::from_millis(200));
     assert!(pump.with(|t| t.items().is_empty()), "never an item under our own well-known name either, once resolved");
+    // Task 5 fix round 2 review: unlike the unique-name path above, resolving a well-known name
+    // takes a GetNameOwner round trip, so the guard in `Host::add` only runs once that answer
+    // comes back — a self-item can exist for a beat before its own (necessarily failing) Gets
+    // remove it again. `items().is_empty()` after a sleep cannot tell "never added" from "added,
+    // then removed before I looked": `ever_saw_owner` can, since the pump thread snapshots
+    // `items()` every poll iteration, not just when this test happens to check.
+    assert!(!pump.ever_saw_owner(&own), "never an item under our own well-known name, not even transiently");
     let nimbus = FakeItem::start(&bus, Spec::kde(1));
     pump.until("the router still works afterwards", ready_count(1));
     assert_eq!(pump.ready()[0].key, item_key(&nimbus.unique, "/StatusNotifierItem"));
@@ -1184,12 +1206,19 @@ fn a_watcher_naming_us_in_its_list_or_signal_is_never_treated_as_an_item() {
     }
     pump.until("the legitimate item of the second watcher's list", ready_count(1));
     assert_eq!(pump.ready()[0].key, item_key(&listed.unique, "/StatusNotifierItem"), "never an item under our own unique name");
+    // Task 5 fix round 2 review: here `register(name, "", out)` goes through the same
+    // GetNameOwner-then-add path as the well-known-name case above, so the same transient is
+    // possible: the list entry naming us resolves to our own unique name, a self-item is added,
+    // and its own (failing) Gets remove it again before `items().len()` or `ready()` would ever
+    // see it. `ever_saw_owner` catches it regardless of timing (see its doc comment on `Pump`).
+    assert!(!pump.ever_saw_owner(&own), "never an item under our own unique name, not even transiently, from the list");
     let own_signal =
         Message::new_signal(WATCHER_PATH, WATCHER_INTERFACE, "StatusNotifierItemRegistered").unwrap().append1(own_entry.clone());
     second.channel.send(own_signal).unwrap();
     second.channel.flush();
     thread::sleep(Duration::from_millis(200));
     assert_eq!(pump.with(|t| t.items().len()), 1, "still never, after its signal names us too");
+    assert!(!pump.ever_saw_owner(&own), "never an item under our own unique name, not even transiently, from the signal");
     let signalled = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(6) });
     let registered = Message::new_signal(WATCHER_PATH, WATCHER_INTERFACE, "StatusNotifierItemRegistered")
         .unwrap()
