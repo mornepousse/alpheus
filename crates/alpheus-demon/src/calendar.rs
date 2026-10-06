@@ -136,8 +136,11 @@ const NL_LOCALE_NAME_TIME: libc::nl_item = 0x2ffff;
 
 /// The locale's first day (LC_TIME, read like `setlocale(LC_ALL, "")` would:
 /// LC_ALL, LC_TIME, LANG), through newlocale/nl_langinfo_l/freelocale:
-/// thread-safe, nothing global changed, nothing kept (controller decision
-/// 11). Monday for C/POSIX or when unreadable (question 4).
+/// thread-safe, no global locale changed (controller decision 11). glibc
+/// keeps the locale archive mapped after this first call to `newlocale(…,
+/// "")` — later calls only touch the handful of pages this locale's data
+/// lives on, not a fresh load of the archive. Monday for C/POSIX or when
+/// unreadable (question 4).
 pub fn locale_first_day() -> u8 {
     // SAFETY: newlocale(3) with a valid mask, a NUL-terminated name and no
     // base locale; null on failure, checked.
@@ -154,7 +157,14 @@ pub fn locale_first_day() -> u8 {
         if name.is_null() || is_c_locale(&CStr::from_ptr(name).to_string_lossy()) {
             MONDAY
         } else {
-            let week_1stday = libc::nl_langinfo_l(NL_TIME_WEEK_1STDAY, locale) as usize as u32;
+            // `_NL_TIME_WEEK_1STDAY` is stored as an `unsigned int` packed into
+            // the pointer's bytes (glibc's `union { const char *string; unsigned
+            // int word; }`), not sign/zero-extended into it: `as usize as u32`
+            // would assume little-endian and read garbage on a big-endian
+            // target. Reading the first 4 bytes in native order works on both
+            // 32- and 64-bit pointers and on either endianness.
+            let bytes = (libc::nl_langinfo_l(NL_TIME_WEEK_1STDAY, locale) as usize).to_ne_bytes();
+            let week_1stday = u32::from_ne_bytes(bytes[..4].try_into().unwrap());
             let first_weekday = libc::nl_langinfo_l(NL_TIME_FIRST_WEEKDAY, locale);
             if first_weekday.is_null() { MONDAY } else { first_day_from(week_1stday, *first_weekday as u8) }
         }
@@ -205,24 +215,31 @@ impl Calendar {
     /// MUTED on the left — the week of the row's Monday (question 5), on rows
     /// holding a day of the month.
     pub fn render(&self) -> Vec<Grid> {
+        // `shown` and `first_day` are public: a caller (or a test) may set
+        // them to anything representable, so render() normalises its own
+        // copies rather than trusting them — an out-of-range month would
+        // index MONTHS out of bounds, an out-of-range first_day would
+        // overflow the u8 arithmetic below.
+        let shown = Month { year: self.shown.year, month: self.shown.month.clamp(1, 12) };
+        let first_day = self.first_day % 7;
         let (width, _) = self.size();
         let left = if self.week_numbers { WEEK_CELLS } else { 0 };
         let mut rows = Vec::with_capacity(2 + WEEK_ROWS);
         let mut title = Grid::empty(width);
-        let text = format!("{} {}", MONTHS[usize::from(self.shown.month) - 1], self.shown.year);
+        let text = format!("{} {}", MONTHS[usize::from(shown.month) - 1], shown.year);
         title.write(width.saturating_sub(text_width(&text)) / 2, width, &text, Style::BOLD_ACCENT);
         rows.push(title);
         let mut weekdays = Grid::empty(width);
         for c in 0..7u16 {
-            let day = usize::from((self.first_day + c as u8) % 7);
+            let day = usize::from((first_day + c as u8) % 7);
             weekdays.write(left + c * COLUMN, width, &SHORT_DAYS[day][..2], Style::MUTED);
         }
         rows.push(weekdays);
-        let first = days_from_civil(self.shown.year, self.shown.month, 1);
+        let first = days_from_civil(shown.year, shown.month, 1);
         // Cells before the 1st: how far it lies from the week's first day.
-        let offset = i64::from((self.shown.first_weekday() + 7 - self.first_day) % 7);
-        let monday_column = i64::from((MONDAY + 7 - self.first_day) % 7);
-        let days = i64::from(self.shown.days());
+        let offset = i64::from((shown.first_weekday() + 7 - first_day) % 7);
+        let monday_column = i64::from((MONDAY + 7 - first_day) % 7);
+        let days = i64::from(shown.days());
         for r in 0..WEEK_ROWS as i64 {
             let mut g = Grid::empty(width);
             let row_start = r * 7 - offset; // days after the 1st of the row's first cell
@@ -235,7 +252,7 @@ impl Calendar {
                 if !(1..=days).contains(&n) {
                     continue;
                 }
-                let is_today = (self.shown.year, self.shown.month, n as u8) == self.today;
+                let is_today = (shown.year, shown.month, n as u8) == self.today;
                 let style = if is_today { Style::INVERTED } else { Style::NORMAL };
                 let x = left + c as u16 * COLUMN;
                 g.write(x, x + DAY_CELLS, &format!("{n:>2}"), style);
@@ -341,6 +358,9 @@ mod tests {
         assert_eq!(iso_week(2026, 10, 5), 41);
         assert_eq!(iso_week(2027, 1, 3), 53, "a Sunday: still 2026's last week");
         assert_eq!(iso_week(2027, 1, 4), 1, "the next Monday");
+        assert_eq!(iso_week(2022, 1, 1), 52, "a Saturday: still 2021's last week");
+        assert_eq!(iso_week(2020, 12, 31), 53, "a Thursday: 2020 has 53 weeks");
+        assert_eq!(iso_week(2032, 12, 31), 53, "a Friday: still week 53");
     }
 
     #[test]
@@ -355,6 +375,21 @@ mod tests {
         assert_eq!(c.shown, Month { year: 2025, month: 9 });
         assert!(!c.scroll(0), "no move: nothing to repaint");
         assert_eq!(Month::of(&TODAY).first_weekday(), 4, "1 October 2026: a Thursday");
+    }
+
+    #[test]
+    fn render_normalises_out_of_range_fields() {
+        // `shown.month` and `first_day` are public fields: a caller setting
+        // them directly to something out of the documented range must not
+        // make render() panic (MONTHS index, u8 overflow in the rotation
+        // arithmetic).
+        let mut c = Calendar::new(&TODAY, MONDAY, false);
+        c.shown.month = 0;
+        c.first_day = 255;
+        c.render();
+        c.shown.month = 13;
+        c.first_day = 200;
+        c.render();
     }
 
     #[test]
