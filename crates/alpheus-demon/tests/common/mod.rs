@@ -18,6 +18,12 @@
 #![allow(dead_code)]
 
 use alpheus_commun::launcher_ipc::{Reply, Request, socket_path};
+use smithay_client_toolkit::reexports::client::globals::{GlobalListContents, registry_queue_init};
+use smithay_client_toolkit::reexports::client::protocol::wl_registry;
+use smithay_client_toolkit::reexports::client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
+use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
+use smithay_client_toolkit::reexports::protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
+use std::cell::OnceCell;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -33,6 +39,50 @@ pub struct Sway {
     pub wayland: String,
     ipc: PathBuf,
     child: Child,
+    /// Created by the first `click`, kept for this sway's lifetime.
+    pointer: OnceCell<VirtualPointer>,
+}
+
+/// A wlr virtual pointer on THIS test's headless sway. Without an input
+/// device (WLR_LIBINPUT_NO_DEVICES) the seat has no pointer capability, so no
+/// client ever gets a wl_pointer and `seat - cursor press` reaches nobody
+/// (checked with wayland-info: `capabilities:` empty). This device gives the
+/// seat its pointer; the cursor itself is moved and pressed by `swaymsg`.
+/// Connected through sway's socket path, never WAYLAND_DISPLAY.
+struct VirtualPointer {
+    _connection: Connection,
+    _queue: EventQueue<NoEvents>,
+    _pointer: ZwlrVirtualPointerV1,
+}
+
+/// The virtual pointer's protocol objects send no event this harness reads.
+struct NoEvents;
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for NoEvents {
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+delegate_noop!(NoEvents: ignore ZwlrVirtualPointerManagerV1);
+delegate_noop!(NoEvents: ignore ZwlrVirtualPointerV1);
+
+impl VirtualPointer {
+    fn create(sway: &Sway) -> VirtualPointer {
+        let stream = UnixStream::connect(sway.runtime.join(&sway.wayland)).unwrap();
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<NoEvents>(&connection).unwrap();
+        let qh = queue.handle();
+        let manager: ZwlrVirtualPointerManagerV1 = globals.bind(&qh, 1..=2, ()).expect("zwlr_virtual_pointer_manager_v1");
+        let pointer = manager.create_virtual_pointer(None, &qh, ());
+        queue.roundtrip(&mut NoEvents).unwrap();
+        VirtualPointer { _connection: connection, _queue: queue, _pointer: pointer }
+    }
 }
 
 impl Sway {
@@ -97,7 +147,7 @@ impl Sway {
         let child = command.spawn().expect("sway not found: run these tests inside `nix develop`");
         // Stored in `Sway` right away: its Drop kills and waits for sway
         // even if the wait below panics (no zombie sway left behind).
-        let mut sway = Sway { runtime: runtime.clone(), wayland: String::new(), ipc: PathBuf::new(), child };
+        let mut sway = Sway { runtime: runtime.clone(), wayland: String::new(), ipc: PathBuf::new(), child, pointer: OnceCell::new() };
         let start = Instant::now();
         loop {
             let names: Vec<String> =
@@ -118,6 +168,42 @@ impl Sway {
     pub fn command(&self, cmd: &str) {
         let ok = Command::new("swaymsg").arg("-s").arg(&self.ipc).arg(cmd).stdout(Stdio::null()).status().unwrap().success();
         assert!(ok, "swaymsg {cmd}");
+    }
+
+    /// The first click or scroll creates the virtual pointer and leaves the
+    /// clients 300 ms to bind their wl_pointer.
+    fn ensure_pointer(&self) {
+        if self.pointer.get().is_none() {
+            let _ = self.pointer.set(VirtualPointer::create(self));
+            thread::sleep(Duration::from_millis(300));
+        }
+    }
+
+    /// `seat - cursor set <x> <y>` (layout coordinates), then press and release
+    /// `button` ("button1" left, "button3" right, "button2" middle).
+    pub fn click(&self, x: u32, y: u32, button: &str) {
+        self.ensure_pointer();
+        self.command(&format!("seat - cursor set {x} {y}"));
+        self.command(&format!("seat - cursor press {button}"));
+        self.command(&format!("seat - cursor release {button}"));
+    }
+
+    /// `seat - cursor set <x> <y>`, then `notches` wheel notches towards
+    /// `direction` ("up", "down", "left", "right"). sway's `cursor press
+    /// button4…7` scrolls 1/120 of a notch per press, and a release scrolls
+    /// again (Step 1): a notch is 120 presses, sent as one command list.
+    pub fn scroll(&self, x: u32, y: u32, direction: &str, notches: u32) {
+        let button = match direction {
+            "up" => "button4",
+            "down" => "button5",
+            "left" => "button6",
+            "right" => "button7",
+            other => panic!("no wheel direction {other:?}"),
+        };
+        self.ensure_pointer();
+        self.command(&format!("seat - cursor set {x} {y}"));
+        let press = format!("seat - cursor press {button}");
+        self.command(&vec![press.as_str(); 120 * notches as usize].join("; "));
     }
 
     /// Kills this sway's process group right away (see `Drop`): simulates a

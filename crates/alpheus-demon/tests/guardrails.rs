@@ -475,8 +475,15 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The bar's signal guard.
         ("launch.rs", "thread::Builder", 1),
         // The launcher's listening socket (its fd: the one thing at rest),
-        // and one watch per connection being read.
-        ("launch.rs", "Generic::new", 2),
+        // one watch per connection being read, and the tray's session-bus fd
+        // (task 11; only inserted when "tray" is in modules and a session
+        // bus answers — an unused module costs nothing at runtime, but the
+        // call itself is still in the source).
+        ("launch.rs", "Generic::new", 3),
+        // `DeadlineTimer::new()`'s own `Timer::` substring (its struct name
+        // contains the token): the tray timer itself is armed only while a
+        // call is pending (task 11).
+        ("wayland.rs", "Timer::", 1),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.

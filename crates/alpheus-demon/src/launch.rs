@@ -17,6 +17,8 @@ use crate::sources;
 use crate::sources::dbus::Domain;
 use crate::sources::resources;
 use crate::state::{Bar, Msg};
+use crate::tray::bus::SessionBus;
+use crate::tray::router::{Tray, TrayOutput};
 use crate::wayland::App;
 use alpheus_commun::exec::{Executor, SystemExecutor};
 use alpheus_commun::launcher_ipc::{self, Reply, Request};
@@ -30,7 +32,7 @@ use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use std::cell::{Cell, RefCell};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -156,6 +158,8 @@ pub struct Wanted {
     /// The D-Bus domains to read and follow; empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
     pub resources: bool,
+    /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
+    pub tray: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
@@ -165,11 +169,48 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         .filter(|(m, _)| has(*m))
         .map(|(_, d)| d)
         .collect();
-    Wanted { sound: has(ModuleId::Volume), dbus, resources: has(ModuleId::Resources) }
+    Wanted { sound: has(ModuleId::Volume), dbus, resources: has(ModuleId::Resources), tray: has(ModuleId::Tray) }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {
     Duration::from_secs(c.interval)
+}
+
+/// Connects the tray to the session bus (blocking, once: a local socket,
+/// controller decision 2) and puts its fd in the loop — no thread. No session
+/// bus: one log line, the tray stays empty, never retried (spec § 3).
+fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
+    let bus = match SessionBus::session() {
+        Ok(b) => b,
+        Err(e) => {
+            log(&format!("tray: no session bus ({e})"));
+            return;
+        }
+    };
+    let mut tray = Tray::start(bus, PathBuf::from("/proc"));
+    let fd = match tray.watch_fd() {
+        Ok(fd) => fd,
+        Err(e) => {
+            log(&format!("tray: no session bus ({e})"));
+            return;
+        }
+    };
+    // Level-triggered: whatever libdbus has not read yet wakes the loop again.
+    // Once the bus has closed (`tray_output` dropped the tray), the source
+    // removes itself: a dead socket must not keep the loop spinning.
+    let source = Generic::new(fd, Interest::READ, Mode::Level);
+    let inserted = handle.insert_source(source, |_, _, app: &mut App| {
+        app.tray_readable();
+        Ok(if app.tray.is_some() { PostAction::Continue } else { PostAction::Remove })
+    });
+    if inserted.is_err() {
+        log("tray: event loop refused the session bus source");
+        return;
+    }
+    log("tray: on the session bus");
+    state.tray = Some(tray);
+    // The startup calls are pending: the deadline timer is armed for them.
+    state.tray_output(TrayOutput::default());
 }
 
 /// The Wayland connection closed gently (EPIPE on write, ECONNRESET on read
@@ -559,6 +600,9 @@ pub fn run() -> i32 {
             return 1;
         }
     }
+    if want.tray {
+        start_tray(&mut state, &handle);
+    }
     let tx_compositor = tx.clone();
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
@@ -634,22 +678,31 @@ mod tests {
     #[test]
     fn only_the_sources_the_modules_need() {
         let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
-        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true });
+        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true, tray: true });
         assert_eq!(
             wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![], resources: false }
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false }
         );
-        assert_eq!(wanted(&[ModuleId::Battery]), Wanted { sound: false, dbus: vec![Domain::Battery], resources: false });
+        assert_eq!(wanted(&[ModuleId::Battery]), Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false });
         assert_eq!(
             wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false }
+            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false }
         );
         assert_eq!(
             wanted(&[ModuleId::Battery, ModuleId::Network]),
-            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false },
+            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false, tray: false },
             "reading order, whatever the bar's order"
         );
-        assert_eq!(wanted(&[ModuleId::Volume, ModuleId::Resources]), Wanted { sound: true, dbus: vec![], resources: true });
+        assert_eq!(wanted(&[ModuleId::Volume, ModuleId::Resources]), Wanted { sound: true, dbus: vec![], resources: true, tray: false });
+    }
+
+    #[test]
+    fn wanted_tray_only_with_the_module() {
+        assert!(wanted(&[ModuleId::Tray]).tray);
+        assert!(wanted(&[ModuleId::Workspaces, ModuleId::Tray, ModuleId::Clock]).tray);
+        let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Tray).collect();
+        assert!(!wanted(&without).tray, "every other module: no session bus");
+        assert_eq!(wanted(&[ModuleId::Tray]), Wanted { sound: false, dbus: vec![], resources: false, tray: true }, "the tray alone");
     }
 
     #[test]

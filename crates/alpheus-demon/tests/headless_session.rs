@@ -7,9 +7,10 @@ mod common;
 
 use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
+use common::sni::{FakeItem, Spec, Value};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive, start_daemon,
-    start_daemon_with, wait_for_pid_file, wtype,
+    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive,
+    start_daemon, start_daemon_with, wait_for_pid_file, wtype,
 };
 use std::ffi::OsString;
 use std::io::Write;
@@ -347,4 +348,110 @@ fn sigterm_cancels_a_waiting_script_and_removes_the_socket() {
     assert_eq!((code, out.as_str()), (EXIT_CANCELLED, ""), "the waiting script sees a cancel, not a cut connection");
     assert!(!socket_path(&sway.runtime).exists(), "the socket file goes with the daemon");
     drop(slow);
+}
+
+/// Waits (10 s at most) until someone owns `org.kde.StatusNotifierWatcher` on
+/// `bus`: the daemon's tray is up and serving.
+fn wait_for_the_watcher(bus: &PrivateBus) {
+    let peer = Peer::connect(bus);
+    let t = std::time::Instant::now();
+    loop {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
+            .unwrap()
+            .append1("org.kde.StatusNotifierWatcher");
+        if peer.call(m).unwrap().read1::<bool>().unwrap() {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the daemon never took the watcher name");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The tray alone then the clock: the first icon is cell 1 (cell 0 is the
+/// margin), 8.4 px per cell at 14 px (any monospace font of the test machine
+/// keeps x = 12 inside it).
+const TRAY_ONLY: &str = "modules = [\"tray\", \"clock\"]\n";
+const FIRST_ICON: (u32, u32) = (12, 10);
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
+    let bus = PrivateBus::start("tray-click");
+    let sway = Sway::start("tray-click", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(TRAY_ONLY), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_for_the_watcher(&bus);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    assert!(d.wait_for("tray: icons shown: 1", DELAY), "{:?}", d.log());
+    sway.click(FIRST_ICON.0, FIRST_ICON.1, "button1");
+    let activate = nimbus.wait_call("Activate", DELAY);
+    assert_eq!(activate.as_deref(), Some("org.kde.StatusNotifierItem.Activate(12, 10)"), "at the press position: {:?}", d.log());
+    // The horizontal wheel over the icon: one notch right, one Scroll(-120, horizontal) — Plasma's
+    // actual convention (decision 4, fixed in `tray_horizontal`: qtbase negates the horizontal
+    // value120 before Plasma re-exposes it, so right is -120, left is +120; vertical is unaffected).
+    sway.scroll(FIRST_ICON.0, FIRST_ICON.1, "right", 1);
+    let scroll = nimbus.wait_call("Scroll", DELAY);
+    assert_eq!(scroll.as_deref(), Some("org.kde.StatusNotifierItem.Scroll(-120, horizontal)"), "one notch right: {:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    let scrolls = nimbus.calls().iter().filter(|c| c.contains(".Scroll(")).count();
+    assert_eq!(scrolls, 1, "one notch, one Scroll: {:?}", nimbus.calls());
+    // A burst of signals: dirty, one frame callback, one re-read (decision 10).
+    let reads = || nimbus.calls().iter().filter(|c| c.ends_with("Get(org.kde.StatusNotifierItem, IconName)")).count();
+    assert_eq!(reads(), 1, "the first Get only: {:?}", nimbus.calls());
+    nimbus.set("IconName", Value::Str("nimbus-busy".into()));
+    nimbus.burst("NewIcon", 20);
+    let t = std::time::Instant::now();
+    while reads() < 2 && t.elapsed() < DELAY {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(reads(), 2, "20 NewIcon, one re-read on the next frame: {:?}", nimbus.calls());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn the_bar_works_without_a_session_bus() {
+    let sway = Sway::start("tray-no-bus", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    // No session_bus: the harness points DBUS_SESSION_BUS_ADDRESS where nothing listens.
+    let mut d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(TRAY_ONLY), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: no session bus", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3));
+    let tray_lines: Vec<String> = d.log().into_iter().filter(|l| l.contains("tray:")).collect();
+    assert_eq!(tray_lines.len(), 1, "one line, never retried: {tray_lines:?}");
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_closed_session_bus_empties_the_tray_once() {
+    let mut bus = PrivateBus::start("tray-closed");
+    let sway = Sway::start("tray-closed", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(TRAY_ONLY), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_for_the_watcher(&bus);
+    let _nimbus = FakeItem::start(&bus, Spec::kde(1));
+    assert!(d.wait_for("tray: icons shown: 1", DELAY), "{:?}", d.log());
+    bus.kill();
+    assert!(d.wait_for("tray: the session bus closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: icons shown: 0", DELAY), "the tray emptied: {:?}", d.log());
+    // The dead socket stays readable: its source must be gone, or the loop spins.
+    std::thread::sleep(Duration::from_millis(500));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_millis(4500));
+    let wakeups = d.main_thread_wakeups() - before;
+    assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    let log = d.log();
+    assert_eq!(log.iter().filter(|l| l.contains("session bus closed")).count(), 1, "{log:?}");
+    assert_eq!(
+        log.iter().filter(|l| l.contains("tray: on the session bus") || l.contains("tray: no session bus")).count(),
+        1,
+        "never reconnected: {log:?}"
+    );
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the daemon alive: {log:?}");
 }

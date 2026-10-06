@@ -1,14 +1,18 @@
 //! Wayland: one layer-shell surface (Top layer, anchored at the top,
 //! exclusive zone) per screen, tracked live; a pointer for clicks and the
 //! wheel. Nothing else is asked of the compositor. Redraw only when a
-//! screen's grid changes.
+//! screen's grid changes. The tray's session-bus callbacks land here too
+//! (`tray_output`): its icons, its gestures, its frame-coalesced re-reads.
 
 use crate::actions::{self, Button, Wheel};
-use crate::grid::Grid;
+use crate::deadline::DeadlineTimer;
+use crate::grid::{Grid, Target};
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
-use crate::state::Bar;
+use crate::state::{Bar, Msg};
+use crate::tray::router::{Tray, TrayOutput};
+use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Palette;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
@@ -299,8 +303,23 @@ pub struct App {
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
     /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
-    /// connections, the dmenu client watch.
+    /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
+    /// For the tray's frame requests, made outside any Wayland callback.
+    qh: QueueHandle<App>,
+    /// The tray while its session bus lives; None without the module, without
+    /// a session bus, or once the bus closed (never reconnected).
+    pub(crate) tray: Option<Tray>,
+    /// Armed only while tray calls are pending (2 s timeouts).
+    pub(crate) tray_timer: DeadlineTimer,
+    /// The bar surface whose frame callback was asked for the tray's dirty
+    /// properties (None: none asked).
+    pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
+    /// The horizontal wheel, for tray icons only.
+    pub(crate) hwheel: Wheel,
+    /// The last button press (serial, time, surface-local position): Activate's
+    /// coordinates, the popup grab (task 15).
+    pub(crate) last_press: Option<(u32, u32, (f64, f64))>,
     /// The launcher while open; None at rest (nothing of it resident).
     pub(crate) launcher: Option<OpenLauncher>,
     /// Bumped at each open: a scan result from an older open is ignored.
@@ -359,6 +378,12 @@ impl App {
             seat: None,
             viewporter,
             loop_handle: None,
+            qh: qh.clone(),
+            tray: None,
+            tray_timer: DeadlineTimer::new(),
+            tray_frame_pending: None,
+            hwheel: Wheel::default(),
+            last_press: None,
             launcher: None,
             launcher_generation: 0,
             mail: None,
@@ -389,6 +414,11 @@ impl App {
         let s = self.surfaces.remove(i); // the surface is destroyed along with `s`
         log(&format!("bar removed from {}", log_name(&s.name, &s.output)));
         self.shrink_pool_if_needed();
+        // A frame asked on this surface never comes now: ask it on another bar.
+        if self.tray_frame_pending.as_ref() == Some(s.layer.wl_surface()) {
+            self.tray_frame_pending = None;
+            self.tray_sync();
+        }
         s.output
     }
 
@@ -471,6 +501,94 @@ impl App {
         s.last = Some(grid);
     }
 
+    /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
+    /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
+    /// dropped and emptied, never retried), a menu asked (logged until task 17
+    /// opens it); then the frame request and the deadline timer.
+    pub(crate) fn tray_output(&mut self, out: TrayOutput) {
+        if out.bus_closed {
+            log("tray: the session bus closed; the tray stays empty");
+            self.tray = None;
+        }
+        if out.redraw || out.bus_closed {
+            let shown = match &self.tray {
+                Some(t) => icons::icons(t.items(), &self.bar.config.tray.icons),
+                None => Vec::new(),
+            };
+            if shown.len() != self.bar.tray.len() {
+                log(&format!("tray: icons shown: {}", shown.len()));
+            }
+            if self.bar.apply(Msg::Tray(shown)) {
+                self.dirty = true;
+            }
+        }
+        if let Some(key) = &out.open_menu {
+            log(&format!("tray: menu asked for {}{}", key.owner, key.path));
+        }
+        self.tray_sync();
+    }
+
+    /// After any tray callback: the deadline timer follows the pending calls
+    /// (none: no timer), and dirty properties ask for one frame callback on
+    /// the first configured bar (a commit with no new buffer and one pixel
+    /// of damage), where they are re-read once (controller decision 10).
+    fn tray_sync(&mut self) {
+        let deadline = self.tray.as_ref().and_then(Tray::next_deadline);
+        if let Some(handle) = &self.loop_handle {
+            self.tray_timer.sync(handle, deadline, App::tray_deadline);
+        }
+        if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
+            return;
+        }
+        let Some(surface) = self.surfaces.iter().find(|s| s.configured).map(|s| s.layer.wl_surface().clone()) else {
+            return;
+        };
+        surface.frame(&self.qh, surface.clone());
+        // 1×1 of buffer damage on every compositor (controller decision 10):
+        // an undamaged commit may get no frame callback at all (Hyprland) or a
+        // throttled one (niri, ≈ 1 s). The attached buffer is not re-sent.
+        surface.damage_buffer(0, 0, 1, 1);
+        surface.commit();
+        self.tray_frame_pending = Some(surface);
+    }
+
+    /// The session bus's fd is readable (calloop callback).
+    pub(crate) fn tray_readable(&mut self) {
+        let Some(tray) = self.tray.as_mut() else { return };
+        let out = tray.on_readable();
+        self.tray_output(out);
+    }
+
+    /// The deadline timer fired (calloop callback; its source is dropped).
+    pub(crate) fn tray_deadline(app: &mut App, now: Instant) {
+        app.tray_timer.fired();
+        let Some(tray) = app.tray.as_mut() else { return };
+        let out = tray.on_deadline(now);
+        app.tray_output(out);
+    }
+
+    /// The tray icon under `x` on bar `i`, if any.
+    fn tray_key_at(&mut self, i: usize, x: f64) -> Option<ItemKey> {
+        let e = self.surfaces[i].scale;
+        let col = painter::column_under(x, e, self.fonts.advance(e));
+        match self.surfaces[i].last.as_ref()?.target_at(col)? {
+            Target::TrayItem(key) => Some(key.clone()),
+            _ => None,
+        }
+    }
+
+    /// A gesture at `position` (surface-local, logical) on bar `i`: sent to
+    /// the tray icon there, with that position (decision 4); false when no
+    /// icon is there (the bar's own click handling then applies).
+    fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture) -> bool {
+        let Some(key) = self.tray_key_at(i, position.0) else { return false };
+        if let Some(tray) = self.tray.as_mut() {
+            let out = tray.gesture(&key, g, (position.0 as i32, position.1 as i32));
+            self.tray_output(out);
+        }
+        true
+    }
+
     /// `launcher_was_open`: whether the launcher was open right before this
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
@@ -533,7 +651,16 @@ impl CompositorHandler for App {
         }
     }
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _: u32) {
+        // Only the tray asks for frames: its dirty properties, re-read once.
+        if self.tray_frame_pending.as_ref() != Some(surface) {
+            return;
+        }
+        self.tray_frame_pending = None;
+        let Some(tray) = self.tray.as_mut() else { return };
+        let out = tray.on_frame();
+        self.tray_output(out);
+    }
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }
@@ -647,6 +774,9 @@ impl LayerShellHandler for App {
             self.awaiting_configure.retain(|s| *s != output);
         }
         self.draw(i);
+        // Signals that came before any bar was configured asked no frame yet:
+        // ask it now, on a surface that has a buffer (drawn just above).
+        self.tray_sync();
     }
 }
 
@@ -719,7 +849,8 @@ impl PointerHandler for App {
                         let _ = p.set_cursor(conn, CursorIcon::Default);
                     }
                 }
-                PointerEventKind::Press { button, .. } => {
+                PointerEventKind::Press { button, serial, time } => {
+                    self.last_press = Some((*serial, *time, ev.position));
                     // A click on the bar while the launcher is open is a click
                     // outside it: close first, then the bar's own action — but
                     // the same press must not then reopen it through the
@@ -729,21 +860,34 @@ impl PointerHandler for App {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
                     if let Some(b) = actions::button(*button) {
-                        self.click(qh, i, ev.position.0, b, was_open);
+                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
+                            self.click(qh, i, ev.position.0, b, was_open);
+                        }
                     }
                 }
-                PointerEventKind::Axis { vertical, .. } => {
+                PointerEventKind::Axis { horizontal, vertical, .. } => {
                     if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        self.click(qh, i, ev.position.0, b, false);
+                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
+                            self.click(qh, i, ev.position.0, b, false);
+                        }
+                    }
+                    // The horizontal axis only scrolls tray icons.
+                    let h = self.hwheel.add(horizontal.absolute, horizontal.discrete, horizontal.value120);
+                    if let Some(g) = h.and_then(actions::tray_horizontal) {
+                        self.tray_gesture_at(i, ev.position, g);
                     }
                     // End of gesture (notched wheel released, touchpad
                     // lifted): nothing to carry over to the next gesture.
                     if vertical.stop {
                         self.wheel.stop();
                     }
+                    if horizontal.stop {
+                        self.hwheel.stop();
+                    }
                 }
                 PointerEventKind::Leave { .. } => {
                     self.wheel.stop();
+                    self.hwheel.stop();
                 }
                 _ => {}
             }
