@@ -12,6 +12,8 @@
 //! [clock]
 //! format = "%H:%M"
 //! date = "%a %e %b"                                         # "": no date
+//! calendar = true                                           # a left click on the clock opens the month
+//! week_numbers = false                                      # ISO week numbers in the calendar
 //! [workspaces]
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! [actions]                                                 # clicks on the system modules
@@ -24,10 +26,17 @@
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
+//! [tray]
+//! passive = "dim"                                           # "dim" | "show" | "hide": items that say they are idle
+//! tooltips = true                                           # the item's name after ½ s of hovering
+//! [tray.icons]                                              # glyph overrides, keyed like the built-in table
+//! keepassxc = "󰌋"
 //! ```
 
 use crate::clock;
+use crate::grid::text_width;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// The bar's modules (spec, § 2), left to right by default. All are
@@ -119,12 +128,77 @@ pub struct ClockConfig {
     pub format: String,
     /// The date, muted, before the time; empty = no date.
     pub date: String,
+    /// A left click on the clock opens the calendar (default true —
+    /// question 10 of the tray plan).
+    pub calendar: bool,
+    /// ISO week numbers in the calendar (default false).
+    pub week_numbers: bool,
 }
 
 impl Default for ClockConfig {
     fn default() -> Self {
-        ClockConfig { format: "%H:%M".into(), date: "%a %e %b".into() }
+        ClockConfig { format: "%H:%M".into(), date: "%a %e %b".into(), calendar: true, week_numbers: false }
     }
+}
+
+/// How a tray item whose `Status` is `Passive` (idle, nothing to report)
+/// is drawn: dimmed (default), like an active one, or not at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Passive {
+    #[default]
+    Dim,
+    Show,
+    Hide,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TrayConfig {
+    pub passive: Passive,
+    /// Tooltips after ½ s of hovering; false: no hover timer at all.
+    pub tooltips: bool,
+    /// Overrides of the built-in glyph table, keyed like it (lower-cased at
+    /// load): a key matched as a substring of the item's Id, IconName,
+    /// tooltip title or process name, a glyph of one or two cells. Two keys
+    /// differing only by case are an error (never one picked silently).
+    pub icons: BTreeMap<String, String>,
+}
+
+impl Default for TrayConfig {
+    fn default() -> Self {
+        TrayConfig { passive: Passive::Dim, tooltips: true, icons: BTreeMap::new() }
+    }
+}
+
+/// Most `[tray.icons]` entries accepted.
+pub const TRAY_ICONS_MAX: usize = 128;
+
+/// `[tray.icons]` checked and its keys lower-cased: at most
+/// `TRAY_ICONS_MAX` entries, no blank key, no blanks around a key, no two
+/// keys differing only by case, each glyph one or two cells with no
+/// control character.
+fn tray_icons(raw: BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    if raw.len() > TRAY_ICONS_MAX {
+        return Err(format!("tray.icons: {} entries, at most {TRAY_ICONS_MAX}", raw.len()));
+    }
+    let mut icons = BTreeMap::new();
+    for (key, glyph) in raw {
+        if key.trim().is_empty() {
+            return Err("tray.icons: empty key".into());
+        }
+        if key.trim() != key {
+            return Err(format!("tray.icons.{key:?}: blanks around the key (the needle would never match)"));
+        }
+        if glyph.chars().any(char::is_control) || !(1..=2).contains(&text_width(&glyph)) {
+            return Err(format!("tray.icons.{key}: expected a glyph of one or two cells, got {glyph:?}"));
+        }
+        let lower = key.to_lowercase();
+        if icons.insert(lower, glyph).is_some() {
+            return Err(format!("tray.icons.{key}: another key differs from it only by case"));
+        }
+    }
+    Ok(icons)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -231,6 +305,7 @@ pub struct BarConfig {
     pub actions: ActionsConfig,
     pub resources: ResourcesConfig,
     pub battery: BatteryConfig,
+    pub tray: TrayConfig,
 }
 
 impl Default for BarConfig {
@@ -244,6 +319,7 @@ impl Default for BarConfig {
             actions: ActionsConfig::default(),
             resources: ResourcesConfig::default(),
             battery: BatteryConfig::default(),
+            tray: TrayConfig::default(),
         }
     }
 }
@@ -271,6 +347,8 @@ struct Raw {
     resources: ResourcesConfig,
     #[serde(default)]
     battery: BatteryConfig,
+    #[serde(default)]
+    tray: TrayConfig,
 }
 
 impl BarConfig {
@@ -322,6 +400,7 @@ impl BarConfig {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
             }
         }
+        let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
             height: b.height,
@@ -331,6 +410,7 @@ impl BarConfig {
             actions: b.actions,
             resources: b.resources,
             battery: b.battery,
+            tray,
         })
     }
 }
@@ -451,5 +531,80 @@ mod tests {
         assert!(err("[battery]\nperipherals = \"sometimes\"").contains("sometimes"));
         assert!(err("[battery]\ncoarse = \"soon\"").contains("soon"));
         assert!(err("[battery]\nshown = true").contains("shown"), "unknown key refused");
+    }
+
+    #[test]
+    fn tray_and_clock_keys_parse_with_defaults() {
+        let d = BarConfig::default();
+        assert_eq!(d.tray, TrayConfig { passive: Passive::Dim, tooltips: true, icons: BTreeMap::new() });
+        assert_eq!((d.clock.calendar, d.clock.week_numbers), (true, false), "the calendar on, week numbers off");
+        assert_eq!(BarConfig::from_text("height = 22").unwrap().tray, TrayConfig::default(), "absent: defaults");
+        let text = "[tray]\npassive = \"hide\"\ntooltips = false\n[tray.icons]\nkeepassxc = \"\u{f030b}\"\n\
+                    [clock]\ncalendar = false\nweek_numbers = true\n";
+        let c = BarConfig::from_text(text).unwrap();
+        assert_eq!((c.tray.passive, c.tray.tooltips), (Passive::Hide, false));
+        assert_eq!(c.tray.icons.get("keepassxc").map(String::as_str), Some("\u{f030b}"));
+        assert_eq!((c.clock.calendar, c.clock.week_numbers), (false, true));
+        assert_eq!((c.clock.format.as_str(), c.clock.date.as_str()), ("%H:%M", "%a %e %b"), "the other clock keys keep their defaults");
+        assert_eq!(BarConfig::from_text("[tray]\npassive = \"show\"").unwrap().tray.passive, Passive::Show);
+        assert_eq!(BarConfig::from_text("[tray]\npassive = \"dim\"").unwrap().tray.passive, Passive::Dim);
+    }
+
+    #[test]
+    fn tray_icons_keys_are_lowercased() {
+        let c = BarConfig::from_text("[tray.icons]\nDiscord = \"\u{f066f}\"\n\"KeePassXC\" = \"\u{f030b}\"\n").unwrap();
+        let keys: Vec<&str> = c.tray.icons.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["discord", "keepassxc"]);
+    }
+
+    #[test]
+    fn invalid_passive_mode_is_an_error() {
+        let e = BarConfig::from_text("[tray]\npassive = \"blink\"").unwrap_err();
+        assert!(e.contains("blink"), "{e}");
+        let (c, w) = BarConfig::load(&file("passive", "[tray]\npassive = \"blink\"\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid")));
+    }
+
+    #[test]
+    fn an_icon_wider_than_two_cells_or_empty_is_an_error() {
+        let err = |t: &str| BarConfig::from_text(&format!("[tray.icons]\n{t}\n")).unwrap_err();
+        assert!(err("foo = \"abc\"").contains("tray.icons.foo"), "three cells");
+        assert!(err("foo = \"日a\"").contains("tray.icons.foo"), "a wide character and one more: three cells");
+        assert!(err("foo = \"\"").contains("tray.icons.foo"), "empty");
+        assert!(err("foo = \"\u{301}\"").contains("tray.icons.foo"), "a lone combining mark: no cell");
+        assert!(err("foo = \"a\\u0007\"").contains("tray.icons.foo"), "a control character");
+        assert!(err("\"\" = \"x\"").contains("empty key"), "an empty key");
+        assert!(err("\" \" = \"x\"").contains("empty key"), "a blank key");
+        assert!(err("\" discord\" = \"x\"").contains("blanks around the key"), "a key with blanks around it");
+        assert!(err("\"discord \" = \"x\"").contains("blanks around the key"), "trailing blanks too");
+        for ok in ["foo = \"x\"", "foo = \"ab\"", "foo = \"日\"", "foo = \"\u{f066f}\""] {
+            assert!(BarConfig::from_text(&format!("[tray.icons]\n{ok}\n")).is_ok(), "{ok}: one or two cells");
+        }
+    }
+
+    #[test]
+    fn unknown_tray_key_is_an_error() {
+        let e = BarConfig::from_text("[tray]\ncolour = \"red\"").unwrap_err();
+        assert!(e.contains("colour"), "{e}");
+        assert!(BarConfig::from_text("[tray.icons]\nanything = \"x\"").is_ok(), "[tray.icons] takes any key");
+    }
+
+    #[test]
+    fn too_many_icons_is_an_error() {
+        let icons = |n: usize| format!("[tray.icons]\n{}", (0..n).map(|i| format!("app{i} = \"x\"\n")).collect::<String>());
+        assert_eq!(BarConfig::from_text(&icons(TRAY_ICONS_MAX)).unwrap().tray.icons.len(), TRAY_ICONS_MAX);
+        let e = BarConfig::from_text(&icons(TRAY_ICONS_MAX + 1)).unwrap_err();
+        assert!(e.contains("tray.icons") && e.contains("128"), "{e}");
+    }
+
+    #[test]
+    fn tray_icon_keys_differing_only_by_case_are_an_error() {
+        let e = BarConfig::from_text("[tray.icons]\nDiscord = \"x\"\ndiscord = \"y\"\n").unwrap_err();
+        assert!(e.contains("tray.icons.") && e.contains("another key differs from it only by case"), "{e}");
+        let (c, w) = BarConfig::load(&file("icon-case", "[tray.icons]\nSteam = \"x\"\nSTEAM = \"y\"\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, never one of the two glyphs picked silently");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid")));
+        assert!(BarConfig::from_text("[tray.icons]\ndiscord = \"x\"\nsteam = \"y\"\n").is_ok(), "distinct keys");
     }
 }
