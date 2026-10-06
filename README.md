@@ -32,8 +32,11 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 7.8 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; `feat/tray` (dbus-rs) merged with `feat/launcher-1`, measured together |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.6 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher adds no thread while closed) |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 7.4–7.5 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.0–8.3 MB with the tray and 10 fake items) |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.6–9.2 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
+| Tray, module present, no item | ≈ 0.5 MB | watcher + session connection only, no thread (468–474 KB) |
+| Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 464–468 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: −46…+81 KB) |
+| Tray, linked in but unused (no `tray` in `modules`, no session bus) | +0.4–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (stripped 4.49 → 5.34 MB, +848 KB: libdbus linkage, menus, popups, calendar); measured back to back in release, a real cost, like the launcher's |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -48,11 +51,10 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
-> (≈ 71 MB) predate both the move from zbus to dbus-rs (tray plan 1, step 1)
-> and the launcher merge (`feat/launcher-1` into `feat/tray`): they were
-> measured before either. The headless sway rows above are now measured
-> with both deliveries together; the live rows will be re-measured at
-> Mae's real-world trial of this branch (tray plan 1, task 5).
+> (≈ 71 MB) predate the move from zbus to dbus-rs, the launcher merge and
+> the tray: they were measured before any of them. The headless sway rows
+> above are measured with all of them; the live rows will be re-measured
+> at the real-world trial of the tray (tray plan 2, task 21).
 
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
@@ -80,10 +82,10 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | **Bar** | | | | | |
 | Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Clock | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Calendar popup | 🚧 bar 4 | ✅ | ➖ | ✅ | ✅ |
+| Calendar popup | ✅ month grid, locale first day, ISO weeks | ✅ | ➖ | ✅ | ✅ |
 | Volume, network, Bluetooth, battery | ✅ | ✅ | ✅ | ✅ | ✅ |
 | CPU, memory, temperature | ✅ | ✅ | ➖ | ✅ | ✅ |
-| System tray (icons and menus) | 🚧 bar 4 | ✅ | ✅ | ✅ | ✅ |
+| System tray (icons and menus) | ✅ Nerd Font glyphs, no images | ✅ | ✅ | ✅ | ✅ |
 | Media (MPRIS) | 🚧 bar 5 | ✅ | ✅ | ✅ | ✅ |
 | Notification counter, do-not-disturb | 🚧 bar 5 | ✅ | ✅ | ➖ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
@@ -158,27 +160,37 @@ A line of monospace characters on a solid background, modules separated by
 
 ![The alpheus bar, sample data, real font, built-in Catppuccin Mocha palette (zoomed ×2, split in two halves)](docs/images/bar.png)
 
+![The tray with fictional apps, one icon's menu and the calendar (sample data, real font, built-in Catppuccin Mocha palette, zoomed ×2; the two popups composed in one image)](docs/images/bar-tray.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, urgent
 in red, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **volume** (gauge, wheel ±5 %, right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals), **resources** (CPU graph,
-memory, temperature), **clock**. Clicking a module opens the matching tab
+memory, temperature), **tray** (status icons of running apps as Nerd
+Font glyphs — or a letter —, left click activates, right click opens the
+app's menu in a popup, keyboard and mouse), **clock** (a click opens the
+month's calendar). Clicking a module opens the matching tab
 of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: the system tray (app icons and menus), now-playing and
-notifications, the OSD, notification toasts.
+Coming next: now-playing and notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.8–9.1 MB
-of memory at start and ≈ 10.1–10.3 MB under load, on three outputs. The
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0–8.3 MB
+of memory at start (with a tray of 10 items) and ≈ 8.6–9.2 MB under load,
+on three outputs. The
 compositor is only **read** (Hyprland or niri event stream); switching
 workspace goes through a configurable command. Sound comes from
 `pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
-resources from `/proc`.
+resources from `/proc`. The tray talks to the session bus
+(StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
+thread. On Hyprland before 0.56.2, which swallows clicks inside the popups
+of an Exclusive layer surface (hyprwm/Hyprland#15729), the bar stays
+non-exclusive while a menu is open (detected from its `hyprland_*`
+globals).
 
 ### The launcher
 
@@ -245,6 +257,15 @@ fallback = ["DejaVu Sans Mono"]  # for symbols the font lacks (✳ ◐…); sett
 [clock]
 format = "%H:%M"
 date = "%a %e %b"   # empty = no date
+calendar = true     # a left click on the clock opens the month
+week_numbers = false  # ISO week numbers in the calendar
+
+[tray]
+passive = "dim"     # "dim" | "show" | "hide": items that say they are idle
+tooltips = true     # the item's name after ½ s of hovering
+
+[tray.icons]        # glyph overrides, keyed like the built-in table (id, icon name, title, process)
+# keepassxc = "󰌋"
 
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]

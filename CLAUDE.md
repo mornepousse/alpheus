@@ -54,6 +54,32 @@ breakdown), then the spec of the sub-project currently in progress in
   events and 5 plug cycles, still 6 threads and 0 wake-ups at rest — the
   launcher adds no thread while closed.
   Real trial on Mae's session pending (plan task 5).
+- Bar **delivery 4, step 2** (the tray, menus, the calendar; spec
+  [`docs/specs/2026-10-05-alpheus-tray-design.md`](docs/specs/2026-10-05-alpheus-tray-design.md),
+  plan 2 [`docs/plans/2026-10-05-alpheus-tray-plan-2.md`](docs/plans/2026-10-05-alpheus-tray-plan-2.md))
+  **implemented on branch `feat/tray`**, not merged. Mae's partial trial on
+  Hyprland done: icons show, menus work after the Hyprland fix; the final
+  trial (Steam and Discord) and the merge are pending (plan task 21).
+  `org.kde.StatusNotifierWatcher` and
+  `org.kde.StatusNotifierItem`/`com.canonical.dbusmenu` on a second,
+  non-blocking dbus-rs connection to the session bus (no new thread); icons
+  as Nerd Font glyphs (no pixmaps ever requested); menus and the calendar as
+  `xdg_popup`s on the bar's own layer surface, sharing the launcher's list
+  rendering and keys. Hyprland before 0.56.2 swallows clicks inside popups
+  of an Exclusive layer surface (hyprwm/Hyprland#15729): on Hyprland
+  (detected from its `hyprland_*` globals) the bar stays non-exclusive
+  during a grab (3a6599e). Measured in **release** (headless sway, 3 runs):
+  startup ≈ 7.4–7.5 MB PSS all modules with the tray unused, ≈ 8.0–8.3 MB
+  with the tray and 10 fake items, ≈ 8.6–9.2 MB after 8,300 events, 0
+  wake-ups at rest with a populated tray, 6 threads (the tray adds none),
+  the module ≈ 470 KB and 10 items ≈ 465 KB (budget 2 MB), 20 popup cycles
+  −46…+81 KB. The baseline with the tray unused grew +0.4–0.7 MB: stripped
+  binary 4.49 → 5.34 MB (+848 KB: libdbus, dbus-rs, menus, popups,
+  calendar) — a one-time cost Mae accepts, like the launcher's. (Mae asked
+  for a "one D-Bus stack" item to move NetworkManager/UPower/BlueZ off zbus:
+  nothing to do, tray plan 1 already did it — zbus left the tree.)
+  Launcher fix (main 9331286): a Toggle arriving less than 250 ms after the
+  launcher opens is debounced, so Mod+Space is a press bind again.
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
@@ -89,7 +115,7 @@ breakdown), then the spec of the sub-project currently in progress in
   folded in: held terminal on Enter, detached on Ctrl+Enter, apps before
   windows on an empty query); merge of `feat/launcher-1` into alpheus
   `main` pending her go.
-- Next, in order: bar step 4 (tray and menus), step 5 (media,
+- Next, in order: bar step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
 - **Later, goal "replace as many costly pieces as possible" (Mae,
