@@ -1072,14 +1072,13 @@ impl App {
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
         }
-        // Invariant (fix round 2026-10-06, item 3): a Tooltip popup is always paired with
-        // `tooltip_item` — set together on success in `hover_fire`, cleared together in
-        // `popup_close` — so it is never None here; `self.tray` can still be None (the session
-        // bus just closed, taking every item with it, this one included).
-        let key = self.tooltip_item.as_ref().expect("tooltip_item set whenever a Tooltip popup is open");
-        let gone = match &self.tray {
-            Some(tray) => tray.item(key).is_none(),
-            None => true,
+        // A Tooltip popup is always paired with `tooltip_item` (set together in `hover_fire`,
+        // cleared together in `popup_close`). Should that ever break, the tooltip closes rather
+        // than the daemon panicking. `self.tray` can be None: the session bus just closed,
+        // taking every item with it.
+        let gone = match (&self.tray, self.tooltip_item.as_ref()) {
+            (Some(tray), Some(key)) => tray.item(key).is_none(),
+            _ => true,
         };
         if gone {
             self.popup_close(PopupClose::ItemGone);
