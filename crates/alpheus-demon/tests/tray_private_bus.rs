@@ -765,6 +765,34 @@ fn the_watcher_serves_what_real_clients_check() {
     let xml =
         ask(&peer, WATCHER_NAME, WATCHER_PATH, "org.freedesktop.DBus.Introspectable", "Introspect", |m| m, Duration::from_secs(2)).unwrap();
     assert!(xml.read1::<&str>().unwrap().contains("RegisterStatusNotifierItem"));
+    // GetAll answers the same three properties real clients read one at a time above (task 5 review).
+    let all = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        "org.freedesktop.DBus.Properties",
+        "GetAll",
+        |m| m.append1(WATCHER_INTERFACE),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut it = all.iter_init();
+    let mut dict = it.recurse(dbus::arg::ArgType::Array).unwrap();
+    let (mut items, mut is_host, mut version) = (None, None, None);
+    while let Some(mut entry) = dict.recurse(dbus::arg::ArgType::DictEntry) {
+        let key: &str = entry.read().unwrap();
+        let mut v = entry.recurse(dbus::arg::ArgType::Variant).unwrap();
+        match key {
+            "RegisteredStatusNotifierItems" => items = v.get::<Vec<String>>(),
+            "IsStatusNotifierHostRegistered" => is_host = v.get::<bool>(),
+            "ProtocolVersion" => version = v.get::<i32>(),
+            _ => {}
+        }
+        dict.next();
+    }
+    assert_eq!(items, Some(Vec::new()), "nothing registered yet");
+    assert_eq!(is_host, Some(true));
+    assert_eq!(version, Some(0));
 }
 
 #[test]
@@ -883,6 +911,9 @@ fn host_only_when_the_name_is_taken_then_takeover() {
     other.kill();
     pump.until("takeover", |t| *t.role() == Role::Watcher);
     assert_eq!(owner(&peer), host, "the name is ours now");
+    // Before either re-registers: both of the other watcher's items survive the takeover by
+    // themselves (items already known stay — spec § 1), never only once applications re-register.
+    assert!(pump.with(|t| ready_count(2)(t)), "Nimbus and Quill still shown right after the takeover");
     nimbus.register();
     quill.register();
     let kettle = FakeItem::start(&bus, Spec::qt());
@@ -1079,9 +1110,94 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
     assert!(pump.with(|t| t.items().is_empty()), "never an item under our own unique name, right after the reply");
     thread::sleep(Duration::from_millis(200));
     assert!(pump.with(|t| t.items().is_empty()), "still never, once any self-directed Get would have settled");
+    // Task 5 review: the check is on the RESOLVED owner (`Host::add`), so it also catches a
+    // registration naming our own WELL-KNOWN name — `split_service` alone cannot see this is us,
+    // only the GetNameOwner round trip `register` takes for a non-unique name can.
+    let reply = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        WATCHER_INTERFACE,
+        "RegisterStatusNotifierItem",
+        |m| m.append1(WATCHER_NAME),
+        Duration::from_secs(2),
+    );
+    assert!(reply.is_ok(), "the watcher still answers at once");
+    thread::sleep(Duration::from_millis(200));
+    assert!(pump.with(|t| t.items().is_empty()), "never an item under our own well-known name either, once resolved");
     let nimbus = FakeItem::start(&bus, Spec::kde(1));
     pump.until("the router still works afterwards", ready_count(1));
     assert_eq!(pump.ready()[0].key, item_key(&nimbus.unique, "/StatusNotifierItem"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_watcher_naming_us_in_its_list_or_signal_is_never_treated_as_an_item() {
+    // Task 5 review: the self-registration check lives in `Host::add` on the RESOLVED owner, so
+    // it also covers a malicious or buggy "other watcher" naming our own unique name in its
+    // RegisteredStatusNotifierItems list, or in its ItemRegistered signal — not only a direct
+    // RegisterStatusNotifierItem to our own watcher object (the only path a router-level check,
+    // now removed, used to see).
+    let bus = PrivateBus::start("router-watcher-names-us");
+    let first = FakeWatcher::start(&bus);
+    let pump = Pump::start(&bus);
+    pump.until("host only on the first", |t| matches!(t.role(), Role::HostOnly { watcher } if *watcher == first.unique));
+    let end = Instant::now() + Duration::from_secs(3);
+    while first.hosts().is_empty() {
+        assert!(Instant::now() < end, "never registered as a host on the first watcher");
+        thread::sleep(Duration::from_millis(10));
+    }
+    let own = first.hosts()[0].clone();
+    let own_entry = format!("{own}/StatusNotifierItem");
+    let listed = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(5) });
+    // A second watcher takes the name straight from the first, as in
+    // host_only_follows_a_watcher_replacing_another: we read its list (and, later, its signals)
+    // by hand, so a hostile entry can be mixed in deliberately.
+    let second = Peer::connect(&bus);
+    let take = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName")
+        .unwrap()
+        .append2(WATCHER_NAME, 2u32 | 4); // REPLACE_EXISTING | DO_NOT_QUEUE
+    assert_eq!(second.call(take).unwrap().read1::<u32>().unwrap(), 1, "the second watcher owns the name");
+    pump.until("host only on the second", |t| matches!(t.role(), Role::HostOnly { watcher } if *watcher == second.name));
+    let listed_entry = "org.kde.StatusNotifierItem-4242-5/StatusNotifierItem";
+    let (mut host, mut list) = (false, false);
+    let end = Instant::now() + Duration::from_secs(3);
+    while !(host && list) {
+        assert!(Instant::now() < end, "never asked by the daemon: host {host}, list {list}");
+        let Ok(Some(m)) = second.channel.blocking_pop_message(Duration::from_millis(20)) else { continue };
+        if m.msg_type() != dbus::message::MessageType::MethodCall {
+            continue;
+        }
+        match m.member().as_deref() {
+            Some("RegisterStatusNotifierHost") => {
+                host = true;
+                second.channel.send(m.method_return()).unwrap();
+            }
+            Some("Get") => {
+                list = true;
+                // A hostile entry naming our own unique name, mixed with a legitimate one.
+                second.channel.send(m.method_return().append1(Variant(vec![own_entry.clone(), listed_entry.to_string()]))).unwrap();
+            }
+            _ => {}
+        }
+        second.channel.flush();
+    }
+    pump.until("the legitimate item of the second watcher's list", ready_count(1));
+    assert_eq!(pump.ready()[0].key, item_key(&listed.unique, "/StatusNotifierItem"), "never an item under our own unique name");
+    let own_signal =
+        Message::new_signal(WATCHER_PATH, WATCHER_INTERFACE, "StatusNotifierItemRegistered").unwrap().append1(own_entry.clone());
+    second.channel.send(own_signal).unwrap();
+    second.channel.flush();
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(pump.with(|t| t.items().len()), 1, "still never, after its signal names us too");
+    let signalled = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(6) });
+    let registered = Message::new_signal(WATCHER_PATH, WATCHER_INTERFACE, "StatusNotifierItemRegistered")
+        .unwrap()
+        .append1("org.kde.StatusNotifierItem-4242-6/StatusNotifierItem");
+    second.channel.send(registered).unwrap();
+    second.channel.flush();
+    pump.until("the router still works afterwards", ready_count(2));
+    assert!(pump.with(|t| t.item(&item_key(&signalled.unique, "/StatusNotifierItem")).is_some()));
 }
 
 // ---- Menus (task 6) ----

@@ -193,12 +193,18 @@ pub struct Host {
     proc_root: PathBuf,
     changes: Changes,
     refusal_logged: bool,
+    /// Our own unique name: never one of the items we host (checked in `add`, on the resolved
+    /// owner — task 5 review — so a registration naming our own well-known name, an entry of
+    /// another watcher's list, or that watcher's ItemRegistered signal are all caught too, not
+    /// only a direct RegisterStatusNotifierItem naming us literally).
+    own: String,
 }
 
 impl Host {
-    /// `proc_root`: "/proc" (tests: a temporary directory with <pid>/comm files).
-    pub fn new(proc_root: PathBuf) -> Host {
-        Host { items: Vec::new(), calls: HashMap::new(), proc_root, changes: Changes::default(), refusal_logged: false }
+    /// `proc_root`: "/proc" (tests: a temporary directory with <pid>/comm files). `own`: our
+    /// connection's unique name, known once at startup (`SessionBus::unique_name`).
+    pub fn new(proc_root: PathBuf, own: String) -> Host {
+        Host { items: Vec::new(), calls: HashMap::new(), proc_root, changes: Changes::default(), refusal_logged: false, own }
     }
 
     fn call(&mut self, call: Call, pending: Pending, out: &mut dyn Outbox) {
@@ -246,6 +252,13 @@ impl Host {
     }
 
     fn add(&mut self, key: ItemKey, service: String, out: &mut dyn Outbox) {
+        // Our own connection is never one of the items we host (task 4 review, moved here and
+        // generalized in task 5's: `key.owner` is always the resolved unique name by this point,
+        // whether `register` had it directly or asked GetNameOwner to get it).
+        if key.owner == self.own {
+            log(&format!("tray: refusing a registration naming our own unique name ({service:?})"));
+            return;
+        }
         if self.items.iter().any(|i| i.key == key) || self.refused(0) {
             return;
         }
@@ -439,11 +452,15 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tray::WATCHER_NAME;
     use crate::tray::bus::Method;
     use crate::tray::bus::testing::FakeOutbox;
     use std::fs;
 
     const NIMBUS: &str = "org.kde.StatusNotifierItem-4242-1";
+    /// The daemon's own unique name, as `Host::new` would be given it — distinct from every
+    /// sender used elsewhere in this module.
+    const OWN: &str = ":1.0";
 
     /// A temporary /proc with one process, 4242, named "nimbus"; removed on drop.
     struct Proc(PathBuf);
@@ -459,7 +476,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("4242")).unwrap();
         fs::write(root.join("4242/comm"), "nimbus\n").unwrap();
-        (Host::new(root.clone()), FakeOutbox::default(), Proc(root))
+        (Host::new(root.clone(), OWN.into()), FakeOutbox::default(), Proc(root))
     }
 
     /// A well-behaved KDE-like item's answers; the bus driver's for the rest.
@@ -586,6 +603,33 @@ mod tests {
         h.register("org.kde.StatusNotifierItem-9999-1", ":1.7", &mut out);
         assert!(out.take().is_empty(), "already known by its unique name: no GetNameOwner");
         assert_eq!(h.items().len(), 1, "still the one item");
+    }
+
+    #[test]
+    fn add_never_treats_our_own_unique_name_as_an_item() {
+        let (mut h, mut out, _proc) = host("self-unique");
+        // The bare-unique-name form of `register` calls `add` directly, with no GetNameOwner
+        // round trip: this is what a RegisterStatusNotifierItem naming us literally, or an
+        // entry already keyed by a unique name in another watcher's list or signal, looks like.
+        h.register(OWN, "whoever-called", &mut out);
+        assert!(h.items().is_empty());
+        assert!(out.take().is_empty(), "nothing asked of our own connection");
+    }
+
+    #[test]
+    fn add_never_treats_a_well_known_name_resolving_to_us_as_an_item() {
+        let (mut h, mut out, _proc) = host("self-well-known");
+        // A registration naming our own well-known name (task 5 review): `split_service` alone
+        // cannot see this is us, only the GetNameOwner round trip it triggers can — the same
+        // round trip `register` takes for any well-known name, so this also covers an entry of
+        // another watcher's list or its ItemRegistered signal (both call `register` the same
+        // way, sender ""), not only a direct call to our own watcher object.
+        h.register(WATCHER_NAME, "", &mut out);
+        let id = out.ids(Method::GetNameOwner).into_iter().next().unwrap();
+        out.take(); // the GetNameOwner call itself; only what `add` would ask next matters below
+        h.answer(id, Ok(Reply::Owner(OWN.into())), &mut out);
+        assert!(h.items().is_empty());
+        assert!(out.take().is_empty(), "no Get ever reaches our own connection");
     }
 
     #[test]

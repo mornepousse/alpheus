@@ -9,7 +9,7 @@
 
 use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus};
 use super::codec::{self, Reply, Signal};
-use super::host::{Host, Item, owner_rule, split_service};
+use super::host::{Host, Item, owner_rule};
 use super::menu_session::{MenuSession, MenuUpdate};
 use super::watcher::Watcher;
 use super::{ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
@@ -95,10 +95,11 @@ impl Tray {
     /// Starts on `bus`: RequestName (DO_NOT_QUEUE), the narrowed NameOwnerChanged rule for WATCHER_NAME,
     /// the host's inventory. Never blocks.
     pub fn start(bus: SessionBus, proc_root: PathBuf) -> Tray {
+        let unique = bus.unique_name().to_string();
         let mut t = Tray {
             bus,
             watcher: Watcher::new(),
-            host: Host::new(proc_root),
+            host: Host::new(proc_root, unique),
             menu: None,
             own: HashMap::new(),
             role: Role::Starting,
@@ -164,6 +165,11 @@ impl Tray {
         self.host.item(key)
     }
 
+    /// After `Incoming::Closed` (`TrayOutput::bus_closed`), this is stale: serving has already
+    /// stopped (the watcher is `set_serving(false)`, the host cleared) but `self.role` itself is
+    /// left as it was, since nothing reads it afterward — the wiring drops the whole `Tray` the
+    /// moment it sees `bus_closed`, never calling `role()` again. No new `Role` variant for a
+    /// state nothing observes; `bus_closed` is the one signal that matters once the bus is gone.
     pub fn role(&self) -> &Role {
         &self.role
     }
@@ -238,6 +244,12 @@ impl Tray {
                     self.host.register(&entry, "", &mut self.bus);
                 }
             }
+            // A refused RequestName (`retry: false`) whose GetNameOwner also found nobody owning
+            // the name (an error, or a timeout) falls here: no retry loop, by design — the same
+            // "never loop on a bus that refuses us" rule as a RequestName failure alone. `role()`
+            // stays `Starting` for good; the host's own one-shot ListNames inventory (already
+            // issued in `start`) still ran, so items present at startup are still found — an
+            // inventory-only host, just never live-updated through a watcher.
             _ => {}
         }
         TrayOutput::default()
@@ -350,17 +362,13 @@ impl Tray {
         for r in self.watcher.handle(m) {
             self.bus.send_message(r);
         }
-        // A registration naming our own unique name as its service (bare, or as the name half of
-        // a "name/path" pair) is never an application: refused, never reaches the host (task 4
-        // review — our own connection is never one of the items we host).
-        let own = self.bus.unique_name().to_string();
+        // `Host::add` refuses a registration naming our own unique name, checked on the resolved
+        // owner (task 5 review): moved there from an early check once made here, so it also
+        // covers an entry of another watcher's list and that watcher's ItemRegistered signal
+        // (`follow`/`signal` below call `register` the very same way) — not only a direct
+        // RegisterStatusNotifierItem naming us, the only path this router-level check used to see.
         for (service, sender) in self.watcher.take_registrations() {
-            match split_service(&service, &sender) {
-                Some((name, _)) if name == own => {
-                    log(&format!("tray: refusing a registration naming our own unique name ({service:?})"));
-                }
-                _ => self.host.register(&service, &sender, &mut self.bus),
-            }
+            self.host.register(&service, &sender, &mut self.bus);
         }
     }
 }

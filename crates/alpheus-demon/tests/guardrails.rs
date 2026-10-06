@@ -598,7 +598,12 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         }
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
         // bare crossroads-style `ctx.method_call(` or any future way of building a call is caught the
-        // same way, without double-counting the one already-allowed spelling.
+        // same way, without double-counting the one already-allowed spelling. Consequence: no
+        // private method under tray/ may be named `method_call` either — its definition
+        // (`fn method_call(`) and every call site (`self.method_call(`) are substring matches too,
+        // failing this guardrail even though the method has nothing to do with building a
+        // `dbus::Message` (task 5's router dispatch method is named `inbound_call`, not
+        // `method_call`, for exactly this reason — see its task 5 report).
         for pattern in ["method_call(", "call_with_args("] {
             built.extend(std::iter::repeat_n(name.clone(), prod.matches(pattern).count()));
         }
