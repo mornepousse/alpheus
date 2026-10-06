@@ -240,7 +240,7 @@ height = 22
 [font]
 family = "JetBrainsMono Nerd Font Mono"
 size = 14.0
-fallback = []       # fallback families (emoji, CJK): each one costs its own memory
+fallback = ["DejaVu Sans Mono"]  # for symbols the font lacks (✳ ◐…); setting the key replaces this default, [] disables it
 
 [clock]
 format = "%H:%M"

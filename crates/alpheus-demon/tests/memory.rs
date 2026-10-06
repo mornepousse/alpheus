@@ -353,6 +353,29 @@ fn startup_pss_per_source() {
     }
 }
 
+/// DejaVu Sans Mono (the default `[font] fallback`): printed for the task
+/// report — what loading it costs at startup while unused, and what
+/// actually drawing from it costs once a title needs it (✳◐◑◒, the glyphs
+/// `fallback_font_draws_a_symbol_the_main_family_lacks` and
+/// `uncovered_character_is_masked_with_a_consistent_width`, in
+/// `painter.rs`, cover unit-wise).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn fallback_font_pss_cost() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("fallback-pss");
+    let (_sway, hypr, d) = start("fallback-pss", 1, &bus, Some("modules = [\"window\", \"clock\"]\n"), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(3)); // startup settled: fonts loaded, DejaVu Sans Mono unused so far
+    let startup = d.pss_kb();
+    // A title with the bug's own symbols, covered only by the fallback.
+    hypr.write("activewindow>>app,\u{2733} build \u{25D0}\u{25D1}\u{25D2}\u{25D3}\n");
+    std::thread::sleep(Duration::from_millis(500));
+    let rendered = d.pss_kb();
+    eprintln!("PSS: {startup} KB at startup (DejaVu Sans Mono loaded, unused), {rendered} KB after rendering a title with ✳◐◑◒ from it");
+    assert!(startup < STARTUP_MAX_KB, "startup: {startup} KB >= 15 MB");
+    assert!(rendered < STARTUP_MAX_KB, "after rendering the fallback glyphs: {rendered} KB >= 15 MB");
+}
+
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups() {

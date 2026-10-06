@@ -7,11 +7,29 @@
     let
       systemes = [ "x86_64-linux" "aarch64-linux" ];
       pour = f: nixpkgs.lib.genAttrs systemes (systeme: f nixpkgs.legacyPackages.${systeme});
-      # Police par défaut du démon (JetBrainsMono Nerd Font) : dossier figé à
-      # la compilation (option_env!) et lu par ses tests. Pas de wrapProgram :
-      # il renommerait le processus (.alpheus-demon-wrapped) et
+      # Les 4 fichiers DejaVu Sans Mono seuls (`pkgs.dejavu_fonts` réunit
+      # toute la famille DejaVu — Sans, Serif, Condensed… — qu'il serait
+      # inutile de faire lire à l'inventaire de fontdb à chaque lancement) :
+      # police de secours légère, chargée seulement pour les glyphes absents
+      # de JetBrainsMono Nerd Font Mono (✳, ◐◓◑◒… des titres de fenêtre).
+      dejaVuSansMono = pkgs: pkgs.runCommand "alpheus-dejavu-sans-mono" { } ''
+        mkdir -p $out
+        for f in DejaVuSansMono DejaVuSansMono-Bold DejaVuSansMono-Oblique DejaVuSansMono-BoldOblique; do
+          ln -s ${pkgs.dejavu_fonts}/share/fonts/truetype/$f.ttf $out/$f.ttf
+        done
+      '';
+      # Police par défaut du démon et la police de secours ci-dessus, réunies
+      # dans un seul dossier : `Fonts::from_dir` n'en lit qu'un. Dossier figé
+      # à la compilation (option_env!) et lu par les tests. Pas de
+      # wrapProgram : il renommerait le processus (.alpheus-demon-wrapped) et
       # `pkill -x alpheus-demon` ne le trouverait plus (même piège que waybar).
-      polices = pkgs: "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/JetBrainsMono";
+      polices = pkgs: "${pkgs.symlinkJoin {
+        name = "alpheus-polices";
+        paths = [
+          "${pkgs.nerd-fonts.jetbrains-mono}/share/fonts/truetype/NerdFonts/JetBrainsMono"
+          (dejaVuSansMono pkgs)
+        ];
+      }}";
       # nativeBuildInputs / buildInputs: system libraries a package links
       # (the daemon's libxkbcommon, launcher plan task 12); empty by default.
       paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ] }:
