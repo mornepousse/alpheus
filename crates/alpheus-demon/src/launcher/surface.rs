@@ -27,8 +27,7 @@ use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use smithay_client_toolkit::seat::SeatError;
-use smithay_client_toolkit::seat::keyboard::KeyEvent;
-use smithay_client_toolkit::seat::keyboard::KeyboardError;
+use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardError};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerSurface};
@@ -357,6 +356,12 @@ impl App {
         }
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
+        // A tooltip's hover tracking must not survive it (task 15 fix round, from the task 16
+        // review): left alone, `Hover.over` would still name whatever icon it was armed on, and a
+        // later motion that never truly left it would wrongly look like "still on the same icon",
+        // never re-arming.
+        let c = self.hover.cancel();
+        self.hover_apply(c);
         let wanted = match &self.bar.compositor {
             Feed::Ready(c) => c.focused_output().map(str::to_owned),
             _ => None,

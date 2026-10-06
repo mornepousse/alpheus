@@ -11,7 +11,7 @@ use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Fonts};
-use crate::popup::{OpenPopup, PopupBody, PopupClose, PopupPointer};
+use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::hover::{self, Hover, HoverChange};
 use crate::tray::router::{Tray, TrayOutput};
@@ -221,6 +221,17 @@ fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, St
         .map_err(|e| e.to_string())
 }
 
+/// Position of the first of `items` whose `key` projection equals `target` — generic over any
+/// `PartialEq` identity so every lookup that must go by surface IDENTITY (never a bar's `name`,
+/// which `update_output` can change after the fact, or which two bars could briefly share) is
+/// unit-testable without a live Wayland connection: a `wl_surface::WlSurface`, like
+/// `wl_output::WlOutput`, cannot be built outside one (see `should_restore`'s own comment) — tests
+/// stand in with plain integers instead, same idiom. Shared by `index`, `popup_close`'s and
+/// `hover_fire`'s own parent lookups (popup.rs; task 15 fix round, CRITICAL).
+pub(crate) fn position_by<T, U: PartialEq>(items: &[T], key: impl Fn(&T) -> &U, target: &U) -> Option<usize> {
+    items.iter().position(|i| key(i) == target)
+}
+
 /// Which of `buffers` to paint a `w` × `h` physical frame into, allocating
 /// from `pool` when `plan_buffer` says so; None on an allocation failure
 /// (logged). Shared by the bar's surfaces and the launcher's box.
@@ -355,6 +366,12 @@ pub struct App {
     pub(crate) hover_timer: DeadlineTimer,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
+    /// The bar surface `hover.over`'s icon was last seen on, set by `hover_moved` (which knows the
+    /// exact surface `i`); `hover_fire` locates it by this IDENTITY, never by re-deriving the bar
+    /// from `Anchor::output` — a name that `update_output` can change, or that two bars could
+    /// briefly share, in the ≤ ½ s between arming and firing (task 15 fix round, from the task 16
+    /// review). Cleared whenever `Hover` itself cancels (`hover_apply`'s `Cancel` arm).
+    hover_surface: Option<wl_surface::WlSurface>,
     /// Raised by a `Msg::Compositor` message, consumed once per
     /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
     /// are fed at most once per pass, never once per message — a burst
@@ -425,6 +442,7 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             tooltip_item: None,
+            hover_surface: None,
             windows_dirty: false,
             scan_started: None,
         })
@@ -449,9 +467,12 @@ impl App {
     /// Returns the removed surface's output, so the caller can decide to
     /// restore the bar onto it (see `closed`) if it still exists.
     fn remove(&mut self, i: usize) -> wl_output::WlOutput {
-        // A popup hanging from this bar goes first (its parent must outlive it).
-        let name = self.surfaces[i].name.clone();
-        self.popup_output_gone(&name);
+        // A popup hanging from this bar goes first (its parent must outlive it): by this surface's
+        // IDENTITY (task 15 fix round, CRITICAL), never its `name` — `update_output` can rename it,
+        // or another bar could share the name for a moment, and the wrong popup (or none) would
+        // react, leaving a bar stuck `Exclusive`.
+        let surface = self.surfaces[i].layer.wl_surface().clone();
+        self.popup_output_gone(&surface);
         let s = self.surfaces.remove(i); // the surface is destroyed along with `s`
         log(&format!("bar removed from {}", log_name(&s.name, &s.output)));
         self.shrink_pool_if_needed();
@@ -489,7 +510,7 @@ impl App {
     }
 
     fn index(&self, surface: &wl_surface::WlSurface) -> Option<usize> {
-        self.surfaces.iter().position(|s| s.layer.wl_surface() == surface)
+        position_by(&self.surfaces, |s| s.layer.wl_surface(), surface)
     }
 
     pub fn redraw_all(&mut self) {
@@ -895,7 +916,11 @@ impl PointerHandler for App {
                 if let (PointerEventKind::Enter { .. }, Some(p)) = (&ev.kind, &self.pointer) {
                     let _ = p.set_cursor(conn, CursorIcon::Default);
                 }
-                if let Some(kind) = popup_pointer_kind(&mut self.wheel, &ev.kind) {
+                // The popup's OWN wheel accumulator (task 15 fix round), never the bar's
+                // `self.wheel`: a notch half-scrolled on the bar must not carry into a menu, or
+                // the other way around.
+                let kind = self.popup.as_mut().and_then(|open| popup_pointer_kind(&mut open.wheel, &ev.kind));
+                if let Some(kind) = kind {
                     self.popup_pointer_event(&ev.surface, ev.position, kind);
                 }
                 continue;
@@ -1002,6 +1027,12 @@ impl App {
         let s = &self.surfaces[i];
         let over = s.last.as_ref().and_then(|g| hover::over(tooltips, g, &s.name, column));
         let c = self.hover.moved(over, Instant::now());
+        if matches!(c, HoverChange::Arm(_)) {
+            // This surface's own identity, known here precisely (task 15 fix round, from the task
+            // 16 review): `hover_fire`, run later by its timer, must find the SAME bar back by
+            // this, never by re-deriving it from a name that could have changed meanwhile.
+            self.hover_surface = Some(self.surfaces[i].layer.wl_surface().clone());
+        }
         self.hover_apply(c);
     }
 
@@ -1011,7 +1042,10 @@ impl App {
         let deadline = match c {
             HoverChange::Nothing => return,
             HoverChange::Arm(at) => Some(at),
-            HoverChange::Cancel => None,
+            HoverChange::Cancel => {
+                self.hover_surface = None;
+                None
+            }
         };
         if tooltip_shown {
             self.popup_close(PopupClose::HoverEnded);
@@ -1044,9 +1078,15 @@ impl App {
             return;
         }
         let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };
-        let Some(columns) = app.surfaces.iter().find(|s| s.name == anchor.output).and_then(|s| s.last.as_ref()).map(Grid::width) else {
-            return;
-        };
+        // By `hover_surface`'s IDENTITY (task 15 fix round, from the task 16 review), never by
+        // re-deriving the bar from `anchor.output`: up to ½ s has passed since `hover_moved` armed
+        // this, time enough for `update_output` to rename it, or for the name to be briefly shared.
+        let Some(surface) = app.hover_surface.clone() else { return };
+        let Some(i) = position_by(&app.surfaces, |s| s.layer.wl_surface(), &surface) else { return };
+        let Some(columns) = app.surfaces[i].last.as_ref().map(Grid::width) else { return };
+        // Refreshed to this surface's CURRENT name: `popup_open` (through `bar_surface`) still
+        // picks the bar by name, but now from a name read right now, never a stale one.
+        let anchor = PopupAnchor { output: app.surfaces[i].name.clone(), ..anchor };
         let row = hover::tooltip_row(&text, columns.saturating_sub(2));
         let qh = app.qh.clone();
         if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), row.width(), 1, false) {
@@ -1184,6 +1224,21 @@ mod tests {
         assert!(tracks_seat(&Some(1), &1), "the tracked seat");
         assert!(!tracks_seat(&Some(1), &2), "a different seat");
         assert!(!tracks_seat(&None, &1), "no seat tracked at all");
+    }
+
+    /// Task 15 fix round, CRITICAL: the shared lookup `popup_close`/`popup_output_gone`/`hover_fire`
+    /// (popup.rs) now use to find their bar by surface IDENTITY, never by a `name` that
+    /// `update_output` can change, or that two bars could briefly share — generic so this is
+    /// testable without a live Wayland connection, a plain integer standing in for a
+    /// `wl_surface::WlSurface` (see `should_restore`'s own comment, same reasoning for
+    /// `wl_output::WlOutput`).
+    #[test]
+    fn position_by_goes_by_the_projected_identity_never_a_shared_name() {
+        // Two entries share the "name" "": only the identity (the second element) tells them apart.
+        let items = [("", 10), ("", 20), ("other", 30)];
+        assert_eq!(position_by(&items, |(_, id)| id, &20), Some(1));
+        assert_eq!(position_by(&items, |(_, id)| id, &10), Some(0));
+        assert_eq!(position_by(&items, |(_, id)| id, &99), None, "no match: already gone");
     }
 
     #[test]

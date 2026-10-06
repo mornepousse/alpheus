@@ -283,6 +283,109 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     assert!(leave.contains("launcher_guarded("), "leave must guard its launcher call: {leave}");
 }
 
+/// Task 15 fix round, minor (e): `press_key`/`repeat_key` (the `KeyboardHandler` trait methods)
+/// and the repeat closure bound by `keyboard_acquire` must all route through `key_event` — the
+/// one place that guards the launcher branch — never call the launcher directly themselves; and
+/// `keyboard_acquire`/`keyboard_lost`, which only touch Wayland/seat state, must call no launcher
+/// method at all. No fake Wayland keyboard exists to call these in a unit test, so this checks the
+/// one thing that would actually regress it: a direct call appearing where `key_event` should be,
+/// or a launcher call appearing in a function that must have none.
+#[test]
+fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
+    let files = source_files();
+    let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
+    let popup_prod = production_code(popup);
+    for func in ["fn press_key(", "fn repeat_key("] {
+        let body = function_body(&popup_prod, func);
+        assert!(body.contains("key_event("), "{func} must go through key_event: {body}");
+    }
+    let keyboard_acquire = function_body(&popup_prod, "fn keyboard_acquire(");
+    assert!(keyboard_acquire.contains("key_event("), "the repeat closure must go through key_event: {keyboard_acquire}");
+    assert!(!keyboard_acquire.contains("self.launcher_"), "keyboard_acquire must call no launcher method: {keyboard_acquire}");
+    let keyboard_lost = function_body(&popup_prod, "fn keyboard_lost(");
+    assert!(!keyboard_lost.contains("self.launcher_"), "keyboard_lost must call no launcher method: {keyboard_lost}");
+}
+
+/// Task 15 fix round, CRITICAL: `popup_close`/`popup_output_gone` (popup.rs) must reset their
+/// parent bar's `Exclusive` keyboard interactivity by its stored SURFACE IDENTITY (`OpenPopup`'s
+/// own `parent` field), never by a bar's `name` — changed after the fact by `update_output`, or
+/// briefly shared by two bars — or the wrong bar (or none) gets reset, left stuck holding Mae's
+/// keyboard. No fake Wayland surface exists to build two same-named bars in a unit test (the
+/// identity-vs-name LOGIC itself is unit-tested generically, `position_by_goes_by_the_projected_
+/// identity_never_a_shared_name` in `wayland.rs`), so this checks the one thing that would
+/// actually regress production code: a `.name ==` comparison reappearing in the parent lookup.
+#[test]
+fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
+    let files = source_files();
+    let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
+    let prod = production_code(popup);
+    let popup_close = function_body(&prod, "pub fn popup_close(");
+    assert!(!popup_close.contains(".name =="), "popup_close must not look up its parent by name: {popup_close}");
+    assert!(popup_close.contains("position_by"), "popup_close must look up its parent by identity: {popup_close}");
+    let popup_output_gone = function_body(&prod, "pub(crate) fn popup_output_gone(");
+    assert!(!popup_output_gone.contains(".name =="), "popup_output_gone must not look up its parent by name: {popup_output_gone}");
+    assert!(
+        popup_output_gone.contains("&p.parent == parent"),
+        "popup_output_gone must compare the stored parent identity: {popup_output_gone}"
+    );
+}
+
+/// Task 15 fix round, from the task 16 review: `hover_fire` (wayland.rs) used to re-locate its bar
+/// by `s.name == anchor.output` — the same stale-name problem as above, reached from the tooltip's
+/// own deferred timer (up to ½ s after `hover_moved` armed it) instead of an output going away.
+/// Fixed by carrying the surface's identity from `hover_moved`, which knows the exact surface,
+/// instead of trusting a name that could have changed meanwhile. No fake Wayland surface exists to
+/// rename a bar in a unit test, so this checks the one thing that would actually regress it: a
+/// `.name ==` lookup reappearing in `hover_fire`.
+#[test]
+fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
+    let files = source_files();
+    let wayland = &files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1;
+    let prod = production_code(wayland);
+    let hover_fire = function_body(&prod, "pub(crate) fn hover_fire(");
+    assert!(!hover_fire.contains(".name =="), "hover_fire must not look up its bar by name: {hover_fire}");
+    assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
+}
+
+/// Task 15 fix round, IMPORTANT: `launcher_fail` must release the keyboard UNCONDITIONALLY,
+/// before its own early return on `self.launcher` already being `None` — if a panic already took
+/// it (inside `launcher_close`, after ITS OWN `take()`, then panicking before finishing), the
+/// early return used to skip the release entirely, leaking the keyboard the launcher had bound.
+/// No panic-mid-close harness exists to exercise this directly in a unit test, so this checks the
+/// one thing that would actually regress it: `keyboard_release()` moved back after the early
+/// return.
+#[test]
+fn launcher_fail_releases_the_keyboard_before_its_early_return() {
+    let files = source_files();
+    let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
+    let prod = production_code(host);
+    let body = function_body(&prod, "fn launcher_fail(");
+    let release_at = body.find("keyboard_release()").expect("launcher_fail must call keyboard_release: {body}");
+    let early_return_at = body.find("self.launcher.take()").expect("launcher_fail must still guard on self.launcher");
+    assert!(release_at < early_return_at, "keyboard_release must run before the early return: {body}");
+}
+
+/// Task 15 fix round, from the task 16 review: an output removal (`popup_output_gone`) and the
+/// launcher opening (`launcher_open`) both close any open popup, but neither used to cancel
+/// `Hover` too — left alone, `Hover.over` keeps naming the same icon, and `Hover::moved` (keyed
+/// only on the item, never a surface) then wrongly sees "still on it" and never re-arms the
+/// tooltip timer again, even long after the bar came back or the launcher closed. No fake Wayland
+/// surface or output exists to exercise this directly in a unit test (the headless tests below
+/// exercise the real, observable symptom end to end), so this checks the one thing that would
+/// actually regress the fix: the `hover.cancel()` call disappearing from either function.
+#[test]
+fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
+    let files = source_files();
+    let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
+    let popup_prod = production_code(popup);
+    let popup_output_gone = function_body(&popup_prod, "pub(crate) fn popup_output_gone(");
+    assert!(popup_output_gone.contains("hover.cancel()"), "popup_output_gone must also cancel a stale hover: {popup_output_gone}");
+    let surface = &files.iter().find(|(p, _)| relative_path(p) == "launcher/surface.rs").expect("launcher/surface.rs").1;
+    let surface_prod = production_code(surface);
+    let launcher_open = function_body(&surface_prod, "pub fn launcher_open(");
+    assert!(launcher_open.contains("hover.cancel()"), "launcher_open must also cancel a stale hover: {launcher_open}");
+}
+
 /// The launcher socket (spec § 3): bound in exactly one place, its file
 /// name only ever built by `launcher_ipc::socket_path` (never spelled out,
 /// so it cannot drift between the daemon and alpheus-launch).

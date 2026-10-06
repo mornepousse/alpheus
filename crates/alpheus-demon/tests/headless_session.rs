@@ -508,3 +508,48 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
+
+/// Task 15 fix round, from the task 16 review: opening the launcher used to close an open
+/// tooltip (`popup_close(Launcher)`) without also cancelling `Hover` — `Hover.over` kept naming
+/// the same tray item, and since `Hover::moved` compares only the item (never a surface), resting
+/// on that SAME icon afterwards was wrongly seen as "still on it" and never re-armed the timer.
+/// Fixed: `launcher_open` now cancels the hover too.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn opening_the_launcher_lets_the_same_tooltip_show_again_after() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-launcher", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    // Still resting near the same icon (a different pixel, same cell): before the fix, this was
+    // seen as "still on the same icon" and never re-armed.
+    sway.hover(14, 10);
+    assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
+}
+
+/// Task 15 fix round, from the task 16 review: an output going away used to close its tooltip
+/// (`popup_output_gone`) without also cancelling `Hover` — the SAME staleness as above, reached
+/// from a bar removal instead of the launcher opening. Fixed: `popup_output_gone` now cancels the
+/// hover too.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-unplug", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-1 disable");
+    assert!(d.wait_for("popup closed (output gone)", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-1 enable");
+    assert!(d.wait_for_count("bar placed on HEADLESS-1", 2, DELAY), "{:?}", d.log());
+    sway.hover(640, 400); // off the bar first: the restored bar must see a real arrival
+    std::thread::sleep(Duration::from_millis(100));
+    sway.hover(12, 10); // the same icon again, same ItemKey, a brand new bar surface
+    assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
+}

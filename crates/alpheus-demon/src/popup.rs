@@ -15,14 +15,14 @@
 //! created) while a grabbing popup is open, and keys arrive on the bar's
 //! surface — so they are routed by "which popup is open", never by surface.
 
-use crate::actions::Button;
+use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
 use crate::grid::Grid;
 use crate::keys::{self, Key, Mods};
 use crate::log::write as log;
 use crate::painter;
 use crate::tray::menu::Menu;
-use crate::wayland::{App, pick_buffer};
+use crate::wayland::{App, pick_buffer, position_by};
 use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_positioner::{Anchor as Edge, ConstraintAdjustment, Gravity};
@@ -148,6 +148,11 @@ pub struct OpenPopup {
     pub body: PopupBody,
     /// The keyboard and an outside click (menus, the calendar); false for a tooltip.
     pub grab: bool,
+    /// The bar's `wl_surface` this popup was opened under (cloned from its `layer.wl_surface()`
+    /// at `popup_open`): `popup_close`/`popup_output_gone` reset THIS surface's keyboard
+    /// interactivity, by identity — never by `anchor.output` or a bar's `name`, which
+    /// `update_output` can change after the fact, or which two bars could briefly share.
+    parent: wl_surface::WlSurface,
     popup: Popup,
     /// Its own pool: dropped with it (a SlotPool never shrinks).
     pool: SlotPool,
@@ -164,6 +169,10 @@ pub struct OpenPopup {
     last: Option<Vec<Grid>>,
     /// Reposition requests sent (their token).
     token: u32,
+    /// This popup's own wheel accumulator (menus, the calendar): never the bar's `self.wheel`,
+    /// reset fresh at every open, else a notch half-accumulated on the bar would carry into it
+    /// (or the other way around) and cost or save a notch that was never really scrolled here.
+    pub(crate) wheel: Wheel,
 }
 
 impl OpenPopup {
@@ -204,8 +213,10 @@ impl App {
     /// keyboard and close on an outside click (menus, calendar; uses `last_press`'s serial); false for a
     /// tooltip. false when the output's bar is not configured.
     pub fn popup_open(&mut self, qh: &QueueHandle<App>, anchor: Anchor, body: PopupBody, columns: u16, rows: u16, grab: bool) -> bool {
-        // Every refusal first: a popup that cannot open closes neither the launcher nor the
-        // popup already shown.
+        // Every refusal first (moved above the launcher/popup closes below, task 15 fix round:
+        // `SlotPool::new` and `XdgPositioner::new` can fail too, and must refuse here, before
+        // anything already shown is torn down): a popup that cannot open closes neither the
+        // launcher nor the popup already shown.
         if self.xdg.is_none() {
             return false;
         }
@@ -215,17 +226,6 @@ impl App {
             (true, None) => return false, // a grab needs the press that asked for it
             (false, _) => None,
         };
-        if self.launcher_is_open() {
-            if !grab {
-                return false; // a tooltip never closes the launcher
-            }
-            self.launcher_guarded("popup", |app| app.launcher_close(crate::launcher::surface::CloseReason::ClickOutside));
-        }
-        if self.popup.is_some() {
-            self.popup_close(PopupClose::Replaced);
-        }
-        // Closing the launcher or a popup never touches `surfaces`: `i` still points at the bar.
-        let Some(xdg) = self.xdg.as_ref() else { return false };
         let scale = self.surfaces[i].scale.max(1);
         let height = self.bar.config.height;
         let advance = self.fonts.advance(scale);
@@ -238,13 +238,25 @@ impl App {
                 return false;
             }
         };
+        let Some(xdg) = self.xdg.as_ref() else { return false }; // checked above: never None here
         let Ok(positioner) = XdgPositioner::new(xdg) else { return false };
         positioner.set_size(p.width, p.height);
         positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
         positioner.set_anchor(Edge::BottomLeft);
         positioner.set_gravity(Gravity::BottomRight);
         positioner.set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
+        if self.launcher_is_open() {
+            if !grab {
+                return false; // a tooltip never closes the launcher
+            }
+            self.launcher_guarded("popup", |app| app.launcher_close(crate::launcher::surface::CloseReason::ClickOutside));
+        }
+        if self.popup.is_some() {
+            self.popup_close(PopupClose::Replaced);
+        }
+        // Closing the launcher or a popup never touches `surfaces`: `i` still points at the bar.
         let layer = self.surfaces[i].layer.clone();
+        let parent = layer.wl_surface().clone();
         if grab {
             // Fact check 5: committed before the popup exists, so the bar's surface holds the
             // keyboard focus while the grab lasts (back to None on close).
@@ -252,6 +264,8 @@ impl App {
             layer.commit();
         }
         let surface = self.compositor.create_surface(qh);
+        // Re-borrowed (the closes above took `&mut self`): confirmed non-None just above.
+        let Some(xdg) = self.xdg.as_ref() else { return false };
         let popup = match Popup::from_surface(None, &positioner, qh, surface, xdg) {
             Ok(popup) => popup,
             Err(e) => {
@@ -273,6 +287,7 @@ impl App {
             anchor,
             body,
             grab,
+            parent,
             popup,
             pool,
             buffers: Vec::new(),
@@ -283,6 +298,7 @@ impl App {
             rows: Vec::new(),
             last: None,
             token: 0,
+            wheel: Wheel::default(),
         });
         if grab {
             self.keyboard_acquire(qh);
@@ -297,35 +313,47 @@ impl App {
 
     /// Paints `rows` (resizing when their size changed: reposition when xdg_wm_base ≥ 3, else a new buffer size).
     pub fn popup_paint(&mut self, rows: &[Grid]) {
+        let Some(open) = self.popup.as_mut() else { return };
+        let cells = (rows.first().map_or(0, Grid::width), rows.len().min(u16::MAX as usize) as u16);
+        open.rows = rows.to_vec();
+        if cells != open.cells && self.popup_reposition(cells) {
+            return; // its configure paints
+        }
+        self.popup_draw();
+    }
+
+    /// Recomputes the positioner's size and anchor rect for `cells` at the popup's current scale,
+    /// and asks the compositor to reposition it (xdg_wm_base ≥ 3) or just updates `size` for the
+    /// next buffer (older compositors); true: a reposition was requested, its `configure` paints —
+    /// the caller must not draw now. Shared by `popup_paint` (the cell count changed) and
+    /// `popup_scale` (task 15 fix round: the SAME cell count can still occupy a slightly different
+    /// pixel size at a different scale — the font's physical advance does not always scale
+    /// exactly — so a scale change must recompute the placement too, not just redraw in place).
+    fn popup_reposition(&mut self, cells: (u16, u16)) -> bool {
         let height = self.bar.config.height;
         let reposition = self.xdg.as_ref().is_some_and(|x| x.xdg_wm_base().version() >= REPOSITION_VERSION);
         let App { popup, fonts, xdg, .. } = self;
-        let Some(open) = popup.as_mut() else { return };
-        let cells = (rows.first().map_or(0, Grid::width), rows.len().min(u16::MAX as usize) as u16);
-        open.rows = rows.to_vec();
-        if cells != open.cells {
-            open.cells = cells;
-            let e = open.scale.max(1);
-            let p = placement(&open.anchor, cells.0, cells.1, logical_advance(fonts.advance(e), e), height, height);
-            open.size = (p.width as u32, p.height as u32);
-            if let (true, Some(xdg)) = (reposition, xdg.as_ref()) {
-                if let Ok(positioner) = XdgPositioner::new(xdg) {
-                    positioner.set_size(p.width, p.height);
-                    positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
-                    positioner.set_anchor(Edge::BottomLeft);
-                    positioner.set_gravity(Gravity::BottomRight);
-                    positioner.set_constraint_adjustment(
-                        ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY,
-                    );
-                    open.token += 1;
-                    open.popup.reposition(&positioner, open.token);
-                    open.configured = false; // its configure paints
-                    return;
-                }
+        let Some(open) = popup.as_mut() else { return false };
+        open.cells = cells;
+        let e = open.scale.max(1);
+        let p = placement(&open.anchor, cells.0, cells.1, logical_advance(fonts.advance(e), e), height, height);
+        open.size = (p.width as u32, p.height as u32);
+        if let (true, Some(xdg)) = (reposition, xdg.as_ref()) {
+            if let Ok(positioner) = XdgPositioner::new(xdg) {
+                positioner.set_size(p.width, p.height);
+                positioner.set_anchor_rect(p.anchor_x, 0, p.anchor_width, p.bar_height);
+                positioner.set_anchor(Edge::BottomLeft);
+                positioner.set_gravity(Gravity::BottomRight);
+                positioner
+                    .set_constraint_adjustment(ConstraintAdjustment::SlideX | ConstraintAdjustment::FlipY | ConstraintAdjustment::ResizeY);
+                open.token += 1;
+                open.popup.reposition(&positioner, open.token);
+                open.configured = false; // its configure paints
+                return true;
             }
-            // xdg_wm_base < 3: a buffer of the new size, placed anew at the next open.
         }
-        self.popup_draw();
+        // xdg_wm_base < 3, or the positioner failed: a buffer of the new size, drawn now.
+        false
     }
 
     fn popup_draw(&mut self) {
@@ -355,10 +383,14 @@ impl App {
     /// Drops everything the popup holds; the keyboard goes back if nothing else needs it.
     pub fn popup_close(&mut self, why: PopupClose) {
         let Some(open) = self.popup.take() else { return };
-        let (grab, output) = (open.grab, open.anchor.output.clone());
+        let (grab, parent) = (open.grab, open.parent.clone());
         drop(open);
         if grab {
-            if let Some(i) = self.surfaces.iter().position(|s| s.name == output) {
+            // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name` (task
+            // 15 fix round, CRITICAL): a name can change after the fact (`update_output`) or be
+            // shared for a moment by two bars, and the wrong bar — or none — would stay stuck
+            // `Exclusive`, holding Mae's keyboard.
+            if let Some(i) = position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) {
                 let layer = &self.surfaces[i].layer;
                 layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                 layer.commit();
@@ -418,11 +450,19 @@ impl App {
         true
     }
 
-    /// The anchor's bar goes (output unplugged, surface closed): the popup goes first.
-    pub(crate) fn popup_output_gone(&mut self, output: &str) {
-        if self.popup.as_ref().is_some_and(|p| p.anchor.output == output) {
+    /// The popup's parent bar surface goes (output unplugged, surface closed): the popup goes
+    /// first — compared by surface IDENTITY (task 15 fix round, CRITICAL), never by `anchor.output`
+    /// or a bar's `name`, both of which can go stale (see `popup_close`).
+    pub(crate) fn popup_output_gone(&mut self, parent: &wl_surface::WlSurface) {
+        if self.popup.as_ref().is_some_and(|p| &p.parent == parent) {
             self.popup_close(PopupClose::OutputGone);
         }
+        // A tooltip's hover tracking must not survive the bar it was armed on going away (task 15
+        // fix round, from the task 16 review): left alone, `Hover.over` would still name the same
+        // icon once the bar (or another showing it) comes back, and `Hover::moved` — keyed only on
+        // the item, never the surface — would then wrongly see "still on it", never re-arming.
+        let c = self.hover.cancel();
+        self.hover_apply(c);
     }
 
     /// Scale change of the popup: repainted at the new scale; false: not ours.
@@ -434,7 +474,12 @@ impl App {
         if open.scale != factor {
             open.scale = factor;
             open.last = None;
-            self.popup_draw();
+            let cells = open.cells;
+            // Through `popup_paint`'s own resize path (task 15 fix round): the placement must be
+            // recomputed at the new scale, not just redrawn at the old one.
+            if !self.popup_reposition(cells) {
+                self.popup_draw();
+            }
         }
         true
     }

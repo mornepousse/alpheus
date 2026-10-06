@@ -168,13 +168,17 @@ impl App {
     /// (`Drop` only releases local resources: the client watch), so not
     /// specially guarded against.
     fn launcher_fail(&mut self) {
+        // Unconditional, before the early-out below (task 15 fix round, IMPORTANT): idempotent,
+        // and `keyboard_wanted` itself checks what still needs the keyboard — but if a panic
+        // happens inside `launcher_close` after it already took the launcher out of `self`,
+        // `self.launcher` is already `None` by the time THIS `launcher_fail` runs, and the early
+        // return below used to skip the release entirely, leaking the keyboard the launcher had bound.
+        self.keyboard_release();
         let Some(open) = self.launcher.take() else { return };
         let _ = guarded("close", move || {
             let mut open = open;
             reply_on_close(open.reply.take(), CloseReason::Error);
         });
-        // The keyboard is the App's (shared with the popups): released here, the launcher gone.
-        self.keyboard_release();
         log("launcher closed (error)");
         crate::memory::release_memory();
     }
