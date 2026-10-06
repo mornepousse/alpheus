@@ -1094,9 +1094,6 @@ impl PointerHandler for App {
                     };
                     let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
                         || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
-                    // Requirement 3: consumed by a matching press, and just as irrelevant to any
-                    // other one — never reused by a later, unrelated press.
-                    self.recently_closed_menu = None;
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup.
                     if self.popup.is_some() {
@@ -1107,6 +1104,12 @@ impl PointerHandler for App {
                     if self.menu_for.is_some() {
                         self.menu_end();
                     }
+                    // Requirement 3: consumed by a matching press, and just as irrelevant to any
+                    // other one — never reused by a later, unrelated press. Cleared AFTER the
+                    // close above: a close this press performs itself needs no record (only a
+                    // compositor `done` arriving ahead of the press does), else a quick reopen
+                    // on the same icon would be swallowed.
+                    self.recently_closed_menu = None;
                     if only_closes {
                         continue; // the menu's own icon: closed, never reopened (Mae)
                     }

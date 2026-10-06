@@ -1022,6 +1022,22 @@ fn a_second_right_click_closes_the_menu() {
     assert!(d.wait_for_count("menu shown", 2, DELAY), "a third right click opens it again: {:?}", d.log());
 }
 
+/// Task 17 fix-round review: a press that itself closes the menu leaves no "closed recently"
+/// record (only a compositor `done` arriving ahead of the press does) — a quick right click right
+/// after closing reopens the menu instead of being swallowed.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_quick_right_click_after_closing_reopens_the_menu() {
+    let (_bus, sway, _hypr, d, _item) = menu_bar("menu-reopen");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    sway.click(12, 10, "button3"); // within the 300 ms window
+    assert!(d.wait_for_count("menu shown", 2, DELAY), "the quick right click reopens it: {:?}", d.log());
+}
+
 /// Mae's "at most 2 s" from the click: every call answered within its own 2 s, but the layout lands
 /// 3 s after the request — the menu is not shown.
 #[test]
