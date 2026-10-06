@@ -1,13 +1,16 @@
 //! Segments of the system modules (spec § 2): volume, network, Bluetooth,
-//! battery, resources. Each returns None when it has nothing to show —
-//! waiting for its first reading, or nothing to report; a source that is
-//! down shows its icon then "–". The whole segment is one click zone.
+//! battery, resources, the tray. Each returns None when it has nothing to
+//! show — waiting for its first reading, or nothing to report; a source that
+//! is down shows its icon then "–". The whole segment is one click zone,
+//! except the tray's: one zone per icon.
 
-use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, ResourcesConfig};
+use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, ResourcesConfig, TrayConfig};
 use crate::grid::{Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
+use crate::tray::Status;
+use crate::tray::icons::{Icon, TrayIcon};
 use std::collections::VecDeque;
 
 // Material Design glyphs of the Nerd Font, checked by name in the post table
@@ -288,6 +291,41 @@ pub(crate) fn resources(r: &Resources, c: &ResourcesConfig) -> Option<Segment> {
     Some(module_segment(ModuleId::Resources, pieces))
 }
 
+/// One tray icon (spec § 1 Icons): a glyph NORMAL, a letter BOLD_ACCENT (the
+/// clock's style: "bold accent colour, no background"); NeedsAttention ERROR
+/// whatever it is; Passive MUTED (`dim`), as Active (`show`) or not drawn
+/// (`hide`). Its own zone: the gestures go to that item.
+fn tray_piece(i: &TrayIcon, passive: Passive) -> Option<Piece> {
+    let (text, style) = match &i.icon {
+        Icon::Glyph(g) => (g.clone(), Style::NORMAL),
+        Icon::Letter(c) => (c.to_string(), Style::BOLD_ACCENT),
+    };
+    let style = match (i.status, passive) {
+        (Status::NeedsAttention, _) => Style::ERROR,
+        (Status::Passive, Passive::Hide) => return None,
+        (Status::Passive, Passive::Dim) => Style::MUTED,
+        _ => style,
+    };
+    Some(Piece { text, style, target: Some(Target::TrayItem(i.key.clone())) })
+}
+
+/// None when nothing is drawn (no icon, or all passive and hidden). One
+/// piece per icon, separated by one blank cell (question 9), each its own
+/// zone (Target::TrayItem); no zone over the whole segment.
+pub(crate) fn tray(icons: &[TrayIcon], config: &TrayConfig) -> Option<Segment> {
+    let mut pieces = Vec::new();
+    for p in icons.iter().filter_map(|i| tray_piece(i, config.passive)) {
+        if !pieces.is_empty() {
+            pieces.push(piece(" ", Style::NORMAL));
+        }
+        pieces.push(p);
+    }
+    if pieces.is_empty() {
+        return None;
+    }
+    Some(Segment { module: ModuleId::Tray, pieces, elastic: false, target: None })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +336,8 @@ mod tests {
     use crate::layout::lay_out;
     use crate::state::{Bar, Msg};
     use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
+    use crate::tray::ItemKey;
+    use crate::tray::icons::{DISCORD, STEAM, TELEGRAM};
     use std::collections::VecDeque;
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
@@ -728,5 +768,150 @@ mod tests {
         }
         insta::assert_snapshot!("full_160", snapshot(&b.grid("HDMI-A-1", 160)));
         insta::assert_snapshot!("full_120", snapshot(&b.grid("HDMI-A-1", 120)));
+    }
+
+    fn tray_icon(n: u32, icon: Icon, status: Status) -> TrayIcon {
+        TrayIcon { key: ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() }, icon, status }
+    }
+
+    fn glyph(c: char) -> Icon {
+        Icon::Glyph(c.to_string())
+    }
+
+    #[test]
+    fn tray_glyphs_letters_and_attention() {
+        let icons = [
+            tray_icon(1, glyph(STEAM), Status::Active),
+            tray_icon(2, Icon::Letter('K'), Status::Active),
+            tray_icon(3, glyph(DISCORD), Status::NeedsAttention),
+            tray_icon(4, Icon::Letter('N'), Status::NeedsAttention),
+        ];
+        let s = tray(&icons, &TrayConfig::default()).unwrap();
+        assert_eq!(
+            draw(&s),
+            ("\u{f04d3} K \u{f066f} N".into(), "..G.e.e".into()),
+            "glyph normal, letter bold accent, attention red whatever it is, one blank cell between"
+        );
+        insta::assert_snapshot!("tray_glyphs_letters_and_attention", snapshot(&lay_out(std::slice::from_ref(&s), s.width() + 2, None)));
+    }
+
+    #[test]
+    fn passive_dim_show_hide() {
+        let icons = [
+            tray_icon(1, glyph(STEAM), Status::Passive),
+            tray_icon(2, Icon::Letter('K'), Status::Active),
+            tray_icon(3, Icon::Letter('N'), Status::Passive),
+        ];
+        let with = |passive| tray(&icons, &TrayConfig { passive, ..TrayConfig::default() });
+        let dim = draw(&with(Passive::Dim).unwrap());
+        let show = draw(&with(Passive::Show).unwrap());
+        let hide = draw(&with(Passive::Hide).unwrap());
+        assert_eq!(dim, ("\u{f04d3} K N".into(), "m.G.m".into()), "dim: muted");
+        assert_eq!(show, ("\u{f04d3} K N".into(), "..G.G".into()), "show: as active");
+        assert_eq!(hide, ("K".into(), "G".into()), "hide: not drawn, no blank cell left behind");
+        let only_passive = [tray_icon(1, glyph(STEAM), Status::Passive)];
+        assert!(tray(&only_passive, &TrayConfig { passive: Passive::Hide, ..TrayConfig::default() }).is_none(), "nothing left");
+        let lines = [("dim", dim), ("show", show), ("hide", hide)].map(|(m, (t, st))| format!("{m:4} {t}\n{m:4} {st}"));
+        insta::assert_snapshot!("passive_dim_show_hide", lines.join("\n"));
+    }
+
+    #[test]
+    fn an_override_two_cells_wide() {
+        let icons = [tray_icon(1, Icon::Glyph("日".into()), Status::Active), tray_icon(2, Icon::Letter('K'), Status::Active)];
+        let s = tray(&icons, &TrayConfig::default()).unwrap();
+        assert_eq!(s.width(), 4);
+        let g = lay_out(std::slice::from_ref(&s), 6, None);
+        let first = Target::TrayItem(icons[0].key.clone());
+        assert_eq!((g.target_at(1), g.target_at(2)), (Some(&first), Some(&first)), "both cells of the wide glyph");
+        assert_eq!(g.target_at(3), None, "the blank cell");
+        assert_eq!(g.target_at(4), Some(&Target::TrayItem(icons[1].key.clone())));
+        insta::assert_snapshot!("an_override_two_cells_wide", snapshot(&g));
+    }
+
+    #[test]
+    fn empty_tray_draws_no_segment() {
+        assert!(tray(&[], &TrayConfig::default()).is_none());
+        let mut b = Bar::new(BarConfig::default());
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Tray, ModuleId::Clock];
+        b.apply(Msg::Compositor(Some(example())));
+        b.apply(Msg::Clock(SUN));
+        let t = b.grid("HDMI-A-1", 60).text();
+        assert_eq!(t.matches('│').count(), 1, "no \"│ │\" for an empty tray: {t}");
+        b.config.tray.passive = Passive::Hide;
+        b.apply(Msg::Tray(vec![tray_icon(1, glyph(STEAM), Status::Passive)]));
+        let t = b.grid("HDMI-A-1", 60).text();
+        assert_eq!(t.matches('│').count(), 1, "every icon hidden: no segment either: {t}");
+        assert!(!t.contains(STEAM));
+    }
+
+    #[test]
+    fn tray_zones_target_each_item() {
+        let mut b = Bar::new(BarConfig::default());
+        b.config.modules = vec![ModuleId::Tray, ModuleId::Clock];
+        b.apply(Msg::Clock(SUN));
+        let icons = vec![
+            tray_icon(1, glyph(STEAM), Status::Active),
+            tray_icon(2, Icon::Letter('K'), Status::Passive),
+            tray_icon(3, glyph(TELEGRAM), Status::NeedsAttention),
+        ];
+        b.apply(Msg::Tray(icons.clone()));
+        let g = b.grid("HDMI-A-1", 40);
+        assert!(g.text().starts_with(" \u{f04d3} K \u{f2c6}"), "{}", g.text());
+        for (col, i) in [(1u16, 0usize), (3, 1), (5, 2)] {
+            assert_eq!(g.target_at(col), Some(&Target::TrayItem(icons[i].key.clone())), "icon {i} at {col}");
+        }
+        for blank in [0u16, 2, 4, 6] {
+            assert_eq!(g.target_at(blank), None, "no zone on the margin, the blank cells or the separator ({blank})");
+        }
+        // Counted among the tray's own targets only: other modules may have zones of their own
+        // (task 18 gives the clock one).
+        let tray_zones = g.zones().iter().filter(|z| matches!(z.target, Target::TrayItem(_))).count();
+        assert_eq!(tray_zones, 3, "one zone per icon");
+        assert!(!g.zones().iter().any(|z| z.target == Target::Module(ModuleId::Tray)), "none over the whole segment");
+        insta::assert_snapshot!("tray_zones_target_each_item", snapshot(&g));
+    }
+
+    fn full_bar_with_a_tray() -> Bar {
+        let mut b = full_bar();
+        b.apply(Msg::Tray(vec![
+            tray_icon(1, glyph(STEAM), Status::Active),
+            tray_icon(2, glyph(DISCORD), Status::NeedsAttention),
+            tray_icon(3, Icon::Letter('K'), Status::Passive),
+        ]));
+        b
+    }
+
+    #[test]
+    fn narrow_output_drops_the_tray_in_order() {
+        // Widths measured on this bar (with the launcher button ahead of
+        // the workspaces): every module at 160, resources gone below 153,
+        // the tray below 108, the title below 103.
+        const WIDE: u16 = 160;
+        const NO_RESOURCES: u16 = 130;
+        const NO_TRAY: u16 = 105;
+        const NO_TITLE: u16 = 80;
+        let (window, tray, battery, resources) = (ModuleId::Window, ModuleId::Tray, ModuleId::Battery, ModuleId::Resources);
+        let b = full_bar_with_a_tray();
+        let marks = [(window, "Web page"), (tray, "\u{f04d3}"), (battery, "\u{f008b}"), (resources, "\u{f035b}")];
+        let shown = |w: u16| {
+            let t = b.grid("HDMI-A-1", w).text();
+            marks.iter().filter(|(_, s)| t.contains(s)).map(|(m, _)| *m).collect::<Vec<_>>()
+        };
+        assert_eq!(shown(WIDE), [window, tray, battery, resources]);
+        assert_eq!(shown(NO_RESOURCES), [window, tray, battery], "resources leave first");
+        assert_eq!(shown(NO_TRAY), [window, battery], "then the tray, before the title");
+        assert_eq!(shown(NO_TITLE), [battery], "then the title");
+        for w in [WIDE, NO_RESOURCES, NO_TRAY, NO_TITLE] {
+            let g = b.grid("HDMI-A-1", w);
+            assert_eq!(g.width(), w);
+            assert!(g.text().ends_with(" 14:05 "), "the clock whole at {w}: {}", g.text());
+        }
+    }
+
+    #[test]
+    fn a_full_bar_with_a_tray_on_the_hdmi_screen() {
+        let g = full_bar_with_a_tray().grid("HDMI-A-1", 160);
+        assert!(g.text().contains(" │ \u{f04d3} \u{f066f} K │ "), "between resources and the clock: {}", g.text());
+        insta::assert_snapshot!("full_tray_160", snapshot(&g));
     }
 }

@@ -7,8 +7,9 @@
 //! right-aligned instead of collapsing left; only with the window module
 //! absent from the configuration entirely does the free space fall back to
 //! preceding the last module. Narrow screen: modules disappear by priority
-//! (resources, media, title, then Bluetooth, network, volume, battery, and
-//! last the launcher button); workspaces and the clock always stay.
+//! (resources, the tray, media, title, then Bluetooth, network, volume,
+//! battery, and last the launcher button); workspaces and the clock always
+//! stay.
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
@@ -17,11 +18,13 @@ use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
 
 /// Order of disappearance when space runs short: the spec's (resources,
-/// media, title), then the system indicators (Q9), and the launcher button
+/// media, title), then the system indicators (Q9); the tray goes right
+/// after resources (Mae, tray plan 2 question 1), and the launcher button
 /// last (Mae, 2026-10-05: `Mod+Space` still opens the launcher). Workspaces
 /// and the clock always stay.
-const REMOVAL: [ModuleId; 8] = [
+const REMOVAL: [ModuleId; 9] = [
     ModuleId::Resources,
+    ModuleId::Tray,
     ModuleId::Media,
     ModuleId::Window,
     ModuleId::Bluetooth,
@@ -156,8 +159,9 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth),
         ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery),
         ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources),
-        // Deliveries 4 and 5: not shown yet.
-        ModuleId::Media | ModuleId::Tray | ModuleId::Notifications => None,
+        ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
+        // Delivery 5: not shown yet.
+        ModuleId::Media | ModuleId::Notifications => None,
     }
 }
 

@@ -3,6 +3,7 @@
 //! drawing (`painter`) only copies it.
 
 use crate::config::ModuleId;
+use crate::tray::ItemKey;
 use std::str::Chars;
 use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
@@ -69,6 +70,8 @@ pub enum Target {
     },
     /// A whole system module (volume, network…): `actions` decides by button.
     Module(ModuleId),
+    /// One tray icon: its gestures go to the application (task 10), never a command.
+    TrayItem(ItemKey),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

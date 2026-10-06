@@ -1,0 +1,10 @@
+---
+source: crates/alpheus-demon/src/segments.rs
+expression: "lines.join(\"\\n\")"
+---
+dim  󰓓 K N
+dim  m.G.m
+show 󰓓 K N
+show ..G.G
+hide K
+hide G

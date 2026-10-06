@@ -123,6 +123,8 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
             Some(template.iter().map(|a| substitute(a, &[("{workspace}", &workspace), ("{output}", &workspace_output)])).collect())
         }
         Target::Module(m) => module_command(bar, *m, b),
+        // The tray never runs a command: its gestures are D-Bus calls (tray plan 2, task 10).
+        Target::TrayItem(_) => None,
     }
 }
 
@@ -423,5 +425,14 @@ mod tests {
             click(&b, "HDMI-A-1", &g, x, 1, 8.0, Button::WheelUp),
             argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"])
         );
+    }
+
+    #[test]
+    fn a_tray_icon_runs_no_command() {
+        use crate::tray::ItemKey;
+        let t = Target::TrayItem(ItemKey { owner: ":1.7".into(), path: "/StatusNotifierItem".into() });
+        for b in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert_eq!(command(&full(), "eDP-1", &t, b), None, "{b:?}");
+        }
     }
 }

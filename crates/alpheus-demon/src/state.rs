@@ -5,6 +5,7 @@ use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
 use crate::config::BarConfig;
 use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
+use crate::tray::icons::TrayIcon;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Feed<T> {
@@ -26,6 +27,8 @@ pub enum Msg {
     Bluetooth(Option<BtState>),
     Battery(Option<PowerState>),
     Resources(Sample),
+    /// The tray's shown items, rebuilt whole by the wiring (task 11).
+    Tray(Vec<TrayIcon>),
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +41,8 @@ pub struct Bar {
     pub bluetooth: Feed<BtState>,
     pub battery: Feed<PowerState>,
     pub resources: Resources,
+    /// The tray's icons, in registration order; empty at start.
+    pub tray: Vec<TrayIcon>,
 }
 
 /// Puts `v` in `slot` (None: down); true if it changed.
@@ -76,6 +81,7 @@ impl Bar {
             bluetooth: Feed::Waiting,
             battery: Feed::Waiting,
             resources: Resources::default(),
+            tray: Vec::new(),
         }
     }
 
@@ -105,6 +111,14 @@ impl Bar {
             Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
             Msg::Battery(s) => update(&mut self.battery, s),
             Msg::Resources(s) => self.resources.push(s),
+            Msg::Tray(icons) => {
+                if self.tray == icons {
+                    false
+                } else {
+                    self.tray = icons;
+                    true
+                }
+            }
         }
     }
 }
@@ -181,5 +195,25 @@ mod tests {
         assert!(r.push(s));
         assert!(!r.push(s), "same reading, no CPU: nothing to redraw");
         assert!(r.history.is_empty());
+    }
+
+    #[test]
+    fn tray_message_redraws_only_on_change() {
+        use crate::tray::icons::{Icon, TrayIcon};
+        use crate::tray::{ItemKey, Status};
+        let icon = |c: char, status| TrayIcon {
+            key: ItemKey { owner: ":1.7".into(), path: "/StatusNotifierItem".into() },
+            icon: Icon::Letter(c),
+            status,
+        };
+        let mut b = Bar::new(BarConfig::default());
+        assert!(b.tray.is_empty(), "empty at start");
+        assert!(!b.apply(Msg::Tray(vec![])), "still empty: nothing to redraw");
+        assert!(b.apply(Msg::Tray(vec![icon('N', Status::Active)])));
+        assert!(!b.apply(Msg::Tray(vec![icon('N', Status::Active)])), "same icons: nothing to redraw");
+        assert!(b.apply(Msg::Tray(vec![icon('N', Status::NeedsAttention)])), "a status change redraws");
+        assert_eq!(b.tray, vec![icon('N', Status::NeedsAttention)]);
+        assert!(b.apply(Msg::Tray(vec![])));
+        assert!(b.tray.is_empty());
     }
 }
