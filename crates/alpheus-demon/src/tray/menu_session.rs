@@ -102,23 +102,39 @@ impl MenuSession {
             }
             Pending::Layout(parent) => {
                 self.fetching.retain(|f| *f != parent);
+                // GetLayout(parent) must echo parent as the returned root's id; an application that
+                // answers with a different node is bad, never grafted (it would otherwise graft onto
+                // whatever other node in the tree happens to share that id).
+                let result = match result {
+                    Ok(Reply::Layout(l)) if l.root.id != parent => {
+                        Err(CallError::BadReply(format!("GetLayout({parent}): root id {} returned", l.root.id)))
+                    }
+                    other => other,
+                };
                 match (result, &mut self.layout) {
                     (Ok(Reply::Layout(l)), None) if parent == 0 => {
                         self.layout = Some(l);
                         MenuUpdate::Changed
                     }
                     (Ok(Reply::Layout(l)), Some(layout)) => {
-                        layout.revision = l.revision;
                         if !layout.graft(l.root) {
                             return MenuUpdate::Nothing;
                         }
+                        // The revision only moves once the graft actually lands: on failure the tree
+                        // is unchanged, and a bumped revision alone would hide the next real
+                        // LayoutUpdated (its revision would already look "seen").
+                        layout.revision = l.revision;
                         if parent != 0 && !self.fetched.contains(&parent) {
                             self.fetched.push(parent);
                         }
                         self.refetch_under(parent, out);
                         MenuUpdate::Changed
                     }
-                    // No layout at all: there is no menu to show.
+                    // A submenu reply arriving before the root is known: there is no tree to graft
+                    // onto yet, but the root fetch already in flight (from `open`) will bring one —
+                    // ignored, not a reason to close (the menu may still open fine).
+                    (_, None) if parent != 0 => MenuUpdate::Nothing,
+                    // No root layout at all: there is no menu to show.
                     (_, None) => MenuUpdate::Close,
                     _ => MenuUpdate::Nothing,
                 }
@@ -145,10 +161,17 @@ impl MenuSession {
     /// fetched again); ItemsPropertiesUpdated → patched in place (Changed when it names an entry of this menu).
     pub fn signal(&mut self, s: &Signal, out: &mut dyn Outbox) -> MenuUpdate {
         match s {
-            Signal::LayoutUpdated { sender, path, parent, .. } if self.mine(sender, path) => {
+            Signal::LayoutUpdated { sender, path, parent, revision } if self.mine(sender, path) => {
                 // Before the first layout, the GetLayout(0) on its way reads the new one anyway; a submenu
                 // never opened (no children known) is read when it opens.
-                if self.layout.as_ref().and_then(|l| l.node(*parent)).is_some_and(|n| *parent == 0 || !n.children.is_empty()) {
+                let known = self.layout.as_ref().and_then(|l| l.node(*parent)).is_some_and(|n| *parent == 0 || !n.children.is_empty());
+                // Some applications always send revision 0 (no versioning on their side): a 0 is never
+                // trusted as "already seen", or their second real change would be swallowed forever.
+                // Prior art (libdbusmenu-glib's `dbusmenu-client.c`, `layout_update`) only refetches when
+                // `revision > held`, which is exactly that trap for a 0-only sender; `!=` plus the 0
+                // carve-out stays safe for both well- and badly-behaved applications.
+                let stale = self.layout.as_ref().is_none_or(|l| *revision == 0 || *revision != l.revision);
+                if known && stale {
                     self.get_layout(*parent, out);
                 }
                 MenuUpdate::Nothing
@@ -353,6 +376,81 @@ mod tests {
         s.signal(&updated, &mut out);
         s.answer(last(&out).0, Ok(layout(8)), &mut out);
         assert_eq!(out.calls.len(), 1, "More back, never opened since: forgotten, not fetched");
+    }
+
+    #[test]
+    fn a_mismatched_root_id_is_a_bad_reply_no_graft() {
+        let mut out = FakeOutbox::default();
+        let mut s = opened(&mut out);
+        let before = s.layout().cloned().unwrap();
+        let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 2, parent: 0 };
+        assert_eq!(s.signal(&updated, &mut out), MenuUpdate::Nothing);
+        assert_eq!(last(&out).1, get_layout(0));
+        // The application echoes the id of an existing child (1, "Open") instead of the root it was
+        // asked for (0): grafting it blindly would silently replace "Open" with a bogus subtree.
+        let wrong = Reply::Layout(Layout { revision: 9, root: node(1, "Hijacked", true, vec![node(99, "Evil", false, vec![])]) });
+        assert_eq!(s.answer(last(&out).0, Ok(wrong), &mut out), MenuUpdate::Nothing, "never grafted onto an unrelated node");
+        assert_eq!(s.layout().unwrap(), &before, "tree and revision left exactly as they were");
+    }
+
+    #[test]
+    fn revision_is_not_bumped_when_a_submenus_graft_fails() {
+        let mut out = FakeOutbox::default();
+        let mut s = opened(&mut out);
+        s.fetch_submenu(8, &mut out);
+        s.answer(last(&out).0, Ok(Reply::NeedUpdate(false)), &mut out);
+        let get8 = last(&out).0;
+        // A root re-read removes "More" (id 8) before that submenu's own GetLayout comes back.
+        let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 5, parent: 0 };
+        s.signal(&updated, &mut out);
+        let without = Layout { revision: 5, root: node(0, "", true, vec![node(1, "Open", false, vec![])]) };
+        assert_eq!(s.answer(last(&out).0, Ok(Reply::Layout(without)), &mut out), MenuUpdate::Changed);
+        assert_eq!(s.layout().unwrap().revision, 5);
+        assert!(s.layout().unwrap().node(8).is_none(), "More is gone");
+        // The orphaned submenu reply arrives after: its root id (8) still matches what was asked, so it
+        // is not a bad reply (fix #1) — but there is no node 8 left to graft onto.
+        let stray = more(vec![node(9, "Settings", false, vec![])]);
+        assert_eq!(s.answer(get8, Ok(stray), &mut out), MenuUpdate::Nothing);
+        assert_eq!(s.layout().unwrap().revision, 5, "a failed graft must never move the revision");
+    }
+
+    #[test]
+    fn a_submenu_reply_before_the_root_is_known_is_ignored() {
+        let mut out = FakeOutbox::default();
+        let mut s = MenuSession::open(key(), "/MenuBar".into(), &mut out);
+        s.fetch_submenu(8, &mut out);
+        let about8 = last(&out).0;
+        s.answer(about8, Ok(Reply::NeedUpdate(false)), &mut out);
+        let get8 = last(&out).0;
+        let reply = more(vec![node(9, "Settings", false, vec![])]);
+        assert_eq!(s.answer(get8, Ok(reply), &mut out), MenuUpdate::Nothing, "no root tree yet: ignored, not closed");
+        assert!(s.layout().is_none(), "no bogus tree built from a submenu alone");
+    }
+
+    #[test]
+    fn layout_updated_with_the_same_revision_is_not_refetched() {
+        let mut out = FakeOutbox::default();
+        let mut s = opened(&mut out);
+        let repeat = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 1, parent: 0 };
+        assert_eq!(s.signal(&repeat, &mut out), MenuUpdate::Nothing);
+        assert!(out.calls.is_empty(), "already at revision 1: nothing to refetch");
+    }
+
+    #[test]
+    fn layout_updated_revision_zero_never_freezes_updates() {
+        let mut out = FakeOutbox::default();
+        let mut s = opened(&mut out);
+        let zero = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 0, parent: 0 };
+        s.signal(&zero, &mut out);
+        assert_eq!(last(&out).1, get_layout(0), "first 0: always trusted as a real change");
+        let first =
+            Layout { revision: 0, root: node(0, "", true, vec![node(1, "Open", false, vec![]), node(13, "Resume", false, vec![])]) };
+        assert_eq!(s.answer(last(&out).0, Ok(Reply::Layout(first)), &mut out), MenuUpdate::Changed);
+        out.take();
+        // A second real change, still announced with revision 0 (an app that never versions its
+        // layout): without the 0 carve-out, 0 == 0 would look already-seen and this would be dropped.
+        s.signal(&zero, &mut out);
+        assert_eq!(last(&out).1, get_layout(0), "a second 0 still refetches: never frozen");
     }
 
     #[test]
