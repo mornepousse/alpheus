@@ -1,8 +1,8 @@
 //! Resources, read from /proc and /sys with no command at all, on the event
 //! loop (a few µs per reading, every `[resources] interval` seconds): CPU use
 //! since the previous reading (the aggregate `cpu` line only, so CPU hotplug
-//! never confuses it), memory in use (tenths of GiB, falling back to
-//! `MemFree` when `MemAvailable` is absent), the chosen sensor's
+//! never confuses it), memory in use like htop (tenths of GiB, caches left
+//! out, shared memory kept; see `parse_meminfo`), the chosen sensor's
 //! temperature — the max across every match when several packages or
 //! drivers share the hint's name, re-resolved by name whenever a cached
 //! sensor file stops existing (hwmon numbers are not stable across a reboot
@@ -47,17 +47,18 @@ pub fn cpu_percent(a: CpuTimes, b: CpuTimes) -> Option<u8> {
 /// KiB in a GiB.
 const GIB_KB: u64 = 1024 * 1024;
 
-/// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like
-/// `free`'s "used" column (Mae, 2026-10-06: RAM only, caches left out):
-/// MemTotal − MemFree − Buffers − Cached − SReclaimable (SReclaimable absent
-/// on old kernels counts as 0). Without Buffers/Cached, MemTotal −
-/// MemAvailable, then MemTotal − MemFree (pre-3.14 kernels).
+/// Memory in use, in tenths of GiB, rounded (Q5: shown "10.5G"). Like htop
+/// (Mae, 2026-10-06: RAM only, caches left out): MemTotal − MemFree −
+/// Buffers − (Cached + SReclaimable − Shmem). Shmem (tmpfs, shared buffers)
+/// sits inside Cached but cannot be reclaimed, so it stays counted as used;
+/// SReclaimable or Shmem absent (old kernels) count as 0. Without Buffers or
+/// Cached, MemTotal − MemAvailable, then MemTotal − MemFree (pre-3.14).
 pub fn parse_meminfo(text: &str) -> Option<u16> {
     let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
     let total = field("MemTotal:").filter(|t| *t > 0)?;
     let free_style = || {
-        let caches = field("Buffers:")? + field("Cached:")? + field("SReclaimable:").unwrap_or(0);
-        Some(field("MemFree:")? + caches)
+        let reclaimable = (field("Cached:")? + field("SReclaimable:").unwrap_or(0)).saturating_sub(field("Shmem:").unwrap_or(0));
+        Some(field("MemFree:")? + field("Buffers:")? + reclaimable)
     };
     let available = free_style().or_else(|| field("MemAvailable:")).or_else(|| field("MemFree:"))?;
     let used = total.saturating_sub(available);
@@ -324,13 +325,27 @@ mod tests {
     }
 
     #[test]
-    fn memory_in_use_like_free_without_cache() {
-        // Mae (2026-10-06): RAM only, like `free`'s "used": MemTotal − MemFree
-        // − Buffers − Cached − SReclaimable = 9618492 kB on the workstation
-        // fixture, 9.2 GiB (MemTotal − MemAvailable would say 10.5).
-        assert_eq!(parse_meminfo(MEMINFO), Some(92), "9.2 GiB in use, caches left out");
+    fn memory_in_use_like_htop_without_cache() {
+        // Mae (2026-10-06): RAM only, like htop: MemTotal − MemFree − Buffers
+        // − (Cached + SReclaimable − Shmem) = 10574668 kB on the workstation
+        // fixture, 10.1 GiB (MemTotal − MemAvailable would say 10.5).
+        assert_eq!(parse_meminfo(MEMINFO), Some(101), "10.1 GiB in use, caches left out, shared memory kept");
         assert_eq!(parse_meminfo("MemTotal: 0 kB\nMemAvailable: 0 kB\n"), None);
         assert_eq!(parse_meminfo(""), None);
+    }
+
+    #[test]
+    fn a_big_tmpfs_stays_counted_as_used() {
+        // 4 GiB of tmpfs sits in Cached but cannot be reclaimed: still in use.
+        let gib = 1024 * 1024;
+        let text = format!(
+            "MemTotal: {} kB\nMemFree: {} kB\nBuffers: 0 kB\nCached: {} kB\nSReclaimable: 0 kB\nShmem: {} kB\n",
+            16 * gib,
+            8 * gib,
+            6 * gib,
+            4 * gib
+        );
+        assert_eq!(parse_meminfo(&text), Some(60), "2 GiB of programs + 4 GiB of tmpfs");
     }
 
     #[test]
@@ -411,9 +426,9 @@ mod tests {
     fn the_reader_first_without_cpu_then_38() {
         let t = workstation("reader");
         let mut r = Reader::new(&t.0, "");
-        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(92), temperature: Some(66) });
+        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(101), temperature: Some(66) });
         put(&t.0, "proc/stat", STAT_B);
-        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(92), temperature: Some(66) });
+        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(101), temperature: Some(66) });
         put(&t.0, "sys/class/hwmon/hwmon9/temp1_input", "-5000\n");
         assert_eq!(r.sample().temperature, Some(-5));
     }
