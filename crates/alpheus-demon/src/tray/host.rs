@@ -93,8 +93,10 @@ impl Item {
         self.dirty.iter().filter(|p| !self.asking.contains(*p))
     }
 
-    /// Stores `v` as `p`; whether anything changed. An empty text is absent. Compares only the one
-    /// field a property maps to — never the whole item (no clone).
+    /// Stores `v` as `p`; whether anything changed. An empty, or whitespace-only, text is absent
+    /// (fix round 2026-10-06, item 5: `codec::clean` turns a tooltip of just "\n" into a single
+    /// space, which `tooltip_row` would otherwise draw as a blank floating box). Compares only the
+    /// one field a property maps to — never the whole item (no clone).
     fn apply(&mut self, p: Prop, v: PropValue) -> bool {
         fn set<T: PartialEq>(field: &mut T, value: T) -> bool {
             let changed = *field != value;
@@ -102,7 +104,7 @@ impl Item {
             changed
         }
         let text = |v: PropValue| match v {
-            PropValue::Text(t) if !t.is_empty() => Some(t),
+            PropValue::Text(t) if !t.trim().is_empty() => Some(t),
             _ => None,
         };
         match (p, v) {
@@ -1101,6 +1103,20 @@ mod tests {
         assert_eq!(i.tooltip_text(), Some("Lumen"));
         i.tooltip = Some("Lumen: 2 unread".into());
         assert_eq!(i.tooltip_text(), Some("Lumen: 2 unread"));
+    }
+
+    /// Fix round 2026-10-06, item 5: `codec::clean` turns a ToolTip of just "\n" into a single
+    /// space — stored as absent, so `tooltip_text` falls back instead of a blank floating box.
+    #[test]
+    fn a_whitespace_only_tooltip_is_stored_as_absent() {
+        let mut i = Item::new(key(":1.7"), ":1.7".into());
+        i.title = Some("Lumen".into());
+        assert!(!i.apply(Prop::ToolTip, PropValue::Text(" ".into())), "already absent: nothing changed");
+        assert_eq!(i.tooltip, None);
+        assert_eq!(i.tooltip_text(), Some("Lumen"), "falls back to Title");
+        assert!(i.apply(Prop::ToolTip, PropValue::Text("Lumen: 2 unread".into())));
+        assert!(i.apply(Prop::ToolTip, PropValue::Text("  ".into())), "a real tooltip withdrawn to whitespace");
+        assert_eq!(i.tooltip, None);
     }
 }
 

@@ -573,11 +573,9 @@ impl App {
             self.tray = None;
         }
         if out.redraw || out.bus_closed {
-            // The icons may have moved under the pointer: the hover starts over at the next motion
-            // (a tooltip whose item left closes as ItemGone, any other as the hover ends).
+            // The hovered item leaving the tray closes its tooltip outright (ItemGone), whatever
+            // else changed; checked first, independent of the grid below.
             self.tooltip_item_gone();
-            let c = self.hover.cancel();
-            self.hover_apply(c);
             let shown = match &self.tray {
                 Some(t) => icons::icons(t.items(), &self.bar.config.tray.icons),
                 None => Vec::new(),
@@ -585,8 +583,20 @@ impl App {
             if shown.len() != self.bar.tray.len() {
                 log(&format!("tray: icons shown: {}", shown.len()));
             }
-            if self.bar.apply(Msg::Tray(shown)) {
+            // Fix round 2026-10-06 (main fix): `out.redraw` fires for ANY property of ANY item
+            // changing (a messenger's unread counter, an icon animating faster than ½ s) — most of
+            // which leave the drawn grid untouched. Only an actual display change (`bar.apply`
+            // returns true) can possibly have moved or dropped the hovered icon's own zone, so the
+            // hover (armed, or already shown as a tooltip) is cancelled then, and only if
+            // `hover_target_moved` confirms THAT zone is the one that changed — an unrelated icon
+            // changing elsewhere leaves it alone.
+            let changed = self.bar.apply(Msg::Tray(shown));
+            if changed {
                 self.dirty = true;
+                if self.hover_target_moved() {
+                    let c = self.hover.cancel();
+                    self.hover_apply(c);
+                }
             }
         }
         if let Some(key) = &out.open_menu {
@@ -1024,9 +1034,10 @@ impl App {
         let tooltips = self.bar.config.tray.tooltips && !busy;
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
-        let s = &self.surfaces[i];
-        let over = s.last.as_ref().and_then(|g| hover::over(tooltips, g, &s.name, column));
-        let c = self.hover.moved(over, Instant::now());
+        // Borrowed from `self.surfaces[i]` (fix round 2026-10-06, item 2): resting on the same
+        // icon allocates nothing, `Hover::moved` only clones the key and the output name on Arm.
+        let found = self.surfaces[i].last.as_ref().and_then(|g| hover::over(tooltips, g, column));
+        let c = self.hover.moved(found, &self.surfaces[i].name, Instant::now());
         if matches!(c, HoverChange::Arm(_)) {
             // This surface's own identity, known here precisely (task 15 fix round, from the task
             // 16 review): `hover_fire`, run later by its timer, must find the SAME bar back by
@@ -1061,12 +1072,36 @@ impl App {
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
         }
-        let gone = match (&self.tray, self.tooltip_item.as_ref()) {
-            (Some(tray), Some(key)) => tray.item(key).is_none(),
-            _ => true,
+        // Invariant (fix round 2026-10-06, item 3): a Tooltip popup is always paired with
+        // `tooltip_item` — set together on success in `hover_fire`, cleared together in
+        // `popup_close` — so it is never None here; `self.tray` can still be None (the session
+        // bus just closed, taking every item with it, this one included).
+        let key = self.tooltip_item.as_ref().expect("tooltip_item set whenever a Tooltip popup is open");
+        let gone = match &self.tray {
+            Some(tray) => tray.item(key).is_none(),
+            None => true,
         };
         if gone {
             self.popup_close(PopupClose::ItemGone);
+        }
+    }
+
+    /// True when the item `Hover` is tracking (armed, or already shown as a tooltip) lost its
+    /// zone, or moved to different columns, in the grid `self.bar` would now paint for the
+    /// surface it was armed on (fix round 2026-10-06, main fix) — found by `hover_surface`'s
+    /// IDENTITY, never `anchor.output`'s name (it can change meanwhile, see the task 15 fix
+    /// round). An unrelated icon changing elsewhere never moves THIS one's zone, so this stays
+    /// false then — the whole point of only cancelling here, not on every redraw. Nothing
+    /// tracked: never "moved".
+    fn hover_target_moved(&self) -> bool {
+        let Some((key, anchor)) = self.hover.target() else { return false };
+        let Some(surface) = self.hover_surface.as_ref() else { return false };
+        let Some(i) = self.index(surface) else { return true }; // the bar surface itself is gone
+        let Some(columns) = self.surfaces[i].last.as_ref().map(Grid::width) else { return true };
+        let grid = self.bar.grid(&self.surfaces[i].name, columns);
+        match grid.zones().iter().find(|z| matches!(&z.target, Target::TrayItem(k) if k == key)) {
+            Some(z) => (z.start, z.end) != (anchor.start, anchor.end),
+            None => true, // dropped from the grid: gone
         }
     }
 

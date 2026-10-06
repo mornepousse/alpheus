@@ -33,14 +33,17 @@ impl Hover {
         Hover::default()
     }
 
-    /// The pointer moved over `over` (None: off any tray icon) at `now`: a new icon (re)arms, the same
-    /// icon changes nothing, none cancels.
-    pub fn moved(&mut self, over: Option<(ItemKey, Anchor)>, now: Instant) -> HoverChange {
-        match over {
+    /// The pointer moved over `found` (the hovered zone's item key, by reference, and its
+    /// columns; None: off any tray icon) on `output`, at `now`: a new icon (re)arms — cloning the
+    /// key and allocating `output` into an `Anchor` only then (fix round 2026-10-06, item 2) — the
+    /// same icon changes nothing (compared on the borrowed key, no allocation at all), none
+    /// cancels.
+    pub fn moved(&mut self, found: Option<(&ItemKey, u16, u16)>, output: &str, now: Instant) -> HoverChange {
+        match found {
             None => self.cancel(),
-            Some((key, _)) if self.over.as_ref().is_some_and(|(k, _)| *k == key) => HoverChange::Nothing,
-            Some(o) => {
-                self.over = Some(o);
+            Some((key, _, _)) if self.over.as_ref().is_some_and(|(k, _)| k == key) => HoverChange::Nothing,
+            Some((key, start, end)) => {
+                self.over = Some((key.clone(), Anchor { output: output.to_string(), start, end }));
                 self.since = Some(now);
                 HoverChange::Arm(now + TOOLTIP_DELAY)
             }
@@ -67,17 +70,27 @@ impl Hover {
         self.since = None;
         self.over.clone()
     }
+
+    /// The item currently tracked (armed, or already shown as a tooltip) and its last known
+    /// anchor; None at rest. Lets `tray_output` (wayland.rs) tell an unrelated icon changing from
+    /// the tracked one actually moving or disappearing under a redrawn grid (fix round
+    /// 2026-10-06): only the latter should ever cancel.
+    pub fn target(&self) -> Option<(&ItemKey, &Anchor)> {
+        self.over.as_ref().map(|(k, a)| (k, a))
+    }
 }
 
-/// The tray icon under `column` of `output`'s bar, as a tooltip target; always None when
-/// `[tray] tooltips = false` (no hover timer at all).
-pub fn over(tooltips: bool, grid: &Grid, output: &str, column: u16) -> Option<(ItemKey, Anchor)> {
+/// The tray icon under `column` of the bar, borrowed from `grid` (no allocation): its key, and the
+/// zone's own columns. Always None when `[tray] tooltips = false` (no hover timer at all). The
+/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms — fix
+/// round 2026-10-06, item 2: a plain motion event over the SAME icon must allocate nothing.
+pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, u16)> {
     if !tooltips {
         return None;
     }
     let zone = grid.zone_at(column)?;
     match &zone.target {
-        Target::TrayItem(key) => Some((key.clone(), Anchor { output: output.to_string(), start: zone.start, end: zone.end })),
+        Target::TrayItem(key) => Some((key, zone.start, zone.end)),
         _ => None,
     }
 }
@@ -105,43 +118,55 @@ mod tests {
         Some((key(n), Anchor { output: "HDMI-A-1".into(), start: n as u16, end: n as u16 + 1 }))
     }
 
+    /// `Hover::moved` now borrows its key (item 2 of the 2026-10-06 fix round: no allocation on a
+    /// plain motion event); these two helpers own the `ItemKey` for the call's duration, the way
+    /// the real wiring's `Grid` does.
+    fn moved_to(h: &mut Hover, n: u32, now: Instant) -> HoverChange {
+        let k = key(n);
+        h.moved(Some((&k, n as u16, n as u16 + 1)), "HDMI-A-1", now)
+    }
+
+    fn moved_off(h: &mut Hover, now: Instant) -> HoverChange {
+        h.moved(None, "HDMI-A-1", now)
+    }
+
     #[test]
     fn hover_arms_once_per_icon_and_cancels_off_icon() {
         let t0 = Instant::now();
         let mut h = Hover::new();
-        assert_eq!(h.moved(None, t0), HoverChange::Nothing, "off any icon: nothing armed");
-        assert_eq!(h.moved(at(1), t0), HoverChange::Arm(t0 + TOOLTIP_DELAY));
+        assert_eq!(moved_off(&mut h, t0), HoverChange::Nothing, "off any icon: nothing armed");
+        assert_eq!(moved_to(&mut h, 1, t0), HoverChange::Arm(t0 + TOOLTIP_DELAY));
         let later = t0 + Duration::from_millis(200);
-        assert_eq!(h.moved(at(1), later), HoverChange::Nothing, "moving on the same icon does not re-arm");
+        assert_eq!(moved_to(&mut h, 1, later), HoverChange::Nothing, "moving on the same icon does not re-arm");
         assert_eq!(h.deadline(), Some(t0 + TOOLTIP_DELAY), "the first arrival counts");
-        assert_eq!(h.moved(at(2), later), HoverChange::Arm(later + TOOLTIP_DELAY), "another icon re-arms");
-        assert_eq!(h.moved(None, later), HoverChange::Cancel, "off the icons: cancelled");
+        assert_eq!(moved_to(&mut h, 2, later), HoverChange::Arm(later + TOOLTIP_DELAY), "another icon re-arms");
+        assert_eq!(moved_off(&mut h, later), HoverChange::Cancel, "off the icons: cancelled");
         assert_eq!(h.deadline(), None);
-        assert_eq!(h.moved(None, later), HoverChange::Nothing, "already cancelled");
+        assert_eq!(moved_off(&mut h, later), HoverChange::Nothing, "already cancelled");
     }
 
     #[test]
     fn a_press_cancels() {
         let t0 = Instant::now();
         let mut h = Hover::new();
-        h.moved(at(1), t0);
+        moved_to(&mut h, 1, t0);
         assert_eq!(h.cancel(), HoverChange::Cancel);
         assert_eq!(h.fire(t0 + Duration::from_secs(1)), None, "nothing to show after a press");
         assert_eq!(h.cancel(), HoverChange::Nothing);
-        assert_eq!(h.moved(at(1), t0), HoverChange::Arm(t0 + TOOLTIP_DELAY), "the same icon arms again after a cancel");
+        assert_eq!(moved_to(&mut h, 1, t0), HoverChange::Arm(t0 + TOOLTIP_DELAY), "the same icon arms again after a cancel");
     }
 
     #[test]
     fn fire_only_after_the_delay() {
         let t0 = Instant::now();
         let mut h = Hover::new();
-        h.moved(at(3), t0);
+        moved_to(&mut h, 3, t0);
         assert_eq!(h.fire(t0 + Duration::from_millis(499)), None, "too early");
         assert_eq!(h.fire(t0 + TOOLTIP_DELAY), at(3));
         assert_eq!(h.deadline(), None, "fired once: no timer left");
         assert_eq!(h.fire(t0 + Duration::from_secs(5)), None, "not twice");
-        assert_eq!(h.moved(at(3), t0 + Duration::from_secs(5)), HoverChange::Nothing, "still on it: nothing re-armed");
-        assert_eq!(h.moved(None, t0 + Duration::from_secs(5)), HoverChange::Cancel, "leaving it closes the tooltip");
+        assert_eq!(moved_to(&mut h, 3, t0 + Duration::from_secs(5)), HoverChange::Nothing, "still on it: nothing re-armed");
+        assert_eq!(moved_off(&mut h, t0 + Duration::from_secs(5)), HoverChange::Cancel, "leaving it closes the tooltip");
     }
 
     #[test]
@@ -149,11 +174,23 @@ mod tests {
         let mut g = Grid::empty(10);
         g.write(4, 5, "x", Style::NORMAL);
         g.zone(4, 5, Target::TrayItem(key(7)));
-        assert_eq!(over(true, &g, "HDMI-A-1", 4), at(7).map(|(k, _)| (k, Anchor { output: "HDMI-A-1".into(), start: 4, end: 5 })));
-        assert_eq!(over(true, &g, "HDMI-A-1", 3), None, "beside the icon");
-        assert_eq!(over(false, &g, "HDMI-A-1", 4), None, "tooltips = false");
+        let k7 = key(7);
+        assert_eq!(over(true, &g, 4), Some((&k7, 4, 5)));
+        assert_eq!(over(true, &g, 3), None, "beside the icon");
+        assert_eq!(over(false, &g, 4), None, "tooltips = false");
         let mut h = Hover::new();
-        assert_eq!(h.moved(over(false, &g, "HDMI-A-1", 4), Instant::now()), HoverChange::Nothing, "never armed");
+        assert_eq!(h.moved(over(false, &g, 4), "HDMI-A-1", Instant::now()), HoverChange::Nothing, "never armed");
+    }
+
+    #[test]
+    fn target_reports_the_tracked_item_and_its_anchor() {
+        let t0 = Instant::now();
+        let mut h = Hover::new();
+        assert_eq!(h.target(), None, "nothing tracked at rest");
+        moved_to(&mut h, 1, t0);
+        assert_eq!(h.target(), Some((&key(1), &Anchor { output: "HDMI-A-1".into(), start: 1, end: 2 })));
+        h.cancel();
+        assert_eq!(h.target(), None, "cancelled: nothing tracked any more");
     }
 
     #[test]

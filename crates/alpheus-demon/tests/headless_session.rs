@@ -553,3 +553,95 @@ fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
     sway.hover(12, 10); // the same icon again, same ItemKey, a brand new bar surface
     assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
 }
+
+/// Fix round 2026-10-06 (main fix): `tray_output` used to cancel the hover unconditionally on
+/// every `out.redraw`, which fires for ANY property changing on ANY item — a messenger's "3
+/// unread" becoming "4 unread" closed (or never armed) the tooltip even though nothing about the
+/// hovered icon's OWN position changed. `ToolTip` here never affects which letter/glyph is drawn
+/// (`icons::icons` falls back to the item's Title, never its tooltip text), so `bar.apply` reports
+/// no change and the hover is left alone entirely: the tooltip stays shown with its original text
+/// (the simpler of the two options the brief allowed — see task-16-fix-report.md).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_hovered_items_tooltip_text_changing_does_not_close_it() {
+    let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-text-changes", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    item.set("ToolTip", Value::ToolTip { title: "Nimbus — 4 new messages".into(), pixmap_bytes: 0 });
+    item.emit("NewToolTip");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("popup closed"), 0, "the tooltip must not close just because its text changed: {:?}", d.log());
+    assert_eq!(d.count("tooltip shown"), 1, "still the same tooltip, not reopened: {:?}", d.log());
+}
+
+/// Fix round 2026-10-06 (main fix): an icon animating faster than the ½ s delay (`NewIcon` signals
+/// a few tens of milliseconds apart) used to cancel the pending hover on every single one of them
+/// — since the pointer never moves again on its own, the timer was gone for good and the tooltip
+/// never showed. `IconName` changing never moves the hovered icon's zone either (one item, one
+/// cell, same position throughout), so `hover_target_moved` stays false and the timer survives.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn an_animating_icon_still_gets_its_tooltip_after_half_a_second() {
+    let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-animated", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    let t = Instant::now();
+    sway.hover(12, 10); // the tray's one icon
+    let mut frame = 0;
+    while t.elapsed() < Duration::from_millis(450) {
+        frame += 1;
+        item.set("IconName", Value::Str(format!("nimbus-frame-{frame}")));
+        item.emit("NewIcon");
+        std::thread::sleep(Duration::from_millis(90));
+    }
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
+}
+
+/// Item 4 of the 2026-10-06 fix round: `[tray] tooltips = false` arms no timer at all, even
+/// resting right on an icon — no wake-up of the loop, no "tooltip" log line ever.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn tooltips_false_gives_no_timer_and_no_tooltip() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-off", "[tray]\ntooltips = false\n");
+    sway.hover(640, 400); // the virtual pointer exists, off the bar
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon: armed with tooltips on, never with them off
+    std::thread::sleep(Duration::from_millis(200));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(2));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the icon: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
+}
+
+/// Item 4 of the 2026-10-06 fix round: a press on the bar, even away from the hovered icon, closes
+/// a shown tooltip (already true via the `Press` arm's `hover.cancel()`; exercised headlessly here).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_press_on_the_bar_closes_a_shown_tooltip() {
+    let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-press", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    sway.click(1260, 10, "button1"); // elsewhere on the bar (the clock): still cancels the hover
+    assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
+}
+
+/// Item 4 of the 2026-10-06 fix round: the hovered item's application quitting (its
+/// StatusNotifierItem disappearing from the bus) closes its shown tooltip as `ItemGone`, not
+/// `HoverEnded` (already true via `tooltip_item_gone`; exercised headlessly here).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_hovered_item_vanishing_closes_its_tooltip() {
+    let (_bus, sway, _hypr, d, item) = tray_bar("tooltip-vanish", "");
+    sway.hover(640, 400);
+    std::thread::sleep(Duration::from_millis(200));
+    sway.hover(12, 10); // the tray's one icon
+    assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
+    item.kill(); // the application quits: its StatusNotifierItem disappears
+    assert!(d.wait_for("popup closed (item gone)", DELAY), "{:?}", d.log());
+}

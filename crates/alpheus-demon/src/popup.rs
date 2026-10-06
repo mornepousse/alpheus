@@ -384,6 +384,12 @@ impl App {
     pub fn popup_close(&mut self, why: PopupClose) {
         let Some(open) = self.popup.take() else { return };
         let (grab, parent) = (open.grab, open.parent.clone());
+        // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
+        // that no longer exists (fix round 2026-10-06, item 3) — `tooltip_item_gone` (wayland.rs)
+        // relies on the two always being set and cleared together.
+        if matches!(open.body, PopupBody::Tooltip(_)) {
+            self.tooltip_item = None;
+        }
         drop(open);
         if grab {
             // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name` (task

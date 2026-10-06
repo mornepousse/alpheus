@@ -386,6 +386,21 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
     assert!(launcher_open.contains("hover.cancel()"), "launcher_open must also cancel a stale hover: {launcher_open}");
 }
 
+/// Fix round 2026-10-06, item 3: `tooltip_item_gone` (wayland.rs) relies on a Tooltip popup
+/// always being paired with `tooltip_item` — set together in `hover_fire`, so it must be cleared
+/// together too, in `popup_close`, whatever the closing reason (hover ended, a press, a replaced
+/// popup…), or a later redraw's check would read a stale key left behind by an earlier tooltip.
+/// No fake Wayland popup exists to exercise every closing reason in a unit test, so this checks
+/// the one thing that would actually regress the fix: the reset disappearing from `popup_close`.
+#[test]
+fn popup_close_resets_tooltip_item_for_a_closed_tooltip() {
+    let files = source_files();
+    let popup = &files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1;
+    let prod = production_code(popup);
+    let popup_close = function_body(&prod, "pub fn popup_close(");
+    assert!(popup_close.contains("tooltip_item = None"), "popup_close must reset tooltip_item on a closed tooltip: {popup_close}");
+}
+
 /// The launcher socket (spec § 3): bound in exactly one place, its file
 /// name only ever built by `launcher_ipc::socket_path` (never spelled out,
 /// so it cannot drift between the daemon and alpheus-launch).
