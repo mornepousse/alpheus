@@ -33,7 +33,14 @@ pub enum Value {
     Bool(bool),
     Path(String),
     Int(i32),
-    ToolTip { title: String, pixmap_bytes: usize },
+    ToolTip {
+        title: String,
+        pixmap_bytes: usize,
+    },
+    /// `IconPixmap`/`AttentionIconPixmap` (`a(iiay)`, one 32x32 entry of `bytes` bytes): the daemon
+    /// never reads it (spec § 3), but a real item may still offer it alongside (or instead of) an
+    /// icon name.
+    IconPixmap(usize),
 }
 
 fn s(text: &str) -> Value {
@@ -132,6 +139,10 @@ pub struct Spec {
     pub silent: bool,
     /// Registers only if the watcher's IsStatusNotifierHostRegistered is true (Chromium).
     pub needs_host: bool,
+    /// Chromium's other quirks, independent of the host pre-check above: its signals go out
+    /// doubled, on `org.freedesktop.StatusNotifierItem` as well, and an unknown property answers
+    /// `Failed` rather than `UnknownProperty`.
+    pub chromium_quirks: bool,
 }
 
 fn props(list: &[(&str, Value)]) -> Vec<(String, Value)> {
@@ -165,6 +176,7 @@ impl Spec {
             menu: Some(FakeMenu::sample()),
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -179,6 +191,7 @@ impl Spec {
                 ("Title", s("Kettle")),
                 ("Status", s("Active")),
                 ("IconName", s("")),
+                ("IconPixmap", Value::IconPixmap(4096)),
                 ("ToolTip", Value::ToolTip { title: "Kettle".into(), pixmap_bytes: 4096 }),
                 ("Menu", Value::Path("/MenuBar".into())),
                 ("ItemIsMenu", Value::Bool(false)),
@@ -187,6 +200,7 @@ impl Spec {
             menu: Some(FakeMenu::sample()),
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -221,6 +235,7 @@ impl Spec {
             menu: Some(menu),
             silent: false,
             needs_host: true,
+            chromium_quirks: true,
         }
     }
 
@@ -244,6 +259,7 @@ impl Spec {
             menu: Some(menu),
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -266,6 +282,7 @@ impl Spec {
             menu: Some(menu),
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -280,6 +297,7 @@ impl Spec {
             menu: None,
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -294,6 +312,7 @@ impl Spec {
             menu: None,
             silent: true,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 
@@ -309,6 +328,7 @@ impl Spec {
             menu: Some(FakeMenu::huge(501)),
             silent: false,
             needs_host: false,
+            chromium_quirks: false,
         }
     }
 }
@@ -338,6 +358,15 @@ fn append_value(i: &mut IterAppend<'_>, v: &Value) {
                 });
                 st.append(title.as_str());
                 st.append("");
+            })
+        }),
+        Value::IconPixmap(bytes) => i.append_variant(&signature("a(iiay)"), |v| {
+            v.append_array(&signature("(iiay)"), |a| {
+                a.append_struct(|px| {
+                    px.append(32i32);
+                    px.append(32i32);
+                    px.append(vec![0x5au8; *bytes]);
+                });
             })
         }),
     }
@@ -442,6 +471,11 @@ struct Served {
     /// The lazy menu's layout exists (built at the first AboutToShow).
     built: bool,
     revision: u32,
+    /// A pre-check (KDE's `ProtocolVersion`, Chromium's host check) already failed once: like the
+    /// real client, a further `register()` is then a no-op — it does not poll the watcher blindly.
+    /// Cleared by `StatusNotifierHostRegistered` (watched for when `needs_host`), which is the real
+    /// signal real clients retry on; a new watcher owner would equally justify trying again.
+    gave_up: bool,
 }
 
 impl Served {
@@ -459,6 +493,10 @@ impl Served {
     }
 
     fn register(&mut self, ack: Sender<bool>) {
+        if self.gave_up {
+            let _ = ack.send(false);
+            return;
+        }
         match self.spec.registration {
             Registration::Never => {
                 let _ = ack.send(false);
@@ -493,6 +531,7 @@ impl Served {
             Waiting::ProtocolVersion(ack) if ok && m.read1::<Variant<i32>>().map(|v| v.0) == Ok(0) => self.register_now(ack),
             Waiting::HostCheck(ack) if ok && m.read1::<Variant<bool>>().map(|v| v.0) == Ok(true) => self.register_now(ack),
             Waiting::ProtocolVersion(ack) | Waiting::HostCheck(ack) => {
+                self.gave_up = true;
                 let _ = ack.send(false);
             }
             Waiting::Register(ack) => {
@@ -503,7 +542,7 @@ impl Served {
 
     fn emit(&self, path: &str, interface: &str, member: &str, args: impl Fn(Message) -> Message) {
         let _ = self.peer.channel.send(args(Message::new_signal(path, interface, member).unwrap()));
-        if self.spec.needs_host && interface == ITEM_INTERFACE {
+        if self.spec.chromium_quirks && interface == ITEM_INTERFACE {
             let _ = self.peer.channel.send(args(Message::new_signal(path, FREEDESKTOP_ITEM, member).unwrap()));
         }
     }
@@ -563,8 +602,12 @@ impl Served {
         let member = call.member().map(|x| x.to_string()).unwrap_or_default();
         let path = call.path().map(|p| p.to_string()).unwrap_or_default();
         let unknown_property =
-            if self.spec.needs_host { "org.freedesktop.DBus.Error.Failed" } else { "org.freedesktop.DBus.Error.UnknownProperty" };
+            if self.spec.chromium_quirks { "org.freedesktop.DBus.Error.Failed" } else { "org.freedesktop.DBus.Error.UnknownProperty" };
         let menu = self.spec.menu.clone().filter(|m| m.path == path);
+        if path != self.spec.path && menu.is_none() {
+            let reply = error(call, "org.freedesktop.DBus.Error.UnknownObject");
+            return (!call.get_no_reply()).then_some(reply);
+        }
         let reply = match (interface.as_str(), member.as_str()) {
             (PROPERTIES, "Get") if path == self.spec.path => {
                 let (iface, name): (&str, &str) = call.read2().ok()?;
@@ -637,7 +680,10 @@ impl Served {
 }
 
 fn serve(mut served: Served, commands: Receiver<Command>) {
-    let mut reading = true;
+    // `silent` alone still reads long enough to complete its own registration (the round trip
+    // `register()` waits on) before going quiet; combined with `Registration::Never`, there is no
+    // registration to wait for, so it must never read at all, from the very first message.
+    let mut reading = !(served.spec.silent && served.spec.registration == Registration::Never);
     loop {
         if !reading {
             // Silent: connected, never reads its socket again; only told to stop.
@@ -666,6 +712,13 @@ fn serve(mut served: Served, commands: Receiver<Command>) {
                         served.peer.channel.flush();
                     }
                 }
+                // The real retry trigger (not an explicit register() call, a no-op once gave_up): a
+                // host just appeared, so a gave-up Chromium-like item tries again.
+                MessageType::Signal if m.member().as_deref() == Some("StatusNotifierHostRegistered") && served.gave_up => {
+                    served.gave_up = false;
+                    let (ack, _never_read) = mpsc::channel();
+                    served.register(ack);
+                }
                 _ => {}
             },
             Ok(None) => {}
@@ -690,11 +743,20 @@ impl FakeItem {
         if let Some(name) = &spec.name {
             peer.own(name);
         }
+        if spec.needs_host {
+            // The signal a real client retries on once it has given up (see `register`'s doc
+            // comment): broadcast, no destination, so a plain AddMatch is enough to receive it.
+            let rule = format!("type='signal',interface='{WATCHER_INTERFACE}',member='StatusNotifierHostRegistered'");
+            let add_match = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "AddMatch")
+                .unwrap()
+                .append1(rule);
+            let _ = peer.call(add_match);
+        }
         let unique = peer.name.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let (commands, rx) = mpsc::channel();
         let never = spec.registration == Registration::Never;
-        let served = Served { peer, spec, calls: calls.clone(), waiting: HashMap::new(), built: false, revision: 1 };
+        let served = Served { peer, spec, calls: calls.clone(), waiting: HashMap::new(), built: false, revision: 1, gave_up: false };
         let thread = thread::spawn(move || serve(served, rx));
         let item = FakeItem { unique, commands, calls, thread: Some(thread) };
         if !never {
@@ -703,7 +765,12 @@ impl FakeItem {
         item
     }
 
-    /// Registers again (duplicates; a watcher that reappeared). Waits for the watcher's answer (5 s at most).
+    /// Registers again (duplicates). A no-op once a pre-check (KDE's `ProtocolVersion`, Chromium's
+    /// host check) has already failed: like the real client, this fake does not poll the watcher
+    /// blindly. The way back is the signal a real client watches for instead —
+    /// `StatusNotifierHostRegistered`, handled automatically in `serve` — not a fresh call here; a
+    /// new watcher owner (a different unique name taking `org.kde.StatusNotifierWatcher`) would
+    /// equally justify trying again. Waits for the watcher's answer (5 s at most).
     pub fn register(&self) {
         let (ack, done) = mpsc::channel();
         let _ = self.commands.send(Command::Register(ack));
@@ -819,6 +886,8 @@ impl FakeWatcher {
                         for entry in gone {
                             let _ = peer.channel.send(signal("StatusNotifierItemUnregistered").append1(entry));
                         }
+                        // A departed host is dropped too (no signal of its own: hosts have none).
+                        h.lock().unwrap().retain(|host| host != &name);
                         peer.channel.flush();
                     }
                     continue;
@@ -838,20 +907,43 @@ impl FakeWatcher {
                     }
                     "RegisterStatusNotifierItem" => {
                         let service: String = call.read1().unwrap_or_default();
-                        // Plasma's "<service><path>".
-                        let entry = if service.starts_with('/') {
-                            format!("{sender}{service}")
-                        } else if service.contains('/') {
-                            service
-                        } else {
-                            format!("{service}{DEFAULT_ITEM_PATH}")
+                        // A path-only or combined registration names no separate bus name: the
+                        // sender's own unique name already backs it. A bare well-known name must
+                        // actually be owned (by anyone — real watchers accept registering another
+                        // connection's name) or the registration is refused, never recorded.
+                        let owned = service.starts_with('/') || service.contains('/') || {
+                            let owner = Message::new_method_call(
+                                "org.freedesktop.DBus",
+                                "/org/freedesktop/DBus",
+                                "org.freedesktop.DBus",
+                                "GetNameOwner",
+                            )
+                            .unwrap()
+                            .append1(service.as_str());
+                            peer.call(owner).is_ok()
                         };
-                        let mut list = i.lock().unwrap();
-                        if !list.contains(&entry) {
-                            list.push(entry.clone());
+                        if !owned {
+                            let _ = peer.channel.send(error(&call, "org.freedesktop.DBus.Error.NameHasNoOwner"));
+                            None
+                        } else {
+                            // Plasma's "<service><path>".
+                            let entry = if service.starts_with('/') {
+                                format!("{sender}{service}")
+                            } else if service.contains('/') {
+                                service
+                            } else {
+                                format!("{service}{DEFAULT_ITEM_PATH}")
+                            };
+                            let mut list = i.lock().unwrap();
+                            let is_new = !list.contains(&entry);
+                            if is_new {
+                                list.push(entry.clone());
+                            }
+                            drop(list);
+                            let _ = peer.channel.send(call.method_return());
+                            // A duplicate registration is acknowledged but never announced again.
+                            is_new.then(|| signal("StatusNotifierItemRegistered").append1(entry))
                         }
-                        let _ = peer.channel.send(call.method_return());
-                        Some(signal("StatusNotifierItemRegistered").append1(entry))
                     }
                     "Get" => {
                         let (_, name): (String, String) = call.read2().unwrap_or_default();
@@ -861,6 +953,25 @@ impl FakeWatcher {
                             "ProtocolVersion" => call.method_return().append1(Variant(0i32)),
                             _ => error(&call, "org.freedesktop.DBus.Error.UnknownProperty"),
                         };
+                        let _ = peer.channel.send(r);
+                        None
+                    }
+                    "GetAll" => {
+                        let mut r = call.method_return();
+                        IterAppend::new(&mut r).append_dict(&signature("s"), &signature("v"), |d| {
+                            d.append_dict_entry(|e| {
+                                e.append("RegisteredStatusNotifierItems");
+                                e.append(Variant(i.lock().unwrap().clone()));
+                            });
+                            d.append_dict_entry(|e| {
+                                e.append("IsStatusNotifierHostRegistered");
+                                e.append(Variant(!h.lock().unwrap().is_empty()));
+                            });
+                            d.append_dict_entry(|e| {
+                                e.append("ProtocolVersion");
+                                e.append(Variant(0i32));
+                            });
+                        });
                         let _ = peer.channel.send(r);
                         None
                     }

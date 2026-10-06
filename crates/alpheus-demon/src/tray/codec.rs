@@ -98,7 +98,9 @@ fn names(it: &mut Iter<'_>) -> Result<Vec<String>, CallError> {
     while out.len() < MAX_NAMES
         && let Some(s) = a.get::<&str>()
     {
-        out.push(s.to_string());
+        if s.len() <= MAX_SERVICE {
+            out.push(s.to_string());
+        }
         a.next();
     }
     Ok(out)
@@ -114,7 +116,7 @@ fn item_property(p: Prop, it: &mut Iter<'_>) -> Result<PropValue, CallError> {
             v.get::<&str>().map(|s| PropValue::Text(clean(s))).ok_or_else(wrong)
         }
         Prop::Status => v.get::<&str>().map(|s| PropValue::Status(Status::parse(s))).ok_or_else(wrong),
-        Prop::Menu => v.get::<Path>().map(|o| PropValue::Path(o.to_string())).ok_or_else(wrong),
+        Prop::Menu => v.get::<Path>().filter(|o| o.len() <= MAX_SERVICE).map(|o| PropValue::Path(o.to_string())).ok_or_else(wrong),
         Prop::ItemIsMenu => v.get::<bool>().map(PropValue::Bool).ok_or_else(wrong),
         Prop::ToolTip => tooltip_title(&mut v).map(|t| PropValue::Text(clean(t))).ok_or_else(wrong),
     }
@@ -133,6 +135,7 @@ fn tooltip_title<'a>(v: &mut Iter<'a>) -> Option<&'a str> {
 /// A received signal, reduced to what the tray reads.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Signal {
+    /// Only from the bus driver (sender `org.freedesktop.DBus`): any peer may send a signal by that name.
     NameOwnerChanged {
         name: String,
         old: String,
@@ -150,7 +153,8 @@ pub enum Signal {
         path: String,
         status: Status,
     },
-    /// Another watcher's signals (host-only mode): the service string as it sent it.
+    /// Another watcher's signals (host-only mode): the service string as it sent it, uncut
+    /// (`host::split_service` validates it); longer than MAX_SERVICE bytes → Other.
     ItemRegistered(String),
     ItemUnregistered(String),
     LayoutUpdated {
@@ -276,9 +280,12 @@ pub fn clean(s: &str) -> String {
 }
 
 /// Zero-width and bidirectional formatting characters: drawn as nothing,
-/// they could hide or reorder what the bar shows (a title posing as another).
+/// they could hide or reorder what the bar shows (a title posing as
+/// another). U+200C (ZWNJ) and U+200D (ZWJ) are excluded: they are ordinary
+/// text shaping (Arabic/Indic ligature control, emoji ZWJ sequences), not
+/// spoofing tools, so removing them would corrupt otherwise legible text.
 fn invisible(c: char) -> bool {
-    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
 /// A dbusmenu label: one leading-mnemonic `_` removed per occurrence, `__` → `_`, then `clean`.
@@ -728,6 +735,29 @@ mod tests {
     }
 
     #[test]
+    fn names_skip_a_string_longer_than_max_service() {
+        let longest = "a".repeat(MAX_SERVICE);
+        let too_long = "a".repeat(MAX_SERVICE + 1);
+        let list = body(|i| i.append(vec![longest.as_str(), too_long.as_str(), "org.freedesktop.DBus"]));
+        assert_eq!(
+            reply(&Call::ListNames, &list),
+            Ok(Reply::Names(vec![longest, "org.freedesktop.DBus".into()])),
+            "exactly MAX_SERVICE bytes kept, one byte over skipped (not cut)"
+        );
+    }
+
+    #[test]
+    fn a_menu_path_longer_than_max_service_is_a_bad_reply() {
+        let longest = format!("/{}", "a".repeat(MAX_SERVICE - 1));
+        assert!(longest.len() == MAX_SERVICE);
+        let ok = reply(&get(Prop::Menu), &body(|i| i.append(Variant(Path::new(longest.as_str()).unwrap()))));
+        assert_eq!(ok, Ok(Reply::Prop(PropValue::Path(longest))));
+        let too_long = format!("/{}", "a".repeat(MAX_SERVICE));
+        let bad = reply(&get(Prop::Menu), &body(|i| i.append(Variant(Path::new(too_long.as_str()).unwrap()))));
+        assert!(matches!(bad, Err(CallError::BadReply(_))), "{bad:?}");
+    }
+
+    #[test]
     fn tooltip_title_without_decoding_pixmaps() {
         // 300 KB of pixmaps whose elements are not even (iiay): stepped over, never read.
         let big = tooltip("Kettle", "a(iis)", 300_000);
@@ -989,6 +1019,12 @@ mod tests {
         assert_eq!(clean("one\ntwo\r\nthree"), "one two  three", "line breaks become spaces");
         assert_eq!(clean("two  spaces"), "two  spaces");
         assert_eq!(clean("ab\u{202e}cd\u{200b}e\u{2066}f\u{2069}"), "abcdef", "bidi overrides and zero-width characters removed");
+        assert_eq!(
+            clean("a\u{200c}b\u{200d}c"),
+            "a\u{200c}b\u{200d}c",
+            "ZWNJ/ZWJ are legitimate text shaping (Arabic, emoji sequences), kept"
+        );
+        assert_eq!(clean("a\u{61c}b"), "ab", "the Arabic Letter Mark is a bidi control too, removed");
     }
 
     #[test]

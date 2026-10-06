@@ -134,6 +134,35 @@ fn the_bus_going_away_is_closed_once() {
 
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
+fn a_call_after_the_bus_closed_is_disconnected_with_no_timer() {
+    let mut bus = PrivateBus::start("tray-call-after-close");
+    let silent = Peer::connect(&bus);
+    let mut tray = SessionBus::at(&bus.address).unwrap();
+    bus.kill();
+    // Drain until the close is detected (sets the internal `closed` flag).
+    let closed_batch = read_until(&mut tray, 1, Duration::from_secs(5));
+    assert!(closed_batch.iter().any(|i| matches!(i, Incoming::Closed)), "{closed_batch:?}");
+    assert_eq!(tray.pending(), 0);
+    let id = tray.call(get(&silent.name, Prop::Title));
+    assert_eq!(tray.pending(), 0, "a call on a closed bus is never pending: no deadline timer arms for it");
+    assert_eq!(tray.next_deadline(), None);
+    let got = answers(tray.read());
+    assert_eq!(got, [(id, get(&silent.name, Prop::Title), format!("{:?}", CallError::Disconnected))]);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+#[cfg_attr(debug_assertions, should_panic(expected = "send_message"))]
+fn send_message_refuses_a_method_call() {
+    let bus = PrivateBus::start("tray-send-message-guard");
+    let mut tray = SessionBus::at(&bus.address).unwrap();
+    let mut call = Message::new_method_call(":1.3", "/x", "org.example", "Do").unwrap();
+    call.set_serial(9);
+    tray.send_message(call);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
 fn the_connection_is_close_on_exec() {
     use std::os::fd::AsRawFd;
     let bus = PrivateBus::start("tray-cloexec");
@@ -160,7 +189,7 @@ fn the_xdg_runtime_bus_socket_is_found() {
 
 // ---- The fakes themselves (task 3), driven by a plain Peer ----
 
-use alpheus_demon::tray::{ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use alpheus_demon::tray::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use common::sni::{FakeItem, FakeMenu, FakeWatcher, Registration, Spec, Value};
 use dbus::Message;
 
@@ -363,7 +392,14 @@ fn the_fake_watcher_lists_and_signals() {
     assert!(next_signal(&peer, "StatusNotifierHostRegistered", Duration::from_secs(2)).is_some());
     assert_eq!(watcher.hosts(), vec![peer.name.clone()]);
     assert!(is_host());
-    lumen.register();
+    // lumen never calls register() again (that would be a no-op once it has given up, per its
+    // doc comment): it retries on its own, because it watches for this very signal, same as
+    // StatusNotifierHostRegistered just did for this test's own peer.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while watcher.items().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!watcher.items().is_empty(), "lumen must retry on the host-registered signal alone");
     let nimbus = FakeItem::start(&bus, Spec::kde(1));
     let quill = FakeItem::start(&bus, Spec::ayatana());
     let expected = [
@@ -405,4 +441,211 @@ fn a_killed_fake_emits_name_owner_changed() {
     }
     gone.sort();
     assert_eq!(gone, [(unique.clone(), unique.clone()), ("org.kde.StatusNotifierItem-4242-2".to_string(), unique)]);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_registration_never_silent_fake_never_reads_at_all() {
+    let bus = PrivateBus::start("fakes-silent-never");
+    let peer = Peer::connect(&bus);
+    let silent = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::silent() });
+    let started = Instant::now();
+    let r = ask(
+        &peer,
+        &silent.unique,
+        "/StatusNotifierItem",
+        "org.freedesktop.DBus.Properties",
+        "Get",
+        |m| m.append2(ITEM_INTERFACE, "Title"),
+        Duration::from_millis(300),
+    );
+    assert_eq!(r.unwrap_err(), "org.freedesktop.DBus.Error.NoReply");
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert!(silent.calls().is_empty(), "silent + Registration::Never: not even the first call is ever read");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn kde_checks_protocol_version_before_registering() {
+    let bus = PrivateBus::start("fakes-kde-protocol");
+    let peer = Peer::connect(&bus);
+    peer.own(WATCHER_NAME);
+    let served = thread::spawn(move || {
+        let call = peer.next_call().unwrap();
+        assert_eq!((call.interface().as_deref(), call.member().as_deref()), (Some("org.freedesktop.DBus.Properties"), Some("Get")));
+        let (_, name): (&str, &str) = call.read2().unwrap();
+        assert_eq!(name, "ProtocolVersion");
+        peer.channel.send(call.method_return().append1(Variant(1i32))).unwrap();
+        peer.channel.flush();
+        // A real KDE item gives up silently once ProtocolVersion is not 0: nothing else must ever arrive.
+        peer.channel.blocking_pop_message(Duration::from_millis(300)).unwrap()
+    });
+    let _nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let extra = served.join().unwrap();
+    assert!(extra.is_none(), "no RegisterStatusNotifierItem after a non-zero ProtocolVersion: {extra:?}");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn chromiums_signals_are_doubled_on_the_freedesktop_interface() {
+    let bus = PrivateBus::start("fakes-chromium-double");
+    let peer = Peer::connect(&bus);
+    add_match(&peer, "type='signal'");
+    let lumen = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::chromium() });
+    lumen.emit("NewIcon");
+    let kde_side = next_signal(&peer, "NewIcon", Duration::from_secs(1)).expect("the kde-interface copy");
+    assert_eq!(kde_side.interface().as_deref(), Some(ITEM_INTERFACE));
+    let freedesktop_side = next_signal(&peer, "NewIcon", Duration::from_secs(1)).expect("the freedesktop-interface copy");
+    assert_eq!(freedesktop_side.interface().as_deref(), Some("org.freedesktop.StatusNotifierItem"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn chromiums_register_is_a_no_op_after_a_failed_precheck() {
+    let bus = PrivateBus::start("fakes-chromium-no-op");
+    let peer = Peer::connect(&bus);
+    peer.own(WATCHER_NAME);
+    let served = thread::spawn(move || {
+        let call = peer.next_call().unwrap();
+        assert_eq!(call.member().as_deref(), Some("Get"));
+        peer.channel.send(call.method_return().append1(Variant(false))).unwrap();
+        peer.channel.flush();
+        // A second, explicit register() call must not touch the bus again: nothing else arrives.
+        peer.channel.blocking_pop_message(Duration::from_millis(300)).unwrap()
+    });
+    let lumen = FakeItem::start(&bus, Spec::chromium());
+    lumen.register();
+    let extra = served.join().unwrap();
+    assert!(extra.is_none(), "a repeated register() after a failed pre-check must be a no-op: {extra:?}");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_watcher_refuses_an_ownerless_registration() {
+    let bus = PrivateBus::start("fakes-watcher-ownerless");
+    let watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    let r = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        WATCHER_INTERFACE,
+        "RegisterStatusNotifierItem",
+        |m| m.append1("org.example.NoSuchOwner"),
+        Duration::from_secs(2),
+    );
+    assert!(r.is_err(), "a name nobody owns must be refused: {r:?}");
+    assert!(watcher.items().is_empty());
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_watcher_does_not_re_announce_a_duplicate_registration() {
+    let bus = PrivateBus::start("fakes-watcher-dup");
+    let watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    add_match(&peer, &format!("type='signal',interface='{WATCHER_INTERFACE}'"));
+    let register = || {
+        ask(
+            &peer,
+            WATCHER_NAME,
+            WATCHER_PATH,
+            WATCHER_INTERFACE,
+            "RegisterStatusNotifierItem",
+            |m| m.append1(peer.name.as_str()),
+            Duration::from_secs(2),
+        )
+        .unwrap()
+    };
+    register();
+    let first = next_signal(&peer, "StatusNotifierItemRegistered", Duration::from_secs(2));
+    assert!(first.is_some());
+    register();
+    let second = next_signal(&peer, "StatusNotifierItemRegistered", Duration::from_millis(300));
+    assert!(second.is_none(), "a duplicate registration is acknowledged, never announced twice: {second:?}");
+    assert_eq!(watcher.items().len(), 1);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_watcher_drops_a_departed_host() {
+    let bus = PrivateBus::start("fakes-watcher-host-departs");
+    let watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        WATCHER_INTERFACE,
+        "RegisterStatusNotifierHost",
+        |m| m.append1(peer.name.as_str()),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(watcher.hosts(), vec![peer.name.clone()]);
+    drop(peer);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !watcher.hosts().is_empty() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(watcher.hosts().is_empty(), "the departed host must be dropped");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_fake_watcher_answers_get_all() {
+    let bus = PrivateBus::start("fakes-watcher-getall");
+    let watcher = FakeWatcher::start(&bus);
+    let peer = Peer::connect(&bus);
+    let _nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let r = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        "org.freedesktop.DBus.Properties",
+        "GetAll",
+        |m| m.append1(WATCHER_INTERFACE),
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let mut it = r.iter_init();
+    let mut dict = it.recurse(dbus::arg::ArgType::Array).unwrap();
+    let (mut items, mut is_host, mut version) = (None, None, None);
+    while let Some(mut entry) = dict.recurse(dbus::arg::ArgType::DictEntry) {
+        let key: &str = entry.read().unwrap();
+        let mut v = entry.recurse(dbus::arg::ArgType::Variant).unwrap();
+        match key {
+            "RegisteredStatusNotifierItems" => items = v.get::<Vec<String>>(),
+            "IsStatusNotifierHostRegistered" => is_host = v.get::<bool>(),
+            "ProtocolVersion" => version = v.get::<i32>(),
+            _ => {}
+        }
+        dict.next();
+    }
+    assert_eq!(items, Some(vec![format!("org.kde.StatusNotifierItem-4242-1{DEFAULT_ITEM_PATH}")]));
+    assert_eq!(is_host, Some(false));
+    assert_eq!(version, Some(0));
+    assert_eq!(watcher.items().len(), 1, "sanity: matches the plain Get-based assertions used elsewhere");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_unknown_path_answers_unknown_object() {
+    let bus = PrivateBus::start("fakes-unknown-path");
+    let peer = Peer::connect(&bus);
+    let nimbus = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(1) });
+    let r = ask(&peer, &nimbus.unique, "/NoSuchObject", ITEM_INTERFACE, "Activate", |m| m.append2(1i32, 2i32), Duration::from_secs(2));
+    assert_eq!(r.unwrap_err(), "org.freedesktop.DBus.Error.UnknownObject");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_icon_pixmap_value_is_available_though_never_read() {
+    let bus = PrivateBus::start("fakes-iconpixmap");
+    let peer = Peer::connect(&bus);
+    let kettle = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::qt() });
+    let r = property(&peer, &kettle.unique, "/StatusNotifierItem", ITEM_INTERFACE, "IconPixmap").unwrap();
+    let mut it = r.iter_init();
+    let mut v = it.recurse(dbus::arg::ArgType::Variant).unwrap();
+    assert_eq!(v.signature().to_string(), "a(iiay)");
 }

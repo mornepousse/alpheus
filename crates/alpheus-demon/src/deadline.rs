@@ -12,6 +12,13 @@ use std::time::Instant;
 pub struct DeadlineTimer {
     token: Option<RegistrationToken>,
     at: Option<Instant>,
+    /// How many times `sync` actually registered a new timer: used by `armed_count` (a test-only
+    /// getter below) to prove the no-op guard above — a repeated, unchanged deadline — really skips
+    /// re-arming, not just that firing still happens once regardless, which it would even without
+    /// the guard. A plain field here, not test-gated: gating a struct field that way reads oddly to
+    /// the simple brace-counting some text-based tests use on whole items.
+    #[allow(dead_code)]
+    armed: u32,
 }
 
 impl DeadlineTimer {
@@ -37,7 +44,16 @@ impl DeadlineTimer {
                     TimeoutAction::Drop
                 })
                 .ok();
+            #[cfg(test)]
+            {
+                self.armed += 1;
+            }
         }
+    }
+
+    #[cfg(test)]
+    fn armed_count(&self) -> u32 {
+        self.armed
     }
 
     /// Called from `fire`: calloop dropped the source. `fire` MUST call it
@@ -79,18 +95,18 @@ mod tests {
         let mut t = DeadlineTimer::new();
         t.sync(&l.handle(), None, count);
         assert!(!t.is_armed(), "nothing pending: no timer at all");
-        t.sync(&l.handle(), Some(Instant::now() + Duration::from_millis(30)), count);
+        t.sync(&l.handle(), Some(Instant::now() + Duration::from_millis(50)), count);
         assert!(t.is_armed());
         t.sync(&l.handle(), None, count);
         assert!(!t.is_armed(), "the answer came: the timer is removed");
-        run(&mut l, &mut fired, Duration::from_millis(80));
+        run(&mut l, &mut fired, Duration::from_millis(400));
         assert_eq!(fired, 0, "a removed timer never wakes the loop");
-        t.sync(&l.handle(), Some(Instant::now() + Duration::from_millis(20)), count);
-        run(&mut l, &mut fired, Duration::from_millis(80));
+        t.sync(&l.handle(), Some(Instant::now() + Duration::from_millis(50)), count);
+        run(&mut l, &mut fired, Duration::from_millis(400));
         assert_eq!(fired, 1);
         t.fired();
         assert!(!t.is_armed());
-        run(&mut l, &mut fired, Duration::from_millis(50));
+        run(&mut l, &mut fired, Duration::from_millis(400));
         assert_eq!(fired, 1, "fired once, then gone");
     }
 
@@ -100,13 +116,14 @@ mod tests {
         let mut fired = 0;
         let mut t = DeadlineTimer::new();
         let start = Instant::now();
-        let late = start + Duration::from_millis(120);
-        t.sync(&l.handle(), Some(start + Duration::from_millis(20)), count);
+        let late = start + Duration::from_millis(400);
+        t.sync(&l.handle(), Some(start + Duration::from_millis(50)), count);
         t.sync(&l.handle(), Some(late), count);
         t.sync(&l.handle(), Some(late), count);
-        run(&mut l, &mut fired, Duration::from_millis(80));
+        assert_eq!(t.armed_count(), 2, "the repeated deadline must not re-arm a new timer");
+        run(&mut l, &mut fired, Duration::from_millis(200));
         assert_eq!(fired, 0, "the first deadline moved away: it never fires");
-        run(&mut l, &mut fired, Duration::from_millis(100));
+        run(&mut l, &mut fired, Duration::from_millis(400));
         assert_eq!(fired, 1, "the same deadline twice is one timer, firing once");
     }
 }

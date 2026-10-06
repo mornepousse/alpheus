@@ -318,8 +318,53 @@ pub fn session_address(var: impl Fn(&str) -> Option<OsString>, exists: impl Fn(&
     if let Some(a) = var("DBUS_SESSION_BUS_ADDRESS").filter(|a| !a.is_empty() && !launches(a)) {
         return Some(a.to_string_lossy().into_owned());
     }
+    runtime_bus_address(var, exists)
+}
+
+/// "unix:path=<XDG_RUNTIME_DIR>/bus" when `exists` says that socket is there, else None: the half of
+/// `session_address` that never reads `DBUS_SESSION_BUS_ADDRESS`, reused by `session()` to retry once
+/// libdbus rejects the variable's address (a malformed or stale value some other program left behind).
+fn runtime_bus_address(var: impl Fn(&str) -> Option<OsString>, exists: impl Fn(&Path) -> bool) -> Option<String> {
     let socket = Path::new(&var("XDG_RUNTIME_DIR").filter(|d| !d.is_empty())?).join("bus");
-    exists(&socket).then(|| format!("unix:path={}", socket.display()))
+    exists(&socket).then(|| format!("unix:path={}", escape_address_value(&socket.to_string_lossy())))
+}
+
+/// Percent-escapes `s` for a D-Bus address's `path=` value (D-Bus Specification, "Server Addresses"):
+/// every byte outside `[-0-9A-Za-z_/.]` becomes `%XX`, so a runtime directory with an unusual byte
+/// (a space, a comma, anything `;`/`:`/`=`-like that the address grammar itself uses) still yields an
+/// address libdbus parses as one path, not several fields.
+fn escape_address_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'/' | b'.') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// `session()`'s logic, with the environment and the connection attempt both injected: testable
+/// without a real bus. Tries the variable's (or the runtime socket's, when the variable is absent)
+/// address first; if `open` rejects it and the runtime socket exists and differs, retries there once
+/// (a malformed or stale `DBUS_SESSION_BUS_ADDRESS` must not strand the tray when the ordinary socket
+/// would have worked).
+fn session_with<T>(
+    var: impl Fn(&str) -> Option<OsString>,
+    exists: impl Fn(&Path) -> bool,
+    mut open: impl FnMut(&str) -> io::Result<T>,
+) -> io::Result<T> {
+    let Some(address) = session_address(&var, &exists) else {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "no usable DBUS_SESSION_BUS_ADDRESS and no $XDG_RUNTIME_DIR/bus"));
+    };
+    match open(&address) {
+        Ok(bus) => Ok(bus),
+        Err(e) => match runtime_bus_address(&var, &exists) {
+            Some(fallback) if fallback != address => open(&fallback),
+            _ => Err(e),
+        },
+    }
 }
 
 pub struct SessionBus {
@@ -329,17 +374,19 @@ pub struct SessionBus {
     /// down from u32::MAX, far from libdbus's own, so they time out normally.
     lost: u32,
     closed: bool,
+    /// Answers `read` must deliver before anything else: a call made after the bus already closed
+    /// (`Outbox::call` on a closed `SessionBus`) is answered Disconnected here, at once, with no
+    /// pending entry and so no deadline timer.
+    ready: Vec<Incoming>,
 }
 
 impl SessionBus {
     /// The session bus, never autolaunched (controller decision 1): $DBUS_SESSION_BUS_ADDRESS (unless
     /// it names `autolaunch:`), else unix:path=$XDG_RUNTIME_DIR/bus if it exists, else Err(NotFound).
-    /// Blocking connect + Hello, once.
+    /// Blocking connect + Hello, once. Retries the runtime socket once if libdbus rejects the
+    /// variable's address (`session_with`).
     pub fn session() -> io::Result<SessionBus> {
-        match session_address(|k| std::env::var_os(k), |p| p.exists()) {
-            Some(address) => SessionBus::at(&address),
-            None => Err(io::Error::new(io::ErrorKind::NotFound, "no usable DBUS_SESSION_BUS_ADDRESS and no $XDG_RUNTIME_DIR/bus")),
-        }
+        session_with(|k| std::env::var_os(k), |p| p.exists(), SessionBus::at)
     }
 
     /// The bus at `address` (tests: a PrivateBus).
@@ -348,7 +395,7 @@ impl SessionBus {
         let mut channel = Channel::open_private(address).map_err(failed)?;
         channel.register().map_err(failed)?;
         channel.set_watch_enabled(true);
-        Ok(SessionBus { channel, pending: BTreeMap::new(), lost: u32::MAX, closed: false })
+        Ok(SessionBus { channel, pending: BTreeMap::new(), lost: u32::MAX, closed: false, ready: Vec::new() })
     }
 
     pub fn unique_name(&self) -> &str {
@@ -366,7 +413,7 @@ impl SessionBus {
     /// Reads without blocking (read_write(Some(0))) and drains every queued message; answers are
     /// matched by reply serial (a late answer, its call already expired, is dropped).
     pub fn read(&mut self) -> Vec<Incoming> {
-        let mut out = Vec::new();
+        let mut out = std::mem::take(&mut self.ready);
         if self.closed {
             return out;
         }
@@ -408,8 +455,10 @@ impl SessionBus {
         self.pending.values().map(|(_, deadline)| *deadline).min()
     }
 
-    /// Sends a reply, an error or a signal built elsewhere (watcher, router).
+    /// Sends a reply, an error or a signal built elsewhere (watcher, router) — never a method call:
+    /// those go through `call`/`send`, which track or wave off a reply as the call needs.
     pub fn send_message(&mut self, m: Message) {
+        debug_assert_ne!(m.msg_type(), MessageType::MethodCall, "send_message is for replies, errors and signals, not calls");
         let _ = self.channel.send(m);
     }
 
@@ -433,6 +482,14 @@ impl SessionBus {
 
 impl Outbox for SessionBus {
     fn call(&mut self, call: Call) -> CallId {
+        if self.closed {
+            // No socket left to send on: answered at once, never pending, so no deadline timer
+            // ever arms for it (`expire`/`next_deadline` never see this id).
+            self.lost -= 1;
+            let id = CallId(self.lost);
+            self.ready.push(Incoming::Answer { id, call, result: Err(CallError::Disconnected) });
+            return id;
+        }
         let serial = self.channel.send(message(&call)).unwrap_or_else(|()| {
             self.lost -= 1;
             self.lost
@@ -654,5 +711,78 @@ mod tests {
             None,
             "an autolaunch entry anywhere in the list: the whole variable is ignored"
         );
+    }
+
+    #[test]
+    fn the_runtime_socket_address_is_percent_escaped() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+        };
+        let present = |_: &Path| true;
+        assert_eq!(
+            session_address(env(&[("XDG_RUNTIME_DIR", "/run/user/7 x,y")]), present),
+            Some("unix:path=/run/user/7%20x%2Cy/bus".into()),
+            "a space and a comma, both significant to the address grammar, escaped"
+        );
+        assert_eq!(
+            session_address(env(&[("XDG_RUNTIME_DIR", "/run/user/7")]), present),
+            Some("unix:path=/run/user/7/bus".into()),
+            "ordinary characters pass through unescaped"
+        );
+    }
+
+    #[test]
+    fn session_retries_the_runtime_socket_when_the_variable_is_rejected() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+        };
+        let present = |p: &Path| p == Path::new("/run/user/7/bus");
+        let mut tried = Vec::new();
+        let result: io::Result<()> = session_with(
+            env(&[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/malformed"), ("XDG_RUNTIME_DIR", "/run/user/7")]),
+            present,
+            |address| {
+                tried.push(address.to_string());
+                if address == "unix:path=/malformed" { Err(io::Error::other("rejected")) } else { Ok(()) }
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(tried, ["unix:path=/malformed", "unix:path=/run/user/7/bus"]);
+    }
+
+    #[test]
+    fn session_never_retries_when_the_runtime_socket_is_what_it_already_tried() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+        };
+        let present = |p: &Path| p == Path::new("/run/user/7/bus");
+        let mut tried = Vec::new();
+        // No DBUS_SESSION_BUS_ADDRESS: session_address already picked the runtime socket, so a
+        // failure there must not retry the very same address a second time.
+        let result: io::Result<()> = session_with(env(&[("XDG_RUNTIME_DIR", "/run/user/7")]), present, |address| {
+            tried.push(address.to_string());
+            Err(io::Error::other("rejected"))
+        });
+        assert!(result.is_err());
+        assert_eq!(tried, ["unix:path=/run/user/7/bus"]);
+    }
+
+    #[test]
+    fn session_gives_up_when_the_variable_fails_and_no_runtime_socket_exists() {
+        let env = |pairs: &'static [(&'static str, &'static str)]| {
+            move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(v))
+        };
+        let absent = |_: &Path| false;
+        let mut tried = Vec::new();
+        let result: io::Result<()> = session_with(
+            env(&[("DBUS_SESSION_BUS_ADDRESS", "unix:path=/malformed"), ("XDG_RUNTIME_DIR", "/run/user/7")]),
+            absent,
+            |address| {
+                tried.push(address.to_string());
+                Err(io::Error::other("rejected"))
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(tried, ["unix:path=/malformed"], "no runtime socket to fall back to: tried once");
     }
 }

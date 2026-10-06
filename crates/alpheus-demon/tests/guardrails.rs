@@ -596,7 +596,12 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         for never in ["send_with_reply_and_block", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
-        built.extend(std::iter::repeat_n(name.clone(), prod.matches("Message::new_method_call(").count()));
+        // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
+        // bare crossroads-style `ctx.method_call(` or any future way of building a call is caught the
+        // same way, without double-counting the one already-allowed spelling.
+        for pattern in ["method_call(", "call_with_args("] {
+            built.extend(std::iter::repeat_n(name.clone(), prod.matches(pattern).count()));
+        }
     }
     assert!(tray_files >= 2, "the tray's sources were not found");
     assert_eq!(built, ["tray/bus.rs"], "every tray call is built by bus::message, from a Call");
