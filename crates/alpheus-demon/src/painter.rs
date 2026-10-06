@@ -6,6 +6,12 @@
 //! Bounded memory: the font database only holds the faces actually useful
 //! (cosmic-text otherwise parses every monospace face in its database up
 //! front), and the glyph cache is cleared past `MAX_CACHE` entries.
+//!
+//! Masking: a character with no glyph anywhere (`family`, nor any
+//! `fallback`) is simply not drawn, rather than drawn as the resolved
+//! face's `.notdef` "missing glyph" box (`shape`'s `gl.glyph_id == 0`
+//! check). Its cell keeps the width `Grid::write` already gave it — only
+//! the paint is skipped.
 
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Tint};
@@ -44,6 +50,17 @@ struct ShapedGlyph {
 /// exactly one — a lone `char` can still decompose into several glyphs
 /// through font fallback or shaping rules, so this never assumes a single
 /// result).
+///
+/// Masking: a glyph whose id is 0 (`.notdef`, reserved by the OpenType spec
+/// for exactly this — no face, neither `family` nor any configured
+/// fallback, has a cmap entry for `ch`) is dropped here rather than kept
+/// for `glyph` to draw. Left in, it would paint whatever "missing glyph"
+/// box the resolved face happens to use for `.notdef` (the bug this masks:
+/// window-manager spinners and odd title symbols outside every loaded
+/// font). Dropping it here, before a `ShapedGlyph` is ever produced, costs
+/// nothing extra in `glyph` and needs no change to `Grid::write`'s column
+/// accounting: the cell stays exactly as wide as the character's own
+/// width already made it, just with nothing painted into it.
 fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold: bool) -> Vec<ShapedGlyph> {
     let mut s = [0u8; 4];
     buffer.set_text(fs, ch.encode_utf8(&mut s), attrs(family, bold), Shaping::Advanced);
@@ -51,6 +68,9 @@ fn shape(fs: &mut FontSystem, buffer: &mut Buffer, family: &str, ch: char, bold:
     let mut shaped = Vec::new();
     for run in buffer.layout_runs() {
         for gl in run.glyphs.iter() {
+            if gl.glyph_id == 0 {
+                continue;
+            }
             let phys = gl.physical((-gl.x, 0.0), 1.0);
             shaped.push(ShapedGlyph { cache_key: phys.cache_key, dx: phys.x, y: run.line_y as i32 + phys.y, color_opt: gl.color_opt });
         }
@@ -412,7 +432,12 @@ mod tests {
     /// memo (B-I3): reshapes `ch` from scratch every single call, however
     /// many times it was already drawn. Kept only so
     /// `memoized_shaping_is_pixel_identical_to_reshaping_every_glyph` has
-    /// an independent ground truth to compare the memoized path against.
+    /// an independent ground truth to compare the memoized path against —
+    /// frozen with respect to the memo, but still masking `.notdef` the
+    /// same way `shape` does, or a title with an uncovered character (this
+    /// test's "日本語", not in JetBrainsMono Nerd Font Mono nor DejaVu Sans
+    /// Mono) would draw a `.notdef` box here while the real, masked path
+    /// draws nothing, and the two would never match.
     #[allow(clippy::too_many_arguments)]
     fn glyph_reshaped_every_time(p: &mut Fonts, ch: char, bold: bool, x0: f32, ink: Rgb, px: &mut [u8], width: u32, height: u32) {
         if p.cache.image_cache.len() >= MAX_CACHE {
@@ -426,6 +451,9 @@ mod tests {
         let base = Color::rgb(r, g, b);
         for run in p.buffer.layout_runs() {
             for gl in run.glyphs.iter() {
+                if gl.glyph_id == 0 {
+                    continue;
+                }
                 let phys = gl.physical((x0 - gl.x, 0.0), 1.0);
                 let tint = gl.color_opt.unwrap_or(base);
                 p.cache.with_pixels(&mut p.fs, phys.cache_key, tint, |dx, dy, c| {
@@ -571,12 +599,80 @@ mod tests {
         assert!((x3..w).all(|x| (0..h).all(|y| read(x, y) == (pal.bg, 0xff))), "empty cell: background, opaque");
     }
 
+    /// Mae's bug report: Claude Code's terminal title starts with "✳ "
+    /// (U+2733) — a glyph JetBrainsMono Nerd Font Mono does not have
+    /// (checked via its cmap table) but DejaVu Sans Mono does, hence the
+    /// default `fallback`. Bites on dropping that default
+    /// (`FontConfig::default`'s `fallback: Vec::new()` instead of
+    /// `vec!["DejaVu Sans Mono".into()]`): with no fallback loaded,
+    /// `family` alone has no glyph for ✳ either, so masking (see `shape`)
+    /// would drop it and this test would go red.
+    #[test]
+    fn fallback_font_draws_a_symbol_the_main_family_lacks() {
+        let mut p = fonts();
+        let mut g = Grid::empty(3);
+        g.write(0, 3, "\u{2733}", Style::NORMAL); // ✳, eight-spoked asterisk
+        let pal = Palette::default();
+        let av = p.advance(1);
+        let (w, h) = ((av * 3.0).ceil() as u32, DEFAULT_HEIGHT);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        p.paint(&g, &pal, &mut px, w, h, 1);
+        let read = |x: u32, y: u32| {
+            let o = ((y * w + x) * 4) as usize;
+            Rgb(px[o + 2], px[o + 1], px[o])
+        };
+        let ink = (0..av as u32).any(|x| (0..h).any(|y| read(x, y) != pal.bg));
+        assert!(ink, "✳ must be drawn from the fallback font, not masked away");
+        // Directly confirms it is a real glyph (from DejaVu Sans Mono), not
+        // what masking would otherwise have dropped.
+        assert!(!p.shaped('\u{2733}', false).is_empty(), "shaping ✳ must produce a real glyph, not an empty (masked) result");
+    }
+
+    /// A Cherokee letter (U+13A0): no loaded face has it (neither
+    /// JetBrainsMono Nerd Font Mono — itself a reasonably complete font,
+    /// it does carry the braille block the bug report also mentioned, so
+    /// that one turned out not to exercise masking at all — nor the
+    /// default fallback DejaVu Sans Mono; checked via their cmap tables),
+    /// so it must be masked: no `.notdef` box drawn, and the character
+    /// after it stays at its own exact column. Bites on removing the
+    /// `gl.glyph_id == 0` filter in `shape`: the character's cell would
+    /// then show whatever "missing glyph" box the resolved face paints
+    /// for `.notdef`, and `shaped` would stop returning an empty vec.
+    #[test]
+    fn uncovered_character_is_masked_with_a_consistent_width() {
+        let mut p = fonts();
+        assert!(p.shaped('\u{13A0}', false).is_empty(), "no font covers U+13A0: shaping it must yield nothing to draw");
+        let mut g = Grid::empty(3);
+        g.write(0, 3, "A", Style::NORMAL);
+        g.write(1, 3, "\u{13A0}", Style::NORMAL);
+        g.write(2, 3, "B", Style::NORMAL);
+        let pal = Palette::default();
+        let av = p.advance(1);
+        let (w, h) = ((av * 3.0).ceil() as u32, DEFAULT_HEIGHT);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        p.paint(&g, &pal, &mut px, w, h, 1);
+        let read = |x: u32, y: u32| {
+            let o = ((y * w + x) * 4) as usize;
+            Rgb(px[o + 2], px[o + 1], px[o])
+        };
+        let (x0, x1) = ((av * 1.0).round() as u32, (av * 2.0).round() as u32);
+        assert!(
+            (x0..x1).all(|x| (0..h).all(|y| read(x, y) == pal.bg)),
+            "a masked character draws no box at all, just its cell's background"
+        );
+        let ink_b = (x1..w).any(|x| (0..h).any(|y| read(x, y) != pal.bg));
+        assert!(ink_b, "the character right after the masked one is still drawn, at its own column (consistent width)");
+    }
+
     #[test]
     fn only_useful_faces_are_loaded() {
-        // Regular + bold: ≈ 2 MB. The whole database (system + Nerd Font
-        // directory) cost ≈ 47 MB at the plan's review.
+        // Regular + bold of the family, plus regular + bold of DejaVu Sans
+        // Mono (the default fallback): ≈ 2 MB, DejaVu's own share close to
+        // nothing (measured in the release memory suite). The whole
+        // database (system + Nerd Font directory) cost ≈ 47 MB at the
+        // plan's review.
         let p = fonts();
-        assert_eq!(p.loaded_faces(), 2, "faces loaded: {}", p.loaded_faces());
+        assert_eq!(p.loaded_faces(), 4, "faces loaded: {}", p.loaded_faces());
     }
 
     #[test]
@@ -660,7 +756,9 @@ mod tests {
         let w = w.expect("warning expected");
         assert!(w.contains("A Font That Does Not Exist") && w.contains(p.family()), "{w}");
         assert_ne!(p.family(), "A Font That Does Not Exist");
-        assert!(p.loaded_faces() <= 2, "fallback: one family, not the whole database ({})", p.loaded_faces());
+        // The replacement family's own faces (<= 2) plus the default
+        // fallback's (DejaVu Sans Mono, <= 2): still not the whole database.
+        assert!(p.loaded_faces() <= 4, "fallback: one family and one fallback, not the whole database ({})", p.loaded_faces());
     }
 
     #[test]
@@ -774,8 +872,13 @@ mod tests {
     fn ttc_collection_one_face_per_chosen_weight() {
         let directory = test_dir("ttc");
         let path = build_ttc(&directory, &["JetBrainsMonoNerdFontMono-Regular.ttf", "JetBrainsMonoNerdFontMono-Bold.ttf"]);
-        let (p, w) = Fonts::from_dir(Some(&directory), &FontConfig::default(), DEFAULT_HEIGHT)
-            .expect("the built collection contains a monospace font");
+        // No fallback: this test is only about the collection's own face
+        // selection. The default fallback (DejaVu Sans Mono) is absent
+        // from this isolated directory, which would otherwise make
+        // `from_dir` fall back to scanning every system font (same as a
+        // genuinely missing family) — unrelated to what this test checks.
+        let font = FontConfig { fallback: Vec::new(), ..FontConfig::default() };
+        let (p, w) = Fonts::from_dir(Some(&directory), &font, DEFAULT_HEIGHT).expect("the built collection contains a monospace font");
         assert_eq!(w, None, "{w:?}");
         // Regular + bold, each once: not 4 (the collection loaded twice by
         // `load_font_source`, once per chosen weight).
