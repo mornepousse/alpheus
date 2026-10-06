@@ -5,6 +5,9 @@
 //! (`tray_output`): its icons, its gestures, its frame-coalesced re-reads.
 
 use crate::actions::{self, Button, Wheel};
+use crate::calendar::{Calendar, locale_first_day};
+use crate::clock::LocalTime;
+use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
 use crate::keys::Mods;
@@ -754,7 +757,42 @@ impl App {
     /// `launcher_was_open`: whether the launcher was open right before this
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
+    /// The clock's cells when a left press at `x` lands on them (`[clock] calendar`): the calendar's anchor.
+    fn clock_anchor(&mut self, i: usize, x: f64, b: Button) -> Option<PopupAnchor> {
+        let e = self.surfaces[i].scale;
+        let column = painter::column_under(x, e, self.fonts.advance(e));
+        let s = &self.surfaces[i];
+        let zone = s.last.as_ref()?.zone_at(column)?;
+        (b == Button::Left && zone.target == Target::Module(ModuleId::Clock)).then(|| PopupAnchor {
+            output: s.name.clone(),
+            start: zone.start,
+            end: zone.end,
+        })
+    }
+
+    /// Left press on the clock zone: toggles the calendar under it (a second click closes it).
+    pub(crate) fn calendar_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
+        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_))) {
+            self.popup_close(PopupClose::OutsideClick);
+            return;
+        }
+        // The locale's first day, read at each open (decision 11): never at startup, nothing kept
+        // while closed.
+        let calendar = Calendar::new(&LocalTime::now().0, locale_first_day(), self.bar.config.clock.week_numbers);
+        let rows = crate::list::framed(&calendar.render());
+        let month = crate::popup::calendar_month(&calendar);
+        let (columns, height) = (rows.first().map_or(0, Grid::width), rows.len() as u16);
+        if self.popup_open(qh, anchor, PopupBody::Calendar(calendar), columns, height, true) {
+            self.popup_paint(&rows);
+            log(&format!("calendar shown {month}"));
+        }
+    }
+
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
+        if let Some(anchor) = self.clock_anchor(i, x, b) {
+            self.calendar_toggle(qh, anchor);
+            return;
+        }
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
         let toggles = {
@@ -1104,8 +1142,11 @@ impl PointerHandler for App {
                     let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
                         || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
                     // A press on the bar is delivered to it even while one of its popups grabs
-                    // the pointer (same client, fact check 5): it is a click outside that popup.
-                    if self.popup.is_some() {
+                    // the pointer (same client, fact check 5): it is a click outside that popup —
+                    // except the clock's second click: `calendar_toggle` closes its own calendar.
+                    let toggles_calendar = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_)))
+                        && b.is_some_and(|b| self.clock_anchor(i, ev.position.0, b).is_some());
+                    if self.popup.is_some() && !toggles_calendar {
                         // Where the compositor delivered it: a press meant for the popup but handed
                         // to the bar (seen on Hyprland) shows here, at a row below the bar's own.
                         log(&format!("popup: press on the bar at ({:.0}, {:.0})", ev.position.0, ev.position.1));

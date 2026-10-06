@@ -131,6 +131,7 @@ fn window(state: &Feed<CompositorState>) -> Option<Segment> {
     Some(Segment { module: ModuleId::Window, pieces: vec![piece(text, Style::NORMAL)], elastic: true, target: None })
 }
 
+/// The clock is a click zone only when a left click opens the calendar (`[clock] calendar`).
 fn bar_clock(bar: &Bar) -> Segment {
     let pieces = match &bar.clock {
         None => vec![piece("…", Style::MUTED)],
@@ -144,7 +145,8 @@ fn bar_clock(bar: &Bar) -> Segment {
             v
         }
     };
-    Segment { module: ModuleId::Clock, pieces, elastic: false, target: None }
+    let target = bar.config.clock.calendar.then_some(Target::Module(ModuleId::Clock));
+    Segment { module: ModuleId::Clock, pieces, elastic: false, target }
 }
 
 /// A module's segment, or None if it has nothing to show.
@@ -324,6 +326,22 @@ mod tests {
         assert!(g.text().starts_with(" \u{f0349} │  3··  web·  │ "), "{}", g.text());
         let t = b.grid("HEADLESS-1", 120).text();
         assert!(t.contains(" 1 ") && t.contains(" web· "), "unknown screen: every workspace ({t})");
+    }
+
+    #[test]
+    fn the_clock_has_a_zone_only_with_the_calendar() {
+        let clock = Target::Module(ModuleId::Clock);
+        let g = bar().grid("HDMI-A-1", 100);
+        let t = g.text();
+        let start = t.chars().count() as u16 - " Sun 4 Oct 14:05 ".chars().count() as u16 + 1;
+        assert_eq!(g.target_at(start), Some(&clock), "the date's first cell: {t}");
+        assert_eq!(g.target_at(98), Some(&clock), "the time's last cell");
+        assert_eq!(g.target_at(start - 1), None, "the space before the date");
+        assert_eq!(g.target_at(99), None, "the margin");
+        let mut b = bar();
+        b.config.clock.calendar = false;
+        let g = b.grid("HDMI-A-1", 100);
+        assert!(g.zones().iter().all(|z| z.target != clock), "no calendar: the clock is no zone");
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
 use crate::grid::Grid;
 use crate::keys::{self, Key, Mods};
+use crate::list;
 use crate::log::write as log;
 use crate::painter;
 use crate::tray::codec::Layout;
@@ -233,6 +234,11 @@ fn release(k: wl_keyboard::WlKeyboard) {
     if k.version() >= 3 {
         k.release();
     }
+}
+
+/// "2026-10": the shown month, for the log.
+pub(crate) fn calendar_month(c: &Calendar) -> String {
+    format!("{}-{:02}", c.shown.year, c.shown.month)
 }
 
 impl App {
@@ -468,9 +474,27 @@ impl App {
                 let action = self.menu_with(|m, layout| m.key(k, layout));
                 self.menu_action(action, self.key_time);
             }
-            PopupBody::Calendar(_) => {} // task 18
+            // ← → change month, Escape closes (spec § 2).
+            PopupBody::Calendar(_) => match k {
+                Key::Left => self.calendar_scroll(-1),
+                Key::Right => self.calendar_scroll(1),
+                Key::Escape => self.popup_close(PopupClose::Escape),
+                _ => {}
+            },
             PopupBody::Tooltip(_) => {}
         }
+    }
+
+    /// The calendar shows `months` later (earlier when negative), repainted the same size.
+    fn calendar_scroll(&mut self, months: i32) {
+        let Some(PopupBody::Calendar(c)) = self.popup.as_mut().map(|p| &mut p.body) else { return };
+        if !c.scroll(months) {
+            return;
+        }
+        let rows = list::framed(&c.render());
+        let month = calendar_month(c);
+        self.popup_paint(&rows);
+        log(&format!("calendar shows {month}"));
     }
 
     /// Runs `f` on the open menu and its session's layout; Nothing when either is missing — the
@@ -506,7 +530,12 @@ impl App {
                 // right click, say), not necessarily the one running an entry inside it.
                 self.menu_action(action, self.popup_press_time);
             }
-            PopupBody::Calendar(_) => {} // task 18
+            // The wheel changes month.
+            PopupBody::Calendar(_) => {
+                if let PopupPointer::Scroll(steps) = kind {
+                    self.calendar_scroll(steps);
+                }
+            }
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
                 if let PopupPointer::Press(_) = kind {

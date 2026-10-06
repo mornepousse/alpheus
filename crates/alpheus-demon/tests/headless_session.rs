@@ -621,6 +621,10 @@ fn an_animating_icon_still_gets_its_tooltip_after_half_a_second() {
 fn tooltips_false_gives_no_timer_and_no_tooltip() {
     let (_bus, sway, _hypr, d, _item) = tray_bar("tooltip-off", "[tray]\ntooltips = false\n");
     sway.hover(640, 400); // the virtual pointer exists, off the bar
+    // Not across a minute tick: the clock's own wake-up would count (as in the test above).
+    while alpheus_demon::clock::LocalTime::now().0.second > 55 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
     std::thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon: armed with tooltips on, never with them off
     std::thread::sleep(Duration::from_millis(200));
@@ -1097,4 +1101,145 @@ fn the_menu_closes_when_its_path_changes_under_it() {
     // though the router already dropped its own session object as part of noticing the move.
     assert!(d.wait_for("popup closed (menu moved)", DELAY), "{:?}", d.log());
     assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
+}
+
+/// A bar with only the clock (cells 1 to ~16 of HEADLESS-1, from x ≈ 8 px), and `extra` bar.toml lines.
+fn clock_bar(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = format!("modules = [\"clock\"]\n{extra}");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // configured and drawn
+    (sway, hypr, d)
+}
+
+/// "YYYY-MM" of every "calendar shown/shows" line, in order.
+fn calendar_months(d: &Daemon) -> Vec<String> {
+    d.log().iter().filter_map(|l| l.split_once("calendar show").map(|(_, r)| r.rsplit(' ').next().unwrap_or("").to_string())).collect()
+}
+
+/// The month after (or before) "YYYY-MM".
+fn month_step(m: &str, by: i32) -> String {
+    let (y, mo) = m.split_once('-').unwrap();
+    let n = y.parse::<i32>().unwrap() * 12 + mo.parse::<i32>().unwrap() - 1 + by;
+    format!("{}-{:02}", n.div_euclid(12), n.rem_euclid(12) + 1)
+}
+
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn the_calendar_opens_on_the_clock_and_closes_on_escape() {
+    let (sway, _hypr, d) = clock_bar("calendar-escape", "");
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("calendar shown"), 1, "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn the_wheel_and_arrows_change_month() {
+    let (sway, _hypr, d) = clock_bar("calendar-months", "");
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    sway.scroll(60, 120, "down", 1); // inside the calendar, below the clock: next month
+    assert!(d.wait_for_count("calendar shows", 1, DELAY), "{:?}", d.log());
+    keys(&sway, &["Right"]);
+    assert!(d.wait_for_count("calendar shows", 2, DELAY), "{:?}", d.log());
+    keys(&sway, &["Left", "Left"]);
+    assert!(d.wait_for_count("calendar shows", 4, DELAY), "{:?}", d.log());
+    sway.scroll(60, 120, "up", 1); // previous month
+    assert!(d.wait_for_count("calendar shows", 5, DELAY), "{:?}", d.log());
+    let m = calendar_months(&d);
+    let today = m[0].clone();
+    let expected: Vec<String> = [0, 1, 2, 1, 0, -1].iter().map(|by| month_step(&today, *by)).collect();
+    assert_eq!(m, expected, "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("popup closed")), "still open: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_second_click_closes_it() {
+    let (sway, _hypr, d) = clock_bar("calendar-twice", "");
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("calendar shown"), 1, "closed, not reopened: {:?}", d.log());
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for_count("calendar shown", 2, DELAY), "a third click opens it again: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn calendar_false_opens_nothing() {
+    let (sway, _hypr, d) = clock_bar("calendar-off", "[clock]\ncalendar = false\n");
+    sway.click(40, 10, "button1");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(d.log().iter().all(|l| !l.contains("calendar") && !l.contains("popup")), "{:?}", d.log());
+}
+
+/// Requirement 3 of the review: a click elsewhere on the bar closes the calendar (an outside
+/// click), and the loop stays at rest afterwards — nothing the calendar armed is left.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_click_elsewhere_closes_it_and_leaves_no_timer() {
+    let (sway, _hypr, d) = clock_bar("calendar-outside", "");
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    sway.click(640, 10, "button1"); // the bar, far from the clock
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    sway.hover(640, 400);
+    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(delta, 0, "the loop woke {delta} times at rest after the calendar: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn an_output_going_away_closes_the_calendar() {
+    let sway = Sway::start("calendar-gone", 2);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("modules = [\"clock\"]\n"), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-2", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-1 pos 0 0"); // pinned: the click below lands on HEADLESS-1
+    sway.command("output HEADLESS-2 pos 3000 0");
+    std::thread::sleep(Duration::from_millis(300));
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-1 disable");
+    assert!(d.wait_for("popup closed (output gone)", DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn opening_the_launcher_closes_the_calendar() {
+    let (sway, _hypr, d) = clock_bar("calendar-launcher", "");
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for("popup closed (launcher)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_tray_menu_replaces_the_calendar() {
+    let (_bus, sway, _hypr, d, _item) = menu_bar("calendar-menu");
+    sway.click(1260, 10, "button1"); // the clock, at the right end
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    sway.click(12, 10, "button3"); // the tray icon's menu
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().any(|l| l.contains("popup closed (outside click)")), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
