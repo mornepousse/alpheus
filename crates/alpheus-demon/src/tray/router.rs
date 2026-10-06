@@ -42,6 +42,9 @@ pub struct TrayOutput {
     pub menu_changed: bool,
     /// The open menu must close (2 s without an answer, its item gone — task 6).
     pub close_menu: bool,
+    /// `close_menu` is for its item's `Menu` path moving under it (a duplicate registration,
+    /// fix round 2026-10-06), never a real timeout — the wiring must not log it as one.
+    pub menu_path_changed: bool,
     /// The session bus closed: the tray is empty for good (the wiring logs once and drops the Tray).
     pub bus_closed: bool,
 }
@@ -54,6 +57,7 @@ impl TrayOutput {
         }
         self.menu_changed |= other.menu_changed;
         self.close_menu |= other.close_menu;
+        self.menu_path_changed |= other.menu_path_changed;
         self.bus_closed |= other.bus_closed;
     }
 }
@@ -214,13 +218,12 @@ impl Tray {
         // closes. No StatusNotifierItem signal exists for Menu, so this is the only place that
         // notices; checked once per batch, not per event.
         if let Some(m) = self.menu.as_ref() {
-            let stale = match self.host.item(&m.key) {
-                None => true,
-                Some(item) => item.menu.as_deref() != Some(m.path.as_str()),
-            };
-            if stale {
+            let gone = self.host.item(&m.key).is_none();
+            let moved = !gone && self.host.item(&m.key).and_then(|i| i.menu.as_deref()) != Some(m.path.as_str());
+            if gone || moved {
                 self.close_menu();
                 out.close_menu = true;
+                out.menu_path_changed = moved;
             }
         }
         let changes = self.host.take_changes();

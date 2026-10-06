@@ -89,6 +89,12 @@ impl Menu {
         self.levels.last_mut().expect("the root level is never popped")
     }
 
+    /// The current level's selected entry, if any (task 17 fix round: the wiring checks it still
+    /// matches a submenu fetch before grafting a reply that may have arrived late).
+    pub fn selected(&self) -> Option<i32> {
+        self.level().selected
+    }
+
     /// 1 when the current level is a submenu: its `◂ parent` header row.
     fn header(&self) -> usize {
         usize::from(self.levels.len() > 1)

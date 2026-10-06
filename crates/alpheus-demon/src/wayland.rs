@@ -46,7 +46,7 @@ use smithay_client_toolkit::{
     registry_handlers,
 };
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::log::write as log;
 
@@ -350,6 +350,10 @@ pub struct App {
     /// The last button press (serial, time, surface-local position): Activate's
     /// coordinates, the popup grab (task 15).
     pub(crate) last_press: Option<(u32, u32, (f64, f64))>,
+    /// The last press's time ON THE OPEN POPUP's surface (fix round 2026-10-06, requirement 6):
+    /// never `last_press`, which is the bar's own — a mouse click inside a menu running an entry
+    /// sends dbusmenu's `Event` with THIS time, not the click that asked the popup to open.
+    pub(crate) popup_press_time: u32,
     /// The launcher while open; None at rest (nothing of it resident).
     pub(crate) launcher: Option<OpenLauncher>,
     /// Bumped at each open: a scan result from an older open is ignored.
@@ -368,16 +372,27 @@ pub struct App {
     pub(crate) hover_timer: DeadlineTimer,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
-    /// The tray icon last pressed and its cells: where its menu hangs if one is asked for.
-    pub(crate) last_icon: Option<(ItemKey, PopupAnchor)>,
+    /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
+    /// button that pressed it: a failed Activate's menu, arriving asynchronously, is for the icon
+    /// and button the user actually pressed, not necessarily the one under the pointer by then.
+    pub(crate) last_icon: Option<(ItemKey, PopupAnchor, Button)>,
     /// The menu asked for (its session opening, then its popup shown) and where it hangs.
     pub(crate) menu_for: Option<(ItemKey, PopupAnchor)>,
+    /// The button whose press opened `menu_for`'s menu (Mae, 2026-10-06): a click with THAT
+    /// button, or a right click (always), on the same icon only closes its menu.
+    pub(crate) menu_opened_by: Option<Button>,
     /// A submenu asked for whose children are being fetched: entered when they arrive.
     pub(crate) submenu_wanted: Option<i32>,
     /// The last key's time (dbusmenu Event's timestamp).
     pub(crate) key_time: u32,
     /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
     pub(crate) menu_asked_at: Option<Instant>,
+    /// The icon, the closing button and the time of the menu last closed by `done` or an outside
+    /// click (fix round 2026-10-06, requirement 3): a compositor may deliver `xdg_popup.done`
+    /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
+    /// menu`) would let that very press reopen what it just closed — a record of it, consulted
+    /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
+    pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
     /// The bar surface `hover.over`'s icon was last seen on, set by `hover_moved` (which knows the
     /// exact surface `i`); `hover_fire` locates it by this IDENTITY, never by re-deriving the bar
     /// from `Anchor::output` — a name that `update_output` can change, or that two bars could
@@ -444,6 +459,7 @@ impl App {
             tray_frame_pending: None,
             hwheel: Wheel::default(),
             last_press: None,
+            popup_press_time: 0,
             launcher: None,
             launcher_generation: 0,
             mail: None,
@@ -456,9 +472,11 @@ impl App {
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
+            menu_opened_by: None,
             submenu_wanted: None,
             key_time: 0,
             menu_asked_at: None,
+            recently_closed_menu: None,
             hover_surface: None,
             windows_dirty: false,
             scan_started: None,
@@ -624,21 +642,31 @@ impl App {
             }
             self.menu_end();
         }
-        if let Some(key) = out.open_menu {
-            match self.last_icon.clone().filter(|(k, _)| *k == key) {
-                Some((key, anchor)) => self.menu_requested(key, anchor),
-                None => log("tray: a menu was asked for an icon no longer under the pointer"),
-            }
-        }
+        // Fix round 2026-10-06, requirement 4: close_menu before open_menu — both can land in the
+        // SAME batch (one incoming message closes the menu stale under it, another opens a new
+        // one for a different item), and processing open_menu first would let this close_menu,
+        // meant for the OLD request, wrongly end the NEW one `open_menu` just replaced it with.
         if out.close_menu && self.menu_for.is_some() {
             let gone = self.menu_for.as_ref().is_some_and(|(k, _)| self.tray.as_ref().is_none_or(|t| t.item(k).is_none()));
-            let why = if gone { PopupClose::ItemGone } else { PopupClose::Timeout };
+            let why = if gone {
+                PopupClose::ItemGone
+            } else if out.menu_path_changed {
+                PopupClose::MenuMoved
+            } else {
+                PopupClose::Timeout
+            };
             if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
                 self.popup_close(why);
             } else {
                 // Never shown (no layout within 2 s, question 8): nothing to close but the request.
                 self.menu_end();
                 log(&format!("tray: menu not shown ({})", why.text()));
+            }
+        }
+        if let Some(key) = out.open_menu {
+            match self.last_icon.clone().filter(|(k, _, _)| *k == key) {
+                Some((key, anchor, button)) => self.menu_requested(key, anchor, button),
+                None => log("tray: a menu was asked for an icon no longer under the pointer"),
             }
         }
         if out.menu_changed {
@@ -698,13 +726,15 @@ impl App {
         }
     }
 
-    /// A gesture at `position` (surface-local, logical) on bar `i`: sent to
-    /// the tray icon there, with that position (decision 4); false when no
-    /// icon is there (the bar's own click handling then applies).
-    fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture) -> bool {
+    /// A gesture at `position` (surface-local, logical) on bar `i`, from button `b`: sent to the
+    /// tray icon there, with that position (decision 4); false when no icon is there (the bar's
+    /// own click handling then applies).
+    fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture, b: Button) -> bool {
         let Some(key) = self.tray_key_at(i, position.0) else { return false };
-        // Task 17: the icon's cells, where its menu will hang.
-        self.last_icon = self.icon_anchor(i, position.0);
+        // Task 17: the icon's cells, where its menu will hang, and the button that pressed it
+        // (fix round 2026-10-06, requirement 2) — read back by `menu_requested` once the menu
+        // actually opens, which may be later (a failed Activate's error answers asynchronously).
+        self.last_icon = self.icon_anchor(i, position.0).map(|(k, a)| (k, a, b));
         if let Some(tray) = self.tray.as_mut() {
             let out = tray.gesture(&key, g, (position.0 as i32, position.1 as i32));
             self.tray_output(out);
@@ -756,10 +786,31 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
     }
 }
 
-/// Mae (2026-10-05): a second right click on the icon whose menu is shown closes that menu and does
-/// nothing else — the press that closed it never reopens it (like `decide_click` for the launcher).
-fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemKey>, b: Option<Button>) -> bool {
-    b == Some(Button::Right) && menu_shown_for.is_some() && menu_shown_for == pressed_icon
+/// Mae (2026-10-05), generalised 2026-10-06: a click on the icon whose menu is shown, with the
+/// button that opened it, only closes that menu and does nothing else; a right click always
+/// closes it, whatever opened it — the press that closed it never reopens it (like `decide_click`
+/// for the launcher). Steam's menu, opened by a left click (a failed Activate, no `Menu` of its
+/// own on the press), is closed the same way: the same left click again, no new Activate, no
+/// flicker.
+fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemKey>, b: Option<Button>, opened_by: Option<Button>) -> bool {
+    menu_shown_for.is_some() && menu_shown_for == pressed_icon && b.is_some() && (b == Some(Button::Right) || b == opened_by)
+}
+
+/// Fix round 2026-10-06, requirement 3 (Hyprland/niri hardening): a compositor may deliver `xdg_
+/// popup.done` (closing the popup as an outside click) before the press that follows it reaches
+/// the bar — by then `closes_own_menu` sees no menu open at all and would let this very press
+/// reopen what it just closed. `record` (the icon whose menu this was, the button that opened it,
+/// and when it closed) makes that press still only-closing: the same icon, a button `closes_own_
+/// menu` would also have accepted (its own opening button, or a right click), within `
+/// RECENT_CLOSE_WINDOW` of the close.
+const RECENT_CLOSE_WINDOW: Duration = Duration::from_millis(300);
+
+fn closed_recently(record: Option<&(ItemKey, Button, Instant)>, pressed_icon: Option<&ItemKey>, b: Option<Button>, now: Instant) -> bool {
+    let Some((key, opened_by, at)) = record else { return false };
+    b.is_some()
+        && pressed_icon == Some(key)
+        && (b == Some(Button::Right) || b == Some(*opened_by))
+        && now.duration_since(*at) < RECENT_CLOSE_WINDOW
 }
 
 /// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
@@ -767,6 +818,15 @@ fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemK
 /// without its own Activate, e.g. Steam) must not close and reopen the session already in flight.
 fn already_requested(menu_for: Option<&ItemKey>, key: &ItemKey) -> bool {
     menu_for == Some(key)
+}
+
+/// Fix round 2026-10-06, requirement 1: a submenu fetch (`submenu_wanted`) is worth grafting only
+/// if the menu's current selection is still that very id when the layout arrives — any other
+/// action in between (a move, going back, a different submenu chosen) clears `submenu_wanted`
+/// itself (`menu_action`), but `relayout`'s own bookkeeping can also shift the selection without
+/// going through it (an entry dropped from the menu, say); this is the last check before grafting.
+fn submenu_still_selected(wanted: Option<i32>, selected: Option<i32>) -> bool {
+    wanted.is_some() && wanted == selected
 }
 
 impl CompositorHandler for App {
@@ -983,6 +1043,12 @@ impl PointerHandler for App {
                 if let (PointerEventKind::Enter { .. }, Some(p)) = (&ev.kind, &self.pointer) {
                     let _ = p.set_cursor(conn, CursorIcon::Default);
                 }
+                // Fix round 2026-10-06, requirement 6: THIS press's own time — never the bar's
+                // `last_press`, the click that asked the popup to open — so a mouse click running
+                // a menu entry sends dbusmenu's `Event` with the click's own timestamp.
+                if let PointerEventKind::Press { time, .. } = &ev.kind {
+                    self.popup_press_time = *time;
+                }
                 // The popup's OWN wheel accumulator (task 15 fix round), never the bar's
                 // `self.wheel`: a notch half-scrolled on the bar must not carry into a menu, or
                 // the other way around.
@@ -1014,11 +1080,23 @@ impl PointerHandler for App {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
+                    // Fix round 2026-10-06, requirement 7: a press that hits no icon drops
+                    // `last_icon` — a failed Activate answered late, for whatever icon was
+                    // pressed before this one, must not open a menu once the user has pressed
+                    // elsewhere on the bar meanwhile.
+                    if pressed_icon.is_none() {
+                        self.last_icon = None;
+                    }
+                    let b = actions::button(*button);
                     let menu_shown_for = match self.popup.as_ref().map(|p| &p.body) {
                         Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
                         _ => None,
                     };
-                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), actions::button(*button));
+                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
+                        || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
+                    // Requirement 3: consumed by a matching press, and just as irrelevant to any
+                    // other one — never reused by a later, unrelated press.
+                    self.recently_closed_menu = None;
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup.
                     if self.popup.is_some() {
@@ -1032,22 +1110,22 @@ impl PointerHandler for App {
                     if only_closes {
                         continue; // the menu's own icon: closed, never reopened (Mae)
                     }
-                    if let Some(b) = actions::button(*button) {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
+                    if let Some(b) = b {
+                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
                             self.click(qh, i, ev.position.0, b, was_open);
                         }
                     }
                 }
                 PointerEventKind::Axis { horizontal, vertical, .. } => {
                     if let Some(b) = self.wheel.add(vertical.absolute, vertical.discrete, vertical.value120) {
-                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
+                        if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
                             self.click(qh, i, ev.position.0, b, false);
                         }
                     }
                     // The horizontal axis only scrolls tray icons.
                     let h = self.hwheel.add(horizontal.absolute, horizontal.discrete, horizontal.value120);
-                    if let Some(g) = h.and_then(actions::tray_horizontal) {
-                        self.tray_gesture_at(i, ev.position, g);
+                    if let (Some(b), Some(g)) = (h, h.and_then(actions::tray_horizontal)) {
+                        self.tray_gesture_at(i, ev.position, g, b);
                     }
                     // End of gesture (notched wheel released, touchpad
                     // lifted): nothing to carry over to the next gesture.
@@ -1215,9 +1293,10 @@ impl App {
         }
     }
 
-    /// The item's menu: remembered anchor (the clicked icon's zone on that output); the popup opens when
-    /// the first layout arrives (question 8) — or never, when 2 s pass first.
-    pub(crate) fn menu_requested(&mut self, key: ItemKey, anchor: PopupAnchor) {
+    /// The item's menu: remembered anchor (the clicked icon's zone on that output) and the button
+    /// that asked for it; the popup opens when the first layout arrives (question 8) — or never,
+    /// when 2 s pass first.
+    pub(crate) fn menu_requested(&mut self, key: ItemKey, anchor: PopupAnchor, button: Button) {
         // Review requirement 3: a menu already open, or whose session is already opening, for this
         // icon is untouched — a duplicate failed Activate (two quick left clicks on Steam, each
         // erroring in turn) must not close and reopen the session already in flight for it. Distinct
@@ -1236,6 +1315,7 @@ impl App {
         self.tray_sync();
         if opened {
             self.menu_for = Some((key, anchor));
+            self.menu_opened_by = Some(button);
             self.submenu_wanted = None;
             self.menu_asked_at = Some(Instant::now());
         } else {
@@ -1257,12 +1337,21 @@ impl App {
             };
             m.relayout(layout);
             if let Some(id) = *submenu_wanted {
-                // Review requirement 4: a stale asynchronous `enter` (the user went back, or
-                // elsewhere, before this submenu's layout arrived) is refused by `Menu::enter`
-                // itself (`level_alive`, checked against the CURRENT level): dropped here with
-                // nothing else to do, never a crash, never entering the wrong level.
-                if m.enter(id, layout) {
-                    *submenu_wanted = None;
+                // Review requirement 4, hardened by the fix round (requirement 1): a stale
+                // asynchronous graft is refused two ways now. `Menu::enter` itself
+                // (`level_alive`, checked against the CURRENT level) catches an id that is no
+                // longer a selectable entry there at all. `submenu_still_selected` catches the
+                // narrower case `level_alive` cannot see: the id IS still a valid entry of this
+                // level, but the user has since moved the selection elsewhere (a hover, a scroll)
+                // without leaving the level — Steam and Electron re-emit `LayoutUpdated` often
+                // enough that a late graft can otherwise jump into "More" long after the user
+                // looked elsewhere.
+                if submenu_still_selected(Some(id), m.selected()) {
+                    if m.enter(id, layout) {
+                        *submenu_wanted = None;
+                    }
+                } else {
+                    *submenu_wanted = None; // stale: the user moved away first, nothing to graft
                 }
             }
             self.menu_repaint();
@@ -1326,6 +1415,14 @@ impl App {
     /// MenuAction → Tray calls and popup changes (Click: menu_click with the key or press time, then
     /// close Activated; Submenu: menu_submenu, enter when grafted; Close: close_menu + popup_close).
     pub(crate) fn menu_action(&mut self, a: MenuAction, timestamp: u32) {
+        // Fix round 2026-10-06, requirement 1: any of these three actions invalidates a pending
+        // submenu fetch (`submenu_wanted`) — a selection move or going back (both Redraw), a
+        // DIFFERENT submenu asked for, or an entry run all mean the user is no longer waiting on
+        // the one that was asked for before. Left uncleared, a late `LayoutUpdated` (Steam,
+        // Electron re-emit it often) could otherwise graft it in long after the user moved on.
+        if matches!(a, MenuAction::Redraw | MenuAction::Submenu(_) | MenuAction::Click(_)) {
+            self.submenu_wanted = None;
+        }
         match a {
             MenuAction::Nothing => {}
             MenuAction::Redraw => self.menu_repaint(),
@@ -1361,11 +1458,18 @@ impl App {
 
     /// The menu asked for or shown is over: its D-Bus session too (RemoveMatch, task 6), logged.
     pub(crate) fn menu_end(&mut self) {
-        self.menu_for = None;
+        // Fix round 2026-10-06, requirement 5: logged whenever there WAS an app-level request —
+        // even if the router already dropped its own session object first (the stale-path check
+        // closes it before ever surfacing `close_menu`): `tray.close_menu()` is harmless once
+        // there is nothing left to close, but the request DID end, and used to go unlogged then.
+        let had_one = self.menu_for.take().is_some();
+        self.menu_opened_by = None;
         self.submenu_wanted = None;
         self.menu_asked_at = None;
-        if let Some(tray) = self.tray.as_mut().filter(|t| t.menu().is_some()) {
-            tray.close_menu();
+        if had_one {
+            if let Some(tray) = self.tray.as_mut() {
+                tray.close_menu();
+            }
             log("tray: menu session closed");
         }
         self.tray_sync(); // requirement 1: re-arms the deadline timer after close_menu
@@ -1426,15 +1530,53 @@ mod tests {
         assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
     }
 
+    /// Mae (2026-10-06): a click with the button that opened the menu, or a right click whatever
+    /// opened it, on the icon whose menu is shown closes that menu and does nothing else.
     #[test]
-    fn a_second_right_click_on_the_menus_icon_only_closes_it() {
+    fn closes_only_with_the_opening_button_or_a_right_click() {
         let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
         let (a, b) = (key(1), key(2));
-        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right)), "the menu's own icon: closed, nothing else");
-        assert!(!closes_own_menu(Some(&a), Some(&b), Some(Button::Right)), "another icon: its menu opens");
-        assert!(!closes_own_menu(Some(&a), Some(&a), Some(Button::Left)), "a left click still activates");
-        assert!(!closes_own_menu(None, Some(&a), Some(Button::Right)), "no menu shown: it opens");
-        assert!(!closes_own_menu(Some(&a), None, Some(Button::Right)), "elsewhere on the bar: the bar's own action");
+        // Opened by a right click (the common case): a right click closes it; a left click does
+        // not — it is left to run as its own gesture (Activate), after the popup still closes as
+        // a plain click outside.
+        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right), Some(Button::Right)), "right closes its own menu");
+        assert!(!closes_own_menu(Some(&a), Some(&a), Some(Button::Left), Some(Button::Right)), "left: not the opening button");
+        // Opened by a left click (Steam: ItemIsMenu, or a refused Activate): the SAME left click
+        // closes it too — no new Activate, no flicker.
+        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Left), Some(Button::Left)), "left closes a menu it opened");
+        // A right click always closes it, whatever opened it.
+        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right), Some(Button::Left)), "right always closes it");
+        assert!(!closes_own_menu(Some(&a), Some(&b), Some(Button::Right), Some(Button::Right)), "another icon: its menu opens");
+        assert!(!closes_own_menu(None, Some(&a), Some(Button::Right), Some(Button::Right)), "no menu shown: it opens");
+        assert!(!closes_own_menu(Some(&a), None, Some(Button::Right), Some(Button::Right)), "elsewhere on the bar: the bar's own action");
+    }
+
+    /// Fix round 2026-10-06, requirement 3: the compositor may close the popup (`done`) before the
+    /// press that follows it is delivered — a record of what just closed covers that race.
+    #[test]
+    fn a_press_right_after_a_race_closed_popup_only_closes_too() {
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let (a, b) = (key(1), key(2));
+        let t0 = Instant::now();
+        let record = (a.clone(), Button::Right, t0);
+        assert!(closed_recently(Some(&record), Some(&a), Some(Button::Right), t0), "right: the closing rule's button");
+        assert!(closed_recently(Some(&record), Some(&a), Some(Button::Right), t0 + Duration::from_millis(100)), "still within the window");
+        assert!(!closed_recently(Some(&record), Some(&a), Some(Button::Right), t0 + RECENT_CLOSE_WINDOW), "window elapsed");
+        assert!(!closed_recently(Some(&record), Some(&b), Some(Button::Right), t0), "a different icon: its own press");
+        assert!(!closed_recently(Some(&record), Some(&a), Some(Button::Left), t0), "left, but it was opened and closed by right");
+        assert!(!closed_recently(None, Some(&a), Some(Button::Right), t0), "no record: nothing to race against");
+        let left_opened = (a.clone(), Button::Left, t0);
+        assert!(closed_recently(Some(&left_opened), Some(&a), Some(Button::Left), t0), "the same button that opened it");
+    }
+
+    /// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current
+    /// selection is still the one it was asked for.
+    #[test]
+    fn a_submenu_fetch_grafts_only_while_still_selected() {
+        assert!(submenu_still_selected(Some(3), Some(3)), "still on it: graft it in");
+        assert!(!submenu_still_selected(Some(3), Some(7)), "selection moved elsewhere: drop it");
+        assert!(!submenu_still_selected(Some(3), None), "nothing selected any more: drop it");
+        assert!(!submenu_still_selected(None, Some(3)), "nothing was ever asked for");
     }
 
     /// Review requirement 3: a duplicate failed Activate (two quick left clicks on an item without

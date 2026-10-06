@@ -35,6 +35,7 @@ use smithay_client_toolkit::shell::xdg::XdgPositioner;
 use smithay_client_toolkit::shell::xdg::popup::{Popup, PopupConfigure, PopupHandler};
 use smithay_client_toolkit::shell::xdg::window::{Window, WindowConfigure, WindowHandler};
 use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
+use std::time::Instant;
 
 /// `xdg_popup.reposition` exists from `xdg_wm_base` version 3.
 const REPOSITION_VERSION: u32 = 3;
@@ -104,6 +105,9 @@ pub enum PopupClose {
     Replaced,
     ItemGone,
     Timeout,
+    /// Its item's `Menu` path moved under it (a duplicate registration, fix round 2026-10-06):
+    /// never a real timeout, so it gets its own, honestly-named reason.
+    MenuMoved,
     Launcher,
     /// A tooltip: the pointer left its icon (task 16).
     HoverEnded,
@@ -121,6 +125,7 @@ impl PopupClose {
             PopupClose::Replaced => "replaced",
             PopupClose::ItemGone => "item gone",
             PopupClose::Timeout => "timeout",
+            PopupClose::MenuMoved => "menu moved",
             PopupClose::Launcher => "launcher",
             PopupClose::HoverEnded => "hover ended",
             PopupClose::Error => "error",
@@ -387,6 +392,16 @@ impl App {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
         let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
+        // done` (routed here as OutsideClick) before the press that follows it reaches the bar — a
+        // record of what just closed, by whom it was opened, and when, lets that next press still
+        // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
+        // gone by the time it arrives.
+        if menu && why == PopupClose::OutsideClick {
+            if let (Some((key, _)), Some(button)) = (self.menu_for.clone(), self.menu_opened_by) {
+                self.recently_closed_menu = Some((key, button, Instant::now()));
+            }
+        }
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
@@ -437,13 +452,16 @@ impl App {
         }
     }
 
-    /// Runs `f` on the open menu and its session's layout; Close when either is missing (the
-    /// session ended under it).
+    /// Runs `f` on the open menu and its session's layout; Nothing when either is missing — the
+    /// session ended under it (its item gone, its path moved, a call timed out), which `tray_
+    /// output` has already closed and logged with the right reason (fix round 2026-10-06,
+    /// requirement 5): a fabricated `MenuAction::Close` here would make `menu_action` log it again,
+    /// wrongly, as "escape".
     fn menu_with(&mut self, f: impl FnOnce(&mut Menu, &Layout) -> MenuAction) -> MenuAction {
         let App { tray, popup, .. } = self;
         match (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body)) {
             (Some(layout), Some(PopupBody::Menu(m))) => f(m, layout),
-            _ => MenuAction::Close,
+            _ => MenuAction::Nothing,
         }
     }
 
@@ -462,8 +480,10 @@ impl App {
                     (PopupPointer::Scroll(steps), _) => self.menu_with(|m, l| m.scroll(steps, l)),
                     _ => MenuAction::Nothing,
                 };
-                let time = self.last_press.map_or(0, |(_, t, _)| t);
-                self.menu_action(action, time);
+                // Fix round 2026-10-06, requirement 6: the popup's OWN last press, never the
+                // bar's `last_press` — that one is the click that asked the popup to open (a
+                // right click, say), not necessarily the one running an entry inside it.
+                self.menu_action(action, self.popup_press_time);
             }
             PopupBody::Calendar(_) => {} // task 18
             // A press on the tooltip dismisses it (nothing in it is clickable).
@@ -719,10 +739,22 @@ mod tests {
     #[test]
     fn close_reasons_have_texts() {
         use PopupClose::*;
-        let all = [Escape, OutsideClick, Activated, OutputGone, Replaced, ItemGone, Timeout, Launcher, HoverEnded, Error];
+        let all = [Escape, OutsideClick, Activated, OutputGone, Replaced, ItemGone, Timeout, MenuMoved, Launcher, HoverEnded, Error];
         assert_eq!(
             all.map(PopupClose::text),
-            ["escape", "outside click", "activated", "output gone", "replaced", "item gone", "timeout", "launcher", "hover ended", "error"]
+            [
+                "escape",
+                "outside click",
+                "activated",
+                "output gone",
+                "replaced",
+                "item gone",
+                "timeout",
+                "menu moved",
+                "launcher",
+                "hover ended",
+                "error"
+            ]
         );
     }
 }

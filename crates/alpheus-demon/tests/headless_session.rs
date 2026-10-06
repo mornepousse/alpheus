@@ -745,6 +745,31 @@ fn steam_left_click_opens_the_menu() {
     assert!(item.calls().iter().any(|c| c.contains("Activate")), "Activate tried first: {:?}", item.calls());
 }
 
+/// Mae (2026-10-06): a click on the icon whose menu is shown, with the button that opened it,
+/// only closes it. Steam's menu opens from a failed left-click Activate; the SAME left click again
+/// must only close it — no new Activate, no flicker.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_second_left_click_on_steams_icon_only_closes_its_menu() {
+    let bus = PrivateBus::start("menu-steam-toggle");
+    let sway = Sway::start("menu-steam-toggle", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let item = FakeItem::start(&bus, Spec::steam());
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button1"); // Activate refused: the menu instead
+    assert!(d.wait_for("menu shown", DELAY), "{:?} / {:?}", d.log(), item.calls());
+    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    let activates_before = item.calls().iter().filter(|c| c.contains("Activate")).count();
+    sway.click(12, 10, "button1"); // the SAME left click: only closes it
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(item.calls().iter().filter(|c| c.contains("Activate")).count(), activates_before, "no new Activate: {:?}", item.calls());
+    assert_eq!(d.count("menu shown"), 1, "closed, not reopened: {:?}", d.log());
+}
+
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn an_outside_click_closes_the_menu() {
@@ -815,6 +840,87 @@ fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
             peer.channel.flush();
         }
     });
+}
+
+/// An item with a `Menu` and no `ItemIsMenu` (so a left click first tries Activate): a `Peer`
+/// whose `Activate` is refused only after `delay`, but whose dbusmenu answers at once (one entry,
+/// "Item") so a menu that does open shows right away — review fix round requirement 7: the delay
+/// is wide enough to click elsewhere on the bar before the error reply, and so the late
+/// `open_menu`, lands.
+fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
+    let peer = Peer::connect(bus);
+    std::thread::spawn(move || {
+        let register = dbus::Message::new_method_call(
+            "org.kde.StatusNotifierWatcher",
+            "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher",
+            "RegisterStatusNotifierItem",
+        )
+        .unwrap()
+        .append1("/StatusNotifierItem");
+        let _ = peer.call(register);
+        while let Some(call) = peer.next_call() {
+            if call.interface().as_deref() == Some("org.kde.StatusNotifierItem") && call.member().as_deref() == Some("Activate") {
+                std::thread::sleep(delay);
+                let reply =
+                    dbus::Message::error(&call, &"org.freedesktop.DBus.Error.UnknownMethod".into(), &std::ffi::CString::new("no").unwrap());
+                let _ = peer.channel.send(reply);
+                peer.channel.flush();
+                continue;
+            }
+            if call.interface().as_deref() == Some("com.canonical.dbusmenu") {
+                let reply = if call.member().as_deref() == Some("AboutToShow") {
+                    call.method_return().append1(false)
+                } else {
+                    // GetLayout: revision 1, the root (its children-display) with one entry, "Item".
+                    type Node = (i32, PropMap, Vec<Variant<Box<dyn RefArg>>>);
+                    let prop = |k: &str, v: &str| PropMap::from([(k.to_string(), Variant(Box::new(v.to_string()) as Box<dyn RefArg>))]);
+                    let entry: Node = (1, prop("label", "Item"), Vec::new());
+                    let root: Node = (0, prop("children-display", "submenu"), vec![Variant(Box::new(entry) as Box<dyn RefArg>)]);
+                    call.method_return().append2(1u32, root)
+                };
+                let _ = peer.channel.send(reply);
+                peer.channel.flush();
+                continue;
+            }
+            if call.interface().as_deref() != Some("org.freedesktop.DBus.Properties") {
+                continue;
+            }
+            let property: String = call.read2::<&str, &str>().map(|(_, p)| p.to_string()).unwrap_or_default();
+            let reply = match property.as_str() {
+                "Id" => call.method_return().append1(dbus::arg::Variant("slow")),
+                "Menu" => call.method_return().append1(dbus::arg::Variant(dbus::Path::from("/Menu"))),
+                _ => dbus::Message::error(
+                    &call,
+                    &"org.freedesktop.DBus.Error.UnknownProperty".into(),
+                    &std::ffi::CString::new("no").unwrap(),
+                ),
+            };
+            let _ = peer.channel.send(reply);
+            peer.channel.flush();
+        }
+    });
+}
+
+/// Fix round 2026-10-06, requirement 7: a press on the bar that hits no icon drops `last_icon` —
+/// a failed Activate answered late, for the icon pressed earlier, must open nothing once the user
+/// has since clicked elsewhere.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_late_failed_activate_after_clicking_elsewhere_opens_nothing() {
+    let bus = PrivateBus::start("menu-elsewhere");
+    let sway = Sway::start("menu-elsewhere", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    slow_activate_item(&bus, Duration::from_millis(800));
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button1"); // left click: Activate sent, answered late
+    std::thread::sleep(Duration::from_millis(200));
+    sway.click(100, 10, "button1"); // elsewhere on the bar, before the error reply lands
+    std::thread::sleep(Duration::from_secs(1)); // the delayed error reply has now landed
+    assert_eq!(d.count("menu shown"), 0, "clicked elsewhere before the reply landed: {:?}", d.log());
 }
 
 #[test]
@@ -957,5 +1063,9 @@ fn the_menu_closes_when_its_path_changes_under_it() {
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
     item.set("Menu", Value::Path("/OtherMenu".into()));
     item.register();
-    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    // Fix round 2026-10-06, requirement 5: the item is still here — only its Menu moved — so this
+    // must never be logged as "timeout", and the session itself still ends (and says so), even
+    // though the router already dropped its own session object as part of noticing the move.
+    assert!(d.wait_for("popup closed (menu moved)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
 }
