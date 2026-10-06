@@ -34,6 +34,23 @@ use std::time::{Duration, Instant};
 /// magnitude for "too long" elsewhere on this socket.
 const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 
+/// How long after the launcher opens a Toggle is still ignored (Mae,
+/// 2026-10-06): with a press bind, Hyprland fires the bind a second time on
+/// release once the launcher has grabbed the keyboard, so a second Toggle
+/// lands here a few ms to ~200 ms after the open and would otherwise close
+/// the box right back. Ignoring it is what keeps the press bind usable — the
+/// release bind nixos-config tried instead misses whenever Mae lets go of
+/// Super before Space.
+const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
+
+/// Whether a Toggle arriving `since_open` after the launcher opened must be
+/// ignored rather than close it (see `TOGGLE_DEBOUNCE`). A real double click
+/// on the bar button within the window is treated the same way — ignored,
+/// not a bug.
+fn toggle_is_debounced(since_open: Duration) -> bool {
+    since_open < TOGGLE_DEBOUNCE
+}
+
 fn guarded_with<R>(what: &str, f: impl FnOnce() -> R, log: &mut dyn FnMut(&str)) -> Option<R> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
         Ok(r) => Some(r),
@@ -63,13 +80,17 @@ pub enum Action {
     },
 }
 
-/// open: None (closed), Some(false) (apps), Some(true) (script). The Reply, when Some, is sent at once
+/// open: None (closed), Some(false) (apps), Some(true) (script). `since_open` is the time elapsed
+/// since the launcher opened (ignored when `open` is None). The Reply, when Some, is sent at once
 /// on this connection: Toggle/Close → Done (Toggle closes an open script launcher: its own client gets
-/// Cancelled through launcher_close); Dmenu while a script is open → (Nothing, Some(Busy));
-/// Dmenu otherwise → (OpenScript, None).
-pub fn decide(request: Request, open: Option<bool>) -> (Action, Option<Reply>) {
+/// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
+/// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
+pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Action, Option<Reply>) {
     match (request, open) {
         (Request::Toggle, None) => (Action::OpenApps, Some(Reply::Done)),
+        // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
+        // action: the Hyprland press-bind refire must not take the box right back down.
+        (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Toggle, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Close, None) => (Action::Nothing, Some(Reply::Done)),
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
@@ -196,7 +217,8 @@ impl App {
         // just the part after this request was fully read (review item 4).
         let requested_at = conn.accepted_at();
         let open = self.launcher.as_ref().map(|o| o.model.is_script());
-        match decide(request, open) {
+        let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
+        match decide(request, open, since_open) {
             (Action::OpenScript { prompt, lines }, _) => {
                 if self.launcher_is_open() {
                     self.launcher_close(CloseReason::Replaced);
@@ -222,12 +244,17 @@ impl App {
     }
 
     /// Bar button and Toggle: open (reads launcher.toml and the history now, spawns the scan with a new
-    /// generation, decides the spawner) or close.
+    /// generation, decides the spawner) or close — unless debounced (`TOGGLE_DEBOUNCE`): a real
+    /// double click on the bar button right after opening is ignored the same way a Hyprland
+    /// press-bind refire is.
     pub fn launcher_toggle(&mut self, qh: &QueueHandle<App>) {
         let qh = qh.clone();
         self.launcher_guarded("toggle", move |app| {
             if app.launcher_is_open() {
-                app.launcher_close(CloseReason::Toggle);
+                let since_open = app.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
+                if !toggle_is_debounced(since_open) {
+                    app.launcher_close(CloseReason::Toggle);
+                }
             } else {
                 app.launcher_open_apps(&qh, Instant::now());
             }
@@ -382,6 +409,10 @@ mod tests {
         Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()] }
     }
 
+    /// A Duration safely past `TOGGLE_DEBOUNCE`, for rows that exercise the
+    /// ordinary (non-debounced) behaviour.
+    const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
@@ -399,30 +430,55 @@ mod tests {
         ];
         for (request, open, action, reply) in rows {
             let label = format!("{request:?} while {open:?}");
-            assert_eq!(decide(request, open), (action, reply), "{label}");
+            assert_eq!(decide(request, open, PAST_DEBOUNCE), (action, reply), "{label}");
         }
     }
 
+    /// A Toggle arriving less than `TOGGLE_DEBOUNCE` after the open is the
+    /// Hyprland press-bind refire (spec of this fix, Mae 2026-10-06): it must
+    /// be ignored, not close the box right back — but the socket still
+    /// replies Done, so `alpheus-launch` exits 0.
     #[test]
-    fn toggle_twice_quickly_leaves_it_closed() {
-        let mut open = None;
-        for _ in 0..2 {
-            let (action, reply) = decide(Request::Toggle, open);
-            assert_eq!(reply, Some(Reply::Done));
-            open = open_after(open, &action);
-        }
-        assert_eq!(open, None, "Mod+Space twice: opened, then closed — never a second box");
-        let (action, _) = decide(Request::Toggle, open);
-        assert_eq!(open_after(open, &action), Some(false), "and the third opens again");
+    fn a_toggle_within_the_debounce_window_is_ignored_but_still_acked() {
+        let (action, reply) = decide(Request::Toggle, Some(false), Duration::from_millis(100));
+        assert_eq!(action, Action::Nothing, "the Hyprland press-bind refire must not close the box");
+        assert_eq!(reply, Some(Reply::Done), "alpheus-launch must still exit 0");
+    }
+
+    /// Past the debounce window, a Toggle is a real one again and closes.
+    #[test]
+    fn a_toggle_past_the_debounce_window_closes() {
+        let (action, reply) = decide(Request::Toggle, Some(false), Duration::from_millis(300));
+        assert_eq!(action, Action::Close(CloseReason::Toggle));
+        assert_eq!(reply, Some(Reply::Done));
+    }
+
+    /// Was `toggle_twice_quickly_leaves_it_closed`: before this fix, two
+    /// Toggles in a row (the exact shape of the Hyprland press-bind refire)
+    /// opened then immediately closed the box again. That is the bug this
+    /// fix removes — adapted here to assert the new, intended behaviour: a
+    /// quick second Toggle is swallowed and the box stays open; only once
+    /// `TOGGLE_DEBOUNCE` has elapsed does a Toggle close it.
+    #[test]
+    fn toggle_twice_quickly_is_debounced_and_leaves_it_open() {
+        let (action, reply) = decide(Request::Toggle, None, Duration::ZERO);
+        assert_eq!(reply, Some(Reply::Done));
+        let open = open_after(None, &action);
+        assert_eq!(open, Some(false));
+        let (action, reply) = decide(Request::Toggle, open, Duration::from_millis(100));
+        assert_eq!(reply, Some(Reply::Done));
+        assert_eq!(open_after(open, &action), open, "the second, quick Toggle changes nothing");
+        let (action, _) = decide(Request::Toggle, open, PAST_DEBOUNCE);
+        assert_eq!(open_after(open, &action), None, "a Toggle once the window has passed closes it");
     }
 
     #[test]
     fn a_dmenu_replaces_an_app_launcher_and_a_second_dmenu_is_busy() {
-        let (action, reply) = decide(dmenu(), Some(false));
+        let (action, reply) = decide(dmenu(), Some(false), PAST_DEBOUNCE);
         assert!(matches!(action, Action::OpenScript { .. }) && reply.is_none(), "the connection is kept for the answer");
         let open = open_after(Some(false), &action);
         assert_eq!(open, Some(true));
-        let (action, reply) = decide(dmenu(), open);
+        let (action, reply) = decide(dmenu(), open, PAST_DEBOUNCE);
         assert_eq!((action.clone(), reply), (Action::Nothing, Some(Reply::Busy)));
         assert_eq!(open_after(open, &action), Some(true), "the first script menu stays open");
     }
