@@ -173,16 +173,27 @@ fn toggle_opens_and_closes_the_launcher() {
     assert_eq!(mode & 0o777, 0o600, "owner-only socket");
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    // Past TOGGLE_DEBOUNCE: a real Toggle closes it.
+    thread::sleep(Duration::from_millis(300));
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
     // close is idempotent: answered, nothing to close.
     assert_eq!(launcher(&sway, &Request::Close), Reply::Done);
     assert_eq!(launcher(&sway, &Request::Close), Reply::Done);
-    // Mod+Space twice quickly: opened then closed, never two boxes.
+    // Mod+Space twice quickly (the Hyprland press-bind refire, Mae
+    // 2026-10-06): the box opens, and the second Toggle — arriving within
+    // TOGGLE_DEBOUNCE — is still answered Done (alpheus-launch exits 0) but
+    // must NOT close the box back down. This replaces the previous
+    // expectation here (opened then closed, "never two boxes"): that was
+    // exactly the bug a real Hyprland press bind triggers on release.
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("launcher closed (toggle)"), 1, "the quick second Toggle must not close it: {:?}", d.log());
+    // Past the window, a Toggle closes it for good.
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count("launcher closed (toggle)", 2, DELAY), "{:?}", d.log());
-    thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("launcher closed ("), 2, "the two Close requests closed nothing: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
