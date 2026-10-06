@@ -10,6 +10,7 @@
 use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus};
 use super::codec::{self, Reply, Signal};
 use super::host::{Host, Item, owner_rule, split_service};
+use super::menu_session::{MenuSession, MenuUpdate};
 use super::watcher::Watcher;
 use super::{ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::log::write as log;
@@ -82,6 +83,8 @@ pub struct Tray {
     bus: SessionBus,
     watcher: Watcher,
     host: Host,
+    /// The open menu (one at a time).
+    menu: Option<MenuSession>,
     own: HashMap<CallId, Own>,
     role: Role,
     /// A RequestName is in flight (never two).
@@ -92,8 +95,15 @@ impl Tray {
     /// Starts on `bus`: RequestName (DO_NOT_QUEUE), the narrowed NameOwnerChanged rule for WATCHER_NAME,
     /// the host's inventory. Never blocks.
     pub fn start(bus: SessionBus, proc_root: PathBuf) -> Tray {
-        let mut t =
-            Tray { bus, watcher: Watcher::new(), host: Host::new(proc_root), own: HashMap::new(), role: Role::Starting, requesting: false };
+        let mut t = Tray {
+            bus,
+            watcher: Watcher::new(),
+            host: Host::new(proc_root),
+            menu: None,
+            own: HashMap::new(),
+            role: Role::Starting,
+            requesting: false,
+        };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
         t.host.start(&mut t.bus);
@@ -176,6 +186,11 @@ impl Tray {
                 }
             }
         }
+        // Its item gone (its application left): the menu closes.
+        if self.menu.as_ref().is_some_and(|m| self.host.item(&m.key).is_none()) {
+            self.close_menu();
+            out.close_menu = true;
+        }
         let changes = self.host.take_changes();
         out.redraw |= changes.redraw;
         for m in self.watcher.publish(&changes) {
@@ -189,6 +204,10 @@ impl Tray {
         if self.host.owns(id) {
             self.host.answer(id, result, &mut self.bus);
             return TrayOutput::default();
+        }
+        if let Some(menu) = self.menu.as_mut().filter(|m| m.owns(id)) {
+            let update = menu.answer(id, result, &mut self.bus);
+            return self.menu_update(update);
         }
         match (self.own.remove(&id), result) {
             (Some(Own::RequestName), r) => {
@@ -269,9 +288,61 @@ impl Tray {
             Signal::ItemUnregistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
                 self.host.unregister(service, &mut self.bus)
             }
+            Signal::LayoutUpdated { .. } | Signal::ItemsPropertiesUpdated { .. } => {
+                if let Some(menu) = self.menu.as_mut() {
+                    let update = menu.signal(&s, &mut self.bus);
+                    return self.menu_update(update);
+                }
+            }
             _ => {}
         }
         TrayOutput::default()
+    }
+
+    fn menu_update(&mut self, update: MenuUpdate) -> TrayOutput {
+        match update {
+            MenuUpdate::Nothing => TrayOutput::default(),
+            MenuUpdate::Changed => TrayOutput { menu_changed: true, ..TrayOutput::default() },
+            MenuUpdate::Close => {
+                self.close_menu();
+                TrayOutput { close_menu: true, ..TrayOutput::default() }
+            }
+        }
+    }
+
+    /// Opens `key`'s menu session (closing any other: one menu at a time); false when the item is gone
+    /// or has no Menu.
+    pub fn open_menu(&mut self, key: &ItemKey) -> bool {
+        let Some(path) = self.host.item(key).and_then(|i| i.menu.clone()) else { return false };
+        self.close_menu();
+        self.menu = Some(MenuSession::open(key.clone(), path, &mut self.bus));
+        self.bus.flush();
+        true
+    }
+
+    pub fn menu(&self) -> Option<&MenuSession> {
+        self.menu.as_ref()
+    }
+
+    pub fn menu_submenu(&mut self, id: i32) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.fetch_submenu(id, &mut self.bus);
+            self.bus.flush();
+        }
+    }
+
+    pub fn menu_click(&mut self, id: i32, timestamp: u32) {
+        if let Some(menu) = self.menu.as_mut() {
+            menu.click(id, timestamp, &mut self.bus);
+            self.bus.flush();
+        }
+    }
+
+    pub fn close_menu(&mut self) {
+        if let Some(menu) = self.menu.take() {
+            menu.close(&mut self.bus);
+            self.bus.flush();
+        }
     }
 
     fn inbound_call(&mut self, m: Message) {

@@ -1083,3 +1083,90 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
     pump.until("the router still works afterwards", ready_count(1));
     assert_eq!(pump.ready()[0].key, item_key(&nimbus.unique, "/StatusNotifierItem"));
 }
+
+// ---- Menus (task 6) ----
+
+/// Labels of the open menu's root entries, in order.
+fn menu_labels(pump: &Pump) -> Vec<String> {
+    pump.with(|t| {
+        t.menu().and_then(|m| m.layout()).map(|l| l.root.children.iter().map(|n| n.label().to_string()).collect()).unwrap_or_default()
+    })
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn menu_round_trip_with_a_fake_app() {
+    let bus = PrivateBus::start("menu-round-trip");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    pump.until("shown", ready_count(1));
+    let key = item_key(&nimbus.unique, "/StatusNotifierItem");
+    assert!(pump.with(|t| t.open_menu(&key)));
+    pump.until("the layout arrived", |t| t.menu().and_then(|m| m.layout()).is_some());
+    assert_eq!(menu_labels(&pump), ["Open", "Mute", "Low", "High", "", "Disabled", "Hidden", "More"]);
+    assert!(pump.outputs.lock().unwrap().iter().any(|o| o.menu_changed));
+    let menu_calls: Vec<String> = nimbus.calls().into_iter().filter(|c| c.starts_with("com.canonical.dbusmenu.")).collect();
+    assert_eq!(
+        menu_calls,
+        [
+            "com.canonical.dbusmenu.AboutToShow(0)",
+            "com.canonical.dbusmenu.GetLayout(0, 1, [type, label, enabled, visible, toggle-type, toggle-state, children-display])"
+        ],
+        "AboutToShow first, then one level"
+    );
+    pump.with(|t| t.menu_submenu(8));
+    pump.until("More's children", |t| t.menu().and_then(|m| m.layout()).and_then(|l| l.node(8)).is_some_and(|n| n.children.len() == 2));
+    pump.with(|t| t.menu_click(9, 0));
+    assert_eq!(nimbus.wait_call("Event", Duration::from_secs(2)).as_deref(), Some("com.canonical.dbusmenu.Event(9, clicked, 0, 0)"));
+    pump.with(|t| t.close_menu());
+    assert!(pump.with(|t| t.menu().is_none()));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_electron_like_lazy_menu_fills_after_about_to_show() {
+    let bus = PrivateBus::start("menu-lazy");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let lumen = FakeItem::start(&bus, Spec::chromium());
+    pump.until("shown", ready_count(1));
+    assert!(pump.with(|t| t.open_menu(&item_key(&lumen.unique, "/StatusNotifierItem"))));
+    pump.until("the lazy layout, built at AboutToShow", |t| t.menu().and_then(|m| m.layout()).is_some_and(|l| l.len() == 8));
+    assert_eq!(menu_labels(&pump)[0], "Open");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_501_entry_menu_is_cut_to_500() {
+    let bus = PrivateBus::start("menu-huge");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let hostile = FakeItem::start(&bus, Spec::hostile());
+    pump.until("shown", ready_count(1));
+    assert!(pump.with(|t| t.open_menu(&item_key(&hostile.unique, "/StatusNotifierItem"))));
+    pump.until("the layout", |t| t.menu().and_then(|m| m.layout()).is_some());
+    assert_eq!(pump.with(|t| t.menu().unwrap().layout().unwrap().len()), 500);
+    assert_eq!(menu_labels(&pump).last().map(String::as_str), Some("Entry 500"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_menu_closes_when_its_app_leaves() {
+    let bus = PrivateBus::start("menu-leaves");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let kettle = FakeItem::start(&bus, Spec::qt());
+    pump.until("shown", ready_count(2));
+    assert!(pump.with(|t| t.open_menu(&item_key(&nimbus.unique, "/StatusNotifierItem"))));
+    pump.until("open", |t| t.menu().and_then(|m| m.layout()).is_some());
+    assert!(!pump.with(|t| t.open_menu(&item_key(":1.999", "/StatusNotifierItem"))), "no such item");
+    assert!(pump.with(|t| t.menu().is_some()), "the open one stays");
+    assert!(pump.with(|t| t.open_menu(&item_key(&kettle.unique, "/StatusNotifierItem"))), "one menu at a time: Nimbus's closes");
+    assert_eq!(pump.with(|t| t.menu().map(|m| m.key.owner.clone())), Some(kettle.unique.clone()));
+    pump.until("Kettle's layout", |t| t.menu().and_then(|m| m.layout()).is_some());
+    kettle.kill();
+    pump.until("closed with its item", |t| t.menu().is_none());
+    assert!(pump.outputs.lock().unwrap().iter().any(|o| o.close_menu));
+}
