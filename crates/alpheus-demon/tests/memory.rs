@@ -18,12 +18,14 @@
 mod common;
 
 use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use common::sni::{FakeItem, Spec};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with, wtype, wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with, wtype,
+    wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DELAY: Duration = Duration::from_secs(10);
 /// Startup PSS budget: firm (Mae, 2026-10-04, Q13). Never raised: a figure
@@ -78,13 +80,79 @@ fn pump(hypr: &FakeHyprland, duration: Duration, n: &mut u64) {
     }
 }
 
-fn start(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, pw_dump: PwDump) -> (Sway, FakeHyprland, Daemon) {
+fn start(
+    name: &str,
+    outputs: u32,
+    bus: &PrivateBus,
+    session: Option<&PrivateBus>,
+    bar_toml: Option<&str>,
+    pw_dump: PwDump,
+) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, outputs);
     let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml, system_bus: Some(&bus.address), pw_dump, ..DaemonOptions::default() });
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml,
+            system_bus: Some(&bus.address),
+            session_bus: session.map(|s| s.address.as_str()),
+            pw_dump,
+            ..DaemonOptions::default()
+        },
+    );
     assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
     (sway, hypr, d)
 }
+
+/// 5 KDE-style items, 2 Qt-style, 2 Chromium-style, 1 Steam-like: the
+/// population spec § 4 asks startup and rest to be measured against.
+fn ten_fakes(session: &PrivateBus) -> Vec<FakeItem> {
+    let mut items: Vec<FakeItem> = (1..=5).map(|n| FakeItem::start(session, Spec::kde(n))).collect();
+    items.push(FakeItem::start(session, Spec::qt()));
+    items.push(FakeItem::start(session, Spec::qt()));
+    items.push(FakeItem::start(session, Spec::chromium()));
+    items.push(FakeItem::start(session, Spec::chromium()));
+    items.push(FakeItem::start(session, Spec::steam()));
+    items
+}
+
+/// Waits (10 s at most) until someone owns `org.kde.StatusNotifierWatcher`
+/// on `bus` (the same check as task 11's headless tests).
+fn wait_for_the_watcher(bus: &PrivateBus) {
+    let peer = Peer::connect(bus);
+    let t = Instant::now();
+    loop {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
+            .unwrap()
+            .append1("org.kde.StatusNotifierWatcher");
+        if peer.call(m).unwrap().read1::<bool>().unwrap() {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the daemon never took the watcher name");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The daemon's tray is connected and its watcher serves: only then may a
+/// fake register (a KDE-style fake asks the watcher's ProtocolVersion, a
+/// Chromium-style one IsStatusNotifierHostRegistered, once — neither retries).
+fn tray_up(d: &Daemon, session: &PrivateBus) {
+    assert!(d.wait_for("tray: on the session bus", DELAY), "{:?}", d.log());
+    wait_for_the_watcher(session);
+}
+
+/// `tray_up`, the ten fakes, then all ten shown: nothing is measured on a
+/// half-populated tray.
+fn populate(d: &Daemon, session: &PrivateBus) -> Vec<FakeItem> {
+    tray_up(d, session);
+    let items = ten_fakes(session);
+    assert!(d.wait_for("tray: icons shown: 10", DELAY), "{:?}", d.log());
+    items
+}
+
+/// Once every icon is shown: the last Gets' buffers and startup's own
+/// release_memory settle (the same 3 s as pss_under_30mb_and_stable).
+const TRAY_SETTLE: Duration = Duration::from_secs(3);
 
 /// ≈ 300 synthetic applications, each with an action: the size of a real
 /// desktop's catalog (Mae's has about that many). Synthetic only (no capture).
@@ -285,7 +353,7 @@ fn pss_under_30mb_and_stable() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("memory");
     let _workstation = Workstation::serve(&bus);
-    let (sway, hypr, d) = start("memory", 3, &bus, Some("[resources]\ninterval = 1\n"), PwDump::Busy);
+    let (sway, hypr, d) = start("memory", 3, &bus, None, Some("[resources]\ninterval = 1\n"), PwDump::Busy);
     // 3 s: startup is over (fonts, pw-dump's first array, the D-Bus initial
     // state, their release_memory): `initial` is a settled figure, which the
     // return-margin check below needs.
@@ -345,7 +413,7 @@ fn startup_pss_per_source() {
     let mut report = Vec::new();
     for (i, (what, modules)) in cases.iter().enumerate() {
         let toml = format!("modules = [{modules}]\n");
-        let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, Some(&toml), PwDump::Silent);
+        let (_sway, _hypr, d) = start(&format!("per-source-{i}"), 3, &bus, None, Some(&toml), PwDump::Silent);
         std::thread::sleep(Duration::from_secs(3)); // as in pss_under_30mb_and_stable
         report.push((*what, d.pss_kb()));
     }
@@ -366,7 +434,7 @@ fn startup_pss_per_source() {
 fn fallback_font_pss_cost() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("fallback-pss");
-    let (_sway, hypr, d) = start("fallback-pss", 1, &bus, Some("modules = [\"window\", \"clock\"]\n"), PwDump::Silent);
+    let (_sway, hypr, d) = start("fallback-pss", 1, &bus, None, Some("modules = [\"window\", \"clock\"]\n"), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(3)); // startup settled: fonts loaded, DejaVu Sans Mono unused so far
     let startup = d.pss_kb();
     // A title with the bug's own symbols, covered only by the fallback.
@@ -384,7 +452,7 @@ fn at_rest_no_wakeups() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("rest");
     let _workstation = Workstation::serve(&bus);
-    let (_sway, _hypr, d) = start("rest", 3, &bus, Some(AT_REST), PwDump::Silent);
+    let (_sway, _hypr, d) = start("rest", 3, &bus, None, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2)); // end of startup
     let before = d.wakeups();
     let sound_before = d.thread_wakeups("sound").expect("the sound thread runs");
@@ -415,7 +483,7 @@ fn resources_tick_at_the_configured_interval() {
     let bus = PrivateBus::start("cadence");
     let toml = "modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n";
     // One output: one redraw round trip per tick, not three.
-    let (_sway, _hypr, d) = start("cadence", 1, &bus, Some(toml), PwDump::Silent);
+    let (_sway, _hypr, d) = start("cadence", 1, &bus, None, Some(toml), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2));
     let before = d.main_thread_wakeups();
     std::thread::sleep(Duration::from_secs(5));
@@ -440,7 +508,7 @@ fn resources_tick_at_the_configured_interval() {
 fn no_thread_leak_across_system_bus_restarts() {
     require_release(cfg!(debug_assertions));
     let mut bus = PrivateBus::start("restarts");
-    let (_sway, _hypr, d) = start("restarts", 1, &bus, Some(AT_REST), PwDump::Silent);
+    let (_sway, _hypr, d) = start("restarts", 1, &bus, None, Some(AT_REST), PwDump::Silent);
     std::thread::sleep(Duration::from_secs(2));
     let before = d.threads();
     for round in 1..=2 {
@@ -503,8 +571,8 @@ fn the_d_bus_source_costs_one_thread() {
     let _workstation = Workstation::serve(&bus);
     let without = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
     let with = "modules = [\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\"]\n";
-    let (_s1, _h1, a) = start("one-thread-a", 1, &bus, Some(without), PwDump::Silent);
-    let (_s2, _h2, b) = start("one-thread-b", 1, &bus, Some(with), PwDump::Silent);
+    let (_s1, _h1, a) = start("one-thread-a", 1, &bus, None, Some(without), PwDump::Silent);
+    let (_s2, _h2, b) = start("one-thread-b", 1, &bus, None, Some(with), PwDump::Silent);
     // Bounded poll instead of a fixed sleep: both settled once their thread
     // count stops changing (the D-Bus initial state read adds nothing further).
     let ta = wait_for_stable_threads(&a, Duration::from_secs(5));
@@ -512,4 +580,167 @@ fn the_d_bus_source_costs_one_thread() {
     assert!(b.log().iter().all(|l| !l.contains("source down")), "the D-Bus source up: {:?}", b.log());
     eprintln!("threads: {ta} without the D-Bus modules, {tb} with them");
     assert_eq!(tb, ta + 1, "the D-Bus source must cost its own thread and nothing else");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn ten_fake_items_cost_at_most_2_mb() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tray-cost");
+    let without = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let with = "modules = [\"workspaces\", \"window\", \"tray\", \"clock\"]\n";
+    // Each configuration alone, its daemon gone before the next starts: two
+    // daemons of the same binary would split their shared pages (PSS).
+    let base = {
+        let (_sway, _hypr, d) = start("tray-cost-a", 1, &bus, None, Some(without), PwDump::Silent);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let empty = {
+        let session = PrivateBus::start("tray-cost-empty");
+        let (_sway, _hypr, d) = start("tray-cost-b", 1, &bus, Some(&session), Some(with), PwDump::Silent);
+        tray_up(&d, &session);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let full = {
+        let session = PrivateBus::start("tray-cost-full");
+        let (_sway, _hypr, d) = start("tray-cost-c", 1, &bus, Some(&session), Some(with), PwDump::Silent);
+        let _items = populate(&d, &session);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let module_cost = empty.saturating_sub(base);
+    let items_cost = full.saturating_sub(empty);
+    eprintln!(
+        "tray PSS (KB): {base} without the module, {empty} with an empty tray (module cost {module_cost}), \
+         {full} with 10 fake items (items cost {items_cost})"
+    );
+    assert!(items_cost <= 2048, "10 fake items cost {items_cost} KB, budget 2,048 KB (module alone: {module_cost} KB)");
+}
+
+/// Sleeps until a `window` starting now fits inside one minute, 2 s from
+/// each boundary: the clock (the only timer at rest without resources) then
+/// never ticks inside the measurement, and any loop-thread wake-up is a fault.
+fn away_from_the_minute(window: Duration) {
+    let into = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 60;
+    if into < 2 {
+        std::thread::sleep(Duration::from_secs(2 - into));
+    } else if into + window.as_secs() + 2 >= 60 {
+        std::thread::sleep(Duration::from_secs(60 - into + 2));
+    }
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_a_populated_tray() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tray-rest");
+    let session = PrivateBus::start("tray-rest-session");
+    let toml = "modules = [\"workspaces\", \"window\", \"tray\", \"clock\"]\n";
+    let (_sway, _hypr, d) = start("tray-rest", 1, &bus, Some(&session), Some(toml), PwDump::Silent);
+    let _items = populate(&d, &session);
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST);
+    let before = d.wakeups();
+    let main_before = d.main_thread_wakeups();
+    std::thread::sleep(REST);
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest with a populated tray (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert!(
+        d.log().iter().all(|l| !l.contains("source down") && !l.contains("tray: no session bus")),
+        "every source up, a session bus found: {:?}",
+        d.log()
+    );
+    // The budget, ≤ 4 in 5 s for the whole daemon, over 10 s.
+    assert!(delta <= 8, "{delta} wake-ups in 10 s at rest with the tray populated");
+    // No minute boundary inside the window: the loop thread has nothing to
+    // do. A call still pending would fire its 2 s deadline here, a timer of
+    // any period up to 10 s would show at least once.
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s at rest (no clock tick in the window)");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_tray_adds_no_thread() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tray-threads");
+    let without = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let with = "modules = [\"workspaces\", \"window\", \"tray\", \"clock\"]\n";
+    let (_sway_a, _hypr_a, d_without) = start("tray-threads-a", 1, &bus, None, Some(without), PwDump::Silent);
+    let session = PrivateBus::start("tray-threads-session");
+    let (_sway_b, _hypr_b, d_with) = start("tray-threads-b", 1, &bus, Some(&session), Some(with), PwDump::Silent);
+    let _items = populate(&d_with, &session);
+    let ta = wait_for_stable_threads(&d_without, Duration::from_secs(5));
+    let tb = wait_for_stable_threads(&d_with, Duration::from_secs(5));
+    eprintln!("threads: {ta} without the tray, {tb} with it and 10 fake items");
+    assert_eq!(tb, ta, "the tray's fd is a calloop source on the loop thread: it must cost no extra thread");
+}
+
+/// The tray alone then the clock (task 11's convention): the first icon is
+/// cell 1, x = 12 inside it at any monospace advance of the test machine.
+const ICON: (u32, u32) = (12, 10);
+/// Headless sway's output is 1280 px wide and, with no window module, the
+/// clock sits at the right end of the bar (measured by a click scan:
+/// x = 1170..1260 hit it): x = 1240 is inside its text.
+const CLOCK: (u32, u32) = (1280 - 40, 10);
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn popups_free_everything_on_close() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tray-popups");
+    let session = PrivateBus::start("tray-popups-session");
+    // Tooltips off: the pointer rests on the icon after each right click, and
+    // a tooltip would add its own "popup closed" lines to the count.
+    let toml = "modules = [\"tray\", \"clock\"]\n[tray]\ntooltips = false\n[clock]\ncalendar = true\n";
+    let (sway, _hypr, d) = start("tray-popups", 1, &bus, Some(&session), Some(toml), PwDump::Silent);
+    tray_up(&d, &session);
+    let _item = FakeItem::start(&session, Spec::kde(1));
+    assert!(d.wait_for("tray: icons shown: 1", DELAY), "{:?}", d.log());
+    // Cycle n: the menu (right click, Escape), then the calendar (a click on
+    // the clock opens it, a second one closes it) — exactly two
+    // "popup closed" lines per cycle.
+    let cycle = |n: usize| {
+        sway.click(ICON.0, ICON.1, "button3");
+        assert!(d.wait_for_count("menu shown", n, DELAY), "cycle {n}: {:?}", d.log());
+        assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success(), "wtype");
+        assert!(d.wait_for_count("popup closed", 2 * n - 1, DELAY), "cycle {n}: {:?}", d.log());
+        sway.click(CLOCK.0, CLOCK.1, "button1");
+        assert!(d.wait_for_count("calendar shown", n, DELAY), "cycle {n}: {:?}", d.log());
+        sway.click(CLOCK.0, CLOCK.1, "button1");
+        assert!(d.wait_for_count("popup closed", 2 * n, DELAY), "cycle {n}: {:?}", d.log());
+    };
+    // Warm-up: what the first open builds once and keeps by design (the
+    // glyphs of the menu and calendar in the shared glyph cache, wtype's
+    // virtual keyboard keymap) is in the baseline, not in the difference.
+    cycle(1);
+    std::thread::sleep(Duration::from_millis(500));
+    let baseline = d.pss_kb();
+    for n in 2..=21 {
+        cycle(n);
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let end = d.pss_kb();
+    eprintln!("PSS: {baseline} KB baseline (after one warm-up cycle), {end} KB after 20 menu/calendar open-close cycles");
+    assert!(end.abs_diff(baseline) <= 512, "popups leak: {baseline} KB -> {end} KB");
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn startup_pss_with_the_tray_under_15_mb() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("tray-startup");
+    let _workstation = Workstation::serve(&bus);
+    let session = PrivateBus::start("tray-startup-session");
+    let toml = "modules = [\"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \
+                \"resources\", \"tray\", \"clock\"]\n[resources]\ninterval = 1\n";
+    let (_sway, _hypr, d) = start("tray-startup", 3, &bus, Some(&session), Some(toml), PwDump::Silent);
+    let _items = populate(&d, &session);
+    std::thread::sleep(TRAY_SETTLE);
+    let kb = d.pss_kb();
+    eprintln!("startup PSS, every module, 10 tray items, 3 outputs: {kb} KB");
+    assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report to Mae, never raise: {kb}");
 }
