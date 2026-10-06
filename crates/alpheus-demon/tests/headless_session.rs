@@ -7,11 +7,12 @@ mod common;
 
 use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
-use common::sni::{FakeItem, Spec, Value};
+use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
     Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive,
     start_daemon, start_daemon_with, wait_for_pid_file, wtype,
 };
+use dbus::arg::{PropMap, RefArg, Variant};
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -644,4 +645,317 @@ fn the_hovered_item_vanishing_closes_its_tooltip() {
     assert!(d.wait_for("tooltip shown", DELAY), "{:?}", d.log());
     item.kill(); // the application quits: its StatusNotifierItem disappears
     assert!(d.wait_for("popup closed (item gone)", DELAY), "{:?}", d.log());
+}
+
+// ---- Menus wired end to end (task 17) ----
+
+/// The id of the entry labelled `label` (mnemonic underscores aside) in a fake menu.
+fn entry_id(menu: &FakeMenu, label: &str) -> i32 {
+    fn find(entries: &[Entry], label: &str) -> Option<i32> {
+        entries.iter().find_map(|e| {
+            let named = e.props.iter().any(|(k, v)| k == "label" && matches!(v, Value::Str(s) if s.replace('_', "") == label));
+            if named { Some(e.id) } else { find(&e.children, label) }
+        })
+    }
+    find(&menu.root, label).unwrap_or_else(|| panic!("no {label:?} in {menu:?}"))
+}
+
+/// A KDE-like fake whose menu is FakeMenu::sample(): "Open" (selected at open), "Mute", "Low",
+/// "High", a separator, "Disabled", a hidden entry, "More" (two children, fetched on demand).
+fn menu_bar(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeItem) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let mut spec = Spec::kde(1);
+    spec.menu = Some(FakeMenu::sample());
+    let item = FakeItem::start(&bus, spec);
+    std::thread::sleep(Duration::from_secs(1)); // registered, read, drawn
+    (bus, sway, hypr, d, item)
+}
+
+/// Keys typed after wtype's keyboard appeared (fact check 5: the bar's surface takes it).
+fn keys(sway: &Sway, names: &[&str]) {
+    let mut args = vec!["-s", "300"];
+    for n in names {
+        args.extend(["-k", n]);
+    }
+    assert!(wtype(sway, &args).success());
+}
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_fake_apps_menu_opens_runs_an_item_and_closes() {
+    let (_bus, sway, _hypr, d, item) = menu_bar("menu-run");
+    sway.click(12, 10, "button3"); // right click on the icon
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    keys(&sway, &["Down", "Down", "Return"]); // Open → Mute → Low
+    let low = format!("Event({},", entry_id(&FakeMenu::sample(), "Low"));
+    assert!(wait_recorded(&item, &low), "{:?}", item.calls());
+    assert!(item.calls().iter().any(|c| c.contains(&low) && c.contains("clicked")), "{:?}", item.calls());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: menu session closed", DELAY), "the session ends with the popup: {:?}", d.log());
+}
+
+/// Waits until one of `item`'s recorded calls contains `pattern`.
+fn wait_recorded(item: &FakeItem, pattern: &str) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < DELAY {
+        if item.calls().iter().any(|c| c.contains(pattern)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_submenu_opens_with_right_and_back_with_left() {
+    let (_bus, sway, _hypr, d, item) = menu_bar("menu-submenu");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    let sample = FakeMenu::sample();
+    let more = entry_id(&sample, "More");
+    keys(&sway, &["End", "Right"]); // on More, entered
+    assert!(wait_recorded(&item, &format!("AboutToShow({more}")), "the submenu fetched on demand: {:?}", item.calls());
+    assert!(wait_recorded(&item, &format!("GetLayout({more},")), "{:?}", item.calls());
+    std::thread::sleep(Duration::from_millis(300)); // grafted and entered
+    // Back at the root, on More; Up skips Disabled and the separator: High.
+    keys(&sway, &["Left", "Up", "Return"]);
+    let high = entry_id(&sample, "High");
+    assert!(wait_recorded(&item, &format!("Event({high},")), "← went back one level: {:?}", item.calls());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn steam_left_click_opens_the_menu() {
+    let bus = PrivateBus::start("menu-steam");
+    let sway = Sway::start("menu-steam", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let item = FakeItem::start(&bus, Spec::steam());
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button1"); // Activate refused (UnknownMethod): the menu instead
+    assert!(d.wait_for("menu shown", DELAY), "{:?} / {:?}", d.log(), item.calls());
+    assert!(item.calls().iter().any(|c| c.contains("Activate")), "Activate tried first: {:?}", item.calls());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn an_outside_click_closes_the_menu() {
+    let (_bus, sway, _hypr, d, item) = menu_bar("menu-outside");
+    // Escape first, spec § 2's other way out.
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for_count("menu shown", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    sway.click(640, 400, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("tray: menu session closed", 2, DELAY), "{:?}", d.log());
+    assert!(item.calls().iter().all(|c| !c.contains("Event")), "nothing clicked: {:?}", item.calls());
+}
+
+/// An item whose properties answer but whose menu answers late or never: a `Peer` (not a FakeItem,
+/// whose menus always answer at once), registered with the daemon's watcher. `menu_after`: None, the
+/// menu never answers; Some(d), `AboutToShow` and then `GetLayout` are each answered after `d` (one
+/// entry, "Late").
+fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
+    let peer = Peer::connect(bus);
+    std::thread::spawn(move || {
+        let register = dbus::Message::new_method_call(
+            "org.kde.StatusNotifierWatcher",
+            "/StatusNotifierWatcher",
+            "org.kde.StatusNotifierWatcher",
+            "RegisterStatusNotifierItem",
+        )
+        .unwrap()
+        .append1("/StatusNotifierItem");
+        let _ = peer.call(register);
+        while let Some(call) = peer.next_call() {
+            if call.interface().as_deref() == Some("com.canonical.dbusmenu") {
+                let Some(after) = menu_after else { continue }; // never answered
+                std::thread::sleep(after);
+                let reply = if call.member().as_deref() == Some("AboutToShow") {
+                    call.method_return().append1(false)
+                } else {
+                    // GetLayout: revision 1, the root (its children-display) with one entry.
+                    type Node = (i32, PropMap, Vec<Variant<Box<dyn RefArg>>>);
+                    let prop = |k: &str, v: &str| PropMap::from([(k.to_string(), Variant(Box::new(v.to_string()) as Box<dyn RefArg>))]);
+                    let late: Node = (1, prop("label", "Late"), Vec::new());
+                    let root: Node = (0, prop("children-display", "submenu"), vec![Variant(Box::new(late) as Box<dyn RefArg>)]);
+                    call.method_return().append2(1u32, root)
+                };
+                let _ = peer.channel.send(reply);
+                peer.channel.flush();
+                continue;
+            }
+            if call.interface().as_deref() != Some("org.freedesktop.DBus.Properties") {
+                continue;
+            }
+            let property: String = call.read2::<&str, &str>().map(|(_, p)| p.to_string()).unwrap_or_default();
+            let reply = match property.as_str() {
+                "Id" => call.method_return().append1(dbus::arg::Variant("hush")),
+                "Menu" => call.method_return().append1(dbus::arg::Variant(dbus::Path::from("/Menu"))),
+                _ => dbus::Message::error(
+                    &call,
+                    &"org.freedesktop.DBus.Error.UnknownProperty".into(),
+                    &std::ffi::CString::new("no").unwrap(),
+                ),
+            };
+            let _ = peer.channel.send(reply);
+            peer.channel.flush();
+        }
+    });
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_silent_menu_never_opens_and_leaves_nothing_pending() {
+    let bus = PrivateBus::start("menu-silent");
+    let sway = Sway::start("menu-silent", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    hushed_item(&bus, None);
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("tray: menu not shown (timeout)", Duration::from_secs(4)), "{:?}", d.log());
+    assert_eq!(d.count("menu shown"), 0, "{:?}", d.log());
+    // Nothing pending: the deadline timer is gone, the loop sleeps (away from a clock tick).
+    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_menu_closes_when_its_app_leaves() {
+    let (_bus, sway, _hypr, d, item) = menu_bar("menu-app-leaves");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    item.kill();
+    assert!(d.wait_for("popup closed (item gone)", DELAY), "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_menu_closes_when_its_output_goes() {
+    let (_bus, sway, _hypr, mut d, _item) = menu_bar("menu-output");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-1 disable");
+    assert!(d.wait_for("popup closed (output gone)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar removed from HEADLESS-1", DELAY), "{:?}", d.log());
+    let popup = d.log().iter().position(|l| l.contains("popup closed (output gone)"));
+    let bar = d.log().iter().position(|l| l.contains("bar removed from HEADLESS-1"));
+    assert!(popup < bar, "the popup goes before its parent: {:?}", d.log());
+    sway.command("output HEADLESS-1 enable");
+    assert!(d.wait_for_count("bar placed on HEADLESS-1", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(500)), None, "no protocol error: the daemon lives: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_launcher_and_a_menu_are_never_open_together() {
+    let (_bus, sway, _hypr, d, _item) = menu_bar("menu-launcher");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    // The launcher opens (its socket, as Mod+Space would): the menu goes first.
+    common::launcher(&sway, &alpheus_commun::launcher_ipc::Request::Toggle);
+    assert!(d.wait_for("popup closed (launcher)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher shown", DELAY), "{:?}", d.log());
+    // A right click on the icon now: the launcher closes (click outside) before the menu opens.
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("launcher closed (click outside)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("menu shown", 2, DELAY), "{:?}", d.log());
+    let closed = d.log().iter().position(|l| l.contains("launcher closed (click outside)"));
+    let shown = d.log().iter().rposition(|l| l.contains("menu shown"));
+    assert!(closed < shown, "never both: {:?}", d.log());
+}
+
+/// Mae (2026-10-05): a second right click on the icon closes its menu; it does not reopen it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_second_right_click_closes_the_menu() {
+    let (_bus, sway, _hypr, d, _item) = menu_bar("menu-toggle");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // the popup configured and mapped
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: menu session closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("menu shown"), 1, "closed, not reopened: {:?}", d.log());
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for_count("menu shown", 2, DELAY), "a third right click opens it again: {:?}", d.log());
+}
+
+/// Mae's "at most 2 s" from the click: every call answered within its own 2 s, but the layout lands
+/// 3 s after the request — the menu is not shown.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_menu_answering_after_2_s_is_not_shown() {
+    let bus = PrivateBus::start("menu-late");
+    let sway = Sway::start("menu-late", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    hushed_item(&bus, Some(Duration::from_millis(1500)));
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("tray: menu not shown (timeout)", Duration::from_secs(5)), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("menu shown"), 0, "{:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "no popup ever opened: {:?}", d.log());
+}
+
+/// Review requirement 2: the session bus dying while a menu is shown must close that popup (never
+/// leave the bar stuck `Exclusive`, holding Mae's keyboard for good).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_dead_session_bus_closes_an_open_menu() {
+    let (mut bus, sway, _hypr, d, _item) = menu_bar("menu-bus-dies");
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    bus.kill();
+    assert!(d.wait_for("popup closed (item gone)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("tray: the session bus closed", DELAY), "{:?}", d.log());
+}
+
+/// Review requirement 7: the item's Menu path changing under an open menu (a duplicate
+/// registration re-reading it, router.rs) closes it just like the item leaving. A duplicate
+/// registration only re-reads Menu for a unique-name item (`Spec::qt()`, like
+/// `a_duplicate_registration_closes_the_open_menu_if_its_path_changed` at the router level): a
+/// well-known-name re-registration (`Spec::kde`, `menu_bar`'s item) is already known by its service
+/// name and `register()` is then a no-op (host.rs), so this needs its own Qt-like item.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_menu_closes_when_its_path_changes_under_it() {
+    let bus = PrivateBus::start("menu-path-changed");
+    let sway = Sway::start("menu-path-changed", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"tray\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let item = FakeItem::start(&bus, Spec::qt());
+    std::thread::sleep(Duration::from_secs(1));
+    sway.click(12, 10, "button3");
+    assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
+    item.set("Menu", Value::Path("/OtherMenu".into()));
+    item.register();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
 }

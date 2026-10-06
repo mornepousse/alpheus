@@ -14,6 +14,8 @@ use crate::painter::{self, Fonts};
 use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::hover::{self, Hover, HoverChange};
+use crate::tray::menu::{Menu, MenuAction};
+use crate::tray::menu_session::MenuSession;
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
@@ -366,6 +368,16 @@ pub struct App {
     pub(crate) hover_timer: DeadlineTimer,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
+    /// The tray icon last pressed and its cells: where its menu hangs if one is asked for.
+    pub(crate) last_icon: Option<(ItemKey, PopupAnchor)>,
+    /// The menu asked for (its session opening, then its popup shown) and where it hangs.
+    pub(crate) menu_for: Option<(ItemKey, PopupAnchor)>,
+    /// A submenu asked for whose children are being fetched: entered when they arrive.
+    pub(crate) submenu_wanted: Option<i32>,
+    /// The last key's time (dbusmenu Event's timestamp).
+    pub(crate) key_time: u32,
+    /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
+    pub(crate) menu_asked_at: Option<Instant>,
     /// The bar surface `hover.over`'s icon was last seen on, set by `hover_moved` (which knows the
     /// exact surface `i`); `hover_fire` locates it by this IDENTITY, never by re-deriving the bar
     /// from `Anchor::output` — a name that `update_output` can change, or that two bars could
@@ -442,6 +454,11 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             tooltip_item: None,
+            last_icon: None,
+            menu_for: None,
+            submenu_wanted: None,
+            key_time: 0,
+            menu_asked_at: None,
             hover_surface: None,
             windows_dirty: false,
             scan_started: None,
@@ -599,8 +616,33 @@ impl App {
                 }
             }
         }
-        if let Some(key) = &out.open_menu {
-            log(&format!("tray: menu asked for {}{}", key.owner, key.path));
+        if out.bus_closed && self.menu_for.is_some() {
+            // The session went with the bus (the tray is already dropped): a menu shown closes, a
+            // request still waiting dies.
+            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+                self.popup_close(PopupClose::ItemGone);
+            }
+            self.menu_end();
+        }
+        if let Some(key) = out.open_menu {
+            match self.last_icon.clone().filter(|(k, _)| *k == key) {
+                Some((key, anchor)) => self.menu_requested(key, anchor),
+                None => log("tray: a menu was asked for an icon no longer under the pointer"),
+            }
+        }
+        if out.close_menu && self.menu_for.is_some() {
+            let gone = self.menu_for.as_ref().is_some_and(|(k, _)| self.tray.as_ref().is_none_or(|t| t.item(k).is_none()));
+            let why = if gone { PopupClose::ItemGone } else { PopupClose::Timeout };
+            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+                self.popup_close(why);
+            } else {
+                // Never shown (no layout within 2 s, question 8): nothing to close but the request.
+                self.menu_end();
+                log(&format!("tray: menu not shown ({})", why.text()));
+            }
+        }
+        if out.menu_changed {
+            self.menu_layout_changed();
         }
         self.tray_sync();
     }
@@ -661,6 +703,8 @@ impl App {
     /// icon is there (the bar's own click handling then applies).
     fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture) -> bool {
         let Some(key) = self.tray_key_at(i, position.0) else { return false };
+        // Task 17: the icon's cells, where its menu will hang.
+        self.last_icon = self.icon_anchor(i, position.0);
         if let Some(tray) = self.tray.as_mut() {
             let out = tray.gesture(&key, g, (position.0 as i32, position.1 as i32));
             self.tray_output(out);
@@ -710,6 +754,19 @@ fn decide_click(toggles_launcher: bool, launcher_was_open: bool) -> ClickDecisio
         (true, true) => ClickDecision::Nothing,
         (false, _) => ClickDecision::RunBarAction,
     }
+}
+
+/// Mae (2026-10-05): a second right click on the icon whose menu is shown closes that menu and does
+/// nothing else — the press that closed it never reopens it (like `decide_click` for the launcher).
+fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemKey>, b: Option<Button>) -> bool {
+    b == Some(Button::Right) && menu_shown_for.is_some() && menu_shown_for == pressed_icon
+}
+
+/// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
+/// already opening, is a no-op — a duplicate failed Activate (two quick left clicks on an item
+/// without its own Activate, e.g. Steam) must not close and reopen the session already in flight.
+fn already_requested(menu_for: Option<&ItemKey>, key: &ItemKey) -> bool {
+    menu_for == Some(key)
 }
 
 impl CompositorHandler for App {
@@ -956,10 +1013,24 @@ impl PointerHandler for App {
                     if was_open {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
+                    let pressed_icon = self.tray_key_at(i, ev.position.0);
+                    let menu_shown_for = match self.popup.as_ref().map(|p| &p.body) {
+                        Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
+                        _ => None,
+                    };
+                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), actions::button(*button));
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup.
                     if self.popup.is_some() {
                         self.popup_close(PopupClose::OutsideClick);
+                    }
+                    // A menu asked for but not shown yet dies with any press on the bar (a menu
+                    // shown has just ended with its popup).
+                    if self.menu_for.is_some() {
+                        self.menu_end();
+                    }
+                    if only_closes {
+                        continue; // the menu's own icon: closed, never reopened (Mae)
                     }
                     if let Some(b) = actions::button(*button) {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b)) {
@@ -1131,6 +1202,176 @@ impl App {
     }
 }
 
+impl App {
+    /// The tray icon under `x` on bar `i`, and its cells.
+    fn icon_anchor(&mut self, i: usize, x: f64) -> Option<(ItemKey, PopupAnchor)> {
+        let e = self.surfaces[i].scale;
+        let column = painter::column_under(x, e, self.fonts.advance(e));
+        let s = &self.surfaces[i];
+        let zone = s.last.as_ref()?.zone_at(column)?;
+        match &zone.target {
+            Target::TrayItem(key) => Some((key.clone(), PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end })),
+            _ => None,
+        }
+    }
+
+    /// The item's menu: remembered anchor (the clicked icon's zone on that output); the popup opens when
+    /// the first layout arrives (question 8) — or never, when 2 s pass first.
+    pub(crate) fn menu_requested(&mut self, key: ItemKey, anchor: PopupAnchor) {
+        // Review requirement 3: a menu already open, or whose session is already opening, for this
+        // icon is untouched — a duplicate failed Activate (two quick left clicks on Steam, each
+        // erroring in turn) must not close and reopen the session already in flight for it. Distinct
+        // from a second RIGHT click on the same icon (`closes_own_menu`, in the Press arm below),
+        // which does close it (Mae's decision).
+        if already_requested(self.menu_for.as_ref().map(|(k, _)| k), &key) {
+            return;
+        }
+        // One menu at a time: a menu shown goes (its session is replaced by the new one).
+        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+            self.popup_close(PopupClose::Replaced);
+        }
+        let opened = self.tray.as_mut().is_some_and(|t| t.open_menu(&key));
+        // Review requirement 1: `open_menu` just sent calls of its own (AddMatch, AboutToShow), each
+        // with its own 2 s deadline — re-arm the timer now, not only at the next bus event.
+        self.tray_sync();
+        if opened {
+            self.menu_for = Some((key, anchor));
+            self.submenu_wanted = None;
+            self.menu_asked_at = Some(Instant::now());
+        } else {
+            // A request still waiting for an earlier layout does not outlive this one.
+            self.menu_end();
+            log("tray: no menu for this item");
+        }
+    }
+
+    /// The session's layout changed: the first one opens the popup, later ones patch it.
+    fn menu_layout_changed(&mut self) {
+        let menu_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        if menu_shown {
+            let App { tray, popup, submenu_wanted, .. } = self;
+            let (Some(layout), Some(PopupBody::Menu(m))) =
+                (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
+            else {
+                return;
+            };
+            m.relayout(layout);
+            if let Some(id) = *submenu_wanted {
+                // Review requirement 4: a stale asynchronous `enter` (the user went back, or
+                // elsewhere, before this submenu's layout arrived) is refused by `Menu::enter`
+                // itself (`level_alive`, checked against the CURRENT level): dropped here with
+                // nothing else to do, never a crash, never entering the wrong level.
+                if m.enter(id, layout) {
+                    *submenu_wanted = None;
+                }
+            }
+            self.menu_repaint();
+            return;
+        }
+        let Some((key, anchor)) = self.menu_for.clone() else { return };
+        // Mae: at most 2 s from the request to the menu — each call has its own 2 s, so a layout can
+        // land later than that; it opens nothing then.
+        if self.menu_asked_at.is_some_and(|t| t.elapsed() > crate::tray::bus::TIMEOUT) {
+            self.menu_end();
+            log("tray: menu not shown (timeout)");
+            return;
+        }
+        let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else {
+            self.menu_end();
+            return;
+        };
+        let (max_columns, max_rows) = self.popup_room(i);
+        let Some(layout) = self.tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout) else { return };
+        let mut m = Menu::new();
+        m.relayout(layout); // requirement 5: the first entry selected before the popup ever shows
+        let (columns, rows) = m.size(layout, max_columns, max_rows);
+        m.set_rows(usize::from(rows.saturating_sub(2))); // consistent with render's height (size.1 − 2)
+        let grid = m.render(layout, columns, rows);
+        let qh = self.qh.clone();
+        if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, true) {
+            self.popup_paint(&grid);
+            log(&format!("menu shown for {}{}", key.owner, key.path));
+        } else {
+            self.menu_end();
+            log("tray: the menu could not open");
+        }
+    }
+
+    /// Cells a popup may take under bar `i`: its columns, and the output's rows below the bar.
+    fn popup_room(&self, i: usize) -> (u16, u16) {
+        let s = &self.surfaces[i];
+        let columns = s.last.as_ref().map_or(0, Grid::width);
+        let height = self.bar.config.height.max(1);
+        let output_height = self.outputs.info(&s.output).and_then(|o| o.logical_size).map_or(720, |(_, h)| h.max(1) as u32);
+        let rows = (output_height / height).saturating_sub(1).min(u16::MAX as u32) as u16;
+        (columns, rows)
+    }
+
+    /// The menu re-rendered at its current level (the popup resized when its size changed).
+    fn menu_repaint(&mut self) {
+        let Some(i) = self.popup.as_ref().and_then(|p| self.surfaces.iter().position(|s| s.name == p.anchor.output)) else { return };
+        let (max_columns, max_rows) = self.popup_room(i);
+        let App { tray, popup, .. } = self;
+        let (Some(layout), Some(PopupBody::Menu(m))) =
+            (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
+        else {
+            return;
+        };
+        let (columns, rows) = m.size(layout, max_columns, max_rows);
+        m.set_rows(usize::from(rows.saturating_sub(2)));
+        let grid = m.render(layout, columns, rows);
+        self.popup_paint(&grid);
+    }
+
+    /// MenuAction → Tray calls and popup changes (Click: menu_click with the key or press time, then
+    /// close Activated; Submenu: menu_submenu, enter when grafted; Close: close_menu + popup_close).
+    pub(crate) fn menu_action(&mut self, a: MenuAction, timestamp: u32) {
+        match a {
+            MenuAction::Nothing => {}
+            MenuAction::Redraw => self.menu_repaint(),
+            MenuAction::Close => self.popup_close(PopupClose::Escape),
+            MenuAction::Click(id) => {
+                if let Some(tray) = self.tray.as_mut() {
+                    tray.menu_click(id, timestamp);
+                }
+                self.tray_sync(); // requirement 1
+                self.popup_close(PopupClose::Activated);
+            }
+            MenuAction::Submenu(id) => {
+                if let Some(tray) = self.tray.as_mut() {
+                    tray.menu_submenu(id);
+                }
+                self.tray_sync(); // requirement 1: re-arms the deadline timer for AboutToShow/GetLayout
+                let App { tray, popup, submenu_wanted, .. } = self;
+                let (Some(layout), Some(PopupBody::Menu(m))) =
+                    (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
+                else {
+                    return;
+                };
+                if m.enter(id, layout) {
+                    *submenu_wanted = None;
+                    self.menu_repaint();
+                } else {
+                    // Fetched lazily (AboutToShow, GetLayout): entered when grafted (menu_changed).
+                    *submenu_wanted = Some(id);
+                }
+            }
+        }
+    }
+
+    /// The menu asked for or shown is over: its D-Bus session too (RemoveMatch, task 6), logged.
+    pub(crate) fn menu_end(&mut self) {
+        self.menu_for = None;
+        self.submenu_wanted = None;
+        self.menu_asked_at = None;
+        if let Some(tray) = self.tray.as_mut().filter(|t| t.menu().is_some()) {
+            tray.close_menu();
+            log("tray: menu session closed");
+        }
+        self.tray_sync(); // requirement 1: re-arms the deadline timer after close_menu
+    }
+}
+
 /// A pointer event as the popup sees it; the wheel goes through the bar's `Wheel` (notches).
 fn popup_pointer_kind(wheel: &mut Wheel, kind: &PointerEventKind) -> Option<PopupPointer> {
     match kind {
@@ -1183,6 +1424,28 @@ mod tests {
         assert_eq!(decide_click(true, true), ClickDecision::Nothing, "the same press that closed it as a click outside must not reopen it");
         assert_eq!(decide_click(false, true), ClickDecision::RunBarAction, "elsewhere on the bar: its own action");
         assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
+    }
+
+    #[test]
+    fn a_second_right_click_on_the_menus_icon_only_closes_it() {
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let (a, b) = (key(1), key(2));
+        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right)), "the menu's own icon: closed, nothing else");
+        assert!(!closes_own_menu(Some(&a), Some(&b), Some(Button::Right)), "another icon: its menu opens");
+        assert!(!closes_own_menu(Some(&a), Some(&a), Some(Button::Left)), "a left click still activates");
+        assert!(!closes_own_menu(None, Some(&a), Some(Button::Right)), "no menu shown: it opens");
+        assert!(!closes_own_menu(Some(&a), None, Some(Button::Right)), "elsewhere on the bar: the bar's own action");
+    }
+
+    /// Review requirement 3: a duplicate failed Activate (two quick left clicks on an item without
+    /// its own Activate, e.g. Steam) must not close and reopen the menu already asked for it.
+    #[test]
+    fn open_menu_for_the_same_key_already_asked_is_a_no_op() {
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let (a, b) = (key(1), key(2));
+        assert!(already_requested(Some(&a), &a), "the same icon: a duplicate failed Activate changes nothing");
+        assert!(!already_requested(Some(&a), &b), "a different icon: its own menu still opens");
+        assert!(!already_requested(None, &a), "nothing asked yet: opens normally");
     }
 
     #[test]

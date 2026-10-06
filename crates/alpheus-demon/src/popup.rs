@@ -21,7 +21,9 @@ use crate::grid::Grid;
 use crate::keys::{self, Key, Mods};
 use crate::log::write as log;
 use crate::painter;
-use crate::tray::menu::Menu;
+use crate::tray::codec::Layout;
+use crate::tray::menu::{Menu, MenuAction};
+use crate::tray::menu_session::MenuSession;
 use crate::wayland::{App, pick_buffer, position_by};
 use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
@@ -382,6 +384,12 @@ impl App {
 
     /// Drops everything the popup holds; the keyboard goes back if nothing else needs it.
     pub fn popup_close(&mut self, why: PopupClose) {
+        // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
+        // already swapped the session); a menu still being fetched dies with the launcher opening.
+        let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
+            self.menu_end();
+        }
         let Some(open) = self.popup.take() else { return };
         let (grab, parent) = (open.grab, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
@@ -418,21 +426,45 @@ impl App {
 
     /// A key while a grabbing popup is open (the launcher is closed).
     pub(crate) fn popup_key(&mut self, k: Key) {
-        let _ = k; // read by the bodies' arms (tasks 17, 18)
         let Some(open) = self.popup.as_ref() else { return };
         match open.body {
-            PopupBody::Menu(_) => {}     // task 17
+            PopupBody::Menu(_) => {
+                let action = self.menu_with(|m, layout| m.key(k, layout));
+                self.menu_action(action, self.key_time);
+            }
             PopupBody::Calendar(_) => {} // task 18
             PopupBody::Tooltip(_) => {}
         }
     }
 
+    /// Runs `f` on the open menu and its session's layout; Close when either is missing (the
+    /// session ended under it).
+    fn menu_with(&mut self, f: impl FnOnce(&mut Menu, &Layout) -> MenuAction) -> MenuAction {
+        let App { tray, popup, .. } = self;
+        match (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body)) {
+            (Some(layout), Some(PopupBody::Menu(m))) => f(m, layout),
+            _ => MenuAction::Close,
+        }
+    }
+
     /// The pointer on the popup, at cell (`column`, `row`) of its rows.
     pub(crate) fn popup_pointer(&mut self, column: u16, row: u16, kind: PopupPointer) {
-        let _ = (column, row); // read by the bodies' arms (tasks 17, 18)
+        let _ = column; // one entry per row: the column never matters
         let Some(open) = self.popup.as_ref() else { return };
         match open.body {
-            PopupBody::Menu(_) => {}     // task 17
+            // Row 0 and the last are the frame: content rows count from 1.
+            PopupBody::Menu(_) => {
+                let rows = self.popup.as_ref().map_or(0, |p| p.cells.1);
+                let content = (row >= 1 && row + 1 < rows).then(|| row - 1);
+                let action = match (kind, content) {
+                    (PopupPointer::Motion, Some(r)) => self.menu_with(|m, l| m.hover(r, l)),
+                    (PopupPointer::Press(Button::Left), Some(r)) => self.menu_with(|m, l| m.press(r, l)),
+                    (PopupPointer::Scroll(steps), _) => self.menu_with(|m, l| m.scroll(steps, l)),
+                    _ => MenuAction::Nothing,
+                };
+                let time = self.last_press.map_or(0, |(_, t, _)| t);
+                self.menu_action(action, time);
+            }
             PopupBody::Calendar(_) => {} // task 18
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
@@ -535,6 +567,7 @@ impl App {
 
     /// A key (press or repeat): to the launcher when it is open, else to a grabbing popup.
     pub(crate) fn key_event(&mut self, event: KeyEvent) {
+        self.key_time = event.time;
         match key_to(self.launcher_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
             KeyTo::Launcher => {
                 self.launcher_guarded("key", move |app| app.launcher_key(event));

@@ -786,7 +786,8 @@ fn the_tray_spawns_no_thread() {
         }
         checked += 1;
         let prod = production_code(&t);
-        for never in ["thread::", "Executor", "actions::run", ".stream(", "Command::new"] {
+        // "spawn(": no process, task or thread started by any means (calloop's executor, a Child).
+        for never in ["thread::", "Executor", "actions::run", ".stream(", "Command::new", "spawn("] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
     }
