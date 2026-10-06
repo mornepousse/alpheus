@@ -649,3 +649,437 @@ fn an_icon_pixmap_value_is_available_though_never_read() {
     let mut v = it.recurse(dbus::arg::ArgType::Variant).unwrap();
     assert_eq!(v.signature().to_string(), "a(iiay)");
 }
+
+// ---- The watcher and the router (task 5) ----
+
+use alpheus_demon::tray::ItemKey;
+use alpheus_demon::tray::host::Item;
+use alpheus_demon::tray::router::{Role, Tray, TrayOutput};
+use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+/// The router on a thread of its own, pumped like the bar's loop pumps it: a poll on its fd, bounded
+/// by its next deadline; every non-empty output kept for the test.
+struct Pump {
+    tray: Arc<Mutex<Tray>>,
+    outputs: Arc<Mutex<Vec<TrayOutput>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl Pump {
+    fn start(bus: &PrivateBus) -> Pump {
+        let mut tray = Tray::start(SessionBus::at(&bus.address).unwrap(), std::path::PathBuf::from("/proc"));
+        let fd = tray.watch_fd().unwrap();
+        let tray = Arc::new(Mutex::new(tray));
+        let outputs = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (t, o, s) = (tray.clone(), outputs.clone(), stop.clone());
+        let thread = thread::spawn(move || {
+            while !s.load(Ordering::Relaxed) {
+                let wait = t.lock().unwrap().next_deadline().map(|d| d.saturating_duration_since(Instant::now()));
+                let ms = wait.map(|w| w.as_millis().min(20) as i32).unwrap_or(20);
+                let mut p = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                // SAFETY: poll(2) on one pollfd this thread owns.
+                unsafe { libc::poll(&mut p, 1, ms) };
+                let mut tray = t.lock().unwrap();
+                let mut out = tray.on_readable();
+                if tray.next_deadline().is_some_and(|d| d <= Instant::now()) {
+                    out.merge(tray.on_deadline(Instant::now()));
+                }
+                if out != TrayOutput::default() {
+                    let closed = out.bus_closed;
+                    o.lock().unwrap().push(out);
+                    if closed {
+                        return;
+                    }
+                }
+            }
+        });
+        Pump { tray, outputs, stop, thread: Some(thread) }
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&mut Tray) -> R) -> R {
+        f(&mut self.tray.lock().unwrap())
+    }
+
+    /// Waits until `cond` holds (5 s at most), or panics with `what`.
+    fn until(&self, what: &str, cond: impl Fn(&Tray) -> bool) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while !self.with(|t| cond(t)) {
+            assert!(Instant::now() < end, "never: {what}");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn ready(&self) -> Vec<Item> {
+        self.with(|t| t.items().iter().filter(|i| i.is_ready()).cloned().collect())
+    }
+
+    fn redraws(&self) -> usize {
+        self.outputs.lock().unwrap().iter().filter(|o| o.redraw).count()
+    }
+}
+
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+fn ready_count(n: usize) -> impl Fn(&Tray) -> bool {
+    move |t: &Tray| t.items().iter().filter(|i| i.is_ready()).count() == n
+}
+
+fn item_key(owner: &str, path: &str) -> ItemKey {
+    ItemKey { owner: owner.into(), path: path.into() }
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_watcher_serves_what_real_clients_check() {
+    let bus = PrivateBus::start("router-serves");
+    let pump = Pump::start(&bus);
+    pump.until("the watcher's name is ours", |t| *t.role() == Role::Watcher);
+    let peer = Peer::connect(&bus);
+    let is_host = property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "IsStatusNotifierHostRegistered").unwrap();
+    assert!(is_host.read1::<Variant<bool>>().unwrap().0);
+    let version = property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "ProtocolVersion").unwrap();
+    assert_eq!(version.read1::<Variant<i32>>().unwrap().0, 0);
+    let set = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        "org.freedesktop.DBus.Properties",
+        "Set",
+        |m| m.append3(WATCHER_INTERFACE, "ProtocolVersion", Variant(1i32)),
+        Duration::from_secs(2),
+    );
+    assert_eq!(set.unwrap_err(), "org.freedesktop.DBus.Error.PropertyReadOnly");
+    let bogus = ask(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "Bogus", |m| m, Duration::from_secs(2));
+    assert_eq!(bogus.unwrap_err(), "org.freedesktop.DBus.Error.UnknownMethod");
+    let xml =
+        ask(&peer, WATCHER_NAME, WATCHER_PATH, "org.freedesktop.DBus.Introspectable", "Introspect", |m| m, Duration::from_secs(2)).unwrap();
+    assert!(xml.read1::<&str>().unwrap().contains("RegisterStatusNotifierItem"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn chromium_registers_only_when_a_host_is_registered() {
+    let bus = PrivateBus::start("router-chromium");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let lumen = FakeItem::start(&bus, Spec::chromium());
+    pump.until("Lumen shown", ready_count(1));
+    let item = &pump.ready()[0];
+    assert_eq!(item.key, item_key(&lumen.unique, "/StatusNotifierItem"));
+    assert_eq!((item.id.as_deref(), item.title.as_deref(), item.icon_name.as_deref()), (Some("chrome_status_icon_1"), None, None));
+    assert_eq!(
+        (item.tooltip.as_deref(), item.menu.as_deref()),
+        (Some("Lumen"), Some("/org/chromium/DbusMenu")),
+        "its 300 KB pixmap never decoded"
+    );
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn registration_forms_and_duplicates_over_the_wire() {
+    let bus = PrivateBus::start("router-forms");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let quill = FakeItem::start(&bus, Spec::ayatana());
+    let ferry = FakeItem::start(&bus, Spec::combined());
+    let kettle = FakeItem::start(&bus, Spec::qt());
+    nimbus.register();
+    kettle.register();
+    pump.until("four items", ready_count(4));
+    thread::sleep(Duration::from_millis(100));
+    // Sorted: a well-known name is keyed only once its owner is known, so the order of arrival is not
+    // the order of registration.
+    let mut keys: Vec<ItemKey> = pump.with(|t| t.items().iter().map(|i| i.key.clone()).collect());
+    keys.sort_by(|a, b| (&a.owner, &a.path).cmp(&(&b.owner, &b.path)));
+    let mut expected = [
+        item_key(&nimbus.unique, "/StatusNotifierItem"),
+        item_key(&quill.unique, "/org/ayatana/NotificationItem/quill"),
+        item_key(&ferry.unique, "/StatusNotifierItem"),
+        item_key(&kettle.unique, "/StatusNotifierItem"),
+    ];
+    expected.sort_by(|a, b| (&a.owner, &a.path).cmp(&(&b.owner, &b.path)));
+    assert_eq!(keys, expected, "keyed by unique name, duplicates are one");
+    let peer = Peer::connect(&bus);
+    let list = property(&peer, WATCHER_NAME, WATCHER_PATH, WATCHER_INTERFACE, "RegisteredStatusNotifierItems").unwrap();
+    let mut list = list.read1::<Variant<Vec<String>>>().unwrap().0;
+    list.sort();
+    let mut expected = [
+        "org.kde.StatusNotifierItem-4242-1/StatusNotifierItem".to_string(),
+        format!("{}/org/ayatana/NotificationItem/quill", quill.unique),
+        "org.kde.StatusNotifierItem-4343-1/StatusNotifierItem".to_string(),
+        format!("{}/StatusNotifierItem", kettle.unique),
+    ];
+    expected.sort();
+    assert_eq!(list, expected);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_steam_like_item_without_properties_is_shown() {
+    let bus = PrivateBus::start("router-steam");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let _steam = FakeItem::start(&bus, Spec::steam());
+    pump.until("Steam shown", ready_count(1));
+    let item = &pump.ready()[0];
+    assert_eq!((item.title.as_deref(), item.tooltip.as_deref(), item.item_is_menu), (Some("Steam"), None, false));
+    assert_eq!(item.menu.as_deref(), Some("/org/ayatana/NotificationItem/steam/Menu"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_item_leaving_is_removed_and_unregistered() {
+    let bus = PrivateBus::start("router-leaving");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let peer = Peer::connect(&bus);
+    add_match(&peer, &format!("type='signal',interface='{WATCHER_INTERFACE}'"));
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    pump.until("Nimbus shown", ready_count(1));
+    let entry = "org.kde.StatusNotifierItem-4242-1/StatusNotifierItem";
+    assert_eq!(next_signal(&peer, "StatusNotifierItemRegistered", Duration::from_secs(2)).unwrap().read1::<&str>().unwrap(), entry);
+    nimbus.kill();
+    pump.until("Nimbus gone", |t| t.items().is_empty());
+    assert_eq!(next_signal(&peer, "StatusNotifierItemUnregistered", Duration::from_secs(2)).unwrap().read1::<&str>().unwrap(), entry);
+    assert!(pump.redraws() >= 2, "shown, then gone");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn host_only_when_the_name_is_taken_then_takeover() {
+    let bus = PrivateBus::start("router-takeover");
+    let other = FakeWatcher::start(&bus);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    let pump = Pump::start(&bus);
+    pump.until("host only", |t| matches!(t.role(), Role::HostOnly { watcher } if *watcher == other.unique));
+    pump.until("Nimbus, from the other watcher's list", ready_count(1));
+    let quill = FakeItem::start(&bus, Spec::ayatana());
+    pump.until("Quill, from the other watcher's signal", ready_count(2));
+    assert_eq!(other.hosts().len(), 1, "registered as a host on it");
+    let peer = Peer::connect(&bus);
+    let owner = |peer: &Peer| {
+        let m = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner")
+            .unwrap()
+            .append1(WATCHER_NAME);
+        peer.call(m).unwrap().read1::<String>().unwrap()
+    };
+    assert_eq!(owner(&peer), other.unique, "never taken from its owner, even one that allows it");
+    let host = other.hosts()[0].clone();
+    let refused =
+        ask(&peer, &host, WATCHER_PATH, WATCHER_INTERFACE, "RegisterStatusNotifierItem", |m| m.append1(":1.99"), Duration::from_secs(2));
+    assert_eq!(refused.unwrap_err(), "org.freedesktop.DBus.Error.UnknownMethod", "not serving while host only");
+    other.kill();
+    pump.until("takeover", |t| *t.role() == Role::Watcher);
+    assert_eq!(owner(&peer), host, "the name is ours now");
+    nimbus.register();
+    quill.register();
+    let kettle = FakeItem::start(&bus, Spec::qt());
+    pump.until("Kettle registered with us", ready_count(3));
+    assert!(pump.with(|t| t.item(&item_key(&kettle.unique, "/StatusNotifierItem")).is_some()));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn host_only_follows_a_watcher_replacing_another() {
+    let bus = PrivateBus::start("router-replaced");
+    let first = FakeWatcher::start(&bus);
+    let pump = Pump::start(&bus);
+    pump.until("host only on the first", |t| matches!(t.role(), Role::HostOnly { watcher } if *watcher == first.unique));
+    let listed = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(3) });
+    let signalled = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(4) });
+    // A second watcher takes the name straight from the first (which allows it): one NameOwnerChanged
+    // (name, first, second), never an empty owner in between.
+    let second = Peer::connect(&bus);
+    let take = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName")
+        .unwrap()
+        .append2(WATCHER_NAME, 2u32 | 4); // REPLACE_EXISTING | DO_NOT_QUEUE
+    assert_eq!(second.call(take).unwrap().read1::<u32>().unwrap(), 1, "the second watcher owns the name");
+    pump.until("host only on the second", |t| matches!(t.role(), Role::HostOnly { watcher } if *watcher == second.name));
+    // The second watcher, by hand: we register as a host on it and read its list.
+    let entry = "org.kde.StatusNotifierItem-4242-3/StatusNotifierItem";
+    let (mut host, mut list) = (false, false);
+    let end = Instant::now() + Duration::from_secs(3);
+    while !(host && list) {
+        assert!(Instant::now() < end, "never asked by the daemon: host {host}, list {list}");
+        let Ok(Some(m)) = second.channel.blocking_pop_message(Duration::from_millis(20)) else { continue };
+        if m.msg_type() != dbus::message::MessageType::MethodCall {
+            continue;
+        }
+        match m.member().as_deref() {
+            Some("RegisterStatusNotifierHost") => {
+                host = true;
+                second.channel.send(m.method_return()).unwrap();
+            }
+            Some("Get") => {
+                list = true;
+                second.channel.send(m.method_return().append1(Variant(vec![entry.to_string()]))).unwrap();
+            }
+            _ => {}
+        }
+        second.channel.flush();
+    }
+    pump.until("the item of the second watcher's list", ready_count(1));
+    assert_eq!(pump.ready()[0].key, item_key(&listed.unique, "/StatusNotifierItem"));
+    let registered = Message::new_signal(WATCHER_PATH, WATCHER_INTERFACE, "StatusNotifierItemRegistered")
+        .unwrap()
+        .append1("org.kde.StatusNotifierItem-4242-4/StatusNotifierItem");
+    second.channel.send(registered).unwrap();
+    second.channel.flush();
+    pump.until("the item of the second watcher's signal", ready_count(2));
+    assert!(pump.with(|t| t.item(&item_key(&signalled.unique, "/StatusNotifierItem")).is_some()));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_item_started_before_the_bar_is_found_by_the_inventory() {
+    let bus = PrivateBus::start("router-inventory");
+    let nimbus = FakeItem::start(&bus, Spec { registration: Registration::Never, ..Spec::kde(3) });
+    let pump = Pump::start(&bus);
+    pump.until("found at startup", ready_count(1));
+    assert_eq!(pump.ready()[0].key, item_key(&nimbus.unique, "/StatusNotifierItem"));
+    assert_eq!(pump.ready()[0].service, "org.kde.StatusNotifierItem-4242-3");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_burst_of_signals_gives_one_reread_and_one_redraw() {
+    let bus = PrivateBus::start("router-burst");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    pump.until("shown", ready_count(1));
+    let reads = |f: &FakeItem| f.calls().iter().filter(|c| c.ends_with("Get(org.kde.StatusNotifierItem, IconName)")).count();
+    assert_eq!(reads(&nimbus), 1);
+    let redraws = pump.redraws();
+    nimbus.set("IconName", Value::Str("nimbus-busy".into()));
+    nimbus.burst("NewIcon", 50);
+    pump.until("marked dirty", |t| t.wants_frame());
+    thread::sleep(Duration::from_millis(200));
+    pump.with(|t| t.on_frame());
+    pump.until("re-read", |t| t.items()[0].icon_name.as_deref() == Some("nimbus-busy"));
+    thread::sleep(Duration::from_millis(200));
+    assert_eq!(reads(&nimbus), 2, "50 signals, one Get");
+    assert_eq!(pump.redraws(), redraws + 1, "one redraw");
+    assert!(!pump.with(|t| t.wants_frame()));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_65th_fake_is_refused_and_a_hostile_title_is_cut() {
+    let bus = PrivateBus::start("router-bounds");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let hostile = FakeItem::start(&bus, Spec::hostile());
+    let mut fakes: Vec<FakeItem> = (0..63).map(|_| FakeItem::start(&bus, Spec::qt())).collect();
+    pump.until("64 items", ready_count(64));
+    let last = FakeItem::start(&bus, Spec::qt());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(pump.with(|t| t.items().len()), 64, "the 65th refused");
+    assert!(last.calls().is_empty(), "nothing asked of it");
+    let title = pump.with(|t| t.item(&item_key(&hostile.unique, "/StatusNotifierItem")).unwrap().title.clone().unwrap());
+    assert_eq!(title.chars().count(), 256);
+    assert!(title.chars().all(|c| !c.is_control()), "{title:?}");
+    fakes.clear();
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_silent_item_gets_its_letter_after_2_s() {
+    let bus = PrivateBus::start("router-silent");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let started = Instant::now();
+    let _silent = FakeItem::start(&bus, Spec::silent());
+    pump.until("registered", |t| t.items().len() == 1);
+    thread::sleep(Duration::from_millis(1500).saturating_sub(started.elapsed()));
+    assert!(pump.ready().is_empty(), "not shown before its Gets time out");
+    pump.until("its letter, once its Gets time out", ready_count(1));
+    let item = &pump.ready()[0];
+    assert!(started.elapsed() >= Duration::from_secs(2));
+    assert_eq!((item.title.as_deref(), item.id.as_deref()), (None, None), "its letter: nothing known");
+    assert_eq!(pump.with(|t| t.next_deadline()), None, "nothing pending: no timer");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn nothing_outside_the_allowlist_reaches_a_fake_app() {
+    let bus = PrivateBus::start("router-allowlist");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let fakes =
+        [Spec::kde(1), Spec::qt(), Spec::chromium(), Spec::steam(), Spec::ayatana(), Spec::combined()].map(|s| FakeItem::start(&bus, s));
+    pump.until("all shown", ready_count(fakes.len()));
+    for f in &fakes {
+        f.burst("NewToolTip", 3);
+        f.emit_status("NeedsAttention");
+    }
+    thread::sleep(Duration::from_millis(200));
+    pump.with(|t| t.on_frame());
+    thread::sleep(Duration::from_millis(200));
+    let allowed = [
+        "org.freedesktop.DBus.Properties.Get(",
+        "org.kde.StatusNotifierItem.Activate(",
+        "org.kde.StatusNotifierItem.SecondaryActivate(",
+        "org.kde.StatusNotifierItem.ContextMenu(",
+        "org.kde.StatusNotifierItem.Scroll(",
+        "com.canonical.dbusmenu.AboutToShow(",
+        "com.canonical.dbusmenu.GetLayout(",
+        "com.canonical.dbusmenu.Event(",
+    ];
+    for f in &fakes {
+        let calls = f.calls();
+        assert!(calls.len() >= 9, "{calls:?}");
+        for c in calls {
+            assert!(allowed.iter().any(|a| c.starts_with(a)), "outside the allowlist: {c}");
+            assert!(!c.contains("GetAll") && !c.contains("Introspect"), "{c}");
+        }
+    }
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_registration_naming_our_own_unique_name_is_refused() {
+    // Task 4 review: the router must never treat its own connection as one of the items it hosts
+    // (a hostile or buggy RegisterStatusNotifierItem naming the daemon's own unique name).
+    let bus = PrivateBus::start("router-self-registration");
+    let pump = Pump::start(&bus);
+    pump.until("watcher", |t| *t.role() == Role::Watcher);
+    let peer = Peer::connect(&bus);
+    let owner = Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetNameOwner")
+        .unwrap()
+        .append1(WATCHER_NAME);
+    let own = peer.call(owner).unwrap().read1::<String>().unwrap();
+    let reply = ask(
+        &peer,
+        WATCHER_NAME,
+        WATCHER_PATH,
+        WATCHER_INTERFACE,
+        "RegisterStatusNotifierItem",
+        |m| m.append1(own.as_str()),
+        Duration::from_secs(2),
+    );
+    assert!(reply.is_ok(), "the watcher still answers at once, even to a hostile registration");
+    // Deterministic, not a race: a registration naming a unique name is added to the host
+    // synchronously, before any Get it triggers leaves the socket (`route`'s `flush` comes after
+    // `inbound_call`'s `host.register`); the registration's reply itself is only flushed then too.
+    // So by the time this blocking `ask` has its reply in hand, an unrefused registration would
+    // already be in `items()` — this must never be observed, with or without a timing margin.
+    assert!(pump.with(|t| t.items().is_empty()), "never an item under our own unique name, right after the reply");
+    thread::sleep(Duration::from_millis(200));
+    assert!(pump.with(|t| t.items().is_empty()), "still never, once any self-directed Get would have settled");
+    let nimbus = FakeItem::start(&bus, Spec::kde(1));
+    pump.until("the router still works afterwards", ready_count(1));
+    assert_eq!(pump.ready()[0].key, item_key(&nimbus.unique, "/StatusNotifierItem"));
+}

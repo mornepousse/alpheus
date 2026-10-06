@@ -30,6 +30,9 @@ xkeysym = "0.2"
 # System D-Bus (NetworkManager, UPower, BlueZ) through dbus-rs over libdbus, blocking,
 # on the D-Bus thread and no thread of its own (tray plan 1, Mae 2026-10-05). Daemon only.
 dbus = "0.9"
+# The tray's own StatusNotifierWatcher object (tray plan 2, Mae 2026-10-05): dbus-rs's own object
+# server, no further dependency. Daemon only, in src/tray/watcher.rs.
+dbus-crossroads = "0.5"
 
 [profile.release]
 lto = true

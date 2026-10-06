@@ -45,6 +45,7 @@ dependencies = [
  "alpheus-launch",
  "cosmic-text",
  "dbus",
+ "dbus-crossroads",
  "insta",
  "libc",
  "nucleo-matcher",
@@ -427,6 +428,15 @@ dependencies = [
  "libc",
  "libdbus-sys",
  "windows-sys",
+]
+
+[[package]]
+name = "dbus-crossroads"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64bff0bd181fba667660276c6b7ebdc50cff37ce593e7adf9e734f89c8f444e8"
+dependencies = [
+ "dbus",
 ]
 
 [[package]]
