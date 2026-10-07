@@ -370,6 +370,8 @@ pub struct App {
     pub(crate) mode_runtime: Option<std::path::PathBuf>,
     /// The mode last written to it; None: not yet.
     pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
+    /// The last write failure logged: the same one is not logged again.
+    pub(crate) mode_error: Option<String>,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -502,6 +504,7 @@ impl App {
             portal_tried: false,
             mode_runtime: None,
             mode_written: None,
+            mode_error: None,
             tray_deferred_queued: false,
             hwheel: Wheel::default(),
             last_press: None,

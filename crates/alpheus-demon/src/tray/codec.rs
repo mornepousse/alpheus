@@ -215,6 +215,9 @@ pub fn signal(m: &Message) -> Signal {
             Ok((revision, parent)) => Signal::LayoutUpdated { sender, path, revision, parent },
             Err(_) => Signal::Other,
         },
+        // A unicast signal (destination set) reaches us whatever the match rules say: any peer could
+        // send one. Only a broadcast, through the sender-filtered rule, is the portal's.
+        (SETTINGS_INTERFACE, "SettingChanged") if m.destination().is_some() => Signal::Other,
         (SETTINGS_INTERFACE, "SettingChanged") if path == PORTAL_PATH => {
             let namespace = it.get::<&str>();
             it.next();
@@ -764,6 +767,17 @@ mod tests {
             Signal::Other,
             "not a u32"
         );
+    }
+
+    #[test]
+    fn a_unicast_setting_changed_is_never_the_portals() {
+        use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+        let mut m = Message::new_signal(PORTAL_PATH, SETTINGS_INTERFACE, "SettingChanged").unwrap();
+        m.set_sender(Some(":1.4".into()));
+        let mut m = m.append3(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, Variant(2u32));
+        assert_eq!(signal(&m), Signal::ColorScheme(2), "broadcast: read");
+        m.set_destination(Some(":1.9".into()));
+        assert_eq!(signal(&m), Signal::Other, "addressed to us alone: a peer's, not the rule's");
     }
 
     #[test]

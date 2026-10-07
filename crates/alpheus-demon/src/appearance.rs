@@ -113,18 +113,76 @@ pub fn mode_to_publish(written: Option<Mode>, now: Mode) -> Option<Mode> {
     (written != Some(now)).then_some(now)
 }
 
+/// Whether `dir` (`runtime/alpheus`) may hold the mode file: a real directory (never a symlink),
+/// owned by us, closed to group and others. Missing is fine (it is created 0700).
+fn dir_is_ours(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    // SAFETY: geteuid(2) cannot fail.
+    let me = unsafe { libc::geteuid() };
+    if !meta.is_dir() {
+        Err(io::Error::other(format!("{} is not a real directory", dir.display())))
+    } else if meta.uid() != me {
+        Err(io::Error::other(format!("{} is not ours", dir.display())))
+    } else if meta.mode() & 0o077 != 0 {
+        Err(io::Error::other(format!("{} is open to others", dir.display())))
+    } else {
+        Ok(())
+    }
+}
+
 /// The mode in effect to `runtime/alpheus/mode`, for the TUI. The directory is created owner-only
-/// (0700) when missing, like the launcher's state directory; the text goes to a temporary file in
-/// that directory, then is renamed over the old one, so a reader sees the old text or the new one,
-/// never half of one. Err: the caller logs one line.
+/// (0700) when missing and refused when it is a symlink, someone else's or open to others; the text
+/// goes to a fresh temporary file in that directory (a stale one removed first, never followed),
+/// then is renamed over the old one, so a reader sees the old text or the new one, never half of
+/// one. Err: the caller logs one line.
 pub fn write_mode(runtime: &Path, mode: Mode) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     let dir = runtime.join(MODE_DIR);
+    dir_is_ours(&dir)?;
     DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    dir_is_ours(&dir)?;
     let tmp = dir.join(format!(".mode.{}", std::process::id()));
-    std::fs::write(&tmp, mode_text(mode))?;
-    std::fs::rename(&tmp, mode_path(runtime)).inspect_err(|_| {
+    let _ = std::fs::remove_file(&tmp);
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(0o600).open(&tmp)?;
+    let written = file.write_all(mode_text(mode).as_bytes());
+    drop(file);
+    written.and_then(|()| std::fs::rename(&tmp, mode_path(runtime))).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
     })
+}
+
+/// One publication: writes `now` when it differs from `written` and a runtime directory exists.
+/// `written` moves only on success (a failed write is tried again at the next change); a failure is
+/// logged once per distinct error (`last_error`), never once per toggle.
+pub fn publish(
+    runtime: Option<&Path>,
+    written: &mut Option<Mode>,
+    last_error: &mut Option<String>,
+    now: Mode,
+    write: impl Fn(&Path, Mode) -> io::Result<()>,
+    mut say: impl FnMut(&str),
+) {
+    let Some(mode) = mode_to_publish(*written, now) else { return };
+    let Some(runtime) = runtime else { return };
+    match write(runtime, mode) {
+        Ok(()) => {
+            *written = Some(mode);
+            *last_error = None;
+        }
+        Err(e) => {
+            let text = format!("appearance: cannot write {} ({e})", mode_path(runtime).display());
+            if last_error.as_deref() != Some(text.as_str()) {
+                say(&text);
+                *last_error = Some(text);
+            }
+        }
+    }
 }
 
 /// What a link callback changed.
@@ -339,12 +397,7 @@ impl App {
     /// the next change tries again.
     pub(crate) fn publish_mode(&mut self) {
         let now = effective_mode(self.theme_settings.mode, self.portal_mode);
-        let Some(mode) = mode_to_publish(self.mode_written, now) else { return };
-        let Some(runtime) = self.mode_runtime.as_deref() else { return };
-        if let Err(e) = write_mode(runtime, mode) {
-            log(&format!("appearance: cannot write {} ({e})", mode_path(runtime).display()));
-        }
-        self.mode_written = Some(mode);
+        publish(self.mode_runtime.as_deref(), &mut self.mode_written, &mut self.mode_error, now, write_mode, log);
     }
 }
 
@@ -463,6 +516,73 @@ mod tests {
         let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["mode"], "no temporary file left behind");
         let _ = std::fs::remove_dir_all(&run);
+    }
+
+    #[test]
+    fn a_directory_open_to_others_or_a_symlink_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let run = std::env::temp_dir().join(format!("alpheus-{}-mode-unsafe", std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(run.join("alpheus")).unwrap();
+        std::fs::set_permissions(run.join("alpheus"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(write_mode(&run, Mode::Light).is_err(), "0755 refused");
+        assert!(!run.join("alpheus/mode").exists());
+        std::fs::set_permissions(run.join("alpheus"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_mode(&run, Mode::Light).unwrap();
+        std::fs::remove_dir_all(run.join("alpheus")).unwrap();
+        let elsewhere = run.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, run.join("alpheus")).unwrap();
+        assert!(write_mode(&run, Mode::Light).is_err(), "a symlinked directory refused");
+        assert!(!elsewhere.join("mode").exists());
+        let _ = std::fs::remove_dir_all(&run);
+    }
+
+    #[test]
+    fn a_stale_temporary_symlink_is_never_followed() {
+        let run = std::env::temp_dir().join(format!("alpheus-{}-mode-stale", std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(&run).unwrap();
+        write_mode(&run, Mode::Dark).unwrap();
+        let victim = run.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        std::os::unix::fs::symlink(&victim, run.join(format!("alpheus/.mode.{}", std::process::id()))).unwrap();
+        write_mode(&run, Mode::Light).unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(std::fs::read_to_string(run.join("alpheus/mode")).unwrap(), "light\n");
+        let _ = std::fs::remove_dir_all(&run);
+    }
+
+    #[test]
+    fn a_failed_write_is_retried_and_logged_once_per_error() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let (mut written, mut error) = (None, None);
+        let fail = |_: &Path, _: Mode| {
+            calls.set(calls.get() + 1);
+            Err(io::Error::other("disk"))
+        };
+        let run = Path::new("/run/x");
+        let mut lines = 0;
+        publish(Some(run), &mut written, &mut error, Mode::Dark, fail, |_| lines += 1);
+        assert_eq!((written, calls.get(), lines), (None, 1, 1), "not marked written");
+        publish(Some(run), &mut written, &mut error, Mode::Dark, fail, |_| lines += 1);
+        assert_eq!((calls.get(), lines), (2, 1), "tried again, not logged again");
+        let first = error.clone();
+        assert!(first.is_some());
+        publish(Some(run), &mut written, &mut error, Mode::Light, fail, |_| lines += 1);
+        assert_eq!(lines, 1, "the same error on the next toggle: still one line");
+        assert_eq!(error, first, "same error: same record, not re-logged");
+        publish(Some(run), &mut written, &mut error, Mode::Light, |_, _| Ok(()), |_| lines += 1);
+        assert_eq!((written, error.clone()), (Some(Mode::Light), None), "success marks and clears");
+    }
+
+    #[test]
+    fn no_runtime_directory_writes_nothing() {
+        let (mut written, mut error) = (None, None);
+        publish(None, &mut written, &mut error, Mode::Light, |_, _| panic!("no runtime: no write"), |_| panic!("nothing logged"));
+        assert_eq!((written, error), (None, None));
     }
 
     #[test]

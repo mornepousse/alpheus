@@ -142,3 +142,26 @@ fn a_silent_portal_times_out_once_then_dark() {
     assert_eq!(outs, []);
     assert_eq!((link.portal(), link.pending(), link.next_deadline()), (None, 0, None));
 }
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_peer_cannot_set_the_mode_with_a_unicast_signal() {
+    use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+    let bus = PrivateBus::start("appearance-spoof");
+    let session = SessionBus::at(&bus.address).unwrap();
+    let ours = session.unique_name().to_string();
+    let mut link = PortalLink::start(session);
+    pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0); // no portal: answered at once
+    let spoofer = Peer::connect(&bus);
+    let mut spoof = dbus::Message::new_signal(PORTAL_PATH, SETTINGS_INTERFACE, "SettingChanged").unwrap().append3(
+        APPEARANCE_NAMESPACE,
+        COLOR_SCHEME_KEY,
+        dbus::arg::Variant(2u32),
+    );
+    spoof.set_destination(Some(ours.as_str().into()));
+    spoofer.channel.send(spoof).unwrap();
+    spoofer.channel.flush();
+    let outs = pump(&mut link, Duration::from_millis(500), |_| false);
+    assert_eq!(outs, [], "addressed to us alone: not the portal's word");
+    assert_eq!(link.portal(), None);
+}
