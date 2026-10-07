@@ -65,9 +65,7 @@ breakdown), then the spec of the sub-project currently in progress in
   non-blocking dbus-rs connection to the session bus (no new thread); icons
   as Nerd Font glyphs (no pixmaps ever requested); menus and the calendar as
   `xdg_popup`s on the bar's own layer surface, sharing the launcher's list
-  rendering and keys. Hyprland before 0.56.2 swallows clicks inside popups
-  of an Exclusive layer surface (hyprwm/Hyprland#15729): on Hyprland
-  (detected from its `hyprland_*` globals) the bar stays non-exclusive
+  rendering and keys. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals,
   during a grab (3a6599e). Measured in **release** (headless sway, 3 runs):
   startup ≈ 7.4–7.5 MB PSS all modules with the tray unused, ≈ 8.0–8.3 MB
   with the tray and 10 fake items, ≈ 8.6–9.2 MB after 8,300 events, 0
@@ -113,8 +111,8 @@ breakdown), then the spec of the sub-project currently in progress in
   switch done (`lanceur-alpheus` merged into Mae's nixos-config); Mae
   using the alpheus launcher daily since 2026-10-05 (her own feedback
   folded in: held terminal on Enter, detached on Ctrl+Enter, apps before
-  windows on an empty query); merge of `feat/launcher-1` into alpheus
-  `main` pending her go.
+  windows on an empty query); `feat/launcher-1` merged into alpheus
+  `main` on 2026-10-05.
 - Next, in order: bar step 5 (media,
   notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.

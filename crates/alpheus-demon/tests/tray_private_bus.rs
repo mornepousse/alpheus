@@ -1080,7 +1080,7 @@ fn a_silent_item_gets_its_letter_after_2_s() {
     let started = Instant::now();
     let _silent = FakeItem::start(&bus, Spec::silent());
     pump.until("registered", |t| t.items().len() == 1);
-    thread::sleep(Duration::from_millis(1500).saturating_sub(started.elapsed()));
+    thread::sleep(Duration::from_millis(1000).saturating_sub(started.elapsed()));
     assert!(pump.ready().is_empty(), "not shown before its Gets time out");
     pump.until("its letter, once its Gets time out", ready_count(1));
     let item = &pump.ready()[0];

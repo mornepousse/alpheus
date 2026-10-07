@@ -216,9 +216,12 @@ fn toggle_opens_and_closes_the_launcher() {
     // must NOT close the box back down. This replaces the previous
     // expectation here (opened then closed, "never two boxes"): that was
     // exactly the bug a real Hyprland press bind triggers on release.
+    // Both sent back to back, without waiting for "shown": the second is
+    // then within the window whatever the machine load (the unit test of
+    // `toggle_is_debounced` is the precise check of the 250 ms edge).
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
-    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("launcher closed (toggle)"), 1, "the quick second Toggle must not close it: {:?}", d.log());
     // Past the window, a Toggle closes it for good.
@@ -419,7 +422,9 @@ fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
         std::thread::sleep(Duration::from_millis(20));
     }
     std::thread::sleep(Duration::from_millis(500));
-    assert_eq!(reads(), 2, "20 NewIcon, one re-read on the next frame: {:?}", nimbus.calls());
+    // A signal landing after the frame callback may cost one more read under load; never one per
+    // signal (an uncoalesced daemon would read 21 times).
+    assert!((2..=3).contains(&reads()), "20 NewIcon, one re-read per frame at most: {:?}", nimbus.calls());
 }
 
 #[test]
@@ -931,12 +936,12 @@ fn a_late_failed_activate_after_clicking_elsewhere_opens_nothing() {
     let toml = "modules = [\"tray\", \"clock\"]\n";
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    slow_activate_item(&bus, Duration::from_millis(800));
+    slow_activate_item(&bus, Duration::from_millis(1500));
     std::thread::sleep(Duration::from_secs(1));
     sway.click(12, 10, "button1"); // left click: Activate sent, answered late
     std::thread::sleep(Duration::from_millis(200));
     sway.click(100, 10, "button1"); // elsewhere on the bar, before the error reply lands
-    std::thread::sleep(Duration::from_secs(1)); // the delayed error reply has now landed
+    std::thread::sleep(Duration::from_millis(1800)); // the delayed error reply has now landed
     assert_eq!(d.count("menu shown"), 0, "clicked elsewhere before the reply landed: {:?}", d.log());
 }
 

@@ -187,10 +187,7 @@ workspace goes through a configurable command. Sound comes from
 `pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
 resources from `/proc`. The tray talks to the session bus
 (StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
-thread. On Hyprland before 0.56.2, which swallows clicks inside the popups
-of an Exclusive layer surface (hyprwm/Hyprland#15729), the bar stays
-non-exclusive while a menu is open (detected from its `hyprland_*`
-globals).
+thread. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
 
