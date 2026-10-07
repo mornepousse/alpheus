@@ -81,6 +81,7 @@ impl App {
             }
             Target::AppearanceTheme(i) => self.appearance_click_theme(i, now),
             Target::AppearanceMode(m) => self.appearance_click_mode(m, now),
+            Target::AppearanceColors(m) => self.appearance_click_colors(m, now),
             Target::OutputToggle(i) => {
                 self.focus = i;
                 if let Some(Item::Output(name)) = self.focused() {
@@ -341,6 +342,17 @@ mod tests {
         click(&mut a, x, y);
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmode = \"light\"\n");
         assert!(a.appearance.mode_focus && a.appearance.applied_mode == ModeSetting::Light);
+    }
+
+    #[test]
+    fn a_click_on_a_module_colours_value_applies_it() {
+        use alpheus_commun::theme::settings::ModuleColors;
+        let (mut a, dir) = open("mouse-colors", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (x, y) = center(&a, Target::AppearanceColors(ModuleColors::Full));
+        click(&mut a, x, y);
+        assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmodule_colors = \"full\"\n");
+        assert!(a.appearance.colors_focus && !a.appearance.mode_focus);
+        assert_eq!(a.appearance.applied_module_colors, ModuleColors::Full);
     }
 
     #[test]

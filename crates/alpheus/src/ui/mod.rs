@@ -105,10 +105,10 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
-            Tab::Appearance if app.appearance.mode_focus => {
+            Tab::Appearance if app.appearance.mode_focus || app.appearance.colors_focus => {
                 pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));
-                pairs.push((km.label(Action::NextTab), "Theme"));
+                pairs.push((km.label(Action::NextTab), if app.appearance.mode_focus { "Colours" } else { "Theme" }));
             }
             Tab::Appearance => {
                 pairs.push((format!("{}/{}", km.label(Action::Up), km.label(Action::Down)), "Choose"));

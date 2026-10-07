@@ -1,5 +1,5 @@
 //! The Appearance tab's data and its one write: the theme list with its display names, and
-//! `theme.toml`'s `theme` and `mode` lines, edited in place (everything else byte for byte).
+//! `theme.toml`'s `theme`, `mode` and `module_colors` lines, edited in place (everything else byte for byte).
 
 use alpheus_commun::theme::presets::PRESETS;
 use alpheus_commun::theme::settings::THEME_FILE;
@@ -98,12 +98,12 @@ fn set_one(text: &str, key: &str, value: &str) -> String {
     out
 }
 
-/// `theme.toml` text with the top-level `theme` and `mode` lines set (None: left alone). Every
-/// other line is kept byte for byte: comments, blank lines, the `[colors]` overrides. A replaced
-/// line loses its own trailing comment.
-pub fn set_keys(text: &str, theme: Option<&str>, mode: Option<&str>) -> String {
+/// `theme.toml` text with the top-level `theme`, `mode` and `module_colors` lines set (None: left
+/// alone). Every other line is kept byte for byte: comments, blank lines, the `[colors]`
+/// overrides. A replaced line loses its own trailing comment.
+pub fn set_keys(text: &str, theme: Option<&str>, mode: Option<&str>, module_colors: Option<&str>) -> String {
     let mut out = text.to_string();
-    for (key, value) in [("theme", theme), ("mode", mode)] {
+    for (key, value) in [("theme", theme), ("mode", mode), ("module_colors", module_colors)] {
         if let Some(v) = value {
             out = set_one(&out, key, v);
         }
@@ -111,10 +111,10 @@ pub fn set_keys(text: &str, theme: Option<&str>, mode: Option<&str>) -> String {
     out
 }
 
-/// Writes `theme` / `mode` into `dir/theme.toml`: reads it (absent: empty), edits it with
+/// Writes `theme` / `mode` / `module_colors` into `dir/theme.toml`: reads it (absent: empty), edits it with
 /// `set_keys`, creates `dir` if needed, then writes a temporary file beside it and renames it.
 /// An unreadable existing file is an error, never overwritten.
-pub fn write_settings(dir: &Path, theme: Option<&str>, mode: Option<&str>) -> io::Result<()> {
+pub fn write_settings(dir: &Path, theme: Option<&str>, mode: Option<&str>, module_colors: Option<&str>) -> io::Result<()> {
     // A symlinked theme.toml (dotfiles managers) keeps its link: the target is what gets replaced,
     // so a read-only target (a store path) is an error, not a silent swap for a regular file.
     let link = dir.join(THEME_FILE);
@@ -127,7 +127,7 @@ pub fn write_settings(dir: &Path, theme: Option<&str>, mode: Option<&str>) -> io
     let parent = path.parent().unwrap_or(dir);
     std::fs::create_dir_all(parent)?;
     let tmp = parent.join(format!(".{THEME_FILE}.{}.tmp", std::process::id()));
-    let result = std::fs::write(&tmp, set_keys(&old, theme, mode)).and_then(|()| std::fs::rename(&tmp, &path));
+    let result = std::fs::write(&tmp, set_keys(&old, theme, mode, module_colors)).and_then(|()| std::fs::rename(&tmp, &path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn writing_creates_the_directory_and_leaves_no_temporary_file() {
         let dir = scratch("create").join("not").join("yet");
-        write_settings(&dir, Some("nord"), Some("dark")).unwrap();
+        write_settings(&dir, Some("nord"), Some("dark"), None).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmode = \"dark\"\n");
         let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(names, ["theme.toml"], "the temporary file was renamed away");
@@ -174,7 +174,7 @@ mod tests {
         let dir = scratch("edit");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("theme.toml"), "# mine\ntheme = \"gruvbox\"\n[colors]\nfg = \"#ffffff\"\n").unwrap();
-        write_settings(&dir, Some("dracula"), None).unwrap();
+        write_settings(&dir, Some("dracula"), None, None).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "# mine\ntheme = \"dracula\"\n[colors]\nfg = \"#ffffff\"\n");
     }
 
@@ -185,7 +185,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("theme.toml"), "theme = \"nord\"\n").unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let r = write_settings(&dir, Some("gruvbox"), None);
+        let r = write_settings(&dir, Some("gruvbox"), None, None);
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.is_err(), "{r:?}");
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\n");
@@ -199,7 +199,7 @@ mod tests {
         std::fs::create_dir_all(&real).unwrap();
         std::fs::write(real.join("mine.toml"), "# mine\ntheme = \"nord\"\n").unwrap();
         std::os::unix::fs::symlink(real.join("mine.toml"), dir.join("theme.toml")).unwrap();
-        write_settings(&dir, Some("gruvbox"), None).unwrap();
+        write_settings(&dir, Some("gruvbox"), None, None).unwrap();
         assert!(std::fs::symlink_metadata(dir.join("theme.toml")).unwrap().file_type().is_symlink());
         assert_eq!(std::fs::read_to_string(real.join("mine.toml")).unwrap(), "# mine\ntheme = \"gruvbox\"\n");
     }
@@ -214,7 +214,7 @@ mod tests {
         std::fs::write(real.join("mine.toml"), "theme = \"nord\"\n").unwrap();
         std::os::unix::fs::symlink(real.join("mine.toml"), dir.join("theme.toml")).unwrap();
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o555)).unwrap();
-        let r = write_settings(&dir, Some("gruvbox"), None);
+        let r = write_settings(&dir, Some("gruvbox"), None, None);
         std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.is_err(), "{r:?}");
         assert!(std::fs::symlink_metadata(dir.join("theme.toml")).unwrap().file_type().is_symlink());
@@ -225,27 +225,27 @@ mod tests {
     fn an_unreadable_theme_toml_is_never_overwritten() {
         let dir = scratch("dir-as-file");
         std::fs::create_dir_all(dir.join("theme.toml")).unwrap();
-        assert!(write_settings(&dir, Some("nord"), None).is_err());
+        assert!(write_settings(&dir, Some("nord"), None, None).is_err());
         assert!(dir.join("theme.toml").is_dir());
     }
 
     #[test]
     fn an_empty_file_gets_both_lines() {
-        assert_eq!(set_keys("", Some("nord"), Some("dark")), "theme = \"nord\"\nmode = \"dark\"\n");
-        assert_eq!(set_keys("", None, Some("auto")), "mode = \"auto\"\n");
-        assert_eq!(set_keys("", None, None), "");
+        assert_eq!(set_keys("", Some("nord"), Some("dark"), None), "theme = \"nord\"\nmode = \"dark\"\n");
+        assert_eq!(set_keys("", None, Some("auto"), None), "mode = \"auto\"\n");
+        assert_eq!(set_keys("", None, None, None), "");
     }
 
     #[test]
     fn a_file_with_only_colors_keeps_them_below_the_new_lines() {
         let t = "[colors]\naccent = \"#ff8800\"\n";
-        assert_eq!(set_keys(t, Some("nord"), None), "theme = \"nord\"\n\n[colors]\naccent = \"#ff8800\"\n");
+        assert_eq!(set_keys(t, Some("nord"), None, None), "theme = \"nord\"\n\n[colors]\naccent = \"#ff8800\"\n");
     }
 
     #[test]
     fn an_existing_line_is_replaced_in_place_and_the_rest_kept_byte_for_byte() {
         let t = "# my look\n\n  theme   =   \"gruvbox\"  # old\n# mode next\nmode = \"auto\"\n\n[colors]\n# theme = \"x\"\naccent = \"#ff8800\"";
-        let out = set_keys(t, Some("tokyo-night"), Some("light"));
+        let out = set_keys(t, Some("tokyo-night"), Some("light"), None);
         assert_eq!(
             out,
             "# my look\n\n  theme = \"tokyo-night\"\n# mode next\nmode = \"light\"\n\n[colors]\n# theme = \"x\"\naccent = \"#ff8800\""
@@ -255,45 +255,78 @@ mod tests {
     #[test]
     fn a_theme_key_inside_a_table_is_never_touched() {
         let t = "[colors]\ntheme = \"#101010\"\n";
-        let out = set_keys(t, Some("nord"), None);
+        let out = set_keys(t, Some("nord"), None, None);
         assert_eq!(out, "theme = \"nord\"\n\n[colors]\ntheme = \"#101010\"\n");
         let t = "mode = \"dark\"\n[other]\nmode = \"keep\"\n";
-        assert_eq!(set_keys(t, None, Some("light")), "mode = \"light\"\n[other]\nmode = \"keep\"\n");
+        assert_eq!(set_keys(t, None, Some("light"), None), "mode = \"light\"\n[other]\nmode = \"keep\"\n");
     }
 
     #[test]
     fn a_missing_mode_is_inserted_after_the_last_top_level_line() {
         let t = "theme = \"nord\"\n# note\n[colors]\nfg = \"#ffffff\"\n";
-        assert_eq!(set_keys(t, None, Some("dark")), "theme = \"nord\"\nmode = \"dark\"\n# note\n[colors]\nfg = \"#ffffff\"\n");
+        assert_eq!(set_keys(t, None, Some("dark"), None), "theme = \"nord\"\nmode = \"dark\"\n# note\n[colors]\nfg = \"#ffffff\"\n");
     }
 
     #[test]
     fn with_no_table_the_lines_go_at_the_end_even_without_a_final_newline() {
-        assert_eq!(set_keys("# hi", Some("nord"), None), "# hi\ntheme = \"nord\"\n");
-        assert_eq!(set_keys("theme = \"nord\"", None, Some("auto")), "theme = \"nord\"\nmode = \"auto\"\n");
+        assert_eq!(set_keys("# hi", Some("nord"), None, None), "# hi\ntheme = \"nord\"\n");
+        assert_eq!(set_keys("theme = \"nord\"", None, Some("auto"), None), "theme = \"nord\"\nmode = \"auto\"\n");
     }
 
     #[test]
     fn setting_the_same_values_twice_changes_nothing() {
         let t = "# c\n[colors]\nfg = \"#fff\"\n";
-        let once = set_keys(t, Some("nord"), Some("dark"));
-        assert_eq!(set_keys(&once, Some("nord"), Some("dark")), once);
+        let once = set_keys(t, Some("nord"), Some("dark"), None);
+        assert_eq!(set_keys(&once, Some("nord"), Some("dark"), None), once);
     }
 
     #[test]
     fn the_comment_glued_to_a_table_stays_with_it() {
         let t = "# colour overrides\n[colors]\nfg = \"#fff\"\n";
-        assert_eq!(set_keys(t, None, Some("dark")), "mode = \"dark\"\n\n# colour overrides\n[colors]\nfg = \"#fff\"\n");
+        assert_eq!(set_keys(t, None, Some("dark"), None), "mode = \"dark\"\n\n# colour overrides\n[colors]\nfg = \"#fff\"\n");
     }
 
     #[test]
     fn a_key_that_only_starts_with_theme_is_not_theme() {
         let t = "theme_extra = 1\n";
-        assert_eq!(set_keys(t, Some("nord"), None), "theme_extra = 1\ntheme = \"nord\"\n");
+        assert_eq!(set_keys(t, Some("nord"), None, None), "theme_extra = 1\ntheme = \"nord\"\n");
     }
 
     #[test]
     fn crlf_lines_keep_their_ending_when_replaced() {
-        assert_eq!(set_keys("theme = \"a\"\r\nmode = \"b\"\r\n", Some("nord"), None), "theme = \"nord\"\r\nmode = \"b\"\r\n");
+        assert_eq!(set_keys("theme = \"a\"\r\nmode = \"b\"\r\n", Some("nord"), None, None), "theme = \"nord\"\r\nmode = \"b\"\r\n");
+    }
+
+    #[test]
+    fn module_colors_is_set_replaced_and_inserted_like_the_others() {
+        assert_eq!(set_keys("", None, None, Some("full")), "module_colors = \"full\"\n");
+        assert_eq!(set_keys("", Some("nord"), Some("dark"), Some("none")), "theme = \"nord\"\nmode = \"dark\"\nmodule_colors = \"none\"\n");
+        let t = "# mine\nmodule_colors = \"icons\"  # old\ntheme = \"nord\"\n\n[colors]\nmodule_colors = \"keep\"\nfg = \"#fff\"\n";
+        assert_eq!(
+            set_keys(t, None, None, Some("full")),
+            "# mine\nmodule_colors = \"full\"\ntheme = \"nord\"\n\n[colors]\nmodule_colors = \"keep\"\nfg = \"#fff\"\n",
+            "replaced in place, the one in [colors] untouched"
+        );
+        assert_eq!(
+            set_keys("theme = \"nord\"\n[colors]\nfg = \"#fff\"\n", None, None, Some("none")),
+            "theme = \"nord\"\nmodule_colors = \"none\"\n[colors]\nfg = \"#fff\"\n"
+        );
+        assert_eq!(set_keys("module_colors_x = 1\n", None, None, Some("none")), "module_colors_x = 1\nmodule_colors = \"none\"\n");
+        assert_eq!(set_keys("module_colors = \"icons\"\r\n", None, None, Some("full")), "module_colors = \"full\"\r\n");
+    }
+
+    #[test]
+    fn module_colors_is_written_atomically_through_a_symlink() {
+        let dir = scratch("colors-link");
+        let real = scratch("colors-link-real");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("mine.toml"), "# mine\ntheme = \"nord\"\n").unwrap();
+        std::os::unix::fs::symlink(real.join("mine.toml"), dir.join("theme.toml")).unwrap();
+        write_settings(&dir, None, None, Some("full")).unwrap();
+        assert!(std::fs::symlink_metadata(dir.join("theme.toml")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(real.join("mine.toml")).unwrap(), "# mine\ntheme = \"nord\"\nmodule_colors = \"full\"\n");
+        let names: Vec<_> = std::fs::read_dir(&real).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["mine.toml"], "no temporary file left");
     }
 }

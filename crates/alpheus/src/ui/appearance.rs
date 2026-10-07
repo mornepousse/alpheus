@@ -1,12 +1,13 @@
 //! The Appearance tab: the theme list on the left, the preview of the theme under the cursor on
 //! the right (a mini bar and a mini menu, drawn with the previewed theme's own roles), and the mode
-//! row below. Everything is cells; nothing here reads a file.
+//! and module-colours rows below. Everything is cells; nothing here reads a file.
 
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use crate::app::App;
-use crate::app::appearance::{MODES, mode_label};
+use crate::app::appearance::{COLORS, MODES, colors_label, mode_label};
 use crate::theme::color;
+use alpheus_commun::theme::settings::ModuleColors;
 use alpheus_commun::theme::{Mode, Roles};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -16,8 +17,10 @@ use ratatui::style::{Modifier, Style};
 const LIST_W: u16 = 30;
 const GAP: u16 = 2;
 /// The preview's frames: widest, and narrowest worth drawing.
-const PREVIEW_W: u16 = 36;
+const PREVIEW_W: u16 = 46;
 const PREVIEW_MIN: u16 = 22;
+/// Column of the chips of the mode and module-colours rows, from the body's left edge.
+const CHIPS_X: u16 = 16;
 /// Column of the "dark only" tags in a list row.
 const TAG_X: u16 = 18;
 /// Inner width of the mini menu.
@@ -30,10 +33,12 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     // The mode row sits under the list when it fits, else on the body's last row with the list
     // scrolled so the cursor stays visible. Nothing is drawn or made clickable outside `body`.
     let n = ap.entries.len();
-    let room = usize::from(body.height).saturating_sub(3);
+    // A blank row sits between the list and the two chip rows when everything fits with it.
+    let gap = usize::from(usize::from(body.height) >= n + 4);
+    let room = usize::from(body.height).saturating_sub(3 + gap);
     let shown = n.min(room);
     let offset = if ap.cursor >= shown { ap.cursor + 1 - shown } else { 0 };
-    let mode_y = body.y + 2 + shown as u16;
+    let mode_y = body.y + 1 + (shown + gap) as u16;
     for (i, e) in ap.entries.iter().enumerate().skip(offset).take(shown) {
         let y = body.y + 1 + (i - offset) as u16;
         let row = Rect::new(body.x, y, LIST_W.min(body.width), 1);
@@ -53,18 +58,28 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
         }
         hits.push(row.intersection(body), Target::AppearanceTheme(i));
     }
-    put(buf, body, body.x, mode_y, "Mode", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
-    let mut x = body.x + 6;
-    for m in MODES {
-        let style = if m != ap.mode {
+    let chip = |m_selected: bool, focused: bool, th: &crate::theme::Theme| {
+        if !m_selected {
             Style::default().fg(th.muted)
-        } else if ap.mode_focus {
+        } else if focused {
             th.filled()
         } else {
             th.selected()
-        };
-        let w = put(buf, body, x, mode_y, &format!(" {} ", mode_label(m)), style);
+        }
+    };
+    put(buf, body, body.x, mode_y, "Mode", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
+    let mut x = body.x + CHIPS_X;
+    for m in MODES {
+        let w = put(buf, body, x, mode_y, &format!(" {} ", mode_label(m)), chip(m == ap.mode, ap.mode_focus, th));
         hits.push(Rect::new(x, mode_y, w, 1).intersection(body), Target::AppearanceMode(m));
+        x = x.saturating_add(w + 1);
+    }
+    let colors_y = mode_y + 1;
+    put(buf, body, body.x, colors_y, "Module colours", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
+    let mut x = body.x + CHIPS_X;
+    for m in COLORS {
+        let w = put(buf, body, x, colors_y, &format!(" {} ", colors_label(m)), chip(m == ap.module_colors, ap.colors_focus, th));
+        hits.push(Rect::new(x, colors_y, w, 1).intersection(body), Target::AppearanceColors(m));
         x = x.saturating_add(w + 1);
     }
     if let (Some(roles), Some(entry)) = (&ap.preview, ap.cursor_entry()) {
@@ -82,7 +97,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
                 Style::default().fg(th.muted).add_modifier(Modifier::BOLD),
             );
             let w = avail.min(PREVIEW_W);
-            mini_bar(buf, body, Rect::new(px, body.y + 1, w, 3), roles);
+            mini_bar(buf, body, Rect::new(px, body.y + 1, w, 3), roles, ap.module_colors);
             mini_menu(buf, body, Rect::new(px, body.y + 5, (MENU_W + 2).min(w), 5), roles);
             if let Some(note) = &ap.preview_note {
                 put(buf, body, px, body.y + 10, &truncate(note, usize::from(avail)), Style::default().fg(th.error));
@@ -106,8 +121,10 @@ fn frame(buf: &mut Buffer, clip: Rect, r: Rect, bg: Style, border: Style) {
     put(buf, clip, r.x, r.bottom() - 1, &line("└", "─", "┘"), border);
 }
 
-/// The bar of the previewed theme: workspaces, a title, a battery warning and a clock.
-fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles) {
+/// The bar of the previewed theme: workspaces, a title, four modules (sound, network, battery,
+/// memory) tinted by `colors` with the theme's hues, and a clock. The battery is low, so it shows
+/// the warn colour whatever the setting (a state wins over its hue).
+fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColors) {
     let bg = Style::default().fg(color(p.fg)).bg(color(p.bar_bg));
     let border = Style::default().fg(color(p.border_over(p.bar_bg))).bg(color(p.bar_bg));
     frame(buf, clip, r, bg, border);
@@ -119,13 +136,28 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles) {
     cx += put(buf, inner, cx, y, " 2 ", bg);
     cx += put(buf, inner, cx, y, " 3!", on(p.urgent));
     put(buf, inner, cx + 1, y, "notes.md", bg);
-    let tail = "15% 14:05";
-    let tx = (inner.right()).saturating_sub(tail.len() as u16 + 1);
+    // Right-aligned, only when it fits after the title.
+    let modules = MODULES_W + 1 + CLOCK_W;
+    let tx = inner.right().saturating_sub(modules + 1);
     if tx > cx + 9 {
-        put(buf, inner, tx, y, "15%", on(p.warn));
-        put(buf, inner, tx + 4, y, "14:05", on(p.accent));
+        let icon = |hue: alpheus_commun::theme::Rgb| if colors == ModuleColors::None { bg } else { on(hue) };
+        let text = |hue: alpheus_commun::theme::Rgb| if colors == ModuleColors::Full { on(hue) } else { bg };
+        let h = &p.hues;
+        let mut mx = tx;
+        mx += put(buf, inner, mx, y, "♪", icon(h.blue));
+        mx += put(buf, inner, mx, y, " 84% ", text(h.blue));
+        mx += put(buf, inner, mx, y, "≈ ", icon(h.cyan));
+        mx += put(buf, inner, mx, y, "▮", on(p.warn));
+        mx += put(buf, inner, mx, y, " 15% ", on(p.warn));
+        mx += put(buf, inner, mx, y, "▤", icon(h.yellow));
+        put(buf, inner, mx, y, " 6G", text(h.yellow));
+        put(buf, inner, tx + MODULES_W + 1, y, "14:05", on(p.accent));
     }
 }
+
+/// Cells of the mini bar's four modules ("♪ 84% ≈ ▮ 15% ▤ 6G") and of its clock.
+const MODULES_W: u16 = 18;
+const CLOCK_W: u16 = 5;
 
 /// The menu of the previewed theme: a selected row, a checked row and a plain one.
 fn mini_menu(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles) {
@@ -149,6 +181,7 @@ mod tests {
     use crate::app::appearance::tests::open;
     use alpheus_commun::theme::Rgb;
     use alpheus_commun::theme::presets::preset;
+    use alpheus_commun::theme::settings::ModuleColors;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -226,7 +259,8 @@ mod tests {
         assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.bar_bg)), "inactive workspace");
         assert_eq!(cell(&b, 4, "!").0, rgb(p.urgent), "urgent workspace");
         assert_eq!(cell(&b, 4, "n"), (rgb(p.fg), rgb(p.bar_bg)), "window title");
-        assert_eq!(cell(&b, 4, "%").0, rgb(p.warn), "low battery");
+        assert_eq!(cell(&b, 4, "▮").0, rgb(p.warn), "low battery");
+        assert_eq!(cell(&b, 4, "5").0, rgb(p.warn), "its number too");
         assert_eq!(cell(&b, 4, ":").0, rgb(p.accent), "clock");
         // The menu (frame at 7, rows 8..=10).
         assert_eq!(cell(&b, 8, "O"), (rgb(p.fg), rgb(p.selection)), "selected row");
@@ -236,6 +270,66 @@ mod tests {
         // The TUI itself still wears the applied theme, not the previewed one.
         assert_eq!(a.theme.bg, rgb(preset("catppuccin").unwrap().dark.bar_bg));
         assert_ne!(rgb(p.bar_bg), a.theme.bg, "the test bites only if the two themes differ");
+    }
+
+    /// The mini bar's modules under each setting, on the previewed theme's hues.
+    #[test]
+    fn the_mini_bar_tints_its_modules_by_the_selected_module_colours() {
+        let (mut a, _) = open("preview-colors", &[("theme.toml", "theme = \"tokyo-night\"\nmode = \"dark\"\n")]);
+        let p = preset("tokyo-night").unwrap().dark;
+        let (fg, bar) = (rgb(p.fg), rgb(p.bar_bg));
+        let mut seen = Vec::new();
+        for (mc, icons_tinted, text_tinted) in
+            [(ModuleColors::None, false, false), (ModuleColors::Icons, true, false), (ModuleColors::Full, true, true)]
+        {
+            a.appearance.module_colors = mc;
+            a.on_key_action(Action::Home);
+            goto(&mut a, "tokyo-night");
+            let b = buffer(&a);
+            let pick = |sym, hue: Rgb, tinted: bool| {
+                let want = if tinted { rgb(hue) } else { fg };
+                assert_eq!(cell(&b, 4, sym), (want, bar), "{sym} under {mc:?}");
+            };
+            pick("♪", p.hues.blue, icons_tinted);
+            pick("8", p.hues.blue, text_tinted);
+            pick("≈", p.hues.cyan, icons_tinted);
+            pick("▤", p.hues.yellow, icons_tinted);
+            pick("6", p.hues.yellow, text_tinted);
+            assert_eq!(cell(&b, 4, "▮").0, rgb(p.warn), "a state wins over the hue under {mc:?}");
+            seen.push(buffer(&a));
+        }
+        assert_ne!(seen[0], seen[1]);
+        assert_ne!(seen[1], seen[2]);
+    }
+
+    #[test]
+    fn the_module_colours_row_is_drawn_with_its_three_values_and_regions() {
+        let (a, _) = open("colors-row", &[("theme.toml", "module_colors = \"full\"\n")]);
+        let (rows, hits) = draw(&a, 100, 24);
+        let row = rows.iter().find(|r| r.contains("Module colours")).expect("the row");
+        assert!(row.contains("None") && row.contains("Icons") && row.contains("Full"), "{row:?}");
+        for m in COLORS {
+            assert!(hits.find(Target::AppearanceColors(m)).is_some(), "{m:?}");
+        }
+        let mode_y = hits.find(Target::AppearanceMode(MODES[0])).unwrap().y;
+        assert_eq!(hits.find(Target::AppearanceColors(COLORS[0])).unwrap().y, mode_y + 1, "right under Mode");
+        // The loaded value is the highlighted one.
+        let b = buffer(&a);
+        let full = hits.find(Target::AppearanceColors(ModuleColors::Full)).unwrap();
+        let none = hits.find(Target::AppearanceColors(ModuleColors::None)).unwrap();
+        assert_ne!(b[(full.x + 1, full.y)].bg, b[(none.x + 1, none.y)].bg, "Full is highlighted, None is not");
+        assert!(rows[23].contains("Enter Apply"), "{:?}", rows[23]);
+    }
+
+    #[test]
+    fn the_footer_names_the_next_stop_of_the_tab_key() {
+        let (mut a, _) = open("footer", &[]);
+        let last = |a: &crate::app::App| draw(a, 100, 24).0[23].clone();
+        assert!(last(&a).contains("Tab Mode"), "{:?}", last(&a));
+        a.on_key_action(Action::NextTab);
+        assert!(last(&a).contains("Tab Colours"), "{:?}", last(&a));
+        a.on_key_action(Action::NextTab);
+        assert!(last(&a).contains("Tab Theme"), "{:?}", last(&a));
     }
 
     #[test]
@@ -288,6 +382,11 @@ mod tests {
                         assert_eq!(r.intersection(body), r, "mode outside the body at height {h}");
                     }
                 }
+                for m in COLORS {
+                    if let Some(r) = hits.find(Target::AppearanceColors(m)) {
+                        assert_eq!(r.intersection(body), r, "module colours outside the body at height {h}");
+                    }
+                }
                 let row = hits.find(Target::AppearanceTheme(cursor));
                 assert!(row.is_some(), "cursor {cursor} not drawn at height {h}");
                 if let Some(r) = row {
@@ -295,6 +394,7 @@ mod tests {
                 }
                 if h >= 9 {
                     assert!(hits.find(Target::AppearanceMode(MODES[0])).is_some(), "mode row visible at height {h}");
+                    assert!(hits.find(Target::AppearanceColors(COLORS[0])).is_some(), "module colours row visible at height {h}");
                 }
             }
         }

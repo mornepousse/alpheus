@@ -1,4 +1,5 @@
-//! The Appearance tab: choose a theme and the light/dark mode, preview them, write theme.toml.
+//! The Appearance tab: choose a theme, the light/dark mode and the module colours, preview them,
+//! write theme.toml.
 //! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor only changes
 //! the preview; Enter writes (`crate::appearance::write_settings`) and reloads the TUI's own theme.
 //! The daemon follows through its inotify reload; the TUI never touches D-Bus.
@@ -8,7 +9,9 @@ use super::action::Action;
 use crate::appearance::{Entry, WALLPAPER, entries, write_settings};
 use crate::theme::Theme;
 use alpheus_commun::theme::mode_file::read_mode;
-use alpheus_commun::theme::settings::{ModeSetting, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve};
+use alpheus_commun::theme::settings::{
+    ModeSetting, ModuleColors, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve,
+};
 use alpheus_commun::theme::{Mode, Roles};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -33,6 +36,26 @@ fn mode_value(m: ModeSetting) -> &'static str {
     }
 }
 
+/// The module-colours chips, in display order.
+pub const COLORS: [ModuleColors; 3] = [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full];
+
+pub fn colors_label(m: ModuleColors) -> &'static str {
+    match m {
+        ModuleColors::None => "None",
+        ModuleColors::Icons => "Icons",
+        ModuleColors::Full => "Full",
+    }
+}
+
+/// `theme.toml`'s value for `m`.
+fn colors_value(m: ModuleColors) -> &'static str {
+    match m {
+        ModuleColors::None => "none",
+        ModuleColors::Icons => "icons",
+        ModuleColors::Full => "full",
+    }
+}
+
 pub struct AppearanceTab {
     /// The config directory (theme.toml, colors.toml); None: nothing can be written.
     pub dir: Option<PathBuf>,
@@ -50,6 +73,12 @@ pub struct AppearanceTab {
     pub applied_mode: ModeSetting,
     /// Keyboard focus is on the mode row.
     pub mode_focus: bool,
+    /// The module colours chosen (previewed; written by Enter).
+    pub module_colors: ModuleColors,
+    /// The module colours in effect, as theme.toml says.
+    pub applied_module_colors: ModuleColors,
+    /// Keyboard focus is on the module-colours row (never together with `mode_focus`).
+    pub colors_focus: bool,
     /// The roles under the cursor, for the chosen mode.
     pub preview: Option<Roles>,
     /// The user's `[colors]` overrides: the preview shows what Enter will produce.
@@ -73,6 +102,9 @@ impl Default for AppearanceTab {
             mode: ModeSetting::Auto,
             applied_mode: ModeSetting::Auto,
             mode_focus: false,
+            module_colors: ModuleColors::default(),
+            applied_module_colors: ModuleColors::default(),
+            colors_focus: false,
             preview: None,
             preview_note: None,
             overrides: Overrides::default(),
@@ -99,7 +131,7 @@ impl AppearanceTab {
         let mode = self.effective_mode();
         let dir = self.dir.clone().unwrap_or_default();
         let settings =
-            |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone(), module_colors: Default::default() };
+            |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone(), module_colors: self.module_colors };
         if entry.key == WALLPAPER {
             if self.wallpaper.as_ref().is_none_or(|(m, ..)| *m != mode) {
                 let (roles, warnings) = resolve(&settings(ThemeSource::Wallpaper), mode, &dir);
@@ -137,6 +169,9 @@ impl App {
         a.mode = settings.mode;
         a.applied_mode = settings.mode;
         a.mode_focus = false;
+        a.module_colors = settings.module_colors;
+        a.applied_module_colors = settings.module_colors;
+        a.colors_focus = false;
         a.auto_mode = read_mode(a.runtime.as_deref());
         a.wallpaper = None;
         a.refresh_preview();
@@ -145,19 +180,30 @@ impl App {
     /// A key of the Appearance tab. false: not ours, the generic handling goes on (Esc, 1–7, help…).
     pub(crate) fn appearance_action(&mut self, a: Action, now: Instant) -> bool {
         let last = self.appearance.entries.len().saturating_sub(1);
-        let on_mode = self.appearance.mode_focus;
+        let ap = &mut self.appearance;
+        // Focus: 0 the list, 1 the mode row, 2 the module-colours row. Tab cycles, Up and Down walk.
+        let focus = usize::from(ap.mode_focus) + 2 * usize::from(ap.colors_focus);
+        let focus = if focus == 3 { 0 } else { focus };
+        let set_focus = |ap: &mut AppearanceTab, f: usize| {
+            ap.mode_focus = f == 1;
+            ap.colors_focus = f == 2;
+        };
         match a {
-            Action::NextTab | Action::PrevTab => self.appearance.mode_focus = !on_mode,
-            Action::Up if on_mode => self.appearance.mode_focus = false,
-            Action::Up | Action::Down | Action::PageUp | Action::PageDown | Action::Home | Action::End if on_mode => {}
+            Action::NextTab => set_focus(ap, (focus + 1) % 3),
+            Action::PrevTab => set_focus(ap, (focus + 2) % 3),
+            Action::Up if focus > 0 => set_focus(ap, focus - 1),
+            Action::Down if focus > 0 => set_focus(ap, (focus + 1).min(2)),
+            Action::PageUp | Action::PageDown | Action::Home | Action::End if focus > 0 => {}
             Action::Up => self.appearance_move(-1),
             Action::Down => self.appearance_move(1),
             Action::PageUp => self.appearance_move(-5),
             Action::PageDown => self.appearance_move(5),
             Action::Home => self.appearance_move(-(last as i32)),
             Action::End => self.appearance_move(last as i32),
-            Action::Left | Action::Decrease if on_mode => self.appearance_step(-1),
-            Action::Right | Action::Increase if on_mode => self.appearance_step(1),
+            Action::Left | Action::Decrease if focus == 1 => self.appearance_step(-1),
+            Action::Right | Action::Increase if focus == 1 => self.appearance_step(1),
+            Action::Left | Action::Decrease if focus == 2 => self.appearance_step_colors(-1),
+            Action::Right | Action::Increase if focus == 2 => self.appearance_step_colors(1),
             Action::Left | Action::Right | Action::Decrease | Action::Increase => {}
             Action::Activate => self.appearance_apply(now),
             _ => return false,
@@ -179,10 +225,18 @@ impl App {
         a.refresh_preview();
     }
 
+    fn appearance_step_colors(&mut self, delta: i32) {
+        let a = &mut self.appearance;
+        let i = COLORS.iter().position(|m| *m == a.module_colors).unwrap_or(0) as i32;
+        a.module_colors = COLORS[(i + delta).clamp(0, COLORS.len() as i32 - 1) as usize];
+        a.refresh_preview();
+    }
+
     /// A click on a theme: selects it; a click on the row already under the cursor applies it.
     pub(crate) fn appearance_click_theme(&mut self, i: usize, now: Instant) {
         let a = &mut self.appearance;
         a.mode_focus = false;
+        a.colors_focus = false;
         if i >= a.entries.len() {
             return;
         }
@@ -198,22 +252,35 @@ impl App {
     pub(crate) fn appearance_click_mode(&mut self, m: ModeSetting, now: Instant) {
         let a = &mut self.appearance;
         a.mode_focus = true;
+        a.colors_focus = false;
         a.mode = m;
+        a.refresh_preview();
+        self.appearance_apply(now);
+    }
+
+    /// A click on a module-colours value applies it at once.
+    pub(crate) fn appearance_click_colors(&mut self, m: ModuleColors, now: Instant) {
+        let a = &mut self.appearance;
+        a.colors_focus = true;
+        a.mode_focus = false;
+        a.module_colors = m;
         a.refresh_preview();
         self.appearance_apply(now);
     }
 
     /// Writes theme.toml: the theme when the list has the focus (or the cursor moved off the one in
     /// effect), the mode when the mode row has it (or the chosen mode differs from the one in
-    /// effect). Then the TUI reloads its own theme; the daemon reloads from the file. A failed
+    /// effect), the module colours likewise. Then the TUI reloads its own theme; the daemon reloads from the file. A failed
     /// write changes nothing but the status line.
     pub(crate) fn appearance_apply(&mut self, now: Instant) {
         let a = &self.appearance;
         let Some(entry) = a.cursor_entry().copied() else { return };
-        let theme = (!a.mode_focus || a.applied != Some(a.cursor)).then_some(entry.key);
+        let on_list = !a.mode_focus && !a.colors_focus;
+        let theme = (on_list || a.applied != Some(a.cursor)).then_some(entry.key);
         let mode = (a.mode_focus || a.mode != a.applied_mode).then(|| mode_value(a.mode));
+        let colors = (a.colors_focus || a.module_colors != a.applied_module_colors).then(|| colors_value(a.module_colors));
         let written = match &a.dir {
-            Some(dir) => write_settings(dir, theme, mode).map_err(|e| e.to_string()),
+            Some(dir) => write_settings(dir, theme, mode, colors).map_err(|e| e.to_string()),
             None => Err("no config directory".to_string()),
         };
         if let Err(e) = written {
@@ -227,13 +294,17 @@ impl App {
             a.applied = Some(a.cursor);
         }
         a.applied_mode = a.mode;
+        a.applied_module_colors = a.module_colors;
         a.auto_mode = read_mode(a.runtime.as_deref());
         a.refresh_preview();
         if let Some(dir) = a.dir.clone() {
             self.theme = Theme::load(&dir, self.appearance.runtime.as_deref()).0;
         }
         self.status.error = None;
-        let msg = format!("Theme: {}, {}", entry.label, mode_label(self.appearance.mode).to_lowercase());
+        let mut msg = format!("Theme: {}, {}", entry.label, mode_label(self.appearance.mode).to_lowercase());
+        if let Some(c) = colors {
+            msg.push_str(&format!(", module colours {c}"));
+        }
         self.status.last = Some(msg.clone());
         self.toast(msg, false, now);
     }
@@ -246,6 +317,7 @@ pub(crate) mod tests {
     use super::*;
     use alpheus_commun::theme::Rgb;
     use alpheus_commun::theme::presets::preset;
+    use alpheus_commun::theme::settings::ModuleColors;
     use ratatui::style::Color;
 
     /// A fresh config directory holding `files`, and an App opened on the Appearance tab with it.
@@ -389,6 +461,71 @@ pub(crate) mod tests {
         assert_eq!(a.appearance.applied_mode, ModeSetting::Light);
         act(&mut a, Action::PrevTab);
         assert!(!a.appearance.mode_focus, "Tab again: back to the list");
+    }
+
+    #[test]
+    fn tab_walks_the_list_the_mode_row_the_colours_row_and_back() {
+        let (mut a, _) = open("tab3", &[]);
+        let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus);
+        assert_eq!(at(&a), (false, false));
+        act(&mut a, Action::NextTab);
+        assert_eq!(at(&a), (true, false));
+        act(&mut a, Action::NextTab);
+        assert_eq!(at(&a), (false, true));
+        act(&mut a, Action::NextTab);
+        assert_eq!(at(&a), (false, false));
+        act(&mut a, Action::PrevTab);
+        assert_eq!(at(&a), (false, true), "backwards");
+        act(&mut a, Action::Up);
+        assert_eq!(at(&a), (true, false), "Up walks back one row");
+        act(&mut a, Action::Down);
+        act(&mut a, Action::Down);
+        assert_eq!(at(&a), (false, true), "Down stops on the last row");
+        act(&mut a, Action::Up);
+        act(&mut a, Action::Up);
+        assert_eq!(at(&a), (false, false));
+    }
+
+    #[test]
+    fn the_colours_row_chooses_with_the_arrows_and_applies_with_enter_writing_only_its_key() {
+        let (mut a, dir) = open("colors-keys", &[("theme.toml", "# mine\ntheme = \"nord\"\nmode = \"dark\"\n")]);
+        assert_eq!(
+            (a.appearance.module_colors, a.appearance.applied_module_colors),
+            (ModuleColors::Icons, ModuleColors::Icons),
+            "the default"
+        );
+        act(&mut a, Action::NextTab);
+        act(&mut a, Action::NextTab);
+        act(&mut a, Action::Right);
+        assert_eq!(a.appearance.module_colors, ModuleColors::Full);
+        act(&mut a, Action::Right);
+        assert_eq!(a.appearance.module_colors, ModuleColors::Full, "bounded");
+        act(&mut a, Action::Left);
+        act(&mut a, Action::Left);
+        assert_eq!(a.appearance.module_colors, ModuleColors::None);
+        assert_eq!(theme_toml(&dir), "# mine\ntheme = \"nord\"\nmode = \"dark\"\n", "choosing writes nothing");
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "# mine\ntheme = \"nord\"\nmode = \"dark\"\nmodule_colors = \"none\"\n");
+        assert_eq!(a.appearance.applied_module_colors, ModuleColors::None);
+        assert_eq!(a.status.last.as_deref(), Some("Theme: Nord, dark, module colours none"));
+        // A fresh read of the file gives it back.
+        a.go_tab(Tab::Home, Instant::now());
+        a.go_tab(Tab::Appearance, Instant::now());
+        assert_eq!(a.appearance.module_colors, ModuleColors::None);
+    }
+
+    #[test]
+    fn the_loaded_module_colours_survive_a_theme_or_mode_write() {
+        let (mut a, dir) = open("colors-carried", &[("theme.toml", "theme = \"nord\"\nmodule_colors = \"full\"\n")]);
+        assert_eq!((a.appearance.module_colors, a.appearance.applied_module_colors), (ModuleColors::Full, ModuleColors::Full));
+        act(&mut a, Action::Home); // Wallpaper
+        act(&mut a, Action::Activate);
+        assert!(theme_toml(&dir).contains("module_colors = \"full\""), "{}", theme_toml(&dir));
+        act(&mut a, Action::NextTab);
+        act(&mut a, Action::Right);
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nmodule_colors = \"full\"\nmode = \"dark\"\n");
+        assert_eq!(a.appearance.module_colors, ModuleColors::Full, "still what the preview uses");
     }
 
     #[test]
