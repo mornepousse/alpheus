@@ -7,6 +7,7 @@
 //! nothing is served unless the daemon owns the watcher's name.
 
 use super::bus::refusal;
+use super::codec::MAX_SERVICE;
 use super::host::Changes;
 use super::{WATCHER_INTERFACE, WATCHER_PATH};
 use dbus::Message;
@@ -45,7 +46,10 @@ impl Watcher {
         let iface = cr.register(WATCHER_INTERFACE, |b: &mut IfaceBuilder<State>| {
             b.method("RegisterStatusNotifierItem", ("service",), (), |ctx, state: &mut State, (service,): (String,)| {
                 let sender = ctx.message().sender().map(|s| s.to_string()).unwrap_or_default();
-                state.registrations.push((service, sender));
+                // Longer than any service string the host would accept: dropped before it is kept.
+                if service.len() <= MAX_SERVICE {
+                    state.registrations.push((service, sender));
+                }
                 Ok(())
             });
             // Plasma ignores the argument too: we are the only host that matters here.
@@ -190,6 +194,19 @@ mod tests {
         quiet.set_no_reply(true);
         assert!(w.handle(quiet).is_empty(), "no reply when none is expected");
         assert_eq!(w.take_registrations().len(), 1, "but registered");
+    }
+
+    #[test]
+    fn an_oversized_registration_is_answered_but_never_kept() {
+        let mut w = Watcher::new();
+        w.set_serving(true);
+        let huge = "a.".repeat(512 * 1024);
+        let r = w.handle(call(WATCHER_PATH, WATCHER_INTERFACE, "RegisterStatusNotifierItem").append1(huge));
+        assert_eq!(r[0].msg_type(), MessageType::MethodReturn, "still answered");
+        assert!(w.take_registrations().is_empty(), "never queued for the host");
+        let longest = "a".repeat(MAX_SERVICE);
+        w.handle(call(WATCHER_PATH, WATCHER_INTERFACE, "RegisterStatusNotifierItem").append1(longest));
+        assert_eq!(w.take_registrations().len(), 1, "the bound itself passes");
     }
 
     #[test]

@@ -41,14 +41,25 @@ pub struct MenuSession {
     /// Submenus whose children arrived: a re-read of one of their ancestors is one level deep
     /// (graft carries their old children over, task 2), so they are fetched again to refresh them.
     fetched: Vec<i32>,
+    /// Parents a `LayoutUpdated` named since the last frame: re-read once per frame (`on_frame`),
+    /// however many signals a storm sends, like the host's dirty item properties.
+    dirty: Vec<i32>,
 }
 
 impl MenuSession {
     /// AddMatch(menu_rule), then AboutToShow(0); GetLayout(0) follows its answer (or its error).
     pub fn open(key: ItemKey, path: String, out: &mut dyn Outbox) -> MenuSession {
         let rule = menu_rule(&key.owner, &path);
-        let mut s =
-            MenuSession { key, path, layout: None, rule: rule.clone(), pending: Vec::new(), fetching: Vec::new(), fetched: Vec::new() };
+        let mut s = MenuSession {
+            key,
+            path,
+            layout: None,
+            rule: rule.clone(),
+            pending: Vec::new(),
+            fetching: Vec::new(),
+            fetched: Vec::new(),
+            dirty: Vec::new(),
+        };
         s.call(Call::AddMatch { rule }, Pending::Rule, out);
         s.about_to_show(0, out);
         s
@@ -156,10 +167,10 @@ impl MenuSession {
         }
     }
 
-    /// Signals of this menu only (sender and path checked): LayoutUpdated → GetLayout(parent) re-read and
+    /// Signals of this menu only (sender and path checked): LayoutUpdated → parent marked dirty, then re-read (`on_frame`) and
     /// grafted (the root, or a submenu whose children are known; the submenus fetched below it are
     /// fetched again); ItemsPropertiesUpdated → patched in place (Changed when it names an entry of this menu).
-    pub fn signal(&mut self, s: &Signal, out: &mut dyn Outbox) -> MenuUpdate {
+    pub fn signal(&mut self, s: &Signal) -> MenuUpdate {
         match s {
             Signal::LayoutUpdated { sender, path, parent, revision } if self.mine(sender, path) => {
                 // Before the first layout, the GetLayout(0) on its way reads the new one anyway; a submenu
@@ -171,8 +182,8 @@ impl MenuSession {
                 // `revision > held`, which is exactly that trap for a 0-only sender; `!=` plus the 0
                 // carve-out stays safe for both well- and badly-behaved applications.
                 let stale = self.layout.as_ref().is_none_or(|l| *revision == 0 || *revision != l.revision);
-                if known && stale {
-                    self.get_layout(*parent, out);
+                if known && stale && !self.dirty.contains(parent) {
+                    self.dirty.push(*parent);
                 }
                 MenuUpdate::Nothing
             }
@@ -186,6 +197,18 @@ impl MenuSession {
                 None => MenuUpdate::Nothing,
             },
             _ => MenuUpdate::Nothing,
+        }
+    }
+
+    /// A `LayoutUpdated` is waiting for its re-read: the wiring asks for one frame.
+    pub fn wants_frame(&self) -> bool {
+        !self.dirty.is_empty()
+    }
+
+    /// The frame callback: one GetLayout per dirty parent (none while one for it is in flight).
+    pub fn on_frame(&mut self, out: &mut dyn Outbox) {
+        for parent in std::mem::take(&mut self.dirty) {
+            self.get_layout(parent, out);
         }
     }
 
@@ -317,11 +340,14 @@ mod tests {
         let mut out = FakeOutbox::default();
         let mut s = opened(&mut out);
         let unopened = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 4, parent: 8 };
-        assert_eq!(s.signal(&unopened, &mut out), MenuUpdate::Nothing);
+        assert_eq!(s.signal(&unopened), MenuUpdate::Nothing);
         assert!(out.calls.is_empty(), "More never opened: read when it opens");
         let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 5, parent: 0 };
-        assert_eq!(s.signal(&updated, &mut out), MenuUpdate::Nothing);
-        s.signal(&updated, &mut out);
+        assert_eq!(s.signal(&updated), MenuUpdate::Nothing);
+        s.signal(&updated);
+        assert!(s.wants_frame() && out.calls.is_empty(), "marked dirty, read at the frame");
+        s.on_frame(&mut out);
+        assert!(!s.wants_frame());
         assert_eq!(out.calls.len(), 1, "one re-read in flight");
         assert_eq!(last(&out).1, get_layout(0));
         let newer = Layout { revision: 5, root: node(0, "", true, vec![node(1, "Open", false, vec![]), node(12, "Pause", false, vec![])]) };
@@ -340,7 +366,7 @@ mod tests {
             updated: vec![(1, MenuProps { label: Some("Open again".into()), enabled: Some(false), ..MenuProps::default() })],
             removed: vec![],
         };
-        assert_eq!(s.signal(&patch, &mut out), MenuUpdate::Changed);
+        assert_eq!(s.signal(&patch), MenuUpdate::Changed);
         let n = s.layout().unwrap().node(1).unwrap();
         assert_eq!((n.label(), n.is_enabled()), ("Open again", false));
         assert!(out.calls.is_empty(), "no call: the signal carries the values");
@@ -350,7 +376,7 @@ mod tests {
             updated: vec![(99, MenuProps { label: Some("Ghost".into()), ..MenuProps::default() })],
             removed: vec![(98, vec!["label".into()])],
         };
-        assert_eq!(s.signal(&elsewhere, &mut out), MenuUpdate::Nothing, "no entry of this menu named: nothing to repaint");
+        assert_eq!(s.signal(&elsewhere), MenuUpdate::Nothing, "no entry of this menu named: nothing to repaint");
     }
 
     #[test]
@@ -362,20 +388,40 @@ mod tests {
         s.answer(last(&out).0, Ok(more(vec![node(9, "Settings", false, vec![])])), &mut out);
         out.take();
         let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 6, parent: 0 };
-        s.signal(&updated, &mut out);
+        s.signal(&updated);
+        s.on_frame(&mut out);
         assert_eq!(s.answer(last(&out).0, Ok(layout(6)), &mut out), MenuUpdate::Changed);
         assert_eq!(last(&out).1, get_layout(8), "More's children, carried over by the graft, read again");
         assert_eq!(s.answer(last(&out).0, Ok(more(vec![node(9, "Settings", false, vec![])])), &mut out), MenuUpdate::Changed);
         assert_eq!(s.layout().unwrap().node(8).unwrap().children.len(), 1);
         out.take();
         let without = Layout { revision: 7, root: node(0, "", true, vec![node(1, "Open", false, vec![])]) };
-        s.signal(&updated, &mut out);
+        s.signal(&updated);
+        s.on_frame(&mut out);
         s.answer(last(&out).0, Ok(Reply::Layout(without)), &mut out);
         assert_eq!(out.calls.len(), 1, "More gone: the root re-read only");
         out.take();
-        s.signal(&updated, &mut out);
+        s.signal(&updated);
+        s.on_frame(&mut out);
         s.answer(last(&out).0, Ok(layout(8)), &mut out);
         assert_eq!(out.calls.len(), 1, "More back, never opened since: forgotten, not fetched");
+    }
+
+    #[test]
+    fn a_storm_of_layout_updates_is_one_read_per_frame() {
+        let mut out = FakeOutbox::default();
+        let mut s = opened(&mut out);
+        for revision in 2..60 {
+            let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision, parent: 0 };
+            s.signal(&updated);
+        }
+        assert!(out.calls.is_empty(), "nothing asked between frames");
+        assert!(s.wants_frame());
+        s.on_frame(&mut out);
+        assert_eq!(out.ids(Method::GetLayout).len(), 1, "58 signals, one GetLayout");
+        s.on_frame(&mut out);
+        assert_eq!(out.calls.len(), 1, "and nothing more on the next frame");
+        assert!(!s.wants_frame());
     }
 
     #[test]
@@ -384,7 +430,8 @@ mod tests {
         let mut s = opened(&mut out);
         let before = s.layout().cloned().unwrap();
         let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 2, parent: 0 };
-        assert_eq!(s.signal(&updated, &mut out), MenuUpdate::Nothing);
+        assert_eq!(s.signal(&updated), MenuUpdate::Nothing);
+        s.on_frame(&mut out);
         assert_eq!(last(&out).1, get_layout(0));
         // The application echoes the id of an existing child (1, "Open") instead of the root it was
         // asked for (0): grafting it blindly would silently replace "Open" with a bogus subtree.
@@ -402,7 +449,8 @@ mod tests {
         let get8 = last(&out).0;
         // A root re-read removes "More" (id 8) before that submenu's own GetLayout comes back.
         let updated = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 5, parent: 0 };
-        s.signal(&updated, &mut out);
+        s.signal(&updated);
+        s.on_frame(&mut out);
         let without = Layout { revision: 5, root: node(0, "", true, vec![node(1, "Open", false, vec![])]) };
         assert_eq!(s.answer(last(&out).0, Ok(Reply::Layout(without)), &mut out), MenuUpdate::Changed);
         assert_eq!(s.layout().unwrap().revision, 5);
@@ -432,7 +480,7 @@ mod tests {
         let mut out = FakeOutbox::default();
         let mut s = opened(&mut out);
         let repeat = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 1, parent: 0 };
-        assert_eq!(s.signal(&repeat, &mut out), MenuUpdate::Nothing);
+        assert_eq!(s.signal(&repeat), MenuUpdate::Nothing);
         assert!(out.calls.is_empty(), "already at revision 1: nothing to refetch");
     }
 
@@ -441,7 +489,8 @@ mod tests {
         let mut out = FakeOutbox::default();
         let mut s = opened(&mut out);
         let zero = Signal::LayoutUpdated { sender: ":1.7".into(), path: "/MenuBar".into(), revision: 0, parent: 0 };
-        s.signal(&zero, &mut out);
+        s.signal(&zero);
+        s.on_frame(&mut out);
         assert_eq!(last(&out).1, get_layout(0), "first 0: always trusted as a real change");
         let first =
             Layout { revision: 0, root: node(0, "", true, vec![node(1, "Open", false, vec![]), node(13, "Resume", false, vec![])]) };
@@ -449,7 +498,8 @@ mod tests {
         out.take();
         // A second real change, still announced with revision 0 (an app that never versions its
         // layout): without the 0 carve-out, 0 == 0 would look already-seen and this would be dropped.
-        s.signal(&zero, &mut out);
+        s.signal(&zero);
+        s.on_frame(&mut out);
         assert_eq!(last(&out).1, get_layout(0), "a second 0 still refetches: never frozen");
     }
 
@@ -466,8 +516,8 @@ mod tests {
                 updated: vec![(1, MenuProps { label: Some("Spoofed".into()), ..MenuProps::default() })],
                 removed: vec![],
             };
-            assert_eq!(s.signal(&updated, &mut out), MenuUpdate::Nothing);
-            assert_eq!(s.signal(&patch, &mut out), MenuUpdate::Nothing);
+            assert_eq!(s.signal(&updated), MenuUpdate::Nothing);
+            assert_eq!(s.signal(&patch), MenuUpdate::Nothing);
         }
         assert!(out.calls.is_empty());
         assert_eq!(s.layout().cloned(), before);

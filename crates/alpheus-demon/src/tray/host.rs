@@ -7,7 +7,10 @@
 
 use super::bus::{Call, CallError, CallId, Outbox, Property};
 use super::codec::{Reply, Signal, clean};
-use super::{DEFAULT_ITEM_PATH, Gesture, ITEM_INTERFACE, ITEM_NAME_PREFIXES, ItemKey, MAX_ITEMS, Prop, PropSet, PropValue, Status};
+use super::{
+    DEFAULT_ITEM_PATH, Gesture, ITEM_INTERFACE, ITEM_NAME_PREFIXES, ItemKey, MAX_ITEMS, MAX_ITEMS_PER_OWNER, Prop, PropSet, PropValue,
+    Status,
+};
 use crate::log::write as log;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -143,18 +146,25 @@ fn is_object_path(p: &str) -> bool {
 
 /// A D-Bus bus name: ":1.42", or "org.example.App-1" (two elements or more, none starting with a digit).
 fn is_bus_name(n: &str) -> bool {
+    // The length first, in O(1): a megabyte of dots must never be walked, let alone collected.
+    if n.len() > 255 {
+        return false;
+    }
     let (unique, rest) = match n.strip_prefix(':') {
         Some(r) => (true, r),
         None => (false, n),
     };
-    let elements: Vec<&str> = rest.split('.').collect();
-    n.len() <= 255
-        && elements.len() >= 2
-        && elements.iter().all(|e| {
-            !e.is_empty()
-                && e.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                && (unique || !e.as_bytes()[0].is_ascii_digit())
-        })
+    let mut elements = 0;
+    for e in rest.split('.') {
+        let valid = !e.is_empty()
+            && e.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            && (unique || !e.as_bytes()[0].is_ascii_digit());
+        if !valid {
+            return false;
+        }
+        elements += 1;
+    }
+    elements >= 2
 }
 
 /// The three registration forms (spec § 1): a bus name → (name, DEFAULT_ITEM_PATH); a path alone →
@@ -240,6 +250,13 @@ impl Host {
     pub fn register(&mut self, service: &str, sender: &str, out: &mut dyn Outbox) {
         let Some((name, path)) = split_service(service, sender) else { return };
         if name.starts_with(':') {
+            // From our own watcher (`sender` known), a unique name is accepted only when it is the
+            // caller's own: Electron and libappindicator register their own connection, and
+            // nothing else may point us at somebody else's. An entry of another watcher's list or
+            // signal (`sender` empty) has no caller to compare with.
+            if !sender.is_empty() && name != sender {
+                return;
+            }
             self.add(ItemKey { owner: name.clone(), path }, name, out);
             return;
         }
@@ -287,6 +304,10 @@ impl Host {
         if self.refused(0) {
             return;
         }
+        // One application cannot take the whole tray.
+        if self.items.iter().filter(|i| i.key.owner == key.owner).count() >= MAX_ITEMS_PER_OWNER {
+            return;
+        }
         if !self.items.iter().any(|i| i.key.owner == key.owner) {
             self.call(Call::AddMatch { rule: owner_rule(&key.owner) }, Pending::Rule, out);
             self.call(Call::AddMatch { rule: item_rule(&key.owner) }, Pending::Rule, out);
@@ -316,8 +337,9 @@ impl Host {
     fn remove(&mut self, index: usize, out: &mut dyn Outbox) {
         let item = self.items.remove(index);
         if !self.items.iter().any(|i| i.key.owner == item.key.owner) {
-            self.call(Call::RemoveMatch { rule: owner_rule(&item.key.owner) }, Pending::Rule, out);
-            self.call(Call::RemoveMatch { rule: item_rule(&item.key.owner) }, Pending::Rule, out);
+            // No answer to read: sent without a pending entry (`Outbox::send`).
+            out.send(Call::RemoveMatch { rule: owner_rule(&item.key.owner) });
+            out.send(Call::RemoveMatch { rule: item_rule(&item.key.owner) });
         }
         self.changes.unregistered.push(item.watcher_entry());
         self.changes.redraw |= item.is_shown();
@@ -743,6 +765,44 @@ mod tests {
     }
 
     #[test]
+    fn a_huge_name_is_refused_by_its_length_alone() {
+        // Valid element by element: only the 255-byte bound can refuse it.
+        let dotted = "a.".repeat(512 * 1024);
+        assert_eq!(dotted.len(), 1 << 20);
+        assert_eq!(split_service(&dotted, ":1.7"), None, "1 MB of short elements");
+        assert_eq!(split_service(&format!("{dotted}/x"), ":1.7"), None, "with a path");
+        let flat = "a".repeat(1 << 20);
+        assert_eq!(split_service(&flat, ":1.7"), None, "1 MB without a dot");
+        let longest = format!("org.{}", "a".repeat(251));
+        assert_eq!(longest.len(), 255);
+        assert!(split_service(&longest, ":1.7").is_some(), "255 bytes still pass");
+        assert_eq!(split_service(&format!("{longest}a"), ":1.7"), None, "256 do not");
+    }
+
+    #[test]
+    fn a_bare_unique_name_must_be_the_callers_own() {
+        let (mut h, mut out, _proc) = host("unique-sender");
+        h.register(":1.9", ":1.7", &mut out);
+        h.register(":1.9/StatusNotifierItem", ":1.7", &mut out);
+        assert!(h.items().is_empty() && out.take().is_empty(), "somebody else's connection: ignored");
+        h.register(":1.7", ":1.7", &mut out);
+        assert_eq!(h.items().len(), 1, "its own: accepted");
+        h.register(":1.12/StatusNotifierItem", "", &mut out);
+        assert_eq!(h.items().len(), 2, "another watcher's entry has no caller to compare with");
+    }
+
+    #[test]
+    fn one_owner_holds_at_most_16_items() {
+        let (mut h, mut out, _proc) = host("per-owner");
+        for n in 0..MAX_ITEMS_PER_OWNER + 4 {
+            h.register(&format!("/item{n}"), ":1.7", &mut out);
+        }
+        assert_eq!(h.items().len(), MAX_ITEMS_PER_OWNER);
+        h.register(":1.8", ":1.8", &mut out);
+        assert_eq!(h.items().len(), MAX_ITEMS_PER_OWNER + 1, "another owner is not affected");
+    }
+
+    #[test]
     fn duplicate_registration_is_one_item() {
         let (mut h, mut out, _proc) = host("duplicate");
         h.register(":1.7", ":1.7", &mut out);
@@ -831,7 +891,14 @@ mod tests {
         );
         assert_eq!(item_rule(":1.7"), "type='signal',sender=':1.7',interface='org.kde.StatusNotifierItem'");
         h.signal(&gone(":1.7", ":1.7"), &mut out);
-        assert_eq!(rules(&mut out, Method::RemoveMatch), [owner_rule(":1.7"), item_rule(":1.7")], "removed with the owner's last item");
+        let removed: Vec<String> = std::mem::take(&mut out.sent)
+            .into_iter()
+            .map(|c| match c {
+                Call::RemoveMatch { rule } => rule,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(removed, [owner_rule(":1.7"), item_rule(":1.7")], "removed with the owner's last item, no answer awaited");
         assert_eq!(h.items().len(), 1);
     }
 
@@ -924,7 +991,8 @@ mod tests {
             other => nimbus(other),
         });
         assert!(h.items().is_empty(), "never shown");
-        assert!(calls.iter().any(|c| c.method() == Method::RemoveMatch), "its rules go with it");
+        assert!(out.sent.iter().any(|c| c.method() == Method::RemoveMatch), "its rules go with it");
+        assert!(!calls.iter().any(|c| c.method() == Method::RemoveMatch), "sent, not called: nobody reads the answer");
         let c = h.take_changes();
         assert!(!c.redraw, "it was never drawn");
         assert_eq!(c.unregistered, [":1.7/no/such/object"]);
@@ -948,7 +1016,7 @@ mod tests {
         });
         assert_eq!(h.items().len(), 1, "/b dropped, /a stays");
         assert_eq!(h.items()[0].key.path, "/a");
-        assert!(!calls.iter().any(|c| c.method() == Method::RemoveMatch), "the owner still has /a: rules stay");
+        assert!(!calls.iter().any(|c| c.method() == Method::RemoveMatch) && out.sent.is_empty(), "the owner still has /a: rules stay");
     }
 
     #[test]
@@ -1065,18 +1133,11 @@ mod tests {
         h.unregister(&format!("{NIMBUS}/StatusNotifierItem"), &mut out);
         calls.extend(settle(&mut h, &mut out, nimbus));
         assert!(h.items().is_empty());
-        let allowed = [
-            Method::Get,
-            Method::GetNameOwner,
-            Method::GetConnectionUnixProcessID,
-            Method::ListNames,
-            Method::AddMatch,
-            Method::RemoveMatch,
-        ];
+        let allowed = [Method::Get, Method::GetNameOwner, Method::GetConnectionUnixProcessID, Method::ListNames, Method::AddMatch];
         for c in &calls {
             assert!(allowed.contains(&c.method()), "{c:?}");
         }
-        assert!(out.sent.is_empty(), "the host sends nothing without an answer");
+        assert!(out.sent.iter().all(|c| c.method() == Method::RemoveMatch), "the host sends only the rules' removal, unanswered");
     }
 
     #[test]

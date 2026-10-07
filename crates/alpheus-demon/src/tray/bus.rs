@@ -238,7 +238,7 @@ pub enum CallError {
     Disconnected,
     /// A D-Bus error reply, by name ("org.freedesktop.DBus.Error.UnknownMethod"…).
     Remote(String),
-    /// An answer whose body is not what the call expects (codec, task 2).
+    /// An answer whose body is not what the call expects (the codec).
     BadReply(String),
 }
 
@@ -252,7 +252,7 @@ pub enum Incoming {
         result: Result<Message, CallError>,
     },
     Signal(Message),
-    /// A method call addressed to the daemon (the watcher serves it, task 5; anything else is refused).
+    /// A method call addressed to the daemon (the watcher serves it; anything else is refused).
     MethodCall(Message),
     /// The connection is gone (bus died): the tray empties, no retry.
     Closed,
@@ -263,8 +263,8 @@ pub trait Outbox {
     /// Sends `call` (auto-start off) and expects an answer within TIMEOUT.
     fn call(&mut self, call: Call) -> CallId;
     /// Sends `call` with NO_REPLY_EXPECTED: no pending entry, no timer — calls whose answer nobody
-    /// reads: dbusmenu `Event`, `RemoveMatch` (task 6), the `ContextMenu`, `SecondaryActivate` and
-    /// `Scroll` gestures (task 10).
+    /// reads: dbusmenu `Event`, `RemoveMatch`, the `ContextMenu`, `SecondaryActivate` and
+    /// `Scroll` gestures.
     fn send(&mut self, call: Call);
 }
 
@@ -411,13 +411,21 @@ impl SessionBus {
     }
 
     /// Reads without blocking (read_write(Some(0))) and drains every queued message; answers are
-    /// matched by reply serial (a late answer, its call already expired, is dropped).
+    /// matched by reply serial (a late answer, its call already expired, is dropped). What an earlier
+    /// `flush` already drained comes first.
     pub fn read(&mut self) -> Vec<Incoming> {
         let mut out = std::mem::take(&mut self.ready);
         if self.closed {
             return out;
         }
-        let mut lost = self.channel.read_write(Some(Duration::ZERO)).is_err();
+        let lost = self.channel.read_write(Some(Duration::ZERO)).is_err();
+        self.drain(&mut out, lost);
+        out
+    }
+
+    /// Pops every message libdbus holds into `out`, answers matched to their call; a lost or
+    /// disconnected connection ends in `Closed`, every pending call answered Disconnected first.
+    fn drain(&mut self, out: &mut Vec<Incoming>, mut lost: bool) {
         while let Some(m) = self.channel.pop_message() {
             match m.msg_type() {
                 MessageType::MethodReturn | MessageType::Error => {
@@ -437,7 +445,15 @@ impl SessionBus {
             }
             out.push(Incoming::Closed);
         }
-        out
+    }
+
+    /// What `flush` (or a call on a closed bus) left for delivery: taken, in arrival order.
+    pub fn take_ready(&mut self) -> Vec<Incoming> {
+        std::mem::take(&mut self.ready)
+    }
+
+    pub fn has_ready(&self) -> bool {
+        !self.ready.is_empty()
     }
 
     /// Every pending call whose deadline is ≤ now, as Answer { result: Err(Timeout) }.
@@ -469,10 +485,18 @@ impl SessionBus {
     /// stopped daemon would stall the bar here, the same acceptance as the
     /// blocking connect (controller decision 2). Calls are small; a burst of
     /// them fits the socket buffer, so this returns at once in practice.
+    ///
+    /// With messages queued, libdbus's flush also reads the socket (DO_READING): whatever arrives
+    /// is then in its queue while the fd, level-triggered, no longer reads as ready — so it is
+    /// drained here into `ready` (`take_ready`), never left behind to be reported as a timeout.
     pub fn flush(&mut self) {
-        if !self.closed {
-            self.channel.flush();
+        if self.closed {
+            return;
         }
+        self.channel.flush();
+        let mut drained = Vec::new();
+        self.drain(&mut drained, false);
+        self.ready.extend(drained);
     }
 
     pub fn pending(&self) -> usize {

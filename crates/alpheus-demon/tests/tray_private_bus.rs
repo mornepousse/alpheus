@@ -67,8 +67,8 @@ fn calls_and_answers_matched_by_serial() {
     assert!(tray.unique_name().starts_with(":1."));
     let id = tray.call(get(&app, Prop::Id));
     let title = tray.call(get(&app, Prop::Title));
-    tray.flush();
     assert_eq!(tray.pending(), 2);
+    tray.flush();
     let got = answers(read_until(&mut tray, 2, Duration::from_secs(5)));
     let _peer = served.join().unwrap();
     assert_eq!(got, [(title, get(&app, Prop::Title), "value of Title".into()), (id, get(&app, Prop::Id), "value of Id".into())]);
@@ -110,6 +110,37 @@ fn a_late_answer_is_dropped() {
     peer.channel.flush();
     let after = read_until(&mut tray, 1, Duration::from_millis(500));
     assert!(after.iter().all(|i| !matches!(i, Incoming::Answer { .. })), "the late answer is dropped: {after:?}");
+}
+
+/// A flush with messages queued also reads (libdbus DO_READING): an answer already waiting in the
+/// socket lands in libdbus's queue, the fd goes quiet — it must come out of `flush` itself, not wait
+/// for a read that never comes (and be reported as a timeout).
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_answer_read_by_a_flush_is_delivered_not_left_behind() {
+    let bus = PrivateBus::start("tray-flush-reads");
+    let peer = Peer::connect(&bus);
+    let app = peer.name.clone();
+    let served = thread::spawn(move || {
+        let call = peer.next_call().unwrap();
+        peer.channel.send(call.method_return().append1(Variant("early".to_string()))).unwrap();
+        peer.channel.flush();
+        peer
+    });
+    let mut tray = SessionBus::at(&bus.address).unwrap();
+    let first = tray.call(get(&app, Prop::Id));
+    tray.flush();
+    let _peer = served.join().unwrap();
+    thread::sleep(Duration::from_millis(100)); // the answer is now in our socket, unread
+    // Something big enough that the write blocks: the flush then polls for reading too.
+    tray.call(Call::AddMatch { rule: format!("type='signal',member='{}'", "m".repeat(2 << 20)) });
+    tray.flush();
+    assert!(tray.has_ready(), "the flush drained the answer it read");
+    let all = tray.take_ready();
+    let got = answers(all);
+    assert_eq!(got, [(first, get(&app, Prop::Id), "early".into())]);
+    assert_eq!(tray.pending(), 1, "only the second call is still waiting");
+    assert!(!tray.has_ready());
 }
 
 #[test]
@@ -1402,4 +1433,86 @@ fn a_duplicate_registration_closes_the_open_menu_if_its_path_changed() {
     kettle.register();
     pump.until("closed: its menu path changed under it", |t| t.menu().is_none());
     assert!(pump.outputs.lock().unwrap().iter().any(|o| o.close_menu));
+}
+
+/// Serves the tray from this thread (its fd polled, 20 ms at most) until `cond`, 5 s at most.
+fn serve_until(tray: &mut Tray, fd: &std::os::fd::OwnedFd, what: &str, cond: impl Fn(&Tray) -> bool) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while !cond(tray) {
+        assert!(Instant::now() < end, "never: {what}");
+        let mut p = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll(2) on one pollfd this thread owns.
+        unsafe { libc::poll(&mut p, 1, 20) };
+        tray.on_readable();
+    }
+}
+
+/// An answer already waiting when the deadline fires is read before anything expires: the 9 calls
+/// of a registered item answered while the loop was busy are answers, not 9 timeouts.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn an_answer_waiting_when_the_deadline_fires_is_delivered_not_timed_out() {
+    let bus = PrivateBus::start("tray-deadline-reads-first");
+    let mut tray = Tray::start(SessionBus::at(&bus.address).unwrap(), std::path::PathBuf::from("/proc"));
+    let fd = tray.watch_fd().unwrap();
+    serve_until(&mut tray, &fd, "watcher", |t| *t.role() == Role::Watcher);
+    thread::scope(|scope| {
+        // The item registers (and waits for the watcher's reply) from a thread; this one serves.
+        let starter = scope.spawn(|| FakeItem::start(&bus, Spec::kde(1)));
+        serve_until(&mut tray, &fd, "registered", |t| !t.items().is_empty());
+        // Not reading from here on: the answers pile up in the socket.
+        thread::sleep(Duration::from_millis(400));
+        tray.on_deadline(Instant::now() + Duration::from_secs(10));
+        let item = &tray.items()[0];
+        assert!(item.is_ready() && item.title.is_some(), "answered, not a letter after timeouts: {item:?}");
+        let _item = starter.join().unwrap();
+    });
+}
+
+/// calloop's timer hands over the deadline it was scheduled for: the first call's. A burst of calls
+/// timing out within a few hundred ms is one wake-up, expired by the real time.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_burst_of_timeouts_is_one_wake_up() {
+    let bus = PrivateBus::start("tray-deadline-burst");
+    let mut tray = Tray::start(SessionBus::at(&bus.address).unwrap(), std::path::PathBuf::from("/proc"));
+    let fd = tray.watch_fd().unwrap();
+    serve_until(&mut tray, &fd, "watcher", |t| *t.role() == Role::Watcher);
+    thread::scope(|scope| {
+        let first = scope.spawn(|| FakeItem::start(&bus, Spec::silent()));
+        serve_until(&mut tray, &fd, "first registered", |t| t.items().len() == 1);
+        let scheduled = tray.next_deadline().expect("its Gets are pending");
+        thread::sleep(Duration::from_millis(300));
+        let second = scope.spawn(|| FakeItem::start(&bus, Spec::silent()));
+        serve_until(&mut tray, &fd, "second registered", |t| t.items().len() == 2);
+        // Past both items' deadlines (the second's calls are 300 ms+ younger), the timer wakes with
+        // the first one's.
+        while Instant::now() < scheduled + Duration::from_millis(900) {
+            thread::sleep(Duration::from_millis(20));
+        }
+        tray.on_deadline(scheduled);
+        assert_eq!(tray.next_deadline(), None, "everything due by the real time expired in one go");
+        assert!(tray.items().iter().all(|i| i.is_ready()), "both silent items got their letter");
+        let _items = (first.join().unwrap(), second.join().unwrap());
+    });
+}
+
+/// What a flush drains is routed before the call returns: a gesture whose flush finds the bus dead
+/// reports `bus_closed` itself, not on some later read.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_gesture_whose_flush_finds_the_bus_dead_reports_it_at_once() {
+    let mut bus = PrivateBus::start("tray-gesture-dead-bus");
+    let mut tray = Tray::start(SessionBus::at(&bus.address).unwrap(), std::path::PathBuf::from("/proc"));
+    let fd = tray.watch_fd().unwrap();
+    serve_until(&mut tray, &fd, "watcher", |t| *t.role() == Role::Watcher);
+    let key = thread::scope(|scope| {
+        let starter = scope.spawn(|| FakeItem::start(&bus, Spec::kde(1)));
+        serve_until(&mut tray, &fd, "shown", ready_count(1));
+        let item = starter.join().unwrap();
+        item_key(&item.unique, "/StatusNotifierItem")
+    });
+    bus.kill();
+    let out = tray.gesture(&key, Gesture::Left, (1, 1));
+    assert!(out.bus_closed, "found out by the flush itself: {out:?}");
 }

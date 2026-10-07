@@ -1,5 +1,5 @@
 //! One calloop `Timer` at a deadline while there is one, none otherwise:
-//! the tray's 2 s call timeouts (and, later, the tooltip's hover delay) cost
+//! the tray's 2 s call timeouts and the tooltip's hover delay cost
 //! nothing at rest — no source, no wake-up — instead of a periodic tick.
 
 use smithay_client_toolkit::reexports::calloop::LoopHandle;
@@ -57,7 +57,7 @@ impl DeadlineTimer {
     }
 
     /// Called from `fire`: calloop dropped the source. `fire` MUST call it
-    /// before any `sync` (tasks 11 and 16): otherwise `sync` would remove a
+    /// before any `sync` (the tray's and the hover's callbacks both do): otherwise `sync` would remove a
     /// token calloop already dropped, or keep, for the same deadline, a timer
     /// that no longer exists.
     pub fn fired(&mut self) {

@@ -23,7 +23,7 @@ const MAX_NAMES: usize = 64 * MAX_ITEMS;
 /// Longest registration string another watcher's signal may carry, in bytes
 /// (a bus name is at most 255 bytes, plus an object path): passed uncut for
 /// `host::split_service` to validate, refused beyond.
-const MAX_SERVICE: usize = 1024;
+pub const MAX_SERVICE: usize = 1024;
 
 /// A decoded answer, by the call it answers.
 #[derive(Debug, Clone, PartialEq)]

@@ -36,11 +36,11 @@ pub enum Role {
 pub struct TrayOutput {
     /// The items changed: rebuild Msg::Tray and redraw the bars.
     pub redraw: bool,
-    /// Open this item's menu (right click, ItemIsMenu, a failed Activate — task 10; acted on in task 17).
+    /// Open this item's menu (right click, ItemIsMenu, a failed Activate).
     pub open_menu: Option<ItemKey>,
-    /// The open menu's layout changed (arrived, grafted, patched — task 6): repaint it (task 17).
+    /// The open menu's layout changed (arrived, grafted, patched): repaint it.
     pub menu_changed: bool,
-    /// The open menu must close (2 s without an answer, its item gone — task 6).
+    /// The open menu must close (2 s without an answer, its item gone).
     pub close_menu: bool,
     /// `close_menu` is for its item's `Menu` path moving under it (a duplicate registration,
     /// fix round 2026-10-06), never a real timeout — the wiring must not log it as one.
@@ -62,8 +62,8 @@ impl TrayOutput {
     }
 }
 
-/// The router's own calls, around the watcher's name. Not `Copy`: task 10 adds
-/// `Activate(ItemKey)` (a gesture's answer) and its arm in `answer`.
+/// The router's own calls, around the watcher's name. Not `Copy`: `Activate` carries
+/// the gesture's `ItemKey`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Own {
     RequestName,
@@ -76,7 +76,7 @@ enum Own {
     WatcherItems,
     /// AddMatch, RemoveMatch, RegisterStatusNotifierHost: nothing to read.
     Ignore,
-    /// An Activate sent by `gesture`: its answer may open the item's menu (task 10).
+    /// An Activate sent by `gesture`: its answer may open the item's menu
     Activate(ItemKey),
 }
 
@@ -95,7 +95,15 @@ pub struct Tray {
     role: Role,
     /// A RequestName is in flight (never two).
     requesting: bool,
+    /// What answers drained by a flush made happen during a call that returns no `TrayOutput`
+    /// (`open_menu`, `menu_*`, `close_menu`): merged into the next output, or taken with
+    /// `take_deferred`.
+    deferred: TrayOutput,
 }
+
+/// How many times a flush's drained answers are routed (and what that sends flushed again) before
+/// the rest waits for the next read: a bound, so a chatty application cannot spin the loop.
+const SETTLE_ROUNDS: usize = 8;
 
 impl Tray {
     /// Starts on `bus`: RequestName (DO_NOT_QUEUE), the narrowed NameOwnerChanged rule for WATCHER_NAME,
@@ -110,11 +118,13 @@ impl Tray {
             own: HashMap::new(),
             role: Role::Starting,
             requesting: false,
+            deferred: TrayOutput::default(),
         };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
         t.host.start(&mut t.bus);
-        t.bus.flush();
+        let out = t.settle();
+        t.deferred.merge(out);
         t
     }
 
@@ -142,9 +152,13 @@ impl Tray {
         self.route(incoming)
     }
 
-    /// The deadline timer fired: expired calls answered with Timeout and routed.
+    /// The deadline timer fired (`now` is the instant calloop scheduled, possibly earlier than the
+    /// real time): what already arrived is read first, so an answer waiting in the queue is never
+    /// reported as a timeout; then the calls due by the real time are answered with Timeout, a burst
+    /// of them costing one wake-up, and routed.
     pub fn on_deadline(&mut self, now: Instant) -> TrayOutput {
-        let incoming = self.bus.expire(now);
+        let mut incoming = self.bus.read();
+        incoming.extend(self.bus.expire(Instant::now().max(now)));
         self.route(incoming)
     }
 
@@ -155,12 +169,45 @@ impl Tray {
     /// A frame callback: the host's dirty properties re-read.
     pub fn on_frame(&mut self) -> TrayOutput {
         self.host.on_frame(&mut self.bus);
-        self.bus.flush();
-        TrayOutput::default()
+        if let Some(menu) = self.menu.as_mut() {
+            menu.on_frame(&mut self.bus);
+        }
+        self.settled()
     }
 
+    /// Something is dirty (an item's property, the open menu's layout): the wiring asks for one frame.
     pub fn wants_frame(&self) -> bool {
-        self.host.wants_frame()
+        self.host.wants_frame() || self.menu.as_ref().is_some_and(MenuSession::wants_frame)
+    }
+
+    /// What answers drained during `open_menu`, `menu_submenu`, `menu_click` or `close_menu` made
+    /// happen, when no other callback has returned it yet. Rare (it takes an answer arriving while
+    /// a call is flushed); every other callback's output includes it already.
+    pub fn take_deferred(&mut self) -> TrayOutput {
+        std::mem::take(&mut self.deferred)
+    }
+
+    /// Flushes, routes what the flush drained (bounded), and returns it with anything deferred.
+    fn settled(&mut self) -> TrayOutput {
+        let mut out = std::mem::take(&mut self.deferred);
+        out.merge(self.settle());
+        out
+    }
+
+    /// Flush, then route the answers the flush read into libdbus's queue (the fd no longer reads as
+    /// ready for them), flushing again what that sends, `SETTLE_ROUNDS` times at most.
+    fn settle(&mut self) -> TrayOutput {
+        let mut out = TrayOutput::default();
+        for _ in 0..SETTLE_ROUNDS {
+            self.bus.flush();
+            if !self.bus.has_ready() {
+                return out;
+            }
+            let ready = self.bus.take_ready();
+            out.merge(self.dispatch(ready));
+        }
+        self.bus.flush();
+        out
     }
 
     pub fn items(&self) -> &[Item] {
@@ -182,7 +229,7 @@ impl Tray {
                 self.own.insert(id, Own::Activate(key.clone()));
             }
         }
-        self.bus.flush();
+        out.merge(self.settled());
         out
     }
 
@@ -195,7 +242,16 @@ impl Tray {
         &self.role
     }
 
+    /// Routes `incoming`, then flushes and routes what the flush drained.
     fn route(&mut self, incoming: Vec<Incoming>) -> TrayOutput {
+        let mut out = std::mem::take(&mut self.deferred);
+        out.merge(self.dispatch(incoming));
+        out.merge(self.settle());
+        out
+    }
+
+    /// Routes `incoming` to its owners; sends what that makes, flushing nothing.
+    fn dispatch(&mut self, incoming: Vec<Incoming>) -> TrayOutput {
         let mut out = TrayOutput::default();
         for i in incoming {
             match i {
@@ -221,7 +277,7 @@ impl Tray {
             let gone = self.host.item(&m.key).is_none();
             let moved = !gone && self.host.item(&m.key).and_then(|i| i.menu.as_deref()) != Some(m.path.as_str());
             if gone || moved {
-                self.close_menu();
+                self.drop_menu();
                 out.close_menu = true;
                 out.menu_path_changed = moved;
             }
@@ -231,7 +287,6 @@ impl Tray {
         for m in self.watcher.publish(&changes) {
             self.bus.send_message(m);
         }
-        self.bus.flush();
         out
     }
 
@@ -273,17 +328,17 @@ impl Tray {
                     self.host.register(&entry, "", &mut self.bus);
                 }
             }
+            // An error reply from an item with a menu (Steam has no Activate): its menu instead
+            // (decision 5).
+            (Some(Own::Activate(key)), r) if self.host.opens_menu_after_activate(&key, &r) => {
+                return TrayOutput { open_menu: Some(key), ..TrayOutput::default() };
+            }
             // A refused RequestName (`retry: false`) whose GetNameOwner also found nobody owning
             // the name (an error, or a timeout) falls here: no retry loop, by design — the same
             // "never loop on a bus that refuses us" rule as a RequestName failure alone. `role()`
             // stays `Starting` for good; the host's own one-shot ListNames inventory (already
             // issued in `start`) still ran, so items present at startup are still found — an
             // inventory-only host, just never live-updated through a watcher.
-            // An error reply from an item with a menu (Steam has no Activate): its menu instead
-            // (decision 5).
-            (Some(Own::Activate(key)), r) if self.host.opens_menu_after_activate(&key, &r) => {
-                return TrayOutput { open_menu: Some(key), ..TrayOutput::default() };
-            }
             _ => {}
         }
         TrayOutput::default()
@@ -336,7 +391,7 @@ impl Tray {
             }
             Signal::LayoutUpdated { .. } | Signal::ItemsPropertiesUpdated { .. } => {
                 if let Some(menu) = self.menu.as_mut() {
-                    let update = menu.signal(&s, &mut self.bus);
+                    let update = menu.signal(&s);
                     return self.menu_update(update);
                 }
             }
@@ -350,7 +405,7 @@ impl Tray {
             MenuUpdate::Nothing => TrayOutput::default(),
             MenuUpdate::Changed => TrayOutput { menu_changed: true, ..TrayOutput::default() },
             MenuUpdate::Close => {
-                self.close_menu();
+                self.drop_menu();
                 TrayOutput { close_menu: true, ..TrayOutput::default() }
             }
         }
@@ -360,9 +415,10 @@ impl Tray {
     /// or has no Menu.
     pub fn open_menu(&mut self, key: &ItemKey) -> bool {
         let Some(path) = self.host.item(key).and_then(|i| i.menu.clone()) else { return false };
-        self.close_menu();
+        self.drop_menu();
         self.menu = Some(MenuSession::open(key.clone(), path, &mut self.bus));
-        self.bus.flush();
+        let out = self.settled();
+        self.deferred.merge(out);
         true
     }
 
@@ -373,21 +429,31 @@ impl Tray {
     pub fn menu_submenu(&mut self, id: i32) {
         if let Some(menu) = self.menu.as_mut() {
             menu.fetch_submenu(id, &mut self.bus);
-            self.bus.flush();
+            let out = self.settled();
+            self.deferred.merge(out);
         }
     }
 
     pub fn menu_click(&mut self, id: i32, timestamp: u32) {
         if let Some(menu) = self.menu.as_mut() {
             menu.click(id, timestamp, &mut self.bus);
-            self.bus.flush();
+            let out = self.settled();
+            self.deferred.merge(out);
         }
     }
 
     pub fn close_menu(&mut self) {
+        if self.menu.is_some() {
+            self.drop_menu();
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
+    }
+
+    /// The open menu closed (its rule removed), flushing nothing: the caller's flush follows.
+    fn drop_menu(&mut self) {
         if let Some(menu) = self.menu.take() {
             menu.close(&mut self.bus);
-            self.bus.flush();
         }
     }
 
@@ -397,7 +463,7 @@ impl Tray {
             self.bus.send_message(r);
         }
         // `Host::add` refuses a registration naming our own unique name, checked on the resolved
-        // owner (task 5 review): moved there from an early check once made here, so it also
+        // owner (an earlier review): moved there from an early check once made here, so it also
         // covers an entry of another watcher's list and that watcher's ItemRegistered signal
         // (`follow`/`signal` below call `register` the very same way) — not only a direct
         // RegisterStatusNotifierItem naming us, the only path this router-level check used to see.
