@@ -75,6 +75,9 @@ pub fn padded(content: &[Grid]) -> Boxed {
 /// One list row's content.
 pub struct Row<'a> {
     pub icon: Option<char>,
+    /// The icon's style when not selected: ACCENT for the launcher, ACCENT2 for a menu's toggles
+    /// (spec § 4), MUTED for a menu's back arrow.
+    pub icon_style: Style,
     pub text: &'a str,
     /// Right-aligned, MUTED (launcher kinds; menu submenu marker "▸").
     pub right: &'a str,
@@ -84,16 +87,16 @@ pub struct Row<'a> {
 }
 
 /// Writes `row` between `start` and `end` (excluded) of `g`, exactly as the launcher draws a result:
-/// the selection INVERTED across the whole span, one blank cell, the icon (ACCENT) and a space, the
+/// the selection SELECTED across the whole span, one blank cell, the icon (`icon_style`) and a space, the
 /// text truncated with "…", the right text (at most RIGHT_MAX cells) right-aligned one cell from `end`.
 pub fn row(g: &mut Grid, start: u16, end: u16, r: &Row) {
-    let pick = |s: Style| if r.selected { Style::INVERTED } else { s };
+    let pick = |s: Style| if r.selected { Style::SELECTED } else { s };
     if r.selected {
-        g.write(start, end, &" ".repeat(usize::from(end.saturating_sub(start))), Style::INVERTED);
+        g.write(start, end, &" ".repeat(usize::from(end.saturating_sub(start))), Style::SELECTED);
     }
     let mut x = start + 1;
     if let Some(c) = r.icon {
-        x = g.write(x, end, &c.to_string(), pick(Style::ACCENT));
+        x = g.write(x, end, &c.to_string(), pick(r.icon_style));
         x = g.write(x, end, " ", pick(Style::NORMAL));
     }
     // At the minimum width, RIGHT_MAX alone can still reach past the icon (whose space `x`
@@ -235,21 +238,33 @@ mod tests {
     }
 
     /// The launcher's result row, rebuilt through `list::row`: the same text and styles as its
-    /// snapshots (icon ACCENT, name NORMAL, kind MUTED one cell from the end; selected: INVERTED
+    /// snapshots (icon ACCENT, name NORMAL, kind MUTED one cell from the end; selected: SELECTED
     /// from `start` to the pane's end).
     #[test]
     fn row_draws_like_the_launcher_result() {
         let mut g = Grid::empty(30);
-        let r = Row { icon: Some('#'), text: "Firefox", right: "Web Browser", style: Style::NORMAL, selected: false };
+        let r = Row {
+            icon: Some('#'),
+            icon_style: Style::ACCENT,
+            text: "Firefox",
+            right: "Web Browser",
+            style: Style::NORMAL,
+            selected: false,
+        };
         row(&mut g, 1, 29, &r);
         assert_eq!(g.text(), "  # Firefox      Web Browser  ");
         assert_eq!(g.styles(), format!("..a{}{}..", ".".repeat(14), "m".repeat(11)));
         let mut g = Grid::empty(30);
         row(&mut g, 1, 29, &Row { selected: true, ..r });
         assert_eq!(g.text(), "  # Firefox      Web Browser  ");
-        assert_eq!(g.styles(), ".AAAAAAAAAAAAAAAAAAAAAAAAAAAA.");
+        assert_eq!(g.styles(), ".SSSSSSSSSSSSSSSSSSSSSSSSSSSS.");
         let mut g = Grid::empty(30);
-        row(&mut g, 1, 29, &Row { icon: None, text: &"x".repeat(40), right: "", style: Style::MUTED, selected: false });
+        row(
+            &mut g,
+            1,
+            29,
+            &Row { icon: None, icon_style: Style::MUTED, text: &"x".repeat(40), right: "", style: Style::MUTED, selected: false },
+        );
         assert_eq!(g.text(), format!("  {}…  ", "x".repeat(25)), "no right text: the text runs to one cell from the end");
         assert_eq!(g.styles(), format!("..{}..", "m".repeat(26)));
     }
@@ -263,7 +278,7 @@ mod tests {
     #[test]
     fn padded_pads_each_side_makes_rows_as_wide_as_the_widest_and_keeps_styles() {
         let mut a = Grid::empty(3);
-        a.write(0, 3, "abc", Style::INVERTED);
+        a.write(0, 3, "abc", Style::ACTIVE);
         let b = Grid::empty(2);
         let boxed = padded(&[a, b]);
         let text: Vec<String> = boxed.rows.iter().map(Grid::text).collect();
@@ -290,5 +305,18 @@ mod tests {
         assert_eq!(boxed(&rows, &[], Some(0)).divider, None, "a divider on the ring has nothing to draw");
         assert_eq!(boxed(&[], &[], None).cells(), (0, 0), "nothing at all: nothing panics");
         assert_eq!(boxed(&rows[..1], &[], None).cells(), (0, 0));
+    }
+
+    /// The menu's toggles (spec § 4: checks and radios in accent2) and the launcher's icons each keep
+    /// their own style; on the selected row, everything is the selection.
+    #[test]
+    fn the_icon_has_its_own_style_until_selected() {
+        let mut g = Grid::empty(12);
+        let r = Row { icon: Some('✓'), icon_style: Style::ACCENT2, text: "Mute", right: "", style: Style::NORMAL, selected: false };
+        row(&mut g, 1, 11, &r);
+        assert_eq!(&g.styles()[..4], "..b.", "{}", g.styles());
+        let mut g = Grid::empty(12);
+        row(&mut g, 1, 11, &Row { selected: true, ..r });
+        assert_eq!(g.styles(), ".SSSSSSSSSS.");
     }
 }

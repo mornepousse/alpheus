@@ -2,6 +2,7 @@
 
 use crate::app::PanelField;
 use crate::app::action::Tab;
+use alpheus_commun::theme::settings::{ModeSetting, ModuleColors};
 use ratatui::layout::Rect;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +33,12 @@ pub enum Target {
     },
     PanelCancel,
     PanelApply,
+    /// A row of the Appearance theme list (index into `appearance::entries()`).
+    AppearanceTheme(usize),
+    /// A chip of the Appearance mode row.
+    AppearanceMode(ModeSetting),
+    /// A chip of the Appearance module-colours row.
+    AppearanceColors(ModuleColors),
     /// Inside of an overlay: absorbs the click.
     Overlay,
 }

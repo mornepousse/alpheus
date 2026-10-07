@@ -14,9 +14,9 @@
 //! the paint is skipped.
 
 use crate::config::FontConfig;
-use crate::grid::{CONT, Grid, Tint};
+use crate::grid::{CONT, Grid, Hue, Tint};
 use crate::list::Boxed;
-use alpheus_commun::theme::{Palette, Rgb};
+use alpheus_commun::theme::{Rgb, Roles};
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -164,14 +164,32 @@ pub struct Fonts {
     shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
 }
 
-pub fn color(p: &Palette, t: Tint) -> Rgb {
+/// A tint's colour on a surface whose own background is `base` (`Tint::Bg`). The painter picks the
+/// base from its entry point: `paint` (bars) passes `bar_bg`, `paint_boxed` (popups, the launcher)
+/// `popup_bg` — no caller can pass the wrong one.
+pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
     match t {
-        Tint::Bg => p.bg,
-        Tint::Fg => p.fg,
-        Tint::Accent => p.accent,
-        Tint::Muted => p.muted,
-        Tint::Surface => p.surface,
-        Tint::Error => p.error,
+        Tint::Bg => base,
+        Tint::Fg => r.fg,
+        Tint::FgDim => r.fg_dim,
+        Tint::OnAccent => r.on_accent,
+        Tint::Accent => r.accent,
+        Tint::AccentContainer => r.accent_container,
+        Tint::Accent2 => r.accent2,
+        Tint::Pill => r.pill_bg,
+        Tint::Selection => r.selection,
+        Tint::Warn => r.warn,
+        Tint::Error => r.error,
+        Tint::Urgent => r.urgent,
+        Tint::Hue(h) => match h {
+            Hue::Red => r.hues.red,
+            Hue::Orange => r.hues.orange,
+            Hue::Yellow => r.hues.yellow,
+            Hue::Green => r.hues.green,
+            Hue::Cyan => r.hues.cyan,
+            Hue::Blue => r.hues.blue,
+            Hue::Purple => r.hues.purple,
+        },
     }
 }
 
@@ -450,31 +468,33 @@ impl Fonts {
         self.advance
     }
 
-    pub fn paint(&mut self, grid: &Grid, palette: &Palette, px: &mut [u8], width: u32, height: u32, scale: i32) {
+    /// A bar: `grid` on `roles.bar_bg`.
+    pub fn paint(&mut self, grid: &Grid, roles: &Roles, px: &mut [u8], width: u32, height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
         self.set_scale(scale);
-        fill(px, width, 0, width, height, color(palette, Tint::Bg));
-        self.paint_cells(grid, palette, px, width, height, 0);
+        fill(px, width, 0, width, height, roles.bar_bg);
+        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0);
     }
 
     /// `grid`'s cells in a band `height` px tall, the first one `x0` px from the band's left edge:
-    /// the cell backgrounds that differ from the surface's, then the glyphs. The band's own
+    /// the cell backgrounds that differ from the surface's (`base`), then the glyphs. The band's own
     /// background is the caller's.
-    fn paint_cells(&mut self, grid: &Grid, palette: &Palette, px: &mut [u8], width: u32, height: u32, x0: u32) {
+    #[allow(clippy::too_many_arguments)]
+    fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32) {
         let advance = self.advance;
         let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
             if c.style.bg != Tint::Bg {
-                fill(px, width, edge(col), edge(col + 1), height, color(palette, c.style.bg));
+                fill(px, width, edge(col), edge(col + 1), height, color(roles, base, c.style.bg));
             }
         }
         for (col, c) in grid.cells().iter().enumerate() {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
-            self.glyph(c.ch, c.style.bold, edge(col) as f32, color(palette, c.style.fg), px, width, height);
+            self.glyph(c.ch, c.style.bold, edge(col) as f32, color(roles, base, c.style.fg), px, width, height);
         }
     }
 
@@ -514,19 +534,21 @@ impl Fonts {
     /// Paints a boxed surface `width` × `height` px: the surface's background, the rows' cells
     /// `frame.side` px from the left and `frame.top` from the top, each `row_height` px tall, the
     /// separator and divider lines, and last the frame, drawn at the surface's own edge (outside
-    /// its rounded corners stays transparent). Rows that do not fit are not painted.
+    /// its rounded corners stays transparent). Rows that do not fit are not painted. The surface is
+    /// `roles.popup_bg`, the frame and the lines `roles.border_over(popup_bg)`.
     #[allow(clippy::too_many_arguments)]
-    pub fn paint_boxed(&mut self, b: &Boxed, palette: &Palette, px: &mut [u8], width: u32, height: u32, row_height: u32, scale: i32) {
+    pub fn paint_boxed(&mut self, b: &Boxed, roles: &Roles, px: &mut [u8], width: u32, height: u32, row_height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
         let frame = self.frame(scale).fitted(b.cells(), self.advance, row_height, (width, height));
-        fill(px, width, 0, width, height, color(palette, Tint::Bg));
+        let base = roles.popup_bg;
+        fill(px, width, 0, width, height, base);
         let band = width as usize * row_height as usize * 4;
         for (i, row) in b.rows.iter().enumerate() {
             let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
             let Some(slice) = px.get_mut(start..start + band) else { break };
-            self.paint_cells(row, palette, slice, width, row_height, frame.side);
+            self.paint_cells(row, roles, base, slice, width, row_height, frame.side);
         }
         // A selection band reaching the frame's top or bottom edge is as far from it as from the
         // sides: the first and last rows' coloured cells bleed into the vertical inset.
@@ -537,11 +559,11 @@ impl Fonts {
             for (col, c) in grid.map_or(&[][..], |g| g.cells()).iter().enumerate() {
                 if c.style.bg != Tint::Bg {
                     let x = (frame.side + self.edge(col), frame.side + self.edge(col + 1));
-                    rect(px, width, height, x, (y0, y1), color(palette, c.style.bg));
+                    rect(px, width, height, x, (y0, y1), color(roles, base, c.style.bg));
                 }
             }
         }
-        let ink = color(palette, Tint::Muted);
+        let ink = roles.border_over(base); // spec § 1: fg_dim at 40 % over the surface
         let (w, h, s) = (width, height, frame.stroke);
         for &r in &b.separators {
             let y = frame.top + r as u32 * row_height + row_height.saturating_sub(s) / 2;
@@ -606,12 +628,98 @@ mod tests {
     use super::*;
     use crate::config::DEFAULT_HEIGHT;
     use crate::grid::Style;
+    use alpheus_commun::theme::Hues;
 
     fn fonts() -> Fonts {
         let (p, w) = Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT)
             .expect("no monospace font available: run the tests inside `nix develop` (ALPHEUS_POLICES)");
         assert_eq!(w, None, "JetBrainsMono Nerd Font Mono expected (nix develop)");
         p
+    }
+
+    /// 16 different colours, one per role: a tint resolved to the wrong role shows.
+    fn distinct() -> Roles {
+        let c = |i: u8| Rgb(i * 15, 255 - i * 15, i * 7);
+        Roles {
+            bar_bg: c(1),
+            pill_bg: c(2),
+            popup_bg: c(3),
+            raised: c(4),
+            selection: c(5),
+            fg: c(6),
+            fg_dim: c(7),
+            on_accent: c(8),
+            accent: c(9),
+            accent_container: c(10),
+            accent2: c(11),
+            accent2_container: c(12),
+            ok: c(13),
+            warn: c(14),
+            error: c(15),
+            urgent: c(16),
+            hues: Hues {
+                red: Rgb(17, 100 + 17, 200),
+                orange: Rgb(18, 100 + 18, 200),
+                yellow: Rgb(19, 100 + 19, 200),
+                green: Rgb(20, 100 + 20, 200),
+                cyan: Rgb(21, 100 + 21, 200),
+                blue: Rgb(22, 100 + 22, 200),
+                purple: Rgb(23, 100 + 23, 200),
+            },
+        }
+    }
+
+    #[test]
+    fn every_tint_is_its_role_and_bg_the_surfaces_base() {
+        let r = distinct();
+        let base = Rgb(1, 2, 3);
+        let expected = [
+            (Tint::Bg, base),
+            (Tint::Fg, r.fg),
+            (Tint::FgDim, r.fg_dim),
+            (Tint::OnAccent, r.on_accent),
+            (Tint::Accent, r.accent),
+            (Tint::AccentContainer, r.accent_container),
+            (Tint::Accent2, r.accent2),
+            (Tint::Pill, r.pill_bg),
+            (Tint::Selection, r.selection),
+            (Tint::Warn, r.warn),
+            (Tint::Error, r.error),
+            (Tint::Urgent, r.urgent),
+            (Tint::Hue(Hue::Red), r.hues.red),
+            (Tint::Hue(Hue::Orange), r.hues.orange),
+            (Tint::Hue(Hue::Yellow), r.hues.yellow),
+            (Tint::Hue(Hue::Green), r.hues.green),
+            (Tint::Hue(Hue::Cyan), r.hues.cyan),
+            (Tint::Hue(Hue::Blue), r.hues.blue),
+            (Tint::Hue(Hue::Purple), r.hues.purple),
+        ];
+        for (t, c) in expected {
+            assert_eq!(color(&r, base, t), c, "{t:?}");
+        }
+    }
+
+    /// Spec § 4: the bar on `bar_bg`; popups and the launcher on `popup_bg`, framed in `fg_dim` at
+    /// 40 % over it.
+    #[test]
+    fn a_bar_is_painted_on_bar_bg_and_a_box_on_popup_bg() {
+        let r = distinct();
+        let mut p = fonts();
+        let av = p.advance(1);
+        let (w, h) = ((av * 4.0).ceil() as u32, DEFAULT_HEIGHT);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        p.paint(&Grid::empty(4), &r, &mut px, w, h, 1);
+        assert_eq!(&px[..4], &[r.bar_bg.2, r.bar_bg.1, r.bar_bg.0, 0xff], "a bar: bar_bg");
+        let b = Boxed { rows: vec![text_row(6, ""), text_row(6, "")], separators: vec![], divider: None };
+        let frame = p.frame(1);
+        let (bw, bh) = ((6.0 * av).ceil() as u32 + frame.extra().0, 2 * DEFAULT_HEIGHT + frame.extra().1);
+        let mut bpx = vec![0u8; (bw * bh * 4) as usize];
+        p.paint_boxed(&b, &r, &mut bpx, bw, bh, DEFAULT_HEIGHT, 1);
+        let middle = ((bh / 2 * bw + bw / 2) * 4) as usize;
+        assert_eq!(&bpx[middle..middle + 4], &[r.popup_bg.2, r.popup_bg.1, r.popup_bg.0, 0xff], "a popup, the launcher: popup_bg");
+        let stroke = ((bh / 2 * bw) * 4) as usize; // the left stroke, mid-height
+        let ink = r.border_over(r.popup_bg);
+        assert_eq!(&bpx[stroke..stroke + 4], &[ink.2, ink.1, ink.0, 0xff], "the frame: fg_dim at 40 % over popup_bg");
     }
 
     /// Frozen copy of `Fonts::glyph` exactly as it shaped text before the
@@ -651,21 +759,30 @@ mod tests {
 
     /// Frozen copy of `Fonts::paint`, calling `glyph_reshaped_every_time`
     /// instead of the memoized `Fonts::glyph`.
-    fn paint_reshaping_every_glyph(p: &mut Fonts, grid: &Grid, palette: &Palette, px: &mut [u8], width: u32, height: u32, scale: i32) {
+    fn paint_reshaping_every_glyph(p: &mut Fonts, grid: &Grid, palette: &Roles, px: &mut [u8], width: u32, height: u32, scale: i32) {
         p.set_scale(scale);
         let advance = p.advance;
         let edge = |col: usize| ((col as f32) * advance).round() as u32;
-        fill(px, width, 0, width, height, color(palette, Tint::Bg));
+        fill(px, width, 0, width, height, palette.bar_bg);
         for (col, c) in grid.cells().iter().enumerate() {
             if c.style.bg != Tint::Bg {
-                fill(px, width, edge(col), edge(col + 1), height, color(palette, c.style.bg));
+                fill(px, width, edge(col), edge(col + 1), height, color(palette, palette.bar_bg, c.style.bg));
             }
         }
         for (col, c) in grid.cells().iter().enumerate() {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
-            glyph_reshaped_every_time(p, c.ch, c.style.bold, edge(col) as f32, color(palette, c.style.fg), px, width, height);
+            glyph_reshaped_every_time(
+                p,
+                c.ch,
+                c.style.bold,
+                edge(col) as f32,
+                color(palette, palette.bar_bg, c.style.fg),
+                px,
+                width,
+                height,
+            );
         }
     }
 
@@ -673,7 +790,7 @@ mod tests {
     fn memoized_shaping_is_pixel_identical_to_reshaping_every_glyph() {
         let mut memo = fonts();
         let mut fresh = fonts();
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = memo.advance(1);
         assert_eq!(av, fresh.advance(1));
         let mut g = Grid::empty(40);
@@ -698,7 +815,7 @@ mod tests {
     fn glyph_shaping_memo_speeds_up_paint() {
         let mut memo = fonts();
         let mut fresh = fonts();
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = memo.advance(1);
         fresh.advance(1);
         // A realistic bar line: repeats of a modest alphabet, as redrawn
@@ -764,20 +881,20 @@ mod tests {
         }
     }
 
-    /// The selection band (an INVERTED first and last row) is as far from the frame at the top and
+    /// The selection band (a SELECTED first and last row) is as far from the frame at the top and
     /// the bottom as it is on the left and the right, at both scales.
     #[test]
     fn the_selection_band_is_at_an_even_distance_from_the_frame() {
         for scale in [1, 2] {
             let mut p = fonts();
             let mut inv = Grid::empty(6);
-            inv.write(0, 6, "", Style::INVERTED);
+            inv.write(0, 6, "", Style::SELECTED);
             for c in 0..6 {
-                inv.write(c, c + 1, " ", Style::INVERTED);
+                inv.write(c, c + 1, " ", Style::SELECTED);
             }
             let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
             let s = Surface::paint(&mut p, &b, scale);
-            let accent = Surface::opaque(Palette::default().accent);
+            let accent = Surface::opaque(Roles::default().selection);
             let (mx, my) = (s.w / 2, s.h / 2);
             let first = |f: &dyn Fn(u32) -> [u8; 4], range: std::ops::Range<u32>| range.into_iter().find(|&k| f(k) == accent);
             let top = first(&|y| s.at(mx, y), 0..s.h).unwrap_or(u32::MAX);
@@ -798,7 +915,7 @@ mod tests {
             let mut p = fonts();
             let mut inv = Grid::empty(6);
             for c in 0..6 {
-                inv.write(c, c + 1, " ", Style::INVERTED);
+                inv.write(c, c + 1, " ", Style::SELECTED);
             }
             let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
             let (advance, frame) = (p.advance(scale), p.frame(scale));
@@ -806,12 +923,12 @@ mod tests {
             let (w, h) =
                 ((6.0 * advance).ceil() as u32 + frame.extra().0 + 14 * scale as u32, 3 * rh + frame.extra().1 + 31 * scale as u32);
             let mut px = vec![0x11u8; (w * h * 4) as usize];
-            p.paint_boxed(&b, &Palette::default(), &mut px, w, h, rh, scale);
+            p.paint_boxed(&b, &Roles::default(), &mut px, w, h, rh, scale);
             let at = |x: u32, y: u32| {
                 let o = ((y * w + x) * 4) as usize;
                 [px[o + 2], px[o + 1], px[o], px[o + 3]]
             };
-            let accent = Surface::opaque(Palette::default().accent);
+            let accent = Surface::opaque(Roles::default().selection);
             let first = |f: &dyn Fn(u32) -> [u8; 4], n: u32| (0..n).find(|&k| f(k) == accent).unwrap_or(u32::MAX);
             let (mx, row) = (w / 2, h / 2 - rh); // inside the first row
             let (left, right) = (first(&|x| at(x, row), w), first(&|x| at(w - 1 - x, row), w));
@@ -846,7 +963,7 @@ mod tests {
 
     impl Surface {
         fn paint(p: &mut Fonts, b: &Boxed, scale: i32) -> Surface {
-            let pal = Palette::default();
+            let pal = Roles::default();
             let (advance, frame) = (p.advance(scale), p.frame(scale));
             let (cols, rows) = b.cells();
             let rh = DEFAULT_HEIGHT * scale as u32;
@@ -881,7 +998,7 @@ mod tests {
             let mut p = fonts();
             let b = Boxed { rows: vec![text_row(6, " E"), text_row(6, ""), text_row(6, " E")], separators: vec![], divider: None };
             let s = Surface::paint(&mut p, &b, scale);
-            let bg = Surface::opaque(Palette::default().bg);
+            let bg = Surface::opaque(Roles::default().popup_bg);
             let (r, st) = (s.frame.radius, s.frame.stroke);
             let (mut min_x, mut min_y, mut max_y) = (u32::MAX, u32::MAX, 0);
             for y in st..s.h - st {
@@ -906,21 +1023,21 @@ mod tests {
             let mut p = fonts();
             let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![], divider: None };
             let s = Surface::paint(&mut p, &b, scale);
-            let pal = Palette::default();
-            let (muted, bg) = (Surface::opaque(pal.muted), Surface::opaque(pal.bg));
+            let pal = Roles::default();
+            let (border, bg) = (Surface::opaque(pal.border_over(pal.popup_bg)), Surface::opaque(pal.popup_bg));
             let (r, st, w, h) = (s.frame.radius, s.frame.stroke, s.w, s.h);
             let mid = (w / 2, h / 2);
             for k in 0..st {
-                assert_eq!(s.at(mid.0, k), muted, "scale {scale}: top stroke line {k}");
-                assert_eq!(s.at(mid.0, h - 1 - k), muted, "bottom stroke line {k}");
-                assert_eq!(s.at(k, mid.1), muted, "left stroke line {k}");
-                assert_eq!(s.at(w - 1 - k, mid.1), muted, "right stroke line {k}");
+                assert_eq!(s.at(mid.0, k), border, "scale {scale}: top stroke line {k}");
+                assert_eq!(s.at(mid.0, h - 1 - k), border, "bottom stroke line {k}");
+                assert_eq!(s.at(k, mid.1), border, "left stroke line {k}");
+                assert_eq!(s.at(w - 1 - k, mid.1), border, "right stroke line {k}");
             }
             assert_eq!(s.at(mid.0, st), bg, "scale {scale}: the stroke is {st} px thick, not more");
             assert_eq!(s.at(st, mid.1), bg);
-            assert_eq!(s.at(r, 0), muted, "the straight part starts where the corner ends");
-            assert_eq!(s.at(0, r), muted);
-            assert_eq!(s.at(w - 1 - r, h - 1), muted);
+            assert_eq!(s.at(r, 0), border, "the straight part starts where the corner ends");
+            assert_eq!(s.at(0, r), border);
+            assert_eq!(s.at(w - 1 - r, h - 1), border);
             for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
                 assert_eq!(s.at(x, y)[3], 0, "scale {scale}: outside the rounded corner stays transparent ({x}, {y})");
             }
@@ -942,15 +1059,15 @@ mod tests {
                 divider: Some(5),
             };
             let s = Surface::paint(&mut p, &b, scale);
-            let pal = Palette::default();
-            let (muted, bg) = (Surface::opaque(pal.muted), Surface::opaque(pal.bg));
+            let pal = Roles::default();
+            let (border, bg) = (Surface::opaque(pal.border_over(pal.popup_bg)), Surface::opaque(pal.popup_bg));
             let (st, w, h, rh) = (s.frame.stroke, s.w, s.h, s.rh);
             let y = s.frame.top + rh + (rh - st) / 2;
             let off_divider = s.frame.side + (3.0 * s.advance).round() as u32;
             for k in 0..st {
-                assert_eq!(s.at(off_divider, y + k), muted, "scale {scale}: the separator, line {k}");
-                assert_eq!(s.at(st, y + k), muted, "it reaches the left stroke");
-                assert_eq!(s.at(w - 1 - st, y + k), muted, "and the right one");
+                assert_eq!(s.at(off_divider, y + k), border, "scale {scale}: the separator, line {k}");
+                assert_eq!(s.at(st, y + k), border, "it reaches the left stroke");
+                assert_eq!(s.at(w - 1 - st, y + k), border, "and the right one");
             }
             assert_eq!(s.at(off_divider, y - 1), bg, "{st} px thick: nothing above");
             assert_eq!(s.at(off_divider, y + st), bg, "nor below");
@@ -959,7 +1076,7 @@ mod tests {
                 + ((6.0 * s.advance).round() as u32 - (5.0 * s.advance).round() as u32 - st) / 2;
             for yy in [st, s.frame.top, s.frame.top + 2 * rh + rh / 2, h - 1 - st] {
                 for k in 0..st {
-                    assert_eq!(s.at(x + k, yy), muted, "scale {scale}: the divider at y {yy}, column {k}");
+                    assert_eq!(s.at(x + k, yy), border, "scale {scale}: the divider at y {yy}, column {k}");
                 }
             }
             assert_eq!(s.at(x - 1, s.frame.top + 2 * rh + rh / 2), bg, "{st} px thick: nothing to its left");
@@ -972,25 +1089,25 @@ mod tests {
         let mut p = fonts();
         let b = Boxed { rows: vec![Grid::empty(4), Grid::empty(4)], separators: vec![0], divider: Some(1) };
         let mut px = vec![0x11u8; 100];
-        p.paint_boxed(&b, &Palette::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1);
+        p.paint_boxed(&b, &Roles::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1);
         assert!(px.iter().all(|b| *b == 0x11), "an inconsistent buffer is left alone");
         // Rows past the buffer's end (the compositor shortened the popup): the rows that fit are painted, no panic.
         let frame = p.frame(1);
         let w = (p.advance(1) * 4.0).ceil() as u32 + frame.extra().0;
         let h = frame.top + DEFAULT_HEIGHT; // the first row only
         let mut px = vec![0x11u8; (w * h * 4) as usize];
-        p.paint_boxed(&b, &Palette::default(), &mut px, w, h, DEFAULT_HEIGHT, 1);
+        p.paint_boxed(&b, &Roles::default(), &mut px, w, h, DEFAULT_HEIGHT, 1);
         assert_ne!(&px[..3], &[0x11, 0x11, 0x11], "painted");
     }
 
     #[test]
-    fn inverted_background_and_glyphs() {
+    fn active_background_and_glyphs() {
         let mut p = fonts();
         let mut g = Grid::empty(4);
         g.write(0, 4, "A", Style::NORMAL);
-        g.write(1, 4, " ", Style::INVERTED);
+        g.write(1, 4, " ", Style::ACTIVE);
         g.write(2, 4, "·", Style::NORMAL);
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = p.advance(1);
         let (w, h) = ((av * 4.0).ceil() as u32, DEFAULT_HEIGHT);
         let mut px = vec![0u8; (w * h * 4) as usize];
@@ -999,11 +1116,11 @@ mod tests {
             let o = ((y * w + x) * 4) as usize;
             (Rgb(px[o + 2], px[o + 1], px[o]), px[o + 3])
         };
-        assert_eq!(read((av * 1.5) as u32, h / 2), (pal.accent, 0xff), "inverted cell: accent background");
-        let ink_a = (0..av as u32).any(|x| (0..h).any(|y| read(x, y).0 != pal.bg));
+        assert_eq!(read((av * 1.5) as u32, h / 2), (pal.accent_container, 0xff), "active cell: accent_container background");
+        let ink_a = (0..av as u32).any(|x| (0..h).any(|y| read(x, y).0 != pal.bar_bg));
         assert!(ink_a, "no pixel drawn for \"A\"");
         let x3 = (av * 3.0).ceil() as u32;
-        assert!((x3..w).all(|x| (0..h).all(|y| read(x, y) == (pal.bg, 0xff))), "empty cell: background, opaque");
+        assert!((x3..w).all(|x| (0..h).all(|y| read(x, y) == (pal.bar_bg, 0xff))), "empty cell: background, opaque");
     }
 
     /// Mae's bug report: Claude Code's terminal title starts with "✳ "
@@ -1019,7 +1136,7 @@ mod tests {
         let mut p = fonts();
         let mut g = Grid::empty(3);
         g.write(0, 3, "\u{2733}", Style::NORMAL); // ✳, eight-spoked asterisk
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = p.advance(1);
         let (w, h) = ((av * 3.0).ceil() as u32, DEFAULT_HEIGHT);
         let mut px = vec![0u8; (w * h * 4) as usize];
@@ -1028,7 +1145,7 @@ mod tests {
             let o = ((y * w + x) * 4) as usize;
             Rgb(px[o + 2], px[o + 1], px[o])
         };
-        let ink = (0..av as u32).any(|x| (0..h).any(|y| read(x, y) != pal.bg));
+        let ink = (0..av as u32).any(|x| (0..h).any(|y| read(x, y) != pal.bar_bg));
         assert!(ink, "✳ must be drawn from the fallback font, not masked away");
         // Directly confirms it is a real glyph (from DejaVu Sans Mono), not
         // what masking would otherwise have dropped.
@@ -1053,7 +1170,7 @@ mod tests {
         g.write(0, 3, "A", Style::NORMAL);
         g.write(1, 3, "\u{13A0}", Style::NORMAL);
         g.write(2, 3, "B", Style::NORMAL);
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = p.advance(1);
         let (w, h) = ((av * 3.0).ceil() as u32, DEFAULT_HEIGHT);
         let mut px = vec![0u8; (w * h * 4) as usize];
@@ -1064,10 +1181,10 @@ mod tests {
         };
         let (x0, x1) = ((av * 1.0).round() as u32, (av * 2.0).round() as u32);
         assert!(
-            (x0..x1).all(|x| (0..h).all(|y| read(x, y) == pal.bg)),
+            (x0..x1).all(|x| (0..h).all(|y| read(x, y) == pal.bar_bg)),
             "a masked character draws no box at all, just its cell's background"
         );
-        let ink_b = (x1..w).any(|x| (0..h).any(|y| read(x, y) != pal.bg));
+        let ink_b = (x1..w).any(|x| (0..h).any(|y| read(x, y) != pal.bar_bg));
         assert!(ink_b, "the character right after the masked one is still drawn, at its own column (consistent width)");
     }
 
@@ -1085,7 +1202,7 @@ mod tests {
     #[test]
     fn glyph_cache_bounded_on_varied_titles() {
         let mut p = fonts();
-        let pal = Palette::default();
+        let pal = Roles::default();
         let av = p.advance(1);
         let (w, h) = ((av * 256.0).ceil() as u32, DEFAULT_HEIGHT);
         let mut px = vec![0u8; (w * h * 4) as usize];
@@ -1137,7 +1254,7 @@ mod tests {
     #[test]
     fn mixed_scales_no_flush_on_each_alternation() {
         let mut p = fonts();
-        let pal = Palette::default();
+        let pal = Roles::default();
         let mut g = Grid::empty(4);
         g.write(0, 4, "Ab1", Style::NORMAL);
         let av2 = p.advance(2);
@@ -1191,7 +1308,7 @@ mod tests {
         let mut g = Grid::empty(10);
         g.write(0, 10, "abcdefghij", Style::NORMAL);
         let mut px = vec![0u8; 16];
-        p.paint(&g, &Palette::default(), &mut px, 100, 22, 1);
+        p.paint(&g, &Roles::default(), &mut px, 100, 22, 1);
     }
 
     /// Test directory (unique name per pid, like `config.rs`), dropped on
@@ -1377,8 +1494,8 @@ mod tests {
         // (accent background): also exercises the per-cell background, not
         // just the glyph drawing.
         let mut g = Grid::empty(10);
-        g.write(8, 10, "日", Style::INVERTED);
-        p.paint(&g, &Palette::default(), &mut px, w, h, 1); // must not panic
+        g.write(8, 10, "日", Style::ACTIVE);
+        p.paint(&g, &Roles::default(), &mut px, w, h, 1); // must not panic
         // Every pixel of the buffer stays well-formed (opaque alpha): no
         // write overflowed its computed location.
         for o in (0..px.len()).step_by(4) {

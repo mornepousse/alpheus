@@ -585,9 +585,17 @@ impl App {
         }
     }
 
+    /// The launcher box redrawn even if its rows did not change (a new theme); its scrims are transparent.
+    pub(crate) fn launcher_repaint(&mut self) {
+        if let Some(open) = self.launcher.as_mut() {
+            open.last = None;
+        }
+        self.launcher_draw();
+    }
+
     fn launcher_draw(&mut self) {
         let height = self.bar.config.height;
-        let App { launcher, fonts, palette, .. } = self;
+        let App { launcher, fonts, roles, .. } = self;
         let Some(open) = launcher.as_mut() else { return };
         if !open.configured {
             return;
@@ -605,7 +613,7 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_boxed(&rows, palette, px, w, h, row_height, e);
+        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e);
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

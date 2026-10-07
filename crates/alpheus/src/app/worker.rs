@@ -44,7 +44,7 @@ pub fn domains(tab: Tab) -> &'static [Domain] {
         Tab::Sound => &[Domain::Audio],
         Tab::Network => &[Domain::Network],
         Tab::Bluetooth => &[Domain::Bluetooth],
-        Tab::Power => &[],
+        Tab::Power | Tab::Appearance => &[],
         Tab::Displays => &[Domain::Displays],
     }
 }
@@ -237,6 +237,7 @@ mod tests {
         assert_eq!(domains(Tab::Sound), &[Domain::Audio]);
         assert_eq!(domains(Tab::Displays), &[Domain::Displays]);
         assert!(domains(Tab::Power).is_empty());
+        assert!(domains(Tab::Appearance).is_empty());
     }
 
     #[test]

@@ -218,7 +218,7 @@ impl Calendar {
 
     /// The content rows, each `size().0` wide (`list::padded` adds the pad
     /// cells, the painter the frame): title "October 2026" centred BOLD_ACCENT, weekday
-    /// initials MUTED rotated to first_day, days NORMAL, today INVERTED (like
+    /// initials MUTED rotated to first_day, days NORMAL, today ACTIVE (on accent_container) (like
     /// the active workspace), days of other months blank, ISO week numbers
     /// MUTED on the left — the week of the row's Monday (question 5), on rows
     /// holding a day of the month.
@@ -262,7 +262,7 @@ impl Calendar {
                     continue;
                 }
                 let is_today = (shown.year, shown.month, n as u8) == self.today;
-                let style = if is_today { Style::INVERTED } else { Style::NORMAL };
+                let style = if is_today { Style::ACTIVE } else { Style::NORMAL };
                 let x = left + c as u16 * COLUMN;
                 g.write(x, x + DAY_CELLS, &format!("{n:>2}"), style);
             }

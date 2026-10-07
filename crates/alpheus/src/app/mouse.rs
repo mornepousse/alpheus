@@ -79,6 +79,9 @@ impl App {
                 self.displays.profile_sel = j;
                 self.profile_bar_activate(now);
             }
+            Target::AppearanceTheme(i) => self.appearance_click_theme(i, now),
+            Target::AppearanceMode(m) => self.appearance_click_mode(m, now),
+            Target::AppearanceColors(m) => self.appearance_click_colors(m, now),
             Target::OutputToggle(i) => {
                 self.focus = i;
                 if let Some(Item::Output(name)) = self.focused() {
@@ -312,5 +315,52 @@ mod tests {
         assert_eq!(a.overlay, Overlay::Palette(Palette { query: String::new(), selected: 1 }));
         click(&mut a, 0, 23); // outside: closes
         assert_eq!(a.overlay, Overlay::None);
+    }
+
+    // ── Appearance tab ───────────────────────────────────────────────
+
+    use crate::app::appearance::tests::open;
+    use alpheus_commun::theme::settings::ModeSetting;
+
+    #[test]
+    fn a_click_on_a_theme_selects_it_and_writes_nothing_a_second_click_applies() {
+        let (mut a, dir) = open("mouse-theme", &[]);
+        let (x, y) = center(&a, Target::AppearanceTheme(3));
+        click(&mut a, x, y);
+        assert_eq!(a.appearance.cursor, 3);
+        assert!(!dir.join("theme.toml").exists(), "a first click only selects");
+        assert_eq!(a.appearance.applied, Some(1));
+        click(&mut a, x, y);
+        assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"tokyo-night\"\n");
+        assert_eq!(a.appearance.applied, Some(3));
+    }
+
+    #[test]
+    fn a_click_on_a_mode_applies_it() {
+        let (mut a, dir) = open("mouse-mode", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (x, y) = center(&a, Target::AppearanceMode(ModeSetting::Light));
+        click(&mut a, x, y);
+        assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmode = \"light\"\n");
+        assert!(a.appearance.mode_focus && a.appearance.applied_mode == ModeSetting::Light);
+    }
+
+    #[test]
+    fn a_click_on_a_module_colours_value_applies_it() {
+        use alpheus_commun::theme::settings::ModuleColors;
+        let (mut a, dir) = open("mouse-colors", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (x, y) = center(&a, Target::AppearanceColors(ModuleColors::Full));
+        click(&mut a, x, y);
+        assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmodule_colors = \"full\"\n");
+        assert!(a.appearance.colors_focus && !a.appearance.mode_focus);
+        assert_eq!(a.appearance.applied_module_colors, ModuleColors::Full);
+    }
+
+    #[test]
+    fn the_tabs_bar_reaches_the_appearance_tab() {
+        let mut a = ready_app();
+        let (x, y) = center(&a, Target::Tab(Tab::Appearance));
+        click(&mut a, x, y);
+        assert_eq!(a.tab, Tab::Appearance);
+        assert_eq!(a.appearance.entries.len(), 10, "opened by the click");
     }
 }

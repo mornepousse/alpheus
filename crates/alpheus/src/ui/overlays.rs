@@ -93,11 +93,7 @@ fn palette(buf: &mut Buffer, area: Rect, app: &App, p: &Palette, hits: &mut HitM
     let offset = if p.selected >= visible { p.selected + 1 - visible } else { 0 };
     for (n, (label, _)) in matches.iter().enumerate().skip(offset).take(visible) {
         let y = inner.y + 2 + (n - offset) as u16;
-        let style = if n == p.selected {
-            Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(th.fg).bg(th.surface)
-        };
+        let style = if n == p.selected { th.selected() } else { Style::default().fg(th.fg).bg(th.surface) };
         let row = Rect::new(inner.x, y, inner.width, 1);
         clear(buf, row, style);
         put(buf, row, inner.x + 1, y, &truncate(label, usize::from(inner.width.saturating_sub(2))), style);
@@ -111,7 +107,7 @@ fn confirm(buf: &mut Buffer, area: Rect, app: &App, c: &Confirm, hits: &mut HitM
     let inner = frame(buf, r, " Confirmation ", app, hits);
     put(buf, inner, inner.x + 1, inner.y, c.action.question(), Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD));
     let y = inner.y + inner.height.saturating_sub(1);
-    let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
+    let on = th.filled();
     let off = Style::default().fg(th.fg).bg(th.surface);
     let mut x = inner.x + 1;
     let w = put(buf, inner, x, y, "[ Cancel ]", if c.yes_focused { off } else { on });

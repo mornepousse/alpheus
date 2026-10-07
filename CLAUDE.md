@@ -82,6 +82,18 @@ breakdown), then the spec of the sub-project currently in progress in
   nothing to do, tray plan 1 already did it — zbus left the tree.)
   Launcher fix (main 9331286): a Toggle arriving less than 250 ms after the
   launcher opens is debounced, so Mod+Space is a press bind again.
+- **Themes delivery 1 (colours)** (spec
+  [`docs/specs/2026-10-07-alpheus-themes-design.md`](docs/specs/2026-10-07-alpheus-themes-design.md),
+  plan [`docs/plans/2026-10-07-alpheus-themes-plan-1.md`](docs/plans/2026-10-07-alpheus-themes-plan-1.md))
+  **implemented and merged into `main` on 2026-10-07** (per-task reviews, a final whole-branch review and fix wave; then, at Mae's request, the TUI **Theme tab** (Super+A, tab 7: theme list with preview, mode, module colours) and **module colours** (spec § 9: 7 hues per theme, `module_colors = "none" | "icons" | "full"`, default icons, fixed module→hue mapping, states win, a charging battery stays green)); Mae's trial done:
+  - **Roles and presets.** 16 roles in `alpheus-commun::theme`, and 9 compiled-in presets (dark/light pairs, contrast-tested in both modes).
+  - **Wallpaper.** One more theme, read from 16-role or legacy 7-key files.
+  - **`theme.toml`.** Theme, mode `auto`/`dark`/`light`, and `[colors]` overrides. With no `theme.toml`: wallpaper if `colors.toml` exists, else catppuccin.
+  - **Daemon.** Hot reload through one inotify fd (`watch.rs`; its parent is watched while `~/.config/alpheus` is missing). Mode `auto` follows the portal's `color-scheme` on the tray's session connection, or on one of its own when the tray is off.
+  - **TUI.** Same resolver; no D-Bus. In mode `auto` it reads the mode the daemon publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running).
+  - **Measured in release** (vs `c85c0df`, the tray branch just before the theme code; not the merge-base with `main`, which has no tray yet): a one-time cost of +144–224 KB PSS at start (binary 5.11 → 5.18 MiB stripped, +76 KiB), +0–444 KB over 50 reloads (0 in four of five runs), and 0 loop wake-ups at rest after a reload.
+  - **Pending.** Real-world trial. Mae's matugen setup in nixos-config is her decision (spec § 5): the 16-role template, the dark and light runs, `-t scheme-vibrant`, and dropping `shell-ctl reload-bar` for colours.
+  - **Next.** Themes delivery 2 (the six bar shapes), then delivery 3 (the Appearance tab).
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
@@ -139,7 +151,8 @@ breakdown), then the spec of the sub-project currently in progress in
   dark look gets tiresome over time — study a richer style (borders, accents,
   depth, transparency, light variants…) and **preset colour themes** for
   users who don't follow their wallpaper (matugen stays the default for Mae).
-  Lightness rules apply: a theme costs nothing when unused.
+  Lightness rules apply: a theme costs nothing when unused. Delivery 1
+  (colours) done, see above.
 - **README tables are the yardstick (Mae, 2026-10-05)**: the README keeps a
   memory comparison (alpheus vs other shells, then alpheus per component)
   and a feature comparison (alpheus vs DMS, Noctalia, ashell, waybar stack)

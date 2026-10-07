@@ -1,0 +1,28 @@
+---
+source: crates/alpheus/src/ui/appearance.rs
+expression: "draw(&a, 100, 24).0.join(\"\\n\")"
+---
+ alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
+                                                                                                    
+ Theme                           Preview — Tokyo Night, dark                                        
+     Wallpaper (matugen)         ┌────────────────────────────────────────────┐                     
+   ● Catppuccin                  │ 1  2  3! notes.md ♪ 84% ≈ ▮ 15% ▤ 6G 14:05 │                     
+     Gruvbox                     └────────────────────────────────────────────┘                     
+ ❯   Tokyo Night                                                                                    
+     Rosé Pine                   ┌────────────┐                                                     
+     Everforest                  │ Open       │                                                     
+     Kanagawa                    │ ✓ Mute     │                                                     
+     Solarized                   │   Low      │                                                     
+     Nord          dark only     └────────────┘                                                     
+     Dracula       dark only                                                                        
+                                                                                                    
+ Mode             Auto   Dark   Light                                                               
+ Module colours   None   Icons   Full                                                               
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+ Theme · ready                                                                                      
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  ↑/↓ Choose  Enter Apply  Tab Mode

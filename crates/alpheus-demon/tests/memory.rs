@@ -20,8 +20,8 @@ mod common;
 use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use common::sni::{FakeItem, Spec};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with, wtype,
-    wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with,
+    write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -743,4 +743,59 @@ fn startup_pss_with_the_tray_under_15_mb() {
     let kb = d.pss_kb();
     eprintln!("startup PSS, every module, 10 tray items, 3 outputs: {kb} KB");
     assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report to Mae, never raise: {kb}");
+}
+
+/// Themes task 5: the inotify watch adds nothing at rest, even right after a reload. Read in the
+/// README as "0 wake-ups at rest" with the watch in place.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_theme_reload() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("theme-rest");
+    let toml = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let (sway, _hypr, d) = start("theme-rest", 1, &bus, None, Some(toml), PwDump::Silent);
+    let config = sway.runtime.join("config/alpheus");
+    write_atomically(&config, "theme.toml", "theme = \"gruvbox\"\nmode = \"dark\"\n");
+    assert!(d.wait_for("theme reloaded: gruvbox, dark", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST);
+    let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+    std::thread::sleep(REST);
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after a theme reload (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s at rest after a reload");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s at rest after a reload");
+}
+
+/// Themes delivery 1: 50 reloads (two presets in turn, three bars repainted each time) leave no
+/// growth behind. Printed for the README; budget 768 KB (a leak of 64 KB per reload makes 3.2 MB).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn theme_reloads_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("theme-reloads");
+    let toml = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let (sway, _hypr, d) = start("theme-reloads", 3, &bus, None, Some(toml), PwDump::Silent);
+    let config = sway.runtime.join("config/alpheus");
+    let reload = |n: usize| {
+        let theme = if n % 2 == 0 { "tokyo-night" } else { "gruvbox" };
+        write_atomically(&config, "theme.toml", &format!("theme = \"{theme}\"\nmode = \"dark\"\n"));
+        assert!(d.wait_for_count("theme reloaded:", n + 1, DELAY), "reload {n}: {:?}", d.log());
+    };
+    reload(0);
+    reload(1); // warm-up: both presets painted once
+    std::thread::sleep(Duration::from_secs(2));
+    reload(2);
+    reload(3); // and once more: the first run after a build still settled by +444 KB
+    std::thread::sleep(Duration::from_secs(2));
+    let baseline = d.pss_kb();
+    for n in 4..54 {
+        reload(n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.pss_kb();
+    eprintln!("theme reloads: PSS {baseline} KB after 4 warm-up reloads, {end} KB after 50 more (3 outputs)");
+    assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 50 reloads");
 }

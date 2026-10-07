@@ -22,7 +22,8 @@ use crate::tray::menu_session::MenuSession;
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
-use alpheus_commun::theme::Palette;
+use alpheus_commun::theme::Roles;
+use alpheus_commun::theme::settings::ThemeSettings;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
@@ -312,7 +313,17 @@ pub struct App {
     pub(crate) pointer: Option<ThemedPointer>,
     pub(crate) wheel: Wheel,
     pub bar: Bar,
-    pub(crate) palette: Palette,
+    /// The 16 colour roles every surface paints with (themes spec § 1).
+    pub(crate) roles: Roles,
+    /// theme.toml as last read: its mode decides whether the portal matters (themes task 6).
+    pub(crate) theme_settings: ThemeSettings,
+    /// The portal's color-scheme once it answered (themes task 6); None: no word yet, or no portal
+    /// (mode auto is then dark).
+    pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
+    /// The resolver's warnings at the last resolve: a reload logs only new ones.
+    pub(crate) theme_warnings: Vec<String>,
+    /// The inotify watch on the config directory; None: the theme files are read at startup only.
+    pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
     pub(crate) fonts: Fonts,
     pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
@@ -348,6 +359,19 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
+    /// The portal's own connection when the tray module is off and the mode is auto (themes task 6);
+    /// None otherwise, or once its bus closed (never reconnected).
+    pub(crate) portal: Option<crate::appearance::PortalLink>,
+    /// Armed only while its ReadOne is pending (2 s); never at rest.
+    pub(crate) portal_timer: DeadlineTimer,
+    /// `follow_portal_if_auto` already acted: never a second connection nor a second attempt.
+    pub(crate) portal_tried: bool,
+    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes (themes task 6); None: unset, nothing written.
+    pub(crate) mode_runtime: Option<std::path::PathBuf>,
+    /// The mode last written to it; None: not yet.
+    pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
+    /// The last write failure logged: the same one is not logged again.
+    pub(crate) mode_error: Option<String>,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -432,7 +456,8 @@ impl App {
         globals: &GlobalList,
         qh: &QueueHandle<Self>,
         bar: Bar,
-        palette: Palette,
+        theme_settings: ThemeSettings,
+        roles: Roles,
         fonts: Fonts,
         exec: Arc<dyn Executor>,
     ) -> Result<App, String> {
@@ -456,7 +481,11 @@ impl App {
             pointer: None,
             wheel: Wheel::default(),
             bar,
-            palette,
+            theme_settings,
+            portal_mode: None,
+            theme_warnings: Vec::new(),
+            theme_watch: None,
+            roles,
             fonts,
             exec,
             stop: false,
@@ -470,6 +499,12 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
+            portal: None,
+            portal_timer: DeadlineTimer::new(),
+            portal_tried: false,
+            mode_runtime: None,
+            mode_written: None,
+            mode_error: None,
             tray_deferred_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
@@ -575,6 +610,14 @@ impl App {
         }
     }
 
+    /// Every bar redrawn even if its grid did not change (a new theme): `draw` skips an unchanged grid.
+    pub(crate) fn bars_repaint(&mut self) {
+        for s in &mut self.surfaces {
+            s.last = None;
+        }
+        self.redraw_all();
+    }
+
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
     /// (`launch::run`): places the bar back on every output `closed` marked
     /// for restoration this batch and that is still known now — see
@@ -589,7 +632,7 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, palette, pool, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, .. } = self;
         let s = &mut surfaces[i];
         if !s.configured || s.width == 0 {
             return;
@@ -608,7 +651,7 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint(&grid, palette, pixels, w, h, e);
+        fonts.paint(&grid, roles, pixels, w, h, e);
         let surface = s.layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -624,6 +667,9 @@ impl App {
     /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
     /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
     pub(crate) fn tray_output(&mut self, out: TrayOutput) {
+        if let Some(mode) = out.appearance {
+            self.portal_said(mode);
+        }
         if out.bus_closed {
             log("tray: the session bus closed; the tray stays empty");
             self.tray = None;

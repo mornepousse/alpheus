@@ -7,6 +7,7 @@
 
 use alpheus_commun::exec::fake::FakeExecutor;
 use alpheus_demon::actions::{Button, command, run};
+use alpheus_demon::appearance::SETTING_RULE;
 use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
 use alpheus_demon::config::BarConfig;
 use alpheus_demon::keys::Key;
@@ -21,8 +22,8 @@ use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method}
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
-use alpheus_demon::tray::WATCHER_NAME;
 use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, message};
+use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME};
 use std::path::{Path, PathBuf};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
@@ -641,10 +642,17 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // call itself is still in the source).
         ("launch.rs", "Generic::new", 3),
         // The tray's DeadlineTimer (task 11), armed only while calls are pending; the tooltip's
-        // (task 16), armed only while the pointer rests on a tray icon.
-        ("wayland.rs", "Timer::", 2),
+        // (task 16), armed only while the pointer rests on a tray icon; the portal's (themes task 6),
+        // armed only while its one ReadOne is pending (2 s at most), never at rest.
+        ("wayland.rs", "Timer::", 3),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
+        // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
+        // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
+        ("watch.rs", "Generic::new", 1),
+        // The portal's own session-bus fd (themes task 6): only with mode = "auto" and the tray
+        // module off; readable only when the portal answers or its setting changes.
+        ("appearance.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
         // The keyboard, shared by the launcher and the grabbing popups: bound
@@ -798,10 +806,41 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             "AddMatch",
             "RemoveMatch",
             "RegisterStatusNotifierHost",
+            "ReadOne",
         ]
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
     assert_eq!((name.as_str(), flags), (WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE), "the one name, never replacing");
+}
+
+/// The portal (themes task 6): exactly two members, `ReadOne` (a call, one setting) and
+/// `SettingChanged` (a signal, through one narrowed rule). Read-only, never starting it, built only by
+/// `bus::message`; `appearance.rs` never names the dbus crate.
+#[test]
+fn the_portal_is_read_through_exactly_two_members() {
+    let portal_methods: Vec<&str> = TrayMethod::ALL.iter().filter(|m| m.interface() == SETTINGS_INTERFACE).map(|m| m.name()).collect();
+    assert_eq!(portal_methods, ["ReadOne"], "the only call on the portal's Settings interface");
+    let m = message(&Call::ReadOne);
+    assert_eq!(
+        (m.destination().as_deref(), m.path().as_deref(), m.member().as_deref()),
+        (Some(PORTAL_NAME), Some(PORTAL_PATH), Some("ReadOne"))
+    );
+    assert_eq!(m.read2::<&str, &str>().unwrap(), (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY), "one setting, never ReadAll");
+    assert!(!m.get_auto_start(), "never starts the portal");
+    assert!(SETTING_RULE.starts_with("type='signal',"), "{SETTING_RULE}");
+    assert!(SETTING_RULE.contains("member='SettingChanged'") && SETTING_RULE.contains("arg1='color-scheme'"), "{SETTING_RULE}");
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "appearance.rs").expect("appearance.rs").1;
+    let prod = production_code(&file);
+    assert!(!uses_crate(&prod, "dbus"), "appearance.rs goes through the tray's typed calls and codec");
+    assert!(!prod.contains("method_call("), "every call is built by bus::message");
+    assert_eq!(
+        prod.matches("Call::").count(),
+        prod.matches("Call::ReadOne").count() + prod.matches("Call::AddMatch").count(),
+        "only ReadOne and the rule's AddMatch"
+    );
+    for never in ["\"Read\"", "\"ReadAll\"", "Call::RequestName", "RemoveMatch"] {
+        assert!(!prod.contains(never), "{never} in appearance.rs");
+    }
 }
 
 /// The files of the tray, the popups and the calendar: they run on the
@@ -809,7 +848,8 @@ fn tray_d_bus_is_confined_and_allowlisted() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 6] = ["tray/", "popup.rs", "calendar.rs", "deadline.rs", "list.rs", "keys.rs"];
+const NO_THREAD_NOR_COMMAND: [&str; 8] =
+    ["tray/", "popup.rs", "calendar.rs", "deadline.rs", "list.rs", "keys.rs", "watch.rs", "appearance.rs"];
 
 #[test]
 fn the_tray_spawns_no_thread() {
@@ -1040,4 +1080,53 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+}
+
+/// Themes task 4: the daemon paints with the 16 roles only. Task 1's temporary 7-colour
+/// `Palette` (deleted by task 7) is never named in its sources.
+#[test]
+fn the_daemon_paints_with_roles_never_the_legacy_palette() {
+    let files = source_files();
+    for (p, t) in &files {
+        assert!(!t.contains("Palette"), "the legacy Palette in {}", relative_path(p));
+    }
+    assert!(files.len() > 20, "the daemon's sources were not found");
+}
+
+/// Themes task 5: the config directory is only watched, never written by the daemon; inotify lives
+/// in watch.rs alone.
+#[test]
+fn the_theme_watch_only_reads_the_config_directory() {
+    let mut found = false;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if name == "watch.rs" {
+            found = true;
+            for never in
+                ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
+            {
+                assert!(!prod.contains(never), "{never} in watch.rs: the config directory is read-only to the daemon");
+            }
+        } else {
+            assert!(!prod.contains("inotify_"), "inotify outside watch.rs: {name}");
+        }
+    }
+    assert!(found, "watch.rs not found");
+}
+
+/// The theme is resolved once more after everything it depends on is up (final review): after the
+/// watch is armed (a file written between the first read and the watch would be missed for the
+/// whole session), and after `start_tray` and `follow_portal_if_auto` (earlier, the portal start
+/// sees no bus and gives up for good).
+#[test]
+fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
+    let last = at("state.theme_changed();");
+    assert_eq!(prod.matches("state.theme_changed();").count(), 1);
+    for before in ["crate::watch::start(", "start_tray(&mut state", "state.follow_portal_if_auto();", "state.publish_mode();"] {
+        assert!(at(before) < last, "{before} must come before the startup re-resolve");
+    }
 }

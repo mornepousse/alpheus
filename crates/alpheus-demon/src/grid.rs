@@ -8,15 +8,37 @@ use std::str::Chars;
 use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
 
-/// Symbolic tint, resolved to a color by the palette when painting.
+/// A colour role (themes spec § 1), resolved per surface when painting (`painter::color`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tint {
+    /// The surface's own background: `bar_bg` on a bar, `popup_bg` on a popup or the launcher.
     Bg,
     Fg,
+    FgDim,
+    OnAccent,
     Accent,
-    Muted,
-    Surface,
+    AccentContainer,
+    Accent2,
+    /// `pill_bg`: a raised cell of the bar (a visible, unfocused workspace).
+    Pill,
+    Selection,
+    Warn,
     Error,
+    Urgent,
+    /// One of the theme's seven hues (themes spec § 9), for a module's icon or text.
+    Hue(Hue),
+}
+
+/// The seven named hues of a theme (`Roles::hues`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hue {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Cyan,
+    Blue,
+    Purple,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,25 +50,52 @@ pub struct Style {
 
 impl Style {
     pub const NORMAL: Style = Style { fg: Tint::Fg, bg: Tint::Bg, bold: false };
-    pub const MUTED: Style = Style { fg: Tint::Muted, bg: Tint::Bg, bold: false };
-    /// Active element: inverted accent.
-    pub const INVERTED: Style = Style { fg: Tint::Bg, bg: Tint::Accent, bold: false };
-    pub const SURFACE: Style = Style { fg: Tint::Fg, bg: Tint::Surface, bold: false };
+    /// Secondary text, inactive items.
+    pub const MUTED: Style = Style { fg: Tint::FgDim, bg: Tint::Bg, bold: false };
+    /// The active item (spec § 4): the focused workspace, today, the launcher's mode and cursor.
+    pub const ACTIVE: Style = Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false };
+    /// The selected row of a menu or of the launcher (spec § 4).
+    pub const SELECTED: Style = Style { fg: Tint::Fg, bg: Tint::Selection, bold: false };
+    pub const SURFACE: Style = Style { fg: Tint::Fg, bg: Tint::Pill, bold: false };
     pub const ERROR: Style = Style { fg: Tint::Error, bg: Tint::Bg, bold: false };
+    /// Low battery, a degraded state.
+    pub const WARN: Style = Style { fg: Tint::Warn, bg: Tint::Bg, bold: false };
+    /// An urgent workspace.
+    pub const URGENT: Style = Style { fg: Tint::Urgent, bg: Tint::Bg, bold: false };
     pub const BOLD_ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: true };
     /// Accent without bold: gauges, graphs, a live link.
     pub const ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: false };
+    /// The second accent: checks and radios in menus.
+    pub const ACCENT2: Style = Style { fg: Tint::Accent2, bg: Tint::Bg, bold: false };
+
+    /// A module's icon or text in one of the theme's hues, on the surface's background.
+    pub const fn hue(h: Hue) -> Style {
+        Style { fg: Tint::Hue(h), bg: Tint::Bg, bold: false }
+    }
 
     /// Letter code for snapshots.
     pub fn code(self) -> char {
         match self {
             Style::NORMAL => '.',
             Style::MUTED => 'm',
-            Style::INVERTED => 'A',
+            Style::ACTIVE => 'A',
+            Style::SELECTED => 'S',
             Style::SURFACE => 's',
             Style::ERROR => 'e',
+            Style::WARN => 'w',
+            Style::URGENT => 'u',
             Style::BOLD_ACCENT => 'G',
             Style::ACCENT => 'a',
+            Style::ACCENT2 => 'b',
+            Style { fg: Tint::Hue(h), bg: Tint::Bg, bold: false } => match h {
+                Hue::Red => 'r',
+                Hue::Orange => 'o',
+                Hue::Yellow => 'y',
+                Hue::Green => 'g',
+                Hue::Cyan => 'c',
+                Hue::Blue => 'B',
+                Hue::Purple => 'p',
+            },
             _ => '?',
         }
     }
@@ -273,10 +322,44 @@ mod tests {
         assert_eq!(g.target_at(4), Some(&Target::TrayItem(key(2))), "target_at agrees");
     }
 
+    /// Every style has its own snapshot letter: a snapshot never confuses two roles.
+    #[test]
+    fn every_style_has_its_own_code() {
+        let all = [
+            (Style::NORMAL, '.'),
+            (Style::MUTED, 'm'),
+            (Style::ACTIVE, 'A'),
+            (Style::SELECTED, 'S'),
+            (Style::SURFACE, 's'),
+            (Style::ERROR, 'e'),
+            (Style::WARN, 'w'),
+            (Style::URGENT, 'u'),
+            (Style::BOLD_ACCENT, 'G'),
+            (Style::ACCENT, 'a'),
+            (Style::ACCENT2, 'b'),
+            (Style::hue(Hue::Red), 'r'),
+            (Style::hue(Hue::Orange), 'o'),
+            (Style::hue(Hue::Yellow), 'y'),
+            (Style::hue(Hue::Green), 'g'),
+            (Style::hue(Hue::Cyan), 'c'),
+            (Style::hue(Hue::Blue), 'B'),
+            (Style::hue(Hue::Purple), 'p'),
+        ];
+        for (s, c) in all {
+            assert_eq!(s.code(), c, "{s:?}");
+        }
+        let mut codes: Vec<char> = all.iter().map(|(s, _)| s.code()).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), all.len(), "two styles share a letter");
+        assert_eq!(Style::ACTIVE, Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false }, "spec § 4: the active workspace");
+        assert_eq!(Style::SELECTED, Style { fg: Tint::Fg, bg: Tint::Selection, bold: false }, "spec § 4: the selection row");
+    }
+
     #[test]
     fn write_and_styles() {
         let mut g = Grid::empty(8);
-        let x = g.write(1, 8, "ab", Style::INVERTED);
+        let x = g.write(1, 8, "ab", Style::ACTIVE);
         assert_eq!(x, 3);
         g.write(x, 8, "cd", Style::MUTED);
         assert_eq!(g.text(), " abcd   ");

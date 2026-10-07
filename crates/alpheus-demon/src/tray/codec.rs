@@ -7,8 +7,8 @@
 
 use super::bus::{Call, CallError, Property};
 use super::{
-    ITEM_INTERFACE, MAX_ITEMS, MAX_MENU_DEPTH, MAX_MENU_ENTRIES, MAX_TEXT, MENU_INTERFACE, Prop, PropSet, PropValue, Status,
-    WATCHER_INTERFACE,
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MAX_ITEMS, MAX_MENU_DEPTH, MAX_MENU_ENTRIES, MAX_TEXT, MENU_INTERFACE,
+    PORTAL_PATH, Prop, PropSet, PropValue, SETTINGS_INTERFACE, Status, WATCHER_INTERFACE,
 };
 use crate::sources::dbus::dbusrs_bus::sig;
 use dbus::Message;
@@ -40,6 +40,8 @@ pub enum Reply {
     /// AboutToShow's needUpdate.
     NeedUpdate(bool),
     Layout(Layout),
+    /// ReadOne's color-scheme (0 no preference, 1 dark, 2 light; any other value is kept, `portal_mode` maps it).
+    ColorScheme(u32),
 }
 
 fn bad(what: impl Into<String>) -> CallError {
@@ -78,6 +80,7 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
         Call::RequestName => read::<u32>(&mut it, "RequestName").map(Reply::RequestName),
         Call::AboutToShow { .. } => read::<bool>(&mut it, "AboutToShow").map(Reply::NeedUpdate),
         Call::GetLayout { .. } => layout(&mut it).map(Reply::Layout),
+        Call::ReadOne => color_scheme(&mut it).map(Reply::ColorScheme).ok_or_else(|| bad(format!("color-scheme is {:?}", sig(&mut it)))),
     }
 }
 
@@ -169,6 +172,8 @@ pub enum Signal {
         updated: Vec<(i32, MenuProps)>,
         removed: Vec<(i32, Vec<String>)>,
     },
+    /// The portal's SettingChanged for (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY) on PORTAL_PATH; any other key → Other.
+    ColorScheme(u32),
     /// Anything else, or a body that does not parse.
     Other,
 }
@@ -210,12 +215,36 @@ pub fn signal(m: &Message) -> Signal {
             Ok((revision, parent)) => Signal::LayoutUpdated { sender, path, revision, parent },
             Err(_) => Signal::Other,
         },
+        // A unicast signal (destination set) reaches us whatever the match rules say: any peer could
+        // send one. Only a broadcast, through the sender-filtered rule, is the portal's.
+        (SETTINGS_INTERFACE, "SettingChanged") if m.destination().is_some() => Signal::Other,
+        (SETTINGS_INTERFACE, "SettingChanged") if path == PORTAL_PATH => {
+            let namespace = it.get::<&str>();
+            it.next();
+            let key = it.get::<&str>();
+            it.next();
+            match (namespace, key) {
+                (Some(APPEARANCE_NAMESPACE), Some(COLOR_SCHEME_KEY)) => {
+                    color_scheme(&mut it).map(Signal::ColorScheme).unwrap_or(Signal::Other)
+                }
+                _ => Signal::Other,
+            }
+        }
         (MENU_INTERFACE, "ItemsPropertiesUpdated") => match properties_updated(&mut it) {
             Some((updated, removed)) => Signal::ItemsPropertiesUpdated { sender, path, updated, removed },
             None => Signal::Other,
         },
         _ => Signal::Other,
     }
+}
+
+/// `v(u)`, or `v(v(u))` as some portal backends wrap it: the u32; anything else None.
+fn color_scheme(it: &mut Iter<'_>) -> Option<u32> {
+    let mut v = it.recurse(ArgType::Variant)?;
+    if v.arg_type() == ArgType::Variant {
+        v = v.recurse(ArgType::Variant)?;
+    }
+    v.get::<u32>()
 }
 
 /// A registration string, as sent (never cleaned: `host::split_service`
@@ -696,6 +725,62 @@ mod tests {
     }
 
     #[test]
+    fn read_one_decodes_the_color_scheme_plain_or_nested() {
+        assert_eq!(reply(&Call::ReadOne, &body(|i| i.append(Variant(1u32)))), Ok(Reply::ColorScheme(1)));
+        assert_eq!(
+            reply(&Call::ReadOne, &body(|i| i.append(Variant(Variant(2u32))))),
+            Ok(Reply::ColorScheme(2)),
+            "v(v(u)): some portal backends wrap it twice"
+        );
+        assert!(matches!(reply(&Call::ReadOne, &body(|i| i.append(Variant("dark")))), Err(CallError::BadReply(_))));
+        assert!(matches!(reply(&Call::ReadOne, &body(|i| i.append(1u32))), Err(CallError::BadReply(_))), "not in a variant");
+    }
+
+    #[test]
+    fn setting_changed_is_read_for_color_scheme_only() {
+        use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+        let changed = |path: &str, ns: &str, key: &str, f: &dyn Fn(&mut IterAppend<'_>)| {
+            signal_from(":1.4", path, SETTINGS_INTERFACE, "SettingChanged", |i| {
+                i.append(ns);
+                i.append(key);
+                f(i);
+            })
+        };
+        assert_eq!(changed(PORTAL_PATH, APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, &|i| i.append(Variant(2u32))), Signal::ColorScheme(2));
+        assert_eq!(
+            changed(PORTAL_PATH, APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, &|i| i.append(Variant(Variant(1u32)))),
+            Signal::ColorScheme(1)
+        );
+        assert_eq!(changed(PORTAL_PATH, APPEARANCE_NAMESPACE, "contrast", &|i| i.append(Variant(1u32))), Signal::Other, "another key");
+        assert_eq!(
+            changed(PORTAL_PATH, "org.gnome.desktop.interface", COLOR_SCHEME_KEY, &|i| i.append(Variant("prefer-dark"))),
+            Signal::Other,
+            "another namespace"
+        );
+        assert_eq!(
+            changed("/elsewhere", APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, &|i| i.append(Variant(2u32))),
+            Signal::Other,
+            "not the portal's object"
+        );
+        assert_eq!(
+            changed(PORTAL_PATH, APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, &|i| i.append(Variant("light"))),
+            Signal::Other,
+            "not a u32"
+        );
+    }
+
+    #[test]
+    fn a_unicast_setting_changed_is_never_the_portals() {
+        use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+        let mut m = Message::new_signal(PORTAL_PATH, SETTINGS_INTERFACE, "SettingChanged").unwrap();
+        m.set_sender(Some(":1.4".into()));
+        let mut m = m.append3(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, Variant(2u32));
+        assert_eq!(signal(&m), Signal::ColorScheme(2), "broadcast: read");
+        m.set_destination(Some(":1.9".into()));
+        assert_eq!(signal(&m), Signal::Other, "addressed to us alone: a peer's, not the rule's");
+    }
+
+    #[test]
     fn get_replies_decode_every_property() {
         let text = |p: Prop, s: &'static str| reply(&get(p), &body(|i| i.append(Variant(s))));
         assert_eq!(text(Prop::Id, "nimbus"), Ok(Reply::Prop(PropValue::Text("nimbus".into()))));
@@ -795,6 +880,7 @@ mod tests {
             Call::RequestName,
             Call::AboutToShow { destination: ":1.7".into(), path: "/m".into(), id: 0 },
             layout_call(),
+            Call::ReadOne,
         ] {
             assert!(matches!(call(c.clone()), Err(CallError::BadReply(_))), "{c:?}");
         }
