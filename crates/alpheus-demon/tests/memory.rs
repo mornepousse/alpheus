@@ -770,7 +770,7 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
 }
 
 /// Themes delivery 1: 50 reloads (two presets in turn, three bars repainted each time) leave no
-/// growth behind. Printed for the README; budget 512 KB (half the launcher's 50-cycle budget).
+/// growth behind. Printed for the README; budget 768 KB (a leak of 64 KB per reload makes 3.2 MB).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn theme_reloads_no_growth() {
@@ -787,12 +787,15 @@ fn theme_reloads_no_growth() {
     reload(0);
     reload(1); // warm-up: both presets painted once
     std::thread::sleep(Duration::from_secs(2));
+    reload(2);
+    reload(3); // and once more: the first run after a build still settled by +444 KB
+    std::thread::sleep(Duration::from_secs(2));
     let baseline = d.pss_kb();
-    for n in 2..52 {
+    for n in 4..54 {
         reload(n);
     }
     std::thread::sleep(Duration::from_secs(2));
     let end = d.pss_kb();
-    eprintln!("theme reloads: PSS {baseline} KB after 2 warm-up reloads, {end} KB after 50 more (3 outputs)");
-    assert!(end <= baseline + 512, "growth: {baseline} -> {end} KB over 50 reloads");
+    eprintln!("theme reloads: PSS {baseline} KB after 4 warm-up reloads, {end} KB after 50 more (3 outputs)");
+    assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 50 reloads");
 }

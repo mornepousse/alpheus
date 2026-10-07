@@ -54,7 +54,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > **Memory note:** absolute PSS shifts with machine state, by about ±0.5 MB
 > between boots, because shared libraries are counted proportionally; the
 > per-component deltas are the stable figures. Ranges are over 2–3 release runs
-> (KB/1024, one decimal; two for the figures of the themes delivery).
+> (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
+> from the tray-delivery measurement (three runs); the themes rows from two
+> alternated runs against the delivery before.
 >
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
