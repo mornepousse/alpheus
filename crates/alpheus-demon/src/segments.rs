@@ -5,12 +5,13 @@
 //! except the tray's: one zone per icon.
 
 use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, ResourcesConfig, TrayConfig};
-use crate::grid::{Style, Target, truncate};
+use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
 use crate::tray::Status;
 use crate::tray::icons::{Icon, TrayIcon};
+use alpheus_commun::theme::settings::ModuleColors;
 use std::collections::VecDeque;
 
 // Material Design glyphs of the Nerd Font, checked by name in the post table
@@ -39,18 +40,35 @@ pub const LOW: u8 = 20;
 /// Below this a battery is critical (themes spec § 4: error), below LOW only low (warn).
 pub const CRITICAL: u8 = 10;
 
-/// A battery's tint by its charge: error when critical, warn when low, `normal` otherwise.
-fn charge_style(percent: u8, normal: Style) -> Style {
+/// A battery's state tint by its charge: error when critical, warn when low, None otherwise.
+fn charge_state(percent: u8) -> Option<Style> {
     if percent < CRITICAL {
-        Style::ERROR
+        Some(Style::ERROR)
     } else if percent < LOW {
-        Style::WARN
+        Some(Style::WARN)
     } else {
-        normal
+        None
     }
+}
+
+/// A battery's tint by its charge: its state when there is one, `normal` otherwise.
+fn charge_style(percent: u8, normal: Style) -> Style {
+    charge_state(percent).unwrap_or(normal)
 }
 /// Longest Bluetooth device name, in cells (then "…").
 pub const DEVICE_MAX: u16 = 16;
+
+/// A module's icon: its fixed hue (themes spec § 9) when `module_colors` is `icons` or `full`,
+/// `base` otherwise. Only for a module in its normal state: warn, error and the dimmed states
+/// never go through here.
+pub(crate) fn icon_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
+    if mc == ModuleColors::None { base } else { Style::hue(hue) }
+}
+
+/// A module's text: its hue only under `module_colors = "full"`, `base` otherwise.
+pub(crate) fn text_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
+    if mc == ModuleColors::Full { Style::hue(hue) } else { base }
+}
 
 fn module_segment(module: ModuleId, pieces: Vec<Piece>) -> Segment {
     Segment { module, pieces, elastic: false, target: Some(Target::Module(module)) }
@@ -85,7 +103,7 @@ pub(crate) fn launcher() -> Segment {
     module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
 }
 
-pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
+pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
     let v = match feed {
         Feed::Waiting | Feed::Ready(SoundState { sink: None }) => return None,
         Feed::Down => return Some(down(ModuleId::Volume, VOLUME_HIGH)),
@@ -104,16 +122,16 @@ pub(crate) fn volume(feed: &Feed<SoundState>) -> Option<Segment> {
         };
         let lit = gauge_cells(v.percent);
         vec![
-            piece(format!("{icon} "), Style::NORMAL),
+            piece(format!("{icon} "), icon_style(mc, Hue::Blue, Style::NORMAL)),
             piece(GAUGE[..lit].iter().collect::<String>(), Style::ACCENT),
             piece(GAUGE[lit..].iter().collect::<String>(), Style::MUTED),
-            piece(format!(" {:>3}%", v.percent), Style::NORMAL),
+            piece(format!(" {:>3}%", v.percent), text_style(mc, Hue::Blue, Style::NORMAL)),
         ]
     };
     Some(module_segment(ModuleId::Volume, pieces))
 }
 
-pub(crate) fn network(feed: &Feed<NetState>) -> Option<Segment> {
+pub(crate) fn network(feed: &Feed<NetState>, mc: ModuleColors) -> Option<Segment> {
     let pieces = match feed {
         Feed::Waiting | Feed::Ready(NetState::Absent) => return None,
         Feed::Down => return Some(down(ModuleId::Network, NETWORK_DOWN)),
@@ -126,8 +144,11 @@ pub(crate) fn network(feed: &Feed<NetState>) -> Option<Segment> {
                 Link::Vpn => VPN,
                 Link::Other => NETWORK_OTHER,
             };
-            let mut v =
-                if *limited { vec![piece(format!("{icon} !"), Style::ERROR)] } else { vec![piece(icon.to_string(), Style::NORMAL)] };
+            let mut v = if *limited {
+                vec![piece(format!("{icon} !"), Style::ERROR)]
+            } else {
+                vec![piece(icon.to_string(), icon_style(mc, Hue::Cyan, Style::NORMAL))]
+            };
             match *vpns {
                 0 => {}
                 1 => v.push(piece(format!(" {VPN}"), Style::ACCENT)),
@@ -139,7 +160,7 @@ pub(crate) fn network(feed: &Feed<NetState>) -> Option<Segment> {
     Some(module_segment(ModuleId::Network, pieces))
 }
 
-pub(crate) fn bluetooth(feed: &Feed<BtState>) -> Option<Segment> {
+pub(crate) fn bluetooth(feed: &Feed<BtState>, mc: ModuleColors) -> Option<Segment> {
     let pieces = match feed {
         Feed::Waiting | Feed::Ready(BtState::Absent | BtState::Off) => return None,
         Feed::Down => return Some(down(ModuleId::Bluetooth, BLUETOOTH)),
@@ -147,10 +168,14 @@ pub(crate) fn bluetooth(feed: &Feed<BtState>) -> Option<Segment> {
             None => vec![piece(BLUETOOTH.to_string(), Style::MUTED)],
             Some(d) => {
                 let name = trim_name(&d.name);
+                let icon = icon_style(mc, Hue::Purple, Style::ACCENT);
                 let mut v = if name.is_empty() {
-                    vec![piece(BLUETOOTH_CONNECTED.to_string(), Style::ACCENT)]
+                    vec![piece(BLUETOOTH_CONNECTED.to_string(), icon)]
                 } else {
-                    vec![piece(format!("{BLUETOOTH_CONNECTED} "), Style::ACCENT), piece(truncate(name, DEVICE_MAX), Style::NORMAL)]
+                    vec![
+                        piece(format!("{BLUETOOTH_CONNECTED} "), icon),
+                        piece(truncate(name, DEVICE_MAX), text_style(mc, Hue::Purple, Style::NORMAL)),
+                    ]
                 };
                 if let Some(b) = d.battery {
                     v.push(piece(format!(" {b}%"), charge_style(b, Style::MUTED)));
@@ -230,7 +255,7 @@ fn shown(visibility: BatteryVisibility, low: bool) -> bool {
     }
 }
 
-pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig) -> Option<Segment> {
+pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: ModuleColors) -> Option<Segment> {
     let state = match feed {
         Feed::Waiting => return None,
         Feed::Down => return Some(down(ModuleId::Battery, BATTERY_FULL)),
@@ -238,8 +263,10 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig) -> Option
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        let style = if b.charge == Charge::Charging { Style::ACCENT } else { charge_style(b.percent, Style::NORMAL) };
-        pieces.push(piece(format!("{} {}%", battery_icon(b), b.percent), style));
+        // Charging keeps its accent, like a low charge its warn or error: a state wins over the hue.
+        let state = if b.charge == Charge::Charging { Some(Style::ACCENT) } else { charge_state(b.percent) };
+        pieces.push(piece(format!("{} ", battery_icon(b)), state.unwrap_or_else(|| icon_style(mc, Hue::Green, Style::NORMAL))));
+        pieces.push(piece(format!("{}%", b.percent), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
     }
     // Every peripheral with a real percentage follows `[battery] peripherals`
     // (default "always", warn when low, error when critical); one with only a coarse `BatteryLevel`
@@ -249,12 +276,16 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig) -> Option
         let space = if pieces.is_empty() { "" } else { " " };
         match p.percent {
             Some(percent) if shown(config.peripherals, percent < LOW) => {
-                let style = charge_style(percent, Style::NORMAL);
-                pieces.push(piece(format!("{space}{} {percent}%", peripheral_icon(p.kind)), style));
+                let state = charge_state(percent);
+                pieces.push(piece(
+                    format!("{space}{} ", peripheral_icon(p.kind)),
+                    state.unwrap_or_else(|| icon_style(mc, Hue::Green, Style::NORMAL)),
+                ));
+                pieces.push(piece(format!("{percent}%"), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
             }
             Some(_) => {}
             None if shown(config.coarse, p.low) => {
-                let style = if p.low { Style::WARN } else { Style::NORMAL };
+                let style = if p.low { Style::WARN } else { icon_style(mc, Hue::Green, Style::NORMAL) };
                 pieces.push(piece(format!("{space}{}", peripheral_icon(p.kind)), style));
             }
             None => {}
@@ -274,26 +305,33 @@ pub fn graph(history: &VecDeque<u8>, width: u16) -> String {
     std::iter::repeat_n(' ', pad).chain(history.iter().skip(skip).map(|p| GRAPH[(usize::from(*p) * 8 / 101).min(7)])).collect()
 }
 
-pub(crate) fn resources(r: &Resources, c: &ResourcesConfig) -> Option<Segment> {
+pub(crate) fn resources(r: &Resources, c: &ResourcesConfig, mc: ModuleColors) -> Option<Segment> {
     let s = r.last?;
     let mut pieces = Vec::new();
     if c.graph > 0 {
-        pieces.push(piece(format!("{} ", graph(&r.history, c.graph)), Style::ACCENT));
+        // The graph is the CPU's icon: its orange takes the accent's place.
+        pieces.push(piece(format!("{} ", graph(&r.history, c.graph)), icon_style(mc, Hue::Orange, Style::ACCENT)));
     }
     pieces.push(piece(
         match s.cpu {
             Some(p) => format!("{p:>3}%"),
             None => "  …%".to_string(),
         },
-        Style::NORMAL,
+        text_style(mc, Hue::Orange, Style::NORMAL),
     ));
     if let Some(m) = s.memory {
         // Tenths of GiB, one decimal; the whole part padded to 2 so the
         // total stays 4 wide (the decimal part is always ".D", Q5).
-        pieces.push(piece(format!(" {MEMORY} {:>2}.{}G", m / 10, m % 10), Style::NORMAL));
+        pieces.push(piece(format!(" {MEMORY}"), icon_style(mc, Hue::Yellow, Style::NORMAL)));
+        pieces.push(piece(format!(" {:>2}.{}G", m / 10, m % 10), text_style(mc, Hue::Yellow, Style::NORMAL)));
     }
     if let Some(t) = s.temperature {
-        pieces.push(piece(format!(" {THERMOMETER} {t:>2}°"), if t >= HOT { Style::ERROR } else { Style::NORMAL }));
+        if t >= HOT {
+            pieces.push(piece(format!(" {THERMOMETER} {t:>2}°"), Style::ERROR));
+        } else {
+            pieces.push(piece(format!(" {THERMOMETER}"), icon_style(mc, Hue::Red, Style::NORMAL)));
+            pieces.push(piece(format!(" {t:>2}°"), text_style(mc, Hue::Red, Style::NORMAL)));
+        }
     }
     Some(module_segment(ModuleId::Resources, pieces))
 }
@@ -346,6 +384,24 @@ mod tests {
     use crate::tray::ItemKey;
     use crate::tray::icons::{DISCORD, STEAM, TELEGRAM};
     use std::collections::VecDeque;
+
+    // The segments under `module_colors = "none"` (delivery 1's look), shadowing the real ones: the
+    // tests of the modules' own shapes stay as they were; the hue tests call `super::…` with a setting.
+    fn volume(f: &Feed<SoundState>) -> Option<Segment> {
+        super::volume(f, ModuleColors::None)
+    }
+    fn network(f: &Feed<NetState>) -> Option<Segment> {
+        super::network(f, ModuleColors::None)
+    }
+    fn bluetooth(f: &Feed<BtState>) -> Option<Segment> {
+        super::bluetooth(f, ModuleColors::None)
+    }
+    fn battery(f: &Feed<PowerState>, c: &BatteryConfig) -> Option<Segment> {
+        super::battery(f, c, ModuleColors::None)
+    }
+    fn resources(r: &Resources, c: &ResourcesConfig) -> Option<Segment> {
+        super::resources(r, c, ModuleColors::None)
+    }
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -728,6 +784,93 @@ mod tests {
             b.apply(Msg::Resources(Sample { cpu: Some(cpu), memory: Some(61), temperature: Some(67) }));
         }
         b
+    }
+
+    // ---- module colours (themes spec § 9) ----
+
+    const ICONS: ModuleColors = ModuleColors::Icons;
+    const FULL: ModuleColors = ModuleColors::Full;
+
+    fn discharging(percent: u8) -> Feed<PowerState> {
+        Feed::Ready(PowerState { laptop: Some(Battery { percent, charge: Charge::Discharging }), peripherals: vec![] })
+    }
+
+    #[test]
+    fn none_is_the_look_of_delivery_1_and_icons_tints_only_the_icons() {
+        let v = sound(84, false);
+        assert_eq!(draw(&super::volume(&v, ModuleColors::None).unwrap()).1, "..aaaaaa.....");
+        assert_eq!(draw(&super::volume(&v, ICONS).unwrap()).1, "BBaaaaaa.....", "blue icon (and its space), gauge and number as before");
+        assert_eq!(draw(&super::volume(&v, FULL).unwrap()).1, "BBaaaaaaBBBBB", "the number takes the blue too");
+        let n = online(Link::Wifi, 1, false);
+        assert_eq!(draw(&super::network(&n, ModuleColors::None).unwrap()).1, ".aa");
+        assert_eq!(draw(&super::network(&n, ICONS).unwrap()).1, "caa", "cyan icon, the VPN keeps its accent");
+        assert_eq!(draw(&super::network(&n, FULL).unwrap()).1, "caa", "no text beside the icons");
+        let b = on(&[("CasqueBT", Some(72))]);
+        assert_eq!(draw(&super::bluetooth(&b, ModuleColors::None).unwrap()).1, "aa........mmmm");
+        assert_eq!(draw(&super::bluetooth(&b, ICONS).unwrap()).1, "pp........mmmm", "purple icon in the accent's place");
+        assert_eq!(draw(&super::bluetooth(&b, FULL).unwrap()).1, "ppppppppppmmmm", "and the name; the battery stays dim");
+    }
+
+    #[test]
+    fn battery_and_resources_take_their_hues() {
+        let d = &BatteryConfig::default();
+        let f = discharging(55);
+        assert_eq!(draw(&super::battery(&f, d, ModuleColors::None).unwrap()).1, ".....");
+        assert_eq!(draw(&super::battery(&f, d, ICONS).unwrap()).1, "gg...", "green icon");
+        assert_eq!(draw(&super::battery(&f, d, FULL).unwrap()).1, "ggggg", "green icon and number");
+        let c = ResourcesConfig::default();
+        let s = Sample { cpu: Some(50), memory: Some(61), temperature: Some(67) };
+        let r = resources_with(&[12, 90], s);
+        let none = draw(&super::resources(&r, &c, ModuleColors::None).unwrap());
+        let (text, icons) = draw(&super::resources(&r, &c, ICONS).unwrap());
+        let (_, full) = draw(&super::resources(&r, &c, FULL).unwrap());
+        assert_eq!(text, none.0, "the text never changes");
+        assert_eq!(none.1, "aaaaaaaaaaaaaaaaaaaaa..................", "none: the graph accent, nothing else");
+        // The graph (20 cells and its space) is the CPU's icon: orange in the accent's place.
+        assert_eq!(icons, "ooooooooooooooooooooo....yy......rr....", "graph, memory and thermometer icons");
+        assert_eq!(full, "oooooooooooooooooooooooooyyyyyyyyrrrrrr", "icons and texts, each in its hue");
+    }
+
+    #[test]
+    fn states_win_over_the_hues() {
+        let d = &BatteryConfig::default();
+        for mc in [ICONS, FULL] {
+            assert_eq!(draw(&super::battery(&discharging(15), d, mc).unwrap()).1, "wwwww", "low battery stays warn under {mc:?}");
+            assert_eq!(draw(&super::battery(&discharging(9), d, mc).unwrap()).1, "eeee", "critical stays error under {mc:?}");
+            let charging = Feed::Ready(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] });
+            assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, "aaaaa", "charging keeps its accent under {mc:?}");
+            let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
+            let c = ResourcesConfig { graph: 0, ..ResourcesConfig::default() };
+            assert_eq!(
+                draw(&super::resources(&resources_with(&[], hot), &c, mc).unwrap()).1[4..],
+                *"eeeeee",
+                "hot temperature stays error under {mc:?}"
+            );
+            assert_eq!(
+                draw(&super::network(&online(Link::Wifi, 0, true), mc).unwrap()).1,
+                "eee",
+                "limited connectivity stays error under {mc:?}"
+            );
+            assert_eq!(draw(&super::volume(&sound(84, true), mc).unwrap()).1, "mmmmmmmmmmmmm", "muted stays dim under {mc:?}");
+            assert_eq!(draw(&super::network(&Feed::Ready(NetState::Offline), mc).unwrap()).1, "m", "offline stays dim under {mc:?}");
+            assert_eq!(draw(&super::bluetooth(&Feed::Down, mc).unwrap()).1, "mmm", "a source that is down stays dim under {mc:?}");
+        }
+    }
+
+    /// The same bar under each setting: the representative snapshots. The battery discharges (a
+    /// charging one keeps its accent), so the green shows.
+    fn hue_bar(mc: ModuleColors) -> Bar {
+        let mut b = full_bar();
+        b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 55, charge: Charge::Discharging }), peripherals: vec![] })));
+        b.module_colors = mc;
+        b
+    }
+
+    #[test]
+    fn a_full_bar_under_each_module_colours_setting() {
+        insta::assert_snapshot!("hues_none_160", snapshot(&hue_bar(ModuleColors::None).grid("HDMI-A-1", 160)));
+        insta::assert_snapshot!("hues_icons_160", snapshot(&hue_bar(ICONS).grid("HDMI-A-1", 160)));
+        insta::assert_snapshot!("hues_full_160", snapshot(&hue_bar(FULL).grid("HDMI-A-1", 160)));
     }
 
     #[test]

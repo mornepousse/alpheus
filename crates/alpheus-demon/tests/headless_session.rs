@@ -1331,6 +1331,20 @@ fn writing_theme_toml_repaints_the_bar_in_the_new_bar_bg() {
 
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
+fn a_module_colours_change_alone_repaints_the_bar() {
+    let (_sway, _hypr, mut d, config) = theme_bar("theme-module-colors");
+    // Same theme and mode, so the roles are equal: only the setting differs (themes spec § 9).
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"full\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, module colours full", DELAY), "{:?}", d.log());
+    // The same text again: nothing changed, nothing repainted.
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"full\"\n");
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("theme reloaded:"), 1, "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
 fn a_burst_of_writes_repaints_once() {
     let (sway, _hypr, d, config) = theme_bar("theme-burst");
     for _ in 0..20 {

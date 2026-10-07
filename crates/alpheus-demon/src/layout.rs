@@ -13,9 +13,10 @@
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
-use crate::grid::{Grid, Style, Target, text_width, truncate};
+use crate::grid::{Grid, Hue, Style, Target, text_width, truncate};
 use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
+use alpheus_commun::theme::settings::ModuleColors;
 
 /// Order of disappearance when space runs short: the spec's (resources,
 /// media, title), then the system indicators (Q9); the tray goes right
@@ -121,14 +122,17 @@ fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
 
 /// `None` with no active window: no empty segment (no "│ <empty> │"),
 /// rather than an empty text piece.
-fn window(state: &Feed<CompositorState>) -> Option<Segment> {
-    let text = match state {
-        Feed::Waiting => "…".to_string(),
-        Feed::Down => "–".to_string(),
-        Feed::Ready(CompositorState { window: Some(w), .. }) => format!("{} {}", icons::glyph(&w.class), w.title),
+fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
+    let pieces = match state {
+        Feed::Waiting => vec![piece("…", Style::NORMAL)],
+        Feed::Down => vec![piece("–", Style::NORMAL)],
+        Feed::Ready(CompositorState { window: Some(w), .. }) => vec![
+            piece(icons::glyph(&w.class).to_string(), segments::icon_style(mc, Hue::Purple, Style::NORMAL)),
+            piece(format!(" {}", w.title), segments::text_style(mc, Hue::Purple, Style::NORMAL)),
+        ],
         Feed::Ready(_) => return None,
     };
-    Some(Segment { module: ModuleId::Window, pieces: vec![piece(text, Style::NORMAL)], elastic: true, target: None })
+    Some(Segment { module: ModuleId::Window, pieces, elastic: true, target: None })
 }
 
 /// The clock is a click zone only when a left click opens the calendar (`[clock] calendar`).
@@ -154,13 +158,13 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
     match m {
         ModuleId::Launcher => Some(segments::launcher()),
         ModuleId::Workspaces => workspaces(&bar.compositor, output),
-        ModuleId::Window => window(&bar.compositor),
+        ModuleId::Window => window(&bar.compositor, bar.module_colors),
         ModuleId::Clock => Some(bar_clock(bar)),
-        ModuleId::Volume => segments::volume(&bar.sound),
-        ModuleId::Network => segments::network(&bar.network),
-        ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth),
-        ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery),
-        ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources),
+        ModuleId::Volume => segments::volume(&bar.sound, bar.module_colors),
+        ModuleId::Network => segments::network(&bar.network, bar.module_colors),
+        ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth, bar.module_colors),
+        ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery, bar.module_colors),
+        ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources, bar.module_colors),
         ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
         // Delivery 5: not shown yet.
         ModuleId::Media | ModuleId::Notifications => None,
@@ -261,6 +265,7 @@ mod tests {
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
     use crate::state::Msg;
     use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
+    use alpheus_commun::theme::settings::ModuleColors;
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -441,6 +446,26 @@ mod tests {
             let t = g.text();
             assert!(!t.contains(['\t', '\n', '\u{1b}']), "{t:?}");
         }
+    }
+
+    /// The window module's icon is purple under icons and full; the title only under full; a bar
+    /// that has not heard from the theme yet (`Bar::new`) is delivery 1's look.
+    #[test]
+    fn the_window_title_takes_the_purple_by_module_colours() {
+        let styles = |mc| {
+            let mut b = bar();
+            b.module_colors = mc;
+            b.grid("HDMI-A-1", 100).styles()
+        };
+        let none = styles(ModuleColors::None);
+        assert_eq!(bar().module_colors, ModuleColors::None);
+        let (icons, full) = (styles(ModuleColors::Icons), styles(ModuleColors::Full));
+        assert_eq!(none.matches('p').count(), 0);
+        assert_eq!(icons.matches('p').count(), 1, "the glyph alone: {icons}");
+        assert!(full.matches('p').count() > 10, "the glyph, the space and the title: {full}");
+        assert_eq!(none.replace('p', "."), none);
+        assert_eq!(icons.replace('p', "."), none, "only the icon cell differs");
+        assert_eq!(full.replace('p', "."), none, "only the tints differ, never a character");
     }
 
     #[test]

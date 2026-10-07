@@ -14,7 +14,7 @@
 //! the paint is skipped.
 
 use crate::config::FontConfig;
-use crate::grid::{CONT, Grid, Tint};
+use crate::grid::{CONT, Grid, Hue, Tint};
 use crate::list::Boxed;
 use alpheus_commun::theme::{Rgb, Roles};
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
@@ -181,6 +181,15 @@ pub fn color(r: &Roles, base: Rgb, t: Tint) -> Rgb {
         Tint::Warn => r.warn,
         Tint::Error => r.error,
         Tint::Urgent => r.urgent,
+        Tint::Hue(h) => match h {
+            Hue::Red => r.hues.red,
+            Hue::Orange => r.hues.orange,
+            Hue::Yellow => r.hues.yellow,
+            Hue::Green => r.hues.green,
+            Hue::Cyan => r.hues.cyan,
+            Hue::Blue => r.hues.blue,
+            Hue::Purple => r.hues.purple,
+        },
     }
 }
 
@@ -619,6 +628,7 @@ mod tests {
     use super::*;
     use crate::config::DEFAULT_HEIGHT;
     use crate::grid::Style;
+    use alpheus_commun::theme::Hues;
 
     fn fonts() -> Fonts {
         let (p, w) = Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT)
@@ -647,7 +657,15 @@ mod tests {
             warn: c(14),
             error: c(15),
             urgent: c(16),
-            ..Roles::default()
+            hues: Hues {
+                red: Rgb(17, 100 + 17, 200),
+                orange: Rgb(18, 100 + 18, 200),
+                yellow: Rgb(19, 100 + 19, 200),
+                green: Rgb(20, 100 + 20, 200),
+                cyan: Rgb(21, 100 + 21, 200),
+                blue: Rgb(22, 100 + 22, 200),
+                purple: Rgb(23, 100 + 23, 200),
+            },
         }
     }
 
@@ -668,6 +686,13 @@ mod tests {
             (Tint::Warn, r.warn),
             (Tint::Error, r.error),
             (Tint::Urgent, r.urgent),
+            (Tint::Hue(Hue::Red), r.hues.red),
+            (Tint::Hue(Hue::Orange), r.hues.orange),
+            (Tint::Hue(Hue::Yellow), r.hues.yellow),
+            (Tint::Hue(Hue::Green), r.hues.green),
+            (Tint::Hue(Hue::Cyan), r.hues.cyan),
+            (Tint::Hue(Hue::Blue), r.hues.blue),
+            (Tint::Hue(Hue::Purple), r.hues.purple),
         ];
         for (t, c) in expected {
             assert_eq!(color(&r, base, t), c, "{t:?}");

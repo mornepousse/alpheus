@@ -119,16 +119,9 @@ const HUES_DARK: Hues = Hues {
     blue: Rgb(0x89, 0xb4, 0xfa),
     purple: Rgb(0xcb, 0xa6, 0xf7),
 };
-/// The same seven in Catppuccin Latte, for a light colour file.
-const HUES_LIGHT: Hues = Hues {
-    red: Rgb(0xd2, 0x0f, 0x39),
-    orange: Rgb(0xfe, 0x64, 0x0b),
-    yellow: Rgb(0xdf, 0x8e, 0x1d),
-    green: Rgb(0x40, 0xa0, 0x2b),
-    cyan: Rgb(0x17, 0x92, 0x99),
-    blue: Rgb(0x1e, 0x66, 0xf5),
-    purple: Rgb(0x88, 0x39, 0xef),
-};
+/// The same seven for a light colour file: Catppuccin Latte as the preset ships it, with the orange,
+/// yellow and green darkened to reach 3:1 on a light bar (raw Latte does not).
+const HUES_LIGHT: Hues = presets::CATPPUCCIN_LIGHT.hues;
 /// How far a derived hue moves toward the accent: 30 %.
 const HUE_MIX: u16 = 30;
 
@@ -238,7 +231,7 @@ fn derive_legacy(l: &Legacy, mode: Mode, hues: Hues) -> Roles {
 /// A colour file's text: the 16 role keys, or the legacy 7 (`bg fg accent
 /// muted surface error ok`), derived for `mode` (spec § 1). Either may add the
 /// seven hue keys (`red` … `purple`, spec § 9); a missing one is Catppuccin's
-/// (Mocha for dark, Latte for light) mixed 30 % toward `accent`. Unknown keys
+/// (Mocha for dark, the contrast-fixed Latte of the preset for light) mixed 30 % toward `accent`. Unknown keys
 /// are ignored. Err: one human line.
 pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
     let table: toml::Table = toml::from_str(text).map_err(|e| e.message().trim().to_string())?;
@@ -528,6 +521,14 @@ mod tests {
         // One present hue is kept while the others are derived.
         let r = parse_colors(&format!("{VALID}green = \"#010203\"\n"), Mode::Dark).unwrap();
         assert_eq!((r.hues.green, r.hues.red), (Rgb(1, 2, 3), Rgb(247, 138, 118)));
+    }
+
+    #[test]
+    fn a_missing_light_hue_starts_from_the_darkened_reference() {
+        // Latte's raw orange #fe640b is 2.45:1 on a light bar; the reference is the darkened #e0580a. Toward the
+        // accent #8800ff: (224*70 + 136*30 + 50) / 100 = 198, (88*70 + 50) / 100 = 62, (10*70 + 255*30 + 50) / 100 = 84.
+        let r = parse_colors(VALID_LIGHT, Mode::Light).unwrap();
+        assert_eq!(r.hues.orange, Rgb(198, 62, 84));
     }
 
     #[test]

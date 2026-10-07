@@ -10,7 +10,8 @@ use crate::launch::describe;
 use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
-use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, THEME_FILE, effective_mode, resolve_dir};
+use alpheus_commun::theme::Roles;
+use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, ModuleColors, THEME_FILE, effective_mode, resolve_dir};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
 use std::ffi::{CString, OsStr};
@@ -252,6 +253,20 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     state.theme_watch = Some(watch);
 }
 
+/// A reload repaints when the roles changed or the module colours did: the roles can be equal while
+/// the bar's tints are not (themes spec § 9).
+fn repaint_needed(new: &Roles, old: &Roles, colors_changed: bool) -> bool {
+    colors_changed || new != old
+}
+
+fn colours_name(mc: ModuleColors) -> &'static str {
+    match mc {
+        ModuleColors::None => "none",
+        ModuleColors::Icons => "icons",
+        ModuleColors::Full => "full",
+    }
+}
+
 impl App {
     /// The inotify fd is readable (calloop callback): every queued record drained, one re-resolve at most.
     pub(crate) fn theme_readable(&mut self) {
@@ -278,6 +293,8 @@ impl App {
             new_lines = true;
         }
         self.theme_warnings = warnings;
+        let colors_changed = self.bar.module_colors != settings.module_colors;
+        self.bar.module_colors = settings.module_colors;
         self.theme_settings = settings;
         // A switch to mode = "auto" starts following the portal (a no-op once tried, or when not
         // auto). After the store, never before: it reads `self.theme_settings`.
@@ -288,13 +305,19 @@ impl App {
             if new_lines {
                 log("theme: keeping the current colours until the colour file is usable");
             }
+            // The setting is read from theme.toml, not from the colour file: it still applies.
+            if colors_changed {
+                log(&format!("theme reloaded: module colours {}", colours_name(self.bar.module_colors)));
+                self.repaint_all();
+            }
             return;
         }
-        if resolved.roles == self.roles {
+        if !repaint_needed(&resolved.roles, &self.roles, colors_changed) {
             return;
         }
         self.roles = resolved.roles;
-        log(&format!("theme reloaded: {}", describe(&self.theme_settings, mode)));
+        let colours = if colors_changed { format!(", module colours {}", colours_name(self.bar.module_colors)) } else { String::new() };
+        log(&format!("theme reloaded: {}{colours}", describe(&self.theme_settings, mode)));
         self.repaint_all();
     }
 
@@ -310,6 +333,16 @@ impl App {
 mod tests {
     use super::*;
     use alpheus_commun::theme::settings::THEME_FILE;
+
+    #[test]
+    fn a_reload_repaints_when_only_the_module_colours_changed() {
+        let r = Roles::default();
+        assert!(!repaint_needed(&r, &r, false), "nothing changed: no repaint");
+        assert!(repaint_needed(&r, &r, true), "equal roles, other module colours: repaint");
+        let other = Roles { fg: alpheus_commun::theme::Rgb(1, 2, 3), ..Roles::default() };
+        assert!(repaint_needed(&other, &r, false), "other roles: repaint");
+        assert_eq!([ModuleColors::None, ModuleColors::Icons, ModuleColors::Full].map(colours_name), ["none", "icons", "full"]);
+    }
 
     fn no_link(_: &[u8]) -> bool {
         false

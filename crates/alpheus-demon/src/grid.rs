@@ -25,6 +25,20 @@ pub enum Tint {
     Warn,
     Error,
     Urgent,
+    /// One of the theme's seven hues (themes spec § 9), for a module's icon or text.
+    Hue(Hue),
+}
+
+/// The seven named hues of a theme (`Roles::hues`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hue {
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Cyan,
+    Blue,
+    Purple,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,6 +68,11 @@ impl Style {
     /// The second accent: checks and radios in menus.
     pub const ACCENT2: Style = Style { fg: Tint::Accent2, bg: Tint::Bg, bold: false };
 
+    /// A module's icon or text in one of the theme's hues, on the surface's background.
+    pub const fn hue(h: Hue) -> Style {
+        Style { fg: Tint::Hue(h), bg: Tint::Bg, bold: false }
+    }
+
     /// Letter code for snapshots.
     pub fn code(self) -> char {
         match self {
@@ -68,6 +87,15 @@ impl Style {
             Style::BOLD_ACCENT => 'G',
             Style::ACCENT => 'a',
             Style::ACCENT2 => 'b',
+            Style { fg: Tint::Hue(h), bg: Tint::Bg, bold: false } => match h {
+                Hue::Red => 'r',
+                Hue::Orange => 'o',
+                Hue::Yellow => 'y',
+                Hue::Green => 'g',
+                Hue::Cyan => 'c',
+                Hue::Blue => 'B',
+                Hue::Purple => 'p',
+            },
             _ => '?',
         }
     }
@@ -309,6 +337,13 @@ mod tests {
             (Style::BOLD_ACCENT, 'G'),
             (Style::ACCENT, 'a'),
             (Style::ACCENT2, 'b'),
+            (Style::hue(Hue::Red), 'r'),
+            (Style::hue(Hue::Orange), 'o'),
+            (Style::hue(Hue::Yellow), 'y'),
+            (Style::hue(Hue::Green), 'g'),
+            (Style::hue(Hue::Cyan), 'c'),
+            (Style::hue(Hue::Blue), 'B'),
+            (Style::hue(Hue::Purple), 'p'),
         ];
         for (s, c) in all {
             assert_eq!(s.code(), c, "{s:?}");

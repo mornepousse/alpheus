@@ -51,7 +51,7 @@ pub(crate) const CATPPUCCIN_DARK: Roles = Roles {
 };
 
 /// Catppuccin Latte.
-const CATPPUCCIN_LIGHT: Roles = Roles {
+pub(super) const CATPPUCCIN_LIGHT: Roles = Roles {
     bar_bg: h(0xe6e9ef),            // Mantle
     pill_bg: h(0xccd0da),           // Surface0
     popup_bg: h(0xeff1f5),          // Base
@@ -606,7 +606,7 @@ mod tests {
     #[test]
     fn a_preset_is_a_few_hundred_bytes() {
         assert_eq!(std::mem::size_of::<Roles>(), 69);
-        assert!(std::mem::size_of::<Preset>() <= 192, "{}", std::mem::size_of::<Preset>());
+        assert!(std::mem::size_of::<Preset>() <= 160, "{}", std::mem::size_of::<Preset>());
     }
 
     /// Spec § 7 plus the state-colour amendment: every shipped theme is
