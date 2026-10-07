@@ -768,3 +768,31 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s at rest after a reload");
     assert!(delta <= 8, "{delta} wake-ups in 10 s at rest after a reload");
 }
+
+/// Themes delivery 1: 50 reloads (two presets in turn, three bars repainted each time) leave no
+/// growth behind. Printed for the README; budget 512 KB (half the launcher's 50-cycle budget).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn theme_reloads_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("theme-reloads");
+    let toml = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let (sway, _hypr, d) = start("theme-reloads", 3, &bus, None, Some(toml), PwDump::Silent);
+    let config = sway.runtime.join("config/alpheus");
+    let reload = |n: usize| {
+        let theme = if n % 2 == 0 { "tokyo-night" } else { "gruvbox" };
+        write_atomically(&config, "theme.toml", &format!("theme = \"{theme}\"\nmode = \"dark\"\n"));
+        assert!(d.wait_for_count("theme reloaded:", n + 1, DELAY), "reload {n}: {:?}", d.log());
+    };
+    reload(0);
+    reload(1); // warm-up: both presets painted once
+    std::thread::sleep(Duration::from_secs(2));
+    let baseline = d.pss_kb();
+    for n in 2..52 {
+        reload(n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.pss_kb();
+    eprintln!("theme reloads: PSS {baseline} KB after 2 warm-up reloads, {end} KB after 50 more (3 outputs)");
+    assert!(end <= baseline + 512, "growth: {baseline} -> {end} KB over 50 reloads");
+}
