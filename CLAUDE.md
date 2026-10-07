@@ -85,7 +85,7 @@ breakdown), then the spec of the sub-project currently in progress in
 - **Themes delivery 1 (colours)** (spec
   [`docs/specs/2026-10-07-alpheus-themes-design.md`](docs/specs/2026-10-07-alpheus-themes-design.md),
   plan [`docs/plans/2026-10-07-alpheus-themes-plan-1.md`](docs/plans/2026-10-07-alpheus-themes-plan-1.md))
-  **implemented** on `feat/themes`:
+  **implemented and merged into `main` on 2026-10-07** (per-task reviews, a final whole-branch review and fix wave; then, at Mae's request, the TUI **Theme tab** (Super+A, tab 7: theme list with preview, mode, module colours) and **module colours** (spec § 9: 7 hues per theme, `module_colors = "none" | "icons" | "full"`, default icons, fixed module→hue mapping, states win, a charging battery stays green)); Mae's trial done:
   - **Roles and presets.** 16 roles in `alpheus-commun::theme`, and 9 compiled-in presets (dark/light pairs, contrast-tested in both modes).
   - **Wallpaper.** One more theme, read from 16-role or legacy 7-key files.
   - **`theme.toml`.** Theme, mode `auto`/`dark`/`light`, and `[colors]` overrides. With no `theme.toml`: wallpaper if `colors.toml` exists, else catppuccin.
