@@ -209,11 +209,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 Loadable::Ready(p) => {
                     let mut x = vx;
                     for (j, name) in p.available.iter().enumerate() {
-                        let style = if *name == p.active {
-                            Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(th.muted)
-                        };
+                        let style = if *name == p.active { th.filled() } else { Style::default().fg(th.muted) };
                         let w = put(buf, body, x, y, &format!(" {} ", profile_label(name)), style);
                         hits.push(Rect::new(x, y, w, 1), Target::ProfileOption(j));
                         x = x.saturating_add(w + 1);
@@ -224,11 +220,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
         Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits),
         Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits),
         Item::Button(c) => {
-            let style = if focused {
-                Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(th.accent)
-            };
+            let style = if focused { th.filled() } else { Style::default().fg(th.accent) };
             let w = put(buf, body, lx, y, &format!("[ {} ]", c.label()), style);
             // Clickable area intentionally limited to the drawn button (not the whole row).
             hits.push(Rect::new(body.x, y, w + 2, 1), Target::Item(i));

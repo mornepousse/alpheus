@@ -8,8 +8,6 @@ pub mod mode_file;
 pub mod presets;
 pub mod settings;
 
-use std::path::Path;
-
 /// 24-bit colour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Rgb(pub u8, pub u8, pub u8);
@@ -209,72 +207,9 @@ pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
     Ok(derive_legacy(&legacy, mode))
 }
 
-// ---- TEMPORARY legacy view: task 4 removes its daemon uses, task 7 its TUI
-// uses, and the last of the two deletes it. ----
-
-/// The 7-colour palette the daemon and the TUI paint with until tasks 4 and
-/// 7 move them to `Roles`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Palette {
-    pub bg: Rgb,
-    pub fg: Rgb,
-    pub accent: Rgb,
-    pub muted: Rgb,
-    pub surface: Rgb,
-    pub error: Rgb,
-    pub ok: Rgb,
-}
-
-/// Unchanged from before the roles, so the daemon's and the TUI's pixel and
-/// colour tests do not move until tasks 4 and 7.
-impl Default for Palette {
-    fn default() -> Self {
-        Palette {
-            bg: Rgb(0x1e, 0x1e, 0x2e),
-            fg: Rgb(0xcd, 0xd6, 0xf4),
-            accent: Rgb(0xcb, 0xa6, 0xf7),
-            muted: Rgb(0x6c, 0x70, 0x86),
-            surface: Rgb(0x31, 0x32, 0x44),
-            error: Rgb(0xf3, 0x8b, 0xa8),
-            ok: Rgb(0xa6, 0xe3, 0xa1),
-        }
-    }
-}
-
-impl From<Roles> for Palette {
-    fn from(r: Roles) -> Self {
-        Palette { bg: r.bar_bg, fg: r.fg, accent: r.accent, muted: r.fg_dim, surface: r.pill_bg, error: r.error, ok: r.ok }
-    }
-}
-
-impl Palette {
-    /// colors.toml (16 roles or legacy 7, read as dark) → the legacy view.
-    /// Absent: the default, silently. Same messages as before the roles.
-    pub fn load(path: &Path) -> (Palette, Option<String>) {
-        let s = match std::fs::read_to_string(path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Palette::default(), None),
-            Err(e) => return (Palette::default(), Some(format!("colors.toml unreadable: {e}"))),
-            Ok(s) => s,
-        };
-        match parse_colors(&s, Mode::Dark) {
-            Ok(roles) => (Palette::from(roles), None),
-            Err(e) => (Palette::default(), Some(format!("invalid colors.toml: {e}"))),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    fn file(name: &str, content: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-palette-{name}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("colors.toml");
-        std::fs::write(&p, content).unwrap();
-        p
-    }
 
     const VALID: &str = "bg = \"#101010\"\nfg = \"#eeeeee\"\naccent = \"#ff8800\"\nmuted = \"#777777\"\nsurface = \"#202020\"\nerror = \"#ff0000\"\nok = \"#00ff00\"\n";
     const VALID_LIGHT: &str = "bg = \"#f0f0f0\"\nfg = \"#202020\"\naccent = \"#8800ff\"\nmuted = \"#666666\"\nsurface = \"#e0e0e0\"\nerror = \"#cc0000\"\nok = \"#008800\"\n";
@@ -306,32 +241,6 @@ mod tests {
         assert_eq!(parse_hex("#zzzzzz"), None);
         assert_eq!(parse_hex("#12345"), None);
         assert_eq!(parse_hex("#aééa"), None); // 6 non-ASCII bytes: no cut in the middle of « é »
-    }
-
-    #[test]
-    fn absent_falls_back_with_no_message() {
-        assert_eq!(Palette::load(Path::new("/nonexistent/colors.toml")), (Palette::default(), None));
-    }
-
-    #[test]
-    fn valid_file() {
-        let (p, w) = Palette::load(&file("valid", VALID));
-        assert_eq!(w, None);
-        assert_eq!(p.accent, Rgb(0xff, 0x88, 0x00));
-    }
-
-    #[test]
-    fn invalid_color_falls_back_with_a_message() {
-        let (p, w) = Palette::load(&file("bad", &VALID.replace("#ff8800", "orange")));
-        assert_eq!(p, Palette::default());
-        assert!(w.unwrap().contains("colors.toml"));
-    }
-
-    #[test]
-    fn missing_key_falls_back_with_a_message() {
-        let (p, w) = Palette::load(&file("missing", "bg = \"#101010\"\n"));
-        assert_eq!(p, Palette::default());
-        assert!(w.is_some());
     }
 
     // ---- 16 roles ----
@@ -464,39 +373,5 @@ mod tests {
         assert_eq!(r.popup_bg, Rgb(0x1e, 0x1e, 0x2e)); // Base
         assert_eq!(r.fg, Rgb(0xcd, 0xd6, 0xf4)); // Text
         assert_eq!(r.accent, Rgb(0xcb, 0xa6, 0xf7)); // Mauve
-    }
-
-    // ---- the temporary Palette shim (removed by tasks 4 and 7) ----
-
-    #[test]
-    fn palette_default_is_unchanged() {
-        let p = Palette::default();
-        assert_eq!((p.bg, p.muted, p.surface), (Rgb(0x1e, 0x1e, 0x2e), Rgb(0x6c, 0x70, 0x86), Rgb(0x31, 0x32, 0x44)));
-    }
-
-    #[test]
-    fn the_palette_shim_round_trips_a_legacy_file() {
-        let (p, w) = Palette::load(&file("roundtrip", VALID));
-        assert_eq!(w, None);
-        assert_eq!(
-            p,
-            Palette {
-                bg: Rgb(0x10, 0x10, 0x10),
-                fg: Rgb(0xee, 0xee, 0xee),
-                accent: Rgb(0xff, 0x88, 0x00),
-                muted: Rgb(0x77, 0x77, 0x77),
-                surface: Rgb(0x20, 0x20, 0x20),
-                error: Rgb(0xff, 0x00, 0x00),
-                ok: Rgb(0x00, 0xff, 0x00),
-            }
-        );
-    }
-
-    #[test]
-    fn the_palette_shim_reads_a_sixteen_role_file() {
-        let (p, w) = Palette::load(&file("sixteen", &sixteen(None)));
-        assert_eq!(w, None);
-        // bar_bg = nth(0), pill_bg = nth(1), fg_dim = nth(6), fg = nth(5).
-        assert_eq!((p.bg, p.surface, p.muted, p.fg), (nth(0), nth(1), nth(6), nth(5)));
     }
 }

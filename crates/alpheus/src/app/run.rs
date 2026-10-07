@@ -155,7 +155,9 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
 
 pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     let (config, w_config) = Config::load(&dir.join("config.toml"));
-    let (theme, w_theme) = Theme::load(&dir.join("colors.toml"));
+    // The mode the daemon publishes (themes task 6), read only in mode auto; no D-Bus here.
+    let runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
+    let (theme, w_theme) = Theme::load(dir, runtime.as_deref());
     let (keymap, w_keys) = match Keymap::from_config(&config.keys) {
         Ok(k) => (k, None),
         Err(e) => (Keymap::default(), Some(format!("keys: {e}"))),
@@ -168,7 +170,7 @@ pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     // Unreadable or invalid file: saving would overwrite it without having
     // read it, refused until Mae has fixed it.
     app.displays.profiles_invalid = w_displays.is_some();
-    for w in [w_config, w_theme, w_keys, w_displays].into_iter().flatten() {
+    for w in [w_config, w_keys, w_displays].into_iter().flatten().chain(w_theme) {
         app.warn(w);
     }
     app

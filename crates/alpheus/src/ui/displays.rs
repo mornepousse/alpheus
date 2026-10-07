@@ -109,11 +109,7 @@ pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &
     let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
     let mut x = lx + 11;
     for (j, name) in names.enumerate() {
-        let style = if focused && j == app.displays.profile_sel {
-            Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(th.accent)
-        };
+        let style = if focused && j == app.displays.profile_sel { th.selected() } else { Style::default().fg(th.accent) };
         let w = put(buf, body, x, y, &format!("[ {name} ]"), style);
         hits.push(Rect::new(x, y, w, 1), Target::DisplayProfile(j));
         x = x.saturating_add(w + 2);
@@ -157,7 +153,7 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
 #[allow(clippy::too_many_arguments)]
 fn buttons(buf: &mut Buffer, inner: Rect, y: u16, no: &str, yes: &str, yes_focused: bool, yes_enabled: bool, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
-    let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
+    let on = th.filled();
     let off = Style::default().fg(th.fg).bg(th.surface);
     let disabled = Style::default().fg(th.muted).bg(th.surface);
     let mut x = inner.x + 1;
@@ -299,7 +295,7 @@ pub fn panel(buf: &mut Buffer, area: Rect, app: &App, p: &Panel, hits: &mut HitM
         );
     }
     let by = inner.y + inner.height.saturating_sub(1);
-    let on = Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD);
+    let on = th.filled();
     let mut x = inner.x + 1;
     let cancel_style = if p.field == PanelField::Cancel { on } else { text };
     let w = put(buf, inner, x, by, "[ Cancel ]", cancel_style);

@@ -47,8 +47,7 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     x += put(buf, r, x, r.y, "alpheus", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)) + 2;
     for (i, t) in Tab::ALL.iter().enumerate() {
         let label = format!(" {} {} ", i + 1, t.title());
-        let style =
-            if *t == app.tab { Style::default().fg(th.bg).bg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+        let style = if *t == app.tab { th.selected() } else { Style::default().fg(th.fg) };
         let w = put(buf, r, x, r.y, &label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
         // Glued together: each label already carries its own spaces, so
@@ -152,6 +151,20 @@ mod tests {
     use crate::app::keymap::Keymap;
     use crate::app::testing::{app, node, ready_app};
     use crate::app::worker::{Op, Update};
+
+    #[test]
+    fn the_selected_tab_sits_on_selection_and_the_title_stays_accent() {
+        let a = ready_app();
+        let tab = draw(&a, 80, 24).1.find(Target::Tab(a.tab)).unwrap();
+        let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        t.draw(|f| {
+            render(f, &a);
+        })
+        .unwrap();
+        let cell = &t.backend().buffer()[(tab.x + 1, tab.y)];
+        assert_eq!((cell.fg, cell.bg), (a.theme.fg, a.theme.selection), "spec § 4: a selected tab is on selection");
+        assert_ne!(a.theme.selection, a.theme.accent, "the test bites only if the two differ");
+    }
     use crate::app::{Confirm, Loadable, Overlay, Palette, SliderId};
     use crate::backends::PowerAction;
     use crate::config::KeysConfig;
