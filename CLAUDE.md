@@ -53,13 +53,14 @@ breakdown), then the spec of the sub-project currently in progress in
   launcher linked in), startup ≈ 7.8 MB PSS, steady ≈ 8.6 MB after 8,300
   events and 5 plug cycles, still 6 threads and 0 wake-ups at rest — the
   launcher adds no thread while closed.
-  Real trial on Mae's session pending (plan task 5).
+  Real trial on Mae's session done (she runs it daily).
 - Bar **delivery 4, step 2** (the tray, menus, the calendar; spec
   [`docs/specs/2026-10-05-alpheus-tray-design.md`](docs/specs/2026-10-05-alpheus-tray-design.md),
   plan 2 [`docs/plans/2026-10-05-alpheus-tray-plan-2.md`](docs/plans/2026-10-05-alpheus-tray-plan-2.md))
-  **implemented on branch `feat/tray`**, not merged. Mae's partial trial on
-  Hyprland done: icons show, menus work after the Hyprland fix; the final
-  trial (Steam and Discord) and the merge are pending (plan task 21).
+  **implemented and merged into `main` on 2026-10-07** after per-task
+  reviews, a three-slice whole-branch review and its fix rounds; Mae's
+  trial on Hyprland done (Steam and Equibop icons, menus, pixel frames,
+  calendar).
   `org.kde.StatusNotifierWatcher` and
   `org.kde.StatusNotifierItem`/`com.canonical.dbusmenu` on a second,
   non-blocking dbus-rs connection to the session bus (no new thread); icons
