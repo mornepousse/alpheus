@@ -2,14 +2,12 @@
 source: crates/alpheus-demon/src/tray/menu.rs
 expression: snapshot(&rows)
 ---
-╭──────────╮
-│ ◂ More   │
-│ Settings │
-│ About    │
-╰──────────╯
+ ◂ More   
+ Settings 
+ About    
 
-mmmmmmmmmmmm
-m.m.mmmm...m
-mAAAAAAAAAAm
-m..........m
-mmmmmmmmmmmm
+.m.mmmm...
+AAAAAAAAAA
+..........
+
+separators: []

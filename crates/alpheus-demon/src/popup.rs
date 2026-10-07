@@ -17,11 +17,10 @@
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
-use crate::grid::Grid;
 use crate::keys::{self, Key, Mods};
-use crate::list;
+use crate::list::{self, Boxed};
 use crate::log::write as log;
-use crate::painter;
+use crate::painter::Frame;
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
@@ -41,20 +40,26 @@ use std::time::Instant;
 /// `xdg_popup.reposition` exists from `xdg_wm_base` version 3.
 const REPOSITION_VERSION: u32 = 3;
 
-/// Logical px size of a box of cells: the width rounded UP (never cut the
-/// last column), whole rows of `row_height` physical px.
-pub fn box_size(columns: u16, rows: u16, advance_phys: f32, row_height: u32, scale: i32) -> (u32, u32) {
+/// Logical px size of a box of cells and its frame: the width rounded UP (never cut the last
+/// column), whole rows of `row_height` physical px.
+pub fn box_size(columns: u16, rows: u16, advance_phys: f32, row_height: u32, scale: i32, frame: &Frame) -> (u32, u32) {
     let e = scale.max(1) as u32;
-    let width_phys = (columns as f32 * advance_phys).ceil() as u32;
-    (width_phys.div_ceil(e), (rows as u32 * row_height).div_ceil(e))
+    let (extra_w, extra_h) = frame.extra();
+    let width_phys = (columns as f32 * advance_phys).ceil() as u32 + extra_w;
+    (width_phys.div_ceil(e), (rows as u32 * row_height + extra_h).div_ceil(e))
 }
 
-/// Pointer position (logical px) → (column, row).
-pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32) -> (u16, u16) {
-    let column = painter::column_under(x, scale, advance_phys);
-    let row =
-        if row_height == 0 || y <= 0.0 { 0 } else { ((y * scale.max(1) as f64) / row_height as f64).floor().min(u16::MAX as f64) as u16 };
-    (column, row)
+/// Pointer position (logical px) → the (column, row) of the `cells` box's cells under it; None in
+/// the frame's margin (and past the last cell), where no cell is.
+pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32, frame: &Frame, cells: (u16, u16)) -> Option<(u16, u16)> {
+    let e = scale.max(1) as f64;
+    let (px, py) = (x * e - frame.side as f64, y * e - frame.top as f64);
+    if px < 0.0 || py < 0.0 || advance_phys <= 0.0 || row_height == 0 {
+        return None;
+    }
+    let column = (px / advance_phys as f64).floor();
+    let row = (py / row_height as f64).floor();
+    (column < cells.0 as f64 && row < cells.1 as f64).then_some((column as u16, row as u16))
 }
 
 /// Where a popup hangs: the bar of `output`, under cells [start, end) of its grid.
@@ -76,18 +81,19 @@ pub struct Placement {
     pub height: i32,
 }
 
-/// `advance_logical`: a cell's width in logical px (the physical advance ÷ scale); `row_height`: a
-/// row's height in logical px (the bar's height); `bar_height`: the bar's, the anchor rect's height.
-/// The anchor rect stays the icon's cells even near an edge: sliding the popup is the compositor's.
-pub fn placement(anchor: &Anchor, columns: u16, rows: u16, advance_logical: f32, row_height: u32, bar_height: u32) -> Placement {
+/// `size`: the box's logical px (`box_size`: cells and frame); `advance_logical`: a cell's width in
+/// logical px (the physical advance ÷ scale), the anchor rect's unit; `bar_height`: the bar's, the
+/// anchor rect's height. The anchor rect stays the icon's cells even near an edge: sliding the popup
+/// is the compositor's.
+pub fn placement(anchor: &Anchor, size: (u32, u32), advance_logical: f32, bar_height: u32) -> Placement {
     let left = (anchor.start as f32 * advance_logical).floor() as i32;
     let right = (anchor.end.max(anchor.start + 1) as f32 * advance_logical).ceil() as i32;
     Placement {
         anchor_x: left,
         anchor_width: (right - left).max(1),
         bar_height: bar_height.max(1) as i32,
-        width: ((columns as f32 * advance_logical).ceil() as i32).max(1),
-        height: (rows as u32 * row_height).max(1) as i32,
+        width: (size.0 as i32).max(1),
+        height: (size.1 as i32).max(1),
     }
 }
 
@@ -188,14 +194,14 @@ pub struct OpenPopup {
     buffers: Vec<(Buffer, u32, u32)>,
     /// Logical size asked (the positioner's), then the configured one.
     size: (u32, u32),
-    /// Cells of the rows painted (columns, rows).
+    /// Cells of the rows painted (columns, rows), the frame's margin excluded.
     cells: (u16, u16),
     scale: i32,
     configured: bool,
-    /// The rows to show (painted at the first configure, repainted on a scale change).
-    rows: Vec<Grid>,
-    /// Rows last committed: an unchanged frame is not repainted.
-    last: Option<Vec<Grid>>,
+    /// What to show (painted at the first configure, repainted on a scale change).
+    rows: Boxed,
+    /// What was last committed: an unchanged frame is not repainted.
+    last: Option<Boxed>,
     /// Reposition requests sent (their token).
     token: u32,
     /// This popup's own wheel accumulator (menus, the calendar): never the bar's `self.wheel`,
@@ -243,7 +249,8 @@ pub(crate) fn calendar_month(c: &Calendar) -> String {
 
 impl App {
     /// Closes any open popup (Replaced) and the launcher (it closes with ClickOutside first, decision of
-    /// the launcher plan), then opens `body` under `anchor`, `columns` × `rows` cells. `grab`: take the
+    /// the launcher plan), then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
+    /// comes on top: `Fonts::frame`). `grab`: take the
     /// keyboard and close on an outside click (menus, calendar; uses `last_press`'s serial); false for a
     /// tooltip. false when the output's bar is not configured.
     pub fn popup_open(&mut self, qh: &QueueHandle<App>, anchor: Anchor, body: PopupBody, columns: u16, rows: u16, grab: bool) -> bool {
@@ -263,7 +270,9 @@ impl App {
         let scale = self.surfaces[i].scale.max(1);
         let height = self.bar.config.height;
         let advance = self.fonts.advance(scale);
-        let p = placement(&anchor, columns, rows, logical_advance(advance, scale), height, height);
+        let frame = self.fonts.frame(scale);
+        let size = box_size(columns, rows, advance, height * scale as u32, scale, &frame);
+        let p = placement(&anchor, size, logical_advance(advance, scale), height);
         let bytes = (p.width as usize * scale as usize) * (p.height as usize * scale as usize) * 4;
         let pool = match SlotPool::new(bytes.max(4096), &self.shm) {
             Ok(pool) => pool,
@@ -329,7 +338,7 @@ impl App {
             cells: (columns, rows),
             scale,
             configured: false,
-            rows: Vec::new(),
+            rows: Boxed::default(),
             last: None,
             token: 0,
             wheel: Wheel::default(),
@@ -346,10 +355,10 @@ impl App {
     }
 
     /// Paints `rows` (resizing when their size changed: reposition when xdg_wm_base ≥ 3, else a new buffer size).
-    pub fn popup_paint(&mut self, rows: &[Grid]) {
+    pub fn popup_paint(&mut self, rows: Boxed) {
         let Some(open) = self.popup.as_mut() else { return };
-        let cells = (rows.first().map_or(0, Grid::width), rows.len().min(u16::MAX as usize) as u16);
-        open.rows = rows.to_vec();
+        let cells = rows.cells();
+        open.rows = rows;
         if cells != open.cells && self.popup_reposition(cells) {
             return; // its configure paints
         }
@@ -370,7 +379,9 @@ impl App {
         let Some(open) = popup.as_mut() else { return false };
         open.cells = cells;
         let e = open.scale.max(1);
-        let p = placement(&open.anchor, cells.0, cells.1, logical_advance(fonts.advance(e), e), height, height);
+        let advance = fonts.advance(e);
+        let size = box_size(cells.0, cells.1, advance, height * e as u32, e, &fonts.frame(e));
+        let p = placement(&open.anchor, size, logical_advance(advance, e), height);
         open.size = (p.width as u32, p.height as u32);
         if let (true, Some(xdg)) = (reposition, xdg.as_ref()) {
             if let Ok(positioner) = XdgPositioner::new(xdg) {
@@ -403,7 +414,7 @@ impl App {
         let Some(used) = pick_buffer(buffers, pool, w, h) else { return };
         let Some(px) = buffers[used].0.canvas(pool) else { return };
         px.fill(0);
-        fonts.paint_rows(rows, palette, px, w, height * e as u32, e);
+        fonts.paint_boxed(rows, palette, px, w, h, height * e as u32, e);
         let surface = popup.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -495,9 +506,9 @@ impl App {
         if !c.scroll(months) {
             return;
         }
-        let rows = list::framed(&c.render());
+        let rows = list::padded(&c.render());
         let month = calendar_month(c);
-        self.popup_paint(&rows);
+        self.popup_paint(rows);
         log(&format!("calendar shows {month}"));
     }
 
@@ -514,15 +525,14 @@ impl App {
         }
     }
 
-    /// The pointer on the popup, at cell (`column`, `row`) of its rows.
-    pub(crate) fn popup_pointer(&mut self, column: u16, row: u16, kind: PopupPointer) {
-        let _ = column; // one entry per row: the column never matters
+    /// The pointer on the popup, at `cell` (column, row) of its rows; None: in the frame's margin,
+    /// where no cell is.
+    pub(crate) fn popup_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
         let Some(open) = self.popup.as_ref() else { return };
         match open.body {
-            // Row 0 and the last are the frame: content rows count from 1.
+            // One entry per row: the column never matters.
             PopupBody::Menu(_) => {
-                let rows = self.popup.as_ref().map_or(0, |p| p.cells.1);
-                let content = (row >= 1 && row + 1 < rows).then(|| row - 1);
+                let content = cell.map(|(_, row)| row);
                 let action = match (kind, content) {
                     (PopupPointer::Motion, Some(r)) => self.menu_with(|m, l| m.hover(r, l)),
                     (PopupPointer::Press(Button::Left), Some(r)) => self.menu_with(|m, l| m.press(r, l)),
@@ -557,8 +567,10 @@ impl App {
             return false;
         }
         let e = open.scale.max(1);
-        let (column, row) = cell_under(position.0, position.1, e, self.fonts.advance(e), height * e as u32);
-        self.popup_pointer(column, row, kind);
+        let cells = open.cells;
+        let frame = self.fonts.frame(e);
+        let cell = cell_under(position.0, position.1, e, self.fonts.advance(e), height * e as u32, &frame, cells);
+        self.popup_pointer(cell, kind);
         true
     }
 
@@ -734,16 +746,24 @@ mod tests {
         Anchor { output: output.into(), start, end }
     }
 
+    /// A frame as the first font of the workstation measures it at scale 1 (8.25 px cells, 22 px
+    /// rows), written out so the geometry below is plain arithmetic.
+    fn frame1() -> Frame {
+        Frame { side: 4, top: 7, bottom: 6, stroke: 1, radius: 6 }
+    }
+
     #[test]
     fn placement_under_the_icon_cells() {
         // An icon at cells 40..41, 8.25 px cells, 22 px rows: the rect is that cell, the popup
-        // 20 × 8 cells hangs below the bar.
-        let p = placement(&under("HDMI-A-1", 40, 41), 20, 8, 8.25, 22, 22);
-        assert_eq!(p, Placement { anchor_x: 330, anchor_width: 9, bar_height: 22, width: 165, height: 176 });
-        let p = placement(&under("HDMI-A-1", 10, 13), 23, 10, 8.125, 24, 24);
+        // 20 × 8 cells and its frame hangs below the bar.
+        let size = box_size(20, 8, 8.25, 22, 1, &frame1());
+        assert_eq!(size, (173, 189), "165 + 2 × 4 px, 176 + 7 + 6 px");
+        let p = placement(&under("HDMI-A-1", 40, 41), size, 8.25, 22);
+        assert_eq!(p, Placement { anchor_x: 330, anchor_width: 9, bar_height: 22, width: 173, height: 189 });
+        let p = placement(&under("HDMI-A-1", 10, 13), (187, 240), 8.125, 24);
         assert_eq!((p.anchor_x, p.anchor_width), (81, 25), "floor the left edge, ceil the right: the cells are covered");
-        assert_eq!((p.width, p.height), (187, 240), "186.875 px: the last column is never cut");
-        let p = placement(&under("HDMI-A-1", 7, 8), 1, 1, 8.125, 22, 22);
+        assert_eq!((p.width, p.height), (187, 240), "the size is the caller's, never recomputed here");
+        let p = placement(&under("HDMI-A-1", 7, 8), (1, 1), 8.125, 22);
         assert_eq!((p.anchor_x, p.anchor_width), (56, 9), "56.875 px: the rect starts on the cell's first pixel");
     }
 
@@ -753,33 +773,51 @@ mod tests {
         // so the popup takes the same logical place and size as at scale 1 — never twice as wide.
         assert_eq!(logical_advance(16.5, 2), 8.25);
         assert_eq!(logical_advance(8.25, 0), 8.25, "scale 0 treated as 1");
-        let one = placement(&under("eDP-1", 40, 41), 20, 8, logical_advance(8.25, 1), 22, 22);
-        let two = placement(&under("eDP-1", 40, 41), 20, 8, logical_advance(16.5, 2), 22, 22);
+        let frame2 = Frame { side: 8, top: 14, bottom: 12, stroke: 2, radius: 12 };
+        let one = placement(&under("eDP-1", 40, 41), box_size(20, 8, 8.25, 22, 1, &frame1()), logical_advance(8.25, 1), 22);
+        let two = placement(&under("eDP-1", 40, 41), box_size(20, 8, 16.5, 44, 2, &frame2), logical_advance(16.5, 2), 22);
         assert_eq!(one, two);
-        assert_eq!((two.anchor_x, two.width), (330, 165), "logical px, not the physical 660 and 330");
+        assert_eq!((two.anchor_x, two.width), (330, 173), "logical px, not the physical 660 and 346");
     }
 
     #[test]
     fn placement_near_the_right_edge_keeps_the_anchor() {
         // The last cell of a 160-cell bar: the rect stays the icon's (the compositor slides the
         // popup back inside, slide-x), never moved here.
-        let p = placement(&under("HDMI-A-1", 159, 160), 30, 5, 8.0, 22, 22);
+        let p = placement(&under("HDMI-A-1", 159, 160), (248, 100), 8.0, 22);
         assert_eq!((p.anchor_x, p.anchor_width), (1272, 8));
-        assert_eq!(p.width, 240);
-        let empty = placement(&under("HDMI-A-1", 5, 5), 1, 1, 8.0, 22, 22);
+        assert_eq!(p.width, 248);
+        let empty = placement(&under("HDMI-A-1", 5, 5), (1, 1), 8.0, 22);
         assert_eq!(empty.anchor_width, 8, "an empty span still anchors on one cell");
     }
 
-    /// The launcher's own tests, moved with the functions.
     #[test]
-    fn box_size_and_cell_under_unchanged_after_the_move() {
-        assert_eq!(box_size(60, 15, 8.25, 22, 1), (495, 330));
-        assert_eq!(box_size(61, 15, 8.125, 22, 1), (496, 330), "495.625 px: the last column is never cut");
-        assert_eq!(box_size(60, 15, 16.5, 44, 2), (495, 330), "logical px at scale 2");
-        assert_eq!(box_size(60, 15, 8.25, 22, 0), (495, 330), "scale 0 treated as 1");
-        assert_eq!(cell_under(100.0, 45.0, 1, 8.25, 22), (12, 2));
-        assert_eq!(cell_under(100.0, 45.0, 2, 16.5, 44), (12, 2), "scale 2: physical cells, logical pointer");
-        assert_eq!(cell_under(-3.0, -1.0, 1, 8.25, 22), (0, 0), "a pointer at the very edge");
+    fn box_size_adds_the_frame_to_the_cells() {
+        let f = frame1();
+        assert_eq!(box_size(60, 15, 8.25, 22, 1, &f), (503, 343), "495 + 8, 330 + 13");
+        assert_eq!(box_size(61, 15, 8.125, 22, 1, &f), (504, 343), "495.625 px: the last column is never cut");
+        let f2 = Frame { side: 8, top: 14, bottom: 12, stroke: 2, radius: 12 };
+        assert_eq!(box_size(60, 15, 16.5, 44, 2, &f2), (503, 343), "logical px at scale 2");
+        assert_eq!(box_size(60, 15, 8.25, 22, 0, &f), (503, 343), "scale 0 treated as 1");
+        assert_eq!(box_size(0, 0, 8.25, 22, 1, &f), (8, 13), "no cells: the frame alone");
+    }
+
+    #[test]
+    fn cell_under_counts_from_the_frames_inner_margin() {
+        let f = frame1();
+        let cells = (60, 15);
+        assert_eq!(cell_under(104.0, 52.0, 1, 8.25, 22, &f, cells), Some((12, 2)), "(104 - 4) / 8.25, (52 - 7) / 22");
+        assert_eq!(cell_under(4.0, 7.0, 1, 8.25, 22, &f, cells), Some((0, 0)), "the very first pixel of the first cell");
+        assert_eq!(cell_under(3.5, 30.0, 1, 8.25, 22, &f, cells), None, "left margin: no cell");
+        assert_eq!(cell_under(30.0, 6.5, 1, 8.25, 22, &f, cells), None, "top margin: no cell");
+        assert_eq!(cell_under(-3.0, -1.0, 1, 8.25, 22, &f, cells), None, "outside the surface");
+        assert_eq!(cell_under(4.0 + 60.0 * 8.25, 30.0, 1, 8.25, 22, &f, cells), None, "right margin: past the last column");
+        assert_eq!(cell_under(100.0, 7.0 + 15.0 * 22.0, 1, 8.25, 22, &f, cells), None, "bottom margin: past the last row");
+        assert_eq!(cell_under(4.0 + 59.9 * 8.25, 7.0 + 14.9 * 22.0, 1, 8.25, 22, &f, cells), Some((59, 14)), "the last cell");
+        let f2 = Frame { side: 8, top: 14, bottom: 12, stroke: 2, radius: 12 };
+        assert_eq!(cell_under(104.0, 52.0, 2, 16.5, 44, &f2, cells), Some((12, 2)), "scale 2: physical cells, logical pointer");
+        assert_eq!(cell_under(100.0, 45.0, 1, 0.0, 22, &f, cells), None, "no advance: no cell, no division by zero");
+        assert_eq!(cell_under(100.0, 45.0, 1, 8.25, 0, &f, cells), None, "no row height: same");
     }
 
     #[test]

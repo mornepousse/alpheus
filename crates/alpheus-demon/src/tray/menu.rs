@@ -1,5 +1,5 @@
 //! A tray item's menu as the bar draws it (spec § 1 Menus, § 2): rows of
-//! cells inside a thin frame, the launcher's list rendering and keys
+//! cells inside a pixel frame (the painter's), the launcher's list rendering and keys
 //! (`crate::list`, `crate::keys`), one level at a time — a submenu replaces
 //! the list in the same popup, its first row `◂ <parent>` (drill-down, Mae
 //! 2026-10-05). Pure: it reads the session's `Layout` and answers with a
@@ -8,7 +8,7 @@
 
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
-use crate::list::{self, Row};
+use crate::list::{self, Boxed, Row};
 use crate::tray::codec::{Layout, MenuNode, Toggle};
 
 /// What a menu interaction asks for.
@@ -48,7 +48,7 @@ struct Level {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
     levels: Vec<Level>,
-    /// Content rows between the frames (the header row included), from `set_rows`.
+    /// Content rows (the header row included), from `set_rows`.
     rows: usize,
 }
 
@@ -281,7 +281,9 @@ impl Menu {
         }
     }
 
-    /// Box size in cells for the current level, frame included, within the output's cells.
+    /// Box size in cells for the current level, within the output's cells, counting the one-cell ring
+    /// (a row each side, a column each side) that `render` hands to `list::boxed` and the painter's pixel
+    /// frame replaces.
     pub fn size(&self, layout: &Layout, max_columns: u16, max_rows: u16) -> (u16, u16) {
         let entries = self.entries(layout);
         let toggles = if entries.iter().any(|e| e.props.toggle.is_some()) { 2 } else { 0 };
@@ -300,15 +302,15 @@ impl Menu {
         let wanted = content + 2;
         // Never more than the output allows, even when it offers fewer than 3 rows (there is no
         // sane menu box below that, but returning more than `max_rows` would be worse: the caller
-        // asked for a hard bound). Inside a submenu, aim for header + one entry + both frames (4)
+        // asked for a hard bound). Inside a submenu, aim for header + one entry + the ring's two rows (4)
         // when the output allows it, so the selection (never on the header) has somewhere to show;
-        // at the root, aim for the usual 3 (one entry + both frames).
+        // at the root, aim for the usual 3 (one entry + the ring's two rows).
         let floor = (u16::from(self.header() == 1) + 1 + 2).min(max_rows);
         let rows = wanted.clamp(floor, max_rows);
         (columns, rows)
     }
 
-    /// `rows`: the content rows between the frames, header included (size's height − 2).
+    /// `rows`: the content rows, header included (size's height − the ring's 2).
     pub fn set_rows(&mut self, rows: usize) {
         self.rows = rows.max(1);
     }
@@ -320,10 +322,13 @@ impl Menu {
         list::keep_visible(self.selected_index(entries).unwrap_or(l.top), l.top, self.entry_rows(), entries.len())
     }
 
-    /// One Grid per row: frame, `◂ parent` header row below a submenu's top frame (MUTED), entries
-    /// (toggle column ✓ / ● when any entry of the level has a toggle and its state is 1; label NORMAL or
-    /// MUTED when disabled; "▸" right for submenus; separators as list::separator; selection INVERTED), frame.
-    pub fn render(&self, layout: &Layout, columns: u16, rows: u16) -> Vec<Grid> {
+    /// The menu as a boxed surface of `columns` × `rows` cells (`size`'s, a one-cell ring included,
+    /// which `list::boxed` drops: the painter draws the frame in pixels). In it: a `◂ parent` header
+    /// row below a submenu's top (MUTED), entries (toggle column ✓ / ● when any entry of the level has
+    /// a toggle and its state is 1; label NORMAL or MUTED when disabled; "▸" right for submenus;
+    /// separators drawn as lines; selection INVERTED), and at the right end of the first and last
+    /// entry rows a ▲ / ▼ when more lie above / below.
+    pub fn render(&self, layout: &Layout, columns: u16, rows: u16) -> Boxed {
         let entries = self.entries(layout);
         let selected = self.selected_index(&entries);
         let toggles = entries.iter().any(|e| e.props.toggle.is_some());
@@ -331,13 +336,10 @@ impl Menu {
         let shown = usize::from(rows.saturating_sub(2)).saturating_sub(header);
         let top = self.top(&entries);
         let mut out = Vec::with_capacity(usize::from(rows));
-        let mut first = list::frame(columns, '╭', '╮', None);
-        if top > 0 {
-            first.write(columns.saturating_sub(3), columns.saturating_sub(1), &MORE_ABOVE.to_string(), Style::MUTED);
-        }
-        out.push(first);
+        let mut separators = Vec::new();
+        out.push(Grid::empty(columns));
         if header == 1 {
-            let mut g = list::interior(columns, None);
+            let mut g = Grid::empty(columns);
             let parent = layout.node(self.level().parent).map_or("", MenuNode::label);
             let row = Row { icon: Some(BACK), text: parent, right: "", style: Style::MUTED, selected: false };
             list::row(&mut g, 1, columns.saturating_sub(1), &row);
@@ -348,7 +350,7 @@ impl Menu {
         for r in 0..shown {
             let i = top + r;
             let Some(e) = entries.get(i) else {
-                let mut g = list::interior(columns, None);
+                let mut g = Grid::empty(columns);
                 if entries.is_empty() && r == 0 {
                     g.write(2, columns.saturating_sub(1), EMPTY, Style::MUTED);
                 }
@@ -356,7 +358,8 @@ impl Menu {
                 continue;
             };
             if e.is_separator() {
-                out.push(list::separator(columns));
+                separators.push(out.len());
+                out.push(Grid::empty(columns));
                 continue;
             }
             let mark = match (e.props.toggle, e.props.toggle_state) {
@@ -364,7 +367,7 @@ impl Menu {
                 (Some(Toggle::Radio), Some(1)) => '●',
                 _ => ' ',
             };
-            let mut g = list::interior(columns, None);
+            let mut g = Grid::empty(columns);
             let row = Row {
                 icon: toggles.then_some(mark),
                 text: e.label(),
@@ -375,13 +378,31 @@ impl Menu {
             list::row(&mut g, 1, columns.saturating_sub(1), &row);
             out.push(g);
         }
-        let mut last = list::frame(columns, '╰', '╯', None);
-        if top + shown < entries.len() {
-            last.write(columns.saturating_sub(3), columns.saturating_sub(1), &MORE_BELOW.to_string(), Style::MUTED);
+        // Where the frame's top and bottom strokes used to carry them: in the pad cell at the end of
+        // the first and last entry rows (never over a separator line).
+        let first = 1 + header;
+        let last = out.len() - 1;
+        if top > 0 {
+            mark_edge(&mut out, &separators, first, columns, MORE_ABOVE);
         }
-        out.push(last);
-        out
+        if top + shown < entries.len() {
+            mark_edge(&mut out, &separators, last, columns, MORE_BELOW);
+        }
+        out.push(Grid::empty(columns));
+        list::boxed(&out, &separators, None)
     }
+}
+
+/// Writes `mark` in the pad cell at the end of row `row` (ring coordinates, `columns` wide), keeping the
+/// cell's INVERTED style under the selection and MUTED otherwise; nothing on a separator or past the rows.
+fn mark_edge(rows: &mut [Grid], separators: &[usize], row: usize, columns: u16, mark: char) {
+    let Some(g) = rows.get_mut(row).filter(|_| !separators.contains(&row)) else { return };
+    let column = columns.saturating_sub(2);
+    let style = g
+        .cells()
+        .get(usize::from(column))
+        .map_or(Style::MUTED, |c| if c.style == Style::INVERTED { Style::INVERTED } else { Style::MUTED });
+    g.write(column, column + 1, &mark.to_string(), style);
 }
 
 #[cfg(test)]
@@ -434,21 +455,22 @@ mod tests {
     }
 
     /// Sized and rendered like the wiring does, on an output of `columns` × `rows` cells.
-    fn draw(m: &mut Menu, l: &Layout, columns: u16, rows: u16) -> Vec<Grid> {
+    fn draw(m: &mut Menu, l: &Layout, columns: u16, rows: u16) -> Boxed {
         let (c, r) = m.size(l, columns, rows);
         m.set_rows(usize::from(r - 2));
         let out = m.render(l, c, r);
-        assert_eq!(out.len(), usize::from(r));
-        for g in &out {
-            assert_eq!(g.width(), c, "{}", snapshot(&out));
+        assert_eq!(out.rows.len(), usize::from(r) - 2, "the size's ring (one row each side) is the painter's frame");
+        for g in &out.rows {
+            assert_eq!(g.width(), c - 2, "{}", snapshot(&out));
         }
         out
     }
 
-    fn snapshot(rows: &[Grid]) -> String {
-        let texts: Vec<String> = rows.iter().map(Grid::text).collect();
-        let styles: Vec<String> = rows.iter().map(Grid::styles).collect();
-        format!("{}\n\n{}", texts.join("\n"), styles.join("\n"))
+    /// Each row's text, then each row's style codes, then the rows drawn as lines.
+    fn snapshot(b: &Boxed) -> String {
+        let texts: Vec<String> = b.rows.iter().map(Grid::text).collect();
+        let styles: Vec<String> = b.rows.iter().map(Grid::styles).collect();
+        format!("{}\n\n{}\n\nseparators: {:?}", texts.join("\n"), styles.join("\n"), b.separators)
     }
 
     fn selected_id(m: &Menu, l: &Layout) -> Option<i32> {
@@ -481,10 +503,10 @@ mod tests {
         let l = root(vec![node(1, &"A very long label ".repeat(10)), with(node(2, "Short"), |p| p.submenu = Some(true))]);
         let mut m = open(&l);
         let rows = draw(&mut m, &l, 200, 40);
-        assert_eq!(rows[0].width(), MENU_MAX_COLUMNS);
+        assert_eq!(rows.cells().0 + 2, MENU_MAX_COLUMNS, "the size counts the ring the painter replaces");
         insta::assert_snapshot!("menu_long_labels", snapshot(&rows));
         let rows = draw(&mut m, &l, 30, 40);
-        assert_eq!(rows[0].width(), 30, "never wider than the output");
+        assert_eq!(rows.cells().0 + 2, 30, "never wider than the output");
     }
 
     #[test]
@@ -523,9 +545,9 @@ mod tests {
             let mut m = open(&l);
             for _ in 0..l.root.children.len() {
                 let rows = draw(&mut m, &l, columns, 40);
-                for r in &rows {
+                for r in &rows.rows {
                     let t = r.text();
-                    assert!(t.starts_with(['│', '╭', '╰', '├']) && t.ends_with(['│', '╮', '╯', '┤']), "frame broken at {columns}: {t:?}");
+                    assert_eq!(r.width(), rows.cells().0, "misaligned at {columns}: {t:?}");
                     assert!(!t.contains(['\u{202e}', '\u{200e}', '\u{2066}']), "{t:?}");
                 }
                 m.key(Key::Down, &l);
@@ -751,7 +773,7 @@ mod tests {
         assert_eq!(selected_id(&m, &shrunk), Some(1));
         // Rendering must not panic either: a stale `top` would index past the shrunk entries.
         let rows = draw(&mut m, &shrunk, 200, 40);
-        assert_eq!(rows.len(), 3, "frame, one entry, frame");
+        assert_eq!(rows.rows.len(), 1, "one entry (the ring's two rows are the frame)");
     }
 
     #[test]
@@ -773,8 +795,8 @@ mod tests {
             let (c, r) = m.size(&l, max_columns, max_rows);
             m.set_rows(usize::from(r.saturating_sub(2)));
             let rows = m.render(&l, c, r); // must not panic
-            for g in &rows {
-                assert_eq!(g.width(), c);
+            for g in &rows.rows {
+                assert_eq!(g.width(), c.saturating_sub(2));
             }
         }
     }
@@ -802,7 +824,7 @@ mod tests {
         let empty = root(Vec::new());
         let mut m = open(&empty);
         let rows = draw(&mut m, &empty, 200, 40);
-        assert!(rows[1].text().contains("empty"), "{}", snapshot(&rows));
+        assert!(rows.rows[0].text().contains("empty"), "{}", snapshot(&rows));
         assert_eq!(m.key(Key::Enter, &empty), MenuAction::Nothing);
     }
 }

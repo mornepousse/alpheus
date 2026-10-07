@@ -15,6 +15,7 @@
 
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Tint};
+use crate::list::Boxed;
 use alpheus_commun::theme::{Palette, Rgb};
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
@@ -22,6 +23,60 @@ use std::path::{Path, PathBuf};
 
 /// Rasterized glyphs kept at most (≈ 1 MB at 14 px).
 pub const MAX_CACHE: usize = 2048;
+
+/// Logical px between a boxed surface's edge and its rows' cells, on each side, before the
+/// pad cell every row carries.
+const FRAME_SIDE: u32 = 4;
+/// Logical px radius of a boxed surface's rounded corners.
+const FRAME_RADIUS: u32 = 6;
+/// Pixels between a row's edges and the ink of a capital letter in it: what `Frame::new`
+/// measures the visible margin from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ink {
+    /// Left of the cell to the first inked column.
+    pub left: u32,
+    /// Top of the row to the first inked line.
+    pub top: u32,
+    /// Last inked line to the bottom of the row.
+    pub bottom: u32,
+}
+
+/// The pixel frame of a boxed surface (popups, the launcher), physical px: a `stroke` thick line
+/// along the surface's edge with `radius` rounded corners, and the room between it and the
+/// rows' cells. The room is not the same on every side: the visible gap between the stroke
+/// and the text is, so the vertical insets make up for the leading a row carries above and
+/// below its letters (`Ink`), and the sides count the pad cell each row starts and ends with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame {
+    /// Left and right.
+    pub side: u32,
+    pub top: u32,
+    pub bottom: u32,
+    pub stroke: u32,
+    pub radius: u32,
+}
+
+impl Frame {
+    /// At `scale`, for cells `advance` wide and the `ink` of the font's capitals in a row.
+    pub fn new(scale: i32, advance: f32, ink: Ink) -> Frame {
+        let e = scale.max(1) as u32;
+        let side = FRAME_SIDE * e;
+        // Stroke to the first column's ink: the side room, the pad cell, the letter's own bearing.
+        let gap = side + advance.round().max(0.0) as u32 + ink.left;
+        Frame {
+            side,
+            top: gap.saturating_sub(ink.top).max(e),
+            bottom: gap.saturating_sub(ink.bottom).max(e),
+            stroke: e,
+            radius: FRAME_RADIUS * e,
+        }
+    }
+
+    /// What the frame adds to the cells' width and height.
+    pub fn extra(&self) -> (u32, u32) {
+        (2 * self.side, self.top + self.bottom)
+    }
+}
 
 /// Everything `glyph` needs to blend one shaped glyph, for a given (char,
 /// bold) pair at the current scale — computed once by `shaped`, cached, and
@@ -91,6 +146,8 @@ pub struct Fonts {
     /// practice there are only ever a handful of distinct scales per
     /// session). Avoids reshaping "M" on every alternation.
     advances: Vec<(i32, f32)>,
+    /// The frame already measured for each scale seen (like `advances`).
+    frames: Vec<(i32, Frame)>,
     /// `shape`'s result, memoized per (char, bold): cosmic-text otherwise
     /// reshapes the exact same glyph on every cell, column and redraw.
     /// Bounded like `cache` (`MAX_CACHE`, cleared past it); also cleared on
@@ -140,6 +197,49 @@ fn fill(px: &mut [u8], width: u32, x0: u32, x1: u32, height: u32, Rgb(r, g, b): 
             // large buffer before the conversion.
             let o = (y as usize * width as usize + x as usize) * 4;
             px[o..o + 4].copy_from_slice(&[b, g, r, 0xff]);
+        }
+    }
+}
+
+/// Flat fill over x ∈ [x.0, x.1), y ∈ [y.0, y.1), clipped to the buffer.
+fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rgb(r, g, b): Rgb) {
+    for yy in y.0..y.1.min(height) {
+        for xx in x.0..x.1.min(width) {
+            let o = (yy as usize * width as usize + xx as usize) * 4;
+            px[o..o + 4].copy_from_slice(&[b, g, r, 0xff]);
+        }
+    }
+}
+
+/// Draws `frame` along the edge of the buffer: straight strokes, and in each corner a quarter
+/// ring anti-aliased on both of its edges, the part beyond it left transparent (the buffer is
+/// premultiplied ARGB8888) and the part inside it the background's, over what the rows left.
+fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb, back: Rgb) {
+    let (Rgb(sr, sg, sb), Rgb(br, bg, bb)) = (ink, back);
+    let r = frame.radius.min(width / 2).min(height / 2);
+    let s = frame.stroke.min(r.max(1));
+    rect(px, width, height, (r, width.saturating_sub(r)), (0, s), ink);
+    rect(px, width, height, (r, width.saturating_sub(r)), (height.saturating_sub(s), height), ink);
+    rect(px, width, height, (0, s), (r, height.saturating_sub(r)), ink);
+    rect(px, width, height, (width.saturating_sub(s), width), (r, height.saturating_sub(r)), ink);
+    let (rf, sf) = (r as f32, s as f32);
+    let mix =
+        |stroke: u8, back: u8, ring: f32, inside: f32| ((stroke as f32 * ring + back as f32 * inside).round()).clamp(0.0, 255.0) as u8;
+    for cy in 0..r {
+        for cx in 0..r {
+            // Distance of the pixel's centre to the corner circle's centre, in the corner's own
+            // axes (the top left one): coverage of the outer and of the inner edge.
+            let d = ((rf - cx as f32 - 0.5).powi(2) + (rf - cy as f32 - 0.5).powi(2)).sqrt();
+            let outer = (rf - d + 0.5).clamp(0.0, 1.0);
+            let inner = (rf - sf - d + 0.5).clamp(0.0, 1.0);
+            let ring = outer - inner;
+            let pixel = [mix(sb, bb, ring, inner), mix(sg, bg, ring, inner), mix(sr, br, ring, inner), (outer * 255.0).round() as u8];
+            for (x, y) in [(cx, cy), (width - 1 - cx, cy), (cx, height - 1 - cy), (width - 1 - cx, height - 1 - cy)] {
+                let o = (y as usize * width as usize + x as usize) * 4;
+                if let Some(dst) = px.get_mut(o..o + 4) {
+                    dst.copy_from_slice(&pixel);
+                }
+            }
         }
     }
 }
@@ -282,6 +382,7 @@ impl Fonts {
             scale: 0,
             advance: 0.0,
             advances: Vec::new(),
+            frames: Vec::new(),
             shapes: HashMap::new(),
         };
         p.set_scale(1);
@@ -347,9 +448,16 @@ impl Fonts {
             return; // inconsistent buffer: do nothing rather than panic
         }
         self.set_scale(scale);
-        let advance = self.advance;
-        let edge = |col: usize| ((col as f32) * advance).round() as u32;
         fill(px, width, 0, width, height, color(palette, Tint::Bg));
+        self.paint_cells(grid, palette, px, width, height, 0);
+    }
+
+    /// `grid`'s cells in a band `height` px tall, the first one `x0` px from the band's left edge:
+    /// the cell backgrounds that differ from the surface's, then the glyphs. The band's own
+    /// background is the caller's.
+    fn paint_cells(&mut self, grid: &Grid, palette: &Palette, px: &mut [u8], width: u32, height: u32, x0: u32) {
+        let advance = self.advance;
+        let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
             if c.style.bg != Tint::Bg {
                 fill(px, width, edge(col), edge(col + 1), height, color(palette, c.style.bg));
@@ -363,15 +471,73 @@ impl Fonts {
         }
     }
 
-    /// Paints rows top to bottom; each row is `row_height` physical px (the
-    /// bar's height × scale: the line metrics `set_scale` measured). Only
-    /// whole rows that fit in `px` are painted; nothing past them is touched.
-    pub fn paint_rows(&mut self, rows: &[Grid], palette: &Palette, px: &mut [u8], width: u32, row_height: u32, scale: i32) {
-        let band = width as usize * row_height as usize * 4;
-        for (i, row) in rows.iter().enumerate() {
-            let Some(slice) = px.get_mut(i * band..(i + 1) * band) else { return };
-            self.paint(row, palette, slice, width, row_height, scale);
+    /// The frame of boxed surfaces at `scale`, measured once per scale from the font itself.
+    pub fn frame(&mut self, scale: i32) -> Frame {
+        self.set_scale(scale);
+        if let Some((_, f)) = self.frames.iter().find(|(s, _)| *s == self.scale) {
+            return *f;
         }
+        let ink = self.measure_ink();
+        let frame = Frame::new(self.scale, self.advance, ink);
+        self.frames.push((self.scale, frame));
+        frame
+    }
+
+    /// The ink of a capital "E" in a row, at the current scale (a cap-height letter with a
+    /// stem on its left: the same edges every text in the boxes starts from).
+    fn measure_ink(&mut self) -> Ink {
+        let row = (self.height * self.scale as u32) as i32;
+        let (mut left, mut top, mut bottom) = (i32::MAX, i32::MAX, i32::MIN);
+        for g in self.shaped('E', false) {
+            self.cache.with_pixels(&mut self.fs, g.cache_key, Color::rgb(255, 255, 255), |dx, dy, c| {
+                if c.a() > 0 {
+                    left = left.min(g.dx + dx);
+                    top = top.min(g.y + dy);
+                    bottom = bottom.max(g.y + dy);
+                }
+            });
+        }
+        if top > bottom {
+            // No glyph for it (cannot happen with a monospace face, but never a panic): a plain guess.
+            return Ink { left: 0, top: (row / 4).max(0) as u32, bottom: (row / 4).max(0) as u32 };
+        }
+        Ink { left: left.max(0) as u32, top: top.max(0) as u32, bottom: (row - 1 - bottom).max(0) as u32 }
+    }
+
+    /// Paints a boxed surface `width` × `height` px: the surface's background, the rows' cells
+    /// `frame.side` px from the left and `frame.top` from the top, each `row_height` px tall, the
+    /// separator and divider lines, and last the frame, drawn at the surface's own edge (outside
+    /// its rounded corners stays transparent). Rows that do not fit are not painted.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_boxed(&mut self, b: &Boxed, palette: &Palette, px: &mut [u8], width: u32, height: u32, row_height: u32, scale: i32) {
+        if px.len() < (width as usize) * (height as usize) * 4 {
+            return; // inconsistent buffer: do nothing rather than panic
+        }
+        let frame = self.frame(scale);
+        fill(px, width, 0, width, height, color(palette, Tint::Bg));
+        let band = width as usize * row_height as usize * 4;
+        for (i, row) in b.rows.iter().enumerate() {
+            let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
+            let Some(slice) = px.get_mut(start..start + band) else { break };
+            self.paint_cells(row, palette, slice, width, row_height, frame.side);
+        }
+        let ink = color(palette, Tint::Muted);
+        let (w, h, s) = (width, height, frame.stroke);
+        for &r in &b.separators {
+            let y = frame.top + r as u32 * row_height + row_height.saturating_sub(s) / 2;
+            rect(px, w, h, (s, w.saturating_sub(s)), (y, y + s), ink);
+        }
+        if let Some(c) = b.divider {
+            let (left, right) = (self.edge(usize::from(c)), self.edge(usize::from(c) + 1));
+            let x = frame.side + left + (right - left).saturating_sub(s) / 2;
+            rect(px, w, h, (x, x + s), (s, h.saturating_sub(s)), ink);
+        }
+        draw_frame(px, w, h, &frame, ink, color(palette, Tint::Bg));
+    }
+
+    /// Left edge of cell `col`, px from the cells' origin, at the current scale.
+    fn edge(&self, col: usize) -> u32 {
+        ((col as f32) * self.advance).round() as u32
     }
 
     /// `shape`'s result for (`ch`, `bold`) at the current scale, memoized:
@@ -539,41 +705,190 @@ mod tests {
         assert!(after < before, "the memo should speed up a repeated paint: before {before:?}, after {after:?}");
     }
 
-    /// The launcher box: one Grid per row, each painted in its own band of
-    /// `row_height` lines, nothing written past `rows.len()` bands.
     #[test]
-    fn paint_rows_paints_each_row_in_its_band_and_nothing_below() {
-        let mut p = fonts();
-        let pal = Palette::default();
-        let av = p.advance(1);
-        let cols = 4u16;
-        let (w, rh) = ((av * cols as f32).ceil() as u32, DEFAULT_HEIGHT);
-        let mut rows = vec![Grid::empty(cols), Grid::empty(cols), Grid::empty(cols)];
-        rows[1].write(0, cols, "    ", Style::INVERTED);
-        let mut px = vec![0x11u8; (w * rh * 4) as usize * 4]; // room for 4 rows, 3 painted
-        p.paint_rows(&rows, &pal, &mut px, w, rh, 1);
-        let at = |x: u32, y: u32| {
-            let o = ((y * w + x) * 4) as usize;
-            Rgb(px[o + 2], px[o + 1], px[o])
-        };
-        assert_eq!(at(1, rh / 2), pal.bg, "row 0: plain background");
-        assert_eq!(at(1, rh + rh / 2), pal.accent, "row 1 painted in its own band");
-        assert_eq!(at(1, 2 * rh + rh / 2), pal.bg, "row 2");
-        assert!(px[(3 * rh * w * 4) as usize..].iter().all(|b| *b == 0x11), "exactly rows.len() × row_height lines written");
+    fn frame_makes_the_visible_gap_equal_on_every_side() {
+        // 8.25 px cells (pad cell 8 px), capitals inked from 1 px left, 6 px from the row's top
+        // and 7 px from its bottom: side 4 + pad 8 + bearing 1 = 13 px from stroke to text, so the
+        // vertical insets make up for the leading.
+        let f = Frame::new(1, 8.25, Ink { left: 1, top: 6, bottom: 7 });
+        assert_eq!(f, Frame { side: 4, top: 7, bottom: 6, stroke: 1, radius: 6 });
+        assert_eq!(f.side + 8 + 1, f.top + 6, "left gap = top gap");
+        assert_eq!(f.side + 8 + 1, f.bottom + 7, "left gap = bottom gap");
+        let f2 = Frame::new(2, 16.5, Ink { left: 2, top: 12, bottom: 14 });
+        assert_eq!(
+            f2,
+            Frame { side: 8, top: 15, bottom: 13, stroke: 2, radius: 12 },
+            "everything scales with the buffer (16.5 px cells: a 17 px pad cell)"
+        );
+        assert_eq!(f.extra(), (8, 13));
+        let tight = Frame::new(1, 8.25, Ink { left: 0, top: 40, bottom: 40 });
+        assert_eq!(
+            (tight.top, tight.bottom),
+            (1, 1),
+            "a leading bigger than the gap never pushes the text past the stroke: never below it"
+        );
+        assert_eq!(Frame::new(0, 8.25, Ink { left: 1, top: 6, bottom: 7 }).stroke, 1, "scale 0 treated as 1");
     }
 
     #[test]
-    fn paint_rows_with_a_short_buffer_paints_whole_rows_only() {
+    fn the_fonts_frame_is_measured_once_per_scale() {
         let mut p = fonts();
-        let pal = Palette::default();
-        let av = p.advance(1);
-        let (w, rh) = ((av * 4.0).ceil() as u32, DEFAULT_HEIGHT);
-        let rows = vec![Grid::empty(4), Grid::empty(4)];
-        let band = (w * rh * 4) as usize;
-        let mut px = vec![0x11u8; band + band / 2]; // one row and a half
-        p.paint_rows(&rows, &pal, &mut px, w, rh, 1);
-        assert_ne!(&px[..3], &[0x11, 0x11, 0x11], "the first row is painted");
-        assert!(px[band..].iter().all(|b| *b == 0x11), "no partial row, no panic");
+        let (one, two) = (p.frame(1), p.frame(2));
+        assert_eq!((one.stroke, one.radius, one.side), (1, 6, 4));
+        assert_eq!((two.stroke, two.radius, two.side), (2, 12, 8));
+        assert_eq!(p.frame(1), one, "memoized: the same answer, in either order");
+        assert_eq!(p.frames.len(), 2);
+        assert!(one.top > one.stroke && one.top < DEFAULT_HEIGHT, "a plausible inset above the letters: {one:?}");
+    }
+
+    /// The pixel tests' surface: `rows` painted in a box of the cells' size plus the frame, the rows
+    /// `DEFAULT_HEIGHT * scale` tall.
+    struct Surface {
+        px: Vec<u8>,
+        w: u32,
+        h: u32,
+        rh: u32,
+        frame: Frame,
+        advance: f32,
+    }
+
+    impl Surface {
+        fn paint(p: &mut Fonts, b: &Boxed, scale: i32) -> Surface {
+            let pal = Palette::default();
+            let (advance, frame) = (p.advance(scale), p.frame(scale));
+            let (cols, rows) = b.cells();
+            let rh = DEFAULT_HEIGHT * scale as u32;
+            let (w, h) = ((cols as f32 * advance).ceil() as u32 + frame.extra().0, rows as u32 * rh + frame.extra().1);
+            let mut px = vec![0x11u8; (w * h * 4) as usize];
+            p.paint_boxed(b, &pal, &mut px, w, h, rh, scale);
+            Surface { px, w, h, rh, frame, advance }
+        }
+
+        /// (r, g, b, a)
+        fn at(&self, x: u32, y: u32) -> [u8; 4] {
+            let o = ((y * self.w + x) * 4) as usize;
+            [self.px[o + 2], self.px[o + 1], self.px[o], self.px[o + 3]]
+        }
+
+        fn opaque(rgb: Rgb) -> [u8; 4] {
+            [rgb.0, rgb.1, rgb.2, 255]
+        }
+    }
+
+    fn text_row(columns: u16, text: &str) -> Grid {
+        let mut g = Grid::empty(columns);
+        g.write(0, columns, text, Style::NORMAL);
+        g
+    }
+
+    /// The first and the last row start with an "E" after the pad cell: the ink's distance to the
+    /// frame is the same on the left, at the top and at the bottom (within a pixel), at both scales.
+    #[test]
+    fn the_text_sits_at_an_even_distance_from_the_frame() {
+        for scale in [1, 2] {
+            let mut p = fonts();
+            let b = Boxed { rows: vec![text_row(6, " E"), text_row(6, ""), text_row(6, " E")], separators: vec![], divider: None };
+            let s = Surface::paint(&mut p, &b, scale);
+            let bg = Surface::opaque(Palette::default().bg);
+            let (r, st) = (s.frame.radius, s.frame.stroke);
+            let (mut min_x, mut min_y, mut max_y) = (u32::MAX, u32::MAX, 0);
+            for y in st..s.h - st {
+                for x in r..s.w - r {
+                    if s.at(x, y) != bg {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+            let (left, top, bottom) = (min_x - st, min_y - st, (s.h - st - 1) - max_y);
+            assert!(left.abs_diff(top) <= 1, "scale {scale}: left {left} px, top {top} px");
+            assert!(left.abs_diff(bottom) <= 1, "scale {scale}: left {left} px, bottom {bottom} px");
+            assert!(left > 4 * scale as u32, "scale {scale}: the gap is a real margin, not the stroke ({left} px)");
+        }
+    }
+
+    #[test]
+    fn the_frame_is_a_stroke_at_the_surface_edge_with_rounded_corners() {
+        for scale in [1, 2] {
+            let mut p = fonts();
+            let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![], divider: None };
+            let s = Surface::paint(&mut p, &b, scale);
+            let pal = Palette::default();
+            let (muted, bg) = (Surface::opaque(pal.muted), Surface::opaque(pal.bg));
+            let (r, st, w, h) = (s.frame.radius, s.frame.stroke, s.w, s.h);
+            let mid = (w / 2, h / 2);
+            for k in 0..st {
+                assert_eq!(s.at(mid.0, k), muted, "scale {scale}: top stroke line {k}");
+                assert_eq!(s.at(mid.0, h - 1 - k), muted, "bottom stroke line {k}");
+                assert_eq!(s.at(k, mid.1), muted, "left stroke line {k}");
+                assert_eq!(s.at(w - 1 - k, mid.1), muted, "right stroke line {k}");
+            }
+            assert_eq!(s.at(mid.0, st), bg, "scale {scale}: the stroke is {st} px thick, not more");
+            assert_eq!(s.at(st, mid.1), bg);
+            assert_eq!(s.at(r, 0), muted, "the straight part starts where the corner ends");
+            assert_eq!(s.at(0, r), muted);
+            assert_eq!(s.at(w - 1 - r, h - 1), muted);
+            for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+                assert_eq!(s.at(x, y)[3], 0, "scale {scale}: outside the rounded corner stays transparent ({x}, {y})");
+            }
+            // Where the middle of the stroke crosses the corner's diagonal.
+            let c = (r as f32 - (r as f32 - st as f32 / 2.0) * std::f32::consts::FRAC_1_SQRT_2).floor() as u32;
+            assert_eq!(s.at(c, c)[3], 255, "scale {scale}: inside the arc: opaque");
+            assert_ne!(s.at(c, c), bg, "and on the stroke, not on the background");
+            assert_eq!(s.at(r, r), bg, "the corner's centre is inside, on the background");
+        }
+    }
+
+    #[test]
+    fn separators_and_the_divider_are_lines_of_one_stroke_across_the_box() {
+        for scale in [1, 2] {
+            let mut p = fonts();
+            let b = Boxed {
+                rows: vec![text_row(8, " E"), text_row(8, ""), text_row(8, " E"), text_row(8, " E")],
+                separators: vec![1],
+                divider: Some(5),
+            };
+            let s = Surface::paint(&mut p, &b, scale);
+            let pal = Palette::default();
+            let (muted, bg) = (Surface::opaque(pal.muted), Surface::opaque(pal.bg));
+            let (st, w, h, rh) = (s.frame.stroke, s.w, s.h, s.rh);
+            let y = s.frame.top + rh + (rh - st) / 2;
+            let off_divider = s.frame.side + (3.0 * s.advance).round() as u32;
+            for k in 0..st {
+                assert_eq!(s.at(off_divider, y + k), muted, "scale {scale}: the separator, line {k}");
+                assert_eq!(s.at(st, y + k), muted, "it reaches the left stroke");
+                assert_eq!(s.at(w - 1 - st, y + k), muted, "and the right one");
+            }
+            assert_eq!(s.at(off_divider, y - 1), bg, "{st} px thick: nothing above");
+            assert_eq!(s.at(off_divider, y + st), bg, "nor below");
+            let x = s.frame.side
+                + (5.0 * s.advance).round() as u32
+                + ((6.0 * s.advance).round() as u32 - (5.0 * s.advance).round() as u32 - st) / 2;
+            for yy in [st, s.frame.top, s.frame.top + 2 * rh + rh / 2, h - 1 - st] {
+                for k in 0..st {
+                    assert_eq!(s.at(x + k, yy), muted, "scale {scale}: the divider at y {yy}, column {k}");
+                }
+            }
+            assert_eq!(s.at(x - 1, s.frame.top + 2 * rh + rh / 2), bg, "{st} px thick: nothing to its left");
+            assert_eq!(s.at(x + st, s.frame.top + 2 * rh + rh / 2), bg, "nor its right");
+        }
+    }
+
+    #[test]
+    fn paint_boxed_with_a_short_buffer_paints_nothing_and_never_panics() {
+        let mut p = fonts();
+        let b = Boxed { rows: vec![Grid::empty(4), Grid::empty(4)], separators: vec![0], divider: Some(1) };
+        let mut px = vec![0x11u8; 100];
+        p.paint_boxed(&b, &Palette::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1);
+        assert!(px.iter().all(|b| *b == 0x11), "an inconsistent buffer is left alone");
+        // Rows past the buffer's end (the compositor shortened the popup): the rows that fit are painted, no panic.
+        let frame = p.frame(1);
+        let w = (p.advance(1) * 4.0).ceil() as u32 + frame.extra().0;
+        let h = frame.top + DEFAULT_HEIGHT; // the first row only
+        let mut px = vec![0x11u8; (w * h * 4) as usize];
+        p.paint_boxed(&b, &Palette::default(), &mut px, w, h, DEFAULT_HEIGHT, 1);
+        assert_ne!(&px[..3], &[0x11, 0x11, 0x11], "painted");
     }
 
     #[test]

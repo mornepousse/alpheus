@@ -95,14 +95,14 @@ pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, 
     }
 }
 
-/// The tooltip's one row: the text on SURFACE with one blank cell each side, at most `max_columns`
-/// wide (the output's columns − 2), truncated with "…".
+/// The tooltip's one row: the text, truncated with "…" to `max_columns` − 2 (the output's columns
+/// less the pad cell `list::padded` adds on each side). The frame around it is the painter's, as
+/// for every boxed surface.
 pub fn tooltip_row(text: &str, max_columns: u16) -> Grid {
     let text = truncate(text, max_columns.saturating_sub(2));
-    let columns = (text_width(&text) + 2).min(max_columns.max(2));
+    let columns = text_width(&text);
     let mut g = Grid::empty(columns);
-    g.write(0, columns, &" ".repeat(usize::from(columns)), Style::SURFACE);
-    g.write(1, columns.saturating_sub(1), &text, Style::SURFACE);
+    g.write(0, columns, &text, Style::NORMAL);
     g
 }
 
@@ -199,6 +199,6 @@ mod tests {
             [super::tooltip_row("Nimbus — 3 new messages", 80), super::tooltip_row(&"Kettle ".repeat(20), 30), super::tooltip_row("", 80)];
         let text: Vec<String> = rows.iter().map(|g| format!("{:?}\n{}", g.text(), g.styles())).collect();
         insta::assert_snapshot!("tooltip_row", text.join("\n"));
-        assert!(rows[1].width() <= 30, "never wider than the output allows");
+        assert!(crate::list::padded(&rows[1..2]).cells().0 <= 30, "never wider than the output allows, pad cells included");
     }
 }

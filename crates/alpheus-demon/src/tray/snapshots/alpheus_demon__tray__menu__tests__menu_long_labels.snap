@@ -2,12 +2,10 @@
 source: crates/alpheus-demon/src/tray/menu.rs
 expression: snapshot(&rows)
 ---
-╭──────────────────────────────────────────────╮
-│ A very long label A very long label A very … │
-│ Short                                      ▸ │
-╰──────────────────────────────────────────────╯
+ A very long label A very long label A very … 
+ Short                                      ▸ 
 
-mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
-mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm
-m............................................m.m
-mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+............................................m.
+
+separators: []

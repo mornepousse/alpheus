@@ -175,6 +175,13 @@ impl Grid {
         &self.cells
     }
 
+    /// The grid without its first and last cell (nothing at all when narrower than 3 cells);
+    /// zones are not kept.
+    pub fn without_edges(&self) -> Grid {
+        let inner = self.cells.get(1..self.cells.len().saturating_sub(1)).unwrap_or(&[]);
+        Grid { cells: inner.to_vec(), zones: Vec::new() }
+    }
+
     pub fn zones(&self) -> &[Zone] {
         &self.zones
     }

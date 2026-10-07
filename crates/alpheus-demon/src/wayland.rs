@@ -789,11 +789,11 @@ impl App {
         // The locale's first day, read at each open (decision 11): never at startup, nothing kept
         // while closed.
         let calendar = Calendar::new(&LocalTime::now().0, locale_first_day(), self.bar.config.clock.week_numbers);
-        let rows = crate::list::framed(&calendar.render());
+        let rows = crate::list::padded(&calendar.render());
         let month = crate::popup::calendar_month(&calendar);
-        let (columns, height) = (rows.first().map_or(0, Grid::width), rows.len() as u16);
+        let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Calendar(calendar), columns, height, true) {
-            self.popup_paint(&rows);
+            self.popup_paint(rows);
             log(&format!("calendar shown {month}"));
         }
     }
@@ -1350,11 +1350,12 @@ impl App {
         // Refreshed to this surface's CURRENT name: `popup_open` (through `bar_surface`) still
         // picks the bar by name, but now from a name read right now, never a stale one.
         let anchor = PopupAnchor { output: app.surfaces[i].name.clone(), ..anchor };
-        let row = hover::tooltip_row(&text, columns.saturating_sub(2));
+        let rows = crate::list::padded(&[hover::tooltip_row(&text, columns.saturating_sub(2))]);
         let qh = app.qh.clone();
-        if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), row.width(), 1, false) {
+        let (columns, height) = rows.cells();
+        if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, false) {
             app.tooltip_item = Some(key);
-            app.popup_paint(&[row]);
+            app.popup_paint(rows);
             log("tooltip shown");
         }
     }
@@ -1457,8 +1458,9 @@ impl App {
         m.set_rows(usize::from(rows.saturating_sub(2))); // consistent with render's height (size.1 − 2)
         let grid = m.render(layout, columns, rows);
         let qh = self.qh.clone();
+        let (columns, rows) = grid.cells();
         if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, true) {
-            self.popup_paint(&grid);
+            self.popup_paint(grid);
             log(&format!("menu shown for {}{}", key.owner, key.path));
         } else {
             self.menu_end();
@@ -1489,7 +1491,7 @@ impl App {
         let (columns, rows) = m.size(layout, max_columns, max_rows);
         m.set_rows(usize::from(rows.saturating_sub(2)));
         let grid = m.render(layout, columns, rows);
-        self.popup_paint(&grid);
+        self.popup_paint(grid);
     }
 
     /// MenuAction → Tray calls and popup changes (Click: menu_click with the key or press time, then

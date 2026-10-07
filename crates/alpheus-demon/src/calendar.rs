@@ -208,8 +208,8 @@ impl Calendar {
         (7 * COLUMN - 1 + if self.week_numbers { WEEK_CELLS } else { 0 }, 2 + WEEK_ROWS as u16)
     }
 
-    /// The content rows, each `size().0` wide (task 18 frames them with
-    /// list::framed): title "October 2026" centred BOLD_ACCENT, weekday
+    /// The content rows, each `size().0` wide (`list::padded` adds the pad
+    /// cells, the painter the frame): title "October 2026" centred BOLD_ACCENT, weekday
     /// initials MUTED rotated to first_day, days NORMAL, today INVERTED (like
     /// the active workspace), days of other months blank, ISO week numbers
     /// MUTED on the left — the week of the row's Monday (question 5), on rows

@@ -6,7 +6,6 @@
 //! on close: nothing of the launcher stays resident (spec § 3).
 
 use crate::actions::{self, Button};
-use crate::grid::Grid;
 use crate::keys;
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history;
@@ -15,8 +14,9 @@ use crate::launcher::run::{self, Done, RunContext, Spawner};
 use crate::launcher::scan::ScanEnv;
 use crate::launcher::socket::Pending;
 use crate::launcher::view::{self, BoxLayout, Click};
+use crate::list::Boxed;
 use crate::log::write as log;
-use crate::painter;
+use crate::painter::{self, Frame};
 use crate::popup::{PopupClose, box_size, cell_under};
 use crate::state::Feed;
 use crate::wayland::{App, pick_buffer};
@@ -78,6 +78,27 @@ pub fn output_cells(width: u32, height: u32, advance_phys: f32, row_height: u32,
     let columns = painter::columns(width * e, advance_phys);
     let rows = (height * e).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
     (columns, rows)
+}
+
+/// The box's logical size: the layout's cells without the ring of one blank cell its numbers count
+/// (`view`), plus the pixel frame's room around them.
+pub(crate) fn layout_size(layout: &BoxLayout, advance_phys: f32, row_height: u32, scale: i32, frame: &Frame) -> (u32, u32) {
+    box_size(layout.columns.saturating_sub(2), layout.rows.saturating_sub(2), advance_phys, row_height, scale, frame)
+}
+
+/// The layout's cell (column, row), in `view::hit`'s coordinates (the layout's ring of one blank
+/// cell included), under a pointer at `position` (logical px) on the box; None in the frame's
+/// margin, where no cell is.
+pub(crate) fn hit_cell(
+    position: (f64, f64),
+    scale: i32,
+    advance_phys: f32,
+    row_height: u32,
+    frame: &Frame,
+    layout: &BoxLayout,
+) -> Option<(u16, u16)> {
+    let cells = (layout.columns.saturating_sub(2), layout.rows.saturating_sub(2));
+    cell_under(position.0, position.1, scale, advance_phys, row_height, frame, cells).map(|(column, row)| (column + 1, row + 1))
 }
 
 /// What a redraw does with the box (pure decision).
@@ -162,13 +183,14 @@ pub(crate) fn resized_layout(
     advance_phys: f32,
     row_height: u32,
     scale: i32,
+    frame: &Frame,
 ) -> (BoxLayout, (u32, u32)) {
     match imposed {
         Some(size) => (layout_within(size, model, advance_phys, row_height, scale), size),
         None => {
             let (columns, rows) = output_cells(output_size.0, output_size.1, advance_phys, row_height, scale);
             let layout = open_layout(columns, rows, model);
-            let size = box_size(layout.columns, layout.rows, advance_phys, row_height, scale);
+            let size = layout_size(&layout, advance_phys, row_height, scale, frame);
             (layout, size)
         }
     }
@@ -322,7 +344,7 @@ pub struct OpenLauncher {
     configured: bool,
     shown_logged: bool,
     /// Rows last committed: an unchanged frame is not repainted.
-    last: Option<Vec<Grid>>,
+    last: Option<Boxed>,
     /// The dmenu client's watch (host.rs), removed on drop.
     client_watch: Option<(LoopHandle<'static, App>, RegistrationToken)>,
 }
@@ -393,7 +415,7 @@ impl App {
         // Once per open: the box keeps this size whatever gets selected.
         let layout = open_layout(columns, rows, &model);
         model.set_list_rows(layout.list_rows as usize);
-        let size = box_size(layout.columns, layout.rows, advance, row_height, scale);
+        let size = layout_size(&layout, advance, row_height, scale, &self.fonts.frame(scale));
         let bytes = (size.0 * scale as u32) as usize * (size.1 * scale as u32) as usize * 4;
         let outputs = self.outputs.outputs().count();
         let pool = match SlotPool::new(pool_size(bytes, outputs).max(4096), &self.shm) {
@@ -532,7 +554,8 @@ impl App {
         let e = open.scale.max(1);
         let advance = fonts.advance(e);
         let row_height = height * e as u32;
-        let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e);
+        let frame = fonts.frame(e);
+        let (layout, wanted) = resized_layout(open.imposed_size, open.output_size, &open.model, advance, row_height, e, &frame);
         open.model.set_list_rows(layout.list_rows as usize);
         open.layout = layout;
         match plan_redraw(open.size, wanted, open.configured) {
@@ -567,7 +590,7 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_rows(&rows, palette, px, w, row_height, e);
+        fonts.paint_boxed(&rows, palette, px, w, h, row_height, e);
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -650,14 +673,17 @@ impl App {
             PointerEventKind::Press { .. } if !on_box => self.launcher_close(CloseReason::ClickOutside),
             PointerEventKind::Press { button, .. } => {
                 let advance = self.fonts.advance(scale);
-                let (column, row) = cell_under(ev.position.0, ev.position.1, scale, advance, height * scale as u32);
+                let frame = self.fonts.frame(scale);
                 let outcome = match (self.launcher.as_mut(), actions::button(*button)) {
-                    (Some(open), Some(b)) => match (view::hit(&open.model, &open.layout, column, row), b) {
-                        (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
-                        (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
-                        (Some(Click::Mode(m)), Button::Left) => open.model.click_mode(m),
-                        _ => Outcome::Nothing,
-                    },
+                    (Some(open), Some(b)) => {
+                        let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout);
+                        match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
+                            (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
+                            (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
+                            (Some(Click::Mode(m)), Button::Left) => open.model.click_mode(m),
+                            _ => Outcome::Nothing,
+                        }
+                    }
                     _ => Outcome::Nothing,
                 };
                 self.launcher_outcome(outcome);
@@ -822,16 +848,43 @@ mod tests {
         assert_eq!(plan_configure((495, 330), (640, 0)), Some((640, 330)), "a 0 dimension keeps what was asked");
     }
 
+    /// A frame as the workstation's font measures it at scale 1 (8.25 px cells, 22 px rows).
+    fn frame1() -> Frame {
+        Frame { side: 4, top: 7, bottom: 6, stroke: 1, radius: 6 }
+    }
+
     #[test]
     fn a_layout_refitted_to_a_configured_size_fills_it_and_never_exceeds_it() {
-        // 495 × 330 logical px at 8.25 px × 22 px cells: exactly 60 × 15 cells.
+        // 495 × 330 logical px at 8.25 px × 22 px cells: exactly 60 × 15 cells, ring included.
         let b = layout_within((495, 330), &apps(), 8.25, 22, 1);
         assert_eq!((b.columns, b.rows), (60, 15), "the whole configured size is used");
-        assert_eq!(box_size(b.columns, b.rows, 8.25, 22, 1), (495, 330));
+        let (w, h) = layout_size(&b, 8.25, 22, 1, &frame1());
+        assert_eq!((w, h), (479 + 8, 13 * 22 + 13), "58 × 13 cells and the pixel frame instead of the ring");
+        assert!(w <= 495 && h <= 330, "the frame never takes more room than the ring did: {w} × {h}");
         let b = layout_within((400, 200), &apps(), 8.25, 22, 1);
-        let (w, h) = box_size(b.columns, b.rows, 8.25, 22, 1);
+        let (w, h) = layout_size(&b, 8.25, 22, 1, &frame1());
         assert!(w <= 400 && h <= 200, "never painted past the configured size: {w} × {h}");
         assert!(b.list_rows >= 1);
+    }
+
+    #[test]
+    fn a_press_maps_to_the_layouts_cells_and_the_margin_hits_none() {
+        let b = layout_within((495, 330), &apps(), 8.25, 22, 1);
+        let f = frame1();
+        // The first pixel of the first cell is the layout's cell (1, 1): the ring is the frame.
+        assert_eq!(hit_cell((4.0, 7.0), 1, 8.25, 22, &f, &b), Some((1, 1)));
+        // The third result row, a few columns in.
+        assert_eq!(hit_cell((4.0 + 8.25 * 5.5, 7.0 + 22.0 * 3.5), 1, 8.25, 22, &f, &b), Some((6, 4)));
+        // The margin: left, top, and the frame's other two sides.
+        assert_eq!(hit_cell((3.0, 40.0), 1, 8.25, 22, &f, &b), None);
+        assert_eq!(hit_cell((40.0, 6.0), 1, 8.25, 22, &f, &b), None);
+        let (w, h) = layout_size(&b, 8.25, 22, 1, &f);
+        assert_eq!(hit_cell((f64::from(w) - 1.0, 40.0), 1, 8.25, 22, &f, &b), None, "right margin");
+        assert_eq!(hit_cell((40.0, f64::from(h) - 1.0), 1, 8.25, 22, &f, &b), None, "bottom margin");
+        // And a press there is no click: `view::hit` never sees it.
+        let mut l = apps();
+        l.set_list_rows(usize::from(b.list_rows));
+        assert_eq!(hit_cell((0.0, 0.0), 1, 8.25, 22, &f, &b).and_then(|(c, r)| view::hit(&l, &b, c, r)), None);
     }
 
     /// Review item M1, final review slice 3: `release_memory` must run only
@@ -877,12 +930,12 @@ mod tests {
     #[test]
     fn a_scale_change_keeps_a_compositor_imposed_size_untouched() {
         // Without an imposed size: the whole output, same as before this was tracked.
-        let (free, free_size) = resized_layout(None, (1920, 1080), &apps(), 8.25, 22, 1);
-        assert_eq!(free_size, box_size(free.columns, free.rows, 8.25, 22, 1), "no constraint: sized from the output alone");
+        let (free, free_size) = resized_layout(None, (1920, 1080), &apps(), 8.25, 22, 1, &frame1());
+        assert_eq!(free_size, layout_size(&free, 8.25, 22, 1, &frame1()), "no constraint: sized from the output alone");
         // With one: the imposed logical size wins outright, whatever the output is —
         // a scale change must not quietly widen the box back out past what the
         // compositor already dictated.
-        let (within, wanted) = resized_layout(Some((400, 200)), (1920, 1080), &apps(), 8.25, 22, 1);
+        let (within, wanted) = resized_layout(Some((400, 200)), (1920, 1080), &apps(), 8.25, 22, 1, &frame1());
         assert_eq!(wanted, (400, 200), "the compositor's own size, unaffected by the output");
         assert_eq!(within, layout_within((400, 200), &apps(), 8.25, 22, 1), "the same refit a configure already uses");
     }

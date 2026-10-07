@@ -1,38 +1,75 @@
 //! Lists drawn as rows of cells, shared by the launcher's box, a tray menu
 //! and the calendar (spec: "the list rendering and key handling are shared
-//! with the launcher"): thin frames, a result or menu row (icon, text,
-//! right-aligned muted text, the selection inverted to the pane's end), a
-//! separator, and the selection arithmetic (clamped, never wrapping,
-//! skipping rows that cannot be selected). Pure: every row is a `Grid`
-//! written only through `Grid::write`, so controls never reach a cell and
-//! wide characters are never cut.
+//! with the launcher"): a pixel frame, a result or menu row (icon, text,
+//! right-aligned muted text, the selection inverted to the pane's end), the
+//! lines the painter draws between rows (`Boxed`), and the selection
+//! arithmetic (clamped, never wrapping, skipping rows that cannot be
+//! selected). Pure: every row is a `Grid` written only through
+//! `Grid::write`, so controls never reach a cell and wide characters are
+//! never cut.
 
 use crate::grid::{Grid, Style, text_width, truncate};
 
 /// Most cells a right-aligned kind takes (the launcher's KIND_MAX).
 pub const RIGHT_MAX: u16 = 20;
 
-/// A frame row: `left`, "─" across, `right`; `divider`: (column, char) of a pane divider.
-pub fn frame(columns: u16, left: char, right: char, divider: Option<(u16, char)>) -> Grid {
-    let mut g = Grid::empty(columns);
-    g.write(0, columns, &"─".repeat(usize::from(columns)), Style::MUTED);
-    g.write(0, columns, &left.to_string(), Style::MUTED);
-    if let Some((column, c)) = divider {
-        g.write(column, columns, &c.to_string(), Style::MUTED);
-    }
-    g.write(columns.saturating_sub(1), columns, &right.to_string(), Style::MUTED);
-    g
+/// A boxed surface's content: rows of cells, with the lines the painter draws in pixels between them
+/// (`Painter::paint_boxed`). The frame itself (a 1 px stroke at the surface edge, rounded corners) and
+/// the margin around the cells belong to the painter, not to the grid: a box-drawing glyph sits
+/// in the middle of its cell, half a row from the edge at the top and bottom and half a column at
+/// the sides, so a frame made of them never has even margins.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Boxed {
+    /// Every row as wide as the others (`columns()`).
+    pub rows: Vec<Grid>,
+    /// Rows drawn as a 1 px horizontal line across the box (their cells stay blank).
+    pub separators: Vec<usize>,
+    /// A column drawn as a 1 px vertical line through the box (the launcher's preview divider).
+    pub divider: Option<u16>,
 }
 
-/// An interior row: "│" at both ends and at `divider`, blank inside.
-pub fn interior(columns: u16, divider: Option<u16>) -> Grid {
-    let mut g = Grid::empty(columns);
-    g.write(0, columns, "│", Style::MUTED);
-    if let Some(column) = divider {
-        g.write(column, columns, "│", Style::MUTED);
+impl Boxed {
+    /// The size in cells, frame margin excluded.
+    pub fn cells(&self) -> (u16, u16) {
+        (self.rows.first().map_or(0, Grid::width), self.rows.len().min(usize::from(u16::MAX)) as u16)
     }
-    g.write(columns.saturating_sub(1), columns, "│", Style::MUTED);
-    g
+}
+
+/// `rows` as the layouts build them: inside a ring of one blank cell all around (the row above and
+/// below, the column left and right), where a frame of box-drawing glyphs used to be. The ring is
+/// dropped; `separators` (row indexes) and `divider` (a column) are given in the ring's
+/// coordinates and shift with it. Everything column- and row-based in the callers (hit-testing,
+/// scrolling) keeps its numbers: it is the same offset of one cell, in a single place.
+pub fn boxed(rows: &[Grid], separators: &[usize], divider: Option<u16>) -> Boxed {
+    let inner = rows.len().saturating_sub(2);
+    let rows = rows.iter().skip(1).take(inner).map(Grid::without_edges).collect();
+    Boxed {
+        rows,
+        separators: separators.iter().filter_map(|r| r.checked_sub(1)).filter(|r| *r < inner).collect(),
+        divider: divider.and_then(|c| c.checked_sub(1)),
+    }
+}
+
+/// Content rows alone (the calendar, a tooltip): each as wide as the widest plus a blank cell on each
+/// side (the pad every menu row carries, so the text keeps the same distance from the frame), a
+/// narrower row padded with blanks, styles kept.
+pub fn padded(content: &[Grid]) -> Boxed {
+    let inner = content.iter().map(Grid::width).max().unwrap_or(0);
+    let columns = inner.saturating_add(2);
+    let rows = content
+        .iter()
+        .map(|c| {
+            let mut g = Grid::empty(columns);
+            for (i, cell) in c.cells().iter().enumerate() {
+                // Cell by cell, styles kept; a wide character's continuation comes with it.
+                if cell.ch != crate::grid::CONT {
+                    g.write(1 + i as u16, columns - 1, &cell.ch.to_string(), cell.style);
+                }
+            }
+            g
+        })
+        .collect();
+    Boxed { rows, separators: Vec::new(), divider: None }
 }
 
 /// One list row's content.
@@ -70,33 +107,6 @@ pub fn row(g: &mut Grid, start: u16, end: u16, r: &Row) {
     if right_width > 0 {
         g.write(end.saturating_sub(right_width + 1), end, &right, pick(Style::MUTED));
     }
-}
-
-/// A separator inside a pane: "├" "─"… "┤" MUTED.
-pub fn separator(columns: u16) -> Grid {
-    frame(columns, '├', '┤', None)
-}
-
-/// Content rows wrapped in ╭─╮ / │ │ / ╰─╯ (calendar): each row as wide as the widest content row
-/// plus the two frame columns; a narrower content row is padded with blanks.
-pub fn framed(content: &[Grid]) -> Vec<Grid> {
-    let inner = content.iter().map(Grid::width).max().unwrap_or(0);
-    let columns = inner.saturating_add(2);
-    let mut rows = Vec::with_capacity(content.len() + 2);
-    rows.push(frame(columns, '╭', '╮', None));
-    for c in content {
-        let mut g = interior(columns, None);
-        for (i, cell) in c.cells().iter().enumerate() {
-            // Cell by cell, styles kept; a wide character's continuation comes with it.
-            let column = 1 + i as u16;
-            if cell.ch != crate::grid::CONT {
-                g.write(column, columns - 1, &cell.ch.to_string(), cell.style);
-            }
-        }
-        rows.push(g);
-    }
-    rows.push(frame(columns, '╰', '╯', None));
-    rows
 }
 
 /// The end of `s` that fits in `max` cells, "…" first when cut: the
@@ -225,49 +235,60 @@ mod tests {
     }
 
     /// The launcher's result row, rebuilt through `list::row`: the same text and styles as its
-    /// snapshots (icon ACCENT, name NORMAL, kind MUTED one cell from the frame; selected: INVERTED
-    /// from column 1 to the pane's end).
+    /// snapshots (icon ACCENT, name NORMAL, kind MUTED one cell from the end; selected: INVERTED
+    /// from `start` to the pane's end).
     #[test]
     fn row_draws_like_the_launcher_result() {
-        let mut g = interior(30, None);
+        let mut g = Grid::empty(30);
         let r = Row { icon: Some('#'), text: "Firefox", right: "Web Browser", style: Style::NORMAL, selected: false };
         row(&mut g, 1, 29, &r);
-        assert_eq!(g.text(), "│ # Firefox      Web Browser │");
-        assert_eq!(g.styles(), format!("m.a{}{}.m", ".".repeat(14), "m".repeat(11)));
-        let mut g = interior(30, None);
+        assert_eq!(g.text(), "  # Firefox      Web Browser  ");
+        assert_eq!(g.styles(), format!("..a{}{}..", ".".repeat(14), "m".repeat(11)));
+        let mut g = Grid::empty(30);
         row(&mut g, 1, 29, &Row { selected: true, ..r });
-        assert_eq!(g.text(), "│ # Firefox      Web Browser │");
-        assert_eq!(g.styles(), "mAAAAAAAAAAAAAAAAAAAAAAAAAAAAm");
-        let mut g = interior(30, None);
+        assert_eq!(g.text(), "  # Firefox      Web Browser  ");
+        assert_eq!(g.styles(), ".AAAAAAAAAAAAAAAAAAAAAAAAAAAA.");
+        let mut g = Grid::empty(30);
         row(&mut g, 1, 29, &Row { icon: None, text: &"x".repeat(40), right: "", style: Style::MUTED, selected: false });
-        assert_eq!(g.text(), format!("│ {}… │", "x".repeat(25)), "no right text: the text runs to one cell from the end");
-        assert_eq!(g.styles(), format!("m.{}.m", "m".repeat(26)));
+        assert_eq!(g.text(), format!("  {}…  ", "x".repeat(25)), "no right text: the text runs to one cell from the end");
+        assert_eq!(g.styles(), format!("..{}..", "m".repeat(26)));
+    }
+
+    fn row_of(text: &str, columns: u16) -> Grid {
+        let mut g = Grid::empty(columns);
+        g.write(0, columns, text, Style::NORMAL);
+        g
     }
 
     #[test]
-    fn framed_wraps_content() {
+    fn padded_pads_each_side_makes_rows_as_wide_as_the_widest_and_keeps_styles() {
         let mut a = Grid::empty(3);
         a.write(0, 3, "abc", Style::INVERTED);
         let b = Grid::empty(2);
-        let rows = framed(&[a, b]);
-        let text: Vec<String> = rows.iter().map(Grid::text).collect();
-        assert_eq!(text, ["╭───╮", "│abc│", "│   │", "╰───╯"]);
-        assert_eq!(rows[1].styles(), "mAAAm", "styles kept");
-        assert!(rows.iter().all(|r| r.width() == 5));
-        assert_eq!(framed(&[]).iter().map(Grid::text).collect::<Vec<_>>(), ["╭╮", "╰╯"]);
+        let boxed = padded(&[a, b]);
+        let text: Vec<String> = boxed.rows.iter().map(Grid::text).collect();
+        assert_eq!(text, [" abc ", "     "]);
+        assert_eq!(boxed.rows[0].styles(), ".AAA.", "styles kept, the pad cells plain");
+        assert_eq!(boxed.cells(), (5, 2));
+        assert!(boxed.separators.is_empty() && boxed.divider.is_none());
+        assert_eq!(padded(&[]).cells(), (0, 0), "no rows, no cells");
+        let mut wide = Grid::empty(4);
+        wide.write(0, 4, "日本", Style::NORMAL);
+        assert_eq!(padded(&[wide]).rows[0].text(), " 日本 ", "a wide character comes whole");
     }
 
     #[test]
-    fn separator_spans_the_width() {
-        let g = separator(6);
-        assert_eq!(g.text(), "├────┤");
-        assert_eq!(g.styles(), "mmmmmm");
-    }
-
-    #[test]
-    fn frame_with_a_divider() {
-        let g = frame(8, '╭', '╮', Some((4, '┬')));
-        assert_eq!(g.text(), "╭───┬──╮");
-        assert_eq!(interior(8, Some(4)).text(), "│   │  │");
+    fn boxed_drops_the_ring_and_shifts_what_is_given_in_its_coordinates() {
+        // Ring row, three content rows (the middle one a separator), ring row; ring column each side.
+        let rows = ["      ", " ab c ", "      ", " de   ", "      "].map(|t| row_of(t, 6));
+        let b = boxed(&rows, &[2, 0, 4], Some(3));
+        assert_eq!(b.cells(), (4, 3), "the ring is gone: 2 columns and 2 rows less");
+        assert_eq!(b.rows[0].text(), "ab c");
+        assert_eq!(b.rows[2].text(), "de  ");
+        assert_eq!(b.separators, [1], "row 2 of the ring is row 1 inside; the ring rows themselves are no separator");
+        assert_eq!(b.divider, Some(2), "column 3 of the ring is column 2 inside");
+        assert_eq!(boxed(&rows, &[], Some(0)).divider, None, "a divider on the ring has nothing to draw");
+        assert_eq!(boxed(&[], &[], None).cells(), (0, 0), "nothing at all: nothing panics");
+        assert_eq!(boxed(&rows[..1], &[], None).cells(), (0, 0));
     }
 }

@@ -2,34 +2,32 @@
 source: crates/alpheus-demon/src/launcher/view.rs
 expression: snapshot(&rows)
 ---
-╭──────────────────────────────────────────────────────────┬────────────────────────────────────╮
-│ All  Apps  Windows  Commands                             │ Files                              │
-│ ❯                                                        │ File Manager                       │
-│ 󰆍 Alacritty                                     Terminal │                                    │
-│ 󰣆 btop++                                     application │ Browse and manage the files on     │
-│ 󰉋 Files                                     File Manager │ this computer                      │
-│ 󰈹 Firefox                                    Web Browser │                                    │
-│                                                          │ exec: nautilus                     │
-│                                                          │                                    │
-│                                                          │                                    │
-│                                                          │                                    │
-│                                                          │                                    │
-│                                                          │                                    │
-│ enter open · ctrl+enter action · tab mode · esc close    │                                    │
-╰──────────────────────────────────────────────────────────┴────────────────────────────────────╯
+ All  Apps  Windows  Commands                               Files                              
+ ❯                                                          File Manager                       
+ 󰆍 Alacritty                                     Terminal                                      
+ 󰣆 btop++                                     application   Browse and manage the files on     
+ 󰉋 Files                                     File Manager   this computer                      
+ 󰈹 Firefox                                    Web Browser                                      
+                                                            exec: nautilus                     
+                                                                                               
+                                                                                               
+                                                                                               
+                                                                                               
+                                                                                               
+ enter open · ctrl+enter action · tab mode · esc close                                         
 
-mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
-mmmmmmAAAAAAmmmmmmmmmmmmmmmmmmm............................m.GGGGG..............................m
-m.G.A......................................................m....................................m
-m.a...............................................mmmmmmmm.m....................................m
-m.a............................................mmmmmmmmmmm.m....................................m
-mAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAm....................................m
-m.a............................................mmmmmmmmmmm.m....................................m
-m..........................................................m.mmmmmmmmmmmmmm.....................m
-m..........................................................m....................................m
-m..........................................................m....................................m
-m..........................................................m....................................m
-m..........................................................m....................................m
-m..........................................................m....................................m
-m.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm....m....................................m
-mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+mmmmmAAAAAAmmmmmmmmmmmmmmmmmmm..............................GGGGG..............................
+.G.A...........................................................................................
+.a...............................................mmmmmmmm......................................
+.a............................................mmmmmmmmmmm......................................
+AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.....................................
+.a............................................mmmmmmmmmmm......................................
+............................................................mmmmmmmmmmmmmm.....................
+...............................................................................................
+...............................................................................................
+...............................................................................................
+...............................................................................................
+...............................................................................................
+.mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm.........................................
+
+divider: 58

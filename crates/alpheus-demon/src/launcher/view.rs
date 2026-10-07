@@ -1,16 +1,21 @@
-//! The launcher drawn as rows of cells (spec § 2, mockups A and C): a thin
-//! frame, the modes row, the input line, the results, the help line; a
-//! preview panel on the right when it has something to show. Every row is
-//! a `Grid` exactly `columns` wide, written only through `Grid::write`
-//! (controls become spaces, wide characters are never cut): the painter
-//! copies it, tests snapshot it.
+//! The launcher drawn as rows of cells (spec § 2, mockups A and C): the
+//! modes row, the input line, the results, the help line; a preview panel
+//! on the right when it has something to show; the frame is the painter's
+//! (a pixel line, `list::Boxed`). Every row is a `Grid` written only
+//! through `Grid::write` (controls become spaces, wide characters are never
+//! cut): the painter copies it, tests snapshot it.
+//!
+//! The layout counts a ring of one blank cell all around (`BoxLayout::columns`
+//! and `rows` include it, as the box-drawing frame once did): every number
+//! below is in the ring's coordinates, and `render` drops the ring once
+//! built (`list::boxed`).
 
 use crate::compositor::Toplevel;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
-use crate::list::{self, Row, tail, wrap};
+use crate::list::{self, Boxed, Row, tail, wrap};
 
 pub const BOX_COLUMNS: u16 = 60;
 pub const PREVIEW_COLUMNS: u16 = 36;
@@ -69,13 +74,9 @@ fn mode_spans() -> Vec<(Mode, u16, u16)> {
         .collect()
 }
 
-fn frame(b: &BoxLayout, left: char, right: char, cross: char) -> Grid {
-    list::frame(b.columns, left, right, (b.preview_columns > 0).then(|| (b.pane_end(), cross)))
-}
-
-/// An interior row: side frames and the divider, the rest blank.
-fn interior(b: &BoxLayout) -> Grid {
-    list::interior(b.columns, (b.preview_columns > 0).then(|| b.pane_end()))
+/// A blank row (the ring's, or one to write into).
+fn blank(b: &BoxLayout) -> Grid {
+    Grid::empty(b.columns)
 }
 
 fn modes_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
@@ -231,22 +232,22 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
     out
 }
 
-/// One Grid per row, each `columns` wide. Selected row INVERTED; generic name/kind MUTED right-aligned
+/// The box's rows (ring dropped, the preview divider as a line). Selected row INVERTED; generic name/kind MUTED right-aligned
 /// ("Web browser", "window · 2", "command"); empty results → "no match" (or "scanning…" while the
 /// catalog is None and nothing matched); message on the help line in Style::ERROR.
-pub fn render(l: &Launcher, b: &BoxLayout) -> Vec<Grid> {
-    let mut rows = vec![frame(b, '╭', '╮', '┬')];
+pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
+    let mut rows = vec![blank(b)];
     let end = b.pane_end();
     if !l.is_script() {
-        let mut g = interior(b);
+        let mut g = blank(b);
         modes_row(l, b, &mut g);
         rows.push(g);
     }
-    let mut g = interior(b);
+    let mut g = blank(b);
     input_row(l, b, &mut g);
     rows.push(g);
     for r in 0..usize::from(b.list_rows) {
-        let mut g = interior(b);
+        let mut g = blank(b);
         let index = l.top + r;
         if index < l.results.len() {
             result_row(l, b, &mut g, index);
@@ -256,13 +257,13 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Vec<Grid> {
         }
         rows.push(g);
     }
-    let mut g = interior(b);
+    let mut g = blank(b);
     match &l.message {
         Some(m) => g.write(2, end.saturating_sub(1), &truncate(m, end.saturating_sub(3)), Style::ERROR),
         None => g.write(2, end.saturating_sub(1), &truncate(help_text(l), end.saturating_sub(3)), Style::MUTED),
     };
     rows.push(g);
-    rows.push(frame(b, '╰', '╯', '┴'));
+    rows.push(blank(b));
     // The panel is reserved for the whole open (task 12, Mae 2026-10-05: the box never
     // changes width with the selection) and, once reserved, always shows the selected
     // result (Mae, 2026-10-05, after seeing the real rendering: never blank while one
@@ -284,7 +285,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Vec<Grid> {
             row.write(start, stop, &truncate(&text, stop.saturating_sub(start)), style);
         }
     }
-    rows
+    list::boxed(&rows, &[], (b.preview_columns > 0).then(|| b.pane_end()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,11 +313,13 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
     Some(Click::Inside)
 }
 
-/// Snapshot text: each row's text, then each row's style codes (Grid::text, Grid::styles).
-pub fn snapshot(rows: &[Grid]) -> String {
-    let texts: Vec<String> = rows.iter().map(Grid::text).collect();
-    let styles: Vec<String> = rows.iter().map(Grid::styles).collect();
-    format!("{}\n\n{}", texts.join("\n"), styles.join("\n"))
+/// Snapshot text: each row's text, then each row's style codes (Grid::text, Grid::styles), then the
+/// lines the painter draws (a divider column).
+pub fn snapshot(b: &Boxed) -> String {
+    let texts: Vec<String> = b.rows.iter().map(Grid::text).collect();
+    let styles: Vec<String> = b.rows.iter().map(Grid::styles).collect();
+    let divider = b.divider.map_or("none".to_string(), |c| c.to_string());
+    format!("{}\n\n{}\n\ndivider: {divider}", texts.join("\n"), styles.join("\n"))
 }
 
 #[cfg(test)]
@@ -401,14 +404,14 @@ mod tests {
 
     /// Lays out for an output of `columns` × 40 cells, like task 12 does:
     /// the preview panel reserved for the app launcher, whatever the selection.
-    fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Vec<Grid>) {
+    fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Boxed) {
         let b = layout(columns, 40, l.config.rows, l.is_script(), !l.is_script());
         l.set_list_rows(usize::from(b.list_rows));
         let rows = render(l, &b);
-        for (i, r) in rows.iter().enumerate() {
-            assert_eq!(r.width(), b.columns, "row {i} of {}", snapshot(&rows));
+        for (i, r) in rows.rows.iter().enumerate() {
+            assert_eq!(r.width(), b.columns - 2, "row {i} of {}", snapshot(&rows));
         }
-        assert_eq!(rows.len(), usize::from(b.rows));
+        assert_eq!(rows.rows.len(), usize::from(b.rows) - 2, "the ring's two rows are dropped");
         (b, rows)
     }
 
@@ -463,9 +466,9 @@ mod tests {
     }
 
     /// Helper shared with other tests: the preview panel's text, one entry per interior row.
-    fn panel(rows: &[Grid], b: &BoxLayout) -> Vec<String> {
-        let start = usize::from(b.columns - b.preview_columns - 1);
-        rows[1..rows.len() - 1].iter().map(|r| r.text().chars().skip(start).take(usize::from(b.preview_columns)).collect()).collect()
+    fn panel(rows: &Boxed, b: &BoxLayout) -> Vec<String> {
+        let start = usize::from(b.columns - b.preview_columns - 2);
+        rows.rows.iter().map(|r| r.text().chars().skip(start).take(usize::from(b.preview_columns)).collect()).collect()
     }
 
     /// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
@@ -592,9 +595,9 @@ mod tests {
         let mut l = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
         l.set_catalog(catalog());
         let (b, rows) = draw(&mut l, MIN_COLUMNS);
-        let row = &rows[usize::from(b.list_top)];
+        let row = &rows.rows[usize::from(b.list_top) - 1];
         let icon = icons::glyph(&l.windows[0].class);
-        assert_eq!(row.text().chars().nth(2), Some(icon), "the icon must survive the kind column: {:?}", row.text());
+        assert_eq!(row.text().chars().nth(1), Some(icon), "the icon must survive the kind column: {:?}", row.text());
     }
 
     /// Review Focus 3: a title made only of zero-width characters (bidi marks here) is as
@@ -607,7 +610,7 @@ mod tests {
         let mut l = Launcher::for_apps(LauncherConfig::default(), w, History::empty(200), NOW);
         l.set_catalog(catalog());
         let (b, rows) = draw(&mut l, 100);
-        let row = &rows[usize::from(b.list_top)];
+        let row = &rows.rows[usize::from(b.list_top) - 1];
         assert!(row.text().contains("Alacritty"), "falls back to the class: {:?}", row.text());
     }
 
@@ -691,7 +694,7 @@ mod tests {
         let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
         typed(&mut l, "zzzz");
         let (_, rows) = draw(&mut l, 100);
-        assert!(rows[3].text().contains("scanning…"), "{}", snapshot(&rows));
+        assert!(rows.rows[2].text().contains("scanning…"), "{}", snapshot(&rows));
         let mut l = launcher();
         l.show_message("firefox: program not found".into());
         let (_, rows) = draw(&mut l, 100);
@@ -740,12 +743,10 @@ mod tests {
 
         fn check(l: &mut Launcher, columns: u16) {
             let (b, rows) = draw(l, columns);
-            for r in &rows {
-                assert_eq!(r.width(), b.columns);
+            for r in &rows.rows {
+                assert_eq!(r.width(), b.columns - 2);
                 assert!(r.cells().iter().all(|c| !c.ch.is_control() || c.ch == crate::grid::CONT), "{:?}", r.text());
                 assert!(!r.text().contains(['\u{2028}', '\u{2029}']), "{:?}", r.text());
-                let t = r.text();
-                assert!(t.starts_with(['│', '╭', '╰']) && t.ends_with(['│', '╮', '╯']), "frame broken at {columns}: {t:?}");
             }
             // Review Focus 2: every field this fixture makes hostile (window class, title and
             // workspace; command names; action names; app name, generic name and comment; the
@@ -773,7 +774,7 @@ mod tests {
         for (c, r) in [(0u16, 0u16), (1, 1), (10, 3), (u16::MAX, u16::MAX)] {
             let b = layout(c, r, 10, false, true);
             l.set_list_rows(usize::from(b.list_rows));
-            assert!(render(&l, &b).iter().all(|g| g.width() == b.columns), "{c}×{r}");
+            assert!(render(&l, &b).rows.iter().all(|g| g.width() == b.columns.saturating_sub(2)), "{c}×{r}");
         }
     }
 
@@ -811,9 +812,9 @@ mod tests {
     /// class/title/workspace, command names, action names, app name/generic name/comment, the
     /// dmenu prompt and its lines) — so the six single-field tests this helper used to serve
     /// are redundant and were folded into that one combinatorial test.
-    fn assert_no_raw_hostile_characters(rows: &[Grid]) {
+    fn assert_no_raw_hostile_characters(rows: &Boxed) {
         const HOSTILE: [char; 6] = ['\n', '\r', '\t', '\u{202e}', '\u{200e}', '\u{2066}'];
-        for r in rows {
+        for r in &rows.rows {
             let t = r.text();
             assert!(!t.contains(HOSTILE), "a control character or bidi override leaked into a row: {t:?}");
         }
