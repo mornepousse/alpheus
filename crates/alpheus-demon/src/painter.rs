@@ -647,6 +647,7 @@ mod tests {
             warn: c(14),
             error: c(15),
             urgent: c(16),
+            ..Roles::default()
         }
     }
 

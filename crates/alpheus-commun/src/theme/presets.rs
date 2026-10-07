@@ -3,9 +3,10 @@
 //! official palettes. Role choices follow Catppuccin's UI style guide and
 //! map the other families by analogy (plan, task 2). Where an official
 //! colour failed the contrast test, the nearest passing palette colour is
-//! used and the comment says so. About 1 KB of read-only data in all.
+//! used and the comment says so. Each half also carries the seven named hues
+//! (spec § 9) from the same palette. About 1.2 KB of read-only data in all.
 
-use super::{Rgb, Roles};
+use super::{Hues, Rgb, Roles};
 
 /// One theme family: its dark half, and its light half when it has one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +39,15 @@ pub(crate) const CATPPUCCIN_DARK: Roles = Roles {
     warn: h(0xf9e2af),              // Yellow
     error: h(0xf38ba8),             // Red
     urgent: h(0xfab387),            // Peach
+    hues: Hues {
+        red: h(0xf38ba8),    // Red
+        orange: h(0xfab387), // Peach
+        yellow: h(0xf9e2af), // Yellow
+        green: h(0xa6e3a1),  // Green
+        cyan: h(0x94e2d5),   // Teal
+        blue: h(0x89b4fa),   // Blue
+        purple: h(0xcba6f7), // Mauve
+    },
 };
 
 /// Catppuccin Latte.
@@ -58,6 +68,15 @@ const CATPPUCCIN_LIGHT: Roles = Roles {
     warn: h(0xb77418),              // Yellow darkened to 82 % (official #df8e1d is 2.15:1)
     error: h(0xd20f39),             // Red
     urgent: h(0xe0580a),            // Peach darkened to 88 % (official #fe640b is 2.45:1)
+    hues: Hues {
+        red: h(0xd20f39),    // Red
+        orange: h(0xe0580a), // Peach darkened to 88 % (official #fe640b is 2.45:1)
+        yellow: h(0xb77418), // Yellow darkened to 82 % (official #df8e1d is 2.15:1)
+        green: h(0x3c9628),  // Green darkened to 94 % (official #40a02b is 2.75:1)
+        cyan: h(0x179299),   // Teal
+        blue: h(0x1e66f5),   // Blue
+        purple: h(0x8839ef), // Mauve
+    },
 };
 
 /// Gruvbox dark (morhetz).
@@ -78,6 +97,15 @@ const GRUVBOX_DARK: Roles = Roles {
     warn: h(0xfabd2f),              // bright_yellow
     error: h(0xfb4934),             // bright_red
     urgent: h(0xfb4934),            // bright_red
+    hues: Hues {
+        red: h(0xfb4934),    // bright_red
+        orange: h(0xfe8019), // bright_orange
+        yellow: h(0xfabd2f), // bright_yellow
+        green: h(0xb8bb26),  // bright_green
+        cyan: h(0x8ec07c),   // bright_aqua
+        blue: h(0x83a598),   // bright_blue
+        purple: h(0xd3869b), // bright_purple
+    },
 };
 
 /// Gruvbox light (morhetz).
@@ -98,6 +126,15 @@ const GRUVBOX_LIGHT: Roles = Roles {
     warn: h(0xb57614),              // faded_yellow
     error: h(0x9d0006),             // faded_red
     urgent: h(0x9d0006),            // faded_red
+    hues: Hues {
+        red: h(0x9d0006),    // faded_red
+        orange: h(0xaf3a03), // faded_orange
+        yellow: h(0xb57614), // faded_yellow
+        green: h(0x79740e),  // faded_green
+        cyan: h(0x427b58),   // faded_aqua
+        blue: h(0x076678),   // faded_blue
+        purple: h(0x8f3f71), // faded_purple
+    },
 };
 
 /// Tokyo Night (Night).
@@ -118,6 +155,15 @@ const TOKYO_NIGHT_DARK: Roles = Roles {
     warn: h(0xe0af68),              // yellow
     error: h(0xf7768e),             // red
     urgent: h(0xff9e64),            // orange
+    hues: Hues {
+        red: h(0xf7768e),    // red
+        orange: h(0xff9e64), // orange
+        yellow: h(0xe0af68), // yellow
+        green: h(0x9ece6a),  // green
+        cyan: h(0x7dcfff),   // cyan
+        blue: h(0x7aa2f7),   // blue
+        purple: h(0xbb9af7), // magenta
+    },
 };
 
 /// Tokyo Night (Day).
@@ -138,6 +184,15 @@ const TOKYO_NIGHT_LIGHT: Roles = Roles {
     warn: h(0x8c6c3e),              // yellow
     error: h(0xf52a65),             // red
     urgent: h(0xb15c00),            // orange
+    hues: Hues {
+        red: h(0xf52a65),    // red
+        orange: h(0xb15c00), // orange
+        yellow: h(0x8c6c3e), // yellow
+        green: h(0x587539),  // green
+        cyan: h(0x007197),   // cyan
+        blue: h(0x2e7de9),   // blue
+        purple: h(0x9854f1), // magenta
+    },
 };
 
 /// Rose Pine (main).
@@ -158,6 +213,15 @@ const ROSE_PINE_DARK: Roles = Roles {
     warn: h(0xf6c177),              // gold
     error: h(0xeb6f92),             // love
     urgent: h(0xeb6f92),            // love
+    hues: Hues {
+        red: h(0xeb6f92),    // love
+        orange: h(0xebbcba), // rose (no orange in the palette)
+        yellow: h(0xf6c177), // gold
+        green: h(0x31748f),  // pine (no green in the palette)
+        cyan: h(0x9ccfd8),   // foam
+        blue: h(0xc4a7e7),   // iris (no blue in the palette; also the purple)
+        purple: h(0xc4a7e7), // iris
+    },
 };
 
 /// Rose Pine Dawn.
@@ -178,6 +242,15 @@ const ROSE_PINE_LIGHT: Roles = Roles {
     warn: h(0xbe7f2a),              // gold darkened to 81 % (official #ea9d34 is 2.05:1)
     error: h(0xb4637a),             // love
     urgent: h(0xb4637a),            // love
+    hues: Hues {
+        red: h(0xb4637a),    // love
+        orange: h(0xc67874), // rose darkened to 92 % (official #d7827e is 2.60:1; no orange in the palette)
+        yellow: h(0xbe7f2a), // gold darkened to 81 % (official #ea9d34 is 2.05:1)
+        green: h(0x286983),  // pine (no green in the palette)
+        cyan: h(0x56949f),   // foam
+        blue: h(0x907aa9),   // iris (no blue in the palette; also the purple)
+        purple: h(0x907aa9), // iris
+    },
 };
 
 /// Everforest dark medium.
@@ -198,6 +271,15 @@ const EVERFOREST_DARK: Roles = Roles {
     warn: h(0xdbbc7f),              // yellow
     error: h(0xe67e80),             // red
     urgent: h(0xe69875),            // orange
+    hues: Hues {
+        red: h(0xe67e80),    // red
+        orange: h(0xe69875), // orange
+        yellow: h(0xdbbc7f), // yellow
+        green: h(0xa7c080),  // green
+        cyan: h(0x83c092),   // aqua
+        blue: h(0x7fbbb3),   // blue
+        purple: h(0xd699b6), // purple
+    },
 };
 
 /// Everforest light medium.
@@ -218,6 +300,15 @@ const EVERFOREST_LIGHT: Roles = Roles {
     warn: h(0xae7d00),              // yellow darkened to 78 % (official #dfa000 is 1.91:1)
     error: h(0xe9504d),             // red darkened to 94 % (official #f85552 is 2.73:1)
     urgent: h(0xce6920),            // orange darkened to 84 % (official #f57d26 is 2.23:1)
+    hues: Hues {
+        red: h(0xe9504d),    // red darkened to 94 % (official #f85552 is 2.73:1)
+        orange: h(0xce6920), // orange darkened to 84 % (official #f57d26 is 2.23:1)
+        yellow: h(0xae7d00), // yellow darkened to 78 % (official #dfa000 is 1.91:1)
+        green: h(0x7d8f01),  // green darkened to 89 % (official #8da101 is 2.42:1)
+        cyan: h(0x309670),   // aqua darkened to 90 % (official #35a77c is 2.51:1)
+        blue: h(0x388ebd),   // blue darkened to 96 % (official #3a94c5 is 2.81:1)
+        purple: h(0xcb60a9), // purple darkened to 91 % (official #df69ba is 2.55:1)
+    },
 };
 
 /// Kanagawa Wave.
@@ -238,6 +329,15 @@ const KANAGAWA_DARK: Roles = Roles {
     warn: h(0xff9e3b),              // roninYellow
     error: h(0xe82424),             // samuraiRed
     urgent: h(0xffa066),            // surimiOrange
+    hues: Hues {
+        red: h(0xc34043),    // autumnRed
+        orange: h(0xffa066), // surimiOrange
+        yellow: h(0xe6c384), // carpYellow
+        green: h(0x98bb6c),  // springGreen
+        cyan: h(0x6a9589),   // waveAqua1
+        blue: h(0x7e9cd8),   // crystalBlue
+        purple: h(0x957fb8), // oniViolet
+    },
 };
 
 /// Kanagawa Lotus.
@@ -258,6 +358,15 @@ const KANAGAWA_LIGHT: Roles = Roles {
     warn: h(0xa36100),              // lotusOrange2 darkened to 70 % (official #e98a00 is 1.63:1)
     error: h(0xdc2222),             // lotusRed3 darkened to 95 % (official #e82424 is 2.80:1)
     urgent: h(0xab5c00),            // lotusOrange darkened to 84 % (official #cc6d00 is 2.29:1)
+    hues: Hues {
+        red: h(0xdc2222),    // lotusRed3 darkened to 95 % (official #e82424 is 2.80:1)
+        orange: h(0xab5c00), // lotusOrange darkened to 84 % (official #cc6d00 is 2.29:1)
+        yellow: h(0x77713f), // lotusYellow
+        green: h(0x617744),  // lotusGreen darkened to 87 % (official #6f894e is 2.46:1)
+        cyan: h(0x577973),   // lotusAqua darkened to 98 % (official #597b75 is 2.92:1)
+        blue: h(0x4d699b),   // lotusBlue4
+        purple: h(0x624c83), // lotusViolet4
+    },
 };
 
 /// Solarized dark.
@@ -278,6 +387,15 @@ const SOLARIZED_DARK: Roles = Roles {
     warn: h(0xb58900),              // yellow
     error: h(0xdc322f),             // red
     urgent: h(0xcb4b16),            // orange
+    hues: Hues {
+        red: h(0xdc322f),    // red
+        orange: h(0xcb4b16), // orange
+        yellow: h(0xb58900), // yellow
+        green: h(0x859900),  // green
+        cyan: h(0x2aa198),   // cyan
+        blue: h(0x268bd2),   // blue
+        purple: h(0x6c71c4), // violet
+    },
 };
 
 /// Solarized light.
@@ -298,6 +416,15 @@ const SOLARIZED_LIGHT: Roles = Roles {
     warn: h(0xb18600),              // yellow darkened to 98 % (official #b58900 is 2.98:1)
     error: h(0xdc322f),             // red
     urgent: h(0xcb4b16),            // orange
+    hues: Hues {
+        red: h(0xdc322f),    // red
+        orange: h(0xcb4b16), // orange
+        yellow: h(0xb18600), // yellow darkened to 98 % (official #b58900 is 2.98:1)
+        green: h(0x829600),  // green darkened to 98 % (official #859900 is 2.97:1)
+        cyan: h(0x299e95),   // cyan darkened to 98 % (official #2aa198 is 2.93:1)
+        blue: h(0x268bd2),   // blue
+        purple: h(0x6c71c4), // violet
+    },
 };
 
 /// Nord.
@@ -318,6 +445,15 @@ const NORD_DARK: Roles = Roles {
     warn: h(0xebcb8b),              // nord13
     error: h(0xbf616a),             // nord11
     urgent: h(0xd08770),            // nord12
+    hues: Hues {
+        red: h(0xbf616a),    // nord11
+        orange: h(0xd08770), // nord12
+        yellow: h(0xebcb8b), // nord13
+        green: h(0xa3be8c),  // nord14
+        cyan: h(0x88c0d0),   // nord8
+        blue: h(0x81a1c1),   // nord9 (nord10 #5e81ac is too dark on nord0)
+        purple: h(0xb48ead), // nord15
+    },
 };
 
 /// Dracula.
@@ -338,6 +474,15 @@ const DRACULA_DARK: Roles = Roles {
     warn: h(0xf1fa8c),              // Yellow
     error: h(0xff5555),             // Red
     urgent: h(0xffb86c),            // Orange
+    hues: Hues {
+        red: h(0xff5555),    // Red
+        orange: h(0xffb86c), // Orange
+        yellow: h(0xf1fa8c), // Yellow
+        green: h(0x50fa7b),  // Green
+        cyan: h(0x8be9fd),   // Cyan
+        blue: h(0x6272a4),   // Comment (the palette has no blue; its bluish grey is the nearest)
+        purple: h(0xbd93f9), // Purple
+    },
 };
 
 const CATPPUCCIN: Preset = Preset { name: "catppuccin", dark: CATPPUCCIN_DARK, light: Some(CATPPUCCIN_LIGHT) };
@@ -420,6 +565,30 @@ mod tests {
         assert_eq!(half("dracula", false).accent, Rgb(0xbd, 0x93, 0xf9)); // Purple
     }
 
+    /// One known hue per half, against the official palettes (a typo guard), and the hues the
+    /// families lack (spec § 9: documented in the comments of each half).
+    #[test]
+    fn hues_come_from_the_official_palettes() {
+        let hues = |name: &str, light: bool| {
+            let p = preset(name).unwrap();
+            if light { p.light.unwrap().hues } else { p.dark.hues }
+        };
+        assert_eq!(hues("catppuccin", false).cyan, Rgb(0x94, 0xe2, 0xd5)); // Mocha Teal
+        assert_eq!(hues("catppuccin", true).purple, Rgb(0x88, 0x39, 0xef)); // Latte Mauve
+        assert_eq!(hues("gruvbox", false).blue, Rgb(0x83, 0xa5, 0x98)); // bright_blue
+        assert_eq!(hues("gruvbox", true).blue, Rgb(0x07, 0x66, 0x78)); // faded_blue
+        assert_eq!(hues("tokyo-night", false).cyan, Rgb(0x7d, 0xcf, 0xff));
+        assert_eq!(hues("tokyo-night", true).cyan, Rgb(0x00, 0x71, 0x97));
+        assert_eq!(hues("rose-pine", false).green, Rgb(0x31, 0x74, 0x8f)); // pine
+        assert_eq!(hues("rose-pine", true).red, Rgb(0xb4, 0x63, 0x7a)); // love
+        assert_eq!(hues("everforest", false).purple, Rgb(0xd6, 0x99, 0xb6));
+        assert_eq!(hues("kanagawa", false).red, Rgb(0xc3, 0x40, 0x43)); // autumnRed
+        assert_eq!(hues("kanagawa", true).blue, Rgb(0x4d, 0x69, 0x9b)); // lotusBlue4
+        assert_eq!(hues("solarized", false).purple, Rgb(0x6c, 0x71, 0xc4)); // violet
+        assert_eq!(hues("nord", false).blue, Rgb(0x81, 0xa1, 0xc1)); // nord9
+        assert_eq!(hues("dracula", false).cyan, Rgb(0x8b, 0xe9, 0xfd));
+    }
+
     #[test]
     fn no_two_halves_are_the_same() {
         let halves: Vec<(String, Roles)> = PRESETS
@@ -436,8 +605,8 @@ mod tests {
 
     #[test]
     fn a_preset_is_a_few_hundred_bytes() {
-        assert_eq!(std::mem::size_of::<Roles>(), 48);
-        assert!(std::mem::size_of::<Preset>() <= 128, "{}", std::mem::size_of::<Preset>());
+        assert_eq!(std::mem::size_of::<Roles>(), 69);
+        assert!(std::mem::size_of::<Preset>() <= 192, "{}", std::mem::size_of::<Preset>());
     }
 
     /// Spec § 7 plus the state-colour amendment: every shipped theme is
@@ -447,7 +616,7 @@ mod tests {
     fn every_preset_is_legible_in_both_modes() {
         /// What is checked, how to pick (text, background), the minimum ratio.
         type Pair = (&'static str, fn(&Roles) -> (Rgb, Rgb), f32);
-        let pairs: [Pair; 8] = [
+        let pairs: [Pair; 15] = [
             ("fg on bar_bg", |r| (r.fg, r.bar_bg), 4.5),
             ("fg on popup_bg", |r| (r.fg, r.popup_bg), 4.5),
             ("on_accent on accent_container", |r| (r.on_accent, r.accent_container), 4.5),
@@ -456,6 +625,13 @@ mod tests {
             ("warn on bar_bg", |r| (r.warn, r.bar_bg), 3.0),
             ("error on bar_bg", |r| (r.error, r.bar_bg), 3.0),
             ("urgent on bar_bg", |r| (r.urgent, r.bar_bg), 3.0),
+            ("red on bar_bg", |r| (r.hues.red, r.bar_bg), 3.0),
+            ("orange on bar_bg", |r| (r.hues.orange, r.bar_bg), 3.0),
+            ("yellow on bar_bg", |r| (r.hues.yellow, r.bar_bg), 3.0),
+            ("green on bar_bg", |r| (r.hues.green, r.bar_bg), 3.0),
+            ("cyan on bar_bg", |r| (r.hues.cyan, r.bar_bg), 3.0),
+            ("blue on bar_bg", |r| (r.hues.blue, r.bar_bg), 3.0),
+            ("purple on bar_bg", |r| (r.hues.purple, r.bar_bg), 3.0),
         ];
         let mut failures = Vec::new();
         let mut checked = 0;
@@ -471,7 +647,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 9 * 2 * 8);
+        assert_eq!(checked, 9 * 2 * 15);
         assert!(failures.is_empty(), "{failures:#?}");
     }
 }

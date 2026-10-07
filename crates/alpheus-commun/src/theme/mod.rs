@@ -1,4 +1,4 @@
-//! Colours (spec § 1): 16 named roles shared by the daemon and the TUI,
+//! Colours (spec § 1, § 9): 16 named roles and 7 named hues shared by the daemon and the TUI,
 //! read from a colour file holding either the 16 roles or the legacy 7 keys
 //! (derived per mode). Independent of any display: the TUI converts to
 //! ratatui colours (alpheus::theme), the daemon to pixels.
@@ -19,8 +19,41 @@ pub enum Mode {
     Light,
 }
 
-/// The 16 colour roles (spec § 1). The frame colour is not a role: it is
-/// derived from `fg_dim` by `border_over`.
+/// The seven named hues (spec § 9): what the modules' icons and text take
+/// when `module_colors` asks for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Hues {
+    pub red: Rgb,
+    pub orange: Rgb,
+    pub yellow: Rgb,
+    pub green: Rgb,
+    pub cyan: Rgb,
+    pub blue: Rgb,
+    pub purple: Rgb,
+}
+
+/// Hue names in field order: the optional hue keys of a colour file and of
+/// `[colors]` in theme.toml.
+pub const HUE_NAMES: [&str; 7] = ["red", "orange", "yellow", "green", "cyan", "blue", "purple"];
+
+impl Hues {
+    /// The field named `name` (one of `HUE_NAMES`), None otherwise.
+    pub(crate) fn slot(&mut self, name: &str) -> Option<&mut Rgb> {
+        Some(match name {
+            "red" => &mut self.red,
+            "orange" => &mut self.orange,
+            "yellow" => &mut self.yellow,
+            "green" => &mut self.green,
+            "cyan" => &mut self.cyan,
+            "blue" => &mut self.blue,
+            "purple" => &mut self.purple,
+            _ => return None,
+        })
+    }
+}
+
+/// The 16 colour roles (spec § 1) and the 7 hues (spec § 9). The frame
+/// colour is not a role: it is derived from `fg_dim` by `border_over`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Roles {
     pub bar_bg: Rgb,
@@ -39,6 +72,7 @@ pub struct Roles {
     pub warn: Rgb,
     pub error: Rgb,
     pub urgent: Rgb,
+    pub hues: Hues,
 }
 
 /// Role names in field order: the keys of a 16-role colour file and of
@@ -73,6 +107,37 @@ const AMBER_DARK: Rgb = Rgb(0xff, 0xb0, 0x00);
 const AMBER_LIGHT: Rgb = Rgb(0x8a, 0x53, 0x00);
 /// `fg_dim`'s weight in the border colour: 40 % of 255.
 const BORDER_ALPHA: u16 = 102;
+
+/// Catppuccin Mocha's red, peach, yellow, green, teal, blue and mauve: the
+/// reference hues of a dark colour file that carries none.
+const HUES_DARK: Hues = Hues {
+    red: Rgb(0xf3, 0x8b, 0xa8),
+    orange: Rgb(0xfa, 0xb3, 0x87),
+    yellow: Rgb(0xf9, 0xe2, 0xaf),
+    green: Rgb(0xa6, 0xe3, 0xa1),
+    cyan: Rgb(0x94, 0xe2, 0xd5),
+    blue: Rgb(0x89, 0xb4, 0xfa),
+    purple: Rgb(0xcb, 0xa6, 0xf7),
+};
+/// The same seven in Catppuccin Latte, for a light colour file.
+const HUES_LIGHT: Hues = Hues {
+    red: Rgb(0xd2, 0x0f, 0x39),
+    orange: Rgb(0xfe, 0x64, 0x0b),
+    yellow: Rgb(0xdf, 0x8e, 0x1d),
+    green: Rgb(0x40, 0xa0, 0x2b),
+    cyan: Rgb(0x17, 0x92, 0x99),
+    blue: Rgb(0x1e, 0x66, 0xf5),
+    purple: Rgb(0x88, 0x39, 0xef),
+};
+/// How far a derived hue moves toward the accent: 30 %.
+const HUE_MIX: u16 = 30;
+
+/// `c` mixed `HUE_MIX` % toward `toward`: per 8-bit channel, linear in the
+/// sRGB values (not in linear light), rounded to nearest.
+fn mix_toward(c: Rgb, toward: Rgb) -> Rgb {
+    let m = |a: u8, b: u8| ((a as u16 * (100 - HUE_MIX) + b as u16 * HUE_MIX + 50) / 100) as u8;
+    Rgb(m(c.0, toward.0), m(c.1, toward.1), m(c.2, toward.2))
+}
 
 impl Roles {
     /// fg_dim at 40 % over `bg`, rounded: frames and borders (spec § 1).
@@ -145,7 +210,7 @@ fn step(c: Rgb, mode: Mode, times: u8) -> Rgb {
 }
 
 /// The 16 roles from a legacy file (spec § 1, backward compatibility).
-fn derive_legacy(l: &Legacy, mode: Mode) -> Roles {
+fn derive_legacy(l: &Legacy, mode: Mode, hues: Hues) -> Roles {
     Roles {
         bar_bg: l.bg,
         pill_bg: l.surface,
@@ -166,12 +231,15 @@ fn derive_legacy(l: &Legacy, mode: Mode) -> Roles {
         },
         error: l.error,
         urgent: l.error,
+        hues,
     }
 }
 
 /// A colour file's text: the 16 role keys, or the legacy 7 (`bg fg accent
-/// muted surface error ok`), derived for `mode` (spec § 1). Unknown keys are
-/// ignored. Err: one human line.
+/// muted surface error ok`), derived for `mode` (spec § 1). Either may add the
+/// seven hue keys (`red` … `purple`, spec § 9); a missing one is Catppuccin's
+/// (Mocha for dark, Latte for light) mixed 30 % toward `accent`. Unknown keys
+/// are ignored. Err: one human line.
 pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
     let table: toml::Table = toml::from_str(text).map_err(|e| e.message().trim().to_string())?;
     let color = |key: &str| -> Result<Option<Rgb>, String> {
@@ -183,6 +251,23 @@ pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
             Some(_) => Err(format!("{key}: expected a \"#rrggbb\" string")),
         }
     };
+    // Each missing hue is derived from the accent once it is known.
+    let hues = |accent: Rgb| -> Result<Hues, String> {
+        let reference = match mode {
+            Mode::Dark => HUES_DARK,
+            Mode::Light => HUES_LIGHT,
+        };
+        let mut hues = reference;
+        for name in HUE_NAMES {
+            if let Some(slot) = hues.slot(name) {
+                *slot = match color(name)? {
+                    Some(c) => c,
+                    None => mix_toward(*slot, accent),
+                };
+            }
+        }
+        Ok(hues)
+    };
     let sixteen = ROLE_NAMES.iter().any(|k| !LEGACY_KEYS.contains(k) && table.contains_key(*k));
     if sixteen {
         let mut roles = Roles::default();
@@ -192,6 +277,7 @@ pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
                 *slot = c;
             }
         }
+        roles.hues = hues(roles.accent)?;
         return Ok(roles);
     }
     let need = |key: &str| color(key)?.ok_or_else(|| format!("missing key {key:?}"));
@@ -204,7 +290,8 @@ pub fn parse_colors(text: &str, mode: Mode) -> Result<Roles, String> {
         error: need("error")?,
         ok: need("ok")?,
     };
-    Ok(derive_legacy(&legacy, mode))
+    let hues = hues(legacy.accent)?;
+    Ok(derive_legacy(&legacy, mode, hues))
 }
 
 #[cfg(test)]
@@ -227,6 +314,19 @@ mod tests {
             .filter(|(_, n)| Some(**n) != skip)
             .map(|(i, n)| {
                 let Rgb(r, g, b) = nth(i);
+                format!("{n} = \"#{r:02x}{g:02x}{b:02x}\"\n")
+            })
+            .collect()
+    }
+
+    /// Hue i = nth(20 + i): distinct from every role of `nth`.
+    fn hue_lines(skip: Option<&str>) -> String {
+        HUE_NAMES
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| Some(**n) != skip)
+            .map(|(i, n)| {
+                let Rgb(r, g, b) = nth(20 + i);
                 format!("{n} = \"#{r:02x}{g:02x}{b:02x}\"\n")
             })
             .collect()
@@ -276,11 +376,16 @@ mod tests {
 
     #[test]
     fn a_sixteen_role_file_is_read_as_is_in_both_modes() {
-        let mut r = parse_colors(&sixteen(None), Mode::Dark).unwrap();
+        let text = format!("{}{}", sixteen(None), hue_lines(None));
+        let mut r = parse_colors(&text, Mode::Dark).unwrap();
         for (i, n) in ROLE_NAMES.iter().enumerate() {
             assert_eq!(*r.slot(n).unwrap(), nth(i), "{n}");
         }
-        assert_eq!(parse_colors(&sixteen(None), Mode::Light), Ok(r));
+        assert_eq!(parse_colors(&text, Mode::Light), Ok(r));
+        // Without hues, the roles are the same and only the derived hues follow the mode.
+        let (d, l) = (parse_colors(&sixteen(None), Mode::Dark).unwrap(), parse_colors(&sixteen(None), Mode::Light).unwrap());
+        assert_eq!((d.accent, d.urgent), (l.accent, l.urgent));
+        assert_ne!(d.hues, l.hues);
     }
 
     #[test]
@@ -295,7 +400,7 @@ mod tests {
     #[test]
     fn a_legacy_file_is_derived_for_dark() {
         let h = |x: u32| Rgb((x >> 16) as u8, (x >> 8) as u8, x as u8);
-        let want = Roles {
+        let mut want = Roles {
             bar_bg: h(0x101010),
             pill_bg: h(0x202020),
             popup_bg: h(0x202020),
@@ -312,8 +417,11 @@ mod tests {
             warn: h(0xffb000),
             error: h(0xff0000),
             urgent: h(0xff0000),
+            hues: HUES_DARK, // replaced below: the derived hues have their own test
         };
-        assert_eq!(parse_colors(VALID, Mode::Dark), Ok(want));
+        let got = parse_colors(VALID, Mode::Dark).unwrap();
+        want.hues = got.hues;
+        assert_eq!(got, want);
     }
 
     #[test]
@@ -373,5 +481,62 @@ mod tests {
         assert_eq!(r.popup_bg, Rgb(0x1e, 0x1e, 0x2e)); // Base
         assert_eq!(r.fg, Rgb(0xcd, 0xd6, 0xf4)); // Text
         assert_eq!(r.accent, Rgb(0xcb, 0xa6, 0xf7)); // Mauve
+    }
+
+    // ---- seven hues (spec § 9) ----
+
+    #[test]
+    fn hue_names_cover_every_field_once_in_order() {
+        let mut h = Roles::default().hues;
+        for (i, n) in HUE_NAMES.iter().enumerate() {
+            *h.slot(n).unwrap() = nth(i);
+        }
+        let fields = [h.red, h.orange, h.yellow, h.green, h.cyan, h.blue, h.purple];
+        assert_eq!(fields, std::array::from_fn::<Rgb, 7, _>(nth));
+        assert!(h.slot("accent").is_none());
+        assert!(h.slot("magenta").is_none());
+    }
+
+    #[test]
+    fn hues_in_a_sixteen_role_or_a_legacy_file_are_read_as_is() {
+        let want = |r: &Roles| {
+            std::array::from_fn::<Rgb, 7, _>(|i| nth(20 + i))
+                == [r.hues.red, r.hues.orange, r.hues.yellow, r.hues.green, r.hues.cyan, r.hues.blue, r.hues.purple]
+        };
+        for mode in [Mode::Dark, Mode::Light] {
+            assert!(want(&parse_colors(&format!("{}{}", sixteen(None), hue_lines(None)), mode).unwrap()));
+            assert!(want(&parse_colors(&format!("{VALID}{}", hue_lines(None)), mode).unwrap()));
+        }
+    }
+
+    #[test]
+    fn missing_hues_are_the_catppuccin_reference_mixed_30_percent_toward_the_accent() {
+        // Mocha red #f38ba8 with accent #ff8800: (243*70 + 255*30 + 50) / 100 = 247, (139*70 + 136*30 + 50) / 100 = 138,
+        // (168*70 + 0*30 + 50) / 100 = 118.
+        let r = parse_colors(VALID, Mode::Dark).unwrap();
+        assert_eq!(r.hues.red, Rgb(247, 138, 118));
+        // Latte red #d20f39 with accent #8800ff: (210*70 + 136*30 + 50) / 100 = 188, (15*70 + 50) / 100 = 11,
+        // (57*70 + 255*30 + 50) / 100 = 116.
+        let r = parse_colors(VALID_LIGHT, Mode::Light).unwrap();
+        assert_eq!(r.hues.red, Rgb(188, 11, 116));
+        // The same for a 16-role file without hues (accent = nth(8) = #8008c8), in dark: Mocha blue #89b4fa.
+        let r = parse_colors(&sixteen(None), Mode::Dark).unwrap();
+        assert_eq!(
+            r.hues.blue,
+            Rgb(((137 * 70 + 128 * 30 + 50) / 100) as u8, ((180 * 70 + 8 * 30 + 50) / 100) as u8, ((250 * 70 + 200 * 30 + 50) / 100) as u8)
+        );
+        // One present hue is kept while the others are derived.
+        let r = parse_colors(&format!("{VALID}green = \"#010203\"\n"), Mode::Dark).unwrap();
+        assert_eq!((r.hues.green, r.hues.red), (Rgb(1, 2, 3), Rgb(247, 138, 118)));
+    }
+
+    #[test]
+    fn an_invalid_hue_is_an_error_naming_the_key() {
+        let e = parse_colors(&format!("{VALID}blue = \"nope\"\n"), Mode::Dark).unwrap_err();
+        assert!(e.contains("blue") && e.contains("nope"), "{e}");
+        let e = parse_colors(&format!("{}{}", sixteen(None), "cyan = 3\n"), Mode::Dark).unwrap_err();
+        assert!(e.contains("cyan"), "{e}");
+        let e = parse_colors(&format!("{}{}", sixteen(None), hue_lines(None).replace("#", "")), Mode::Dark).unwrap_err();
+        assert!(e.contains("red"), "{e}");
     }
 }

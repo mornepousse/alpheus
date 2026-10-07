@@ -1,10 +1,10 @@
-//! theme.toml (spec § 2): which theme, which mode, and per-role overrides;
+//! theme.toml (spec § 2, § 9): which theme, which mode, how the modules take the hues, and per-role and per-hue overrides;
 //! the resolver that turns them and the wallpaper colour files into `Roles`,
 //! with spec § 6's fallbacks (one line each, never fatal); and the portal's
 //! `color-scheme` value. Pure apart from reading the files it is given.
 
 use super::presets::{self, DEFAULT_PRESET, PRESETS, Preset};
-use super::{Mode, ROLE_NAMES, Rgb, Roles, parse_colors, parse_hex};
+use super::{HUE_NAMES, Mode, ROLE_NAMES, Rgb, Roles, parse_colors, parse_hex};
 use std::path::Path;
 
 pub const THEME_FILE: &str = "theme.toml";
@@ -29,15 +29,29 @@ pub enum ThemeSource {
     Wallpaper,
 }
 
+/// `module_colors` in theme.toml (spec § 9): how much of each module takes its hue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModuleColors {
+    /// Delivery 1's look: no hue.
+    None,
+    /// The module's icon takes its hue.
+    #[default]
+    Icons,
+    /// The icon and the text.
+    Full,
+}
+
 /// Validated `[colors]` entries, in file order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Overrides(Vec<(&'static str, Rgb)>);
 
 impl Overrides {
-    /// Every override onto `roles`.
+    /// Every override onto `roles`, a role or a hue.
     pub(crate) fn apply(&self, roles: &mut Roles) {
         for (name, c) in &self.0 {
             if let Some(slot) = roles.slot(name) {
+                *slot = *c;
+            } else if let Some(slot) = roles.hues.slot(name) {
                 *slot = *c;
             }
         }
@@ -49,11 +63,17 @@ pub struct ThemeSettings {
     pub source: ThemeSource,
     pub mode: ModeSetting,
     pub overrides: Overrides,
+    pub module_colors: ModuleColors,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        ThemeSettings { source: ThemeSource::Preset(DEFAULT_PRESET.name), mode: ModeSetting::Auto, overrides: Overrides::default() }
+        ThemeSettings {
+            source: ThemeSource::Preset(DEFAULT_PRESET.name),
+            mode: ModeSetting::Auto,
+            overrides: Overrides::default(),
+            module_colors: ModuleColors::default(),
+        }
     }
 }
 
@@ -104,11 +124,17 @@ fn parse_settings_or(text: &str, source: ThemeSource) -> (ThemeSettings, Vec<Str
                 Some("light") => s.mode = ModeSetting::Light,
                 _ => w.push(format!("{THEME_FILE}: mode must be \"auto\", \"dark\" or \"light\", got {value}; using \"auto\"")),
             },
+            "module_colors" => match value.as_str() {
+                Some("none") => s.module_colors = ModuleColors::None,
+                Some("icons") => s.module_colors = ModuleColors::Icons,
+                Some("full") => s.module_colors = ModuleColors::Full,
+                _ => w.push(format!("{THEME_FILE}: module_colors must be \"none\", \"icons\" or \"full\", got {value}; using \"icons\"")),
+            },
             "colors" => match value.as_table() {
                 Some(colors) => {
                     for (role, v) in colors {
-                        match ROLE_NAMES.iter().find(|n| **n == role.as_str()) {
-                            None => w.push(format!("{THEME_FILE}: [colors] {role:?} is not a role, ignored")),
+                        match ROLE_NAMES.iter().chain(&HUE_NAMES).find(|n| **n == role.as_str()) {
+                            None => w.push(format!("{THEME_FILE}: [colors] {role:?} is not a role or a hue, ignored")),
                             Some(name) => match v.as_str().and_then(parse_hex) {
                                 Some(c) => s.overrides.0.push((*name, c)),
                                 None => {
@@ -310,6 +336,7 @@ pub fn effective_mode(setting: ModeSetting, portal: Option<Mode>) -> Mode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::HUE_NAMES;
     use std::path::PathBuf;
 
     /// `$TMPDIR/alpheus-<pid>-<name>`, emptied and created; removed when
@@ -342,15 +369,20 @@ mod tests {
         }
     }
 
-    /// A 16-role colour file holding `roles`.
+    /// A 16-role colour file holding `roles`, hues included.
     fn file_of(mut roles: Roles) -> String {
-        ROLE_NAMES
+        let mut text: String = ROLE_NAMES
             .iter()
             .map(|n| {
                 let Rgb(r, g, b) = *roles.slot(n).unwrap();
                 format!("{n} = \"#{r:02x}{g:02x}{b:02x}\"\n")
             })
-            .collect()
+            .collect();
+        for n in HUE_NAMES {
+            let Rgb(r, g, b) = *roles.hues.slot(n).unwrap();
+            text.push_str(&format!("{n} = \"#{r:02x}{g:02x}{b:02x}\"\n"));
+        }
+        text
     }
 
     const LEGACY_LIGHT: &str = "bg = \"#f0f0f0\"\nfg = \"#202020\"\naccent = \"#8800ff\"\nmuted = \"#666666\"\nsurface = \"#e0e0e0\"\nerror = \"#cc0000\"\nok = \"#008800\"\n";
@@ -372,7 +404,12 @@ mod tests {
         let d = ThemeSettings::default();
         assert_eq!(
             d,
-            ThemeSettings { source: ThemeSource::Preset("catppuccin"), mode: ModeSetting::Auto, overrides: Overrides::default() }
+            ThemeSettings {
+                source: ThemeSource::Preset("catppuccin"),
+                mode: ModeSetting::Auto,
+                overrides: Overrides::default(),
+                module_colors: ModuleColors::Icons,
+            }
         );
         assert_eq!(parse_settings(""), (d, NONE));
     }
@@ -412,6 +449,60 @@ mod tests {
         let (s, w) = parse_settings("theme = \"nord\"\nmode = \"dim\"\n");
         assert_eq!((s.source, s.mode, w.len()), (ThemeSource::Preset("nord"), ModeSetting::Auto, 1));
         assert!(w[0].contains("mode") && w[0].contains("dim"), "{w:?}");
+    }
+
+    #[test]
+    fn module_colors_is_read_in_its_three_values_and_defaults_to_icons() {
+        assert_eq!(ModuleColors::default(), ModuleColors::Icons);
+        assert_eq!(parse_settings("").0.module_colors, ModuleColors::Icons);
+        for (text, want) in [("none", ModuleColors::None), ("icons", ModuleColors::Icons), ("full", ModuleColors::Full)] {
+            let (s, w) = parse_settings(&format!("module_colors = \"{text}\"\n"));
+            assert_eq!((s.module_colors, w), (want, NONE), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_bad_module_colors_warns_once_and_falls_back_to_icons() {
+        // "pills" arrives with the shapes (delivery 2): for now it is a bad value like any other.
+        for text in ["module_colors = \"pills\"\n", "module_colors = \"Full\"\n", "module_colors = 3\n", "module_colors = true\n"] {
+            let (s, w) = parse_settings(text);
+            assert_eq!(s.module_colors, ModuleColors::Icons, "{text}");
+            assert_eq!(w.len(), 1, "{text}: {w:?}");
+            assert!(w[0].contains("module_colors") && w[0].contains("\"none\""), "{w:?}");
+        }
+        // The valid keys around it are kept.
+        let (s, w) = parse_settings("theme = \"nord\"\nmodule_colors = \"pills\"\nmode = \"dark\"\n");
+        assert_eq!((s.source, s.mode, s.module_colors, w.len()), (ThemeSource::Preset("nord"), ModeSetting::Dark, ModuleColors::Icons, 1));
+    }
+
+    #[test]
+    fn module_colors_is_carried_through_load_settings_and_resolve_dir() {
+        let dir = TempDir::new("theme-module-colors");
+        assert_eq!(load_settings(&dir).0.module_colors, ModuleColors::Icons);
+        dir.write(THEME_FILE, "module_colors = \"full\"\n");
+        let (s, w) = load_settings(&dir);
+        assert_eq!((s.module_colors, w), (ModuleColors::Full, NONE));
+        let (s, _) = resolve_dir(&dir, || None);
+        assert_eq!(s.module_colors, ModuleColors::Full);
+        dir.write(THEME_FILE, "module_colors = \"none\"\nmode = \"light\"\n");
+        assert_eq!(resolve_dir(&dir, || None).0.module_colors, ModuleColors::None);
+    }
+
+    #[test]
+    fn a_hue_can_be_overridden_in_colors() {
+        let (s, w) = parse_settings("[colors]\nblue = \"#010203\"\npurple = \"#040506\"\nmagenta = \"#000000\"\naccent = \"#070809\"\n");
+        assert_eq!(s.overrides, Overrides(vec![("accent", Rgb(7, 8, 9)), ("blue", Rgb(1, 2, 3)), ("purple", Rgb(4, 5, 6))]));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("\"magenta\""), "{w:?}");
+        let (r, w) = resolve(&s, Mode::Dark, Path::new("/nonexistent-alpheus-theme-dir"));
+        assert_eq!(w, NONE);
+        let base = named("catppuccin").dark;
+        assert_eq!((r.hues.blue, r.hues.purple, r.accent), (Rgb(1, 2, 3), Rgb(4, 5, 6), Rgb(7, 8, 9)));
+        assert_eq!((r.hues.red, r.hues.green), (base.hues.red, base.hues.green));
+        // An invalid hue is ignored like an invalid role.
+        let (s, w) = parse_settings("[colors]\ncyan = \"teal\"\n");
+        assert_eq!((s.overrides, w.len()), (Overrides::default(), 1));
+        assert!(w[0].contains("\"cyan\""), "{w:?}");
     }
 
     #[test]

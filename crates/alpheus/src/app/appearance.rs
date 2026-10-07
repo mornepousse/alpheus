@@ -98,7 +98,8 @@ impl AppearanceTab {
         let Some(entry) = self.entries.get(self.cursor).copied() else { return };
         let mode = self.effective_mode();
         let dir = self.dir.clone().unwrap_or_default();
-        let settings = |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone() };
+        let settings =
+            |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone(), module_colors: Default::default() };
         if entry.key == WALLPAPER {
             if self.wallpaper.as_ref().is_none_or(|(m, ..)| *m != mode) {
                 let (roles, warnings) = resolve(&settings(ThemeSource::Wallpaper), mode, &dir);
