@@ -263,10 +263,13 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        // Without hues a charging battery keeps its accent (the old look). With hues it is green like
-        // a discharging one: its glyph already says it charges (Mae, 2026-10-07). A low charge's
-        // warn or error wins over the hue either way.
-        let state = if b.charge == Charge::Charging && mc == ModuleColors::None { Some(Style::ACCENT) } else { charge_state(b.percent) };
+        // A charging battery never alarms: the accent without hues (the old look), green with them,
+        // at any level (Mae, 2026-10-07). Warn and error apply only while discharging.
+        let state = match b.charge {
+            Charge::Charging if mc == ModuleColors::None => Some(Style::ACCENT),
+            Charge::Charging => None,
+            _ => charge_state(b.percent),
+        };
         pieces.push(piece(format!("{} ", battery_icon(b)), state.unwrap_or_else(|| icon_style(mc, Hue::Green, Style::NORMAL))));
         pieces.push(piece(format!("{}%", b.percent), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
     }
@@ -614,7 +617,9 @@ mod tests {
         assert_eq!(at(ModuleColors::Icons, 93, Charge::Charging), "gg...", "Icons: the green icon, the text normal");
         assert_eq!(at(ModuleColors::Full, 93, Charge::Charging), "ggggg", "Full: green icon and text");
         assert_eq!(at(ModuleColors::Icons, 93, Charge::Charging), at(ModuleColors::Icons, 93, Charge::Discharging));
-        assert_eq!(at(ModuleColors::Full, 15, Charge::Charging), "wwwww", "a low charge still wins");
+        assert_eq!(at(ModuleColors::Full, 15, Charge::Charging), "ggggg", "charging is green at any level");
+        assert_eq!(at(ModuleColors::Icons, 5, Charge::Charging), "gg..");
+        assert_eq!(at(ModuleColors::Full, 15, Charge::Discharging), "wwwww", "discharging low still warns");
     }
 
     #[test]

@@ -325,7 +325,7 @@ critical (`error`) battery, a hot temperature, a network with limited
 connectivity, a muted volume, an offline or
 down module, an urgent workspace and a tray item that needs attention keep
 their state colours whatever `module_colors` says. A charging battery is
-green like a discharging one (its glyph shows it charges); under `none` it
+green at any level (its glyph shows it charges, so it never warns); under `none` it
 keeps the accent. The Theme tab of the
 control center has a "Module colours" row (None, Icons, Full) with a preview.
 
