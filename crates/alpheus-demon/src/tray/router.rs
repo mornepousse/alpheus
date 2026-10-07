@@ -13,7 +13,9 @@ use super::host::{GestureOutcome, Host, Item, owner_rule};
 use super::menu_session::{MenuSession, MenuUpdate};
 use super::watcher::Watcher;
 use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use crate::appearance::Appearance;
 use crate::log::write as log;
+use alpheus_commun::theme::Mode;
 use dbus::Message;
 use std::collections::HashMap;
 use std::io;
@@ -47,6 +49,8 @@ pub struct TrayOutput {
     pub menu_path_changed: bool,
     /// The session bus closed: the tray is empty for good (the wiring logs once and drops the Tray).
     pub bus_closed: bool,
+    /// The portal's color-scheme changed (themes task 6, `mode = "auto"`): the wiring re-resolves.
+    pub appearance: Option<Mode>,
 }
 
 impl TrayOutput {
@@ -59,6 +63,9 @@ impl TrayOutput {
         self.close_menu |= other.close_menu;
         self.menu_path_changed |= other.menu_path_changed;
         self.bus_closed |= other.bus_closed;
+        if other.appearance.is_some() {
+            self.appearance = other.appearance;
+        }
     }
 }
 
@@ -99,6 +106,8 @@ pub struct Tray {
     /// (`open_menu`, `menu_*`, `close_menu`): merged into the next output, or taken with
     /// `take_deferred`.
     deferred: TrayOutput,
+    /// The portal's color-scheme, followed on this same connection (themes task 6); None unless asked.
+    appearance: Option<Appearance>,
 }
 
 /// How many times a flush's drained answers are routed (and what that sends flushed again) before
@@ -119,6 +128,7 @@ impl Tray {
             role: Role::Starting,
             requesting: false,
             deferred: TrayOutput::default(),
+            appearance: None,
         };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
@@ -126,6 +136,16 @@ impl Tray {
         let out = t.settle();
         t.deferred.merge(out);
         t
+    }
+
+    /// Follows the portal's color-scheme on this connection: the match rule, then one ReadOne
+    /// (pending, its 2 s deadline on the tray's timer). Once: a second call is a no-op.
+    pub fn start_appearance(&mut self) {
+        if self.appearance.is_none() {
+            self.appearance = Some(Appearance::start(&mut self.bus));
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
     }
 
     fn call(&mut self, call: Call, own: Own) {
@@ -296,6 +316,9 @@ impl Tray {
     }
 
     fn answer(&mut self, id: CallId, result: Result<Reply, CallError>) -> TrayOutput {
+        if let Some(a) = self.appearance.as_mut().filter(|a| a.owns(id)) {
+            return TrayOutput { appearance: a.answer(id, result), ..TrayOutput::default() };
+        }
         if self.host.owns(id) {
             self.host.answer(id, result, &mut self.bus);
             return TrayOutput::default();
@@ -393,6 +416,11 @@ impl Tray {
             }
             Signal::ItemUnregistered(service) if matches!(&self.role, Role::HostOnly { watcher } if *watcher == sender) => {
                 self.host.unregister(service, &mut self.bus)
+            }
+            Signal::ColorScheme(value) => {
+                if let Some(a) = self.appearance.as_mut() {
+                    return TrayOutput { appearance: a.changed(*value), ..TrayOutput::default() };
+                }
             }
             Signal::LayoutUpdated { .. } | Signal::ItemsPropertiesUpdated { .. } => {
                 if let Some(menu) = self.menu.as_mut() {

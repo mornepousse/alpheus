@@ -19,6 +19,13 @@ pub const WATCHER_NAME: &str = "org.kde.StatusNotifierWatcher";
 pub const WATCHER_PATH: &str = "/StatusNotifierWatcher";
 pub const WATCHER_INTERFACE: &str = "org.kde.StatusNotifierWatcher";
 pub const MENU_INTERFACE: &str = "com.canonical.dbusmenu";
+/// The desktop portal (xdg-desktop-portal), its Settings interface and object.
+pub const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
+pub const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+pub const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
+/// The one setting read: 0 no preference, 1 dark, 2 light.
+pub const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
+pub const COLOR_SCHEME_KEY: &str = "color-scheme";
 pub const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
 /// Well-known name prefixes the startup inventory probes.
 pub const ITEM_NAME_PREFIXES: [&str; 2] = ["org.kde.StatusNotifierItem-", "org.freedesktop.StatusNotifierItem-"];

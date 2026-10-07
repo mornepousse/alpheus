@@ -4,6 +4,7 @@
 //! cells drawn by cosmic-text into a layer-shell surface per screen.
 
 pub mod actions;
+pub mod appearance;
 pub mod calendar;
 pub mod clock;
 pub mod compositor;

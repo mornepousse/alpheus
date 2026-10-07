@@ -7,7 +7,10 @@
 //! nothing outside the list can reach an application, and no call can
 //! start a service.
 
-use super::{ITEM_INTERFACE, MENU_INTERFACE, Orientation, Prop, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use super::{
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, Orientation, PORTAL_NAME, PORTAL_PATH, Prop,
+    SETTINGS_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
+};
 use dbus::Message;
 use dbus::arg::Variant;
 use dbus::channel::Channel;
@@ -44,10 +47,12 @@ pub enum Method {
     AddMatch,
     RemoveMatch,
     RegisterStatusNotifierHost,
+    /// The portal's color-scheme (themes task 6).
+    ReadOne,
 }
 
 impl Method {
-    pub const ALL: [Method; 15] = [
+    pub const ALL: [Method; 16] = [
         Method::Get,
         Method::Activate,
         Method::SecondaryActivate,
@@ -63,6 +68,7 @@ impl Method {
         Method::AddMatch,
         Method::RemoveMatch,
         Method::RegisterStatusNotifierHost,
+        Method::ReadOne,
     ];
 
     pub fn name(self) -> &'static str {
@@ -82,6 +88,7 @@ impl Method {
             Method::AddMatch => "AddMatch",
             Method::RemoveMatch => "RemoveMatch",
             Method::RegisterStatusNotifierHost => "RegisterStatusNotifierHost",
+            Method::ReadOne => "ReadOne",
         }
     }
 
@@ -97,6 +104,7 @@ impl Method {
             | Method::AddMatch
             | Method::RemoveMatch => DBUS,
             Method::RegisterStatusNotifierHost => WATCHER_INTERFACE,
+            Method::ReadOne => SETTINGS_INTERFACE,
         }
     }
 }
@@ -178,6 +186,8 @@ pub enum Call {
         destination: String,
         host: String,
     },
+    /// `ReadOne(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY)` on the portal: nothing else of the portal can be read.
+    ReadOne,
 }
 
 impl Call {
@@ -198,6 +208,7 @@ impl Call {
             Call::AddMatch { .. } => Method::AddMatch,
             Call::RemoveMatch { .. } => Method::RemoveMatch,
             Call::RegisterStatusNotifierHost { .. } => Method::RegisterStatusNotifierHost,
+            Call::ReadOne => Method::ReadOne,
         }
     }
 
@@ -213,6 +224,7 @@ impl Call {
             | Call::GetLayout { destination, path, .. }
             | Call::Event { destination, path, .. } => (destination, path),
             Call::RegisterStatusNotifierHost { destination, .. } => (destination, WATCHER_PATH),
+            Call::ReadOne => (PORTAL_NAME, PORTAL_PATH),
             Call::RequestName
             | Call::GetNameOwner { .. }
             | Call::GetConnectionUnixProcessID { .. }
@@ -263,7 +275,7 @@ pub trait Outbox {
     /// Sends `call` (auto-start off) and expects an answer within TIMEOUT.
     fn call(&mut self, call: Call) -> CallId;
     /// Sends `call` with NO_REPLY_EXPECTED: no pending entry, no timer — calls whose answer nobody
-    /// reads: dbusmenu `Event`, `RemoveMatch`, the `ContextMenu`, `SecondaryActivate` and
+    /// reads: dbusmenu `Event`, `RemoveMatch`, the appearance's `AddMatch` (themes task 6), the `ContextMenu`, `SecondaryActivate` and
     /// `Scroll` gestures.
     fn send(&mut self, call: Call);
 }
@@ -274,12 +286,14 @@ pub trait Outbox {
 /// that libdbus would refuse to build is a bug, not an application's doing.
 /// So is a call to a well-known name (it could change hands between two
 /// calls): debug builds assert it never happens.
+/// The portal is the one well-known destination (themes task 6): a one-shot read with auto-start off;
+/// if the name changes hands, `SettingChanged` (a rule on the well-known sender) follows the new owner.
 pub fn message(call: &Call) -> Message {
     let method = call.method();
     let (destination, path) = call.target();
     debug_assert!(
-        destination.starts_with(':') || destination == DBUS,
-        "tray call {method:?} to {destination}: not a unique name nor the bus driver"
+        destination.starts_with(':') || destination == DBUS || destination == PORTAL_NAME,
+        "tray call {method:?} to {destination}: not a unique name, the bus driver nor the portal"
     );
     let m = Message::new_method_call(destination, path, method.interface(), method.name())
         .unwrap_or_else(|e| panic!("tray call {method:?} to {destination} {path}: {e}"));
@@ -296,6 +310,7 @@ pub fn message(call: &Call) -> Message {
         Call::ListNames => m,
         Call::AddMatch { rule } | Call::RemoveMatch { rule } => m.append1(rule.as_str()),
         Call::RegisterStatusNotifierHost { host, .. } => m.append1(host.as_str()),
+        Call::ReadOne => m.append2(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY),
     };
     m.set_auto_start(false);
     if method == Method::Event {
@@ -591,6 +606,7 @@ mod tests {
             Method::AddMatch => Call::AddMatch { rule: "type='signal'".into() },
             Method::RemoveMatch => Call::RemoveMatch { rule: "type='signal'".into() },
             Method::RegisterStatusNotifierHost => Call::RegisterStatusNotifierHost { destination, host: ":1.3".into() },
+            Method::ReadOne => Call::ReadOne,
         }
     }
 
@@ -603,6 +619,20 @@ mod tests {
             it.next();
         }
         out
+    }
+
+    #[test]
+    fn read_one_reads_one_setting_of_the_portal() {
+        use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
+        let m = message(&Call::ReadOne);
+        assert_eq!(
+            (m.destination().as_deref(), m.path().as_deref(), m.interface().as_deref(), m.member().as_deref()),
+            (Some(PORTAL_NAME), Some(PORTAL_PATH), Some(SETTINGS_INTERFACE), Some("ReadOne"))
+        );
+        assert_eq!(signatures(&m), ["s", "s"]);
+        assert_eq!(m.read2::<&str, &str>().unwrap(), (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY));
+        assert!(!m.get_auto_start(), "never starts the portal");
+        assert!(!m.get_no_reply(), "its answer is read");
     }
 
     #[test]

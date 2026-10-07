@@ -359,6 +359,17 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
+    /// The portal's own connection when the tray module is off and the mode is auto (themes task 6);
+    /// None otherwise, or once its bus closed (never reconnected).
+    pub(crate) portal: Option<crate::appearance::PortalLink>,
+    /// Armed only while its ReadOne is pending (2 s); never at rest.
+    pub(crate) portal_timer: DeadlineTimer,
+    /// `follow_portal_if_auto` already acted: never a second connection nor a second attempt.
+    pub(crate) portal_tried: bool,
+    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes (themes task 6); None: unset, nothing written.
+    pub(crate) mode_runtime: Option<std::path::PathBuf>,
+    /// The mode last written to it; None: not yet.
+    pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -486,6 +497,11 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
+            portal: None,
+            portal_timer: DeadlineTimer::new(),
+            portal_tried: false,
+            mode_runtime: None,
+            mode_written: None,
             tray_deferred_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
@@ -648,6 +664,9 @@ impl App {
     /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
     /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
     pub(crate) fn tray_output(&mut self, out: TrayOutput) {
+        if let Some(mode) = out.appearance {
+            self.portal_said(mode);
+        }
         if out.bus_closed {
             log("tray: the session bus closed; the tray stays empty");
             self.tray = None;

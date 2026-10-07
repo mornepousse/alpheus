@@ -4,6 +4,7 @@
 //! ratatui colours (alpheus::theme), the daemon to pixels.
 
 pub mod contrast;
+pub mod mode_file;
 pub mod presets;
 pub mod settings;
 

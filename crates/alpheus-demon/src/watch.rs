@@ -269,9 +269,11 @@ impl App {
         }
         self.theme_warnings = warnings;
         self.theme_settings = settings;
-        // Themes task 6 adds `self.follow_portal_if_auto();` and `self.publish_mode();` HERE, right
-        // after the new settings are stored: a switch to mode = "auto" then starts following the
-        // portal at once, and the mode file follows the mode in effect.
+        // A switch to mode = "auto" starts following the portal (a no-op once tried, or when not
+        // auto). After the store, never before: it reads `self.theme_settings`.
+        self.follow_portal_if_auto();
+        // The mode file for the TUI follows the mode in effect (a no-op when it did not change).
+        self.publish_mode();
         if resolved.bad_file {
             if new_lines {
                 log("theme: keeping the current colours until the colour file is usable");

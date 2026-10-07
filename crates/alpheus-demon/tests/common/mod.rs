@@ -846,6 +846,9 @@ pub mod busctl_wire;
 #[path = "../support/sni.rs"]
 pub mod sni;
 
+#[path = "../support/portal.rs"]
+pub mod portal;
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// The workstation recorded on 2026-10-04 (tests/fixtures/dbus-*.json,

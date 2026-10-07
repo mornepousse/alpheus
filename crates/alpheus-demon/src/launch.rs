@@ -653,6 +653,13 @@ pub fn run() -> i32 {
     if want.tray {
         start_tray(&mut state, &handle);
     }
+    // The mode file for the TUI (themes task 6): $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
+    state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
+    // mode = "auto": the portal on the tray's connection, or on one of its own when the tray is off
+    // (themes task 6). Never a second connection, never a retry.
+    state.follow_portal_if_auto();
+    // Written now, once the mode is known: dark until the portal answers (then rewritten).
+    state.publish_mode();
     let tx_compositor = tx.clone();
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
