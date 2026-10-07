@@ -4,6 +4,7 @@
 //! ratatui colours (alpheus::theme), the daemon to pixels.
 
 pub mod contrast;
+pub mod presets;
 
 use std::path::Path;
 
@@ -104,28 +105,10 @@ impl Roles {
     }
 }
 
-/// Catppuccin Mocha, the default theme's dark half (task 2 moves these
-/// values into `presets` and makes this return `presets::CATPPUCCIN_DARK`).
+/// Catppuccin Mocha, the default theme's dark half.
 impl Default for Roles {
     fn default() -> Self {
-        Roles {
-            bar_bg: Rgb(0x18, 0x18, 0x25),            // Mantle
-            pill_bg: Rgb(0x31, 0x32, 0x44),           // Surface0
-            popup_bg: Rgb(0x1e, 0x1e, 0x2e),          // Base
-            raised: Rgb(0x45, 0x47, 0x5a),            // Surface1
-            selection: Rgb(0x58, 0x5b, 0x70),         // Surface2
-            fg: Rgb(0xcd, 0xd6, 0xf4),                // Text
-            fg_dim: Rgb(0x7f, 0x84, 0x9c),            // Overlay1
-            on_accent: Rgb(0x1e, 0x1e, 0x2e),         // Base
-            accent: Rgb(0xcb, 0xa6, 0xf7),            // Mauve
-            accent_container: Rgb(0xcb, 0xa6, 0xf7),  // Mauve
-            accent2: Rgb(0x89, 0xb4, 0xfa),           // Blue
-            accent2_container: Rgb(0x89, 0xb4, 0xfa), // Blue
-            ok: Rgb(0xa6, 0xe3, 0xa1),                // Green
-            warn: Rgb(0xf9, 0xe2, 0xaf),              // Yellow
-            error: Rgb(0xf3, 0x8b, 0xa8),             // Red
-            urgent: Rgb(0xfa, 0xb3, 0x87),            // Peach
-        }
+        presets::CATPPUCCIN_DARK
     }
 }
 
