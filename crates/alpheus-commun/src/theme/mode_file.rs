@@ -3,6 +3,7 @@
 //! daemon writes it (`alpheus_demon::appearance::write_mode`); the TUI reads it in mode "auto".
 
 use super::Mode;
+use super::settings::read_capped;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -36,7 +37,7 @@ pub fn parse_mode(text: &str) -> Mode {
 
 /// The published mode under `runtime` (None: XDG_RUNTIME_DIR unset). No file, unreadable: Dark.
 pub fn read_mode(runtime: Option<&Path>) -> Mode {
-    runtime.and_then(|r| std::fs::read_to_string(mode_path(r)).ok()).map_or(Mode::Dark, |t| parse_mode(&t))
+    runtime.and_then(|r| read_capped(&mode_path(r)).ok()).map_or(Mode::Dark, |t| parse_mode(&t))
 }
 
 #[cfg(test)]
@@ -80,6 +81,26 @@ mod tests {
         assert_eq!(read_mode(Some(&run)), Mode::Light);
         std::fs::write(mode_path(&run), "garbage").unwrap();
         assert_eq!(read_mode(Some(&run)), Mode::Dark);
+        let _ = std::fs::remove_dir_all(&run);
+    }
+
+    #[test]
+    fn a_fifo_or_an_oversized_mode_file_is_dark_and_never_blocks() {
+        let run = std::env::temp_dir().join(format!("alpheus-{}-mode-fifo", std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(run.join(MODE_DIR)).unwrap();
+        let c = std::ffi::CString::new(mode_path(&run).to_str().unwrap()).unwrap();
+        // SAFETY: a NUL-terminated path in a directory this test owns.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        let r = run.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(read_mode(Some(&r)));
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a FIFO blocked the read"), Mode::Dark);
+        std::fs::remove_file(mode_path(&run)).unwrap();
+        std::fs::write(mode_path(&run), format!("{}light\n", " ".repeat(70_000))).unwrap();
+        assert_eq!(read_mode(Some(&run)), Mode::Dark, "`light` lies past the cap");
         let _ = std::fs::remove_dir_all(&run);
     }
 }

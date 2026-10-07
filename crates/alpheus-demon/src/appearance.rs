@@ -195,7 +195,8 @@ pub struct LinkOutput {
 }
 
 /// The session bus for the portal alone (tray module off): one `SessionBus`, routed here, driven by
-/// the bar's loop (no thread), like the tray's.
+/// the bar's loop (no thread), like the tray's. It stays open after the mode leaves `auto` (no
+/// retry, no teardown: one idle connection costs nothing at rest).
 pub struct PortalLink {
     bus: SessionBus,
     appearance: Appearance,

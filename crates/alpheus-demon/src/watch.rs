@@ -10,7 +10,7 @@ use crate::launch::describe;
 use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
-use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, THEME_FILE, effective_mode, load_settings, resolve_detailed};
+use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, THEME_FILE, effective_mode, resolve_dir};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
 use std::ffi::{CString, OsStr};
@@ -194,6 +194,12 @@ fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink())
 }
 
+/// inotify follows a symlinked config directory to its target (the Nix store, with home-manager),
+/// so replacing the link is never seen: one line at start says so.
+fn symlink_line(dir: &Path) -> Option<String> {
+    is_symlink(dir).then(|| format!("theme: {} is a symlink; replacing it is not seen until restart", dir.display()))
+}
+
 /// The directory, or its parent when the directory does not exist.
 fn arm(fd: &OwnedFd, dir: &Path) -> Result<On, String> {
     match add_watch(fd, dir, DIR_MASK) {
@@ -216,7 +222,11 @@ fn add_watch(fd: &OwnedFd, path: &Path, mask: u32) -> io::Result<i32> {
 /// Starts watching (launch::run, once the loop exists). Any failure: one line, the theme files read
 /// at startup only, the bar unaffected.
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
-    let watch = match ThemeWatch::start(&paths::config_dir()) {
+    let dir = paths::config_dir();
+    if let Some(line) = symlink_line(&dir) {
+        log(&line);
+    }
+    let watch = match ThemeWatch::start(&dir) {
         Ok(w) => w,
         Err(e) => {
             log(&format!("theme: {e}; theme files read at startup only"));
@@ -258,10 +268,10 @@ impl App {
     /// (controller reconciliation 9): the bar never flashes to the default theme on a reload.
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
-        let (settings, mut warnings) = load_settings(&dir);
-        let mode = effective_mode(settings.mode, self.portal_mode);
-        let resolved = resolve_detailed(&settings, mode, &dir);
-        warnings.extend(resolved.warnings);
+        let portal = self.portal_mode;
+        let (settings, resolved) = resolve_dir(&dir, || portal);
+        let mode = effective_mode(settings.mode, portal);
+        let warnings = resolved.lines();
         let mut new_lines = false;
         for w in fresh(&self.theme_warnings, &warnings) {
             log(w);
@@ -444,5 +454,19 @@ mod tests {
             panic!("neither the directory nor its parent exists")
         };
         assert!(e.starts_with("cannot watch /nonexistent-alpheus-parent"), "{e}");
+    }
+
+    #[test]
+    fn a_symlinked_config_directory_is_announced() {
+        let real = temp("link-real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = temp("link-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let line = symlink_line(&link).expect("a symlink");
+        assert!(line.contains("is a symlink; replacing it is not seen until restart") && line.contains("link-link"), "{line}");
+        assert_eq!(symlink_line(&real), None, "a plain directory: silent");
+        assert_eq!(symlink_line(&temp("link-absent")), None, "an absent one: silent");
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&real);
     }
 }

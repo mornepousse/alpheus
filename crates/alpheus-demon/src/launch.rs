@@ -22,7 +22,7 @@ use crate::tray::router::{Tray, TrayOutput};
 use crate::wayland::App;
 use alpheus_commun::exec::{Executor, SystemExecutor};
 use alpheus_commun::launcher_ipc::{self, Reply, Request};
-use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve};
+use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, ThemeSource, effective_mode, resolve_dir};
 // `Scheme`: calloop's `Mode` is already in scope.
 use alpheus_commun::theme::{Mode as Scheme, Roles};
 use alpheus_commun::{paths, shutdown};
@@ -73,12 +73,11 @@ pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
 
 /// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode
 /// auto, None before it answers or without one) and the colour files, through the shared resolver.
-/// Startup and every reload (`App::theme_changed`) go through here. Warnings: one line each.
+/// Startup and every reload (`App::theme_changed`) go through `resolve_dir`. Warnings: one line each.
 pub fn theme(directory: &Path, portal: Option<Scheme>) -> (ThemeSettings, Roles, Vec<String>) {
-    let (settings, mut warnings) = load_settings(directory);
-    let (roles, more) = resolve(&settings, effective_mode(settings.mode, portal), directory);
-    warnings.extend(more);
-    (settings, roles, warnings)
+    let (settings, resolved) = resolve_dir(directory, || portal);
+    let lines = resolved.lines();
+    (settings, resolved.roles, lines)
 }
 
 /// "catppuccin, dark", "wallpaper, light (auto)": the theme in effect, for the log.
@@ -660,6 +659,12 @@ pub fn run() -> i32 {
     state.follow_portal_if_auto();
     // Written now, once the mode is known: dark until the portal answers (then rewritten).
     state.publish_mode();
+    // One more resolve, last: a file matugen wrote between the first read and the watch being
+    // armed (or half-written at the first read) is picked up now, and from here on the watch sees
+    // everything. After `start_tray` and `follow_portal_if_auto`, never before: earlier, the
+    // portal start would see no bus and give up for the whole session. Idempotent: no repaint when
+    // the roles are equal, warnings deduplicated.
+    state.theme_changed();
     let tx_compositor = tx.clone();
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {

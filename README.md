@@ -231,7 +231,9 @@ and a light variant. The mode follows the desktop (the portal's
 on to the control center) or is fixed. The bar, its popups, the launcher and the
 control center change together. The bar picks up a new
 `theme.toml`, `colors.toml` or `colors-light.toml` by itself, without a
-restart: one inotify watch, nothing wakes at rest.
+restart: one inotify watch, nothing wakes at rest. If `~/.config/alpheus` is
+itself a symlink (home-manager), the watch follows it to its target, so
+replacing the link is not seen until the bar restarts (the bar logs it once at start).
 
 ![The bar in Tokyo Night (dark), Catppuccin (light) and Gruvbox (dark), then the light theme's menu and calendar (sample data, zoomed ×2)](docs/images/themes.png)
 
@@ -282,7 +284,8 @@ A theme is 16 colours, named by use:
 | `fg`, `fg_dim` | text, secondary text (frames are `fg_dim` at 40 %) |
 | `on_accent` | text on an accent |
 | `accent`, `accent_container` | the clock, the active workspace |
-| `accent2`, `accent2_container` | checks and radios in menus |
+| `accent2` | checks and radios in menus |
+| `accent2_container` | reserved (no surface uses it yet; delivery 2) |
 | `ok`, `warn`, `error`, `urgent` | states: low battery is `warn`, critical `error`, an urgent workspace `urgent` |
 
 #### Wallpaper colours (matugen)

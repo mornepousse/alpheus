@@ -5,7 +5,7 @@
 //! stopped reads the last published mode: accepted, no cleanup. The rest of the TUI only ever sees `Theme`.
 
 use alpheus_commun::theme::mode_file::read_mode;
-use alpheus_commun::theme::settings::{ModeSetting, effective_mode, load_settings, resolve};
+use alpheus_commun::theme::settings::resolve_dir;
 use alpheus_commun::theme::{Rgb, Roles};
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
@@ -59,15 +59,14 @@ impl Default for Theme {
 }
 
 impl Theme {
-    /// `dir`'s theme.toml through `load_settings` (so colors.toml alone means the wallpaper), the
-    /// mode (in mode auto, the daemon's mode file under `runtime`; None or no file: dark), then the
-    /// colour files. Warnings: one line each, for the status bar.
+    /// `dir`'s theme.toml through the shared resolver (so colors.toml alone means the wallpaper),
+    /// the mode (in mode auto, the daemon's mode file under `runtime`; None or no file: dark), then
+    /// the colour files. Warnings: one line each, for the status bar; only errors, never the
+    /// informational notes (a missing light file, a preset without a light variant), which the
+    /// daemon logs once.
     pub fn load(dir: &Path, runtime: Option<&Path>) -> (Theme, Vec<String>) {
-        let (settings, mut warnings) = load_settings(dir);
-        let published = if settings.mode == ModeSetting::Auto { Some(read_mode(runtime)) } else { None };
-        let (roles, more) = resolve(&settings, effective_mode(settings.mode, published), dir);
-        warnings.extend(more);
-        (roles.into(), warnings)
+        let (_, resolved) = resolve_dir(dir, || Some(read_mode(runtime)));
+        (resolved.roles.into(), resolved.warnings)
     }
 
     /// A selected tab, row or choice: normal text on `selection`.
@@ -215,5 +214,20 @@ mod tests {
         let t = Theme::default();
         assert_eq!(t.selected(), Style::default().fg(t.fg).bg(t.selection).add_modifier(Modifier::BOLD));
         assert_eq!(t.filled(), Style::default().fg(t.on_accent).bg(t.accent_container).add_modifier(Modifier::BOLD));
+    }
+
+    /// The status bar shows faults only: the informational lines (no light file, a preset with no
+    /// light variant) are the daemon's to log, once, not the TUI's on every Mod+A.
+    #[test]
+    fn informational_lines_stay_out_of_the_status_bar() {
+        let light = runtime("info-light", Some("light\n"));
+        let d = dir("info-wall", &[("theme.toml", "theme = \"wallpaper\"\n"), ("colors.toml", LEGACY)]);
+        let (_, w) = Theme::load(&d, Some(&light));
+        assert_eq!(w, Vec::<String>::new(), "no colors-light.toml: a note, not a fault");
+        let d = dir("info-nord", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (_, w) = Theme::load(&d, Some(&light));
+        assert_eq!(w, Vec::<String>::new(), "nord has no light variant: a note");
+        let d = dir("info-bad", &[("theme.toml", "theme = \"nosuch\"\n")]);
+        assert_eq!(Theme::load(&d, Some(&light)).1.len(), 1, "a real fault still shows");
     }
 }

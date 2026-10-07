@@ -65,6 +65,9 @@ fn known() -> String {
 /// theme.toml's text. Warnings: one line each, never fatal; whatever is
 /// valid is kept. No `theme` key → catppuccin (`load_settings` applies the
 /// wallpaper rule on top).
+///
+/// Production goes through `load_settings`; this stays public (hidden) for the tests of the crates.
+#[doc(hidden)]
 pub fn parse_settings(text: &str) -> (ThemeSettings, Vec<String>) {
     parse_settings_or(text, ThemeSource::Preset(DEFAULT_PRESET.name))
 }
@@ -130,24 +133,48 @@ fn default_source(dir: &Path) -> ThemeSource {
     if dir.join(DARK_FILE).is_file() { ThemeSource::Wallpaper } else { ThemeSource::Preset(DEFAULT_PRESET.name) }
 }
 
+/// The most a theme or colour file may hold: far above any real one, so a `/dev/zero` named as a
+/// theme file cannot grow the daemon.
+pub const MAX_FILE: u64 = 64 * 1024;
+
+/// A regular file's text, at most `MAX_FILE` bytes (symlinks followed). A FIFO, a device or a
+/// directory is an error (`InvalidInput`) without being opened, so nothing blocks.
+pub fn read_capped(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    if !std::fs::metadata(path)?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)?.take(MAX_FILE).read_to_string(&mut text)?;
+    Ok(text)
+}
+
 /// `dir/theme.toml`; absent → Default with no warning; unreadable → Default
 /// with one. Without a `theme` key, `default_source` decides.
 pub fn load_settings(dir: &Path) -> (ThemeSettings, Vec<String>) {
     let source = default_source(dir);
-    match std::fs::read_to_string(dir.join(THEME_FILE)) {
+    match read_capped(&dir.join(THEME_FILE)) {
         Ok(text) => parse_settings_or(&text, source),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (ThemeSettings { source, ..ThemeSettings::default() }, Vec::new()),
         Err(e) => (ThemeSettings { source, ..ThemeSettings::default() }, vec![format!("{THEME_FILE} unreadable: {e}")]),
     }
 }
 
-/// `p`'s half for `mode`; a missing light half → its dark one, one line.
-fn half(p: &Preset, mode: Mode, w: &mut Vec<String>) -> Roles {
+/// The resolver's lines: `warnings` are errors (something is wrong), `notes` informational
+/// (a documented fallback that is no fault: the TUI does not repeat them on every launch).
+#[derive(Default)]
+struct Lines {
+    warnings: Vec<String>,
+    notes: Vec<String>,
+}
+
+/// `p`'s half for `mode`; a missing light half → its dark one, one note.
+fn half(p: &Preset, mode: Mode, w: &mut Lines) -> Roles {
     match (mode, p.light) {
         (Mode::Dark, _) => p.dark,
         (Mode::Light, Some(light)) => light,
         (Mode::Light, None) => {
-            w.push(format!("theme {:?} has no light variant: using its dark one", p.name));
+            w.notes.push(format!("theme {:?} has no light variant: using its dark one", p.name));
             p.dark
         }
     }
@@ -161,7 +188,7 @@ enum ColorFile {
 }
 
 fn read_colors(dir: &Path, file: &str, mode: Mode) -> ColorFile {
-    match std::fs::read_to_string(dir.join(file)) {
+    match read_capped(&dir.join(file)) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => ColorFile::Absent,
         Err(e) => ColorFile::Bad(format!("{file} unreadable: {e}")),
         Ok(text) => match parse_colors(&text, mode) {
@@ -174,15 +201,15 @@ fn read_colors(dir: &Path, file: &str, mode: Mode) -> ColorFile {
 /// theme = "wallpaper" (spec § 2): the light file in light mode, else the
 /// dark file (read as dark, since that is what it is); any unusable file →
 /// the default theme, and `bad` set (an absent file leaves it alone).
-fn wallpaper(mode: Mode, dir: &Path, w: &mut Vec<String>, bad: &mut bool) -> Roles {
+fn wallpaper(mode: Mode, dir: &Path, w: &mut Lines, bad: &mut bool) -> Roles {
     let fallback = DEFAULT_PRESET.name;
     if mode == Mode::Light {
         match read_colors(dir, LIGHT_FILE, Mode::Light) {
             ColorFile::Found(roles) => return roles,
-            ColorFile::Absent => w.push(format!("{LIGHT_FILE} not found: light mode uses {DARK_FILE}")),
+            ColorFile::Absent => w.notes.push(format!("{LIGHT_FILE} not found: light mode uses {DARK_FILE}")),
             ColorFile::Bad(line) => {
                 *bad = true;
-                w.push(format!("{line}, using {fallback:?}"));
+                w.warnings.push(format!("{line}, using {fallback:?}"));
                 return half(DEFAULT_PRESET, mode, w);
             }
         }
@@ -190,12 +217,12 @@ fn wallpaper(mode: Mode, dir: &Path, w: &mut Vec<String>, bad: &mut bool) -> Rol
     match read_colors(dir, DARK_FILE, Mode::Dark) {
         ColorFile::Found(roles) => roles,
         ColorFile::Absent => {
-            w.push(format!("theme \"wallpaper\": {DARK_FILE} not found, using {fallback:?}"));
+            w.warnings.push(format!("theme \"wallpaper\": {DARK_FILE} not found, using {fallback:?}"));
             half(DEFAULT_PRESET, mode, w)
         }
         ColorFile::Bad(line) => {
             *bad = true;
-            w.push(format!("{line}, using {fallback:?}"));
+            w.warnings.push(format!("{line}, using {fallback:?}"));
             half(DEFAULT_PRESET, mode, w)
         }
     }
@@ -207,8 +234,18 @@ fn wallpaper(mode: Mode, dir: &Path, w: &mut Vec<String>, bad: &mut bool) -> Rol
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub roles: Roles,
+    /// Something is wrong (an unusable file, an unknown theme, a settings line).
     pub warnings: Vec<String>,
+    /// Informational: a documented fallback, no fault (no light file, no light variant).
+    pub notes: Vec<String>,
     pub bad_file: bool,
+}
+
+impl Resolved {
+    /// Every line, errors first: what the daemon logs.
+    pub fn lines(&self) -> Vec<String> {
+        self.warnings.iter().chain(&self.notes).cloned().collect()
+    }
 }
 
 /// The roles for `settings` in `mode`. Reads `dir/colors.toml` /
@@ -216,25 +253,39 @@ pub struct Resolved {
 /// overrides apply last. Each failure is one warning line.
 pub fn resolve(settings: &ThemeSettings, mode: Mode, dir: &Path) -> (Roles, Vec<String>) {
     let r = resolve_detailed(settings, mode, dir);
-    (r.roles, r.warnings)
+    let lines = r.lines();
+    (r.roles, lines)
 }
 
-/// `resolve`, with `bad_file`.
+/// `resolve`, with `bad_file` and the lines split into errors and notes.
 pub fn resolve_detailed(settings: &ThemeSettings, mode: Mode, dir: &Path) -> Resolved {
-    let mut w = Vec::new();
+    let mut w = Lines::default();
     let mut bad_file = false;
     let mut roles = match &settings.source {
         ThemeSource::Wallpaper => wallpaper(mode, dir, &mut w, &mut bad_file),
         ThemeSource::Preset(name) => match presets::preset(name) {
             Some(p) => half(p, mode, &mut w),
             None => {
-                w.push(format!("unknown theme {name:?}, using {:?}", DEFAULT_PRESET.name));
+                w.warnings.push(format!("unknown theme {name:?}, using {:?}", DEFAULT_PRESET.name));
                 half(DEFAULT_PRESET, mode, &mut w)
             }
         },
     };
     settings.overrides.apply(&mut roles);
-    Resolved { roles, warnings: w, bad_file }
+    Resolved { roles, warnings: w.warnings, notes: w.notes, bad_file }
+}
+
+/// The one way to the theme in effect, at startup and on every reload: theme.toml (`load_settings`,
+/// whose lines come first among the warnings), the mode (`portal`: the portal's word, asked in mode auto only),
+/// the colour files.
+pub fn resolve_dir(dir: &Path, portal: impl FnOnce() -> Option<Mode>) -> (ThemeSettings, Resolved) {
+    let (settings, mut warnings) = load_settings(dir);
+    // `portal` is asked only in mode auto (the TUI reads a file there).
+    let portal = if settings.mode == ModeSetting::Auto { portal() } else { None };
+    let mut resolved = resolve_detailed(&settings, effective_mode(settings.mode, portal), dir);
+    warnings.append(&mut resolved.warnings);
+    resolved.warnings = warnings;
+    (settings, resolved)
 }
 
 /// The portal's color-scheme value: 1 → Dark, 2 → Light, anything else
@@ -255,6 +306,7 @@ pub fn effective_mode(setting: ModeSetting, portal: Option<Mode>) -> Mode {
         ModeSetting::Auto => portal.unwrap_or(Mode::Dark),
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -575,5 +627,78 @@ mod tests {
         assert_eq!(effective_mode(ModeSetting::Auto, None), Mode::Dark);
         assert_eq!(effective_mode(ModeSetting::Auto, Some(Mode::Dark)), Mode::Dark);
         assert_eq!(effective_mode(ModeSetting::Auto, Some(Mode::Light)), Mode::Light);
+    }
+
+    /// A FIFO named as a theme or colour file is read as nothing, at once: it must not block the
+    /// daemon's loop (a writer never comes), and it is "unreadable", not a crash.
+    #[test]
+    fn a_fifo_is_unreadable_and_never_blocks() {
+        let dir = TempDir::new("theme-fifo");
+        for file in [THEME_FILE, DARK_FILE] {
+            let c = std::ffi::CString::new(dir.join(file).to_str().unwrap()).unwrap();
+            // SAFETY: a NUL-terminated path in a directory this test owns.
+            assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        }
+        let d = dir.to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (s, w) = load_settings(&d);
+            let r = resolve_detailed(&wallpaper(), Mode::Dark, &d);
+            let _ = tx.send((s, w, r));
+        });
+        let (s, w, r) = rx.recv_timeout(std::time::Duration::from_secs(5)).expect("a FIFO blocked the read");
+        assert_eq!(s.mode, ModeSetting::Auto);
+        assert!(w.len() == 1 && w[0].starts_with("theme.toml unreadable:"), "{w:?}");
+        assert!(r.bad_file && r.warnings.iter().any(|l| l.starts_with("colors.toml unreadable:")), "{r:?}");
+        assert_eq!(r.roles, named("catppuccin").dark, "the existing fallback");
+    }
+
+    /// Only the first 64 KB of a file are read: `/dev/zero` as a symlink target would otherwise grow
+    /// the daemon without bound. The cut text is then (almost surely) not valid TOML: one warning.
+    #[test]
+    fn an_oversized_file_is_cut_at_the_cap() {
+        let dir = TempDir::new("theme-big");
+        let big = format!("# {}\ntheme = \"nord\"\n", "x".repeat(MAX_FILE as usize));
+        std::fs::write(dir.join(THEME_FILE), &big).unwrap();
+        let text = read_capped(&dir.join(THEME_FILE)).unwrap();
+        assert_eq!(text.len() as u64, MAX_FILE, "exactly the cap, not the whole file");
+        let (s, w) = load_settings(&dir);
+        assert_eq!(s.source, ThemeSource::Preset("catppuccin"), "the `theme` line is past the cap");
+        assert!(w.is_empty(), "a comment cut short is still valid TOML: {w:?}");
+        std::os::unix::fs::symlink("/dev/zero", dir.join(DARK_FILE)).unwrap();
+        let r = resolve_detailed(&wallpaper(), Mode::Dark, &dir);
+        assert!(r.bad_file && !r.warnings.is_empty(), "/dev/zero: not a regular file, no growth: {r:?}");
+    }
+
+    /// The informational lines (no light file, no light variant) are `notes`; faults are `warnings`.
+    #[test]
+    fn informational_lines_are_notes_and_faults_are_warnings() {
+        let dir = TempDir::new("theme-notes");
+        std::fs::write(dir.join(DARK_FILE), LEGACY_LIGHT).unwrap();
+        let r = resolve_detailed(&wallpaper(), Mode::Light, &dir);
+        assert_eq!((r.warnings.len(), r.notes.len()), (0, 1), "{r:?}");
+        assert!(r.notes[0].contains("colors-light.toml not found"), "{r:?}");
+        let nord = ThemeSettings { source: ThemeSource::Preset("nord"), ..ThemeSettings::default() };
+        let r = resolve_detailed(&nord, Mode::Light, &dir);
+        assert_eq!((r.warnings.len(), r.notes.len()), (0, 1), "{r:?}");
+        assert!(r.notes[0].contains("no light variant"), "{r:?}");
+        let unknown = ThemeSettings { source: ThemeSource::Preset("nosuch"), ..ThemeSettings::default() };
+        assert_eq!(resolve_detailed(&unknown, Mode::Dark, &dir).warnings.len(), 1, "a fault stays a warning");
+        assert_eq!(r.lines(), r.notes, "the daemon logs both");
+    }
+
+    /// `resolve_dir` is load_settings + resolve_detailed: the settings' lines come first, the portal
+    /// is asked in mode auto only.
+    #[test]
+    fn resolve_dir_is_the_one_path() {
+        let dir = TempDir::new("theme-resolve-dir");
+        std::fs::write(dir.join(THEME_FILE), "theme = \"nord\"\nbogus = 1\n").unwrap();
+        let (s, r) = resolve_dir(&dir, || Some(Mode::Light));
+        assert_eq!(s.source, ThemeSource::Preset("nord"));
+        assert!(r.warnings[0].contains("bogus"), "settings lines first: {r:?}");
+        assert!(r.notes[0].contains("no light variant"), "auto asked the portal: light: {r:?}");
+        std::fs::write(dir.join(THEME_FILE), "theme = \"nord\"\nmode = \"dark\"\n").unwrap();
+        let (_, r) = resolve_dir(&dir, || panic!("a fixed mode never asks the portal"));
+        assert_eq!(r.roles, named("nord").dark);
     }
 }

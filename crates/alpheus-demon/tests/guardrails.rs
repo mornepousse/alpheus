@@ -1114,3 +1114,19 @@ fn the_theme_watch_only_reads_the_config_directory() {
     }
     assert!(found, "watch.rs not found");
 }
+
+/// The theme is resolved once more after everything it depends on is up (final review): after the
+/// watch is armed (a file written between the first read and the watch would be missed for the
+/// whole session), and after `start_tray` and `follow_portal_if_auto` (earlier, the portal start
+/// sees no bus and gives up for good).
+#[test]
+fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
+    let last = at("state.theme_changed();");
+    assert_eq!(prod.matches("state.theme_changed();").count(), 1);
+    for before in ["crate::watch::start(", "start_tray(&mut state", "state.follow_portal_if_auto();", "state.publish_mode();"] {
+        assert!(at(before) < last, "{before} must come before the startup re-resolve");
+    }
+}
