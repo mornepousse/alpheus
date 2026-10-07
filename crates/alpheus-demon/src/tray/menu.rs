@@ -297,9 +297,11 @@ impl Menu {
             0 => 0,
             _ => 6 + layout.node(self.level().parent).map_or(0, |n| text_width(n.label())),
         };
-        let columns = entry_width.max(header_width).clamp(MENU_MIN_COLUMNS, MENU_MAX_COLUMNS).min(max_columns);
         let content = (self.header() + entries.len().max(1)).min(usize::from(u16::MAX - 2)) as u16;
         let wanted = content + 2;
+        // A menu that scrolls carries ▴/▾ marks after the text, with a blank cell before them.
+        let mark_room = u16::from(wanted > max_rows);
+        let columns = (entry_width.max(header_width) + mark_room).clamp(MENU_MIN_COLUMNS, MENU_MAX_COLUMNS).min(max_columns);
         // Never more than the output allows, even when it offers fewer than 3 rows (there is no
         // sane menu box below that, but returning more than `max_rows` would be worse: the caller
         // asked for a hard bound). Inside a submenu, aim for header + one entry + the ring's two rows (4)
@@ -347,6 +349,12 @@ impl Menu {
             g.write(2, columns.saturating_sub(1), &BACK.to_string(), Style::MUTED);
             out.push(g);
         }
+        // The rows carrying the scroll marks: the first / last entry row shown (a separator line
+        // never carries one: the nearest entry row does).
+        let is_entry = |r: &usize| entries.get(top + r).is_some_and(|e| !e.is_separator());
+        let above = (top > 0).then(|| (0..shown).find(is_entry)).flatten();
+        let below = (top + shown < entries.len()).then(|| (0..shown).rev().find(is_entry)).flatten();
+        let mut marks = Vec::new();
         for r in 0..shown {
             let i = top + r;
             let Some(e) = entries.get(i) else {
@@ -375,33 +383,41 @@ impl Menu {
                 style: if e.is_enabled() { Style::NORMAL } else { Style::MUTED },
                 selected: selected == Some(i),
             };
-            list::row(&mut g, 1, columns.saturating_sub(1), &row);
+            // A marked row ends one cell earlier, so a blank cell separates its text from the mark.
+            let mark = if below == Some(r) {
+                Some(MORE_BELOW)
+            } else if above == Some(r) {
+                Some(MORE_ABOVE)
+            } else {
+                None
+            };
+            let end = columns.saturating_sub(1 + u16::from(mark.is_some()));
+            list::row(&mut g, 1, end, &row);
+            if let Some(m) = mark {
+                marks.push((out.len(), m));
+            }
             out.push(g);
         }
         // Where the frame's top and bottom strokes used to carry them: in the pad cell at the end of
-        // the first and last entry rows (never over a separator line).
-        let first = 1 + header;
-        let last = out.len() - 1;
-        if top > 0 {
-            mark_edge(&mut out, &separators, first, columns, MORE_ABOVE);
-        }
-        if top + shown < entries.len() {
-            mark_edge(&mut out, &separators, last, columns, MORE_BELOW);
+        // the first and last entry rows.
+        for (row, mark) in marks {
+            put_mark(&mut out, row, columns, mark);
         }
         out.push(Grid::empty(columns));
         list::boxed(&out, &separators, None)
     }
 }
 
-/// Writes `mark` in the pad cell at the end of row `row` (ring coordinates, `columns` wide), keeping the
-/// cell's INVERTED style under the selection and MUTED otherwise; nothing on a separator or past the rows.
-fn mark_edge(rows: &mut [Grid], separators: &[usize], row: usize, columns: u16, mark: char) {
-    let Some(g) = rows.get_mut(row).filter(|_| !separators.contains(&row)) else { return };
+/// Writes `mark` in the pad cell at the end of row `row` (ring coordinates, `columns` wide), in
+/// the selection's INVERTED style when the row is selected and MUTED otherwise.
+fn put_mark(rows: &mut [Grid], row: usize, columns: u16, mark: char) {
+    let Some(g) = rows.get_mut(row) else { return };
     let column = columns.saturating_sub(2);
-    let style = g
-        .cells()
-        .get(usize::from(column))
-        .map_or(Style::MUTED, |c| if c.style == Style::INVERTED { Style::INVERTED } else { Style::MUTED });
+    // The blank cell before the mark is INVERTED on a selected row: the band is that style all along.
+    let style = match g.cells().get(usize::from(column).saturating_sub(1)) {
+        Some(c) if c.style == Style::INVERTED => Style::INVERTED,
+        _ => Style::MUTED,
+    };
     g.write(column, column + 1, &mark.to_string(), style);
 }
 
@@ -522,6 +538,42 @@ mod tests {
         insta::assert_snapshot!("menu_scrolled", snapshot(&rows));
         assert_eq!(m.hover(5, &l), MenuAction::Nothing, "the last visible row is the selection");
         assert_eq!(m.press(0, &l), MenuAction::Click(5), "row 0 is entry 5 once scrolled");
+    }
+
+    /// The ▴/▾ marks keep a blank cell before them, and sit on the nearest entry row when the
+    /// first or last visible row is a separator.
+    #[test]
+    fn scroll_marks_keep_a_gap_and_skip_separators() {
+        // An entry, a separator, an entry, …: the window's edges meet separators.
+        let children: Vec<MenuNode> = (1..=19)
+            .map(|i| if i % 2 == 0 { with(node(i, ""), |p| p.separator = Some(true)) } else { node(i, &format!("Entry {i}")) })
+            .collect();
+        let l = root(children);
+        let mut at_a_separator = 0;
+        // 12 columns: the longest label is truncated, its last cell would touch the mark.
+        for columns in [12, 200] {
+            let mut m = open(&l);
+            for _ in 0..12 {
+                let rows = draw(&mut m, &l, columns, 8); // 6 rows shown
+                let texts: Vec<String> = rows.rows.iter().map(Grid::text).collect();
+                let has = |mark: char| texts.iter().position(|t| t.ends_with(mark));
+                let numbers: Vec<u32> = texts
+                    .iter()
+                    .filter_map(|t| t.trim().strip_prefix("Entry "))
+                    .filter_map(|n| n.trim_end_matches(['▴', '▾', ' ']).parse().ok())
+                    .collect();
+                assert_eq!(has('▴').is_some(), numbers.first() != Some(&1), "▴ iff entries lie above: {texts:?}");
+                assert_eq!(has('▾').is_some(), numbers.last() != Some(&19), "▾ iff entries lie below: {texts:?}");
+                for i in has('▴').into_iter().chain(has('▾')) {
+                    let t: Vec<char> = texts[i].chars().collect();
+                    assert_eq!(t[t.len() - 2], ' ', "a blank cell before the mark: {texts:?}");
+                    assert!(!rows.separators.contains(&i), "never on a separator line: {texts:?}");
+                }
+                at_a_separator += usize::from(rows.separators.contains(&0) || rows.separators.contains(&(rows.rows.len() - 1)));
+                m.key(Key::Down, &l);
+            }
+        }
+        assert!(at_a_separator > 0, "the scenario reached a separator on an edge row");
     }
 
     #[test]

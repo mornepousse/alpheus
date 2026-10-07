@@ -500,7 +500,7 @@ impl App {
         }
     }
 
-    /// The calendar shows `months` later (earlier when negative), repainted the same size.
+    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint` repositions on a size change.
     fn calendar_scroll(&mut self, months: i32) {
         let Some(PopupBody::Calendar(c)) = self.popup.as_mut().map(|p| &mut p.body) else { return };
         if !c.scroll(months) {

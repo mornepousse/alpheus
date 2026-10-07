@@ -1,7 +1,7 @@
 //! The clock's calendar, pure (spec § 1 Calendar): one month as a grid of
 //! cells, today inverted like the active workspace, the first day of the
 //! week from the locale's LC_TIME, optional ISO week numbers. English like
-//! the clock (question 3); six week rows always. No events, nothing kept:
+//! the clock (question 3); only the weeks of the shown month (4 to 6 rows). No events, nothing kept:
 //! the popup (task 18) builds a `Calendar` at each open and drops it.
 
 use crate::clock::{LocalTime, MONTHS, SHORT_DAYS};
@@ -179,7 +179,6 @@ const DAY_CELLS: u16 = 2;
 const COLUMN: u16 = 3;
 /// The week number column ("41 ") before the days.
 const WEEK_CELLS: u16 = 3;
-const WEEK_ROWS: usize = 6;
 
 pub struct Calendar {
     pub shown: Month,
@@ -202,10 +201,18 @@ impl Calendar {
         self.shown != before
     }
 
-    /// Content size in cells (no frame): 20 wide (+3 with week numbers), 8
-    /// rows (title, weekdays, 6 weeks).
+    /// Content size in cells (no frame): 20 wide (+3 with week numbers), 2 + the shown month's
+    /// weeks rows (title, weekdays, 4 to 6 weeks).
     pub fn size(&self) -> (u16, u16) {
-        (7 * COLUMN - 1 + if self.week_numbers { WEEK_CELLS } else { 0 }, 2 + WEEK_ROWS as u16)
+        (7 * COLUMN - 1 + if self.week_numbers { WEEK_CELLS } else { 0 }, 2 + self.weeks() as u16)
+    }
+
+    /// The week rows of the shown month: the cells before the 1st plus its days, rounded up to
+    /// whole weeks (4 for a February starting on the week's first day, up to 6).
+    fn weeks(&self) -> usize {
+        let shown = Month { year: self.shown.year, month: self.shown.month.clamp(1, 12) };
+        let offset = usize::from((shown.first_weekday() + 7 - self.first_day % 7) % 7);
+        (offset + usize::from(shown.days())).div_ceil(7)
     }
 
     /// The content rows, each `size().0` wide (`list::padded` adds the pad
@@ -224,7 +231,8 @@ impl Calendar {
         let first_day = self.first_day % 7;
         let (width, _) = self.size();
         let left = if self.week_numbers { WEEK_CELLS } else { 0 };
-        let mut rows = Vec::with_capacity(2 + WEEK_ROWS);
+        let weeks = self.weeks();
+        let mut rows = Vec::with_capacity(2 + weeks);
         let mut title = Grid::empty(width);
         let text = format!("{} {}", MONTHS[usize::from(shown.month) - 1], shown.year);
         title.write(width.saturating_sub(text_width(&text)) / 2, width, &text, Style::BOLD_ACCENT);
@@ -240,7 +248,7 @@ impl Calendar {
         let offset = i64::from((shown.first_weekday() + 7 - first_day) % 7);
         let monday_column = i64::from((MONDAY + 7 - first_day) % 7);
         let days = i64::from(shown.days());
-        for r in 0..WEEK_ROWS as i64 {
+        for r in 0..weeks as i64 {
             let mut g = Grid::empty(width);
             let row_start = r * 7 - offset; // days after the 1st of the row's first cell
             if self.week_numbers && row_start + 6 >= 0 && row_start < days {
@@ -278,14 +286,14 @@ mod tests {
     #[test]
     fn october_2026_monday_first() {
         let rows = Calendar::new(&TODAY, MONDAY, false).render();
-        assert_eq!(rows.len(), 8, "title, weekdays, six weeks");
+        assert_eq!(rows.len(), 7, "title, weekdays, five weeks: October 2026 needs no sixth");
         assert!(rows.iter().all(|g| g.width() == 20));
         assert_eq!(rows[0].text(), "    October 2026    ");
         assert_eq!(rows[1].text(), "Mo Tu We Th Fr Sa Su");
         assert_eq!(rows[2].text(), "          1  2  3  4", "1 October 2026 is a Thursday");
         assert_eq!(rows[3].text(), " 5  6  7  8  9 10 11");
         assert_eq!(&rows[3].styles()[..3], "AA.", "today inverted, its two cells");
-        assert_eq!(rows[7].text(), " ".repeat(20), "a sixth row, blank");
+        assert_eq!(rows[6].text(), "26 27 28 29 30 31   ", "the last week");
         insta::assert_snapshot!("october_2026_monday_first", snapshot(&rows));
     }
 
@@ -301,13 +309,13 @@ mod tests {
     #[test]
     fn week_numbers_column() {
         let c = Calendar::new(&TODAY, MONDAY, true);
-        assert_eq!(c.size(), (23, 8));
+        assert_eq!(c.size(), (23, 7));
         let rows = c.render();
         assert_eq!(rows[1].text(), "   Mo Tu We Th Fr Sa Su");
         assert_eq!(rows[2].text(), "40           1  2  3  4");
         assert_eq!(&rows[2].styles()[..2], "mm", "muted");
         assert_eq!(rows[6].text(), "44 26 27 28 29 30 31   ");
-        assert_eq!(rows[7].text(), " ".repeat(23), "no day of the month: no number either");
+        assert_eq!(rows.len(), 7, "no row without a day of the month");
         // Sunday first: the row of Sunday 4 October shows the week of Monday 5 (41).
         let rows = Calendar::new(&TODAY, SUNDAY, true).render();
         assert_eq!(rows[2].text(), "40              1  2  3");
@@ -337,6 +345,26 @@ mod tests {
         );
     }
 
+    /// The height follows the shown month: 4 weeks (February 2027 starts on a Monday, Monday first),
+    /// 5 (October 2026), 6 (August 2026); `size` and `render` agree, whatever the first day.
+    #[test]
+    fn the_height_follows_the_weeks_of_the_month() {
+        for (months, first_day, weeks) in [(4, MONDAY, 4), (4, SUNDAY, 5), (0, MONDAY, 5), (0, SUNDAY, 5), (-2, MONDAY, 6), (-2, SUNDAY, 6)]
+        {
+            let mut c = Calendar::new(&TODAY, first_day, true);
+            c.scroll(months);
+            assert_eq!(c.size().1, 2 + weeks, "{months:+} months, first day {first_day}");
+            assert_eq!(c.render().len(), usize::from(c.size().1), "render and size agree");
+        }
+        let mut feb = Calendar::new(&TODAY, MONDAY, false);
+        feb.scroll(4);
+        let rows = feb.render();
+        assert_eq!(rows[0].text(), "   February 2027    ");
+        assert_eq!(rows[5].text(), "22 23 24 25 26 27 28", "the fourth and last week");
+        assert_eq!(rows.len(), 6);
+        insta::assert_snapshot!("february_2027_four_weeks", snapshot(&rows));
+    }
+
     #[test]
     fn a_month_spanning_six_weeks() {
         // August 2026: Saturday the 1st, 31 days, Monday first: six week rows.
@@ -345,6 +373,7 @@ mod tests {
         let rows = c.render();
         assert_eq!(rows[0].text(), "      August 2026      ");
         assert_eq!(rows[2].text(), "31                 1  2", "1 August 2026: ISO week 31");
+        assert_eq!(rows.len(), 8, "title, weekdays, six weeks");
         assert_eq!(rows[7].text(), "36 31                  ", "Monday the 31st, alone on the sixth row");
         insta::assert_snapshot!("a_month_spanning_six_weeks", snapshot(&rows));
     }

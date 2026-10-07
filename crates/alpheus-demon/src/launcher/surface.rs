@@ -96,9 +96,12 @@ pub(crate) fn hit_cell(
     row_height: u32,
     frame: &Frame,
     layout: &BoxLayout,
+    size: (u32, u32),
 ) -> Option<(u16, u16)> {
     let cells = (layout.columns.saturating_sub(2), layout.rows.saturating_sub(2));
-    cell_under(position.0, position.1, scale, advance_phys, row_height, frame, cells).map(|(column, row)| (column + 1, row + 1))
+    let e = scale.max(1) as u32;
+    let frame = frame.fitted(cells, advance_phys, row_height, (size.0 * e, size.1 * e));
+    cell_under(position.0, position.1, scale, advance_phys, row_height, &frame, cells).map(|(column, row)| (column + 1, row + 1))
 }
 
 /// What a redraw does with the box (pure decision).
@@ -162,11 +165,22 @@ pub(crate) fn owns_surface(open: bool, is_box: bool, is_scrim: bool) -> bool {
     open && (is_box || is_scrim)
 }
 
-/// The open layout refitted inside a size the compositor imposed (logical
-/// px): its cells are the room, `view::layout`'s 1-cell margins given back.
-pub(crate) fn layout_within(size: (u32, u32), model: &Launcher, advance_phys: f32, row_height: u32, scale: i32) -> BoxLayout {
-    let (columns, rows) = output_cells(size.0, size.1, advance_phys, row_height, scale);
-    open_layout(columns.saturating_add(2), rows, model)
+/// The open layout refitted inside a size the compositor imposed (logical px): its cells are the
+/// room the pixel `frame` leaves, `view::layout`'s 1-cell ring added back to the numbers it counts.
+/// The room left over (less than a cell each way) is shared by the painter's frame, evenly.
+pub(crate) fn layout_within(
+    size: (u32, u32),
+    model: &Launcher,
+    advance_phys: f32,
+    row_height: u32,
+    scale: i32,
+    frame: &Frame,
+) -> BoxLayout {
+    let e = scale.max(1) as u32;
+    let (extra_w, extra_h) = frame.extra();
+    let columns = painter::columns((size.0 * e).saturating_sub(extra_w), advance_phys);
+    let rows = ((size.1 * e).saturating_sub(extra_h)).checked_div(row_height).map_or(0, |r| r.min(u16::MAX as u32) as u16);
+    open_layout(columns.saturating_add(4), rows.saturating_add(2), model)
 }
 
 /// What a scale change recomputes the box's layout within: the
@@ -186,7 +200,7 @@ pub(crate) fn resized_layout(
     frame: &Frame,
 ) -> (BoxLayout, (u32, u32)) {
     match imposed {
-        Some(size) => (layout_within(size, model, advance_phys, row_height, scale), size),
+        Some(size) => (layout_within(size, model, advance_phys, row_height, scale, frame), size),
         None => {
             let (columns, rows) = output_cells(output_size.0, output_size.1, advance_phys, row_height, scale);
             let layout = open_layout(columns, rows, model);
@@ -676,7 +690,7 @@ impl App {
                 let frame = self.fonts.frame(scale);
                 let outcome = match (self.launcher.as_mut(), actions::button(*button)) {
                     (Some(open), Some(b)) => {
-                        let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout);
+                        let cell = hit_cell(ev.position, scale, advance, height * scale as u32, &frame, &open.layout, open.size);
                         match (cell.and_then(|(column, row)| view::hit(&open.model, &open.layout, column, row)), b) {
                             (Some(Click::Result(i)), Button::Left) => open.model.click(i, false),
                             (Some(Click::Result(i)), Button::Right) => open.model.click(i, true),
@@ -737,7 +751,8 @@ impl App {
                 // the first output and placed on a smaller one): obey it, the
                 // layout refitted inside, never painted past it.
                 let e = open.scale.max(1);
-                let layout = layout_within(imposed, &open.model, fonts.advance(e), height * e as u32, e);
+                let frame = fonts.frame(e);
+                let layout = layout_within(imposed, &open.model, fonts.advance(e), height * e as u32, e, &frame);
                 open.model.set_list_rows(layout.list_rows as usize);
                 open.layout = layout;
                 open.size = imposed;
@@ -856,12 +871,12 @@ mod tests {
     #[test]
     fn a_layout_refitted_to_a_configured_size_fills_it_and_never_exceeds_it() {
         // 495 × 330 logical px at 8.25 px × 22 px cells: exactly 60 × 15 cells, ring included.
-        let b = layout_within((495, 330), &apps(), 8.25, 22, 1);
-        assert_eq!((b.columns, b.rows), (60, 15), "the whole configured size is used");
+        let b = layout_within((495, 330), &apps(), 8.25, 22, 1, &frame1());
+        assert_eq!((b.columns, b.rows), (60, 15), "the box's own 60 columns and 10 list rows fit the room the frame leaves");
         let (w, h) = layout_size(&b, 8.25, 22, 1, &frame1());
-        assert_eq!((w, h), (479 + 8, 13 * 22 + 13), "58 × 13 cells and the pixel frame instead of the ring");
-        assert!(w <= 495 && h <= 330, "the frame never takes more room than the ring did: {w} × {h}");
-        let b = layout_within((400, 200), &apps(), 8.25, 22, 1);
+        assert_eq!((w, h), (479 + 8, 13 * 22 + 13), "58 × 13 cells and the pixel frame: the rest of 495 × 330 is the painter's to share");
+        assert!(w <= 495 && h <= 330, "never past the imposed size: {w} × {h}");
+        let b = layout_within((400, 200), &apps(), 8.25, 22, 1, &frame1());
         let (w, h) = layout_size(&b, 8.25, 22, 1, &frame1());
         assert!(w <= 400 && h <= 200, "never painted past the configured size: {w} × {h}");
         assert!(b.list_rows >= 1);
@@ -869,22 +884,41 @@ mod tests {
 
     #[test]
     fn a_press_maps_to_the_layouts_cells_and_the_margin_hits_none() {
-        let b = layout_within((495, 330), &apps(), 8.25, 22, 1);
+        let b = layout_within((495, 330), &apps(), 8.25, 22, 1, &frame1());
         let f = frame1();
+        // The box is 487 × 299 in 495 × 330, its cells centred: 4 px more on each side, 15 above.
+        let size = (495, 330);
+        let hit = |x: f64, y: f64| hit_cell((x, y), 1, 8.25, 22, &f, &b, size);
         // The first pixel of the first cell is the layout's cell (1, 1): the ring is the frame.
-        assert_eq!(hit_cell((4.0, 7.0), 1, 8.25, 22, &f, &b), Some((1, 1)));
+        assert_eq!(hit(8.0, 22.0), Some((1, 1)));
+        assert_eq!(hit(7.0, 22.0), None, "the margin is as wide as the share says");
         // The third result row, a few columns in.
-        assert_eq!(hit_cell((4.0 + 8.25 * 5.5, 7.0 + 22.0 * 3.5), 1, 8.25, 22, &f, &b), Some((6, 4)));
+        assert_eq!(hit(8.0 + 8.25 * 5.5, 22.0 + 22.0 * 3.5), Some((6, 4)));
         // The margin: left, top, and the frame's other two sides.
-        assert_eq!(hit_cell((3.0, 40.0), 1, 8.25, 22, &f, &b), None);
-        assert_eq!(hit_cell((40.0, 6.0), 1, 8.25, 22, &f, &b), None);
-        let (w, h) = layout_size(&b, 8.25, 22, 1, &f);
-        assert_eq!(hit_cell((f64::from(w) - 1.0, 40.0), 1, 8.25, 22, &f, &b), None, "right margin");
-        assert_eq!(hit_cell((40.0, f64::from(h) - 1.0), 1, 8.25, 22, &f, &b), None, "bottom margin");
+        assert_eq!(hit(3.0, 40.0), None);
+        assert_eq!(hit(40.0, 21.0), None);
+        assert_eq!(hit(494.0, 40.0), None, "right margin");
+        assert_eq!(hit(40.0, 329.0), None, "bottom margin");
         // And a press there is no click: `view::hit` never sees it.
         let mut l = apps();
         l.set_list_rows(usize::from(b.list_rows));
-        assert_eq!(hit_cell((0.0, 0.0), 1, 8.25, 22, &f, &b).and_then(|(c, r)| view::hit(&l, &b, c, r)), None);
+        assert_eq!(hit(0.0, 0.0).and_then(|(c, r)| view::hit(&l, &b, c, r)), None);
+    }
+
+    /// Mae's review: inside a size the compositor imposed (495 × 330), the box's cells fit in what the
+    /// frame leaves and the rest of the room is shared evenly: the same margin on both sides.
+    #[test]
+    fn an_imposed_size_leaves_even_margins() {
+        let (advance, rh, size) = (8.25_f32, 22_u32, (495_u32, 330_u32));
+        let b = layout_within(size, &apps(), advance, rh, 1, &frame1());
+        let cells = (b.columns - 2, b.rows - 2);
+        let fitted = frame1().fitted(cells, advance, rh, size);
+        let content = ((f32::from(cells.0) * advance).ceil() as u32, u32::from(cells.1) * rh);
+        let (right, bottom) = (size.0 - fitted.side - content.0, size.1 - fitted.top - content.1);
+        assert!(fitted.side.abs_diff(right) <= 1, "left {} px, right {right} px", fitted.side);
+        assert!(fitted.top.abs_diff(bottom) <= 1, "top {} px, bottom {bottom} px", fitted.top);
+        assert_eq!(fitted.top + content.1 + fitted.bottom, size.1, "the frame's insets add up to the whole height");
+        assert!(content.0 + 2 * frame1().side <= size.0 && content.1 + frame1().top + frame1().bottom <= size.1, "never past the size");
     }
 
     /// Review item M1, final review slice 3: `release_memory` must run only
@@ -937,7 +971,7 @@ mod tests {
         // compositor already dictated.
         let (within, wanted) = resized_layout(Some((400, 200)), (1920, 1080), &apps(), 8.25, 22, 1, &frame1());
         assert_eq!(wanted, (400, 200), "the compositor's own size, unaffected by the output");
-        assert_eq!(within, layout_within((400, 200), &apps(), 8.25, 22, 1), "the same refit a configure already uses");
+        assert_eq!(within, layout_within((400, 200), &apps(), 8.25, 22, 1, &frame1()), "the same refit a configure already uses");
     }
 
     #[test]

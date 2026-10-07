@@ -2,18 +2,18 @@
 source: crates/alpheus-demon/src/tray/menu.rs
 expression: snapshot(&rows)
 ---
- Entry 5 ▴
- Entry 6  
- Entry 7  
- Entry 8  
- Entry 9  
- Entry 10▾
+ Entry 5  ▴
+ Entry 6   
+ Entry 7   
+ Entry 8   
+ Entry 9   
+ Entry 10 ▾
 
-.........m
-..........
-..........
-..........
-..........
-AAAAAAAAAA
+..........m
+...........
+...........
+...........
+...........
+AAAAAAAAAAA
 
 separators: []

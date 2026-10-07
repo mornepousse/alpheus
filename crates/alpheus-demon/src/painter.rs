@@ -60,16 +60,23 @@ impl Frame {
     /// At `scale`, for cells `advance` wide and the `ink` of the font's capitals in a row.
     pub fn new(scale: i32, advance: f32, ink: Ink) -> Frame {
         let e = scale.max(1) as u32;
-        let side = FRAME_SIDE * e;
+        let (radius, pad) = (FRAME_RADIUS * e, advance.round().max(0.0) as u32);
         // Stroke to the first column's ink: the side room, the pad cell, the letter's own bearing.
-        let gap = side + advance.round().max(0.0) as u32 + ink.left;
-        Frame {
-            side,
-            top: gap.saturating_sub(ink.top).max(e),
-            bottom: gap.saturating_sub(ink.bottom).max(e),
-            stroke: e,
-            radius: FRAME_RADIUS * e,
-        }
+        // A row with a lot of leading (a tall bar) would need a vertical inset below the corner
+        // radius, so the gap grows to keep one, and the side inset grows with it: the visible
+        // gaps stay equal on every side.
+        let gap = (FRAME_SIDE * e + pad + ink.left).max(ink.top + radius).max(ink.bottom + radius);
+        Frame { side: gap - pad - ink.left, top: gap - ink.top, bottom: gap - ink.bottom, stroke: e, radius }
+    }
+
+    /// This frame inside a surface of `size` physical px holding `cells` columns × rows: the room
+    /// the cells leave over (a compositor-imposed size, the logical rounding of a scale) shared
+    /// evenly between the two sides, so the margins stay even.
+    pub fn fitted(&self, cells: (u16, u16), advance: f32, row_height: u32, size: (u32, u32)) -> Frame {
+        let width = (f32::from(cells.0) * advance).ceil() as u32 + 2 * self.side;
+        let height = u32::from(cells.1) * row_height + self.top + self.bottom;
+        let (extra_w, extra_h) = (size.0.saturating_sub(width), size.1.saturating_sub(height));
+        Frame { side: self.side + extra_w / 2, top: self.top + extra_h / 2, bottom: self.bottom + extra_h - extra_h / 2, ..*self }
     }
 
     /// What the frame adds to the cells' width and height.
@@ -213,9 +220,9 @@ fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rg
 
 /// Draws `frame` along the edge of the buffer: straight strokes, and in each corner a quarter
 /// ring anti-aliased on both of its edges, the part beyond it left transparent (the buffer is
-/// premultiplied ARGB8888) and the part inside it the background's, over what the rows left.
-fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb, back: Rgb) {
-    let (Rgb(sr, sg, sb), Rgb(br, bg, bb)) = (ink, back);
+/// premultiplied ARGB8888) and the part inside it left as the rows painted it.
+fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb) {
+    let Rgb(sr, sg, sb) = ink;
     let r = frame.radius.min(width / 2).min(height / 2);
     let s = frame.stroke.min(r.max(1));
     rect(px, width, height, (r, width.saturating_sub(r)), (0, s), ink);
@@ -233,11 +240,11 @@ fn draw_frame(px: &mut [u8], width: u32, height: u32, frame: &Frame, ink: Rgb, b
             let outer = (rf - d + 0.5).clamp(0.0, 1.0);
             let inner = (rf - sf - d + 0.5).clamp(0.0, 1.0);
             let ring = outer - inner;
-            let pixel = [mix(sb, bb, ring, inner), mix(sg, bg, ring, inner), mix(sr, br, ring, inner), (outer * 255.0).round() as u8];
             for (x, y) in [(cx, cy), (width - 1 - cx, cy), (cx, height - 1 - cy), (width - 1 - cx, height - 1 - cy)] {
                 let o = (y as usize * width as usize + x as usize) * 4;
                 if let Some(dst) = px.get_mut(o..o + 4) {
-                    dst.copy_from_slice(&pixel);
+                    let (b, g, r) = (mix(sb, dst[0], ring, inner), mix(sg, dst[1], ring, inner), mix(sr, dst[2], ring, inner));
+                    dst.copy_from_slice(&[b, g, r, (outer * 255.0).round() as u8]);
                 }
             }
         }
@@ -513,13 +520,26 @@ impl Fonts {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
-        let frame = self.frame(scale);
+        let frame = self.frame(scale).fitted(b.cells(), self.advance, row_height, (width, height));
         fill(px, width, 0, width, height, color(palette, Tint::Bg));
         let band = width as usize * row_height as usize * 4;
         for (i, row) in b.rows.iter().enumerate() {
             let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
             let Some(slice) = px.get_mut(start..start + band) else { break };
             self.paint_cells(row, palette, slice, width, row_height, frame.side);
+        }
+        // A selection band reaching the frame's top or bottom edge is as far from it as from the
+        // sides: the first and last rows' coloured cells bleed into the vertical inset.
+        let rows_end = frame.top + b.rows.len() as u32 * row_height;
+        let up = (frame.side.min(frame.top), frame.top);
+        let down = (rows_end, rows_end + frame.bottom.saturating_sub(frame.side));
+        for (grid, (y0, y1)) in [(b.rows.first(), up), (b.rows.last(), down)] {
+            for (col, c) in grid.map_or(&[][..], |g| g.cells()).iter().enumerate() {
+                if c.style.bg != Tint::Bg {
+                    let x = (frame.side + self.edge(col), frame.side + self.edge(col + 1));
+                    rect(px, width, height, x, (y0, y1), color(palette, c.style.bg));
+                }
+            }
         }
         let ink = color(palette, Tint::Muted);
         let (w, h, s) = (width, height, frame.stroke);
@@ -532,7 +552,7 @@ impl Fonts {
             let x = frame.side + left + (right - left).saturating_sub(s) / 2;
             rect(px, w, h, (x, x + s), (s, h.saturating_sub(s)), ink);
         }
-        draw_frame(px, w, h, &frame, ink, color(palette, Tint::Bg));
+        draw_frame(px, w, h, &frame, ink);
     }
 
     /// Left edge of cell `col`, px from the cells' origin, at the current scale.
@@ -721,13 +741,85 @@ mod tests {
             "everything scales with the buffer (16.5 px cells: a 17 px pad cell)"
         );
         assert_eq!(f.extra(), (8, 13));
-        let tight = Frame::new(1, 8.25, Ink { left: 0, top: 40, bottom: 40 });
-        assert_eq!(
-            (tight.top, tight.bottom),
-            (1, 1),
-            "a leading bigger than the gap never pushes the text past the stroke: never below it"
-        );
+        let tall = Frame::new(1, 8.25, Ink { left: 1, top: 30, bottom: 32 });
+        assert!(tall.top >= tall.radius && tall.bottom >= tall.radius, "a corner never reaches the rows: {tall:?}");
+        assert_eq!(tall.side + 8 + 1, tall.top + 30, "left gap = top gap, the side follows");
+        assert_eq!(tall.side + 8 + 1, tall.bottom + 32, "left gap = bottom gap");
         assert_eq!(Frame::new(0, 8.25, Ink { left: 1, top: 6, bottom: 7 }).stroke, 1, "scale 0 treated as 1");
+    }
+
+    /// A tall bar (height 40) carries more leading than the usual gap covers: the margins stay
+    /// even and the corners stay clear of the rows.
+    #[test]
+    fn a_tall_bar_keeps_the_margins_even_and_the_corners_clear() {
+        let (mut p, _) = Fonts::load(&FontConfig::default(), 40).expect("fonts (nix develop)");
+        for scale in [1, 2] {
+            let f = p.frame(scale);
+            let ink = p.measure_ink();
+            let pad = p.advance.round() as u32;
+            assert!(f.top >= f.radius && f.bottom >= f.radius, "scale {scale}: {f:?}");
+            let left = f.side + pad + ink.left;
+            assert_eq!(left, f.top + ink.top, "scale {scale}: left gap = top gap ({f:?}, {ink:?})");
+            assert_eq!(left, f.bottom + ink.bottom, "scale {scale}: left gap = bottom gap");
+        }
+    }
+
+    /// The selection band (an INVERTED first and last row) is as far from the frame at the top and
+    /// the bottom as it is on the left and the right, at both scales.
+    #[test]
+    fn the_selection_band_is_at_an_even_distance_from_the_frame() {
+        for scale in [1, 2] {
+            let mut p = fonts();
+            let mut inv = Grid::empty(6);
+            inv.write(0, 6, "", Style::INVERTED);
+            for c in 0..6 {
+                inv.write(c, c + 1, " ", Style::INVERTED);
+            }
+            let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
+            let s = Surface::paint(&mut p, &b, scale);
+            let accent = Surface::opaque(Palette::default().accent);
+            let (mx, my) = (s.w / 2, s.h / 2);
+            let first = |f: &dyn Fn(u32) -> [u8; 4], range: std::ops::Range<u32>| range.into_iter().find(|&k| f(k) == accent);
+            let top = first(&|y| s.at(mx, y), 0..s.h).unwrap_or(u32::MAX);
+            let bottom = first(&|y| s.at(mx, s.h - 1 - y), 0..s.h).unwrap_or(u32::MAX);
+            let left = first(&|x| s.at(x, s.frame.top + s.rh / 2), 0..s.w).unwrap_or(u32::MAX);
+            let right = first(&|x| s.at(s.w - 1 - x, s.frame.top + s.rh / 2), 0..s.w).unwrap_or(u32::MAX);
+            assert_eq!(left, s.frame.side, "scale {scale}: the band starts one side inset from the edge");
+            assert_eq!((top, bottom), (left, left), "scale {scale}: top, bottom = left (my {my})");
+            assert!(right.abs_diff(left) <= 1, "scale {scale}: right {right} px (the width is rounded up), left {left}");
+        }
+    }
+
+    /// A surface bigger than its cells (a compositor-imposed size): the room left over is shared by
+    /// both sides, the margins stay even.
+    #[test]
+    fn a_surface_bigger_than_its_cells_shares_the_room_evenly() {
+        for scale in [1, 2] {
+            let mut p = fonts();
+            let mut inv = Grid::empty(6);
+            for c in 0..6 {
+                inv.write(c, c + 1, " ", Style::INVERTED);
+            }
+            let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
+            let (advance, frame) = (p.advance(scale), p.frame(scale));
+            let rh = DEFAULT_HEIGHT * scale as u32;
+            let (w, h) =
+                ((6.0 * advance).ceil() as u32 + frame.extra().0 + 14 * scale as u32, 3 * rh + frame.extra().1 + 31 * scale as u32);
+            let mut px = vec![0x11u8; (w * h * 4) as usize];
+            p.paint_boxed(&b, &Palette::default(), &mut px, w, h, rh, scale);
+            let at = |x: u32, y: u32| {
+                let o = ((y * w + x) * 4) as usize;
+                [px[o + 2], px[o + 1], px[o], px[o + 3]]
+            };
+            let accent = Surface::opaque(Palette::default().accent);
+            let first = |f: &dyn Fn(u32) -> [u8; 4], n: u32| (0..n).find(|&k| f(k) == accent).unwrap_or(u32::MAX);
+            let (mx, row) = (w / 2, h / 2 - rh); // inside the first row
+            let (left, right) = (first(&|x| at(x, row), w), first(&|x| at(w - 1 - x, row), w));
+            let (top, bottom) = (first(&|y| at(mx, y), h), first(&|y| at(mx, h - 1 - y), h));
+            assert!(left.abs_diff(right) <= 1, "scale {scale}: left {left} px, right {right} px");
+            assert!(top.abs_diff(bottom) <= 1, "scale {scale}: top {top} px, bottom {bottom} px");
+            assert!(left > frame.side, "scale {scale}: the extra room is really spread ({left})");
+        }
     }
 
     #[test]
