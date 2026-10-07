@@ -67,12 +67,15 @@ breakdown), then the spec of the sub-project currently in progress in
   `xdg_popup`s on the bar's own layer surface, sharing the launcher's list
   rendering and keys. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals,
   during a grab (3a6599e). Measured in **release** (headless sway, 3 runs):
-  startup ≈ 7.4–7.5 MB PSS all modules with the tray unused, ≈ 8.0–8.3 MB
-  with the tray and 10 fake items, ≈ 8.6–9.2 MB after 8,300 events, 0
+  startup ≈ 7.9–8.0 MB PSS all modules with the tray unused, ≈ 8.4–8.8 MB
+  with the tray and 10 fake items (that test runs without the launcher
+  module), ≈ 9.6–9.7 MB after 8,300 events (absolute PSS shifts ≈ ±0.5 MB
+  between boots, shared libraries being counted proportionally: trust the
+  deltas), 0
   wake-ups at rest with a populated tray, 6 threads (the tray adds none),
-  the module ≈ 470 KB and 10 items ≈ 465 KB (budget 2 MB), 20 popup cycles
-  −46…+81 KB. The baseline with the tray unused grew +0.4–0.7 MB: stripped
-  binary 4.49 → 5.34 MB (+848 KB: libdbus, dbus-rs, menus, popups,
+  the module ≈ 380 KB and 10 items ≈ 490 KB (budget 2 MB), 20 popup cycles
+  +32 KB in each of 3 runs. The baseline with the tray unused grew +0.4–0.7 MB: stripped
+  binary 4.49 → 5.36 MB (+864 KB: libdbus, dbus-rs, menus, popups,
   calendar) — a one-time cost Mae accepts, like the launcher's. (Mae asked
   for a "one D-Bus stack" item to move NetworkManager/UPower/BlueZ off zbus:
   nothing to do, tray plan 1 already did it — zbus left the tree.)
@@ -95,11 +98,11 @@ breakdown), then the spec of the sub-project currently in progress in
   (libxkbcommon now linked). A bar fix landed alongside it: with no
   active window, the right-hand modules now stay right instead of
   collapsing left (611f103). Measured in **release** (headless sway, 300
-  synthetic apps, several runs): open latency median 2.7–3.0 ms
-  (max 4.6–5.3 ms), open +1.8–1.9 MB PSS over closed, 50 cycles
-  +0.1–0.3 MB, 0 wake-ups in 5 s at rest after use. A 100,000-line dmenu
-  peaks at +6.2–6.3 MB over closed, back down to +0.3 MB one second after
-  a cancel. The daemon's own baseline also grew +0.3–0.7 MB over the
+  synthetic apps; refreshed on the tray branch, 3 runs): open latency
+  median 0.8–1.3 ms (max 1.7–2.9 ms), open +2.0–2.1 MB PSS over closed,
+  50 cycles +0.1–0.2 MB, 0 wake-ups in 5 s at rest after use (2 in one
+  run). A 100,000-line dmenu peaks at +6.6–6.8 MB over closed, back down
+  to +0.5 MB one second after a cancel. The daemon's own baseline also grew +0.3–0.7 MB over the
   delivery before this one (plan 1 alone: +524–540 KB; every module:
   +552–724 KB; binary +528 KiB, 5.06 → 5.58 MiB), measured `c256d33` vs
   this delivery back to back in release: a bigger statically-linked

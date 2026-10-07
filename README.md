@@ -32,23 +32,28 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 7.4–7.5 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.0–8.3 MB with the tray and 10 fake items) |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.6–9.2 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
-| Tray, module present, no item | ≈ 0.5 MB | watcher + session connection only, no thread (468–474 KB) |
-| Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 464–468 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: −46…+81 KB) |
-| Tray, linked in but unused (no `tray` in `modules`, no session bus) | +0.4–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (stripped 4.49 → 5.34 MB, +848 KB: libdbus linkage, menus, popups, calendar); measured back to back in release, a real cost, like the launcher's |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 7.9–8.0 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.4–8.8 MB with the tray and 10 fake items, but that test runs without the launcher module) |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.6–9.7 MB | stable, 0 wake-ups at rest, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
+| Tray, module present, no item | ≈ 0.4 MB | watcher + session connection only, no thread (376–392 KB) |
+| Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 488–496 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: +32 KB in each of 3 runs) |
+| Tray, linked in but unused (no `tray` in `modules`, no session bus) | +0.4–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (stripped 4.49 → 5.36 MB, +864 KB: libdbus linkage, menus, popups, calendar); measured back to back in release, a real cost, like the launcher's |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
 | Launcher feature, linked in but never opened (no `launcher` in `modules` even) | +0.3–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (`nucleo-matcher`, `xkeysym`, `xkbcommon`'s Rust bindings) plus `libxkbcommon.so` itself (≈ 60 KB of it, `/proc/<pid>/smaps`); measured `c256d33` vs the launcher delivery, release, back to back — a real cost, not "noise" |
 | Launcher, closed (socket only, nothing else resident) on top of that | +0 MB | no thread, timer or keyboard exists while closed |
-| Launcher, open (typed query, keyboard bound) | ≈ +2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs`, with dbus-rs |
-| Launcher, open latency | ≈ 2.9 ms median (max 5.7 ms) | request accepted → first frame committed, 20 opens, with dbus-rs |
-| Launcher, 50 open/close cycles | ≈ +0.3 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
-| Launcher, 100,000-line dmenu | ≈ +6.0 MB open, back to +0.3 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
+| Launcher, open (typed query, keyboard bound) | ≈ +2.0–2.1 MB over closed | headless sway, 300 synthetic apps, `tests/memory.rs`, with dbus-rs |
+| Launcher, open latency | ≈ 0.8–1.3 ms median (max 1.7–2.9 ms) | request accepted → first frame committed, 20 opens, with dbus-rs |
+| Launcher, 50 open/close cycles | ≈ +0.1–0.2 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
+| Launcher, 100,000-line dmenu | ≈ +6.6–6.8 MB open, back to +0.5 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
 
+> **Memory note:** absolute PSS shifts with machine state, by about ±0.5 MB
+> between boots, because shared libraries are counted proportionally; the
+> per-component deltas are the stable figures. Ranges are over 3 release runs
+> (KB/1024, one decimal).
+>
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
 > (≈ 71 MB) predate the move from zbus to dbus-rs, the launcher merge and
@@ -179,8 +184,8 @@ workspaces and the clock remain.
 Coming next: now-playing and notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0–8.3 MB
-of memory at start (with a tray of 10 items) and ≈ 8.6–9.2 MB under load,
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 7.9–8.0 MB
+of memory at start (≈ 8.4–8.8 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
 on three outputs. The
 compositor is only **read** (Hyprland or niri event stream); switching
 workspace goes through a configurable command. Sound comes from
@@ -206,10 +211,10 @@ bridges to it over an owner-only socket (`toggle`, `close`, `--dmenu`
 with fuzzel's exit codes, plus exit code 3 — daemon unreachable — the
 only case where a script falls back to another menu). Measured in
 **release** (headless sway, 300 synthetic apps): opening costs ≈ 1.9–2.1 MB
-of PSS over closed, median open latency ≈ 2.0 ms, 50 open/close cycles
-grow PSS by well under the 1 MB budget (measured 104–304 KB across runs),
-0 wake-ups in 5 s at rest after use. A 100,000-line dmenu peaks at
-+6.1–6.3 MB and drops back to +0.3–0.4 MB a second after it is cancelled.
+of PSS over closed, median open latency ≈ 0.8–1.3 ms, 50 open/close cycles
+grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
+0 wake-ups in 5 s at rest after use (2 in one of three runs). A 100,000-line dmenu peaks at
++6.6–6.8 MB and drops back to +0.5 MB a second after it is cancelled.
 
 ## Build
 
