@@ -117,7 +117,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Notification toasts | 🚧 (mako ≈ 6.6 MB until then) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness) | 🚧 (swayosd ≈ 49.5 MB until then) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
-| Colour themes, light/dark following the desktop | ✅ 9 presets, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
+| Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | 🚧 themes 2 | ✅ | ✅ | ➖ | ➖ |
 | Appearance settings | 🚧 TUI tab, themes 3 | ✅ | ✅ | ❌ | ❌ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
@@ -152,7 +152,7 @@ checks this.
 Seven tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
 **Displays** (enable, place, set resolution and scale, profiles, with
 automatic rollback after 15 s if not confirmed), **Theme** (choose a
-theme and the light/dark mode, with a preview; `--tab theme`).
+theme, the light/dark mode and the module colours, with a preview; `--tab theme`).
 
 | Key | Action |
 |---|---|
@@ -242,6 +242,7 @@ replacing the link is not seen until the bar restarts (the bar logs it once at s
 # ~/.config/alpheus/theme.toml — every key optional
 theme = "catppuccin"   # a preset below, or "wallpaper"
 mode  = "auto"         # "auto" (follow the desktop), "dark", "light"
+module_colors = "icons" # "none", "icons" (default), "full": see Module colours below
 
 [colors]               # override any role, whatever the theme and mode
 # accent = "#ff9e64"
@@ -289,6 +290,46 @@ A theme is 16 colours, named by use:
 | `accent2_container` | reserved (no surface uses it yet; delivery 2) |
 | `ok`, `warn`, `error`, `urgent` | states: low battery is `warn`, critical `error`, an urgent workspace `urgent` |
 
+#### Module colours
+
+A theme also carries **seven hues**: `red`, `orange`, `yellow`, `green`,
+`cyan`, `blue` and `purple`. Each preset takes them from its own palette
+(darker shades in the light variants where the official one is too pale to
+read, 3:1 on the bar at least). `module_colors` in `theme.toml` decides how
+much of each module wears its hue:
+
+| `module_colors` | Look |
+|---|---|
+| `none` | no hue: the bar looks as before the hues existed |
+| `icons` (default) | each module's icon takes its hue |
+| `full` | the icon and the module's text |
+
+The mapping is fixed:
+
+| Module | Hue |
+|---|---|
+| window title (its icon) | purple |
+| sound | blue |
+| network | cyan |
+| Bluetooth | purple |
+| battery | green |
+| CPU (its graph) | orange |
+| RAM | yellow |
+| temperature | red |
+
+Workspaces, the clock, the tray icons, the launcher button and the
+separators keep their colours. **States win over the hue**: a low (`warn`) or
+critical (`error`) battery, a hot temperature, a network with limited
+connectivity, a charging battery (accent), a muted volume, an offline or
+down module, an urgent workspace and a tray item that needs attention keep
+their state colours whatever `module_colors` says. The Theme tab of the
+control center has a "Module colours" row (None, Icons, Full) with a preview.
+
+A colour file may carry the seven hues as optional keys (`red = "#f38ba8"`,
+and so on); a hue that is absent is derived from Catppuccin's (Mocha for dark,
+Latte for light) mixed 30 % toward the accent, so it stays in tune with the
+theme. `[colors]` in `theme.toml` can override a hue like any role.
+
 #### Wallpaper colours (matugen)
 
 `theme = "wallpaper"` reads `colors.toml` (dark) and `colors-light.toml`
@@ -317,12 +358,34 @@ error             = "{{colors.error.default.hex}}"
 urgent            = "{{colors.error_container.default.hex}}"
 ```
 
-`amber` is a custom colour, tinted toward the wallpaper. One matugen
-configuration per mode, each writing its own file. `~/.config/matugen/alpheus-dark.toml`:
+`amber` is a custom colour, tinted toward the wallpaper. The seven hues are
+custom colours too, harmonised with the wallpaper: add these lines to the
+template, in the same way (the keys are optional; without them alpheus
+derives the hues from the accent):
+
+```toml
+red    = "{{colors.red.default.hex}}"
+orange = "{{colors.orange.default.hex}}"
+yellow = "{{colors.yellow.default.hex}}"
+green  = "{{colors.green.default.hex}}"
+cyan   = "{{colors.cyan.default.hex}}"
+blue   = "{{colors.blue.default.hex}}"
+purple = "{{colors.purple.default.hex}}"
+```
+
+One matugen configuration per mode, each writing its own file.
+`~/.config/matugen/alpheus-dark.toml`:
 
 ```toml
 [config.custom_colors]
-amber = { color = "#f9a825", blend = true }
+amber  = { color = "#f9a825", blend = true }
+red    = { color = "#f38ba8", blend = true }
+orange = { color = "#fab387", blend = true }
+yellow = { color = "#f9e2af", blend = true }
+green  = { color = "#a6e3a1", blend = true }
+cyan   = { color = "#94e2d5", blend = true }
+blue   = { color = "#89b4fa", blend = true }
+purple = { color = "#cba6f7", blend = true }
 
 [templates.alpheus]
 input_path = "~/.config/matugen/templates/alpheus.toml"
