@@ -6,6 +6,7 @@
 pub use alpheus_commun::{backends, config, displays, exec};
 
 pub mod app;
+pub mod appearance;
 pub mod external_tools;
 pub mod fuzzy;
 pub mod theme;

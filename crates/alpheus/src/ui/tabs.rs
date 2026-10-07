@@ -1,6 +1,7 @@
 //! Tab content, as rows: one focusable element per row, headings and lists
 //! around it; scrolling keeps the focus visible.
 
+use super::appearance;
 use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
@@ -25,6 +26,9 @@ enum Row {
 }
 
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
+    if app.tab == Tab::Appearance {
+        return appearance::render(buf, body, app, hits);
+    }
     let map: Vec<Vec<MapCell>> = if app.tab == Tab::Displays {
         let focused = displays::focused_output(app);
         displays::map_canvas(app.outputs(), focused.as_deref(), body.width.saturating_sub(4))
@@ -126,6 +130,7 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
             rows.push(Row::Blank);
             rows.push(Row::Item(1));
         }
+        Tab::Appearance => {}
         Tab::Displays => {
             if app.displays.niri {
                 rows.push(Row::Text("Displays: not available under niri yet".into()));

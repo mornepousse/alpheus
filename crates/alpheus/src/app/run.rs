@@ -170,6 +170,11 @@ pub fn build_app(dir: &Path, tab: Tab, now: Instant) -> App {
     // Unreadable or invalid file: saving would overwrite it without having
     // read it, refused until Mae has fixed it.
     app.displays.profiles_invalid = w_displays.is_some();
+    app.appearance.dir = Some(dir.to_path_buf());
+    app.appearance.runtime = runtime;
+    if app.tab == Tab::Appearance {
+        app.appearance_open();
+    }
     for w in [w_config, w_keys, w_displays].into_iter().flatten().chain(w_theme) {
         app.warn(w);
     }

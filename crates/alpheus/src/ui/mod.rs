@@ -1,6 +1,7 @@
 //! ratatui rendering. `render` draws everything and returns the map of
 //! clickable regions: each component knows its own region for click testing.
 
+mod appearance;
 mod displays;
 pub mod draw;
 pub mod hit;
@@ -20,6 +21,8 @@ use ratatui::style::{Modifier, Style};
 /// Below this, only a message is shown (never a panic).
 pub const MIN_W: u16 = 30;
 pub const MIN_H: u16 = 8;
+/// "alpheus" and the two spaces after it, in the tab bar.
+const BRAND_W: usize = 9;
 
 pub fn render(f: &mut Frame, app: &App) -> HitMap {
     let area = f.area();
@@ -44,14 +47,18 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
 fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let mut x = r.x + 1;
-    x += put(buf, r, x, r.y, "alpheus", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)) + 2;
-    for (i, t) in Tab::ALL.iter().enumerate() {
-        let label = format!(" {} {} ", i + 1, t.title());
+    let labels: Vec<String> = Tab::ALL.iter().enumerate().map(|(i, t)| format!(" {} {} ", i + 1, t.title())).collect();
+    // The brand ("alpheus" and two spaces) goes first when the seven tabs would not fit beside it.
+    let tabs_w: usize = labels.iter().map(|l| l.chars().count()).sum();
+    if tabs_w + BRAND_W < usize::from(r.width) {
+        x += put(buf, r, x, r.y, "alpheus", Style::default().fg(th.accent).add_modifier(Modifier::BOLD)) + 2;
+    }
+    for (t, label) in Tab::ALL.iter().zip(&labels) {
         let style = if *t == app.tab { th.selected() } else { Style::default().fg(th.fg) };
-        let w = put(buf, r, x, r.y, &label, style);
+        let w = put(buf, r, x, r.y, label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
         // Glued together: each label already carries its own spaces, so
-        // the six tabs fit in 80 columns this way.
+        // the seven tabs fit in 80 columns this way (without the brand).
         x = x.saturating_add(w);
     }
 }
@@ -98,6 +105,16 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
+            Tab::Appearance if app.appearance.mode_focus => {
+                pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
+                pairs.push((km.label(Action::Activate), "Apply"));
+                pairs.push((km.label(Action::NextTab), "Theme"));
+            }
+            Tab::Appearance => {
+                pairs.push((format!("{}/{}", km.label(Action::Up), km.label(Action::Down)), "Choose"));
+                pairs.push((km.label(Action::Activate), "Apply"));
+                pairs.push((km.label(Action::NextTab), "Mode"));
+            }
             Tab::Displays => match app.focused() {
                 Some(crate::app::Item::DisplayProfiles) => {
                     pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
@@ -174,8 +191,10 @@ mod tests {
     #[test]
     fn home_frame() {
         let (rows, _) = draw(&ready_app(), 80, 24);
-        assert!(rows[0].contains("alpheus") && rows[0].contains(" 1 Home ") && rows[0].contains(" 5 Power "));
-        assert!(rows[0].contains(" 6 Displays "), "six tabs in 80 columns: {:?}", rows[0]);
+        assert!(rows[0].contains(" 1 Home ") && rows[0].contains(" 5 Power "));
+        assert!(rows[0].contains(" 7 Appearance "), "seven tabs in 80 columns: {:?}", rows[0]);
+        assert!(!rows[0].contains("alpheus"), "the brand makes way for them at 80 columns");
+        assert!(draw(&ready_app(), 100, 24).0[0].contains("alpheus"), "and shows when there is room");
         assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
         assert!(rows[2].contains("  62 %"));
         assert!(rows[4].contains("Brightness") && rows[4].contains("  20 %"));
@@ -537,8 +556,8 @@ mod tests {
         let all = rows.join("\n");
         assert!(all.contains("Help — Esc to close"), "{all}");
         assert!(all.contains("Mouse") && all.contains("click, drag, scroll"), "last row cut off:\n{all}");
-        assert!(all.contains("Tabs 1 to 6") && all.contains("1, 2, 3, 4, 5, 6"), "{all}");
-        assert!(!all.contains("Tab Sound"), "the six tabs fit on one line");
+        assert!(all.contains("Tabs 1 to 7") && all.contains("1, 2, 3, 4, 5, 6, 7"), "{all}");
+        assert!(!all.contains("Tab Sound"), "the seven tabs fit on one line");
     }
 
     #[test]

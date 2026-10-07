@@ -42,6 +42,11 @@ impl App {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn on_key_action(&mut self, a: Action) {
+        self.do_action(a, Instant::now());
+    }
+
     fn key_confirm(&mut self, e: KeyEvent) {
         let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
         match action {
@@ -224,6 +229,9 @@ impl App {
     }
 
     fn do_action(&mut self, a: Action, now: Instant) {
+        if self.tab == Tab::Appearance && self.appearance_action(a, now) {
+            return;
+        }
         match a {
             Action::Quit => self.should_quit = true,
             Action::Back => {
@@ -301,11 +309,15 @@ mod tests {
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(a.tab, Tab::Displays, "Shift+Tab from Home: the last tab");
+        assert_eq!(a.tab, Tab::Appearance, "Shift+Tab from Home: the last tab");
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(a.tab, Tab::Appearance, "on Appearance, Shift+Tab moves the focus instead");
+        c(&mut a, '5');
         assert_eq!(a.tab, Tab::Power);
         c(&mut a, '6');
         assert_eq!(a.tab, Tab::Displays);
+        c(&mut a, '7');
+        assert_eq!(a.tab, Tab::Appearance);
         k(&mut a, KeyCode::Esc);
         assert_eq!(a.tab, Tab::Home);
         k(&mut a, KeyCode::Esc);

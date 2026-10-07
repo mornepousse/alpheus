@@ -2,7 +2,7 @@
 source: crates/alpheus/src/ui/mod.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays         
+  1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays  7 Appearance    
                                                                                 
  ▶ [ Lock ]                                                                     
                                                                                 

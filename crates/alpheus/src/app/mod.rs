@@ -4,6 +4,7 @@
 //! (run.rs) drains. Everything is tested by calling methods.
 
 pub mod action;
+pub mod appearance;
 pub mod displays;
 mod input;
 pub mod keymap;
@@ -17,6 +18,7 @@ use crate::displays::Output;
 use crate::fuzzy;
 use crate::theme::Theme;
 use action::{Command, External, Tab, palette_entries, profile_label};
+pub use appearance::AppearanceTab;
 pub use displays::{DisplaysTab, KEEP_DELAY, Keep, Panel, PanelField, PlaceChoice, SaveDialog, Trial};
 use keymap::Keymap;
 use ratatui::layout::Rect;
@@ -37,7 +39,7 @@ pub fn refresh_period(tab: Tab) -> Option<Duration> {
     match tab {
         Tab::Home => Some(Duration::from_secs(1)),
         Tab::Sound | Tab::Network | Tab::Bluetooth | Tab::Displays => Some(Duration::from_secs(2)),
-        Tab::Power => None,
+        Tab::Power | Tab::Appearance => None,
     }
 }
 
@@ -222,6 +224,7 @@ pub struct App {
     pub theme: Theme,
     pub should_quit: bool,
     pub displays: DisplaysTab,
+    pub appearance: AppearanceTab,
     /// Slider currently being dragged with the mouse, and its bar.
     pub(crate) dragging: Option<(SliderId, Rect)>,
     last_refresh: Instant,
@@ -258,6 +261,7 @@ impl App {
             theme,
             should_quit: false,
             displays: DisplaysTab::default(),
+            appearance: AppearanceTab::default(),
             dragging: None,
             last_refresh: now,
             requests: Vec::new(),
@@ -479,6 +483,9 @@ impl App {
             self.tab = t;
             self.focus = 0;
             self.search = Search::default();
+            if t == Tab::Appearance {
+                self.appearance_open();
+            }
         }
         self.refresh_tab(now);
     }
@@ -505,6 +512,7 @@ impl App {
                 vec![Item::Toggle(ToggleId::Bluetooth), Item::Button(Command::Open(External::Bluetooth))]
             }
             Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
+            Tab::Appearance => Vec::new(),
             Tab::Displays if self.displays.niri => Vec::new(),
             Tab::Displays => {
                 std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()

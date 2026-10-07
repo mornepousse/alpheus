@@ -31,7 +31,7 @@ pub struct Theme {
     pub ok: Color,
 }
 
-fn color(Rgb(r, g, b): Rgb) -> Color {
+pub(crate) fn color(Rgb(r, g, b): Rgb) -> Color {
     Color::Rgb(r, g, b)
 }
 

@@ -11,10 +11,11 @@ pub enum Tab {
     Bluetooth,
     Power,
     Displays,
+    Appearance,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 6] = [Tab::Home, Tab::Sound, Tab::Network, Tab::Bluetooth, Tab::Power, Tab::Displays];
+    pub const ALL: [Tab; 7] = [Tab::Home, Tab::Sound, Tab::Network, Tab::Bluetooth, Tab::Power, Tab::Displays, Tab::Appearance];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -24,6 +25,7 @@ impl Tab {
             Tab::Bluetooth => "Bluetooth",
             Tab::Power => "Power",
             Tab::Displays => "Displays",
+            Tab::Appearance => "Appearance",
         }
     }
 
@@ -53,6 +55,7 @@ impl Tab {
             Tab::Bluetooth => "bluetooth",
             Tab::Power => "power",
             Tab::Displays => "displays",
+            Tab::Appearance => "appearance",
         }
     }
 
@@ -138,7 +141,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub const ALL: [Action; 25] = [
+    pub const ALL: [Action; 26] = [
         Action::Quit,
         Action::Back,
         Action::Help,
@@ -152,6 +155,7 @@ impl Action {
         Action::GoTab(Tab::Bluetooth),
         Action::GoTab(Tab::Power),
         Action::GoTab(Tab::Displays),
+        Action::GoTab(Tab::Appearance),
         Action::Left,
         Action::Right,
         Action::Up,
@@ -249,9 +253,11 @@ mod tests {
 
     #[test]
     fn tabs_wrap_around() {
-        assert_eq!(Tab::Home.prev(), Tab::Displays);
+        assert_eq!(Tab::Home.prev(), Tab::Appearance);
         assert_eq!(Tab::Power.next(), Tab::Displays);
-        assert_eq!(Tab::Displays.next(), Tab::Home);
+        assert_eq!(Tab::Displays.next(), Tab::Appearance);
+        assert_eq!(Tab::Appearance.next(), Tab::Home);
+        assert_eq!(Tab::Appearance.title(), "Appearance");
         assert_eq!(Tab::Displays.title(), "Displays");
         assert_eq!(Tab::Network.index(), 2);
     }
@@ -260,12 +266,13 @@ mod tests {
     fn tab_names_on_the_command_line() {
         let mut names: Vec<&str> = Tab::ALL.iter().map(|t| t.slug()).collect();
         names.sort();
-        assert_eq!(names, ["bluetooth", "displays", "home", "network", "power", "sound"]);
+        assert_eq!(names, ["appearance", "bluetooth", "displays", "home", "network", "power", "sound"]);
         for t in Tab::ALL {
             assert_eq!(Tab::from_slug(t.slug()), Some(t));
         }
         assert_eq!(Tab::from_slug("Network"), Some(Tab::Network));
         assert_eq!(Tab::from_slug(" DISPLAYS "), Some(Tab::Displays));
+        assert_eq!(Tab::from_slug("Appearance"), Some(Tab::Appearance));
         assert_eq!(Tab::from_slug("weather"), None);
         assert_eq!(Tab::from_slug(""), None);
     }
@@ -276,6 +283,7 @@ mod tests {
             assert_eq!(Action::from_name(&a.name()), Some(a), "{}", a.name());
         }
         assert_eq!(Action::GoTab(Tab::Network).name(), "tab_3");
+        assert_eq!(Action::GoTab(Tab::Appearance).name(), "tab_7");
         assert_eq!(Action::PageUp.name(), "page_up");
         assert_eq!(Action::from_name("fly"), None);
     }
@@ -303,6 +311,7 @@ mod tests {
             "Go to: Sound",
             "Profile: Balanced",
             "Go to: Displays",
+            "Go to: Appearance",
             "Display profile: Bureau",
         ] {
             assert!(labels.contains(&expected), "{expected} missing");
