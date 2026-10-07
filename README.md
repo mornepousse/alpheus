@@ -317,12 +317,16 @@ The mapping is fixed:
 | RAM | yellow |
 | temperature | red |
 
+With `graph = 0`, only `full` colours the CPU (its icon is the graph).
+
 Workspaces, the clock, the tray icons, the launcher button and the
 separators keep their colours. **States win over the hue**: a low (`warn`) or
 critical (`error`) battery, a hot temperature, a network with limited
-connectivity, a charging battery (accent), a muted volume, an offline or
+connectivity, a muted volume, an offline or
 down module, an urgent workspace and a tray item that needs attention keep
-their state colours whatever `module_colors` says. The Theme tab of the
+their state colours whatever `module_colors` says. A charging battery is
+green like a discharging one (its glyph shows it charges); under `none` it
+keeps the accent. The Theme tab of the
 control center has a "Module colours" row (None, Icons, Full) with a preview.
 
 A colour file may carry the seven hues as optional keys (`red = "#f38ba8"`,

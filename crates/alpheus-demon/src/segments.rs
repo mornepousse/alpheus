@@ -263,8 +263,10 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        // Charging keeps its accent, like a low charge its warn or error: a state wins over the hue.
-        let state = if b.charge == Charge::Charging { Some(Style::ACCENT) } else { charge_state(b.percent) };
+        // Without hues a charging battery keeps its accent (the old look). With hues it is green like
+        // a discharging one: its glyph already says it charges (Mae, 2026-10-07). A low charge's
+        // warn or error wins over the hue either way.
+        let state = if b.charge == Charge::Charging && mc == ModuleColors::None { Some(Style::ACCENT) } else { charge_state(b.percent) };
         pieces.push(piece(format!("{} ", battery_icon(b)), state.unwrap_or_else(|| icon_style(mc, Hue::Green, Style::NORMAL))));
         pieces.push(piece(format!("{}%", b.percent), state.unwrap_or_else(|| text_style(mc, Hue::Green, Style::NORMAL))));
     }
@@ -604,6 +606,18 @@ mod tests {
     }
 
     #[test]
+    fn a_charging_battery_is_green_under_icons_and_full() {
+        let laptop = |percent, charge| Feed::Ready(PowerState { laptop: Some(Battery { percent, charge }), peripherals: vec![] });
+        let d = &BatteryConfig::default();
+        let at = |mc, percent, charge| draw(&super::battery(&laptop(percent, charge), d, mc).unwrap()).1;
+        assert_eq!(at(ModuleColors::None, 93, Charge::Charging), "aaaaa", "None: the accent, as before");
+        assert_eq!(at(ModuleColors::Icons, 93, Charge::Charging), "gg...", "Icons: the green icon, the text normal");
+        assert_eq!(at(ModuleColors::Full, 93, Charge::Charging), "ggggg", "Full: green icon and text");
+        assert_eq!(at(ModuleColors::Icons, 93, Charge::Charging), at(ModuleColors::Icons, 93, Charge::Discharging));
+        assert_eq!(at(ModuleColors::Full, 15, Charge::Charging), "wwwww", "a low charge still wins");
+    }
+
+    #[test]
     fn battery_tint_boundary_at_19_and_20() {
         // Warn tint strictly below LOW (20): 19 % is low, 20 % is not (Mae,
         // 2026-10-04); see the `b.percent < LOW` comparison in `battery`.
@@ -838,7 +852,12 @@ mod tests {
             assert_eq!(draw(&super::battery(&discharging(15), d, mc).unwrap()).1, "wwwww", "low battery stays warn under {mc:?}");
             assert_eq!(draw(&super::battery(&discharging(9), d, mc).unwrap()).1, "eeee", "critical stays error under {mc:?}");
             let charging = Feed::Ready(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] });
-            assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, "aaaaa", "charging keeps its accent under {mc:?}");
+            let want = match mc {
+                ModuleColors::None => "aaaaa",
+                ModuleColors::Icons => "gg...",
+                ModuleColors::Full => "ggggg",
+            };
+            assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, want, "charging: accent under None, green otherwise ({mc:?})");
             let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
             let c = ResourcesConfig { graph: 0, ..ResourcesConfig::default() };
             assert_eq!(
@@ -858,7 +877,7 @@ mod tests {
     }
 
     /// The same bar under each setting: the representative snapshots. The battery discharges (a
-    /// charging one keeps its accent), so the green shows.
+    /// charging one is green too, or accent under None), so the green shows.
     fn hue_bar(mc: ModuleColors) -> Bar {
         let mut b = full_bar();
         b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 55, charge: Charge::Discharging }), peripherals: vec![] })));
