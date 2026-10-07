@@ -92,8 +92,8 @@ breakdown), then the spec of the sub-project currently in progress in
   - **Daemon.** Hot reload through one inotify fd (`watch.rs`; its parent is watched while `~/.config/alpheus` is missing). Mode `auto` follows the portal's `color-scheme` on the tray's session connection, or on one of its own when the tray is off.
   - **TUI.** Same resolver; no D-Bus. In mode `auto` it reads the mode the daemon publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running).
   - **Measured in release** (vs `c85c0df`, the tray branch just before the theme code; not the merge-base with `main`, which has no tray yet): a one-time cost of +144–224 KB PSS at start (binary 5.11 → 5.18 MiB stripped, +76 KiB), +0–444 KB over 50 reloads (0 in four of five runs), and 0 loop wake-ups at rest after a reload.
-  - **Pending.** Real-world trial. Mae's matugen setup in nixos-config is her decision (spec § 5): the 16-role template, the dark and light runs, `-t scheme-vibrant`, and dropping `shell-ctl reload-bar` for colours.
-  - **Next.** Themes delivery 2 (the six bar shapes), then delivery 3 (the Appearance tab).
+  - **Pending.** Mae's matugen setup in nixos-config is her decision (spec § 5): the 16-role template, the dark and light runs, `-t scheme-vibrant`, and dropping `shell-ctl reload-bar` for colours.
+  - **Next.** Themes delivery 2: the six bar shapes (flat by default; islands, powerline, floating, underline, translucent), chosen from the Theme tab; `module_colors = "pills"` comes with them. The nixos-config branch `alpheus-16-roles` carries the 16-role matugen template (hues still to add).
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
