@@ -5,6 +5,7 @@
 
 pub mod contrast;
 pub mod presets;
+pub mod settings;
 
 use std::path::Path;
 

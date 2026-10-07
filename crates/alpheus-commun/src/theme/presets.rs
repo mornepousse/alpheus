@@ -354,7 +354,6 @@ const DRACULA: Preset = Preset { name: "dracula", dark: DRACULA_DARK, light: Non
 pub static PRESETS: &[Preset] = &[CATPPUCCIN, GRUVBOX, TOKYO_NIGHT, ROSE_PINE, EVERFOREST, KANAGAWA, SOLARIZED, NORD, DRACULA];
 
 /// The default theme (spec § 2), and every fallback's.
-#[allow(dead_code)] // first used by `resolve` (task 3)
 pub(crate) const DEFAULT_PRESET: &Preset = &CATPPUCCIN;
 
 /// The preset called exactly `name` (case-sensitive), if any.
