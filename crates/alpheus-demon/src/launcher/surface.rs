@@ -585,6 +585,14 @@ impl App {
         }
     }
 
+    /// The launcher box redrawn even if its rows did not change (a new theme); its scrims are transparent.
+    pub(crate) fn launcher_repaint(&mut self) {
+        if let Some(open) = self.launcher.as_mut() {
+            open.last = None;
+        }
+        self.launcher_draw();
+    }
+
     fn launcher_draw(&mut self) {
         let height = self.bar.config.height;
         let App { launcher, fonts, roles, .. } = self;

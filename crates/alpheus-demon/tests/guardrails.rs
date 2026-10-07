@@ -645,6 +645,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("wayland.rs", "Timer::", 2),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
+        // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
+        // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
+        ("watch.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
         // The keyboard, shared by the launcher and the grabbing popups: bound
@@ -809,7 +812,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 6] = ["tray/", "popup.rs", "calendar.rs", "deadline.rs", "list.rs", "keys.rs"];
+const NO_THREAD_NOR_COMMAND: [&str; 7] = ["tray/", "popup.rs", "calendar.rs", "deadline.rs", "list.rs", "keys.rs", "watch.rs"];
 
 #[test]
 fn the_tray_spawns_no_thread() {
@@ -1051,4 +1054,26 @@ fn the_daemon_paints_with_roles_never_the_legacy_palette() {
         assert!(!t.contains("Palette"), "the legacy Palette in {}", relative_path(p));
     }
     assert!(files.len() > 20, "the daemon's sources were not found");
+}
+
+/// Themes task 5: the config directory is only watched, never written by the daemon; inotify lives
+/// in watch.rs alone.
+#[test]
+fn the_theme_watch_only_reads_the_config_directory() {
+    let mut found = false;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if name == "watch.rs" {
+            found = true;
+            for never in
+                ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
+            {
+                assert!(!prod.contains(never), "{never} in watch.rs: the config directory is read-only to the daemon");
+            }
+        } else {
+            assert!(!prod.contains("inotify_"), "inotify outside watch.rs: {name}");
+        }
+    }
+    assert!(found, "watch.rs not found");
 }

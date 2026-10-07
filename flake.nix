@@ -106,6 +106,8 @@
             pkgs.libxkbcommon
             # wtype: virtual keyboard for the launcher's ignored end-to-end tests (headless sway only).
             pkgs.wtype
+            # grim (test-only): reads the headless sway's pixels (wlr-screencopy) for the theme tests.
+            pkgs.grim
           ];
           ALPHEUS_POLICES = polices pkgs;
         };

@@ -23,6 +23,7 @@ use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Roles;
+use alpheus_commun::theme::settings::ThemeSettings;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
@@ -314,6 +315,15 @@ pub struct App {
     pub bar: Bar,
     /// The 16 colour roles every surface paints with (themes spec § 1).
     pub(crate) roles: Roles,
+    /// theme.toml as last read: its mode decides whether the portal matters (themes task 6).
+    pub(crate) theme_settings: ThemeSettings,
+    /// The portal's color-scheme once it answered (themes task 6); None: no word yet, or no portal
+    /// (mode auto is then dark).
+    pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
+    /// The resolver's warnings at the last resolve: a reload logs only new ones.
+    pub(crate) theme_warnings: Vec<String>,
+    /// The inotify watch on the config directory; None: the theme files are read at startup only.
+    pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
     pub(crate) fonts: Fonts,
     pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
@@ -433,6 +443,7 @@ impl App {
         globals: &GlobalList,
         qh: &QueueHandle<Self>,
         bar: Bar,
+        theme_settings: ThemeSettings,
         roles: Roles,
         fonts: Fonts,
         exec: Arc<dyn Executor>,
@@ -457,6 +468,10 @@ impl App {
             pointer: None,
             wheel: Wheel::default(),
             bar,
+            theme_settings,
+            portal_mode: None,
+            theme_warnings: Vec::new(),
+            theme_watch: None,
             roles,
             fonts,
             exec,
@@ -574,6 +589,14 @@ impl App {
         for i in 0..self.surfaces.len() {
             self.draw(i);
         }
+    }
+
+    /// Every bar redrawn even if its grid did not change (a new theme): `draw` skips an unchanged grid.
+    pub(crate) fn bars_repaint(&mut self) {
+        for s in &mut self.surfaces {
+            s.last = None;
+        }
+        self.redraw_all();
     }
 
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`

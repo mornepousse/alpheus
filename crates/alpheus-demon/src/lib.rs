@@ -28,4 +28,5 @@ pub mod sources;
 pub mod state;
 pub mod system;
 pub mod tray;
+pub mod watch;
 pub mod wayland;

@@ -429,6 +429,14 @@ impl App {
         false
     }
 
+    /// The open popup redrawn even if its rows did not change (a new theme).
+    pub(crate) fn popup_repaint(&mut self) {
+        if let Some(open) = self.popup.as_mut() {
+            open.last = None;
+        }
+        self.popup_draw();
+    }
+
     fn popup_draw(&mut self) {
         let height = self.bar.config.height;
         let App { popup, fonts, roles, .. } = self;

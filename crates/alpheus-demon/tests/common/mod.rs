@@ -897,3 +897,81 @@ impl Workstation {
         Workstation
     }
 }
+
+/// A binary PPM (P6, maxval 255), as grim writes it.
+pub struct Ppm {
+    pub width: u32,
+    pub height: u32,
+    data: Vec<u8>,
+}
+
+impl Ppm {
+    pub fn parse(bytes: &[u8]) -> Option<Ppm> {
+        // "P6", width, height, maxval, each followed by whitespace; the raster after one byte.
+        let mut fields = Vec::new();
+        let mut i = 0;
+        while fields.len() < 4 {
+            while bytes.get(i)?.is_ascii_whitespace() {
+                i += 1;
+            }
+            let start = i;
+            while !bytes.get(i)?.is_ascii_whitespace() {
+                i += 1;
+            }
+            fields.push(std::str::from_utf8(&bytes[start..i]).ok()?.to_string());
+        }
+        if fields[0] != "P6" || fields[3] != "255" {
+            return None;
+        }
+        let (width, height) = (fields[1].parse().ok()?, fields[2].parse().ok()?);
+        Some(Ppm { width, height, data: bytes.get(i + 1..)?.to_vec() })
+    }
+
+    /// (r, g, b) at (x, y); None outside the image.
+    pub fn at(&self, x: u32, y: u32) -> Option<[u8; 3]> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let o = ((y * self.width + x) * 3) as usize;
+        Some([*self.data.get(o)?, *self.data.get(o + 1)?, *self.data.get(o + 2)?])
+    }
+}
+
+impl Sway {
+    /// `output` of THIS test's headless sway, read with grim (wlr-screencopy). None if grim fails.
+    pub fn screenshot(&self, output: &str) -> Option<Ppm> {
+        let out = Command::new("grim")
+            .env_clear()
+            .env("PATH", env::var_os("PATH").unwrap_or_default())
+            .env("XDG_RUNTIME_DIR", &self.runtime)
+            .env("WAYLAND_DISPLAY", &self.wayland)
+            .args(["-t", "ppm", "-o", output, "-"])
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Ppm::parse(&out.stdout)
+    }
+
+    /// Screenshots `output` until `ok` holds, 10 s at most: the daemon paints asynchronously.
+    pub fn wait_for_screen(&self, output: &str, ok: impl Fn(&Ppm) -> bool) -> bool {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(10) {
+            if self.screenshot(output).is_some_and(|s| ok(&s)) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+}
+
+/// Writes `dir/name` the way editors and matugen-like tools often do: a temporary file, then a
+/// rename into place (one IN_MOVED_TO for `name`; the temporary's IN_CLOSE_WRITE is filtered out).
+pub fn write_atomically(dir: &Path, name: &str, text: &str) {
+    let tmp = dir.join(format!("{name}.tmp"));
+    fs::write(&tmp, text).unwrap();
+    fs::rename(&tmp, dir.join(name)).unwrap();
+}

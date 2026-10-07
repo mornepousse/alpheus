@@ -584,13 +584,14 @@ pub fn run() -> i32 {
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
-    let mut state = match App::new(&globals, &qh, Bar::new(config), roles, fonts, exec.clone()) {
+    let mut state = match App::new(&globals, &qh, Bar::new(config), theme_settings, roles, fonts, exec.clone()) {
         Ok(e) => e,
         Err(m) => {
             log(&m);
             return 1;
         }
     };
+    state.theme_warnings = theme_warnings;
     let mut event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
@@ -646,6 +647,9 @@ pub fn run() -> i32 {
             return 1;
         }
     }
+
+    // Hot reload of the theme: one inotify fd, no thread, no timer (themes task 5).
+    crate::watch::start(&mut state, &handle);
     if want.tray {
         start_tray(&mut state, &handle);
     }
