@@ -587,7 +587,7 @@ impl App {
 
     fn launcher_draw(&mut self) {
         let height = self.bar.config.height;
-        let App { launcher, fonts, palette, .. } = self;
+        let App { launcher, fonts, roles, .. } = self;
         let Some(open) = launcher.as_mut() else { return };
         if !open.configured {
             return;
@@ -605,7 +605,7 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_boxed(&rows, palette, px, w, h, row_height, e);
+        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e);
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

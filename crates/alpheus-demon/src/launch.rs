@@ -22,7 +22,9 @@ use crate::tray::router::{Tray, TrayOutput};
 use crate::wayland::App;
 use alpheus_commun::exec::{Executor, SystemExecutor};
 use alpheus_commun::launcher_ipc::{self, Reply, Request};
-use alpheus_commun::theme::Palette;
+use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve};
+// `Scheme`: calloop's `Mode` is already in scope.
+use alpheus_commun::theme::{Mode as Scheme, Roles};
 use alpheus_commun::{paths, shutdown};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
@@ -63,11 +65,34 @@ pub enum Mail {
     Stop,
 }
 
-/// Settings read at startup, warnings to log.
-pub fn settings(directory: &Path) -> (BarConfig, Palette, Vec<String>) {
-    let (config, w1) = BarConfig::load(&directory.join("bar.toml"));
-    let (palette, w2) = Palette::load(&directory.join("colors.toml"));
-    (config, palette, [w1, w2].into_iter().flatten().collect())
+/// bar.toml, read at startup, and its warnings to log.
+pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
+    let (config, warning) = BarConfig::load(&directory.join("bar.toml"));
+    (config, warning.into_iter().collect())
+}
+
+/// The theme (themes spec § 2): theme.toml, the mode in effect (`portal`: the portal's word in mode
+/// auto, None before it answers or without one) and the colour files, through the shared resolver.
+/// Startup and every reload (`App::theme_changed`) go through here. Warnings: one line each.
+pub fn theme(directory: &Path, portal: Option<Scheme>) -> (ThemeSettings, Roles, Vec<String>) {
+    let (settings, mut warnings) = load_settings(directory);
+    let (roles, more) = resolve(&settings, effective_mode(settings.mode, portal), directory);
+    warnings.extend(more);
+    (settings, roles, warnings)
+}
+
+/// "catppuccin, dark", "wallpaper, light (auto)": the theme in effect, for the log.
+pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
+    let source = match &settings.source {
+        ThemeSource::Preset(name) => *name,
+        ThemeSource::Wallpaper => "wallpaper",
+    };
+    let mode = match mode {
+        Scheme::Dark => "dark",
+        Scheme::Light => "light",
+    };
+    let auto = if settings.mode == ModeSetting::Auto { " (auto)" } else { "" };
+    format!("{source}, {mode}{auto}")
 }
 
 /// Applies a message to the bar. Any compositor event, or a resources tick,
@@ -512,10 +537,17 @@ pub fn run() -> i32 {
         log(w);
     }
     let launcher_server: Option<Rc<Server>> = launcher_server.map(Rc::new);
-    let (config, palette, warnings) = settings(&paths::config_dir());
+    let config_dir = paths::config_dir();
+    let (config, warnings) = settings(&config_dir);
     for a in &warnings {
         log(a);
     }
+    // No portal yet (themes task 6 follows it once the loop runs): mode auto starts dark.
+    let (theme_settings, roles, theme_warnings) = theme(&config_dir, None);
+    for a in &theme_warnings {
+        log(a);
+    }
+    log(&format!("theme: {}", describe(&theme_settings, effective_mode(theme_settings.mode, None))));
     // cosmic-text parses fonts with rayon: one thread is enough for a bar,
     // instead of one thread per core kept around for the whole session.
     // SAFETY: no other thread exists yet (sources and the guard start after).
@@ -552,7 +584,7 @@ pub fn run() -> i32 {
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
-    let mut state = match App::new(&globals, &qh, Bar::new(config), palette, fonts, exec.clone()) {
+    let mut state = match App::new(&globals, &qh, Bar::new(config), roles, fonts, exec.clone()) {
         Ok(e) => e,
         Err(m) => {
             log(&m);
@@ -846,14 +878,40 @@ mod tests {
     #[test]
     fn settings_absent_or_invalid() {
         let d = std::env::temp_dir().join(format!("alpheus-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
-        let (c, p, w) = settings(&d);
-        assert_eq!((c, p, w.len()), (BarConfig::default(), Palette::default(), 0));
+        let (c, w) = settings(&d);
+        assert_eq!((c, w.len()), (BarConfig::default(), 0));
         std::fs::write(d.join("bar.toml"), "modules = [\"weather\"]").unwrap();
-        std::fs::write(d.join("colors.toml"), "bg = 3").unwrap();
-        let (c, _, w) = settings(&d);
+        let (c, w) = settings(&d);
         assert_eq!(c, BarConfig::default());
-        assert!(w.iter().any(|m| m.contains("bar.toml")) && w.iter().any(|m| m.contains("colors.toml")), "{w:?}");
+        assert!(w.iter().any(|m| m.contains("bar.toml")), "{w:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Themes task 4: the startup theme goes through the shared resolver (load_settings,
+    /// effective_mode, resolve) and is described in one line.
+    #[test]
+    fn the_theme_is_read_resolved_and_described() {
+        use alpheus_commun::theme::presets::preset;
+        use alpheus_commun::theme::settings::ThemeSource;
+        let d = std::env::temp_dir().join(format!("alpheus-theme-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let (s, r, w) = theme(&d, None);
+        assert_eq!((r, w.len()), (Roles::default(), 0), "nothing written: catppuccin, dark (no portal)");
+        assert_eq!(describe(&s, Scheme::Dark), "catppuccin, dark (auto)");
+        std::fs::write(d.join("colors.toml"), "bg = 3").unwrap();
+        let (s, r, w) = theme(&d, None);
+        assert_eq!(s.source, ThemeSource::Wallpaper, "colors.toml without theme.toml: the wallpaper, as before themes");
+        assert_eq!(r, Roles::default(), "an invalid one: catppuccin");
+        assert!(w.iter().any(|m| m.contains("colors.toml")), "{w:?}");
+        std::fs::write(d.join("theme.toml"), "theme = \"gruvbox\"\nmode = \"auto\"\n").unwrap();
+        let (s, r, _) = theme(&d, Some(Scheme::Light));
+        assert_eq!(r, preset("gruvbox").unwrap().light.unwrap(), "auto follows the portal's word");
+        assert_eq!(describe(&s, Scheme::Light), "gruvbox, light (auto)");
+        std::fs::write(d.join("theme.toml"), "theme = \"wallpaper\"\nmode = \"dark\"\n").unwrap();
+        assert_eq!(describe(&theme(&d, Some(Scheme::Light)).0, Scheme::Dark), "wallpaper, dark");
         let _ = std::fs::remove_dir_all(&d);
     }
 

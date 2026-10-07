@@ -82,7 +82,7 @@ fn blank(b: &BoxLayout) -> Grid {
 fn modes_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     let end = b.pane_end();
     for (m, start, _) in mode_spans() {
-        let style = if m == l.mode { Style::INVERTED } else { Style::MUTED };
+        let style = if m == l.mode { Style::ACTIVE } else { Style::MUTED };
         g.write(start, end, &format!(" {} ", m.label()), style);
     }
 }
@@ -101,7 +101,7 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     // One cell kept for the cursor, one for the margin.
     let room = end.saturating_sub(x).saturating_sub(2);
     x = g.write(x, end, &tail(&l.query, room), Style::NORMAL);
-    g.write(x, end, " ", Style::INVERTED);
+    g.write(x, end, " ", Style::ACTIVE);
 }
 
 /// A window's title, or its class when the title is empty — or, Review Focus 3, made only of
@@ -131,7 +131,7 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
 
 fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
     let (icon, name, kind) = describe(l, l.results[index].source);
-    let row = Row { icon, text: &name, right: &kind, style: Style::NORMAL, selected: index == l.selected };
+    let row = Row { icon, icon_style: Style::ACCENT, text: &name, right: &kind, style: Style::NORMAL, selected: index == l.selected };
     list::row(g, 1, b.pane_end(), &row);
 }
 
@@ -232,7 +232,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
     out
 }
 
-/// The box's rows (ring dropped, the preview divider as a line). Selected row INVERTED; generic name/kind MUTED right-aligned
+/// The box's rows (ring dropped, the preview divider as a line). Selected row SELECTED; generic name/kind MUTED right-aligned
 /// ("Web browser", "window · 2", "command"); empty results → "no match" (or "scanning…" while the
 /// catalog is None and nothing matched); message on the help line in Style::ERROR.
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {

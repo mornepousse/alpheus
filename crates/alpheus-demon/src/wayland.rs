@@ -22,7 +22,7 @@ use crate::tray::menu_session::MenuSession;
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
-use alpheus_commun::theme::Palette;
+use alpheus_commun::theme::Roles;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
@@ -312,7 +312,8 @@ pub struct App {
     pub(crate) pointer: Option<ThemedPointer>,
     pub(crate) wheel: Wheel,
     pub bar: Bar,
-    pub(crate) palette: Palette,
+    /// The 16 colour roles every surface paints with (themes spec § 1).
+    pub(crate) roles: Roles,
     pub(crate) fonts: Fonts,
     pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
@@ -432,7 +433,7 @@ impl App {
         globals: &GlobalList,
         qh: &QueueHandle<Self>,
         bar: Bar,
-        palette: Palette,
+        roles: Roles,
         fonts: Fonts,
         exec: Arc<dyn Executor>,
     ) -> Result<App, String> {
@@ -456,7 +457,7 @@ impl App {
             pointer: None,
             wheel: Wheel::default(),
             bar,
-            palette,
+            roles,
             fonts,
             exec,
             stop: false,
@@ -589,7 +590,7 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, palette, pool, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, .. } = self;
         let s = &mut surfaces[i];
         if !s.configured || s.width == 0 {
             return;
@@ -608,7 +609,7 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint(&grid, palette, pixels, w, h, e);
+        fonts.paint(&grid, roles, pixels, w, h, e);
         let surface = s.layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

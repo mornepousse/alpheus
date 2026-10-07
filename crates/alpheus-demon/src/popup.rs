@@ -431,7 +431,7 @@ impl App {
 
     fn popup_draw(&mut self) {
         let height = self.bar.config.height;
-        let App { popup, fonts, palette, .. } = self;
+        let App { popup, fonts, roles, .. } = self;
         let Some(open) = popup.as_mut() else { return };
         if !open.configured || open.last.as_ref() == Some(&open.rows) {
             return;
@@ -442,7 +442,7 @@ impl App {
         let Some(used) = pick_buffer(buffers, pool, w, h) else { return };
         let Some(px) = buffers[used].0.canvas(pool) else { return };
         px.fill(0);
-        fonts.paint_boxed(rows, palette, px, w, h, height * e as u32, e);
+        fonts.paint_boxed(rows, roles, px, w, h, height * e as u32, e);
         let surface = popup.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

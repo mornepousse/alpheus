@@ -1041,3 +1041,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
 }
+
+/// Themes task 4: the daemon paints with the 16 roles only. Task 1's temporary 7-colour
+/// `Palette` (deleted by task 7) is never named in its sources.
+#[test]
+fn the_daemon_paints_with_roles_never_the_legacy_palette() {
+    let files = source_files();
+    for (p, t) in &files {
+        assert!(!t.contains("Palette"), "the legacy Palette in {}", relative_path(p));
+    }
+    assert!(files.len() > 20, "the daemon's sources were not found");
+}

@@ -336,7 +336,7 @@ impl Menu {
     /// which `list::boxed` drops: the painter draws the frame in pixels). In it: a `◂ parent` header
     /// row below a submenu's top (MUTED), entries (toggle column ✓ / ● when any entry of the level has
     /// a toggle and its state is 1; label NORMAL or MUTED when disabled; "▸" right for submenus;
-    /// separators drawn as lines; selection INVERTED), and at the right end of the first and last
+    /// separators drawn as lines; selection SELECTED, toggles ACCENT2), and at the right end of the first and last
     /// entry rows a ▴ / ▾ when more lie above / below.
     pub fn render(&self, layout: &Layout, columns: u16, rows: u16) -> Boxed {
         let entries = self.entries(layout);
@@ -351,10 +351,8 @@ impl Menu {
         if header == 1 {
             let mut g = Grid::empty(columns);
             let parent = layout.node(self.level().parent).map_or("", MenuNode::label);
-            let row = Row { icon: Some(BACK), text: parent, right: "", style: Style::MUTED, selected: false };
+            let row = Row { icon: Some(BACK), icon_style: Style::MUTED, text: parent, right: "", style: Style::MUTED, selected: false };
             list::row(&mut g, 1, columns.saturating_sub(1), &row);
-            // The arrow is part of the muted header, not an accent icon.
-            g.write(2, columns.saturating_sub(1), &BACK.to_string(), Style::MUTED);
             out.push(g);
         }
         // The rows carrying the scroll marks: the first / last entry row shown (a separator line
@@ -386,6 +384,7 @@ impl Menu {
             let mut g = Grid::empty(columns);
             let row = Row {
                 icon: toggles.then_some(mark),
+                icon_style: Style::ACCENT2,
                 text: e.label(),
                 right: if e.has_submenu() { SUBMENU } else { "" },
                 style: if e.is_enabled() { Style::NORMAL } else { Style::MUTED },
@@ -417,13 +416,13 @@ impl Menu {
 }
 
 /// Writes `mark` in the pad cell at the end of row `row` (ring coordinates, `columns` wide), in
-/// the selection's INVERTED style when the row is selected and MUTED otherwise.
+/// the selection's SELECTED style when the row is selected and MUTED otherwise.
 fn put_mark(rows: &mut [Grid], row: usize, columns: u16, mark: char) {
     let Some(g) = rows.get_mut(row) else { return };
     let column = columns.saturating_sub(2);
-    // The blank cell before the mark is INVERTED on a selected row: the band is that style all along.
+    // The blank cell before the mark is SELECTED on a selected row: the band is that style all along.
     let style = match g.cells().get(usize::from(column).saturating_sub(1)) {
-        Some(c) if c.style == Style::INVERTED => Style::INVERTED,
+        Some(c) if c.style == Style::SELECTED => Style::SELECTED,
         _ => Style::MUTED,
     };
     g.write(column, column + 1, &mark.to_string(), style);

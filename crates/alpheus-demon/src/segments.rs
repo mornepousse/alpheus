@@ -34,8 +34,21 @@ pub const LAUNCHER: char = '\u{f0349}'; // md-magnify
 
 /// The volume's mini-gauge (spec § 2): one cell per sixth.
 pub const GAUGE: [char; 6] = ['▁', '▃', '▅', '▆', '▇', '▇'];
-/// Below this, a battery is low (error tint).
+/// Below this, a battery is low (warn tint).
 pub const LOW: u8 = 20;
+/// Below this a battery is critical (themes spec § 4: error), below LOW only low (warn).
+pub const CRITICAL: u8 = 10;
+
+/// A battery's tint by its charge: error when critical, warn when low, `normal` otherwise.
+fn charge_style(percent: u8, normal: Style) -> Style {
+    if percent < CRITICAL {
+        Style::ERROR
+    } else if percent < LOW {
+        Style::WARN
+    } else {
+        normal
+    }
+}
 /// Longest Bluetooth device name, in cells (then "…").
 pub const DEVICE_MAX: u16 = 16;
 
@@ -140,7 +153,7 @@ pub(crate) fn bluetooth(feed: &Feed<BtState>) -> Option<Segment> {
                     vec![piece(format!("{BLUETOOTH_CONNECTED} "), Style::ACCENT), piece(truncate(name, DEVICE_MAX), Style::NORMAL)]
                 };
                 if let Some(b) = d.battery {
-                    v.push(piece(format!(" {b}%"), if b < LOW { Style::ERROR } else { Style::MUTED }));
+                    v.push(piece(format!(" {b}%"), charge_style(b, Style::MUTED)));
                 }
                 if devices.len() > 1 {
                     v.push(piece(format!(" +{}", devices.len() - 1), Style::MUTED));
@@ -225,29 +238,23 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig) -> Option
     };
     let mut pieces = Vec::new();
     if let Some(b) = state.laptop {
-        let style = if b.charge == Charge::Charging {
-            Style::ACCENT
-        } else if b.percent < LOW {
-            Style::ERROR
-        } else {
-            Style::NORMAL
-        };
+        let style = if b.charge == Charge::Charging { Style::ACCENT } else { charge_style(b.percent, Style::NORMAL) };
         pieces.push(piece(format!("{} {}%", battery_icon(b), b.percent), style));
     }
     // Every peripheral with a real percentage follows `[battery] peripherals`
-    // (default "always", red when low); one with only a coarse `BatteryLevel`
+    // (default "always", warn when low, error when critical); one with only a coarse `BatteryLevel`
     // (Mae, 2026-10-05) follows `[battery] coarse` (default "low": hidden
-    // except Low or Critical), shown as the bare icon, red when low.
+    // except Low or Critical), shown as the bare icon, warn when low: UPower's Low and Critical are one bool here.
     for p in &state.peripherals {
         let space = if pieces.is_empty() { "" } else { " " };
         match p.percent {
             Some(percent) if shown(config.peripherals, percent < LOW) => {
-                let style = if percent < LOW { Style::ERROR } else { Style::NORMAL };
+                let style = charge_style(percent, Style::NORMAL);
                 pieces.push(piece(format!("{space}{} {percent}%", peripheral_icon(p.kind)), style));
             }
             Some(_) => {}
             None if shown(config.coarse, p.low) => {
-                let style = if p.low { Style::ERROR } else { Style::NORMAL };
+                let style = if p.low { Style::WARN } else { Style::NORMAL };
                 pieces.push(piece(format!("{space}{}", peripheral_icon(p.kind)), style));
             }
             None => {}
@@ -434,8 +441,8 @@ mod tests {
         assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(72))])).unwrap()), ("\u{f00b1} CasqueBT 72%".into(), "aa........mmmm".into()));
         assert_eq!(
             draw(&bluetooth(&on(&[("CasqueBT", Some(15)), ("ClavierBT", None)])).unwrap()),
-            ("\u{f00b1} CasqueBT 15% +1".into(), "aa........eeeemmm".into()),
-            "low battery in the error tint, the other devices counted"
+            ("\u{f00b1} CasqueBT 15% +1".into(), "aa........wwwwmmm".into()),
+            "low battery in the warn tint, the other devices counted"
         );
         assert_eq!(draw(&bluetooth(&on(&[("ClavierBT", None)])).unwrap()).0, "\u{f00b1} ClavierBT");
         assert_eq!(draw(&bluetooth(&on(&[])).unwrap()), ("\u{f00af}".into(), "m".into()), "on, nothing connected");
@@ -447,9 +454,9 @@ mod tests {
 
     #[test]
     fn bluetooth_battery_tint_boundary_at_19_and_20() {
-        // Error tint strictly below LOW (20): 19 % is low, 20 % is not (see
+        // Warn tint strictly below LOW (20): 19 % is low, 20 % is not (see
         // the `b < LOW` comparison in `bluetooth`).
-        assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(19))])).unwrap()).1, "aa........eeee");
+        assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(19))])).unwrap()).1, "aa........wwww");
         assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(20))])).unwrap()).1, "aa........mmmm");
     }
 
@@ -535,19 +542,19 @@ mod tests {
         let d = &BatteryConfig::default();
         assert_eq!(draw(&battery(&laptop(93, Charge::Charging), d).unwrap()), ("\u{f008b} 93%".into(), "aaaaa".into()));
         assert_eq!(draw(&battery(&laptop(55, Charge::Discharging), d).unwrap()), ("\u{f007f} 55%".into(), ".....".into()));
-        assert_eq!(draw(&battery(&laptop(15, Charge::Discharging), d).unwrap()), ("\u{f007b} 15%".into(), "eeeee".into()));
+        assert_eq!(draw(&battery(&laptop(15, Charge::Discharging), d).unwrap()), ("\u{f007b} 15%".into(), "wwwww".into()));
         assert_eq!(draw(&battery(&laptop(15, Charge::Charging), d).unwrap()).1, "aaaaa", "charging wins over low");
         assert_eq!(draw(&battery(&laptop(100, Charge::Full), d).unwrap()), ("\u{f0079} 100%".into(), "......".into()));
     }
 
     #[test]
     fn battery_tint_boundary_at_19_and_20() {
-        // Error tint strictly below LOW (20): 19 % is low, 20 % is not (Mae,
+        // Warn tint strictly below LOW (20): 19 % is low, 20 % is not (Mae,
         // 2026-10-04); see the `b.percent < LOW` comparison in `battery`.
         let laptop =
             |percent| Feed::Ready(PowerState { laptop: Some(Battery { percent, charge: Charge::Discharging }), peripherals: vec![] });
         let d = &BatteryConfig::default();
-        assert_eq!(draw(&battery(&laptop(19), d).unwrap()).1, "eeeee", "19%: error");
+        assert_eq!(draw(&battery(&laptop(19), d).unwrap()).1, "wwwww", "19%: warn");
         assert_eq!(draw(&battery(&laptop(20), d).unwrap()).1, ".....", "20%: normal");
     }
 
@@ -557,7 +564,7 @@ mod tests {
         // independently: the first (19 %) errs, the second (20 %) doesn't.
         let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
         let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(19), mouse(20)] });
-        assert_eq!(draw(&battery(&s, &BatteryConfig::default()).unwrap()).1, "eeeee......");
+        assert_eq!(draw(&battery(&s, &BatteryConfig::default()).unwrap()).1, "wwwww......");
     }
 
     #[test]
@@ -565,18 +572,18 @@ mod tests {
         // Mae, 2026-10-05: BatteryLevel not None means Percentage is not to
         // be trusted (UPower's own words). Default `[battery] coarse = "low"`:
         // hidden, except Low/Critical (`low`), shown as the bare icon in the
-        // error tint.
+        // warn tint.
         let coarse = |low| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low };
         let s = |peripherals| Feed::Ready(PowerState { laptop: None, peripherals });
         let d = &BatteryConfig::default();
         assert!(battery(&s(vec![coarse(false)]), d).is_none(), "hidden: no percentage and not low");
-        assert_eq!(draw(&battery(&s(vec![coarse(true)]), d).unwrap()), ("\u{f037d}".into(), "e".into()), "low: bare icon, error tint");
+        assert_eq!(draw(&battery(&s(vec![coarse(true)]), d).unwrap()), ("\u{f037d}".into(), "w".into()), "low: bare icon, warn tint");
         // Alongside a laptop battery and a real-percentage peripheral.
         let laptop = Some(Battery { percent: 93, charge: Charge::Charging });
         let real = Peripheral { kind: PeripheralKind::Keyboard, name: "Clavier".into(), percent: Some(80), low: false };
         assert_eq!(
             draw(&battery(&s2(laptop, vec![real, coarse(true)]), d).unwrap()),
-            ("\u{f008b} 93% \u{f030c} 80% \u{f037d}".into(), "aaaaa......ee".into()),
+            ("\u{f008b} 93% \u{f030c} 80% \u{f037d}".into(), "aaaaa......ww".into()),
             "a coarse Low peripheral keeps its place after a real one"
         );
 
@@ -601,8 +608,8 @@ mod tests {
         let d = &BatteryConfig::default();
         assert_eq!(
             draw(&battery(&s(charging, vec![mouse(15)]), d).unwrap()),
-            ("\u{f008b} 93% \u{f037d} 15%".into(), "aaaaaeeeeee".into()),
-            "low: error tint"
+            ("\u{f008b} 93% \u{f037d} 15%".into(), "aaaaawwwwww".into()),
+            "low: warn tint"
         );
         assert_eq!(
             draw(&battery(&s(charging, vec![mouse(100)]), d).unwrap()),
@@ -641,7 +648,7 @@ mod tests {
     fn coarse_visibility_always_low_never() {
         // `[battery] coarse` on a peripheral with only a coarse `BatteryLevel`
         // (spec, Mae 2026-10-05): "always" shows the bare icon whatever the
-        // level (error tint only when low), "low" (default) only when Low or
+        // level (warn tint only when low), "low" (default) only when Low or
         // Critical, "never" hides it outright.
         let device = |low| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: None, low };
         let s = |low| Feed::Ready(PowerState { laptop: None, peripherals: vec![device(low)] });
@@ -649,11 +656,11 @@ mod tests {
 
         let always = c(BatteryVisibility::Always);
         assert_eq!(draw(&battery(&s(false), &always).unwrap()), ("\u{f037d}".into(), ".".into()), "always: shown, normal tint");
-        assert_eq!(draw(&battery(&s(true), &always).unwrap()), ("\u{f037d}".into(), "e".into()), "always: shown, error tint when low");
+        assert_eq!(draw(&battery(&s(true), &always).unwrap()), ("\u{f037d}".into(), "w".into()), "always: shown, warn tint when low");
 
         let low = c(BatteryVisibility::Low);
         assert!(battery(&s(false), &low).is_none(), "low: hidden when not low");
-        assert_eq!(draw(&battery(&s(true), &low).unwrap()).1, "e", "low: shown, error tint when low");
+        assert_eq!(draw(&battery(&s(true), &low).unwrap()).1, "w", "low: shown, warn tint when low");
 
         let never = c(BatteryVisibility::Never);
         assert!(battery(&s(false), &never).is_none(), "never: hidden when not low");
@@ -933,5 +940,21 @@ mod tests {
         let g = full_bar_with_a_tray().grid("HDMI-A-1", 160);
         assert!(g.text().contains(" │ \u{f04d3} \u{f066f} K │ "), "between resources and the clock: {}", g.text());
         insta::assert_snapshot!("full_tray_160", snapshot(&g));
+    }
+
+    /// Spec § 4: low battery is warn, critical (below CRITICAL, 10 %) is error — the laptop, a
+    /// peripheral with a percentage, a Bluetooth device alike. Charging still wins.
+    #[test]
+    fn battery_low_is_warn_and_critical_is_error() {
+        let laptop = |percent, charge| Feed::Ready(PowerState { laptop: Some(Battery { percent, charge }), peripherals: vec![] });
+        let d = &BatteryConfig::default();
+        assert_eq!(draw(&battery(&laptop(10, Charge::Discharging), d).unwrap()).1, "wwwww", "10 %: still only low");
+        assert_eq!(draw(&battery(&laptop(9, Charge::Discharging), d).unwrap()).1, "eeee", "9 %: critical");
+        assert_eq!(draw(&battery(&laptop(9, Charge::Charging), d).unwrap()).1, "aaaa", "charging wins over critical");
+        let mouse = |percent| Peripheral { kind: PeripheralKind::Mouse, name: "Souris".into(), percent: Some(percent), low: false };
+        let s = Feed::Ready(PowerState { laptop: None, peripherals: vec![mouse(9), mouse(10)] });
+        assert_eq!(draw(&battery(&s, d).unwrap()).1, "eeeewwwwww", "each peripheral on its own");
+        assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(9))])).unwrap()).1, "aa........eee", "Bluetooth: critical");
+        assert_eq!(CRITICAL, 10);
     }
 }

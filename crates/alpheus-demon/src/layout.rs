@@ -82,9 +82,9 @@ fn label(w: &Workspace) -> String {
 
 fn workspace_style(w: &Workspace) -> Style {
     if w.urgent && !w.focused {
-        Style::ERROR
+        Style::URGENT
     } else if w.focused {
-        Style::INVERTED
+        Style::ACTIVE
     } else if w.visible {
         Style::SURFACE
     } else if w.windows == 0 {
@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(g.width(), 100);
         assert!(t.starts_with(" \u{f0349} │  2·  4!····+  5  │ \u{f0239} Web page — Mozilla Firefox "), "launcher button first: {t}");
         assert!(t.ends_with(" │ Sun 4 Oct 14:05 "), "{t}");
-        assert!(s.starts_with("..mmmAAAAeeeeeeeeemmmmmm"), "{s}");
+        assert!(s.starts_with("..mmmAAAAuuuuuuuuummmmmm"), "{s}");
         assert!(s.ends_with("mmmmmmmmmmmmmGGGGG."), "{s}");
         insta::assert_snapshot!("hdmi_100", snapshot(&g));
     }
