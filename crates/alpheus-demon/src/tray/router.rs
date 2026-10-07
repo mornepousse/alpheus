@@ -183,6 +183,11 @@ impl Tray {
     /// What answers drained during `open_menu`, `menu_submenu`, `menu_click` or `close_menu` made
     /// happen, when no other callback has returned it yet. Rare (it takes an answer arriving while
     /// a call is flushed); every other callback's output includes it already.
+    /// Whether a flush drained answers that no caller has routed yet (`take_deferred`).
+    pub fn has_deferred(&self) -> bool {
+        self.deferred != TrayOutput::default()
+    }
+
     pub fn take_deferred(&mut self) -> TrayOutput {
         std::mem::take(&mut self.deferred)
     }

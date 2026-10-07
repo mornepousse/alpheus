@@ -348,6 +348,10 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
+    /// An idle callback is queued to route what a void tray call's flush drained
+    /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
+    /// output, so it is routed right after the current dispatch, never re-entrantly.
+    pub(crate) tray_deferred_queued: bool,
     /// The horizontal wheel, for tray icons only.
     pub(crate) hwheel: Wheel,
     /// The last button press (serial, time, surface-local position): Activate's
@@ -466,6 +470,7 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
+            tray_deferred_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
             popup_press_time: 0,
@@ -698,6 +703,17 @@ impl App {
     /// the first configured bar (a commit with no new buffer and one pixel
     /// of damage), where they are re-read once (controller decision 10).
     fn tray_sync(&mut self) {
+        if !self.tray_deferred_queued && self.tray.as_ref().is_some_and(Tray::has_deferred) {
+            if let Some(handle) = &self.loop_handle {
+                self.tray_deferred_queued = true;
+                handle.insert_idle(|app| {
+                    app.tray_deferred_queued = false;
+                    let Some(tray) = app.tray.as_mut() else { return };
+                    let out = tray.take_deferred();
+                    app.tray_output(out);
+                });
+            }
+        }
         let deadline = self.tray.as_ref().and_then(Tray::next_deadline);
         if let Some(handle) = &self.loop_handle {
             self.tray_timer.sync(handle, deadline, App::tray_deadline);
