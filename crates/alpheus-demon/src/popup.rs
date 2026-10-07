@@ -62,6 +62,27 @@ pub fn cell_under(x: f64, y: f64, scale: i32, advance_phys: f32, row_height: u32
     (column < cells.0 as f64 && row < cells.1 as f64).then_some((column as u16, row as u16))
 }
 
+/// `cell_under` on the frame as it is PAINTED: `paint_boxed` refits `frame` inside the surface
+/// (`size`, logical px) so the room the cells leave over is shared evenly between the sides, and the
+/// pointer must be resolved against that same refitted frame, never the raw one (the two drift at
+/// scale 3, where the logical rounding leaves px over). The popups and the launcher box both hit-test
+/// through here.
+#[allow(clippy::too_many_arguments)]
+pub fn cell_under_fitted(
+    x: f64,
+    y: f64,
+    scale: i32,
+    advance_phys: f32,
+    row_height: u32,
+    frame: &Frame,
+    cells: (u16, u16),
+    size: (u32, u32),
+) -> Option<(u16, u16)> {
+    let e = scale.max(1) as u32;
+    let frame = frame.fitted(cells, advance_phys, row_height, (size.0 * e, size.1 * e));
+    cell_under(x, y, scale, advance_phys, row_height, &frame, cells)
+}
+
 /// Where a popup hangs: the bar of `output`, under cells [start, end) of its grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Anchor {
@@ -214,6 +235,11 @@ impl OpenPopup {
     pub(crate) fn wl_surface(&self) -> &wl_surface::WlSurface {
         self.popup.wl_surface()
     }
+
+    /// The bar's surface this popup hangs under (compared by identity, never by output name).
+    pub(crate) fn parent_surface(&self) -> &wl_surface::WlSurface {
+        &self.parent
+    }
 }
 
 /// Who gets a key.
@@ -313,7 +339,9 @@ impl App {
             Ok(popup) => popup,
             Err(e) => {
                 log(&format!("popup: {e}"));
-                if grab {
+                // Only what was set: on Hyprland nothing was (`exclusive_during_grab`), and a
+                // needless commit on the bar is a needless roundtrip of its own.
+                if grab && self.exclusive_during_grab {
                     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                     layer.commit();
                 }
@@ -431,7 +459,7 @@ impl App {
         // already swapped the session); a menu still being fetched dies with the launcher opening.
         let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
         // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
-        // done` (routed here as OutsideClick) before the press that follows it reaches the bar — a
+        // done` (routed here as Dismissed) before the press that follows it reaches the bar — a
         // record of what just closed, by whom it was opened, and when, lets that next press still
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
@@ -461,7 +489,9 @@ impl App {
             // 15 fix round, CRITICAL): a name can change after the fact (`update_output`) or be
             // shared for a moment by two bars, and the wrong bar — or none — would stay stuck
             // `Exclusive`, holding Mae's keyboard.
-            if let Some(i) = position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) {
+            // Only if `popup_open` set it (`exclusive_during_grab`: not on Hyprland).
+            let bar = if self.exclusive_during_grab { position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) } else { None };
+            if let Some(i) = bar {
                 let layer = &self.surfaces[i].layer;
                 layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                 layer.commit();
@@ -569,7 +599,7 @@ impl App {
         let e = open.scale.max(1);
         let cells = open.cells;
         let frame = self.fonts.frame(e);
-        let cell = cell_under(position.0, position.1, e, self.fonts.advance(e), height * e as u32, &frame, cells);
+        let cell = cell_under_fitted(position.0, position.1, e, self.fonts.advance(e), height * e as u32, &frame, cells, open.size);
         self.popup_pointer(cell, kind);
         true
     }
@@ -818,6 +848,25 @@ mod tests {
         assert_eq!(cell_under(104.0, 52.0, 2, 16.5, 44, &f2, cells), Some((12, 2)), "scale 2: physical cells, logical pointer");
         assert_eq!(cell_under(100.0, 45.0, 1, 0.0, 22, &f, cells), None, "no advance: no cell, no division by zero");
         assert_eq!(cell_under(100.0, 45.0, 1, 8.25, 0, &f, cells), None, "no row height: same");
+    }
+
+    #[test]
+    fn the_fitted_hit_test_follows_the_painted_frame_at_scale_3() {
+        // Scale 3: 20 columns of 24.75 px (495 px) + 2 x 12 = 519 px of cells and frame, in a
+        // 174-logical-px (522 px) surface: 3 px over, 1 more on the left than the raw frame says.
+        let f = Frame { side: 12, top: 21, bottom: 18, stroke: 3, radius: 18 };
+        let (cells, advance, row) = ((20, 4), 24.75_f32, 66);
+        let size = (174, 130); // 390 px: 4 rows of 66 = 264 + 39 = 303, 87 px over
+        let painted = f.fitted(cells, advance, row, (size.0 * 3, size.1 * 3));
+        assert!(painted.side > f.side && painted.top > f.top, "the surface leaves room over: {painted:?}");
+        // Half a physical pixel into the painted first cell: cell (0, 0).
+        let (x, y) = ((painted.side as f64 + 0.5) / 3.0, (painted.top as f64 + 0.5) / 3.0);
+        assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), Some((0, 0)));
+        // Half a pixel into the RAW frame's first cell: the painted margin, so no cell; the raw
+        // `cell_under` would answer (0, 0), which is the drift this guards.
+        let (x, y) = ((f.side as f64 + 0.5) / 3.0, (f.top as f64 + 0.5) / 3.0);
+        assert_eq!(cell_under_fitted(x, y, 3, advance, row, &f, cells, size), None, "still in the painted margin");
+        assert_eq!(cell_under(x, y, 3, advance, row, &f, cells), Some((0, 0)), "the raw frame disagrees");
     }
 
     #[test]

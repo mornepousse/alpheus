@@ -95,8 +95,17 @@ pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, 
     }
 }
 
-/// The tooltip's one row: the text, truncated with "…" to `max_columns` − 2 (the output's columns
-/// less the pad cell `list::padded` adds on each side). The frame around it is the painter's, as
+/// The most cells (pad cells included) a tooltip may take under a bar `bar_columns` wide: the bar's
+/// own width less the columns the pixel frame adds around the cells (`extra_width` physical px, at
+/// `advance` px a column, rounded up) — on a tall bar the frame's side room is larger than the two
+/// cells the tooltip used to reserve, and a very long text would then overrun the output.
+pub fn tooltip_columns(bar_columns: u16, extra_width: u32, advance: f32) -> u16 {
+    let frame = if advance > 0.0 { (extra_width as f32 / advance).ceil() as u32 } else { 2 };
+    bar_columns.saturating_sub(frame.min(u32::from(u16::MAX)) as u16)
+}
+
+/// The tooltip's one row: the text, truncated with "…" to `max_columns` − 2 (the room `tooltip_columns`
+/// leaves less the pad cell `list::padded` adds on each side). The frame around it is the painter's, as
 /// for every boxed surface.
 pub fn tooltip_row(text: &str, max_columns: u16) -> Grid {
     let text = truncate(text, max_columns.saturating_sub(2));
@@ -128,6 +137,20 @@ mod tests {
 
     fn moved_off(h: &mut Hover, now: Instant) -> HoverChange {
         h.moved(None, "HDMI-A-1", now)
+    }
+
+    #[test]
+    fn a_tall_bars_frame_costs_more_columns_than_two() {
+        assert_eq!(tooltip_columns(100, 16, 8.0), 98, "a normal bar: the old two columns");
+        assert_eq!(tooltip_columns(100, 17, 8.0), 97, "rounded up");
+        assert_eq!(tooltip_columns(100, 60, 8.0), 92, "a tall bar: 8 columns of frame, never 2");
+        assert_eq!(tooltip_columns(5, 60, 8.0), 0, "never negative");
+        assert_eq!(tooltip_columns(100, 16, 0.0), 98, "no advance: the old default, no division by zero");
+        // The whole popup, text truncated to what is left, fits the bar in pixels.
+        let (bar, extra, advance) = (100_u16, 60_u32, 8.0_f32);
+        let row = super::tooltip_row(&"x".repeat(500), tooltip_columns(bar, extra, advance));
+        let cells = row.width() + 2; // `list::padded`
+        assert!(cells as f32 * advance + extra as f32 <= bar as f32 * advance, "{cells} cells + frame within {bar} columns");
     }
 
     #[test]

@@ -164,7 +164,8 @@ pub fn locale_first_day() -> u8 {
             // target. Reading the first 4 bytes in native order works on both
             // 32- and 64-bit pointers and on either endianness.
             let bytes = (libc::nl_langinfo_l(NL_TIME_WEEK_1STDAY, locale) as usize).to_ne_bytes();
-            let week_1stday = u32::from_ne_bytes(bytes[..4].try_into().unwrap());
+            let [b0, b1, b2, b3, ..] = bytes;
+            let week_1stday = u32::from_ne_bytes([b0, b1, b2, b3]);
             let first_weekday = libc::nl_langinfo_l(NL_TIME_FIRST_WEEKDAY, locale);
             if first_weekday.is_null() { MONDAY } else { first_day_from(week_1stday, *first_weekday as u8) }
         }

@@ -301,9 +301,14 @@ fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
     }
     let keyboard_acquire = function_body(&popup_prod, "fn keyboard_acquire(");
     assert!(keyboard_acquire.contains("key_event("), "the repeat closure must go through key_event: {keyboard_acquire}");
-    assert!(!keyboard_acquire.contains("self.launcher_"), "keyboard_acquire must call no launcher method: {keyboard_acquire}");
+    // `self.launcher_` (a method) AND `self.launcher.` (the field itself, e.g. `self.launcher.take()`).
+    for launcher in ["self.launcher_", "self.launcher."] {
+        assert!(!keyboard_acquire.contains(launcher), "keyboard_acquire must not touch the launcher ({launcher}): {keyboard_acquire}");
+    }
     let keyboard_lost = function_body(&popup_prod, "fn keyboard_lost(");
-    assert!(!keyboard_lost.contains("self.launcher_"), "keyboard_lost must call no launcher method: {keyboard_lost}");
+    for launcher in ["self.launcher_", "self.launcher."] {
+        assert!(!keyboard_lost.contains(launcher), "keyboard_lost must not touch the launcher ({launcher}): {keyboard_lost}");
+    }
 }
 
 /// Task 15 fix round, CRITICAL: `popup_close`/`popup_output_gone` (popup.rs) must reset their
@@ -347,22 +352,50 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
     assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
 }
 
-/// Task 15 fix round, IMPORTANT: `launcher_fail` must release the keyboard UNCONDITIONALLY,
-/// before its own early return on `self.launcher` already being `None` — if a panic already took
-/// it (inside `launcher_close`, after ITS OWN `take()`, then panicking before finishing), the
-/// early return used to skip the release entirely, leaking the keyboard the launcher had bound.
-/// No panic-mid-close harness exists to exercise this directly in a unit test, so this checks the
-/// one thing that would actually regress it: `keyboard_release()` moved back after the early
-/// return.
+/// `launcher_fail` must take the launcher out of `self` FIRST, then release the keyboard, then
+/// early-return on "nothing was open". `keyboard_release` is a no-op while `keyboard_wanted()`
+/// holds, which it does as long as `self.launcher` is `Some`: releasing before the take (the order
+/// task 15 locked in, final review R2) left the keyboard, its keymap and its repeat source resident
+/// after a panic closed the launcher. And the release must precede the early return, for a panic
+/// inside `launcher_close` that already took the launcher. No `wl_keyboard` can be built without a
+/// compositor, so the order is checked in the source.
 #[test]
-fn launcher_fail_releases_the_keyboard_before_its_early_return() {
+fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_early() {
     let files = source_files();
     let host = &files.iter().find(|(p, _)| relative_path(p) == "launcher/host.rs").expect("launcher/host.rs").1;
     let prod = production_code(host);
     let body = function_body(&prod, "fn launcher_fail(");
-    let release_at = body.find("keyboard_release()").expect("launcher_fail must call keyboard_release: {body}");
-    let early_return_at = body.find("self.launcher.take()").expect("launcher_fail must still guard on self.launcher");
+    let take_at = body.find("self.launcher.take()").expect("launcher_fail must take the launcher");
+    let release_at = body.find("self.keyboard_release()").expect("launcher_fail must call keyboard_release");
+    let early_return_at = body.find("else { return }").expect("launcher_fail must early-return when nothing was open");
+    assert!(take_at < release_at, "the launcher must be taken BEFORE keyboard_release (still wanted otherwise): {body}");
     assert!(release_at < early_return_at, "keyboard_release must run before the early return: {body}");
+}
+
+/// Final review R2: three small orderings no fake Wayland surface can exercise. `menu_repaint`
+/// finds its bar by the popup's parent SURFACE (never an output name); `launcher_open` drops the
+/// remembered tray press (`last_icon`), so a late failed Activate cannot open a menu over the
+/// launcher; and the bar's keyboard interactivity is only reset where `popup_open` set it
+/// (`exclusive_during_grab`, false on Hyprland), at both places.
+#[test]
+fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (wayland, popup, surface) = (src("wayland.rs"), src("popup.rs"), src("launcher/surface.rs"));
+    let repaint = function_body(&wayland, "fn menu_repaint(");
+    assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
+    assert!(repaint.contains("position_by"), "menu_repaint must find its bar by the popup's parent surface: {repaint}");
+    let open = function_body(&surface, "pub fn launcher_open(");
+    assert!(open.contains("self.last_icon = None"), "launcher_open must drop the remembered tray press: {open}");
+    let close = function_body(&popup, "pub fn popup_close(");
+    assert!(close.contains("self.exclusive_during_grab"), "popup_close must only reset what popup_open set: {close}");
+    let opening = function_body(&popup, "pub fn popup_open(");
+    assert!(
+        opening.contains(
+            "if grab && self.exclusive_during_grab {\n                    layer.set_keyboard_interactivity(KeyboardInteractivity::None)"
+        ),
+        "popup_open's error path must only reset what it set: {opening}"
+    );
 }
 
 /// Task 15 fix round, from the task 16 review: an output removal (`popup_output_gone`) and the
@@ -727,7 +760,9 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             assert!(!t.contains(never), "{never} in {name}: libdbus's own session lookup may autolaunch a bus");
         }
         let prod = production_code(&t);
-        for never in ["send_with_reply_and_block", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"] {
+        for never in
+            ["send_with_reply_and_block", "new_session(", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"]
+        {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a

@@ -189,13 +189,15 @@ impl App {
     /// (`Drop` only releases local resources: the client watch), so not
     /// specially guarded against.
     fn launcher_fail(&mut self) {
-        // Unconditional, before the early-out below (task 15 fix round, IMPORTANT): idempotent,
-        // and `keyboard_wanted` itself checks what still needs the keyboard — but if a panic
-        // happens inside `launcher_close` after it already took the launcher out of `self`,
-        // `self.launcher` is already `None` by the time THIS `launcher_fail` runs, and the early
-        // return below used to skip the release entirely, leaking the keyboard the launcher had bound.
+        // Take the launcher OUT first, then release the keyboard, then early-out (final review R2):
+        // `keyboard_release` is a no-op while `keyboard_wanted()` is true, and that stays true as long
+        // as `self.launcher` is `Some` — releasing before the take left the `wl_keyboard`, its keymap
+        // and its repeat source resident after a panic closed the launcher. The release must also run
+        // when a panic inside `launcher_close` already took the launcher (`None` here): hence before
+        // the early return.
+        let open = self.launcher.take();
         self.keyboard_release();
-        let Some(open) = self.launcher.take() else { return };
+        let Some(open) = open else { return };
         let _ = guarded("close", move || {
             let mut open = open;
             reply_on_close(open.reply.take(), CloseReason::Error);

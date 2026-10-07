@@ -390,8 +390,8 @@ pub struct App {
     pub(crate) key_time: u32,
     /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
     pub(crate) menu_asked_at: Option<Instant>,
-    /// The icon, the closing button and the time of the menu last closed by `done` or an outside
-    /// click (fix round 2026-10-06, requirement 3): a compositor may deliver `xdg_popup.done`
+    /// The icon, the closing button and the time of the menu last closed by `xdg_popup.done`
+    /// (`PopupClose::Dismissed`; fix round 2026-10-06, requirement 3): a compositor may deliver `xdg_popup.done`
     /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
     /// menu`) would let that very press reopen what it just closed — a record of it, consulted
     /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
@@ -616,8 +616,8 @@ impl App {
 
     /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
     /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
-    /// dropped and emptied, never retried), a menu asked (logged until task 17
-    /// opens it); then the frame request and the deadline timer.
+    /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
+    /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
     pub(crate) fn tray_output(&mut self, out: TrayOutput) {
         if out.bus_closed {
             log("tray: the session bus closed; the tray stays empty");
@@ -680,7 +680,9 @@ impl App {
             }
         }
         if let Some(key) = out.open_menu {
-            match self.last_icon.clone().filter(|(k, _, _)| *k == key) {
+            // Consumed (final review R2): a late second answer, or one arriving after Escape closed
+            // the menu, must not open it again from a press that was already used.
+            match take_icon_for(&mut self.last_icon, &key) {
                 Some((key, anchor, button)) => self.menu_requested(key, anchor, button),
                 None => log("tray: a menu was asked for an icon no longer under the pointer"),
             }
@@ -857,7 +859,7 @@ fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemK
 }
 
 /// Fix round 2026-10-06, requirement 3 (Hyprland/niri hardening): a compositor may deliver `xdg_
-/// popup.done` (closing the popup as an outside click) before the press that follows it reaches
+/// popup.done` (closing the popup: `PopupClose::Dismissed`) before the press that follows it reaches
 /// the bar — by then `closes_own_menu` sees no menu open at all and would let this very press
 /// reopen what it just closed. `record` (the icon whose menu this was, the button that opened it,
 /// and when it closed) makes that press still only-closing: the same icon, a button `closes_own_
@@ -879,6 +881,12 @@ fn closed_recently(record: Option<&(ItemKey, Button, Instant)>, pressed_icon: Op
 fn calendar_press(record: &mut Option<Instant>, on_clock: bool, now: Instant) -> bool {
     let at = record.take();
     on_clock && at.is_some_and(|at| now.duration_since(at) < RECENT_CLOSE_WINDOW)
+}
+
+/// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
+/// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
+fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
+    last.take().filter(|(k, _, _)| k == key)
 }
 
 /// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
@@ -1350,7 +1358,11 @@ impl App {
         // Refreshed to this surface's CURRENT name: `popup_open` (through `bar_surface`) still
         // picks the bar by name, but now from a name read right now, never a stale one.
         let anchor = PopupAnchor { output: app.surfaces[i].name.clone(), ..anchor };
-        let rows = crate::list::padded(&[hover::tooltip_row(&text, columns.saturating_sub(2))]);
+        // Room for the pixel frame's real extra width, not a flat two columns: a tall bar's frame
+        // is wider, and a long tooltip must still fit the output.
+        let e = app.surfaces[i].scale.max(1);
+        let room = hover::tooltip_columns(columns, app.fonts.frame(e).extra().0, app.fonts.advance(e));
+        let rows = crate::list::padded(&[hover::tooltip_row(&text, room)]);
         let qh = app.qh.clone();
         let (columns, height) = rows.cells();
         if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, false) {
@@ -1480,7 +1492,11 @@ impl App {
 
     /// The menu re-rendered at its current level (the popup resized when its size changed).
     fn menu_repaint(&mut self) {
-        let Some(i) = self.popup.as_ref().and_then(|p| self.surfaces.iter().position(|s| s.name == p.anchor.output)) else { return };
+        // The bar by the popup's parent SURFACE (identity), like `popup_close`: its output's name can
+        // change (`update_output`) or be shared by two bars while the menu is open.
+        let Some(i) = self.popup.as_ref().and_then(|p| position_by(&self.surfaces, |s| s.layer.wl_surface(), p.parent_surface())) else {
+            return;
+        };
         let (max_columns, max_rows) = self.popup_room(i);
         let App { tray, popup, .. } = self;
         let (Some(layout), Some(PopupBody::Menu(m))) =
@@ -1603,6 +1619,21 @@ impl crate::launch::WindowsFeed for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Final review R2: the press remembered for an Activate answer is spent by the first answer
+    /// that uses it; a second (late) answer, or one for another icon, finds nothing.
+    #[test]
+    fn the_remembered_press_is_consumed_by_the_menu_it_opens() {
+        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let press = |n: u32| Some((key(n), PopupAnchor { output: "DP-1".into(), start: 3, end: 5 }, Button::Left));
+        let mut last = press(1);
+        assert!(take_icon_for(&mut last, &key(1)).is_some(), "the first answer opens the menu");
+        assert!(last.is_none(), "and spends the press");
+        assert!(take_icon_for(&mut last, &key(1)).is_none(), "a late second answer opens nothing");
+        let mut last = press(1);
+        assert!(take_icon_for(&mut last, &key(2)).is_none(), "another icon's answer opens nothing");
+        assert!(last.is_none(), "and the stale press is gone too");
+    }
 
     #[test]
     fn a_launcher_button_click_toggles_unless_this_press_just_closed_it() {

@@ -17,7 +17,7 @@ use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
 use crate::painter::{self, Frame};
-use crate::popup::{PopupClose, box_size, cell_under};
+use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, pick_buffer};
 use alpheus_commun::launcher_ipc::Reply;
@@ -99,9 +99,8 @@ pub(crate) fn hit_cell(
     size: (u32, u32),
 ) -> Option<(u16, u16)> {
     let cells = (layout.columns.saturating_sub(2), layout.rows.saturating_sub(2));
-    let e = scale.max(1) as u32;
-    let frame = frame.fitted(cells, advance_phys, row_height, (size.0 * e, size.1 * e));
-    cell_under(position.0, position.1, scale, advance_phys, row_height, &frame, cells).map(|(column, row)| (column + 1, row + 1))
+    cell_under_fitted(position.0, position.1, scale, advance_phys, row_height, frame, cells, size)
+        .map(|(column, row)| (column + 1, row + 1))
 }
 
 /// What a redraw does with the box (pure decision).
@@ -392,6 +391,8 @@ impl App {
         }
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
+        // A failed Activate answered after the launcher opened must not open a menu over it.
+        self.last_icon = None;
         // A tooltip's hover tracking must not survive it (task 15 fix round, from the task 16
         // review): left alone, `Hover.over` would still name whatever icon it was armed on, and a
         // later motion that never truly left it would wrongly look like "still on the same icon",

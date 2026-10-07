@@ -44,6 +44,8 @@ struct Level {
     top: usize,
 }
 
+const ROOT_LEVEL: Level = Level { parent: ROOT, selected: None, top: 0 };
+
 /// The open menu's view state: a stack of levels (drill-down, question 2), each with its selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Menu {
@@ -78,15 +80,21 @@ fn level_alive(parent: i32, host: &[&MenuNode], layout: &Layout) -> bool {
 
 impl Menu {
     pub fn new() -> Menu {
-        Menu { levels: vec![Level { parent: ROOT, selected: None, top: 0 }], rows: usize::MAX }
+        Menu { levels: vec![ROOT_LEVEL], rows: usize::MAX }
     }
 
+    /// The current level; the root one if the stack were ever empty (it never is: `back` and
+    /// `relayout` keep the root — and a panic here would take the bar down).
     fn level(&self) -> &Level {
-        self.levels.last().expect("the root level is never popped")
+        self.levels.last().unwrap_or(&ROOT_LEVEL)
     }
 
     fn level_mut(&mut self) -> &mut Level {
-        self.levels.last_mut().expect("the root level is never popped")
+        if self.levels.is_empty() {
+            self.levels.push(ROOT_LEVEL);
+        }
+        let last = self.levels.len() - 1; // at least 1 entry here
+        &mut self.levels[last]
     }
 
     /// The current level's selected entry, if any (task 17 fix round: the wiring checks it still
@@ -329,7 +337,7 @@ impl Menu {
     /// row below a submenu's top (MUTED), entries (toggle column ✓ / ● when any entry of the level has
     /// a toggle and its state is 1; label NORMAL or MUTED when disabled; "▸" right for submenus;
     /// separators drawn as lines; selection INVERTED), and at the right end of the first and last
-    /// entry rows a ▲ / ▼ when more lie above / below.
+    /// entry rows a ▴ / ▾ when more lie above / below.
     pub fn render(&self, layout: &Layout, columns: u16, rows: u16) -> Boxed {
         let entries = self.entries(layout);
         let selected = self.selected_index(&entries);
