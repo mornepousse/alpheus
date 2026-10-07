@@ -149,9 +149,10 @@ checks this.
 
 ### The control center (`alpheus`)
 
-Six tabs: **Home**, **Sound**, **Network**, **Bluetooth**, **Power**,
+Seven tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
 **Displays** (enable, place, set resolution and scale, profiles, with
-automatic rollback after 15 s if not confirmed).
+automatic rollback after 15 s if not confirmed), **Theme** (choose a
+theme and the light/dark mode, with a preview; `--tab theme`).
 
 | Key | Action |
 |---|---|

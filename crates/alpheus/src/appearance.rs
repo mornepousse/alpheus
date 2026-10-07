@@ -99,7 +99,8 @@ fn set_one(text: &str, key: &str, value: &str) -> String {
 }
 
 /// `theme.toml` text with the top-level `theme` and `mode` lines set (None: left alone). Every
-/// other line is kept byte for byte: comments, blank lines, the `[colors]` overrides.
+/// other line is kept byte for byte: comments, blank lines, the `[colors]` overrides. A replaced
+/// line loses its own trailing comment.
 pub fn set_keys(text: &str, theme: Option<&str>, mode: Option<&str>) -> String {
     let mut out = text.to_string();
     for (key, value) in [("theme", theme), ("mode", mode)] {
@@ -114,14 +115,18 @@ pub fn set_keys(text: &str, theme: Option<&str>, mode: Option<&str>) -> String {
 /// `set_keys`, creates `dir` if needed, then writes a temporary file beside it and renames it.
 /// An unreadable existing file is an error, never overwritten.
 pub fn write_settings(dir: &Path, theme: Option<&str>, mode: Option<&str>) -> io::Result<()> {
-    let path = dir.join(THEME_FILE);
+    // A symlinked theme.toml (dotfiles managers) keeps its link: the target is what gets replaced,
+    // so a read-only target (a store path) is an error, not a silent swap for a regular file.
+    let link = dir.join(THEME_FILE);
+    let path = std::fs::canonicalize(&link).unwrap_or(link);
     let old = match std::fs::read_to_string(&path) {
         Ok(t) => t,
         Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e),
     };
-    std::fs::create_dir_all(dir)?;
-    let tmp = dir.join(format!(".{THEME_FILE}.{}.tmp", std::process::id()));
+    let parent = path.parent().unwrap_or(dir);
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".{THEME_FILE}.{}.tmp", std::process::id()));
     let result = std::fs::write(&tmp, set_keys(&old, theme, mode)).and_then(|()| std::fs::rename(&tmp, &path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
@@ -184,6 +189,36 @@ mod tests {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(r.is_err(), "{r:?}");
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\n");
+    }
+
+    #[test]
+    fn a_symlinked_theme_toml_stays_a_link_and_its_target_is_written() {
+        let dir = scratch("link");
+        let real = scratch("link-real");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("mine.toml"), "# mine\ntheme = \"nord\"\n").unwrap();
+        std::os::unix::fs::symlink(real.join("mine.toml"), dir.join("theme.toml")).unwrap();
+        write_settings(&dir, Some("gruvbox"), None).unwrap();
+        assert!(std::fs::symlink_metadata(dir.join("theme.toml")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(real.join("mine.toml")).unwrap(), "# mine\ntheme = \"gruvbox\"\n");
+    }
+
+    #[test]
+    fn a_symlink_to_a_read_only_target_is_an_error_and_stays_untouched() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("link-ro");
+        let real = scratch("link-ro-real");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("mine.toml"), "theme = \"nord\"\n").unwrap();
+        std::os::unix::fs::symlink(real.join("mine.toml"), dir.join("theme.toml")).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let r = write_settings(&dir, Some("gruvbox"), None);
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(r.is_err(), "{r:?}");
+        assert!(std::fs::symlink_metadata(dir.join("theme.toml")).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(real.join("mine.toml")).unwrap(), "theme = \"nord\"\n");
     }
 
     #[test]

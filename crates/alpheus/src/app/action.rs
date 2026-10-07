@@ -22,10 +22,10 @@ impl Tab {
             Tab::Home => "Home",
             Tab::Sound => "Sound",
             Tab::Network => "Network",
-            Tab::Bluetooth => "Bluetooth",
+            Tab::Bluetooth => "BT",
             Tab::Power => "Power",
             Tab::Displays => "Displays",
-            Tab::Appearance => "Appearance",
+            Tab::Appearance => "Theme",
         }
     }
 
@@ -62,6 +62,8 @@ impl Tab {
     /// Tab named `name`, case- and accent-insensitive.
     pub fn from_slug(name: &str) -> Option<Tab> {
         let n = crate::fuzzy::fold_str(name.trim());
+        // "theme" is the tab's title; "appearance" stays its long name.
+        let n = if n == "theme" { "appearance".to_string() } else { n };
         Tab::ALL.into_iter().find(|t| t.slug() == n)
     }
 }
@@ -257,7 +259,8 @@ mod tests {
         assert_eq!(Tab::Power.next(), Tab::Displays);
         assert_eq!(Tab::Displays.next(), Tab::Appearance);
         assert_eq!(Tab::Appearance.next(), Tab::Home);
-        assert_eq!(Tab::Appearance.title(), "Appearance");
+        assert_eq!(Tab::Appearance.title(), "Theme");
+        assert_eq!(Tab::Bluetooth.title(), "BT");
         assert_eq!(Tab::Displays.title(), "Displays");
         assert_eq!(Tab::Network.index(), 2);
     }
@@ -273,6 +276,8 @@ mod tests {
         assert_eq!(Tab::from_slug("Network"), Some(Tab::Network));
         assert_eq!(Tab::from_slug(" DISPLAYS "), Some(Tab::Displays));
         assert_eq!(Tab::from_slug("Appearance"), Some(Tab::Appearance));
+        assert_eq!(Tab::from_slug("theme"), Some(Tab::Appearance));
+        assert_eq!(Tab::from_slug("Bluetooth"), Some(Tab::Bluetooth));
         assert_eq!(Tab::from_slug("weather"), None);
         assert_eq!(Tab::from_slug(""), None);
     }
@@ -311,7 +316,8 @@ mod tests {
             "Go to: Sound",
             "Profile: Balanced",
             "Go to: Displays",
-            "Go to: Appearance",
+            "Go to: Theme",
+            "Go to: BT",
             "Display profile: Bureau",
         ] {
             assert!(labels.contains(&expected), "{expected} missing");

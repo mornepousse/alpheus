@@ -2,7 +2,7 @@
 source: crates/alpheus/src/ui/appearance.rs
 expression: "draw(&a, 100, 24).0.join(\"\\n\")"
 ---
- alpheus   1 Home  2 Sound  3 Network  4 Bluetooth  5 Power  6 Displays  7 Appearance               
+ alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
                                                                                                     
  Theme                           Preview — Dracula, dark                                            
      Wallpaper (matugen)         ┌──────────────────────────────────┐                               
@@ -24,5 +24,5 @@ expression: "draw(&a, 100, 24).0.join(\"\\n\")"
                                                                                                     
                                                                                                     
                                                                                                     
- Appearance · ready                                                                                 
+ Theme · ready                                                                                      
  F1 Help  Ctrl+P Palette  Esc Back  q Quit  ↑/↓ Choose  Enter Apply  Tab Mode

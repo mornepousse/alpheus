@@ -58,7 +58,7 @@ fn tab_bar(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         let w = put(buf, r, x, r.y, label, style);
         hits.push(Rect::new(x, r.y, w, 1), Target::Tab(*t));
         // Glued together: each label already carries its own spaces, so
-        // the seven tabs fit in 80 columns this way (without the brand).
+        // the seven tabs fit in 80 columns this way (brand included).
         x = x.saturating_add(w);
     }
 }
@@ -192,9 +192,8 @@ mod tests {
     fn home_frame() {
         let (rows, _) = draw(&ready_app(), 80, 24);
         assert!(rows[0].contains(" 1 Home ") && rows[0].contains(" 5 Power "));
-        assert!(rows[0].contains(" 7 Appearance "), "seven tabs in 80 columns: {:?}", rows[0]);
-        assert!(!rows[0].contains("alpheus"), "the brand makes way for them at 80 columns");
-        assert!(draw(&ready_app(), 100, 24).0[0].contains("alpheus"), "and shows when there is room");
+        assert!(rows[0].contains(" 7 Theme ") && rows[0].contains(" 4 BT "), "seven tabs in 80 columns: {:?}", rows[0]);
+        assert!(rows[0].contains("alpheus"), "the brand stays at 80 columns: {:?}", rows[0]);
         assert!(rows[2].starts_with(" ▶ Volume"), "{:?}", rows[2]);
         assert!(rows[2].contains("  62 %"));
         assert!(rows[4].contains("Brightness") && rows[4].contains("  20 %"));

@@ -52,6 +52,8 @@ pub struct AppearanceTab {
     pub mode_focus: bool,
     /// The roles under the cursor, for the chosen mode.
     pub preview: Option<Roles>,
+    /// The user's `[colors]` overrides: the preview shows what Enter will produce.
+    overrides: Overrides,
     /// A note on the preview (the wallpaper's colour file missing or invalid).
     pub preview_note: Option<String>,
     /// The mode the daemon publishes, read when the tab opens and after each write.
@@ -73,6 +75,7 @@ impl Default for AppearanceTab {
             mode_focus: false,
             preview: None,
             preview_note: None,
+            overrides: Overrides::default(),
             auto_mode: Mode::Dark,
             wallpaper: None,
         }
@@ -95,7 +98,7 @@ impl AppearanceTab {
         let Some(entry) = self.entries.get(self.cursor).copied() else { return };
         let mode = self.effective_mode();
         let dir = self.dir.clone().unwrap_or_default();
-        let settings = |source| ThemeSettings { source, mode: self.mode, overrides: Overrides::default() };
+        let settings = |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone() };
         if entry.key == WALLPAPER {
             if self.wallpaper.as_ref().is_none_or(|(m, ..)| *m != mode) {
                 let (roles, warnings) = resolve(&settings(ThemeSource::Wallpaper), mode, &dir);
@@ -127,6 +130,7 @@ impl App {
             ThemeSource::Wallpaper => WALLPAPER,
             ThemeSource::Preset(name) => name,
         };
+        a.overrides = settings.overrides.clone();
         a.applied = a.entries.iter().position(|e| e.key == key);
         a.cursor = a.applied.unwrap_or(0);
         a.mode = settings.mode;
@@ -493,5 +497,17 @@ pub(crate) mod tests {
         a.go_tab(Tab::Power, Instant::now());
         assert!(a.appearance.entries.is_empty() && a.appearance.preview.is_none());
         assert!(a.take_requests().iter().all(|r| !matches!(r, super::super::worker::Request::Do(_))));
+    }
+
+    #[test]
+    fn the_preview_includes_the_users_colour_overrides() {
+        let t = "theme = \"nord\"\nmode = \"dark\"\n[colors]\nfg = \"#123456\"\n";
+        let (mut a, _) = open("overrides", &[("theme.toml", t)]);
+        assert_eq!(a.appearance.preview.unwrap().fg, Rgb(0x12, 0x34, 0x56));
+        act(&mut a, Action::Down); // Dracula
+        assert_eq!(a.appearance.preview.unwrap().fg, Rgb(0x12, 0x34, 0x56), "on every theme");
+        assert_eq!(a.appearance.preview.unwrap().bar_bg, preset("dracula").unwrap().dark.bar_bg, "only fg is overridden");
+        let (a, _) = open("no-overrides", &[("theme.toml", "theme = \"nord\"\n")]);
+        assert_eq!(a.appearance.preview, Some(preset("nord").unwrap().dark));
     }
 }

@@ -27,8 +27,15 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let ap = &app.appearance;
     put(buf, body, body.x, body.y, "Theme", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
-    for (i, e) in ap.entries.iter().enumerate() {
-        let y = body.y + 1 + i as u16;
+    // The mode row sits under the list when it fits, else on the body's last row with the list
+    // scrolled so the cursor stays visible. Nothing is drawn or made clickable outside `body`.
+    let n = ap.entries.len();
+    let room = usize::from(body.height).saturating_sub(3);
+    let shown = n.min(room);
+    let offset = if ap.cursor >= shown { ap.cursor + 1 - shown } else { 0 };
+    let mode_y = body.y + 2 + shown as u16;
+    for (i, e) in ap.entries.iter().enumerate().skip(offset).take(shown) {
+        let y = body.y + 1 + (i - offset) as u16;
         let row = Rect::new(body.x, y, LIST_W.min(body.width), 1);
         let on_cursor = i == ap.cursor;
         let base = if on_cursor { th.selected() } else { Style::default().fg(th.fg) };
@@ -44,9 +51,8 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
             // A column of its own, clear of the longest preset name.
             put(buf, row, row.x + TAG_X, y, "dark only", Style::default().fg(th.muted).bg(base.bg.unwrap_or(th.bg)));
         }
-        hits.push(row, Target::AppearanceTheme(i));
+        hits.push(row.intersection(body), Target::AppearanceTheme(i));
     }
-    let mode_y = body.y + 2 + ap.entries.len() as u16;
     put(buf, body, body.x, mode_y, "Mode", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
     let mut x = body.x + 6;
     for m in MODES {
@@ -58,7 +64,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
             th.selected()
         };
         let w = put(buf, body, x, mode_y, &format!(" {} ", mode_label(m)), style);
-        hits.push(Rect::new(x, mode_y, w, 1), Target::AppearanceMode(m));
+        hits.push(Rect::new(x, mode_y, w, 1).intersection(body), Target::AppearanceMode(m));
         x = x.saturating_add(w + 1);
     }
     if let (Some(roles), Some(entry)) = (&ap.preview, ap.cursor_entry()) {
@@ -244,7 +250,7 @@ mod tests {
     fn the_regions_and_the_tab_title() {
         let (a, _) = open("hits", &[]);
         let (rows, hits) = draw(&a, 100, 24);
-        assert!(rows[0].contains(" 7 Appearance "), "{:?}", rows[0]);
+        assert!(rows[0].contains(" 7 Theme "), "{:?}", rows[0]);
         assert!(hits.find(Target::Tab(Tab::Appearance)).is_some());
         assert_eq!(hits.find(Target::AppearanceTheme(3)).map(|r| (r.y, r.width)), Some((6, 30)));
         for m in MODES {
@@ -262,5 +268,35 @@ mod tests {
         let all = draw(&a, 50, 24).0.join("\n");
         assert!(!all.contains("Preview"), "{all}");
         assert!(all.contains("Mode"));
+    }
+
+    #[test]
+    fn short_terminals_scroll_the_list_and_never_expose_a_hidden_hit() {
+        let (mut a, _) = open("short", &[]);
+        for h in 8..=20u16 {
+            let body = Rect::new(1, 2, 98, h - 4);
+            for cursor in 0..a.appearance.entries.len() {
+                a.appearance.cursor = cursor;
+                let (rows, hits) = draw(&a, 100, h);
+                for i in 0..a.appearance.entries.len() {
+                    if let Some(r) = hits.find(Target::AppearanceTheme(i)) {
+                        assert_eq!(r.intersection(body), r, "theme {i} outside the body at height {h}");
+                    }
+                }
+                for m in MODES {
+                    if let Some(r) = hits.find(Target::AppearanceMode(m)) {
+                        assert_eq!(r.intersection(body), r, "mode outside the body at height {h}");
+                    }
+                }
+                let row = hits.find(Target::AppearanceTheme(cursor));
+                assert!(row.is_some(), "cursor {cursor} not drawn at height {h}");
+                if let Some(r) = row {
+                    assert!(rows[usize::from(r.y)].contains('❯'), "{:?}", rows[usize::from(r.y)]);
+                }
+                if h >= 9 {
+                    assert!(hits.find(Target::AppearanceMode(MODES[0])).is_some(), "mode row visible at height {h}");
+                }
+            }
+        }
     }
 }
