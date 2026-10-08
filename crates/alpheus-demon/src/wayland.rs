@@ -231,9 +231,11 @@ fn drawable(configured: bool, width: u32, placing: bool) -> bool {
 /// keeps the hold: two quick restyles, or a configure already in flight. The placements differ by
 /// floating's shadow, so their heights tell them apart. Any other configure ends it: the latest
 /// placement's height, 0 (the size left to the client), or a height the compositor clamped or
-/// rounded. A bar must never freeze waiting for an exact echo.
-fn still_placing(placing: bool, height: u32, previous: u32) -> bool {
-    placing && height == previous
+/// rounded. A bar must never freeze waiting for an exact echo: only the FIRST configure after a
+/// placement (`answered`, those already received since it, is 0) can keep it; the second ends it
+/// whatever its height, so a compositor that refuses the resize cannot hold the bar.
+fn still_placing(placing: bool, height: u32, previous: u32, answered: u8) -> bool {
+    placing && answered == 0 && height == previous
 }
 
 /// Applies `p` to `layer`, uncommitted: margin, size, exclusive zone, and the input region (the
@@ -334,6 +336,9 @@ pub(crate) struct Surface {
     /// The surface height of the placement before the latest one: a configure of that height
     /// answers an earlier request, and keeps the hold (`still_placing`).
     placed_from: u32,
+    /// Configures received since the latest placement (saturating): only the first can keep the
+    /// hold (`still_placing`).
+    answered: u8,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
@@ -659,6 +664,7 @@ impl App {
             placement,
             placing: false,
             placed_from: placement.surface_height,
+            answered: 0,
             last: None,
             buffers: Vec::new(),
             opaque: Vec::new(),
@@ -750,6 +756,7 @@ impl App {
             s.placed_from = s.placement.surface_height;
             s.placement = wanted;
             s.placing = true;
+            s.answered = 0;
             s.last = None;
             s.layer.commit();
         }
@@ -1281,7 +1288,8 @@ impl LayerShellHandler for App {
         // again, at the new size.
         let s = &mut self.surfaces[i];
         let held = s.placing;
-        s.placing = still_placing(s.placing, c.new_size.1, s.placed_from);
+        s.placing = still_placing(s.placing, c.new_size.1, s.placed_from, s.answered);
+        s.answered = s.answered.saturating_add(1);
         if held && !s.placing {
             s.last = None;
         }
@@ -2103,13 +2111,26 @@ mod tests {
         assert_ne!(flat, floating, "the check bites only if the two placements differ in height");
         // floating -> flat -> floating: the placement before the latest one is flat.
         let previous = flat;
-        assert!(still_placing(true, flat, previous), "the answer to the first restyle (flat) keeps holding");
-        assert!(!still_placing(true, floating, previous), "the answer to the latest one ends the hold");
-        assert!(!still_placing(true, 0, previous), "a size left to the client (0) ends the hold");
-        assert!(!still_placing(false, flat, previous), "not placing: nothing to end");
+        assert!(still_placing(true, flat, previous, 0), "the answer to the first restyle (flat) keeps holding");
+        assert!(!still_placing(true, floating, previous, 0), "the answer to the latest one ends the hold");
+        assert!(!still_placing(true, 0, previous, 0), "a size left to the client (0) ends the hold");
+        assert!(!still_placing(false, flat, previous, 0), "not placing: nothing to end");
         // A compositor that clamps or rounds the height (25 or 27 for 26) must never freeze the bar.
-        assert!(!still_placing(true, 25, previous), "an unexpected height ends the hold");
-        assert!(!still_placing(true, 27, previous), "an unexpected height ends the hold");
+        assert!(!still_placing(true, 25, previous, 0), "an unexpected height ends the hold");
+        assert!(!still_placing(true, 27, previous, 0), "an unexpected height ends the hold");
+    }
+
+    /// Fix wave A: a compositor that refuses the resize answers every configure at the previous
+    /// height. The second configure after a placement ends the hold whatever its height, so the bar
+    /// can never stay held.
+    #[test]
+    fn the_second_configure_after_a_placement_always_ends_the_hold() {
+        use alpheus_commun::theme::settings::BarStyle;
+        let previous = Placement::for_style(BarStyle::Flat, 22).surface_height;
+        assert!(still_placing(true, previous, previous, 0), "the first, at the previous height: holds");
+        for answered in [1, 2, u8::MAX] {
+            assert!(!still_placing(true, previous, previous, answered), "after {answered} configure(s): the hold ends");
+        }
     }
 
     /// Review items M3/M4, final review slice 3: the same check used by
