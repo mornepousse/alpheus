@@ -833,3 +833,75 @@ fn at_rest_no_wakeups_under_each_style() {
         assert!(*delta <= 4, "{style}: {delta} wake-ups in 5 s at rest: {report:?}");
     }
 }
+
+/// `start`, with `theme.toml` written before the daemon starts: the style is in effect from the
+/// first paint, as on a real login.
+fn start_styled(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: &str, theme_toml: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, outputs);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), theme_toml).unwrap();
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(bar_toml), system_bus: Some(&bus.address), pw_dump: PwDump::Silent, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// Shapes delivery: PSS at start under each style, every module, 3 outputs. A style costs its
+/// branch, its corner masks (created on first use, a few hundred bytes) and, for floating, a
+/// buffer 4 px taller and 12 px narrower: each within 512 KB of flat, all under the firm budget.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn startup_pss_per_style() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("per-style");
+    let _workstation = Workstation::serve(&bus);
+    let modules = "modules = [\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \
+                   \"resources\", \"clock\"]\n";
+    let mut report = Vec::new();
+    for (i, style) in ["flat", "islands", "powerline", "floating", "underline", "translucent"].into_iter().enumerate() {
+        let theme = format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\n");
+        let (_sway, _hypr, d) = start_styled(&format!("per-style-{i}"), 3, &bus, modules, &theme);
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        report.push((style, d.pss_kb()));
+    }
+    eprintln!("startup PSS per style (KB, all modules, 3 outputs): {report:?}");
+    let flat = report[0].1;
+    for (style, kb) in &report {
+        assert!(*kb < STARTUP_MAX_KB, "{style}: {kb} KB >= 15 MB — report to Mae, never raise: {report:?}");
+        assert!(*kb <= flat + 512, "{style}: {kb} KB vs flat {flat} KB: {report:?}");
+    }
+}
+
+/// Shapes delivery: 48 style switches (every style 8 times; floating reconfigures every bar, the
+/// masks are cached) leave no growth behind. Budget 768 KB, as for theme reloads.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn style_switches_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("style-switches");
+    let toml = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let (sway, _hypr, d) = start("style-switches", 3, &bus, None, Some(toml), PwDump::Silent);
+    let config = sway.runtime.join("config/alpheus");
+    let switch = |n: usize| {
+        let style = STYLES[n % STYLES.len()];
+        write_atomically(&config, "theme.toml", &format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\nopacity = 0.6\n"));
+        assert!(d.wait_for_count("theme reloaded:", n + 1, DELAY), "switch {n} ({style}): {:?}", d.log());
+        std::thread::sleep(Duration::from_millis(100)); // floating's configures land before the next write
+    };
+    for n in 0..12 {
+        switch(n); // warm-up: every style painted twice, every mask created
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let baseline = d.pss_kb();
+    for n in 12..60 {
+        switch(n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.pss_kb();
+    eprintln!("style switches: PSS {baseline} KB after 12 warm-up switches, {end} KB after 48 more (3 outputs)");
+    assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 48 style switches");
+}
