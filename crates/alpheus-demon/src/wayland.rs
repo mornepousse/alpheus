@@ -14,6 +14,7 @@ use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
+use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::hover::{self, Hover, HoverChange};
@@ -218,6 +219,32 @@ fn eligible_for_frame(configured: bool, has_buffer: bool) -> bool {
     configured && has_buffer
 }
 
+/// Whether bar `draw` may paint: configured, with a width, and not waiting for the configure of a
+/// new placement.
+fn drawable(configured: bool, width: u32, placing: bool) -> bool {
+    configured && width != 0 && !placing
+}
+
+/// Applies `p` to `layer`, uncommitted: margin, size, exclusive zone, and the input region (the
+/// bar only under floating; the default whole surface otherwise).
+fn apply_placement(compositor: &CompositorState, layer: &LayerSurface, p: &Placement) {
+    let (top, right, bottom, left) = p.margin;
+    layer.set_margin(top, right, bottom, left);
+    layer.set_size(0, p.surface_height);
+    layer.set_exclusive_zone(p.exclusive_zone);
+    match input_rect(p) {
+        None => layer.set_input_region(None),
+        Some((x, y, w, h)) => match Region::new(compositor) {
+            Ok(region) => {
+                region.add(x, y, w, h);
+                // Copied by the request: the region may be destroyed (dropped) right after.
+                layer.set_input_region(Some(region.wl_region()));
+            }
+            Err(e) => log(&format!("input region: {e}")),
+        },
+    }
+}
+
 /// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
 /// `pool` (same format and stride computation everywhere a buffer is
 /// created, whether on first draw, resize, or growing to a second buffer).
@@ -287,6 +314,12 @@ pub(crate) struct Surface {
     width: u32,
     pub(crate) scale: i32,
     pub(crate) configured: bool,
+    /// Where this bar's layer surface is placed (margin, size, exclusive zone, input region): the
+    /// style's `Placement` it was last given.
+    pub(crate) placement: Placement,
+    /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile
+    /// (spec § 4), since a buffer of the old size would not match.
+    placing: bool,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
@@ -302,6 +335,9 @@ pub(crate) struct Surface {
     /// The opaque region last sent (logical px, `painter::opaque_rects`): sent again only when it
     /// changes. Empty before the first draw.
     opaque: Vec<Rect>,
+    /// The last attempt to send the opaque region failed: retried on every frame, logged once
+    /// (`first_failure`).
+    opaque_failing: bool,
 }
 
 pub struct App {
@@ -483,6 +519,14 @@ fn send_opaque<E>(
     }
 }
 
+/// Records whether the last attempt `failed` in `failing`; true only for the first failure after a
+/// success (or ever): what is logged, so a region that keeps failing never floods the log.
+fn first_failure(failing: &mut bool, failed: bool) -> bool {
+    let first = failed && !*failing;
+    *failing = failed;
+    first
+}
+
 /// The background a bar paints with: the bar's style and module colours (set by the wiring from
 /// theme.toml), the theme's opacity, the grid's blocks.
 pub(crate) fn bar_background<'a>(bar: &Bar, settings: &ThemeSettings, grid: &'a Grid) -> Background<'a> {
@@ -582,12 +626,12 @@ impl App {
         let info = self.outputs.info(&output);
         let name = info.as_ref().and_then(|i| i.name.clone()).unwrap_or_default();
         let scale = info.map(|i| i.scale_factor).unwrap_or(1);
-        let height = self.bar.config.height;
+        // The bar's style (reconciliation 2): set from theme.toml at startup and on reload (task 7).
+        let placement = Placement::for_style(self.bar.style, self.bar.config.height);
         let surface = self.compositor.create_surface(qh);
         let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some("alpheus-bar"), Some(&output));
         layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, height);
-        layer.set_exclusive_zone(height as i32);
+        apply_placement(&self.compositor, &layer, &placement);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.commit();
         log(&format!("bar placed on {}", log_name(&name, &output)));
@@ -598,9 +642,12 @@ impl App {
             width: 0,
             scale,
             configured: false,
+            placement,
+            placing: false,
             last: None,
             buffers: Vec::new(),
             opaque: Vec::new(),
+            opaque_failing: false,
         });
     }
 
@@ -629,8 +676,7 @@ impl App {
     /// footprint of a large unplugged screen stays in memory forever
     /// ("running on a potato").
     fn shrink_pool_if_needed(&mut self) {
-        let height = self.bar.config.height;
-        let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, height, s.scale)).collect();
+        let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, s.placement.surface_height, s.scale)).collect();
         if let Some(size) = target_pool(self.pool.len(), &needs) {
             match SlotPool::new(size, &self.shm) {
                 Ok(p) => {
@@ -667,6 +713,33 @@ impl App {
         self.redraw_all();
     }
 
+    /// Re-places every bar for the bar's current `style` (themes delivery 2, spec § 4). Called after
+    /// a theme reload (task 7). A bar whose `Placement` changes (a switch to or from floating) gets
+    /// its new margin, size, exclusive zone and input region, and paints again only on the
+    /// compositor's configure (its size always changes, so that configure always comes). A no-op for
+    /// a bar already placed right, so it can be called on every reload.
+    ///
+    /// Review Focus 1: a popup (menu, tooltip, calendar) is anchored to its bar's surface at the old
+    /// size; it is closed before that bar moves, never left hanging from a stale geometry. The
+    /// launcher is its own layer surface, not anchored to a bar: it stays open.
+    #[expect(dead_code, reason = "called by the theme reload (shapes task 7)")]
+    pub(crate) fn apply_bar_placement(&mut self) {
+        let wanted = Placement::for_style(self.bar.style, self.bar.config.height);
+        let moving: Vec<wl_surface::WlSurface> =
+            self.surfaces.iter().filter(|s| s.placement != wanted).map(|s| s.layer.wl_surface().clone()).collect();
+        for parent in &moving {
+            self.popup_close_if_parent(parent, PopupClose::Restyled);
+        }
+        let App { surfaces, compositor, .. } = self;
+        for s in surfaces.iter_mut().filter(|s| s.placement != wanted) {
+            apply_placement(compositor, &s.layer, &wanted);
+            s.placement = wanted;
+            s.placing = true;
+            s.last = None;
+            s.layer.commit();
+        }
+    }
+
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
     /// (`launch::run`): places the bar back on every output `closed` marked
     /// for restoration this batch and that is still known now — see
@@ -683,11 +756,12 @@ impl App {
     fn draw(&mut self, i: usize) {
         let App { surfaces, fonts, bar, roles, pool, theme_settings, compositor, opaque_scratch, .. } = self;
         let s = &mut surfaces[i];
-        if !s.configured || s.width == 0 {
+        if !drawable(s.configured, s.width, s.placing) {
             return;
         }
         let e = s.scale.max(1);
-        let (w, h) = (s.width * e as u32, bar.config.height * e as u32);
+        // The surface: the bar, plus floating's shadow below it (`Placement::surface_height`).
+        let (w, h) = (s.width * e as u32, s.placement.surface_height * e as u32);
         let grid = bar.grid(&s.name, painter::columns(w, fonts.advance(e)));
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
@@ -719,7 +793,9 @@ impl App {
             },
             || surface.set_opaque_region(None),
         );
-        if let Err(e) = sent {
+        if first_failure(&mut s.opaque_failing, sent.is_err())
+            && let Err(e) = sent
+        {
             log(&format!("opaque region: {e}"));
         }
         surface.set_buffer_scale(e);
@@ -1170,6 +1246,11 @@ impl LayerShellHandler for App {
         // pending) succeeded, the output can again be restored in the
         // future if the compositor closes its surface again.
         let first_configure = !self.surfaces[i].configured;
+        // The configure of a new placement (a style switch): paint again, at the new size.
+        if self.surfaces[i].placing {
+            self.surfaces[i].placing = false;
+            self.surfaces[i].last = None;
+        }
         if self.surfaces[i].width != c.new_size.0 {
             self.surfaces[i].last = None;
         }
@@ -1778,6 +1859,28 @@ mod tests {
         let r =
             send_opaque(&mut sent, &mut wanted, |_| -> Result<(), &str> { panic!("unchanged: not sent again") }, || panic!("unchanged"));
         assert_eq!(r, Ok(()));
+    }
+
+    /// Task 5 review: a region that keeps failing is retried on every frame but logged once, until
+    /// it succeeds again.
+    #[test]
+    fn a_failing_opaque_region_is_logged_once_per_outage() {
+        let mut failing = false;
+        assert!(first_failure(&mut failing, true), "the first failure is logged");
+        assert!(!first_failure(&mut failing, true), "the retries are not");
+        assert!(!first_failure(&mut failing, true));
+        assert!(!first_failure(&mut failing, false), "a success logs nothing");
+        assert!(first_failure(&mut failing, true), "a new outage is logged again");
+    }
+
+    /// Spec § 4: a bar re-placed for a new style waits for the compositor's configure before it
+    /// paints again (its buffer must match the new size).
+    #[test]
+    fn a_bar_waiting_for_its_new_placement_is_not_drawn() {
+        assert!(drawable(true, 800, false));
+        assert!(!drawable(true, 800, true), "re-placed: the configure paints");
+        assert!(!drawable(false, 800, false), "never configured");
+        assert!(!drawable(true, 0, false), "no width yet");
     }
 
     /// Final review R2: the press remembered for an Activate answer is spent by the first answer

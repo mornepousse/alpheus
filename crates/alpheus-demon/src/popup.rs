@@ -142,6 +142,9 @@ pub enum PopupClose {
     Launcher,
     /// A tooltip: the pointer left its icon (task 16).
     HoverEnded,
+    /// Its bar was re-placed for a new style (to or from floating): the popup's anchor and size no
+    /// longer match (shapes Review Focus 1).
+    Restyled,
     Error,
 }
 
@@ -160,6 +163,7 @@ impl PopupClose {
             PopupClose::MenuMoved => "menu moved",
             PopupClose::Launcher => "launcher",
             PopupClose::HoverEnded => "hover ended",
+            PopupClose::Restyled => "restyled",
             PopupClose::Error => "error",
         }
     }
@@ -610,6 +614,14 @@ impl App {
         let cell = cell_under_fitted(position.0, position.1, e, self.fonts.advance(e), height * e as u32, &frame, cells, open.size);
         self.popup_pointer(cell, kind);
         true
+    }
+
+    /// Closes the open popup if it hangs from `parent` (a bar about to be re-placed, shapes task 6).
+    #[expect(dead_code, reason = "called by the theme reload (shapes task 7)")]
+    pub(crate) fn popup_close_if_parent(&mut self, parent: &wl_surface::WlSurface, why: PopupClose) {
+        if self.popup.as_ref().is_some_and(|p| &p.parent == parent) {
+            self.popup_close(why);
+        }
     }
 
     /// The popup's parent bar surface goes (output unplugged, surface closed): the popup goes

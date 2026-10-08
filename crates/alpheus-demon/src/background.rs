@@ -93,9 +93,23 @@ pub fn opaque_rects(style: BarStyle, groups: &[Group], geometry: &BarGeometry, o
                 }
             }
         }
-        // The rounded bar without its corners (task 6). Until then nothing is claimed: always
-        // correct, only slower to composite.
-        BarStyle::Floating => {}
+        // The rounded bar without its corners, as two rectangles; the radius is the painter's own
+        // (`floating::edges` fits `FLOAT_RADIUS` to the same physical size). `geometry.height` is
+        // the bar alone: the shadow below it is never claimed.
+        BarStyle::Floating => {
+            use crate::painter::blocks::fitted_radius;
+            use crate::painter::floating::FLOAT_RADIUS;
+            let e = geometry.scale.max(1) as u32;
+            let (pw, ph) = (geometry.width.saturating_mul(e), geometry.height.saturating_mul(e));
+            let r = fitted_radius(FLOAT_RADIUS, pw, ph, geometry.scale) as i32;
+            let (w, h) = (geometry.width as i32, geometry.height as i32);
+            if w > 2 * r && h > 0 {
+                out.push(Rect { x: r, y: 0, width: w - 2 * r, height: h });
+            }
+            if h > 2 * r && w > 0 {
+                out.push(Rect { x: 0, y: r, width: w, height: h - 2 * r });
+            }
+        }
     }
 }
 
@@ -329,14 +343,18 @@ mod tests {
         assert_eq!(out, [Rect { x: 0, y: 0, width: 960, height: 30 }], "logical px, not physical");
     }
 
-    /// Floating claims nothing yet (task 6 claims the rounded bar): claiming less than is opaque is
-    /// always correct.
+    /// Spec § 3: floating claims its rounded bar without the corners, in logical px; `geometry.height`
+    /// is the bar alone, so the shadow below it is never claimed.
     #[test]
-    fn floating_claims_nothing_until_task_6() {
-        let groups = [Group { kind: GroupKind::Clock, start: 10, end: 20, hue: None }];
-        let mut out = vec![Rect { x: 1, y: 1, width: 1, height: 1 }];
-        opaque_rects(BarStyle::Floating, &groups, &GEOMETRY, &mut out);
-        assert_eq!(out, [], "cleared, nothing claimed");
+    fn floating_claims_its_bar_without_the_corners_and_never_the_shadow() {
+        let mut out = Vec::new();
+        let want = [Rect { x: 10, y: 0, width: 1248, height: 22 }, Rect { x: 0, y: 10, width: 1268, height: 2 }];
+        opaque_rects(BarStyle::Floating, &[], &BarGeometry { width: 1268, height: 22, advance: 8.4, scale: 1 }, &mut out);
+        assert_eq!(out, want, "radius 10");
+        opaque_rects(BarStyle::Floating, &[], &BarGeometry { width: 1268, height: 22, advance: 16.8, scale: 2 }, &mut out);
+        assert_eq!(out, want, "logical px at scale 2");
+        opaque_rects(BarStyle::Floating, &[], &BarGeometry { width: 12, height: 22, advance: 8.4, scale: 1 }, &mut out);
+        assert_eq!(out, [Rect { x: 0, y: 6, width: 12, height: 10 }], "a bar too narrow for its radius: what is left");
     }
 
     /// Spec § 3: islands and translucent claim their blocks, inset, without the rounded corners; in

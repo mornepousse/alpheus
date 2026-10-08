@@ -562,3 +562,208 @@ fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
         }
     }
 }
+
+use crate::placement::FLOAT_SHADOW;
+
+/// A floating bar's surface: the default bar plus its shadow, logical px.
+const FLOATING: u32 = DEFAULT_HEIGHT + FLOAT_SHADOW;
+
+/// Spec § 3, floating:
+/// - one rounded rectangle on bar_bg, radius 10 px, the corners transparent;
+/// - no blocks without pills.
+#[test]
+fn floating_bar_is_one_rounded_rectangle_on_bar_bg() {
+    let roles = Roles::default();
+    let bar = opaque(roles.bar_bg);
+    let groups = two_blocks(None);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &Grid::empty(COLUMNS), &roles, &bg, scale, FLOATING);
+        let (band, side) = (DEFAULT_HEIGHT * s.e, 10 * s.e);
+        for (x, y) in [(0, 0), (s.w - 1, 0), (0, band - 1), (s.w - 1, band - 1)] {
+            assert_eq!(s.at(x, y), CLEAR, "scale {scale}: the bar's corner pixel ({x}, {y}) transparent");
+        }
+        assert_eq!(s.at(side / 2, side / 2), bar, "scale {scale}: inside the arc, opaque bar_bg");
+        assert_eq!(s.at(0, band / 2), bar, "scale {scale}: the straight left end");
+        assert!(s.at(0, 8 * s.e)[3] < 255, "scale {scale}: radius 10, not the islands' 8");
+        let soft = (0..side).any(|cy| (0..side).any(|cx| matches!(s.at(cx, cy)[3], 1..=254)));
+        assert!(soft, "scale {scale}: the arc is anti-aliased");
+        for col in [2, 5, 7] {
+            assert_eq!(s.at(s.mid(col), band / 2), bar, "scale {scale}: cell {col} on bar_bg, no blocks without pills");
+        }
+    }
+}
+
+/// Spec § 3: the shadow is 4 px below the bar, black, its alpha falling from 0.35 to 0, and
+/// absent under the rounded ends' outermost columns.
+#[test]
+fn floating_shadow_falls_from_0_35_to_0_below_the_bar() {
+    let roles = Roles::default();
+    let groups = two_blocks(None);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &Grid::empty(COLUMNS), &roles, &bg, scale, FLOATING);
+        let band = DEFAULT_HEIGHT * s.e;
+        let x = s.w / 2;
+        let alphas: Vec<u8> = (band..s.h).map(|y| s.at(x, y)[3]).collect();
+        assert_eq!(alphas.len() as u32, FLOAT_SHADOW * s.e, "scale {scale}: 4 logical px of shadow");
+        assert_eq!(alphas[0], 89, "scale {scale}: round(0.35 × 255) right below the bar");
+        assert_eq!(alphas.last(), Some(&0), "scale {scale}: down to 0");
+        assert!(alphas.windows(2).all(|w| w[0] > w[1]), "scale {scale}: strictly falling, {alphas:?}");
+        assert!((band..s.h).all(|y| s.at(x, y)[..3] == [0, 0, 0]), "scale {scale}: black, premultiplied");
+        assert_eq!(s.at(0, band), CLEAR, "scale {scale}: no shadow under the rounded end's outermost column");
+    }
+}
+
+/// The text pass stays in the bar's band: a cell background never spills into the shadow.
+#[test]
+fn floating_text_and_cell_backgrounds_stay_in_the_bar_band() {
+    let roles = Roles::default();
+    let groups = two_blocks(None);
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(2, 4, " ", Style::ACTIVE);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &grid, &roles, &bg, scale, FLOATING);
+        let band = DEFAULT_HEIGHT * s.e;
+        assert_eq!(s.at(s.mid(2), band - 1), opaque(roles.accent_container), "scale {scale}: the active cell down to the band's end");
+        assert_eq!(s.at(s.mid(2), band), [0, 0, 0, 89], "scale {scale}: below it, the shadow");
+    }
+}
+
+/// Spec § 1: under floating, pills draws each hued block as a rounded hue rectangle inside the bar.
+#[test]
+fn floating_pills_blocks_are_rounded_hue_blocks_inside_the_bar() {
+    let roles = Roles::default();
+    let green = roles.hues.green;
+    let groups = two_blocks(Some(Hue::Green));
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Pills, &groups);
+        let s = Painted::new(&mut p, &Grid::empty(COLUMNS), &roles, &bg, scale, FLOATING);
+        let band = DEFAULT_HEIGHT * s.e;
+        assert_eq!(s.at(s.mid(7), band / 2), opaque(green), "scale {scale}: the clock's block in its hue");
+        assert_eq!(s.at(s.mid(7), 0), opaque(roles.bar_bg), "scale {scale}: inset as an island: the bar above it");
+        assert_eq!(s.at(s.edge(6), 2 * s.e), opaque(roles.bar_bg), "scale {scale}: outside the block's arc, the bar");
+        assert_eq!(s.at(s.mid(2), band / 2), opaque(roles.bar_bg), "scale {scale}: no hue, no block");
+    }
+}
+
+/// Spec § 1 under floating: pills text reads on its block for every hue, in a dark and a light
+/// theme. The ink is chosen against the hue block floating paints, never against the bar.
+#[test]
+fn floating_pills_text_contrasts_with_its_block() {
+    let light = alpheus_commun::theme::presets::preset("catppuccin").unwrap().light.unwrap();
+    let mut p = fonts();
+    let rgb = |[r, g, b, _]: [u8; 4]| Rgb(r, g, b);
+    for roles in [Roles::default(), light] {
+        for hue in [Hue::Red, Hue::Orange, Hue::Yellow, Hue::Green, Hue::Cyan, Hue::Blue, Hue::Purple] {
+            let fill = color(&roles, roles.bar_bg, Tint::Hue(hue));
+            let groups = two_blocks(Some(hue));
+            let mut grid = Grid::empty(COLUMNS);
+            grid.write(7, 8, "█", Style::hue(hue));
+            let bg = background(BarStyle::Floating, 0.8, ModuleColors::Pills, &groups);
+            for scale in [1, 2] {
+                let s = Painted::new(&mut p, &grid, &roles, &bg, scale, FLOATING);
+                let y = DEFAULT_HEIGHT * s.e / 2;
+                let (block, text) = (s.at(s.mid(8), y), s.at(s.mid(7), y));
+                assert_eq!(block, opaque(fill), "{hue:?} scale {scale}: the block is filled with its hue");
+                let best = ratio(roles.bar_bg, fill).max(ratio(roles.fg, fill));
+                assert_eq!(ratio(rgb(text), rgb(block)), best, "{hue:?} scale {scale}: the text takes the best contrast with its block");
+                assert_ne!(text, block, "{hue:?} scale {scale}: the text is visible on its block");
+            }
+        }
+    }
+}
+
+/// Ruling 11 under floating: no glyph pixel is erased by the rounding (the bar's ends, the pills
+/// blocks' corners), including a full block over the bar's first cell and a pill's first cell.
+#[test]
+fn no_glyph_pixel_is_erased_by_floating() {
+    let mut roles = Roles { fg: Rgb(0xff, 0x00, 0xff), ..Roles::default() };
+    // A dark green: the pill's ink is then fg, visible on the pill and on the bar around it alike.
+    roles.hues.green = Rgb(0x00, 0x30, 0x00);
+    assert_eq!(blocks::on_fill(&roles, roles.hues.green), roles.fg);
+    let groups = two_blocks(None);
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(0, 1, "█", Style::NORMAL);
+    grid.write(6, 7, "█", Style::NORMAL);
+    let empty = Grid::empty(COLUMNS);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let flat = background(BarStyle::Flat, 0.8, ModuleColors::Icons, &groups);
+        let (ink, none) = (
+            Painted::new(&mut p, &grid, &roles, &flat, scale, DEFAULT_HEIGHT),
+            Painted::new(&mut p, &empty, &roles, &flat, scale, DEFAULT_HEIGHT),
+        );
+        for mc in [ModuleColors::Icons, ModuleColors::Pills] {
+            let hued = two_blocks(Some(Hue::Green));
+            let bg = background(BarStyle::Floating, 0.8, mc, &hued);
+            let (with, without) =
+                (Painted::new(&mut p, &grid, &roles, &bg, scale, FLOATING), Painted::new(&mut p, &empty, &roles, &bg, scale, FLOATING));
+            let mut inked = 0;
+            for y in 0..ink.h {
+                for x in (ink.edge(0)..ink.edge(1)).chain(ink.edge(6)..ink.edge(7)) {
+                    if ink.at(x, y) != none.at(x, y) {
+                        inked += 1;
+                        assert_ne!(with.at(x, y), without.at(x, y), "{mc:?} scale {scale}: the glyph's pixel ({x}, {y}) erased");
+                    }
+                }
+            }
+            assert!(inked > 0, "scale {scale}: the full blocks were drawn");
+        }
+    }
+}
+
+/// Ruling 11 and reconciliation 13 under floating's pills: a cell background inside a hued block
+/// stays in the block's inset rows; one on the bar itself (no hue, no block) spans the band.
+#[test]
+fn floating_pills_clip_cell_backgrounds_to_their_hued_block_only() {
+    let roles = Roles::default();
+    let groups = two_blocks(Some(Hue::Green));
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(2, 3, " ", Style::ACTIVE);
+    grid.write(7, 8, " ", Style::ACTIVE);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Pills, &groups);
+        let s = Painted::new(&mut p, &grid, &roles, &bg, scale, FLOATING);
+        let (band, top) = (DEFAULT_HEIGHT * s.e, blocks::ISLAND_INSET * s.e);
+        let active = opaque(roles.accent_container);
+        assert_eq!(s.at(s.mid(7), band / 2), active, "scale {scale}: inside the hued block, painted");
+        assert_eq!(s.at(s.mid(7), top - 1), opaque(roles.bar_bg), "scale {scale}: not above its block");
+        assert_eq!(s.at(s.mid(7), band - top), opaque(roles.bar_bg), "scale {scale}: nor below it");
+        assert_eq!(s.at(s.mid(2), 0), active, "scale {scale}: on the bar, the band's top row");
+        assert_eq!(s.at(s.mid(2), band - 1), active, "scale {scale}: down to the band's end");
+    }
+}
+
+/// The text pass is bounded by the bar's band, not the surface: a glyph taller than a short bar
+/// (a big font on a thin bar) is cut at the band, never drawn over the shadow.
+#[test]
+fn floating_text_never_reaches_the_shadow_even_when_it_overflows_the_bar() {
+    // 12 px of line for the default 14 px font: a full block overflows the line by a few rows.
+    const THIN: u32 = 12;
+    let (mut p, _) = Fonts::load(&FontConfig::default(), THIN).expect("a monospace font (nix develop)");
+    let roles = Roles { fg: Rgb(0xff, 0x00, 0xff), ..Roles::default() };
+    let groups = two_blocks(None);
+    let mut grid = Grid::empty(COLUMNS);
+    for col in 0..COLUMNS {
+        grid.write(col, col + 1, "█", Style::NORMAL);
+    }
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Floating, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &grid, &roles, &bg, scale, THIN + FLOAT_SHADOW);
+        let bare = Painted::new(&mut p, &Grid::empty(COLUMNS), &roles, &bg, scale, THIN + FLOAT_SHADOW);
+        let band = THIN * s.e;
+        assert_ne!(s.at(s.mid(5), band - 1), bare.at(s.mid(5), band - 1), "scale {scale}: the glyph reaches the band's last row");
+        for y in band..s.h {
+            for x in 0..s.w {
+                assert_eq!(s.at(x, y), bare.at(x, y), "scale {scale}: ({x}, {y}) in the shadow is the shadow");
+            }
+        }
+    }
+}

@@ -14,6 +14,7 @@
 //! the paint is skipped.
 
 pub(crate) mod blocks;
+pub(crate) mod floating;
 mod powerline;
 #[cfg(test)]
 mod shape_tests;
@@ -23,6 +24,7 @@ pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Group, Hue, Tint};
 use crate::list::Boxed;
+use crate::placement::FLOAT_SHADOW;
 use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
 use blocks::OnBlock;
@@ -223,6 +225,20 @@ pub fn column_under(x_logical: f64, scale: i32, advance: f32) -> u16 {
 fn attrs(family: &str, bold: bool) -> Attrs<'_> {
     let a = Attrs::new().family(Family::Name(family));
     if bold { a.weight(Weight::BOLD) } else { a }
+}
+
+/// Which cell backgrounds `cell_backgrounds` keeps inside a block (ruling 11).
+#[derive(Debug, Clone, Copy)]
+enum Clip<'a> {
+    /// No block: every cell background over the band's whole height (flat, underline, floating
+    /// without pills, the boxed surfaces).
+    None,
+    /// Every group is a block (islands, translucent, powerline): a cell background stays inside its
+    /// block, and a cell outside every block gets none.
+    Blocks(&'a [Group]),
+    /// Only the hued groups are blocks (floating's pills): a cell in one stays inside it, a cell on
+    /// the bar itself is painted as under `None`.
+    Hued(&'a [Group]),
 }
 
 /// Flat fill over [x0, x1) × [0, height).
@@ -490,14 +506,16 @@ impl Fonts {
     /// A bar in its style (shapes spec § 3):
     /// - the style's background pass;
     /// - the cell backgrounds (under the block styles, clipped to their block: its x span, and
-    ///   under islands and translucent its inset rows);
-    /// - islands' and translucent's edges pass (rounded corners and borders, over the cell
-    ///   backgrounds);
+    ///   under islands, translucent and floating's pills its inset rows);
+    /// - the edges pass of islands, translucent and floating (rounded corners, borders, floating's
+    ///   shadow), over the cell backgrounds;
     /// - the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
     ///   (ruling 11);
     /// - underline's lines.
     ///
-    /// Under `flat` it paints exactly what `paint` paints, byte for byte.
+    /// Under floating the bar's band is the surface minus its shadow rows (`placement::FLOAT_SHADOW`):
+    /// the text never reaches the shadow. Under `flat` it paints exactly what `paint` paints, byte
+    /// for byte.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_bar(&mut self, grid: &Grid, roles: &Roles, bg: &Background, px: &mut [u8], width: u32, height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
@@ -506,35 +524,50 @@ impl Fonts {
         self.set_scale(scale);
         let advance = self.advance;
         let edge = |col: u16| background::cell_edge(col, advance);
+        let band = match bg.style {
+            BarStyle::Floating => height.saturating_sub(FLOAT_SHADOW * scale.max(1) as u32),
+            BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Islands | BarStyle::Translucent => height,
+        };
         // islands: transparent around the blocks; translucent: bar_bg at opacity, premultiplied.
         let outside = match bg.style {
             BarStyle::Islands => Some(blocks::CLEAR),
             BarStyle::Translucent => Some(background::premultiplied(roles.bar_bg, blocks::opacity_alpha(bg.opacity))),
             BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Floating => None,
         };
-        let mut rows = (0, height);
+        let mut rows = (0, band);
         match (bg.style, outside) {
-            (BarStyle::Underline, _) => background::underline_blocks(px, width, height, roles, bg.groups, edge),
+            (BarStyle::Underline, _) => background::underline_blocks(px, width, band, roles, bg.groups, edge),
             (_, Some(outside)) => {
-                blocks::background(px, width, height, scale, advance, roles, bg, outside);
-                rows = blocks::island_y(height, scale);
+                blocks::background(px, width, band, scale, advance, roles, bg, outside);
+                rows = blocks::island_y(band, scale);
             }
-            (BarStyle::Powerline, _) => powerline::background(px, width, height, advance, roles, bg, grid.split()),
-            // Floating (task 6): flat's pass until then.
-            _ => fill(px, width, 0, width, height, roles.bar_bg),
+            (BarStyle::Powerline, _) => powerline::background(px, width, band, advance, roles, bg, grid.split()),
+            (BarStyle::Floating, _) => {
+                floating::background(px, width, band, scale, advance, roles, bg);
+                rows = blocks::island_y(band, scale);
+            }
+            _ => fill(px, width, 0, width, band, roles.bar_bg),
         }
-        // The block styles keep a cell background inside its block (ruling 11); flat and underline
-        // draw no block and clip nothing.
-        let clip = matches!(bg.style, BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline).then_some(bg.groups);
-        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, height, 0, rows, clip);
+        // The block styles keep a cell background inside its block (ruling 11); flat, underline and
+        // floating without pills draw no block and clip nothing.
+        let clip = match bg.style {
+            BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline => Clip::Blocks(bg.groups),
+            BarStyle::Floating if blocks::pills(bg) => Clip::Hued(bg.groups),
+            BarStyle::Flat | BarStyle::Underline | BarStyle::Floating => Clip::None,
+        };
+        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, band, 0, rows, clip);
         if let Some(outside) = outside {
-            blocks::round_islands(&mut self.masks, px, width, height, scale, advance, roles, bg, outside);
+            blocks::round_islands(&mut self.masks, px, width, band, scale, advance, roles, bg, outside);
+        }
+        if bg.style == BarStyle::Floating {
+            // The whole surface: the bar's ends, its pills blocks, and the shadow below the band.
+            floating::edges(&mut self.masks, px, width, height, band, scale, advance, roles, bg);
         }
         // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
         let (on, n) = blocks::pill_inks(roles, bg);
-        self.glyphs(grid, roles, roles.bar_bg, px, width, height, 0, &on[..n]);
+        self.glyphs(grid, roles, roles.bar_bg, px, width, band, 0, &on[..n]);
         if bg.style == BarStyle::Underline {
-            background::underline_lines(px, width, height, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
+            background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
         }
     }
 
@@ -553,13 +586,13 @@ impl Fonts {
     /// the pills inks `on`). The band's own background is the caller's.
     #[allow(clippy::too_many_arguments)]
     fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
-        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height), None);
+        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height), Clip::None);
         self.glyphs(grid, roles, base, px, width, height, x0, on);
     }
 
-    /// The backgrounds of `grid`'s cells that differ from the surface's (`base`), in the band's
-    /// `rows` [top, bottom) only. With `clip` (the block styles' groups), each stays inside the
-    /// x span of the block holding its cell, and a cell outside every block gets none.
+    /// The backgrounds of `grid`'s cells that differ from the surface's (`base`). A cell inside a
+    /// block (`clip`) stays inside its x span and the block's `rows` [top, bottom); a cell on the
+    /// bar itself takes the band's whole height.
     #[allow(clippy::too_many_arguments)]
     fn cell_backgrounds(
         &self,
@@ -571,7 +604,7 @@ impl Fonts {
         height: u32,
         x0: u32,
         rows: (u32, u32),
-        clip: Option<&[Group]>,
+        clip: Clip,
     ) {
         let advance = self.advance;
         let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
@@ -579,13 +612,24 @@ impl Fonts {
             if c.style.bg == Tint::Bg {
                 continue;
             }
-            let mut x = (edge(col), edge(col + 1));
-            if let Some(groups) = clip {
-                let Some(g) = groups.iter().find(|g| usize::from(g.start) <= col && col < usize::from(g.end)) else { continue };
+            let holds = |g: &&Group| usize::from(g.start) <= col && col < usize::from(g.end);
+            let block = match clip {
+                Clip::None => None,
+                Clip::Blocks(groups) => match groups.iter().find(holds) {
+                    Some(g) => Some(g),
+                    None => continue,
+                },
+                Clip::Hued(groups) => groups.iter().filter(|g| g.hue.is_some()).find(holds),
+            };
+            let (mut x, mut y) = ((edge(col), edge(col + 1)), (0, height));
+            if let Some(g) = block {
                 let (b0, b1) = blocks::block_x(g, advance);
+                // A guard only: a cell's edges and its block's come from the same rounding
+                // (`cell_edge`), so the cell already lies inside the block's span.
                 x = (x.0.max(x0 + b0), x.1.min(x0 + b1));
+                y = rows;
             }
-            rect(px, width, height, x, rows, color(roles, base, c.style.bg));
+            rect(px, width, height, x, y, color(roles, base, c.style.bg));
         }
     }
 

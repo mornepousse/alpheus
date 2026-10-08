@@ -24,6 +24,7 @@ pub mod memory;
 pub mod nonblocking;
 pub mod painter;
 pub mod pipewire;
+pub mod placement;
 pub mod popup;
 pub mod segments;
 pub mod sources;
