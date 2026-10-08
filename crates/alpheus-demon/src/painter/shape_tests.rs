@@ -798,3 +798,67 @@ fn floating_text_never_reaches_the_shadow_even_when_it_overflows_the_bar() {
         }
     }
 }
+
+/// A workspace visible on another output (`Style::SURFACE`, a `Tint::Pill` background) sits on a
+/// `pill_bg` block under islands, translucent, powerline and underline: it is painted `raised`, one
+/// step up, never `pill_bg` on `pill_bg` (it would look like any other workspace). Under flat and
+/// floating it sits on `bar_bg` and keeps `pill_bg`.
+#[test]
+fn a_visible_workspace_on_a_pill_bg_block_is_raised() {
+    let roles = Roles::default();
+    let groups = two_blocks(None);
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(2, 3, " ", Style::SURFACE);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        for style in [BarStyle::Islands, BarStyle::Translucent, BarStyle::Powerline, BarStyle::Underline] {
+            for mc in [ModuleColors::Icons, ModuleColors::Pills] {
+                let bg = background(style, 0.8, mc, &groups);
+                let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT);
+                let y = s.h / 2;
+                assert_eq!(s.at(s.mid(2), y), opaque(roles.raised), "{style:?} {mc:?} scale {scale}: the visible workspace raised");
+                assert_eq!(s.at(s.mid(3), y), opaque(roles.pill_bg), "{style:?} {mc:?} scale {scale}: its block on pill_bg");
+            }
+        }
+        // A block that is not `pill_bg` (powerline's `raised` neighbour, a pills hue): `pill_bg` shows.
+        let mut other = Grid::empty(COLUMNS);
+        other.write(7, 8, " ", Style::SURFACE);
+        let hued = two_blocks(Some(Hue::Blue));
+        for (style, mc, groups) in [(BarStyle::Powerline, ModuleColors::Icons, &groups), (BarStyle::Islands, ModuleColors::Pills, &hued)] {
+            let s = Painted::new(&mut p, &other, &roles, &background(style, 0.8, mc, groups), scale, DEFAULT_HEIGHT);
+            assert_eq!(s.at(s.mid(7), s.h / 2), opaque(roles.pill_bg), "{style:?} {mc:?} scale {scale}: off pill_bg, pill_bg");
+        }
+        for style in [BarStyle::Flat, BarStyle::Floating] {
+            let bg = background(style, 0.8, ModuleColors::Icons, &groups);
+            let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT + FLOAT_SHADOW);
+            let y = DEFAULT_HEIGHT * s.e / 2;
+            assert_eq!(s.at(s.mid(2), y), opaque(roles.pill_bg), "{style:?} scale {scale}: on bar_bg, pill_bg stands out");
+            assert_eq!(s.at(s.mid(3), y), opaque(roles.bar_bg), "{style:?} scale {scale}: no block around it");
+        }
+    }
+}
+
+/// A visible workspace is told apart from its block (and powerline's blocks from their neighbours)
+/// only if `raised` is not `pill_bg`: true of a wallpaper theme from a legacy file (derived one step
+/// up) and of every preset half but three, whose palettes give both roles the same tone. Those
+/// three await Mae's choice of a `raised` (fix wave B, 2026-10-08): the list may only shrink.
+#[test]
+fn raised_differs_from_pill_bg_in_every_theme() {
+    use alpheus_commun::theme::presets::PRESETS;
+    use alpheus_commun::theme::{Mode, parse_colors};
+    const PENDING: [&str; 3] = ["tokyo-night light", "solarized dark", "solarized light"];
+    let mut same = Vec::new();
+    for preset in PRESETS {
+        for (half, roles) in [("dark", Some(preset.dark)), ("light", preset.light)] {
+            if roles.is_some_and(|r| r.raised == r.pill_bg) {
+                same.push(format!("{} {half}", preset.name));
+            }
+        }
+    }
+    assert_eq!(same, PENDING, "preset halves whose raised is their pill_bg");
+    let legacy = "bg = \"#1e1e2e\"\nfg = \"#cdd6f4\"\naccent = \"#cba6f7\"\nmuted = \"#6c7086\"\nsurface = \"#313244\"\nerror = \"#f38ba8\"\nok = \"#a6e3a1\"\n";
+    for mode in [Mode::Dark, Mode::Light] {
+        let r = parse_colors(legacy, mode).expect("a legacy wallpaper file");
+        assert_ne!(r.raised, r.pill_bg, "a wallpaper theme, {mode:?}");
+    }
+}

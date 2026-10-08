@@ -184,14 +184,16 @@ const MODULES_W: u16 = 18;
 const CLOCK_W: u16 = 5;
 
 /// A run of the mini bar under a block style: its text (one cell per char), its colour, its own
-/// background (the active workspace), and whether its colour is a state (warn, urgent), which wins
-/// over `pills`' contrast-picked text.
+/// background (the active workspace), whether its colour is a state (warn, urgent), which wins
+/// over `pills`' contrast-picked text, and whether it is a workspace visible on another output
+/// (the bar's `Tint::Pill`: `pill_bg`, or `raised` on a `pill_bg` block).
 #[derive(Clone, Copy)]
 struct Run {
     text: &'static str,
     fg: Rgb,
     bg: Option<Rgb>,
     state: bool,
+    visible: bool,
 }
 
 /// A block of the mini bar, as the real bar groups its modules (shapes spec § 2), and the hue
@@ -210,14 +212,15 @@ impl Block {
 /// The mini bar's blocks, left then right: the flat line's content, grouped as workspaces, title |
 /// status (sound, network, battery), resources (memory), clock.
 fn blocks(p: &Roles, colors: ModuleColors) -> (Vec<Block>, Vec<Block>) {
-    let run = |text, fg| Run { text, fg, bg: None, state: false };
-    let state = |text, fg| Run { text, fg, bg: None, state: true };
+    let run = |text, fg| Run { text, fg, bg: None, state: false, visible: false };
+    let state = |text, fg| Run { text, fg, bg: None, state: true, visible: false };
     let icon = |hue| if colors == ModuleColors::None { p.fg } else { hue };
     let text = |hue| if matches!(colors, ModuleColors::Full | ModuleColors::Pills) { hue } else { p.fg };
     let h = &p.hues;
-    let active = Run { text: "1", fg: p.on_accent, bg: Some(p.accent_container), state: false };
+    let active = Run { text: "1", fg: p.on_accent, bg: Some(p.accent_container), state: false, visible: false };
+    let visible = Run { visible: true, ..run("2", p.fg) };
     let left = vec![
-        Block { runs: vec![active, run(" 2 ", p.fg), state("3!", p.urgent)], hue: None },
+        Block { runs: vec![active, run(" ", p.fg), visible, run(" ", p.fg), state("3!", p.urgent)], hue: None },
         Block { runs: vec![run("notes.md", p.fg)], hue: None },
     ];
     let right = vec![
@@ -369,6 +372,8 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
         cx += put(buf, area, cx, y, g, s);
         for run in &b.runs {
             let (fg, bg) = if underline && run.bg.is_some() { (p.accent, None) } else { (run.fg, run.bg) };
+            // A visible workspace, as the bar paints it: `raised` on a `pill_bg` block.
+            let bg = if run.visible { Some(if f == Some(p.pill_bg) { p.raised } else { p.pill_bg }) } else { bg };
             let ink = match f {
                 Some(f) if pills && b.hue.is_some() && !run.state && bg.is_none() => on_hue(p, f),
                 _ => fg,
@@ -757,7 +762,7 @@ mod tests {
         assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.pill_bg), rgb(p.raised)), "workspaces -> title");
         let second = (find(&b, 4, "\u{e0b0}") + 1..100).find(|x| b[(*x, 4)].symbol() == "\u{e0b0}").expect("a second arrow");
         assert_eq!((b[(second, 4)].fg, b[(second, 4)].bg), (rgb(p.raised), rgb(p.bar_bg)), "title -> bar");
-        assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.pill_bg)), "inactive workspaces inside the block, in their colours");
+        assert_eq!(cell(&b, 4, "3"), (rgb(p.urgent), rgb(p.pill_bg)), "inactive workspaces inside the block, in their colours");
         assert_eq!(cell(&b, 4, "1"), (rgb(p.on_accent), rgb(p.accent_container)), "the active workspace keeps its accent fill");
         assert_ne!(p.accent_container, p.pill_bg, "and stands out on its block");
         // Right: the first arrow comes out of the bar into the status block (pill_bg, index 2).
@@ -776,7 +781,7 @@ mod tests {
         let b = buffer_w(&a, 80);
         let row: String = (33..80).map(|x| b[(x, 4)].symbol().to_string()).collect();
         assert!(!row.contains("not"), "the title is dropped: {row:?}");
-        assert_eq!(cell(&b, 4, "2").1, rgb(p.pill_bg), "the workspaces");
+        assert_eq!(cell(&b, 4, "3").1, rgb(p.pill_bg), "the workspaces");
         assert_eq!(cell(&b, 4, "♪").1, rgb(p.raised), "the block after them differs");
         assert_eq!(cell(&b, 4, "▤").1, rgb(p.pill_bg));
         assert_eq!(cell(&b, 4, ":").1, rgb(p.raised));
@@ -819,6 +824,30 @@ mod tests {
         let b = buffer(&a);
         assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "pills: the sound block's rule in its hue");
         assert_eq!(cell(&b, 4, "8"), (rgb(p.hues.blue), rgb(p.pill_bg)), "pills: the text in its hue, as under full");
+    }
+
+    /// A workspace visible on another output ("2"), as the bar paints it (fix wave B): `raised` on
+    /// a `pill_bg` block (islands, translucent, powerline, underline, and islands under pills: the
+    /// workspaces have no hue), `pill_bg` on the bar itself (floating); its padding stays the block's.
+    #[test]
+    fn a_visible_workspace_is_raised_on_a_pill_bg_block() {
+        let p = preset("tokyo-night").unwrap().dark;
+        assert_ne!(p.raised, p.pill_bg, "the test bites only if the two differ");
+        let cases = [
+            ("islands", "icons", p.raised, p.pill_bg),
+            ("translucent", "icons", p.raised, p.pill_bg),
+            ("powerline", "icons", p.raised, p.pill_bg),
+            ("underline", "icons", p.raised, p.pill_bg),
+            ("islands", "pills", p.raised, p.pill_bg),
+            ("floating", "icons", p.pill_bg, p.bar_bg),
+        ];
+        for (style, colors, want, block) in cases {
+            let a = styled(&format!("prev-visible-{style}-{colors}"), style, colors);
+            let b = buffer(&a);
+            assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(want)), "{style} {colors}: the visible workspace");
+            let two = find(&b, 4, "2");
+            assert_eq!(b[(two + 1, 4)].bg, rgb(block), "{style} {colors}: the cell after it, the block's");
+        }
     }
 
     #[test]
@@ -895,7 +924,7 @@ mod tests {
     /// whole characters, as many as fit.
     #[test]
     fn a_multibyte_title_is_shortened_by_characters() {
-        let run = |text| Run { text, fg: Rgb(0, 0, 0), bg: None, state: false };
+        let run = |text| Run { text, fg: Rgb(0, 0, 0), bg: None, state: false, visible: false };
         let block = |text| Block { runs: vec![run(text)], hue: None };
         for width in 10..40 {
             let mut left = vec![block("1 2"), block("café–über–ñ✓")];

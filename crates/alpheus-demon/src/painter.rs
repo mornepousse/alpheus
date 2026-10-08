@@ -234,13 +234,22 @@ enum Clip<'a> {
     /// without pills, the boxed surfaces).
     None,
     /// Every group is a block (islands, translucent, powerline): a cell background stays inside its
-    /// block, and a cell outside every block gets none.
-    Blocks(&'a [Group]),
+    /// block, and a cell outside every block gets none. A `Tint::Pill` cell on a block whose fill is
+    /// `pill_bg` is painted `raised` (`on_pill_bg`).
+    Blocks(&'a Background<'a>),
     /// Only the hued groups are blocks (floating's pills): a cell in one stays inside it, a cell on
     /// the bar itself is painted as under `None`.
     Hued(&'a [Group]),
-    /// Underline: as `None`, but the active workspace gets no fill (`underlined`).
+    /// Underline: as `None`, but the active workspace gets no fill (`underlined`), and a `Tint::Pill`
+    /// cell, on the blocks' `pill_bg`, is painted `raised` (`on_pill_bg`).
     Underline,
+}
+
+/// A cell background `t` on a surface of `pill_bg` (a block of the block styles, underline's
+/// blocks): `Tint::Pill` there would vanish, so it is painted one step up, `raised` — a workspace
+/// visible on another output (`Style::SURFACE`) stays told apart. Any other tint is its own.
+fn on_pill_bg(roles: &Roles, t: Tint) -> Rgb {
+    if t == Tint::Pill { roles.raised } else { color(roles, roles.pill_bg, t) }
 }
 
 /// A cell's style under `underline` (Mae, 2026-10-08): the active workspace has no fill, its text
@@ -559,7 +568,7 @@ impl Fonts {
         // The block styles keep a cell background inside its block (ruling 11); flat, underline and
         // floating without pills draw no block and clip nothing.
         let clip = match bg.style {
-            BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline => Clip::Blocks(bg.groups),
+            BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline => Clip::Blocks(bg),
             BarStyle::Floating if blocks::pills(bg) => Clip::Hued(bg.groups),
             BarStyle::Underline => Clip::Underline,
             BarStyle::Flat | BarStyle::Floating => Clip::None,
@@ -623,10 +632,21 @@ impl Fonts {
                 continue;
             }
             let holds = |g: &&Group| usize::from(g.start) <= col && col < usize::from(g.end);
+            let mut ink = color(roles, base, style.bg);
             let block = match clip {
-                Clip::None | Clip::Underline => None,
-                Clip::Blocks(groups) => match groups.iter().find(holds) {
-                    Some(g) => Some(g),
+                Clip::None => None,
+                Clip::Underline => {
+                    ink = on_pill_bg(roles, style.bg);
+                    None
+                }
+                Clip::Blocks(bg) => match bg.groups.iter().enumerate().find(|(_, g)| holds(g)) {
+                    Some((i, g)) => {
+                        let otherwise = if bg.style == BarStyle::Powerline { powerline::base(roles, bg.groups, i) } else { roles.pill_bg };
+                        if blocks::block_fill(roles, bg, g, otherwise) == roles.pill_bg {
+                            ink = on_pill_bg(roles, style.bg);
+                        }
+                        Some(g)
+                    }
                     None => continue,
                 },
                 Clip::Hued(groups) => groups.iter().filter(|g| g.hue.is_some()).find(holds),
@@ -639,7 +659,7 @@ impl Fonts {
                 x = (x.0.max(x0 + b0), x.1.min(x0 + b1));
                 y = rows;
             }
-            rect(px, width, height, x, y, color(roles, base, style.bg));
+            rect(px, width, height, x, y, ink);
         }
     }
 

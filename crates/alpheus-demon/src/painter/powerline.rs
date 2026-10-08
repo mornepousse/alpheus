@@ -62,6 +62,13 @@ fn free(groups: &[Group], col: u16) -> bool {
     !groups.iter().any(|g| g.start <= col && col < g.end)
 }
 
+/// The fill of `groups[i]` before pills: `pill_bg` or `raised` by the parity of its distance to the
+/// workspaces block (the first block when there is none), which is on `pill_bg`.
+pub(super) fn base(roles: &Roles, groups: &[Group], i: usize) -> Rgb {
+    let anchor = groups.iter().position(|g| g.kind == GroupKind::Workspaces).unwrap_or(0);
+    if i.abs_diff(anchor) % 2 == 0 { roles.pill_bg } else { roles.raised }
+}
+
 /// Background pass of `powerline`:
 /// - the band opaque `bar_bg`;
 /// - each group a full-height block, `pill_bg` or `raised` by the parity of its distance to the
@@ -77,11 +84,9 @@ fn free(groups: &[Group], col: u16) -> bool {
 pub(crate) fn background(px: &mut [u8], width: u32, height: u32, advance: f32, roles: &Roles, bg: &Background, split: u16) {
     fill_px(px, width, height, (0, width), (0, height), opaque(roles.bar_bg));
     let columns = super::columns(width, advance);
-    let anchor = bg.groups.iter().position(|g| g.kind == GroupKind::Workspaces).unwrap_or(0);
     let mut last_arrow = None;
     for (i, g) in bg.groups.iter().enumerate() {
-        let base = if i.abs_diff(anchor) % 2 == 0 { roles.pill_bg } else { roles.raised };
-        let fill = block_fill(roles, bg, g, base);
+        let fill = block_fill(roles, bg, g, base(roles, bg.groups, i));
         fill_px(px, width, height, block_x(g, advance), (0, height), opaque(fill));
         let (cell, point) = if g.end <= split { (Some(g.end), Point::Right) } else { (g.start.checked_sub(1), Point::Left) };
         let Some(cell) = cell else { continue };
