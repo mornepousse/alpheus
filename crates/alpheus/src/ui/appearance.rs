@@ -99,6 +99,9 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
         x = x.saturating_add(w + step);
     }
     if let (Some(roles), Some(entry)) = (&ap.preview, ap.cursor_entry()) {
+        // The chip rows reach into the preview's column: on short bodies the preview stops above
+        // them, so a chip's region always shows that chip.
+        let body = Rect { height: mode_y.saturating_sub(body.y).min(body.height), ..body };
         let px = body.x + LIST_W + GAP;
         let avail = body.right().saturating_sub(px);
         if avail >= PREVIEW_MIN {
@@ -149,7 +152,7 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColo
     let border = Style::default().fg(color(p.border_over(p.bar_bg))).bg(color(p.bar_bg));
     frame(buf, clip, r, bg, border);
     let (x, y) = (r.x + 1, r.y + 1);
-    let inner = Rect::new(x, y, r.width.saturating_sub(2), 1);
+    let inner = Rect::new(x, y, r.width.saturating_sub(2), 1).intersection(clip);
     let on = |c| bg.fg(color(c));
     let mut cx = x;
     cx += put(buf, inner, cx, y, " 1 ", Style::default().fg(color(p.on_accent)).bg(color(p.accent_container)).add_modifier(Modifier::BOLD));
@@ -273,6 +276,49 @@ fn on(style: Style, c: Option<Rgb>) -> Style {
     }
 }
 
+/// Cells the left side takes up to its last cell (powerline: its last arrow included).
+fn left_end(left: &[Block], powerline: bool) -> u16 {
+    let w: u16 = left.iter().map(|b| b.width() + 3).sum();
+    if powerline { w } else { w.saturating_sub(1) }
+}
+
+/// Cells the right side takes: blocks with a gap between them (powerline: an arrow before each).
+fn right_width(right: &[Block], powerline: bool) -> u16 {
+    let w: u16 = right.iter().map(|b| b.width() + 3).sum();
+    if powerline { w } else { w.saturating_sub(1) }
+}
+
+/// The title's index in the left side (after the workspaces).
+const TITLE: usize = 1;
+/// The shortest title worth showing; shorter, it is dropped.
+const TITLE_MIN: usize = 3;
+
+/// Makes both sides fit `width` cells with a blank between them. What gives way, in order: the
+/// title is shortened, then dropped; then the clock; then the modules. The workspaces stay.
+fn fit(left: &mut Vec<Block>, right: &mut Vec<Block>, width: u16, powerline: bool) {
+    let fits = |left: &[Block], right: &[Block]| {
+        right.is_empty() || width.saturating_sub(right_width(right, powerline)) > left_end(left, powerline)
+    };
+    if fits(left, right) {
+        return;
+    }
+    if let Some(full) = left.get(TITLE).and_then(|b| b.runs.first()).map(|r| r.text) {
+        for k in (TITLE_MIN..full.len()).rev() {
+            left[TITLE].runs[0].text = &full[..k];
+            if fits(left, right) {
+                return;
+            }
+        }
+        left.remove(TITLE);
+    }
+    if !fits(left, right) {
+        right.pop();
+    }
+    if !fits(left, right) {
+        right.clear();
+    }
+}
+
 /// The mini bar under a style other than `flat`, approximated in cells (shapes spec § 4).
 /// - Blocks are cell backgrounds.
 /// - Rounded ends are half-blocks in the block's colour.
@@ -298,7 +344,8 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     } else {
         (inner, bar)
     };
-    let (left, right) = blocks(p, colors);
+    let (mut left, mut right) = blocks(p, colors);
+    fit(&mut left, &mut right, area.width, style == BarStyle::Powerline);
     let fills: Vec<Option<Rgb>> = left.iter().chain(&right).enumerate().map(|(i, b)| fill(p, style, colors, b, i)).collect();
     let (lfill, rfill) = fills.split_at(left.len());
     let rounded = matches!(style, BarStyle::Islands | BarStyle::Translucent | BarStyle::Floating);
@@ -337,8 +384,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     }
     let left_end = if powerline { x } else { x.saturating_sub(1) };
     // Right, right-aligned, only when it fits after the left side.
-    let width: u16 = right.iter().map(|b| b.width() + 2).sum::<u16>() + right.len() as u16 - u16::from(!powerline);
-    let start = area.right().saturating_sub(width);
+    let start = area.right().saturating_sub(right_width(&right, powerline));
     if start > left_end {
         let mut x = start;
         for (j, b) in right.iter().enumerate() {
@@ -607,6 +653,16 @@ mod tests {
                         assert_eq!(r.intersection(body), r, "style outside the body at height {h}");
                     }
                 }
+                // What a chip's region covers is that chip: never the preview drawn over it.
+                let chips = MODES.iter().map(|m| (Target::AppearanceMode(*m), mode_label(*m)));
+                let chips = chips.chain(COLORS.iter().map(|m| (Target::AppearanceColors(*m), colors_label(*m))));
+                for (t, label) in chips.chain(STYLES.iter().map(|s| (Target::AppearanceStyle(*s), style_label(*s)))) {
+                    if let Some(r) = hits.find(t) {
+                        let shown: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();
+                        let want: String = format!(" {label} ").chars().take(usize::from(r.width)).collect();
+                        assert_eq!(shown, want, "{t:?} at height {h}, cursor {cursor}");
+                    }
+                }
                 let row = hits.find(Target::AppearanceTheme(cursor));
                 assert!(row.is_some(), "cursor {cursor} not drawn at height {h}");
                 if let Some(r) = row {
@@ -766,6 +822,55 @@ mod tests {
             let rows = draw(&a, 100, 24).0;
             let preview: Vec<String> = rows[3..=5].iter().map(|r| r.chars().skip(33).take(54).collect()).collect();
             insta::assert_snapshot!(format!("appearance_style_{style}"), preview.join("\n"));
+        }
+    }
+
+    /// The rendered buffer, `w`×24.
+    fn buffer_w(app: &crate::app::App, w: u16) -> ratatui::buffer::Buffer {
+        let mut t = Terminal::new(TestBackend::new(w, 24)).unwrap();
+        t.draw(|f| {
+            super::super::render(f, app);
+        })
+        .unwrap();
+        t.backend().buffer().clone()
+    }
+
+    /// 80 columns, the reference width: the frame is 46 wide, too narrow for the whole line under a
+    /// block style. The title gives way, never the modules the preview is there to show.
+    #[test]
+    fn at_80_columns_every_block_style_keeps_its_modules_and_clock() {
+        for style in ["islands", "powerline", "floating", "underline", "translucent"] {
+            let a = styled(&format!("80-{style}"), style, "pills");
+            let b = buffer_w(&a, 80);
+            let row: String = (33..80).map(|x| b[(x, 4)].symbol().to_string()).collect();
+            for glyph in ["♪", "▤", "14:05", "1 2 3!"] {
+                assert!(row.contains(glyph), "{glyph} under {style}: {row:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_title_gives_way_first_then_the_clock_then_the_modules() {
+        let a = styled("80-title", "islands", "icons");
+        let row = |w: u16| -> String {
+            let b = buffer_w(&a, w);
+            (33..w).map(|x| b[(x, 4)].symbol().to_string()).collect()
+        };
+        assert!(row(100).contains("▐notes.md▌"), "{:?}", row(100));
+        assert!(row(84).contains("▐notes.▌") && !row(84).contains("notes.md"), "{:?}", row(84));
+        assert!(!row(80).contains("not"), "{:?}", row(80));
+        // Narrower: the clock goes next, then the modules; the workspaces stay.
+        assert!(row(70).contains("♪") && !row(70).contains("14:05"), "{:?}", row(70));
+        assert!(row(60).contains("1 2 3!") && !row(60).contains("♪"), "{:?}", row(60));
+    }
+
+    #[test]
+    fn each_block_style_snapshot_at_80_columns() {
+        for style in ["islands", "powerline"] {
+            let a = styled(&format!("snap80-{style}"), style, "icons");
+            let rows = draw(&a, 80, 24).0;
+            let preview: Vec<String> = rows[3..=5].iter().map(|r| r.chars().skip(33).take(46).collect()).collect();
+            insta::assert_snapshot!(format!("appearance_style_{style}_80"), preview.join("\n"));
         }
     }
 }

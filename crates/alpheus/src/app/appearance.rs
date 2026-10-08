@@ -335,8 +335,8 @@ impl App {
 
     /// Writes theme.toml: the theme when the list has the focus (or the cursor moved off the one in
     /// effect), the mode when the mode row has it (or the chosen mode differs from the one in
-    /// effect), the module colours likewise, the style likewise. Then the TUI reloads its own theme; the daemon reloads from the file. A failed
-    /// write changes nothing but the status line.
+    /// effect), the module colours likewise, the style likewise. Then the TUI reloads its own theme;
+    /// the daemon reloads from the file. A failed write changes nothing but the status line.
     pub(crate) fn appearance_apply(&mut self, now: Instant) {
         let a = &self.appearance;
         let Some(entry) = a.cursor_entry().copied() else { return };

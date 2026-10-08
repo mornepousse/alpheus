@@ -1,6 +1,5 @@
 ---
 source: crates/alpheus/src/ui/appearance.rs
-assertion_line: 762
 expression: "preview.join(\"\\n\")"
 ---
 ┌────────────────────────────────────────────┐        
