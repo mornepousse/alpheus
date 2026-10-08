@@ -323,10 +323,15 @@ impl KeysDown {
         held.iter().for_each(|&c| self.pressed(c));
     }
 
+    /// Full, the oldest code goes: the key just pressed is the one whose release matters.
     pub(crate) fn pressed(&mut self, code: u32) {
-        if !self.codes.contains(&code) && self.codes.len() < MAX_KEYS_DOWN {
-            self.codes.push(code);
+        if self.codes.contains(&code) {
+            return;
         }
+        if self.codes.len() >= MAX_KEYS_DOWN {
+            self.codes.remove(0);
+        }
+        self.codes.push(code);
     }
 
     pub(crate) fn released(&mut self, code: u32) {
@@ -837,7 +842,7 @@ impl App {
     }
 
     /// A key went up or the focus left: the release `keyboard_release` deferred, if any, now.
-    fn keyboard_release_deferred(&mut self) {
+    pub(crate) fn keyboard_release_deferred(&mut self) {
         if self.release_deferred {
             self.keyboard_release();
         }
@@ -1131,9 +1136,25 @@ mod tests {
         k.clear();
         assert!(!k.any());
         assert_eq!(release_decision(false, &k, true), Release::Now);
+        // A release deferred on a live focus goes once that focus dies (the bar's surface removed
+        // with its output mid-Escape on sway: no key-up nor leave may come to it any more).
+        k.pressed(ESCAPE);
+        assert_eq!(release_decision(false, &k, true), Release::Defer);
+        assert_eq!(release_decision(false, &k, false), Release::Now, "its focus gone: released");
+        k.clear();
         // Bounded: a flood of presses keeps at most MAX_KEYS_DOWN codes.
         (0..1000).for_each(|c| k.pressed(c));
         assert_eq!(k.len(), MAX_KEYS_DOWN);
+        // Full: a new press drops the oldest code, never the new key (its release must still be
+        // waited for, or its repeat runs on).
+        k.clear();
+        (0..MAX_KEYS_DOWN as u32).for_each(|c| k.pressed(c));
+        k.pressed(ESCAPE + 100);
+        (0..MAX_KEYS_DOWN as u32).for_each(|c| k.released(c));
+        assert!(k.any(), "the newest key is still down");
+        assert_eq!(release_decision(false, &k, true), Release::Defer);
+        k.released(ESCAPE + 100);
+        assert!(!k.any());
         k.entered(&[SHIFT, SHIFT]);
         assert_eq!(k.len(), 1, "enter starts afresh, each key once");
     }

@@ -14,7 +14,7 @@ use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
     Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive,
-    start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype,
+    start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::ffi::OsString;
@@ -1146,6 +1146,7 @@ fn the_calendar_opens_on_the_clock_and_closes_on_escape() {
     assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "released at Escape's key-up: {:?}", d.log());
     assert_eq!(d.count("calendar shown"), 1, "{:?}", d.log());
 }
 
@@ -2055,6 +2056,8 @@ fn the_media_popup_opens_on_a_left_click_and_escape_closes_it() {
     assert!(d.wait_for("media popup shown: Paper Lanterns — Marlowe Vane", DELAY), "{:?}", d.log());
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    // On sway the release waits for Escape's key-up on the bar's surface (fix wave A).
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "the keyboard stayed bound at rest: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for_count("media popup shown", 2, DELAY), "opens again: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
@@ -2084,6 +2087,28 @@ fn the_popup_buttons_reach_the_player() {
         "never seeks, sets volume or raises: {:?}",
         players[0].calls()
     );
+}
+
+/// The bar whose popup Escape closed goes with its output while Escape is still down (sway): the
+/// release deferred on its surface goes then, not at a key-up or leave that can no longer come.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_bar_removed_while_escape_is_down_releases_the_keyboard() {
+    let (_bus, sway, _hypr, d, _players) = media_bar("media-unplug-escape", 2, &[]);
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    std::thread::sleep(Duration::from_millis(500));
+    sway.click(3000 + MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    // Escape pressed and held 4 s: one wtype, its virtual keyboard alive throughout.
+    let held = wtype_spawn(&sway, &["-s", "300", "-P", "Escape", "-s", "4000", "-p", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(d.count("keyboard released"), 0, "Escape is down: the release waits: {:?}", d.log());
+    sway.command("output HEADLESS-2 disable");
+    assert!(d.wait_for("bar removed from HEADLESS-2", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("keyboard released", Duration::from_secs(2)), "released with the bar, Escape still down: {:?}", d.log());
+    held.wait().unwrap();
 }
 
 /// The 1 s tick: never with the popup closed (0 wake-ups at rest with a player playing), every

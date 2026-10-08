@@ -715,6 +715,13 @@ impl App {
             self.tray_frame_pending = None;
             self.tray_sync();
         }
+        // The focus going with this bar (a popup closed by Escape, the key still down, a release
+        // deferred on it): the key-up and leave that would end the wait may never come. Not by
+        // `is_alive`: `closed` holds the layer surface (and so its wl_surface) until it returns.
+        if self.keyboard_focus.as_ref() == Some(&surface) {
+            self.keyboard_focus = None;
+            self.keyboard_release_deferred();
+        }
         s.output
     }
 

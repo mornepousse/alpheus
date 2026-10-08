@@ -189,19 +189,22 @@ impl App {
     /// (`Drop` only releases local resources: the client watch), so not
     /// specially guarded against.
     fn launcher_fail(&mut self) {
-        // Take the launcher OUT first, then release the keyboard, then early-out (final review R2):
+        // Take the launcher OUT first, then release the keyboard (final review R2):
         // `keyboard_release` is a no-op while `keyboard_wanted()` is true, and that stays true as long
         // as `self.launcher` is `Some` — releasing before the take left the `wl_keyboard`, its keymap
         // and its repeat source resident after a panic closed the launcher. The release must also run
-        // when a panic inside `launcher_close` already took the launcher (`None` here): hence before
-        // the early return.
-        let open = self.launcher.take();
-        self.keyboard_release();
-        let Some(open) = open else { return };
+        // when a panic inside `launcher_close` already took the launcher (`None` here).
+        // And after the box is dropped (fix wave A): while it lives, a key down on it (the one
+        // that panicked) defers the release to a key-up or leave that its dead surface never sends.
+        let Some(open) = self.launcher.take() else {
+            self.keyboard_release();
+            return;
+        };
         let _ = guarded("close", move || {
             let mut open = open;
             reply_on_close(open.reply.take(), CloseReason::Error);
         });
+        self.keyboard_release();
         log("launcher closed (error)");
         crate::memory::release_memory();
     }
