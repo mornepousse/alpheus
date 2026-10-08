@@ -10,7 +10,7 @@
 //! table, one deadline rule, and this file never names the dbus crate. Never name a function
 //! `method_call` here: the guardrails count that substring.
 
-use crate::link::{Host, LinkOutput, host};
+use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
 use crate::tray::bus::{Call, CallError, CallId, Outbox};
 use crate::tray::codec::Reply;
@@ -208,7 +208,7 @@ impl App {
             }
             Host::NoBus => log("appearance: no session bus; dark"),
             Host::OnLink | Host::OwnBus => {
-                if self.link.is_some() || self.open_link("appearance") {
+                if self.link.is_some() || self.open_link(LinkUser::Appearance) {
                     if let Some(link) = self.link.as_mut() {
                         link.start_appearance();
                     }

@@ -1950,7 +1950,9 @@ const MEDIA_AT: (u32, u32) = (30, 10);
 fn clicks_reach_the_player(name: &str, modules: &str) {
     let (_bus, sway, _hypr, d, player) = media_daemon(name, modules, Some("mode = \"dark\"\n"));
     assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(300)); // drawn
+    // Drawn: the play glyph in the purple (catppuccin dark), as in the bus-dies test.
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
     let (x, y) = MEDIA_AT;
     sway.click(x, y, "button2");
     assert_eq!(player.wait_call("PlayPause", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.PlayPause()"), "{:?}", d.log());
@@ -1978,4 +1980,180 @@ fn a_middle_click_and_the_wheel_reach_the_player_on_the_bars_link() {
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_middle_click_and_the_wheel_reach_the_player_through_the_tray() {
     clicks_reach_the_player("media-clicks-tray", MEDIA_TRAY_BAR);
+}
+
+/// The media bar on a private session bus on `outputs` outputs: the fake player "lumen" playing
+/// "Paper Lanterns" by Marlowe Vane (fictional), plus one playing "Second Song" per name in `extra`; read and drawn.
+fn media_bar(name: &str, outputs: u32, extra: &[&str]) -> (PrivateBus, Sway, FakeHyprland, Daemon, Vec<FakePlayer>) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, outputs);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(MEDIA_LINK_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    let mut players = vec![FakePlayer::start(&bus, PlayerSpec::playing("lumen", "Paper Lanterns"))];
+    players.extend(extra.iter().map(|n| FakePlayer::start(&bus, PlayerSpec::playing(n, "Second Song"))));
+    for p in &players {
+        assert!(p.wait_call("GetAll", DELAY).is_some(), "the daemon read every fake player: {:?}", d.log());
+    }
+    std::thread::sleep(Duration::from_millis(500)); // read, drawn
+    (bus, sway, hypr, d, players)
+}
+
+/// Layout coordinates of the popup's cell (column, row) on a bar whose media zone starts at cell 1 at
+/// x = `bar_x`: the popup hangs from that cell (≈ 8 px), under the 22 px bar, its frame ≈ 4 px at the
+/// sides and ≈ 7 px at the top, ≈ 8.4 px cells, 22 px rows. The middle of the cell: a few px of
+/// error in these estimates still lands in it (a button takes 5 cells, a row 22 px).
+fn popup_cell(bar_x: u32, column: u32, row: u32) -> (u32, u32) {
+    (bar_x + 8 + 4 + (column * 84 + 42) / 10, 22 + 7 + row * 22 + 11)
+}
+
+/// The loop thread's wake-ups over 5 s, away from the minute's turn (the clock is the bar's only
+/// other timer).
+fn wakeups_over_5_s(d: &Daemon) -> u64 {
+    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    d.main_thread_wakeups().saturating_sub(before)
+}
+
+/// The loop's wake-ups while `player` broadcasts five Seeked over 1.5 s: none once the popup closed,
+/// since the bar's Seeked match rule goes with it (the bus then delivers it nothing).
+fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
+    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let before = d.main_thread_wakeups();
+    for us in 1..=5 {
+        player.seeked(us * 1_000_000);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    d.main_thread_wakeups().saturating_sub(before)
+}
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_media_popup_opens_on_a_left_click_and_escape_closes_it() {
+    let (_bus, sway, _hypr, d, _players) = media_bar("media-open", 1, &[]);
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    // Controller reconciliation 10: the fake track's title and artist, as the popup draws them.
+    assert!(d.wait_for("media popup shown: Paper Lanterns — Marlowe Vane", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for_count("media popup shown", 2, DELAY), "opens again: {:?}", d.log());
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "a second click on the module closes it: {:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("media popup shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_popup_buttons_reach_the_player() {
+    let (_bus, sway, _hypr, d, players) = media_bar("media-buttons", 1, &[]);
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    // Rows: title, artist, time, buttons (row 3); ⏭ at content column 20, boxed column 21.
+    let (x, y) = popup_cell(0, 21, 3);
+    sway.click(x, y, "button1");
+    assert!(players[0].wait_call("Next", DELAY).is_some(), "a click on ⏭: {:?} / {:?}", players[0].calls(), d.log());
+    assert_eq!(d.count("popup closed"), 0, "a click inside the popup keeps it open: {:?}", d.log());
+    keys(&sway, &["Left", "Return"]); // from ⏭ (the click selected it) to ⏯
+    assert!(players[0].wait_call("PlayPause", DELAY).is_some(), "Enter on ⏯: {:?}", players[0].calls());
+    assert!(
+        players[0]
+            .calls()
+            .iter()
+            .all(|c| !c.contains("Seek") && !c.contains("SetPosition") && !c.contains("Volume") && !c.contains("Raise")),
+        "never seeks, sets volume or raises: {:?}",
+        players[0].calls()
+    );
+}
+
+/// The 1 s tick: never with the popup closed (0 wake-ups at rest with a player playing), every
+/// second while it is open and the player plays, gone again once the player pauses (Review Focus).
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
+    let (_bus, sway, _hypr, d, players) = media_bar("media-tick", 1, &[]);
+    sway.hover(640, 400);
+    let closed = wakeups_over_5_s(&d);
+    assert_eq!(closed, 0, "the loop woke {closed} times at rest, popup closed, player playing: {:?}", d.log());
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    let open = wakeups_over_5_s(&d);
+    assert!((4..=12).contains(&open), "about one tick a second while open and playing: {open}");
+    players[0].set_status("Paused");
+    std::thread::sleep(Duration::from_secs(1));
+    let paused = wakeups_over_5_s(&d);
+    assert_eq!(paused, 0, "paused while open: the tick is disarmed ({paused} wake-ups)");
+    players[0].set_status("Playing");
+    std::thread::sleep(Duration::from_secs(1));
+    assert!(wakeups_over_5_s(&d) >= 4, "playing again: the tick is back");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    sway.hover(640, 400);
+    // SCTK arms its key repeat timer at the press of Escape and, at the release, only forgets the
+    // key: the timer fires once at the repeat delay (600 ms on sway), finds no key and drops itself.
+    std::thread::sleep(Duration::from_secs(1));
+    let after = wakeups_over_5_s(&d);
+    assert_eq!(after, 0, "closed: nothing armed is left ({after} wake-ups)");
+    let seeked = wakeups_over_seeked(&d, &players[0]);
+    assert_eq!(seeked, 0, "closed: the Seeked rule went with the popup ({seeked} wake-ups)");
+}
+
+/// The active player vanishing moves the popup to the next one; the last one vanishing closes it.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
+    let (_bus, sway, _hypr, d, mut players) = media_bar("media-gone", 1, &["beta"]);
+    players[1].set_status("Paused"); // lumen plays: it is the active one
+    std::thread::sleep(Duration::from_millis(500));
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    players.remove(0).kill(); // lumen
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("popup closed"), 0, "beta is left: the popup shows it: {:?}", d.log());
+    players.remove(0).kill(); // beta
+    assert!(d.wait_for("popup closed (player gone)", DELAY), "{:?}", d.log());
+}
+
+/// Review Focus: the popup open on one output while the bars restyle. Every bar shares one
+/// placement, so a switch to floating moves the popup's own bar too: it closes once, by its own
+/// parent's identity, with its timer and Seeked rule gone. A style change that keeps the placement
+/// leaves it open and ticking.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
+    let (_bus, sway, _hypr, d, players) = media_bar("media-restyle", 2, &[]);
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    std::thread::sleep(Duration::from_millis(500));
+    sway.click(3000 + MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    let config = sway.runtime.join("config/alpheus");
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\n");
+    assert!(d.wait_for("popup closed (restyled)", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("popup closed"), 1, "closed once, though both bars moved: {:?}", d.log());
+    sway.hover(640, 400);
+    assert_eq!(wakeups_over_5_s(&d), 0, "the timer went with the popup");
+    assert_eq!(wakeups_over_seeked(&d, &players[0]), 0, "and the Seeked rule");
+    // Floating: the bar 6 px down and in.
+    sway.click(3000 + MEDIA_AT.0 + 6, MEDIA_AT.1 + 6, "button1");
+    assert!(d.wait_for_count("media popup shown", 2, DELAY), "{:?}", d.log());
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\nmodule_colors = \"full\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, module colours full", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("popup closed"), 1, "the same placement: the popup stays: {:?}", d.log());
+    assert!(wakeups_over_5_s(&d) >= 4, "and keeps ticking");
 }

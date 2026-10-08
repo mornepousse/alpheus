@@ -12,7 +12,9 @@ use crate::grid::{Grid, Target};
 use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::media::MediaView;
+use crate::link::SessionLink;
+use crate::media::{self, MediaView, Players, Status};
+use crate::media_popup::{self, MediaAction, MediaPopup};
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
@@ -464,9 +466,17 @@ pub struct App {
     /// The keyboard, bound only while the launcher or a grabbing popup needs it.
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) mods: Mods,
+    /// Keys pressed on `keyboard` and not yet released (a leave resets it): the keyboard is never
+    /// released while one is down (`popup::release_decision`).
+    pub(crate) keys_down: u32,
+    /// `keyboard_release` was asked while a key was down: done at its release or a leave.
+    pub(crate) release_deferred: bool,
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
     pub(crate) hover: Hover,
     pub(crate) hover_timer: DeadlineTimer,
+    /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
+    /// plays, up to the track's end; never at rest.
+    pub(crate) media_timer: DeadlineTimer,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
     /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
@@ -627,8 +637,11 @@ impl App {
             popup: None,
             keyboard: None,
             mods: Mods::default(),
+            keys_down: 0,
+            release_deferred: false,
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
+            media_timer: DeadlineTimer::new(),
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
@@ -952,6 +965,7 @@ impl App {
         if out.menu_changed {
             self.menu_layout_changed();
         }
+        self.media_popup_refresh();
         self.tray_sync();
     }
 
@@ -1085,6 +1099,116 @@ impl App {
         }
     }
 
+    /// Left press on the media module: toggles its popup under it (a second click closes it).
+    pub(crate) fn media_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
+        if self.media_shown() {
+            self.popup_close(PopupClose::OutsideClick);
+            return;
+        }
+        let now = Instant::now();
+        let built =
+            mpris_of(self.tray.as_ref(), self.link.as_ref()).map(Mpris::players).filter(|p| p.shown().next().is_some()).map(|players| {
+                let popup = MediaPopup::new(players);
+                let rows = media_popup::rows(players, &popup, now, media_popup::WIDTH);
+                let heading = media_popup::heading(players, &rows);
+                (popup, rows, heading)
+            });
+        let Some((popup, rows, heading)) = built else { return };
+        let (columns, height) = rows.cells();
+        if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, true) {
+            self.popup_paint(rows);
+            self.mpris_do(|m, out| m.popup_opened(out));
+            self.media_timer_sync();
+            // What it shows on top, as drawn (controller reconciliation 10: the headless tests read it).
+            log(&format!("media popup shown: {heading}"));
+        }
+    }
+
+    pub(crate) fn media_shown(&self) -> bool {
+        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Media(_)))
+    }
+
+    /// `f` on the open media popup and the players; Nothing when either is missing.
+    pub(crate) fn media_with(&mut self, f: impl FnOnce(&mut MediaPopup, &Players) -> MediaAction) -> MediaAction {
+        let App { tray, link, popup, .. } = self;
+        match (mpris_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
+            (Some(m), Some(PopupBody::Media(p))) => f(p, m.players()),
+            _ => MediaAction::Nothing,
+        }
+    }
+
+    pub(crate) fn media_action(&mut self, action: MediaAction) {
+        match action {
+            MediaAction::Nothing => {}
+            MediaAction::Redraw => self.media_popup_refresh(),
+            MediaAction::Close => self.popup_close(PopupClose::Escape),
+            // The player answers with PropertiesChanged, which repaints; the refresh shows the
+            // selection the press moved.
+            MediaAction::Control(c) => {
+                self.mpris_do(|m, out| m.control(out, c));
+                self.media_popup_refresh();
+            }
+            MediaAction::Pin(name) => {
+                self.mpris_do(|m, out| {
+                    m.pin(&name);
+                    m.resync_active(out);
+                });
+                self.media_popup_refresh();
+            }
+        }
+    }
+
+    /// After anything that may change what the popup shows (a host's output, a tick, a key): the
+    /// rows rebuilt and painted (`popup_draw` commits nothing when they did not change), the bar's
+    /// view re-applied through `media_view` (a pin changes the active player with no D-Bus traffic),
+    /// the tick re-synced.
+    /// No player shown any more, or no host: the popup closes (player gone). Popup closed: only
+    /// the timer is synced (to none).
+    pub(crate) fn media_popup_refresh(&mut self) {
+        if !self.media_shown() {
+            self.media_timer_sync();
+            return;
+        }
+        let now = Instant::now();
+        let rows = {
+            let App { tray, link, popup, .. } = &mut *self;
+            match (mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players), popup.as_mut().map(|o| &mut o.body)) {
+                (Some(players), Some(PopupBody::Media(p))) if players.shown().next().is_some() => {
+                    p.fit(players);
+                    Some(media_popup::rows(players, p, now, media_popup::WIDTH))
+                }
+                _ => None,
+            }
+        };
+        let Some(rows) = rows else {
+            self.popup_close(PopupClose::PlayerGone);
+            return;
+        };
+        let view = mpris_of(self.tray.as_ref(), self.link.as_ref()).and_then(Mpris::view);
+        self.media_view(view);
+        self.popup_paint(rows);
+        self.media_timer_sync();
+    }
+
+    /// The tick follows `media_popup::tick_due`: armed only while the popup is open and the active
+    /// player plays, before the end of its track; removed otherwise.
+    pub(crate) fn media_timer_sync(&mut self) {
+        let now = Instant::now();
+        let open = self.media_shown();
+        let due = mpris_of(self.tray.as_ref(), self.link.as_ref()).and_then(|m| m.players().active()).and_then(|p| {
+            media_popup::tick_due(open, p.status == Status::Playing, p.rate, media::position_now(p, now).unwrap_or(0), p.track.length_us)
+        });
+        if let Some(handle) = self.loop_handle.clone() {
+            self.media_timer.sync(&handle, due.map(|d| now + d), App::media_tick);
+        }
+    }
+
+    /// The tick fired (calloop callback; its source is dropped).
+    pub(crate) fn media_tick(app: &mut App, _: Instant) {
+        app.media_timer.fired();
+        app.media_popup_refresh();
+    }
+
     /// `launcher_was_open`: whether the launcher was open right before this
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
@@ -1092,6 +1216,7 @@ impl App {
         if let Some((popup, anchor)) = self.module_popup_at(i, x, b) {
             match popup {
                 ModulePopup::Calendar => self.calendar_toggle(qh, anchor),
+                ModulePopup::Media => self.media_toggle(qh, anchor),
             }
             return;
         }
@@ -1176,6 +1301,11 @@ fn closed_by_done(record: &mut Option<(ModulePopup, Instant)>, pressed: Option<M
         (Some((closed, at)), Some(p)) => closed == p && now.duration_since(at) < RECENT_CLOSE_WINDOW,
         _ => false,
     }
+}
+
+/// The media consumer wherever it lives (Task 5): on the tray's connection, else on the bar's link.
+pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Mpris> {
+    tray.and_then(Tray::media).or_else(|| link.and_then(SessionLink::media))
 }
 
 /// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
@@ -2052,6 +2182,12 @@ mod tests {
         assert!(rec.is_none());
         assert!(!closed_by_done(&mut rec, Some(Calendar), t0), "the cleared record no longer swallows a press");
         assert!(!closed_by_done(&mut None, Some(Calendar), t0), "no record: opens");
+        let mut rec = Some((Calendar, t0));
+        assert!(!closed_by_done(&mut rec, Some(Calendar), t0 + RECENT_CLOSE_WINDOW), "the window's very end: elapsed, reopens");
+        assert!(
+            !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Media), t0),
+            "a calendar record does not swallow a media press"
+        );
     }
 
     /// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current

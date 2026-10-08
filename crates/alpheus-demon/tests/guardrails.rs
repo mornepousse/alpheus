@@ -644,8 +644,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The tray's DeadlineTimer (task 11), armed only while calls are pending; the tooltip's
         // (task 16), armed only while the pointer rests on a tray icon; the bar's session link's
         // (media task 5, `link_timer`), armed only while one of its calls is pending — the portal's
-        // ReadOne, an MPRIS listing or read (2 s at most each) — never at rest.
-        ("wayland.rs", "Timer::", 3),
+        // ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
+        // (bar step 5, task 7), armed only while that popup is open and its player plays.
+        ("wayland.rs", "Timer::", 4),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file

@@ -259,7 +259,7 @@ impl App {
                 self.tray_output(TrayOutput::default());
             }
             Host::OnLink | Host::OwnBus => {
-                if self.link.is_none() && !self.open_link("media") {
+                if self.link.is_none() && !self.open_link(LinkUser::Media) {
                     return;
                 }
                 if let Some(link) = self.link.as_mut() {
@@ -271,10 +271,10 @@ impl App {
         }
     }
 
-    /// Opens the bar's session link, once whatever happens (`link_tried`), for `who` ("media",
-    /// "appearance", in its lines). Its fd goes in the loop, level-triggered like the tray's, and the
+    /// Opens the bar's session link, once whatever happens (`link_tried`), for `who` (its failure
+    /// lines are that user's: `link_failed`). Its fd goes in the loop, level-triggered like the tray's, and the
     /// source removes itself once the link is gone (bus closed).
-    pub(crate) fn open_link(&mut self, who: &str) -> bool {
+    pub(crate) fn open_link(&mut self, who: LinkUser) -> bool {
         self.link_tried = true;
         let Some(handle) = self.loop_handle.clone() else { return false };
         let bus = match SessionBus::session() {
@@ -336,6 +336,7 @@ impl App {
         if let Some(view) = out.media {
             self.media_view(view);
         }
+        self.media_popup_refresh();
         self.link_sync();
     }
 
@@ -349,10 +350,20 @@ impl App {
     }
 }
 
+/// Who opens the bar's session link: its failure lines are that user's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinkUser {
+    Appearance,
+    Media,
+}
+
 /// A failure line of `open_link`: the appearance's says the mode falls back to dark; the media
 /// module simply is not there.
-fn link_failed(who: &str, what: &str) -> String {
-    if who == "appearance" { format!("{who}: {what}; dark") } else { format!("{who}: {what}") }
+fn link_failed(who: LinkUser, what: &str) -> String {
+    match who {
+        LinkUser::Appearance => format!("appearance: {what}; dark"),
+        LinkUser::Media => format!("media: {what}"),
+    }
 }
 
 #[cfg(test)]
@@ -376,8 +387,8 @@ mod tests {
 
     #[test]
     fn a_link_failure_tells_the_appearance_it_stays_dark() {
-        assert_eq!(link_failed("appearance", "no session bus (x)"), "appearance: no session bus (x); dark");
-        assert_eq!(link_failed("media", "no session bus (x)"), "media: no session bus (x)", "the module is simply not there");
+        assert_eq!(link_failed(LinkUser::Appearance, "no session bus (x)"), "appearance: no session bus (x); dark");
+        assert_eq!(link_failed(LinkUser::Media, "no session bus (x)"), "media: no session bus (x)", "the module is simply not there");
     }
 
     #[test]

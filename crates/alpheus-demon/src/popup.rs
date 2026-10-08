@@ -22,6 +22,7 @@ use crate::grid::Target;
 use crate::keys::{self, Key, Mods};
 use crate::list::{self, Boxed};
 use crate::log::write as log;
+use crate::media_popup::{self, MediaPopup};
 use crate::painter::Frame;
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
@@ -147,6 +148,8 @@ pub enum PopupClose {
     /// Its bar was re-placed for a new style (to or from floating): the popup's anchor and size no
     /// longer match (shapes Review Focus 1).
     Restyled,
+    /// The media popup: no player left to show (spec § 2), or the connection hosting them went.
+    PlayerGone,
     Error,
 }
 
@@ -166,6 +169,7 @@ impl PopupClose {
             PopupClose::Launcher => "launcher",
             PopupClose::HoverEnded => "hover ended",
             PopupClose::Restyled => "restyled",
+            PopupClose::PlayerGone => "player gone",
             PopupClose::Error => "error",
         }
     }
@@ -194,14 +198,18 @@ pub enum PopupBody {
     Calendar(Calendar),
     /// One row of text (task 16).
     Tooltip(String),
+    /// The media module's popup (title, time, buttons, players).
+    Media(MediaPopup),
 }
 
-/// A bar module whose left click toggles a popup of its own: the clock's calendar (media task 7 adds
-/// the media popup). It is the anchor's and the press race's single source of truth (wayland.rs
+/// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
+/// module's popup. It is the anchor's and the press race's single source of truth (wayland.rs
 /// `module_popup_at`, `closed_by_done`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePopup {
     Calendar,
+    /// The media module's popup (media task 7).
+    Media,
 }
 
 impl ModulePopup {
@@ -209,6 +217,7 @@ impl ModulePopup {
     pub fn of(target: &Target, b: Button) -> Option<ModulePopup> {
         match (target, b) {
             (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
+            (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
             _ => None,
         }
     }
@@ -219,6 +228,7 @@ impl PopupBody {
     pub fn module_popup(&self) -> Option<ModulePopup> {
         match self {
             PopupBody::Calendar(_) => Some(ModulePopup::Calendar),
+            PopupBody::Media(_) => Some(ModulePopup::Media),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -293,6 +303,30 @@ pub(crate) fn key_to(launcher_open: bool, grabbing_popup: bool) -> KeyTo {
         KeyTo::Popup
     } else {
         KeyTo::Nobody
+    }
+}
+
+/// What `keyboard_release` does with the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Release {
+    /// The launcher or a grabbing popup still needs it.
+    Keep,
+    /// A key is down: kept until it is up or the focus leaves (`keys_down`).
+    Defer,
+    Now,
+}
+
+/// SCTK repeats a held key on a calloop timer that stops only on that key's release, a leave, or
+/// the focused surface dying. Under a grab on sway or niri the focus is the bar's own layer surface
+/// (`exclusive_during_grab`), which lives on: a keyboard released while the key that closed the
+/// popup is still down gets neither event, and its timer repeats that key forever.
+fn release_decision(wanted: bool, keys_down: u32) -> Release {
+    if wanted {
+        Release::Keep
+    } else if keys_down > 0 {
+        Release::Defer
+    } else {
+        Release::Now
     }
 }
 
@@ -500,6 +534,7 @@ impl App {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
         let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        let media = self.media_shown();
         // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
         // done` (routed here as Dismissed) before the press that follows it reaches the bar — a
         // record of what just closed, by whom it was opened, and when, lets that next press still
@@ -529,6 +564,12 @@ impl App {
             self.tooltip_item = None;
         }
         drop(open);
+        if media {
+            // Whatever the reason (Escape, outside click, restyle, output gone, replaced): the
+            // Seeked rule goes and the tick with it — `media_timer_sync` sees no popup now.
+            self.mpris_do(|m, out| m.popup_closed(out));
+            self.media_timer_sync();
+        }
         if grab {
             // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name` (task
             // 15 fix round, CRITICAL): a name can change after the fact (`update_output`) or be
@@ -571,6 +612,11 @@ impl App {
                 Key::Escape => self.popup_close(PopupClose::Escape),
                 _ => {}
             },
+            // ↑ ↓ ← →, Enter, Escape (spec § 2).
+            PopupBody::Media(_) => {
+                let action = self.media_with(|p, players| media_popup::key(p, players, k));
+                self.media_action(action);
+            }
             PopupBody::Tooltip(_) => {}
         }
     }
@@ -623,6 +669,13 @@ impl App {
             PopupBody::Calendar(_) => {
                 if let PopupPointer::Scroll(steps) = kind {
                     self.calendar_scroll(steps);
+                }
+            }
+            // A left press on a button or a player does what Enter does; nothing else reacts.
+            PopupBody::Media(_) => {
+                if let (PopupPointer::Press(Button::Left), Some(c)) = (kind, cell) {
+                    let action = self.media_with(|p, players| media_popup::press(p, players, c));
+                    self.media_action(action);
                 }
             }
             // A press on the tooltip dismisses it (nothing in it is clickable).
@@ -698,6 +751,10 @@ impl App {
     /// Binds the keyboard (with repeat on the event loop) on the seat if none: the launcher is open, or a
     /// grabbing popup. (The guardrail counts the binding call: never name it in a comment.)
     pub(crate) fn keyboard_acquire(&mut self, qh: &QueueHandle<App>) {
+        if self.keyboard_wanted() {
+            // Wanted again before a deferred release happened: kept.
+            self.release_deferred = false;
+        }
         if self.keyboard.is_some() || !self.keyboard_wanted() {
             return;
         }
@@ -713,15 +770,29 @@ impl App {
         }
     }
 
-    /// release() once neither the launcher nor a grabbing popup needs it.
+    /// release() once neither the launcher nor a grabbing popup needs it, and no key is down
+    /// (`release_decision`): else at that key's release or the focus leaving.
     pub(crate) fn keyboard_release(&mut self) {
-        if self.keyboard_wanted() {
-            return;
+        match release_decision(self.keyboard_wanted(), self.keys_down) {
+            Release::Keep => return,
+            Release::Defer => {
+                self.release_deferred = true;
+                return;
+            }
+            Release::Now => {}
         }
+        self.release_deferred = false;
         if let Some(k) = self.keyboard.take() {
             release(k);
         }
         self.mods = Mods::default();
+    }
+
+    /// A key went up or the focus left: the release `keyboard_release` deferred, if any, now.
+    fn keyboard_release_deferred(&mut self) {
+        if self.release_deferred {
+            self.keyboard_release();
+        }
     }
 
     /// The seat lost its keyboard: the object goes now, whoever wanted it, and with it the
@@ -730,6 +801,7 @@ impl App {
         if let Some(k) = self.keyboard.take() {
             release(k);
         }
+        (self.keys_down, self.release_deferred) = (0, false);
         self.mods = Mods::default();
     }
 
@@ -765,12 +837,16 @@ impl KeyboardHandler for App {
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
+        // A leave ends every repeat (SCTK): no key counts as down any more.
+        self.keys_down = 0;
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("focus", |app| app.launcher_close(crate::launcher::surface::CloseReason::FocusLost));
         }
+        self.keyboard_release_deferred();
     }
 
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
+        self.keys_down = self.keys_down.saturating_add(1);
         self.key_event(event);
     }
 
@@ -780,7 +856,10 @@ impl KeyboardHandler for App {
         self.key_event(event);
     }
 
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {}
+    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {
+        self.keys_down = self.keys_down.saturating_sub(1);
+        self.keyboard_release_deferred();
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn update_modifiers(
@@ -835,6 +914,15 @@ mod tests {
         }
         assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Volume), Button::Left), None);
         assert_eq!(PopupBody::Tooltip("x".into()).module_popup(), None, "a tooltip belongs to no module");
+        // The media module's left press toggles its own popup (media task 7); its middle button and
+        // wheel are controls, never a popup.
+        let media = Target::Module(ModuleId::Media);
+        assert_eq!(ModulePopup::of(&media, Button::Left), Some(ModulePopup::Media));
+        for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert_eq!(ModulePopup::of(&media, b), None, "{b:?}");
+        }
+        let body = PopupBody::Media(MediaPopup { selected: 0, button: 1 });
+        assert_eq!(body.module_popup(), Some(ModulePopup::Media), "a second press on the module only closes it");
     }
 
     fn under(output: &str, start: u16, end: u16) -> Anchor {
@@ -955,11 +1043,36 @@ mod tests {
         assert!(!bar_exclusive_during_grab(true), "Hyprland: Exclusive would make every click in the menu end it");
     }
 
+    /// A popup closed by a key press (Escape, Enter on an entry) must not release the keyboard
+    /// while that key is down: SCTK's repeat timer stops only on its release or a leave, and on
+    /// sway or niri the focused surface is the bar's own, which never dies — released early, the
+    /// key repeated at the compositor's rate forever (media task 7, found by the tick test).
+    #[test]
+    fn the_keyboard_goes_only_once_its_keys_are_up() {
+        assert_eq!(release_decision(true, 0), Release::Keep, "still wanted: the launcher or a grabbing popup");
+        assert_eq!(release_decision(true, 2), Release::Keep);
+        assert_eq!(release_decision(false, 1), Release::Defer, "the key that closed the popup is still down");
+        assert_eq!(release_decision(false, 0), Release::Now);
+    }
+
     #[test]
     fn close_reasons_have_texts() {
         use PopupClose::*;
-        let all =
-            [Escape, OutsideClick, Dismissed, Activated, OutputGone, Replaced, ItemGone, Timeout, MenuMoved, Launcher, HoverEnded, Error];
+        let all = [
+            Escape,
+            OutsideClick,
+            Dismissed,
+            Activated,
+            OutputGone,
+            Replaced,
+            ItemGone,
+            Timeout,
+            MenuMoved,
+            Launcher,
+            HoverEnded,
+            PlayerGone,
+            Error,
+        ];
         assert_eq!(
             all.map(PopupClose::text),
             [
@@ -974,6 +1087,7 @@ mod tests {
                 "menu moved",
                 "launcher",
                 "hover ended",
+                "player gone",
                 "error"
             ]
         );

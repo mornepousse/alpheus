@@ -335,6 +335,25 @@ impl FakePlayer {
         let _ = self.commands.send(Command::Seeked(us));
     }
 
+    /// Changes PlaybackStatus and signals it (media task 7).
+    pub fn set_status(&self, status: &str) {
+        self.set("PlaybackStatus", text(status));
+    }
+
+    /// A new track, signalled with its value: `title` by `artist`, `length_us` long, its own trackid
+    /// (media tasks 7 and 8).
+    pub fn set_track(&self, title: &str, artist: &str, length_us: i64) {
+        self.set(
+            "Metadata",
+            Prop::Dict(vec![
+                ("mpris:trackid".into(), Prop::ObjPath(format!("/org/mpris/MediaPlayer2/Track/{}", length_us))),
+                ("xesam:title".into(), text(title)),
+                ("xesam:artist".into(), Prop::Strs(vec![artist.into()])),
+                ("mpris:length".into(), Prop::I64(length_us)),
+            ]),
+        );
+    }
+
     /// Every method call received, "Interface.Member(arg, arg)", in arrival order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()

@@ -217,6 +217,16 @@ fn player_row(g: &mut Grid, q: &Player, active: bool, selected: bool, width: u16
     g.write(x, width, &media::truncate_title(&label(q), width.saturating_sub(x)), pick(Style::NORMAL));
 }
 
+/// What the popup shows on top, as drawn in `b` (cut to its width): "Title — Artist", or the title
+/// alone without an artist row; empty when nothing is shown. For the log line "media popup shown".
+pub fn heading(players: &Players, b: &Boxed) -> String {
+    let drawn = |i: usize| b.rows.get(i).map(|g| g.text().trim().to_string()).unwrap_or_default();
+    match lines(players).get(1) {
+        Some(Line::Artist) => format!("{} — {}", drawn(0), drawn(1)),
+        _ => drawn(0),
+    }
+}
+
 /// What Enter (or a press) does on the selected row.
 fn activate(popup: &MediaPopup, players: &Players, lines: &[Line], p: &Player) -> MediaAction {
     match lines.get(popup.selected) {
@@ -568,6 +578,21 @@ mod tests {
         assert_eq!(tick_due(true, p.status == Status::Playing, p.rate, 102_000_000, p.track.length_us), None);
         let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
         assert_eq!(b.rows[3].cells()[16].ch, PLAY);
+    }
+
+    /// Controller reconciliation 10: the "media popup shown" line carries what the popup shows on
+    /// top, as drawn (cut to its width), so a headless test can check the fake track reached it.
+    #[test]
+    fn the_heading_is_the_drawn_title_and_artist() {
+        let t0 = Instant::now();
+        let players = one(t0);
+        let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
+        assert_eq!(heading(&players, &b), "Paper Lanterns — The Quiet Hours");
+        let mut players = Players::default();
+        with(&mut players, "radio", 3, props("Playing", &"a".repeat(40), &[], None));
+        let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
+        assert_eq!(heading(&players, &b), format!("{}…", "a".repeat(29)), "no artist row: the title alone, as drawn");
+        assert_eq!(heading(&Players::default(), &Boxed::default()), "", "nothing shown");
     }
 
     /// A tick whose rows did not change commits nothing (`popup_draw` compares with `last`): two
