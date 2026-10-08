@@ -192,6 +192,44 @@ fn no_glyph_pixel_is_erased_by_the_block_styles() {
     }
 }
 
+/// Ruling 11 under underline: its lines go under the glyphs. Full blocks overflowing a thin bar
+/// (a big font on a short bar, as descenders do on any bar) over the bottom line and a block's hue
+/// underline keep every pixel they ink under flat; wherever nothing is inked, the lines show as
+/// they do with no text.
+#[test]
+fn no_glyph_pixel_is_erased_by_underline() {
+    // 12 px of line for the default 14 px font: a full block reaches the band's last rows.
+    const THIN: u32 = 12;
+    let (mut p, _) = Fonts::load(&FontConfig::default(), THIN).expect("a monospace font (nix develop)");
+    let roles = Roles { fg: Rgb(0xff, 0x00, 0xff), ..Roles::default() }; // unlike every line colour
+    let groups = two_blocks(Some(Hue::Blue));
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(0, 1, "█", Style::NORMAL); // on the bar: over the bottom line
+    grid.write(7, 8, "█", Style::NORMAL); // in the clock's block: over its blue underline
+    let empty = Grid::empty(COLUMNS);
+    for scale in [1, 2] {
+        let flat = background(BarStyle::Flat, 0.8, ModuleColors::Icons, &groups);
+        let (ink, none) =
+            (Painted::new(&mut p, &grid, &roles, &flat, scale, THIN), Painted::new(&mut p, &empty, &roles, &flat, scale, THIN));
+        let bg = background(BarStyle::Underline, 0.8, ModuleColors::Icons, &groups);
+        let (with, without) =
+            (Painted::new(&mut p, &grid, &roles, &bg, scale, THIN), Painted::new(&mut p, &empty, &roles, &bg, scale, THIN));
+        let lines = with.h - 3 * with.e..with.h;
+        let mut inked = 0;
+        for y in lines {
+            for x in (ink.edge(0)..ink.edge(1)).chain(ink.edge(7)..ink.edge(8)) {
+                if ink.at(x, y) != none.at(x, y) {
+                    inked += 1;
+                    assert_ne!(with.at(x, y), without.at(x, y), "scale {scale}: the glyph's pixel ({x}, {y}) erased by a line");
+                } else {
+                    assert_eq!(with.at(x, y), without.at(x, y), "scale {scale}: ({x}, {y}), no ink: the line shows");
+                }
+            }
+        }
+        assert!(inked > 0, "scale {scale}: the full blocks reach the lines");
+    }
+}
+
 /// Spec § 3, translucent: the bar is `bar_bg` at `opacity`, premultiplied; the blocks stay solid,
 /// inset, rounded and bordered as in islands.
 #[test]

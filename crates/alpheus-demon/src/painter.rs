@@ -525,10 +525,9 @@ impl Fonts {
     /// - the cell backgrounds (under the block styles, clipped to their block: its x span, and
     ///   under islands, translucent and floating's pills its inset rows);
     /// - the edges pass of islands, translucent and floating (rounded corners, borders, floating's
-    ///   shadow), over the cell backgrounds;
-    /// - the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
-    ///   (ruling 11);
-    /// - underline's lines.
+    ///   shadow), and underline's lines, over the cell backgrounds;
+    /// - last the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
+    ///   (ruling 11).
     ///
     /// Under floating the bar's band is the surface minus its shadow rows (`placement::FLOAT_SHADOW`):
     /// the text never reaches the shadow. Under `flat` it paints exactly what `paint` paints, byte
@@ -581,12 +580,13 @@ impl Fonts {
             // The whole surface: the bar's ends, its pills blocks, and the shadow below the band.
             floating::edges(&mut self.masks, px, width, height, band, scale, advance, roles, bg);
         }
+        if bg.style == BarStyle::Underline {
+            // Over the cell backgrounds, under the glyphs: a descender is never cut (ruling 11).
+            background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
+        }
         // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
         let (on, n) = blocks::pill_inks(roles, bg);
         self.glyphs(grid, roles, roles.bar_bg, px, width, band, 0, &on[..n], bg.style == BarStyle::Underline);
-        if bg.style == BarStyle::Underline {
-            background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
-        }
     }
 
     /// A bar: `grid` on `roles.bar_bg` — `flat`'s reference, which `paint_bar` reproduces byte for byte.

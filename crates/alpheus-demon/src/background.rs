@@ -270,7 +270,7 @@ pub fn underline_blocks(px: &mut [u8], width: u32, height: u32, roles: &Roles, g
     }
 }
 
-/// `underline`'s lines, over the text pass (shapes spec § 3): a one logical px bottom line in the
+/// `underline`'s lines, over the cell backgrounds and under the text pass (shapes spec § 3): a one logical px bottom line in the
 /// border colour across the bar, and two logical px of underline just above it: `accent` under the
 /// active workspace (the `Style::ACTIVE` cells); under the module colours (icons, full, pills),
 /// also each block's hue under the blocks that have one.
