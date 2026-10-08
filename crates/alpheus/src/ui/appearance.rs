@@ -243,7 +243,9 @@ fn on_hue(p: &Roles, hue: Rgb) -> Rgb {
 }
 
 /// A block's background under `style`; None where the bar's own background shows. `i` is the
-/// block's index over both sides (0: the workspaces), for powerline's alternation.
+/// block's index over the blocks shown on both sides (0: the workspaces), for powerline's
+/// alternation: as the daemon's, `pill_bg` at an even distance from the workspaces, `raised` at an
+/// odd one (Mae, 2026-10-08), so the workspaces are on `pill_bg` and neighbours differ.
 fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -> Option<Rgb> {
     let pill = (colors == ModuleColors::Pills).then(|| b.hue.unwrap_or(p.pill_bg));
     match style {
@@ -258,10 +260,9 @@ fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -
                 None
             }
         }
-        BarStyle::Powerline if i == 0 => Some(p.accent_container),
         BarStyle::Powerline => match (colors, b.hue) {
             (ModuleColors::Pills, Some(hue)) => Some(hue),
-            _ if i % 2 == 1 => Some(p.pill_bg),
+            _ if i % 2 == 0 => Some(p.pill_bg),
             _ => Some(p.raised),
         },
     }
@@ -354,7 +355,9 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     // (spec § 1), which `blocks` already gives its runs.
     let pills = colors == ModuleColors::Pills && style != BarStyle::Underline;
     // One block: lead cell, runs, trail cell; returns the x after it.
-    let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>, workspaces: bool| -> u16 {
+    // Underline: the active workspace has no fill, its text is accent (Mae, 2026-10-08).
+    let underline = style == BarStyle::Underline;
+    let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>| -> u16 {
         let end = |glyph: &'static str| match (rounded, f) {
             (true, Some(f)) => (glyph, on(Style::default().fg(color(f)), row)),
             _ => (" ", on(Style::default(), f.or(row))),
@@ -363,12 +366,12 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
         let (g, s) = end("▐");
         cx += put(buf, area, cx, y, g, s);
         for run in &b.runs {
+            let (fg, bg) = if underline && run.bg.is_some() { (p.accent, None) } else { (run.fg, run.bg) };
             let ink = match f {
-                Some(f) if pills && b.hue.is_some() && !run.state && run.bg.is_none() => on_hue(p, f),
-                Some(_) if powerline && workspaces && !run.state && run.bg.is_none() => p.on_accent,
-                _ => run.fg,
+                Some(f) if pills && b.hue.is_some() && !run.state && bg.is_none() => on_hue(p, f),
+                _ => fg,
             };
-            cx += put(buf, area, cx, y, run.text, on(Style::default().fg(color(ink)), run.bg.or(f).or(row)));
+            cx += put(buf, area, cx, y, run.text, on(Style::default().fg(color(ink)), bg.or(f).or(row)));
         }
         let (g, s) = end("▌");
         cx + put(buf, area, cx, y, g, s)
@@ -379,7 +382,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
     // Left: blocks with one blank cell between them (powerline: an arrow out of each block).
     let mut x = area.x;
     for (i, b) in left.iter().enumerate() {
-        x = block(buf, x, b, lfill[i], i == 0);
+        x = block(buf, x, b, lfill[i]);
         x += if powerline { arrow(buf, x, "\u{e0b0}", lfill[i], lfill.get(i + 1).copied().flatten()) } else { 1 };
     }
     let left_end = if powerline { x } else { x.saturating_sub(1) };
@@ -394,7 +397,7 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
             } else if j > 0 {
                 x += 1;
             }
-            x = block(buf, x, b, rfill[j], false);
+            x = block(buf, x, b, rfill[j]);
         }
     }
     // Underline: a rule on the frame's bottom row, in accent under the active workspace and, with
@@ -747,15 +750,34 @@ mod tests {
         let a = styled("prev-powerline", "powerline", "icons");
         let p = preset("tokyo-night").unwrap().dark;
         let b = buffer(&a);
-        // Left: workspaces on accent_container, an arrow into the title's block (pill_bg), and one
-        // out of it into the bar.
-        assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.accent_container), rgb(p.pill_bg)), "workspaces -> title");
+        // Left (Mae, 2026-10-08): workspaces on pill_bg, an arrow into the title's block (raised),
+        // and one out of it into the bar.
+        assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.pill_bg), rgb(p.raised)), "workspaces -> title");
         let second = (find(&b, 4, "\u{e0b0}") + 1..100).find(|x| b[(*x, 4)].symbol() == "\u{e0b0}").expect("a second arrow");
-        assert_eq!((b[(second, 4)].fg, b[(second, 4)].bg), (rgb(p.pill_bg), rgb(p.bar_bg)), "title -> bar");
-        assert_eq!(cell(&b, 4, "2").1, rgb(p.accent_container), "inactive workspaces inside the block");
-        // Right: the first arrow comes out of the bar into the status block (raised).
-        assert_eq!(cell(&b, 4, "\u{e0b2}"), (rgb(p.raised), rgb(p.bar_bg)), "bar -> status");
-        assert_eq!(cell(&b, 4, "♪").1, rgb(p.raised));
+        assert_eq!((b[(second, 4)].fg, b[(second, 4)].bg), (rgb(p.raised), rgb(p.bar_bg)), "title -> bar");
+        assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.pill_bg)), "inactive workspaces inside the block, in their colours");
+        assert_eq!(cell(&b, 4, "1"), (rgb(p.on_accent), rgb(p.accent_container)), "the active workspace keeps its accent fill");
+        assert_ne!(p.accent_container, p.pill_bg, "and stands out on its block");
+        // Right: the first arrow comes out of the bar into the status block (pill_bg, index 2).
+        assert_eq!(cell(&b, 4, "\u{e0b2}"), (rgb(p.pill_bg), rgb(p.bar_bg)), "bar -> status");
+        assert_eq!(cell(&b, 4, "♪").1, rgb(p.pill_bg));
+        assert_eq!(cell(&b, 4, "▤").1, rgb(p.raised), "resources");
+        assert_eq!(cell(&b, 4, ":").1, rgb(p.pill_bg), "the clock");
+    }
+
+    /// The daemon's rule with the title dropped (80 columns): the alternation counts the blocks
+    /// shown, from the workspaces, so the status block right after them is raised.
+    #[test]
+    fn powerline_alternation_follows_the_blocks_shown_when_the_title_is_dropped() {
+        let a = styled("prev-powerline-80", "powerline", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer_w(&a, 80);
+        let row: String = (33..80).map(|x| b[(x, 4)].symbol().to_string()).collect();
+        assert!(!row.contains("not"), "the title is dropped: {row:?}");
+        assert_eq!(cell(&b, 4, "2").1, rgb(p.pill_bg), "the workspaces");
+        assert_eq!(cell(&b, 4, "♪").1, rgb(p.raised), "the block after them differs");
+        assert_eq!(cell(&b, 4, "▤").1, rgb(p.pill_bg));
+        assert_eq!(cell(&b, 4, ":").1, rgb(p.raised));
     }
 
     #[test]
@@ -782,6 +804,9 @@ mod tests {
         let b = buffer(&a);
         let one = find(&b, 4, "1");
         assert_eq!((b[(one, 5)].symbol(), b[(one, 5)].fg), ("━", rgb(p.accent)), "under the active workspace");
+        // Mae, 2026-10-08: no accent fill, its text in accent on the block.
+        assert_eq!(cell(&b, 4, "1"), (rgb(p.accent), rgb(p.pill_bg)), "the active workspace: accent text, no fill");
+        assert_ne!(p.accent, p.pill_bg, "the test bites only if the two differ");
         assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "under the sound block, its hue");
         assert_eq!(cell(&b, 4, "n").1, rgb(p.pill_bg), "blocks on pill_bg");
         let a = styled("prev-underline-none", "underline", "none");

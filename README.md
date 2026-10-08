@@ -355,9 +355,9 @@ opacity = 0.8        # translucent only: 0.3 to 1.0 (clamped, with one line in t
 |---|---|
 | `flat` | one line on the bar colour, modules separated by `│` |
 | `islands` | each group of modules in its own rounded block; the bar between them is transparent |
-| `powerline` | full-height blocks joined by arrows, the workspaces on the accent |
+| `powerline` | full-height blocks joined by arrows, alternating two tones |
 | `floating` | one rounded bar, 6 px from the top and sides of the screen, with a light shadow |
-| `underline` | blocks one step lighter than the bar, a thin line under it, the active workspace underlined |
+| `underline` | blocks one step lighter than the bar, a thin line under it, the active workspace in the accent, underlined |
 | `translucent` | the bar at `opacity` over the wallpaper, solid blocks |
 
 ![flat](docs/images/style-flat.png)

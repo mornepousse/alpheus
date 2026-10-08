@@ -1,6 +1,6 @@
 //! The `powerline` pass (spec § 3):
-//! - full-height blocks on an opaque `bar_bg`: the workspaces on `accent_container`, the others
-//!   alternating `pill_bg` and `raised`, or their hue under pills;
+//! - full-height blocks on an opaque `bar_bg`, alternating `pill_bg` and `raised` counted from the
+//!   workspaces, which are on `pill_bg` (Mae, 2026-10-08), or their hue under pills;
 //! - between them, a one-cell arrow drawn as an analytically anti-aliased triangle in the colour
 //!   of the block it comes from, never a Nerd Font glyph. Left-side blocks (ending at or before
 //!   `Grid::split`, reconciliation 2) point right, from the free cell after them; right-side blocks
@@ -64,9 +64,10 @@ fn free(groups: &[Group], col: u16) -> bool {
 
 /// Background pass of `powerline`:
 /// - the band opaque `bar_bg`;
-/// - each group a full-height block: workspaces on `accent_container`, the others alternating
-///   `pill_bg` and `raised` (the k-th other block in order: pill_bg first), each the hue of its
-///   first module under pills;
+/// - each group a full-height block, `pill_bg` or `raised` by the parity of its distance to the
+///   workspaces block (on `pill_bg`, the first block when there is none), so neighbours always
+///   differ and the active workspace's `accent_container` stands out (Mae, 2026-10-08); under
+///   pills, a hued block takes its first module's hue, the workspaces (no hue) stay `pill_bg`;
 /// - the block's arrow in its free neighbouring cell: after it, pointing right, when the block
 ///   ends at or before `split` (the grid's right-hand side, `Grid::split`); before it, pointing
 ///   left, otherwise.
@@ -76,14 +77,10 @@ fn free(groups: &[Group], col: u16) -> bool {
 pub(crate) fn background(px: &mut [u8], width: u32, height: u32, advance: f32, roles: &Roles, bg: &Background, split: u16) {
     fill_px(px, width, height, (0, width), (0, height), opaque(roles.bar_bg));
     let columns = super::columns(width, advance);
-    let (mut others, mut last_arrow) = (0usize, None);
-    for g in bg.groups {
-        let base = if g.kind == GroupKind::Workspaces {
-            roles.accent_container
-        } else {
-            others += 1;
-            if others % 2 == 1 { roles.pill_bg } else { roles.raised }
-        };
+    let anchor = bg.groups.iter().position(|g| g.kind == GroupKind::Workspaces).unwrap_or(0);
+    let mut last_arrow = None;
+    for (i, g) in bg.groups.iter().enumerate() {
+        let base = if i.abs_diff(anchor) % 2 == 0 { roles.pill_bg } else { roles.raised };
         let fill = block_fill(roles, bg, g, base);
         fill_px(px, width, height, block_x(g, advance), (0, height), opaque(fill));
         let (cell, point) = if g.end <= split { (Some(g.end), Point::Right) } else { (g.start.checked_sub(1), Point::Left) };

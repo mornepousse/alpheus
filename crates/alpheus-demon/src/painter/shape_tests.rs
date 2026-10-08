@@ -365,9 +365,8 @@ fn split_grid(split: u16) -> Grid {
     g
 }
 
-/// Spec § 3, powerline: full-height blocks on an opaque bar:
-/// - the workspaces on `accent_container`;
-/// - the others alternating `pill_bg` and `raised`.
+/// Spec § 3, powerline (amended 2026-10-08, Mae): full-height blocks on an opaque bar, alternating
+/// `pill_bg` and `raised` from the workspaces, which are on `pill_bg`.
 #[test]
 fn powerline_blocks_are_full_height_on_an_opaque_bar() {
     let roles = Roles::default();
@@ -378,9 +377,9 @@ fn powerline_blocks_are_full_height_on_an_opaque_bar() {
         let s = Painted::new(&mut p, &split_grid(5), &roles, &bg, scale, DEFAULT_HEIGHT);
         assert!((0..s.h).all(|y| (0..s.w).all(|x| s.at(x, y)[3] == 255)), "scale {scale}: the whole bar opaque");
         for y in [0, s.h / 2, s.h - 1] {
-            assert_eq!(s.at(s.mid(1), y), opaque(roles.accent_container), "scale {scale}: workspaces, row {y}");
-            assert_eq!(s.at(s.mid(7), y), opaque(roles.pill_bg), "scale {scale}: the first other block, row {y}");
-            assert_eq!(s.at(s.mid(10), y), opaque(roles.raised), "scale {scale}: the second other block, row {y}");
+            assert_eq!(s.at(s.mid(1), y), opaque(roles.pill_bg), "scale {scale}: workspaces, row {y}");
+            assert_eq!(s.at(s.mid(7), y), opaque(roles.raised), "scale {scale}: the block after them, row {y}");
+            assert_eq!(s.at(s.mid(10), y), opaque(roles.pill_bg), "scale {scale}: the next one, row {y}");
         }
         for col in [0, 4, 11] {
             assert_eq!(s.at(s.mid(col), s.h / 2), opaque(roles.bar_bg), "scale {scale}: free cell {col} on bar_bg");
@@ -396,7 +395,7 @@ fn powerline_blocks_are_full_height_on_an_opaque_bar() {
 #[test]
 fn powerline_arrows_are_one_cell_anti_aliased_triangles_in_their_blocks_colour() {
     let roles = Roles::default();
-    let (ac, bar) = (opaque(roles.accent_container), opaque(roles.bar_bg));
+    let (ac, bar) = (opaque(roles.pill_bg), opaque(roles.bar_bg));
     let groups = powerline_groups(None);
     let mut p = fonts();
     for scale in [1, 2] {
@@ -413,11 +412,41 @@ fn powerline_arrows_are_one_cell_anti_aliased_triangles_in_their_blocks_colour()
         let soft = (a0..a1).any(|x| (0..y).any(|yy| ![ac, bar].contains(&s.at(x, yy))));
         assert!(soft, "scale {scale}: the slanted edges are anti-aliased");
         let (b0, b1) = (s.edge(5), s.edge(6));
-        assert_eq!(s.at(b1 - 1, y), opaque(roles.pill_bg), "scale {scale}: left-pointing, its base against the clock");
+        assert_eq!(s.at(b1 - 1, y), opaque(roles.raised), "scale {scale}: left-pointing, its base against the clock");
         let tip = s.at(b0, y);
-        assert!(tip != opaque(roles.pill_bg) && tip != bar, "scale {scale}: its tip on the left, partly covered, got {tip:?}");
+        assert!(tip != opaque(roles.raised) && tip != bar, "scale {scale}: its tip on the left, partly covered, got {tip:?}");
         assert_eq!(s.at(b0 - 1, y), bar, "scale {scale}: one cell wide");
-        assert_eq!(s.at(s.edge(10) - 1, y), opaque(roles.raised), "scale {scale}: the launcher's arrow in its colour");
+        assert_eq!(s.at(s.edge(10) - 1, y), opaque(roles.pill_bg), "scale {scale}: the launcher's arrow in its colour");
+    }
+}
+
+/// Mae, 2026-10-08: the workspaces block is on `pill_bg` wherever it sits, the active workspace
+/// keeps its accent fill on it, and every block differs from its neighbours, those before the
+/// workspaces included (the launcher on the left).
+#[test]
+fn powerline_alternates_from_the_workspaces_and_the_active_workspace_stands_out() {
+    let roles = Roles::default();
+    let groups = vec![
+        group(GroupKind::Launcher, 0, 1, None),
+        group(GroupKind::Workspaces, 2, 4, None),
+        group(GroupKind::Title, 5, 7, None),
+        group(GroupKind::Status, 8, 9, None),
+        group(GroupKind::Clock, 10, 12, None),
+    ];
+    let mut grid = split_grid(8);
+    grid.write(2, 3, " ", Style::ACTIVE);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT);
+        let y = s.h / 2;
+        let fills: Vec<[u8; 4]> = groups.iter().map(|g| s.at(s.mid(g.end - 1), y)).collect();
+        assert_eq!(fills[1], opaque(roles.pill_bg), "scale {scale}: the workspaces on pill_bg");
+        assert_eq!(fills[0], opaque(roles.raised), "scale {scale}: the launcher before them differs");
+        assert_eq!(fills[2], opaque(roles.raised), "scale {scale}: the block right after them differs");
+        assert!(fills.windows(2).all(|f| f[0] != f[1]), "scale {scale}: neighbours differ: {fills:?}");
+        assert_eq!(s.at(s.mid(2), y), opaque(roles.accent_container), "scale {scale}: the active workspace's accent fill");
+        assert_ne!(roles.accent_container, roles.pill_bg, "the active workspace stands out on its block");
     }
 }
 
@@ -456,7 +485,7 @@ fn powerline_pills_blocks_and_arrows_take_the_hue() {
         assert_eq!(s.at(s.edge(6) - 1, y), opaque(green), "scale {scale}: its arrow in its hue");
         assert_eq!(s.at(s.mid(7), y), opaque(blocks::on_fill(&roles, green)), "scale {scale}: the picked ink");
         assert_eq!(s.at(s.mid(8), y), opaque(roles.warn), "scale {scale}: warn wins over the pick");
-        assert_eq!(s.at(s.mid(1), y), opaque(roles.accent_container), "scale {scale}: no hue, the style's colour");
+        assert_eq!(s.at(s.mid(1), y), opaque(roles.pill_bg), "scale {scale}: no hue, neutral pill_bg");
     }
 }
 
