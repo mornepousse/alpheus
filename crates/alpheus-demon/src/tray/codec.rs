@@ -154,17 +154,16 @@ fn strings(it: &mut Iter<'_>) -> Option<Vec<String>> {
     Some(out)
 }
 
-/// `a{sv}` at `it`: at most MAX_ENTRIES entries, a key longer than MAX_TEXT bytes skipped, each value
-/// decoded by `value` (`maps`: whether a value may itself be an `a{sv}`).
+/// `a{sv}` at `it`: at most MAX_ENTRIES entries read (a skipped one counts too), a key longer than
+/// MAX_TEXT bytes skipped, each value decoded by `value` (`maps`: whether a value may itself be an `a{sv}`).
 fn props(it: &mut Iter<'_>, maps: bool) -> Option<Vec<(String, Value)>> {
     if sig(it).as_deref() != Some("a{sv}") {
         return None;
     }
     let mut entries = it.recurse(ArgType::Array)?;
     let mut out = Vec::new();
-    while out.len() < MAX_ENTRIES
-        && let Some(mut entry) = entries.recurse(ArgType::DictEntry)
-    {
+    for _ in 0..MAX_ENTRIES {
+        let Some(mut entry) = entries.recurse(ArgType::DictEntry) else { break };
         let key = entry.read::<&str>().ok()?;
         let mut v = entry.recurse(ArgType::Variant)?;
         if key.len() <= MAX_TEXT {
@@ -1414,6 +1413,19 @@ mod tests {
             Ok(Reply::Props(vec![("CanPlay".into(), Value::Bool(true))])),
             "a key too long: skipped, never cut"
         );
+    }
+
+    /// Task 3's review: the cap counts entries read, not entries kept, so a reply full of keys
+    /// too long to keep stops after MAX_ENTRIES of them instead of being walked to its end.
+    #[test]
+    fn the_entry_cap_counts_what_is_read_not_what_is_kept() {
+        let long_key = "k".repeat(MAX_TEXT + 1);
+        let m = returned(|i| {
+            let mut entries: Vec<(String, W)> = (0..MAX_ENTRIES).map(|n| (format!("{long_key}{n}"), W::B(true))).collect();
+            entries.push(("CanPlay".into(), W::B(true)));
+            dict(i, &entries)
+        });
+        assert_eq!(reply(&get_all(), &m), Ok(Reply::Props(vec![])), "64 entries read, all skipped: the 65th is never reached");
     }
 
     #[test]

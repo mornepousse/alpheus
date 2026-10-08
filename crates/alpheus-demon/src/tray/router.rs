@@ -11,10 +11,13 @@ use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus
 use super::codec::{self, Reply, Signal};
 use super::host::{GestureOutcome, Host, Item, owner_rule};
 use super::menu_session::{MenuSession, MenuUpdate};
+use super::mpris::Mpris;
 use super::watcher::Watcher;
 use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::appearance::Appearance;
+use crate::config::MediaConfig;
 use crate::log::write as log;
+use crate::media::MediaView;
 use alpheus_commun::theme::Mode;
 use dbus::Message;
 use std::collections::HashMap;
@@ -51,6 +54,8 @@ pub struct TrayOutput {
     pub bus_closed: bool,
     /// The portal's color-scheme changed (themes task 6, `mode = "auto"`): the wiring re-resolves.
     pub appearance: Option<Mode>,
+    /// The media module's view changed (media task 4): Some(None) hides it, Some(Some(v)) shows v.
+    pub media: Option<Option<MediaView>>,
 }
 
 impl TrayOutput {
@@ -65,6 +70,9 @@ impl TrayOutput {
         self.bus_closed |= other.bus_closed;
         if other.appearance.is_some() {
             self.appearance = other.appearance;
+        }
+        if other.media.is_some() {
+            self.media = other.media;
         }
     }
 }
@@ -108,6 +116,8 @@ pub struct Tray {
     deferred: TrayOutput,
     /// The portal's color-scheme, followed on this same connection (themes task 6); None unless asked.
     appearance: Option<Appearance>,
+    /// The MPRIS consumer on this same connection (media task 4); None unless asked.
+    media: Option<Mpris>,
 }
 
 /// How many times a flush's drained answers are routed (and what that sends flushed again) before
@@ -129,6 +139,7 @@ impl Tray {
             requesting: false,
             deferred: TrayOutput::default(),
             appearance: None,
+            media: None,
         };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
@@ -143,6 +154,31 @@ impl Tray {
     pub fn start_appearance(&mut self) {
         if self.appearance.is_none() {
             self.appearance = Some(Appearance::start(&mut self.bus));
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
+    }
+
+    /// Follows the MPRIS players on this connection: two rules, then one ListNames (pending, on
+    /// the tray's timer). Once: a second call is a no-op.
+    pub fn start_media(&mut self, cfg: &MediaConfig) {
+        if self.media.is_none() {
+            self.media = Some(Mpris::start(&mut self.bus, cfg));
+            let out = self.settled();
+            self.deferred.merge(out);
+        }
+    }
+
+    pub fn media(&self) -> Option<&Mpris> {
+        self.media.as_ref()
+    }
+
+    /// Runs `f` on the media consumer with this connection (a control, the popup's Seeked rule and
+    /// position reads, a pin): flushed, and what the flush drained kept for `take_deferred`, as
+    /// `menu_click` does — never routed re-entrantly (`App::mpris_do`, task 6, is its one caller).
+    pub fn media_do(&mut self, f: impl FnOnce(&mut Mpris, &mut SessionBus)) {
+        if let Some(media) = self.media.as_mut() {
+            f(media, &mut self.bus);
             let out = self.settled();
             self.deferred.merge(out);
         }
@@ -312,12 +348,25 @@ impl Tray {
         for m in self.watcher.publish(&changes) {
             self.bus.send_message(m);
         }
+        // The media module's text: once per batch, only when what the bar shows changed; the bus
+        // gone, the module goes with it.
+        if let Some(m) = self.media.as_mut() {
+            if out.bus_closed {
+                out.media = Some(None);
+            } else if let Some(view) = m.take_view_change() {
+                out.media = Some(view);
+            }
+        }
         out
     }
 
     fn answer(&mut self, id: CallId, result: Result<Reply, CallError>) -> TrayOutput {
         if let Some(a) = self.appearance.as_mut().filter(|a| a.owns(id)) {
             return TrayOutput { appearance: a.answer(id, result), ..TrayOutput::default() };
+        }
+        if let Some(m) = self.media.as_mut().filter(|m| m.owns(id)) {
+            m.answer(&mut self.bus, id, result);
+            return TrayOutput::default();
         }
         if self.host.owns(id) {
             self.host.answer(id, result, &mut self.bus);
@@ -393,6 +442,13 @@ impl Tray {
     fn signal(&mut self, m: &Message) -> TrayOutput {
         let s = codec::signal(m);
         let sender = m.sender().map(|s| s.to_string()).unwrap_or_default();
+        // MPRIS names, Player properties and Seeked (media task 4) are the consumer's, never the host's.
+        // Every other NameOwnerChanged (the watcher's name, items' owners) goes on as before.
+        if let Some(media) = self.media.as_mut()
+            && media.signal(&mut self.bus, &s)
+        {
+            return TrayOutput::default();
+        }
         match &s {
             Signal::NameOwnerChanged { name, new, .. } if name == WATCHER_NAME => match self.role.clone() {
                 Role::Watcher => {}
