@@ -20,6 +20,7 @@ pub mod layout;
 pub mod list;
 pub mod lock;
 pub mod log;
+pub mod media;
 pub mod memory;
 pub mod nonblocking;
 pub mod painter;

@@ -32,6 +32,11 @@ pub const BLUETOOTH: char = '\u{f00af}'; // md-bluetooth
 pub const BLUETOOTH_CONNECTED: char = '\u{f00b1}'; // md-bluetooth_connect
 /// The launcher's button, left of the workspaces.
 pub const LAUNCHER: char = '\u{f0349}'; // md-magnify
+/// The media module (media spec § 1, § 2): the bar's mark, the popup's buttons.
+pub const PLAY: char = '\u{f040a}'; // md-play
+pub const PAUSE: char = '\u{f03e4}'; // md-pause
+pub const SKIP_PREVIOUS: char = '\u{f04ae}'; // md-skip_previous
+pub const SKIP_NEXT: char = '\u{f04ad}'; // md-skip_next
 
 /// The volume's mini-gauge (spec § 2): one cell per sixth.
 pub const GAUGE: [char; 6] = ['▁', '▃', '▅', '▆', '▇', '▇'];
@@ -555,6 +560,14 @@ mod tests {
         assert_eq!(s.width(), 1, "one cell, like the other icons");
         assert_eq!(s.target, Some(Target::Module(ModuleId::Launcher)));
         assert_eq!(crate::grid::text_width(&LAUNCHER.to_string()), 1);
+    }
+
+    #[test]
+    fn media_glyphs_are_one_cell_each() {
+        assert_eq!([PLAY, PAUSE, SKIP_PREVIOUS, SKIP_NEXT], ['\u{f040a}', '\u{f03e4}', '\u{f04ae}', '\u{f04ad}']);
+        for g in [PLAY, PAUSE, SKIP_PREVIOUS, SKIP_NEXT] {
+            assert_eq!(crate::grid::text_width(&g.to_string()), 1, "{g:?}");
+        }
     }
 
     fn three_modules_bar() -> Bar {

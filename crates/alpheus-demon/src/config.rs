@@ -31,6 +31,9 @@
 //! tooltips = true                                           # the item's name after ½ s of hovering
 //! [tray.icons]                                              # glyph overrides, keyed like the built-in table
 //! keepassxc = "󰌋"
+//! [media]
+//! title_max = 30                                            # cells of the title in the bar, 8 to 80
+//! ignore = ["kdeconnect"]                                   # players never shown: substrings of their bus name (playerctld always is)
 //! ```
 
 use crate::clock;
@@ -295,6 +298,27 @@ impl Default for BatteryConfig {
     }
 }
 
+/// The narrowest and widest `[media] title_max`, in cells.
+pub const TITLE_MAX_MIN: u16 = 8;
+pub const TITLE_MAX_MAX: u16 = 80;
+
+/// `[media]` (media spec § 4): the title's width in the bar, and the players never shown.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaConfig {
+    /// Cells of the title in the bar (8 to 80), "…" included.
+    pub title_max: u16,
+    /// Substrings of a player's bus name: that player is never queried. playerctld is always
+    /// ignored, whatever this holds.
+    pub ignore: Vec<String>,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        MediaConfig { title_max: 30, ignore: vec!["kdeconnect".into()] }
+    }
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,6 +333,7 @@ pub struct BarConfig {
     pub resources: ResourcesConfig,
     pub battery: BatteryConfig,
     pub tray: TrayConfig,
+    pub media: MediaConfig,
 }
 
 impl Default for BarConfig {
@@ -323,6 +348,7 @@ impl Default for BarConfig {
             resources: ResourcesConfig::default(),
             battery: BatteryConfig::default(),
             tray: TrayConfig::default(),
+            media: MediaConfig::default(),
         }
     }
 }
@@ -352,6 +378,8 @@ struct Raw {
     battery: BatteryConfig,
     #[serde(default)]
     tray: TrayConfig,
+    #[serde(default)]
+    media: MediaConfig,
 }
 
 impl BarConfig {
@@ -403,6 +431,9 @@ impl BarConfig {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
             }
         }
+        if !(TITLE_MAX_MIN..=TITLE_MAX_MAX).contains(&b.media.title_max) {
+            return Err(format!("media.title_max {} out of range {TITLE_MAX_MIN} to {TITLE_MAX_MAX} cells", b.media.title_max));
+        }
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -414,6 +445,7 @@ impl BarConfig {
             resources: b.resources,
             battery: b.battery,
             tray,
+            media: b.media,
         })
     }
 }
@@ -621,6 +653,36 @@ mod tests {
         assert!(glyph_err.contains("fo\\\"o"), "{glyph_err}");
         let case_err = BarConfig::from_text("[tray.icons]\n'Fo\"o' = \"x\"\n'fo\"o' = \"y\"\n").unwrap_err();
         assert!(case_err.contains("fo\\\"o"), "{case_err}");
+    }
+
+    #[test]
+    fn media_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert_eq!(d.media, MediaConfig { title_max: 30, ignore: vec!["kdeconnect".to_string()] });
+        assert!(d.modules.contains(&ModuleId::Media), "on by default");
+        assert_eq!(BarConfig::from_text("height = 22").unwrap().media, MediaConfig::default(), "absent: defaults");
+        let c = BarConfig::from_text("[media]\ntitle_max = 50\nignore = [\"firefox\", \"chromium\"]\n").unwrap();
+        assert_eq!((c.media.title_max, c.media.ignore), (50, vec!["firefox".to_string(), "chromium".to_string()]));
+        let c = BarConfig::from_text("[media]\nignore = []\n").unwrap();
+        assert_eq!((c.media.title_max, c.media.ignore), (30, Vec::<String>::new()), "[] ignores only playerctld; title_max kept");
+        for bound in [TITLE_MAX_MIN, TITLE_MAX_MAX] {
+            let c = BarConfig::from_text(&format!("[media]\ntitle_max = {bound}\n")).unwrap();
+            assert_eq!(c.media.title_max, bound, "bounds included");
+        }
+    }
+
+    #[test]
+    fn media_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("[media]\ntitle_max = 7").contains("media.title_max 7 out of range 8 to 80"), "{}", err("[media]\ntitle_max = 7"));
+        assert!(err("[media]\ntitle_max = 81").contains("media.title_max 81"));
+        assert!(BarConfig::from_text("[media]\ntitle_max = -1").is_err(), "not a u16");
+        assert!(BarConfig::from_text("[media]\ntitle_max = 70000").is_err(), "not a u16");
+        assert!(BarConfig::from_text("[media]\nignore = \"kdeconnect\"").is_err(), "a list, not a string");
+        assert!(err("[media]\nscroll = true").contains("scroll"), "unknown key refused");
+        let (c, w) = BarConfig::load(&file("media", "[media]\ntitle_max = 5\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("media.title_max")));
     }
 
     #[test]

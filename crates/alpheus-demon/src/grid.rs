@@ -179,7 +179,7 @@ fn is_displayed_control(c: char) -> bool {
 /// Displayed width: a control character (or treated as one, see
 /// `is_displayed_control`) becomes a space (1), a combining mark takes no
 /// cell (0), CJK and emoji take 2.
-fn char_width(c: char) -> u16 {
+pub(crate) fn char_width(c: char) -> u16 {
     if is_displayed_control(c) { 1 } else { c.width().unwrap_or(0) as u16 }
 }
 
