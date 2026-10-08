@@ -1562,11 +1562,16 @@ fn a_switch_to_floating_closes_a_popup_hanging_from_the_bar() {
     write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\n");
     assert!(d.wait_for("popup closed (restyled)", DELAY), "{:?}", d.log());
     assert!(d.wait_for("theme reloaded: catppuccin, dark, style floating", DELAY), "{:?}", d.log());
-    let popup = d.log().iter().position(|l| l.contains("popup closed (restyled)"));
-    let reload = d.log().iter().position(|l| l.contains("theme reloaded:"));
-    assert!(popup.is_some() && reload.is_some(), "{:?}", d.log());
-    // The moved bar: the clock is 6 px further right and down.
-    thread::sleep(Duration::from_millis(300)); // the configure and the repaint
+    // The reload's line names the change, then the restyle closes the popup, before the bar moves.
+    let log = d.log();
+    let reload = log.iter().position(|l| l.contains("theme reloaded:"));
+    let popup = log.iter().position(|l| l.contains("popup closed (restyled)"));
+    assert!(matches!((reload, popup), (Some(r), Some(p)) if r < p), "the reload line, then the close: {log:?}");
+    // The moved bar, painted at its new place (its first row 6 px down): the clock is 6 px further
+    // right and down.
+    let mocha = bar_bg("catppuccin");
+    let first_row = |s: &Ppm| (0..s.height).find(|y| s.at(s.width / 2, *y) == Some(mocha));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| first_row(s) == Some(6)), "{:?}", d.log());
     sway.click(x + 6, y + 6, "button1");
     assert!(d.wait_for_count("calendar shown", 2, DELAY), "the calendar opens again on the moved bar: {:?}", d.log());
     // A style switch that keeps the placement leaves an open popup alone.

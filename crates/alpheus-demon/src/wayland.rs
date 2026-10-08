@@ -226,13 +226,14 @@ fn drawable(configured: bool, width: u32, placing: bool) -> bool {
     configured && width != 0 && !placing
 }
 
-/// Whether a bar is still waiting for its placement after a configure `height` logical px tall:
-/// only the configure answering the latest placement (`wanted`, its surface height) ends the hold.
-/// The answer to an earlier one (two quick restyles, or a configure already in flight) has another
-/// height, since the placements differ by floating's shadow. 0 (the size left to the client) ends it
-/// too, so a bar never holds forever.
-fn still_placing(placing: bool, height: u32, wanted: u32) -> bool {
-    placing && height != 0 && height != wanted
+/// Whether a bar is still waiting for its placement after a configure `height` logical px tall.
+/// Only a configure that clearly answers the PREVIOUS placement (`previous`, its surface height)
+/// keeps the hold: two quick restyles, or a configure already in flight. The placements differ by
+/// floating's shadow, so their heights tell them apart. Any other configure ends it: the latest
+/// placement's height, 0 (the size left to the client), or a height the compositor clamped or
+/// rounded. A bar must never freeze waiting for an exact echo.
+fn still_placing(placing: bool, height: u32, previous: u32) -> bool {
+    placing && height == previous
 }
 
 /// Applies `p` to `layer`, uncommitted: margin, size, exclusive zone, and the input region (the
@@ -330,6 +331,9 @@ pub(crate) struct Surface {
     /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile
     /// (spec § 4), since a buffer of the old size would not match.
     placing: bool,
+    /// The surface height of the placement before the latest one: a configure of that height
+    /// answers an earlier request, and keeps the hold (`still_placing`).
+    placed_from: u32,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
@@ -654,6 +658,7 @@ impl App {
             configured: false,
             placement,
             placing: false,
+            placed_from: placement.surface_height,
             last: None,
             buffers: Vec::new(),
             opaque: Vec::new(),
@@ -742,6 +747,7 @@ impl App {
         let App { surfaces, compositor, .. } = self;
         for s in surfaces.iter_mut().filter(|s| s.placement != wanted) {
             apply_placement(compositor, &s.layer, &wanted);
+            s.placed_from = s.placement.surface_height;
             s.placement = wanted;
             s.placing = true;
             s.last = None;
@@ -1271,10 +1277,12 @@ impl LayerShellHandler for App {
         // pending) succeeded, the output can again be restored in the
         // future if the compositor closes its surface again.
         let first_configure = !self.surfaces[i].configured;
-        // The configure of the latest placement (a style switch): paint again, at the new size.
+        // Any configure but the answer to an earlier placement ends a style switch's hold: paint
+        // again, at the new size.
         let s = &mut self.surfaces[i];
-        if s.placing && !still_placing(s.placing, c.new_size.1, s.placement.surface_height) {
-            s.placing = false;
+        let held = s.placing;
+        s.placing = still_placing(s.placing, c.new_size.1, s.placed_from);
+        if held && !s.placing {
             s.last = None;
         }
         if self.surfaces[i].width != c.new_size.0 {
@@ -2083,20 +2091,25 @@ mod tests {
         assert!(!eligible_for_frame(true, true, true), "re-placed, its configure not come yet");
     }
 
-    /// Task 6 review: only the configure answering the LATEST placement ends the hold. Two quick
-    /// restyles (floating -> flat -> floating before any configure) get the answer to the first one
-    /// first: painting then would draw a floating bar at the flat size.
+    /// Task 6 and 7 reviews: the hold ends on any configure except one that clearly answers the
+    /// PREVIOUS placement (its height), so a bar can never freeze. Two quick restyles (floating ->
+    /// flat -> floating before any configure) get the answer to the flat one first: it keeps holding,
+    /// since painting then would draw a floating bar at the flat size.
     #[test]
-    fn only_the_configure_of_the_latest_placement_ends_the_hold() {
+    fn only_the_answer_to_the_previous_placement_keeps_holding() {
         use alpheus_commun::theme::settings::BarStyle;
         let flat = Placement::for_style(BarStyle::Flat, 22).surface_height;
         let floating = Placement::for_style(BarStyle::Floating, 22).surface_height;
         assert_ne!(flat, floating, "the check bites only if the two placements differ in height");
-        let wanted = floating;
-        assert!(still_placing(true, flat, wanted), "the answer to the first restyle (flat) keeps holding");
-        assert!(!still_placing(true, floating, wanted), "the answer to the latest one ends the hold");
-        assert!(!still_placing(true, 0, wanted), "a size left to the client (0) never holds forever");
-        assert!(!still_placing(false, flat, wanted), "not placing: nothing to end");
+        // floating -> flat -> floating: the placement before the latest one is flat.
+        let previous = flat;
+        assert!(still_placing(true, flat, previous), "the answer to the first restyle (flat) keeps holding");
+        assert!(!still_placing(true, floating, previous), "the answer to the latest one ends the hold");
+        assert!(!still_placing(true, 0, previous), "a size left to the client (0) ends the hold");
+        assert!(!still_placing(false, flat, previous), "not placing: nothing to end");
+        // A compositor that clamps or rounds the height (25 or 27 for 26) must never freeze the bar.
+        assert!(!still_placing(true, 25, previous), "an unexpected height ends the hold");
+        assert!(!still_placing(true, 27, previous), "an unexpected height ends the hold");
     }
 
     /// Review items M3/M4, final review slice 3: the same check used by
