@@ -414,7 +414,9 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
         let rule = |buf: &mut Buffer, x: u16, w: u16, c: Rgb| {
             put(buf, clip, x, bottom, &"━".repeat(usize::from(w)), on(Style::default().fg(color(c)), Some(p.bar_bg)));
         };
-        rule(buf, area.x + 1, 1, p.accent); // the "1" sits right after the workspaces block's lead cell
+        if let Some((x, w)) = active_span(&left, area.x) {
+            rule(buf, x, w, p.accent);
+        }
         if colors != ModuleColors::None && start > left_end {
             let mut x = start;
             for b in &right {
@@ -425,6 +427,25 @@ fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleC
             }
         }
     }
+}
+
+/// The active workspace's run (the one with its own background) in the left side laid out from
+/// `x` (each block: a lead cell, its runs, a trail cell, then one cell of gap or arrow): its x and
+/// width; None without one.
+fn active_span(left: &[Block], x: u16) -> Option<(u16, u16)> {
+    let mut bx = x;
+    for b in left {
+        let mut cx = bx + 1;
+        for r in &b.runs {
+            let w = r.text.chars().count() as u16;
+            if r.bg.is_some() {
+                return Some((cx, w));
+            }
+            cx += w;
+        }
+        bx += b.width() + 3;
+    }
+    None
 }
 
 /// The menu of the previewed theme: a selected row, a checked row and a plain one.
@@ -938,6 +959,22 @@ mod tests {
         let mut left = vec![block("1 2"), block("café–über–ñ✓")];
         fit(&mut left, &mut vec![block("♪ 84%")], 24, false);
         assert_eq!(left[TITLE].runs[0].text, "café–übe", "24 columns: eight characters fit");
+    }
+
+    /// Underline's accent rule sits under the active workspace's run wherever it is: the run with
+    /// its own background, found through the blocks' lead cells and gaps, never a fixed column.
+    #[test]
+    fn the_underline_rule_follows_the_active_workspace_run() {
+        let run = |text, bg| Run { text, fg: Rgb(0, 0, 0), bg, state: false, visible: false };
+        let lit = Some(Rgb(1, 2, 3));
+        let left = vec![
+            Block { runs: vec![run("◆", None)], hue: None },
+            Block { runs: vec![run("1 ", None), run("2", lit), run(" 3", None)], hue: None },
+        ];
+        // The launcher block (lead, "◆", trail) and its gap take 4 cells; then the lead, "1 ".
+        assert_eq!(active_span(&left, 10), Some((10 + 4 + 1 + 2, 1)));
+        let none = vec![Block { runs: vec![run("1 2", None)], hue: None }];
+        assert_eq!(active_span(&none, 10), None, "no active workspace, no rule");
     }
 
     #[test]
