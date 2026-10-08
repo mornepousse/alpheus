@@ -73,16 +73,15 @@ fn spacing(style: BarStyle) -> Spacing {
     }
 }
 
-/// The block a module belongs to (shapes spec § 2). Media and notifications (delivery 5) join the
-/// status block.
+/// The block a module belongs to (shapes spec § 2). Media is a block of its own (media spec § 1);
+/// notifications (a later delivery) join the status block.
 pub fn group_kind(m: ModuleId) -> GroupKind {
     match m {
         ModuleId::Launcher => GroupKind::Launcher,
         ModuleId::Workspaces => GroupKind::Workspaces,
         ModuleId::Window => GroupKind::Title,
-        ModuleId::Media | ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications => {
-            GroupKind::Status
-        }
+        ModuleId::Media => GroupKind::Media,
+        ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications => GroupKind::Status,
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
@@ -93,12 +92,12 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
 /// without one.
 pub const fn module_hue(m: ModuleId) -> Option<Hue> {
     match m {
-        ModuleId::Window | ModuleId::Bluetooth => Some(Hue::Purple),
+        ModuleId::Window | ModuleId::Bluetooth | ModuleId::Media => Some(Hue::Purple),
         ModuleId::Volume => Some(Hue::Blue),
         ModuleId::Network => Some(Hue::Cyan),
         ModuleId::Battery => Some(Hue::Green),
         ModuleId::Resources => Some(Hue::Orange),
-        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Media | ModuleId::Tray | ModuleId::Notifications | ModuleId::Clock => None,
+        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Tray | ModuleId::Notifications | ModuleId::Clock => None,
     }
 }
 
@@ -224,8 +223,9 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery, bar.module_colors),
         ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources, bar.module_colors),
         ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
-        // Delivery 5: not shown yet.
-        ModuleId::Media | ModuleId::Notifications => None,
+        ModuleId::Media => segments::media(bar.media.as_ref(), bar.module_colors),
+        // A later delivery: not shown yet.
+        ModuleId::Notifications => None,
     }
 }
 
@@ -388,6 +388,7 @@ mod tests {
     use crate::clock::LocalTime;
     use crate::compositor::{Window, example};
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
+    use crate::media::MediaView;
     use crate::state::Msg;
     use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
     use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
@@ -907,6 +908,75 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    // ---- the media module (media spec § 1) ----
+
+    /// The media module between the title and the volume (its place in `ModuleId::ALL`).
+    fn bar_with_media(playing: bool) -> Bar {
+        let mut b = bar();
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Media, ModuleId::Volume, ModuleId::Clock];
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Media(Some(MediaView { playing, title: "Bohemian Rhapsody".into() })));
+        b
+    }
+
+    #[test]
+    fn media_sits_between_the_title_and_the_volume() {
+        let g = bar_with_media(true).grid("HDMI-A-1", 100);
+        let t = g.text();
+        assert!(t.contains(" │ \u{f040a} Bohemian Rhapsody │ \u{f057e} ▁▃▅▆▇▇  84% │ Sun 4 Oct 14:05 "), "{t}");
+        let media = Target::Module(ModuleId::Media);
+        let (start, _) = tail_from(&g, &media);
+        assert_eq!(g.target_at(start + 18), Some(&media), "its last cell: 19 cells, one zone");
+        assert_eq!((g.target_at(start - 1), g.target_at(start + 19)), (None, None), "the separators around it");
+        insta::assert_snapshot!("media_flat_100", snapshot(&g));
+        let mut gone = bar_with_media(true);
+        gone.apply(Msg::Media(None));
+        let mut absent = bar_with_media(true);
+        absent.config.modules.retain(|m| *m != ModuleId::Media);
+        assert_eq!(gone.grid("HDMI-A-1", 100), absent.grid("HDMI-A-1", 100), "no player: exactly the bar without the module");
+    }
+
+    #[test]
+    fn media_is_a_block_of_its_own_in_purple() {
+        for style in [BarStyle::Underline, BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Translucent] {
+            let g = styled(bar_with_media(true), style).grid("HDMI-A-1", 100);
+            let kinds: Vec<GroupKind> = g.groups().iter().map(|x| x.kind).collect();
+            assert_eq!(
+                kinds,
+                [GroupKind::Workspaces, GroupKind::Title, GroupKind::Media, GroupKind::Status, GroupKind::Clock],
+                "{style:?}"
+            );
+            let (media, status) = (g.groups()[2], g.groups()[3]);
+            assert_eq!((media.hue, status.hue), (Some(Hue::Purple), Some(Hue::Blue)), "{style:?}: the volume opens a block of its own");
+            let cells: String = g.cells()[usize::from(media.start)..usize::from(media.end)]
+                .iter()
+                .filter(|c| c.ch != crate::grid::CONT)
+                .map(|c| c.ch)
+                .collect();
+            let want = if style == BarStyle::Underline { "\u{f040a} Bohemian Rhapsody" } else { " \u{f040a} Bohemian Rhapsody " };
+            assert_eq!(cells, want, "{style:?}: the block wraps the mark and the title, its pads included");
+        }
+        let g = styled(bar_with_media(true), BarStyle::Islands).grid("HDMI-A-1", 100);
+        insta::assert_snapshot!("media_islands_100", snapshot(&g));
+    }
+
+    #[test]
+    fn media_leaves_after_the_tray_and_before_the_title() {
+        let at = |m: ModuleId| REMOVAL.iter().position(|r| *r == m);
+        assert!(at(ModuleId::Tray) < at(ModuleId::Media) && at(ModuleId::Media) < at(ModuleId::Window));
+        let b = bar_with_media(true);
+        let shown = |w: u16| {
+            let t = b.grid("HDMI-A-1", w).text();
+            (t.contains(crate::segments::PLAY), t.contains("Web"))
+        };
+        let gone = (20u16..=100).rev().find(|&w| !shown(w).0).expect("narrow enough, the media leaves");
+        assert_eq!(shown(gone), (false, true), "the title is still there at {gone} columns");
+        for w in 20u16..=100 {
+            let (media, title) = shown(w);
+            assert!(!media || title, "at {w}: the media outlived the title");
         }
     }
 

@@ -143,6 +143,8 @@ pub enum GroupKind {
     Tray,
     Clock,
     Launcher,
+    /// The media module: a block of its own (media spec § 1).
+    Media,
 }
 
 /// One block: cells [start, end) of the bar's grid, its pads included under the block styles;

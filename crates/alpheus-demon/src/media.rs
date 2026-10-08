@@ -685,8 +685,14 @@ mod tests {
         assert_eq!(p.apply(":1.4", &[], &["Metadata".into()]), Need::Metadata(":1.4".into()));
         assert_eq!(p.apply(":1.4", &[], &["Volume".into()]), Need::None);
         assert_eq!(p.apply(":1.9", &changed, &["Metadata".into()]), Need::None, "an unknown player");
-        for (rate, want) in [(Value::Float(40.0), MAX_RATE), (Value::Float(-1.0), 0.0), (Value::Int(2), 2.0), (Value::Float(f64::NAN), 2.0)]
-        {
+        for (rate, want) in [
+            (Value::Float(40.0), MAX_RATE),
+            (Value::Float(-1.0), 0.0),
+            (Value::Int(2), 2.0),
+            (Value::Float(f64::NAN), 2.0),
+            (Value::Float(f64::INFINITY), 2.0),
+            (Value::Float(f64::NEG_INFINITY), 2.0),
+        ] {
             p.apply(":1.4", &props(&[("Rate", rate.clone())]), &[]);
             assert_eq!(p.get(":1.4").unwrap().rate, want, "{rate:?}");
         }
@@ -718,6 +724,8 @@ mod tests {
         p.set_identity(":1.4", " \t");
         assert_eq!(p.get(":1.4").unwrap().identity, None);
         p.set_identity(":1.9", "Nobody");
+        assert_eq!(p.len(), 1, "an unknown player is not added");
+        assert_eq!(p.get(":1.4").unwrap().identity, None, "and the known one is untouched");
     }
 
     // ---- the active player (spec § 3) ----

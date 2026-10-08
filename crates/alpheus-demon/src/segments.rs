@@ -7,6 +7,7 @@
 use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, ResourcesConfig, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
+use crate::media::MediaView;
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
 use crate::tray::Status;
@@ -348,6 +349,24 @@ pub(crate) fn resources(r: &Resources, c: &ResourcesConfig, mc: ModuleColors) ->
     Some(module_segment(ModuleId::Resources, pieces))
 }
 
+/// The media module (media spec § 1): `▶ Title` while playing, in the purple as `module_colors`
+/// says; `⏸ Title` while paused, dimmed whatever it says (a state wins over the hue); None without
+/// a player playing or paused. The whole segment is one click zone.
+pub(crate) fn media(view: Option<&MediaView>, mc: ModuleColors) -> Option<Segment> {
+    let v = view?;
+    let (mark, icon, text) = if v.playing {
+        (PLAY, icon_style(mc, Hue::Purple, Style::NORMAL), text_style(mc, Hue::Purple, Style::NORMAL))
+    } else {
+        (PAUSE, Style::MUTED, Style::MUTED)
+    };
+    let pieces = if v.title.is_empty() {
+        vec![piece(mark.to_string(), icon)]
+    } else {
+        vec![piece(format!("{mark} "), icon), piece(v.title.clone(), text)]
+    };
+    Some(module_segment(ModuleId::Media, pieces))
+}
+
 /// One tray icon (spec § 1 Icons): a glyph NORMAL, a letter BOLD_ACCENT (the
 /// clock's style: "bold accent colour, no background"); NeedsAttention ERROR
 /// whatever it is; Passive MUTED (`dim`), as Active (`show`) or not drawn
@@ -560,6 +579,50 @@ mod tests {
         assert_eq!(s.width(), 1, "one cell, like the other icons");
         assert_eq!(s.target, Some(Target::Module(ModuleId::Launcher)));
         assert_eq!(crate::grid::text_width(&LAUNCHER.to_string()), 1);
+    }
+
+    fn song(playing: bool, title: &str) -> MediaView {
+        MediaView { playing, title: title.into() }
+    }
+
+    #[test]
+    fn media_shows_its_mark_and_title() {
+        let s = super::media(Some(&song(true, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
+        assert_eq!(draw(&s), ("\u{f040a} Bohemian Rhapsody".into(), ".".repeat(19)));
+        assert_eq!((s.module, &s.target), (ModuleId::Media, &Some(Target::Module(ModuleId::Media))), "one click zone");
+        let paused = super::media(Some(&song(false, "Bohemian Rhapsody")), ModuleColors::None).unwrap();
+        assert_eq!(draw(&paused), ("\u{f03e4} Bohemian Rhapsody".into(), "m".repeat(19)), "paused: the pause mark, dimmed");
+        let bare = super::media(Some(&song(true, "")), ModuleColors::None).unwrap();
+        assert_eq!((draw(&bare).0.as_str(), bare.width()), ("\u{f040a}", 1), "no title: the mark alone, no trailing space");
+    }
+
+    #[test]
+    fn media_is_hidden_without_a_player() {
+        for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+            assert!(super::media(None, mc).is_none(), "{mc:?}");
+        }
+        let mut b = Bar::new(BarConfig::default());
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Media, ModuleId::Clock];
+        b.apply(Msg::Compositor(Some(example())));
+        b.apply(Msg::Clock(SUN));
+        let t = b.grid("HDMI-A-1", 60).text();
+        assert_eq!(t.matches('│').count(), 1, "no \"│ │\" without a player: {t}");
+        b.apply(Msg::Media(Some(song(true, "Song"))));
+        let t = b.grid("HDMI-A-1", 60).text();
+        assert_eq!(t.matches('│').count(), 2, "{t}");
+        assert!(t.contains(" │ \u{f040a} Song "), "{t}");
+    }
+
+    #[test]
+    fn media_takes_the_purple_by_module_colours_and_paused_stays_dim() {
+        let at = |playing, mc| draw(&super::media(Some(&song(playing, "Song")), mc).unwrap()).1;
+        assert_eq!(at(true, ModuleColors::None), "......");
+        assert_eq!(at(true, ICONS), "pp....", "the purple mark (and its space)");
+        assert_eq!(at(true, FULL), "pppppp", "and the title");
+        assert_eq!(at(true, ModuleColors::Pills), "pppppp", "pills lays out as full");
+        for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+            assert_eq!(at(false, mc), "mmmmmm", "paused stays dim under {mc:?}");
+        }
     }
 
     #[test]

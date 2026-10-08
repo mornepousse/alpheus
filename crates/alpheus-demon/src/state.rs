@@ -4,6 +4,7 @@
 use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
 use crate::config::BarConfig;
+use crate::media::MediaView;
 use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
@@ -30,6 +31,8 @@ pub enum Msg {
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring (task 11).
     Tray(Vec<TrayIcon>),
+    /// What the media module shows; None: no player, or every player stopped (media spec § 1).
+    Media(Option<MediaView>),
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +47,8 @@ pub struct Bar {
     pub resources: Resources,
     /// The tray's icons, in registration order; empty at start.
     pub tray: Vec<TrayIcon>,
+    /// The media module's mark and title; None until a player plays or pauses, and again when none does.
+    pub media: Option<MediaView>,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
     /// at start and on every theme reload. `None` until then, the look of delivery 1.
     pub module_colors: ModuleColors,
@@ -89,6 +94,7 @@ impl Bar {
             battery: Feed::Waiting,
             resources: Resources::default(),
             tray: Vec::new(),
+            media: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
         }
@@ -125,6 +131,14 @@ impl Bar {
                     false
                 } else {
                     self.tray = icons;
+                    true
+                }
+            }
+            Msg::Media(view) => {
+                if self.media == view {
+                    false
+                } else {
+                    self.media = view;
                     true
                 }
             }
@@ -204,6 +218,21 @@ mod tests {
         assert!(r.push(s));
         assert!(!r.push(s), "same reading, no CPU: nothing to redraw");
         assert!(r.history.is_empty());
+    }
+
+    #[test]
+    fn media_message_redraws_only_on_change() {
+        use crate::media::MediaView;
+        let song = |playing| Some(MediaView { playing, title: "Bohemian Rhapsody".into() });
+        let mut b = Bar::new(BarConfig::default());
+        assert_eq!(b.media, None, "nothing at start");
+        assert!(!b.apply(Msg::Media(None)), "still nothing: no redraw");
+        assert!(b.apply(Msg::Media(song(true))));
+        assert!(!b.apply(Msg::Media(song(true))), "the same mark and title: no redraw");
+        assert!(b.apply(Msg::Media(song(false))), "paused: the mark changes");
+        assert_eq!(b.media, song(false));
+        assert!(b.apply(Msg::Media(None)), "the last player left");
+        assert_eq!(b.media, None);
     }
 
     #[test]
