@@ -307,6 +307,14 @@ pub(crate) fn lay_out(segs: &[Segment], columns: u16, gap_at: Option<usize>) -> 
     lay_out_styled(segs, columns, gap_at, BarStyle::Flat)
 }
 
+/// Records a block unless clipping left nothing but blanks in it: a lone pad would be a lone border.
+fn record_block(g: &mut Grid, block: Group) {
+    let end = usize::from(block.end.min(g.width()));
+    if g.cells().get(usize::from(block.start)..end).is_some_and(|c| c.iter().any(|c| c.ch != ' ')) {
+        g.group(block);
+    }
+}
+
 pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usize>, style: BarStyle) -> Grid {
     let spacing = spacing(style);
     let mut g = Grid::empty(columns);
@@ -341,7 +349,7 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
             if let Some((kind, start, hue)) = open.take()
                 && record
             {
-                g.group(Group { kind, start, end: text_end.saturating_add(pad), hue });
+                record_block(&mut g, Group { kind, start, end: text_end.saturating_add(pad), hue });
             }
             open = Some((group_kind(s.module), x, module_hue(s.module)));
             x = x.saturating_add(pad);
@@ -362,13 +370,14 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
         text_end = x;
         if s.elastic {
             x = limit;
-            g.set_split(x);
+            // Past the closing pad, as in the non-elastic branch: the title's block ends before the split.
+            g.set_split(x.saturating_add(pad));
         }
     }
     if let Some((kind, start, hue)) = open
         && record
     {
-        g.group(Group { kind, start, end: text_end.saturating_add(pad), hue });
+        record_block(&mut g, Group { kind, start, end: text_end.saturating_add(pad), hue });
     }
     g
 }
@@ -795,7 +804,7 @@ mod tests {
                 group(GroupKind::Clock, 82, 99, None),
             ]
         );
-        assert_eq!(g.split(), 80, "the title's free space ends where the right-hand side starts");
+        assert_eq!(g.split(), 81, "the title's free space and closing pad end where the right-hand side starts");
         assert_eq!(g.target_at(2), Some(&Target::Module(ModuleId::Launcher)), "the zones follow the cells");
         assert_eq!(g.target_at(6), Some(&Target::Workspace { reference: "2".into(), output: "HDMI-A-1".into() }));
         insta::assert_snapshot!("blocks_hdmi_100", snapshot(&g));
@@ -872,6 +881,47 @@ mod tests {
                 }
             }
             assert_eq!(removed_at.len(), 4, "{style:?}: all but the launcher leave by 45 columns ({removed_at:?})");
+        }
+    }
+
+    /// Left blocks end at or before the split and right blocks start at or after it, a long
+    /// (truncated) title included: powerline reads the side of a block from it.
+    #[test]
+    fn blocks_sit_on_one_side_of_the_split_even_with_a_truncated_title() {
+        for style in BLOCK_STYLES {
+            for title in ["Web page", &"very long title ".repeat(12)] {
+                let mut b = styled(bar_with_right_modules(), style);
+                let mut e = example();
+                e.window.as_mut().unwrap().title = title.to_string();
+                b.apply(Msg::Compositor(Some(e)));
+                for w in [100u16, 80, 70] {
+                    let g = b.grid("HDMI-A-1", w);
+                    for x in g.groups() {
+                        let left = matches!(x.kind, GroupKind::Launcher | GroupKind::Workspaces | GroupKind::Title);
+                        assert!(
+                            if left { x.end <= g.split() } else { x.start >= g.split() },
+                            "{style:?} {w}: {x:?} split {} in {}",
+                            g.split(),
+                            g.text()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Below the minimum width the clipped text may vanish: no block is left holding only blanks.
+    #[test]
+    fn no_block_holds_only_blanks_at_any_width() {
+        for style in BLOCK_STYLES {
+            let b = styled(bar_with_right_modules(), style);
+            for w in 0u16..45 {
+                let g = b.grid("HDMI-A-1", w);
+                for x in g.groups() {
+                    let cells = &g.cells()[usize::from(x.start)..usize::from(x.end)];
+                    assert!(cells.iter().any(|c| c.ch != ' '), "{style:?} at {w}: {x:?} in {:?}", g.text());
+                }
+            }
         }
     }
 }
