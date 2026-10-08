@@ -172,6 +172,15 @@ pub enum Need {
     Metadata(String),
 }
 
+/// What `Players::apply` did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Applied {
+    pub need: Need,
+    /// Something the bar or the popup shows moved: the status, the track or a capability. Never for
+    /// Rate, Volume or a value repeated (media task 5: the view is rebuilt only then).
+    pub visible: bool,
+}
+
 /// The players known, in discovery order (the popup's order).
 #[derive(Debug, Default)]
 pub struct Players {
@@ -224,9 +233,11 @@ impl Players {
     /// `Metadata`, `Rate`, `CanPlay`, `CanPause`, `CanGoNext`, `CanGoPrevious`; anything else, or a
     /// value of another type, is ignored (`Position` included: it comes from `set_position`). A
     /// status or track change forgets the position. Need::Metadata when `Metadata` is invalidated.
-    pub fn apply(&mut self, unique: &str, changed: &[(String, Value)], invalidated: &[String]) -> Need {
+    pub fn apply(&mut self, unique: &str, changed: &[(String, Value)], invalidated: &[String]) -> Applied {
         let Players { list, seq, .. } = self;
-        let Some(p) = list.iter_mut().find(|p| p.unique == unique) else { return Need::None };
+        let Some(p) = list.iter_mut().find(|p| p.unique == unique) else { return Applied { need: Need::None, visible: false } };
+        let (status, caps) = (p.status, p.caps);
+        let mut visible = false;
         for (key, value) in changed {
             match (key.as_str(), value) {
                 ("PlaybackStatus", Value::Str(s)) => {
@@ -243,6 +254,7 @@ impl Players {
                     if track != p.track {
                         p.track = track;
                         p.position = None;
+                        visible = true;
                     }
                 }
                 ("Rate", v) => {
@@ -257,7 +269,9 @@ impl Players {
                 _ => {}
             }
         }
-        if invalidated.iter().any(|k| k == "Metadata") { Need::Metadata(unique.to_string()) } else { Need::None }
+        let visible = visible || p.status != status || p.caps != caps;
+        let need = if invalidated.iter().any(|k| k == "Metadata") { Need::Metadata(unique.to_string()) } else { Need::None };
+        Applied { need, visible }
     }
 
     pub fn set_position(&mut self, unique: &str, sync: PositionSync) {
@@ -283,6 +297,11 @@ impl Players {
     /// The players not Stopped, in discovery order.
     pub fn shown(&self) -> impl Iterator<Item = &Player> {
         self.list.iter().filter(|p| p.status != Status::Stopped)
+    }
+
+    /// Whether the player of this well-known name is followed, whatever its status.
+    pub fn has_name(&self, bus_name: &str) -> bool {
+        self.list.iter().any(|p| p.bus_name == bus_name)
     }
 
     pub fn get(&self, unique: &str) -> Option<&Player> {
@@ -678,13 +697,13 @@ mod tests {
             ("Position", Value::Int(42)),
             ("CanPlay", Value::Other),
         ]);
-        assert_eq!(p.apply(":1.4", &changed, &[]), Need::None);
+        assert_eq!(p.apply(":1.4", &changed, &[]).need, Need::None);
         let x = p.get(":1.4").unwrap();
         assert_eq!(x.caps, Caps { play: true, pause: true, next: true, previous: false }, "a value of the wrong type is ignored");
         assert_eq!((x.rate, x.position), (1.5, None), "Volume and Position are not read here");
-        assert_eq!(p.apply(":1.4", &[], &["Metadata".into()]), Need::Metadata(":1.4".into()));
-        assert_eq!(p.apply(":1.4", &[], &["Volume".into()]), Need::None);
-        assert_eq!(p.apply(":1.9", &changed, &["Metadata".into()]), Need::None, "an unknown player");
+        assert_eq!(p.apply(":1.4", &[], &["Metadata".into()]).need, Need::Metadata(":1.4".into()));
+        assert_eq!(p.apply(":1.4", &[], &["Volume".into()]).need, Need::None);
+        assert_eq!(p.apply(":1.9", &changed, &["Metadata".into()]).need, Need::None, "an unknown player");
         for (rate, want) in [
             (Value::Float(40.0), MAX_RATE),
             (Value::Float(-1.0), 0.0),
@@ -696,6 +715,24 @@ mod tests {
             p.apply(":1.4", &props(&[("Rate", rate.clone())]), &[]);
             assert_eq!(p.get(":1.4").unwrap().rate, want, "{rate:?}");
         }
+    }
+
+    /// Task 4's review: only what the bar or the popup shows (status, track, capabilities) asks for
+    /// the view to be rebuilt; Rate, Volume or a repeat of the same value never does.
+    #[test]
+    fn apply_says_whether_anything_shown_changed() {
+        let mut p = players(&[("spotify", ":1.4", "Paused")]);
+        let visible = |p: &mut Players, changed: &[(String, Value)]| p.apply(":1.4", changed, &[]).visible;
+        assert!(visible(&mut p, &props(&[("PlaybackStatus", s("Playing"))])), "a status");
+        assert!(!visible(&mut p, &props(&[("PlaybackStatus", s("Playing"))])), "the same status again");
+        let song = props(&[("Metadata", Value::Map(props(&[("xesam:title", s("One"))])))]);
+        assert!(visible(&mut p, &song), "a track");
+        assert!(!visible(&mut p, &song), "the same track again");
+        assert!(visible(&mut p, &props(&[("CanGoNext", Value::Bool(true))])), "a capability");
+        assert!(!visible(&mut p, &props(&[("CanGoNext", Value::Bool(true))])), "the same capability again");
+        assert!(!visible(&mut p, &props(&[("Rate", Value::Float(2.0)), ("Volume", Value::Float(0.3))])), "Rate, Volume: unseen");
+        assert!(!p.apply(":1.4", &[], &["Metadata".into()]).visible, "an invalidation alone: nothing yet");
+        assert!(!p.apply(":1.9", &props(&[("PlaybackStatus", s("Stopped"))]), &[]).visible, "an unknown player");
     }
 
     #[test]

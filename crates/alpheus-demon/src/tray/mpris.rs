@@ -32,10 +32,10 @@ fn is_unique(name: &str) -> bool {
 /// What one of the consumer's calls was for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ask {
-    /// The startup ListNames.
-    List,
-    /// GetNameOwner of this well-known name (the startup inventory).
-    Owner(String),
+    /// The startup ListNames; true for a second attempt (a lost one is asked again once).
+    List(bool),
+    /// GetNameOwner of this well-known name (the startup inventory); true for a second attempt.
+    Owner(String, bool),
     /// GetAll(Player) on this unique name.
     State(String),
     /// Get(root, Identity).
@@ -56,6 +56,9 @@ pub struct Mpris {
     stale: bool,
     /// The cap was reached and logged; cleared when a player leaves.
     full: bool,
+    /// A ListNames was answered. Until then (lost twice to our timeout, at login on a slow bus), the
+    /// next MPRIS arrival lists again: players already running are found without a timer.
+    listed: bool,
     log: fn(&str),
     /// How many times `take_view_change` built the view (the tests' witness of `stale`).
     #[cfg(test)]
@@ -80,11 +83,12 @@ impl Mpris {
             shown: None,
             stale: false,
             full: false,
+            listed: false,
             log,
             #[cfg(test)]
             built: 0,
         };
-        m.ask(out, Call::ListNames, Ask::List);
+        m.ask(out, Call::ListNames, Ask::List(false));
         m
     }
 
@@ -114,7 +118,7 @@ impl Mpris {
     /// Room for one more: the players plus the names being resolved stay within MAX_PLAYERS. The first
     /// refusal of a full episode is logged; the rest are silent.
     fn room(&mut self, bus_name: &str) -> bool {
-        let resolving = self.asks.values().filter(|a| matches!(a, Ask::Owner(_))).count();
+        let resolving = self.asks.values().filter(|a| matches!(a, Ask::Owner(..))).count();
         if self.players.len() + resolving < MAX_PLAYERS {
             return true;
         }
@@ -136,6 +140,22 @@ impl Mpris {
         self.ask_player(out, unique, |dest| Call::PlayerIdentity { dest }, Ask::Identity);
     }
 
+    /// `bus_name` was released by `unique`: its player goes, only if it is that name's. One
+    /// connection may own two MPRIS names (only the first is followed): the second one released
+    /// leaves the first one's player alone.
+    fn release(&mut self, bus_name: &str, unique: &str) {
+        if self.players.get(unique).is_some_and(|p| p.bus_name == bus_name) {
+            self.leave(unique);
+        }
+    }
+
+    /// The listing again, after the lost ones (`listed`): once in flight at most.
+    fn relist(&mut self, out: &mut impl Outbox) {
+        if !self.listed && !self.asks.values().any(|a| matches!(a, Ask::List(_))) {
+            self.ask(out, Call::ListNames, Ask::List(true));
+        }
+    }
+
     fn leave(&mut self, unique: &str) {
         if self.players.remove_unique(unique) {
             self.full = false;
@@ -149,8 +169,9 @@ impl Mpris {
         if self.players.get(unique).is_none() {
             return;
         }
-        self.stale = true;
-        if let Need::Metadata(u) = self.players.apply(unique, changed, invalidated) {
+        let applied = self.players.apply(unique, changed, invalidated);
+        self.stale |= applied.visible;
+        if let Need::Metadata(u) = applied.need {
             let asked = self.asks.values().any(|a| matches!(a, Ask::Metadata(x) if *x == u));
             if !asked {
                 self.ask_player(out, &u, |dest| Call::PlayerMetadata { dest }, Ask::Metadata);
@@ -161,18 +182,38 @@ impl Mpris {
     pub fn answer(&mut self, out: &mut impl Outbox, id: CallId, reply: Result<Reply, CallError>) {
         let Some(why) = self.asks.remove(&id) else { return };
         match (why, reply) {
-            (Ask::List, Ok(Reply::Names(names))) => {
-                let wanted: Vec<String> = names.into_iter().filter(|n| self.followed(n)).collect();
+            (Ask::List(_), Ok(Reply::Names(names))) => {
+                self.listed = true;
+                // A listing after arrivals (`relist`) skips the names already followed or resolving.
+                let wanted: Vec<String> = names
+                    .into_iter()
+                    .filter(|n| self.followed(n) && !self.players.has_name(n))
+                    .filter(|n| !self.asks.values().any(|a| matches!(a, Ask::Owner(x, _) if x == n)))
+                    .collect();
                 for name in wanted {
                     if self.room(&name) {
-                        self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name));
+                        self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, false));
                     }
                 }
             }
-            (Ask::List, Err(e)) => (self.log)(&format!("media: the players could not be listed ({e:?})")),
-            (Ask::Owner(name), Ok(Reply::Owner(unique))) => self.arrive(out, &name, &unique),
-            // Gone between ListNames and GetNameOwner (NameHasNoOwner), or no answer: nothing to follow.
-            (Ask::Owner(_), _) => {}
+            (Ask::List(again), Err(e)) => {
+                if !again {
+                    (self.log)(&format!("media: the players could not be listed ({e:?})"));
+                }
+                // Lost to our own timeout (a slow bus at login): asked once more, at once.
+                if !again && e == CallError::Timeout {
+                    self.ask(out, Call::ListNames, Ask::List(true));
+                }
+            }
+            (Ask::Owner(name, _), Ok(Reply::Owner(unique))) => self.arrive(out, &name, &unique),
+            // Lost to our own timeout: asked once more.
+            (Ask::Owner(name, false), Err(CallError::Timeout)) => {
+                if self.room(&name) {
+                    self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
+                }
+            }
+            // Gone between ListNames and GetNameOwner (NameHasNoOwner), or lost twice: nothing to follow.
+            (Ask::Owner(..), _) => {}
             (Ask::State(u) | Ask::Metadata(u), Ok(Reply::Props(props))) => self.apply(out, &u, &props, &[]),
             (Ask::Identity(u), Ok(Reply::Text(name))) => {
                 if self.players.get(&u).is_some() {
@@ -197,14 +238,18 @@ impl Mpris {
             Signal::NameOwnerChanged { name, old, new } if name.starts_with(MPRIS_PREFIX) => {
                 if self.followed(name) {
                     // Fresher than a GetNameOwner still in flight for this name: that answer is dropped.
-                    self.asks.retain(|_, a| !matches!(a, Ask::Owner(n) if n == name));
+                    self.asks.retain(|_, a| !matches!(a, Ask::Owner(n, _) if n == name));
                     // A restart is one signal with both owners: the old one goes, the new one comes.
                     if !old.is_empty() {
-                        self.leave(old);
+                        self.release(name, old);
                     }
                     if !new.is_empty() {
                         self.arrive(out, name, new);
                     }
+                }
+                // The bus answers again: a listing lost at startup is asked once more.
+                if !new.is_empty() {
+                    self.relist(out);
                 }
                 true
             }
@@ -230,9 +275,12 @@ impl Mpris {
         }
     }
 
+    /// Pins the player of `bus_name` (the popup's choice); an unknown name changes nothing.
     pub fn pin(&mut self, bus_name: &str) {
-        self.players.pin(bus_name);
-        self.stale = true;
+        if self.players.has_name(bus_name) {
+            self.players.pin(bus_name);
+            self.stale = true;
+        }
     }
 
     pub fn players(&self) -> &Players {
@@ -642,5 +690,92 @@ mod tests {
         assert!(m.signal(&mut out, &paused));
         assert_eq!(m.take_view_change(), Some(view(false, "Harbor Lights")));
         assert_eq!(m.built, built + 1);
+    }
+
+    /// Task 4's review: Rate and Volume are shown nowhere, an unknown pin moves nothing: neither
+    /// rebuilds the view. A capability is shown (the popup's buttons): it does.
+    #[test]
+    fn unseen_changes_never_rebuild_the_view() {
+        let (mut out, mut m) = started();
+        loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
+        assert!(m.take_view_change().is_some());
+        let built = m.built;
+        let props = |changed: Vec<(String, Value)>| Signal::PlayerProps { sender: ":1.7".into(), changed, invalidated: vec![] };
+        assert!(m.signal(&mut out, &props(vec![("Rate".into(), Value::Float(2.0))])));
+        assert!(m.signal(&mut out, &props(vec![("Volume".into(), Value::Float(0.4))])));
+        assert!(m.signal(&mut out, &props(state("Playing", "Harbor Lights"))), "the same state again");
+        m.pin("org.mpris.MediaPlayer2.nobody");
+        assert_eq!(m.take_view_change(), None);
+        assert_eq!(m.built, built, "Rate, Volume, a repeat, an unknown pin: not rebuilt");
+        assert!(m.signal(&mut out, &props(vec![("CanGoNext".into(), Value::Bool(false))])));
+        assert_eq!(m.take_view_change(), None, "the bar's text is the same");
+        assert_eq!(m.built, built + 1, "but the popup shows the buttons: rebuilt");
+        m.pin(TIDEWAVE);
+        m.take_view_change();
+        assert_eq!(m.built, built + 2, "a known pin: rebuilt");
+    }
+
+    /// Task 4's review: one connection may own two MPRIS names; only the first is followed. The
+    /// second one released must not take the first one's player away.
+    #[test]
+    fn a_released_second_name_of_the_same_connection_leaves_the_player() {
+        let (mut out, mut m) = started();
+        loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, "", ":1.7")));
+        assert_eq!(m.players().len(), 1, "the second name of :1.7 is not followed");
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, ":1.7", "")));
+        assert_eq!(m.players().len(), 1, "LANTERN released: TIDEWAVE stays");
+        assert_eq!(m.view(), view(true, "Harbor Lights"));
+        assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.7", "")));
+        assert_eq!(m.players().len(), 0, "its own name released: gone");
+    }
+
+    /// Task 4's review (login): a ListNames lost to our timeout is asked once more at once; if that
+    /// one is lost too, the next MPRIS arrival lists again, so players already running are found
+    /// without a timer. Once listed, never again.
+    #[test]
+    fn a_lost_list_names_is_asked_again_once_then_on_the_next_arrival() {
+        let (mut out, mut m) = started();
+        assert_eq!(out.take(), [(CallId(1), Call::ListNames)]);
+        m.answer(&mut out, CallId(1), Err(CallError::Timeout));
+        let again = out.take();
+        assert_eq!(again.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::ListNames], "one retry at once");
+        m.answer(&mut out, again[0].0, Err(CallError::Timeout));
+        assert!(out.take().is_empty(), "the retry lost too: no third call, no timer");
+        assert_eq!(lines("could not be listed"), 1, "one line");
+        // A player arrives: it is followed, and the listing is asked once more.
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, "", ":1.8")));
+        let asked = out.take();
+        let calls: Vec<Call> = asked.iter().map(|(_, c)| c.clone()).collect();
+        assert_eq!(calls, [get_all(":1.8"), identity(":1.8"), Call::ListNames]);
+        assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.other", "", ":1.9")));
+        assert!(!out.take().iter().any(|(_, c)| *c == Call::ListNames), "one in flight: not twice");
+        let list = asked[2].0;
+        m.answer(&mut out, list, Ok(Reply::Names(vec![TIDEWAVE.into(), LANTERN.into(), "org.mpris.MediaPlayer2.other".into()])));
+        let calls: Vec<Call> = out.take().into_iter().map(|(_, c)| c).collect();
+        assert_eq!(calls, [Call::GetNameOwner { name: TIDEWAVE.into() }], "only the one not yet followed");
+        assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.late", "", ":1.10")));
+        assert!(!out.take().iter().any(|(_, c)| *c == Call::ListNames), "listed: never again");
+    }
+
+    /// Task 4's review: a GetNameOwner lost to our timeout is asked once more, never twice.
+    #[test]
+    fn a_lost_get_name_owner_is_asked_again_once() {
+        let (mut out, mut m) = started();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(vec![TIDEWAVE.into()])));
+        let first = out.ids(Method::GetNameOwner);
+        out.take();
+        m.answer(&mut out, first[0], Err(CallError::Timeout));
+        let again = out.take();
+        assert_eq!(again.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::GetNameOwner { name: TIDEWAVE.into() }]);
+        m.answer(&mut out, again[0].0, Err(CallError::Timeout));
+        assert!(out.take().is_empty(), "lost twice: given up");
+        // A name with no owner any more is not a lost call: never asked again.
+        let (mut out, mut m) = started();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(vec![TIDEWAVE.into()])));
+        let first = out.ids(Method::GetNameOwner);
+        out.take();
+        m.answer(&mut out, first[0], Err(CallError::Remote("org.freedesktop.DBus.Error.NameHasNoOwner".into())));
+        assert!(out.take().is_empty());
     }
 }
