@@ -457,6 +457,32 @@ pub struct App {
     opaque_scratch: Vec<Rect>,
 }
 
+/// Sends `wanted` as a surface's opaque region when it differs from the one last `sent`, then
+/// records it: `set` makes and sets the region. When that fails, `clear` withdraws the surface's
+/// claim, so a stale region never covers what is now transparent, and nothing is recorded as sent:
+/// the next frame tries again.
+fn send_opaque<E>(
+    sent: &mut Vec<Rect>,
+    wanted: &mut Vec<Rect>,
+    set: impl FnOnce(&[Rect]) -> Result<(), E>,
+    clear: impl FnOnce(),
+) -> Result<(), E> {
+    if *wanted == *sent {
+        return Ok(());
+    }
+    match set(wanted) {
+        Ok(()) => {
+            std::mem::swap(sent, wanted);
+            Ok(())
+        }
+        Err(e) => {
+            clear();
+            sent.clear();
+            Err(e)
+        }
+    }
+}
+
 /// The background a bar paints with: the bar's style and module colours (set by the wiring from
 /// theme.toml), the theme's opacity, the grid's blocks.
 pub(crate) fn bar_background<'a>(bar: &Bar, settings: &ThemeSettings, grid: &'a Grid) -> Background<'a> {
@@ -680,18 +706,21 @@ impl App {
         // when it changes (a new width, style or block layout).
         let geometry = BarGeometry { width: s.width, height: bar.config.height, advance: fonts.advance(e), scale: e };
         painter::opaque_rects(bar.style, grid.groups(), &geometry, opaque_scratch);
-        if *opaque_scratch != s.opaque {
-            match Region::new(&*compositor) {
-                Ok(region) => {
-                    for r in opaque_scratch.iter() {
-                        region.add(r.x, r.y, r.width, r.height);
-                    }
-                    surface.set_opaque_region(Some(region.wl_region()));
-                    std::mem::swap(&mut s.opaque, opaque_scratch);
+        let sent = send_opaque(
+            &mut s.opaque,
+            opaque_scratch,
+            |rects| {
+                let region = Region::new(&*compositor)?;
+                for r in rects {
+                    region.add(r.x, r.y, r.width, r.height);
                 }
-                // Not recorded: the next frame tries again.
-                Err(e) => log(&format!("opaque region: {e}")),
-            }
+                surface.set_opaque_region(Some(region.wl_region()));
+                Ok::<(), smithay_client_toolkit::error::GlobalError>(())
+            },
+            || surface.set_opaque_region(None),
+        );
+        if let Err(e) = sent {
+            log(&format!("opaque region: {e}"));
         }
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
@@ -1721,6 +1750,35 @@ impl crate::launch::WindowsFeed for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Task 4 review: the opaque region is sent only when it changes; a region that cannot be made
+    /// clears the surface's claim (never a stale one over transparent gaps) and is retried later.
+    #[test]
+    fn a_failed_opaque_region_clears_the_claim_and_is_retried() {
+        let rect = |x: i32| Rect { x, y: 0, width: 10, height: 22 };
+        let (mut sent, mut wanted) = (vec![rect(0)], vec![rect(5)]);
+        let (mut set, mut cleared) = (0, 0);
+        let r = send_opaque(&mut sent, &mut wanted, |_| Err("no region"), || cleared += 1);
+        assert_eq!(r, Err("no region"), "the error is handed back for the log");
+        assert_eq!(cleared, 1, "the stale claim is withdrawn");
+        assert!(sent.is_empty(), "nothing recorded as sent");
+        let r = send_opaque(
+            &mut sent,
+            &mut wanted,
+            |rs: &[Rect]| {
+                assert_eq!(rs, &[rect(5)]);
+                set += 1;
+                Ok::<(), &str>(())
+            },
+            || cleared += 1,
+        );
+        assert_eq!((r, set, cleared), (Ok(()), 1, 1), "the next frame retries and sends it");
+        assert_eq!(sent, vec![rect(5)]);
+        wanted = vec![rect(5)];
+        let r =
+            send_opaque(&mut sent, &mut wanted, |_| -> Result<(), &str> { panic!("unchanged: not sent again") }, || panic!("unchanged"));
+        assert_eq!(r, Ok(()));
+    }
 
     /// Final review R2: the press remembered for an Activate answer is spent by the first answer
     /// that uses it; a second (late) answer, or one for another icon, finds nothing.

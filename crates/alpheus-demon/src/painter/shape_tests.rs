@@ -348,3 +348,169 @@ fn degenerate_blocks_draw_nothing_and_never_wrap() {
         }
     }
 }
+
+/// Workspaces on 1..3, the clock on 6..9, the launcher on 10..11, the right-hand side from cell 5
+/// (`Grid::split`):
+/// - a right-pointing arrow in cell 3;
+/// - left-pointing arrows in cells 5 and 9;
+/// - cells 0, 4 and 11 plain bar.
+fn powerline_groups(clock: Option<Hue>) -> Vec<Group> {
+    vec![group(GroupKind::Workspaces, 1, 3, None), group(GroupKind::Clock, 6, 9, clock), group(GroupKind::Launcher, 10, 11, None)]
+}
+
+/// An empty powerline grid whose right-hand side starts at `split`.
+fn split_grid(split: u16) -> Grid {
+    let mut g = Grid::empty(COLUMNS);
+    g.set_split(split);
+    g
+}
+
+/// Spec § 3, powerline: full-height blocks on an opaque bar:
+/// - the workspaces on `accent_container`;
+/// - the others alternating `pill_bg` and `raised`.
+#[test]
+fn powerline_blocks_are_full_height_on_an_opaque_bar() {
+    let roles = Roles::default();
+    let groups = powerline_groups(None);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &split_grid(5), &roles, &bg, scale, DEFAULT_HEIGHT);
+        assert!((0..s.h).all(|y| (0..s.w).all(|x| s.at(x, y)[3] == 255)), "scale {scale}: the whole bar opaque");
+        for y in [0, s.h / 2, s.h - 1] {
+            assert_eq!(s.at(s.mid(1), y), opaque(roles.accent_container), "scale {scale}: workspaces, row {y}");
+            assert_eq!(s.at(s.mid(7), y), opaque(roles.pill_bg), "scale {scale}: the first other block, row {y}");
+            assert_eq!(s.at(s.mid(10), y), opaque(roles.raised), "scale {scale}: the second other block, row {y}");
+        }
+        for col in [0, 4, 11] {
+            assert_eq!(s.at(s.mid(col), s.h / 2), opaque(roles.bar_bg), "scale {scale}: free cell {col} on bar_bg");
+        }
+    }
+}
+
+/// Spec § 3, powerline arrows:
+/// - one cell wide, in the colour of the block they come from;
+/// - the base against the block, the tip partly covered, symmetric about the axis;
+/// - an anti-aliased edge;
+/// - right-pointing after a left-side block, left-pointing before a right-side block.
+#[test]
+fn powerline_arrows_are_one_cell_anti_aliased_triangles_in_their_blocks_colour() {
+    let roles = Roles::default();
+    let (ac, bar) = (opaque(roles.accent_container), opaque(roles.bar_bg));
+    let groups = powerline_groups(None);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &split_grid(5), &roles, &bg, scale, DEFAULT_HEIGHT);
+        let y = s.h / 2; // the row just below the axis
+        let (a0, a1) = (s.edge(3), s.edge(4));
+        assert_eq!(s.at(a0, y), ac, "scale {scale}: the base, against the workspaces");
+        let tip = s.at(a1 - 1, y);
+        assert!(tip != ac && tip != bar, "scale {scale}: the tip partly covered, got {tip:?}");
+        assert_eq!(s.at(a1, y), bar, "scale {scale}: one cell wide");
+        assert_eq!(s.at(a1 - 1, 0), bar, "scale {scale}: above the tip, bar_bg");
+        assert!((a0..a1).all(|x| (0..s.h).all(|yy| s.at(x, yy) == s.at(x, s.h - 1 - yy))), "scale {scale}: symmetric");
+        let soft = (a0..a1).any(|x| (0..y).any(|yy| ![ac, bar].contains(&s.at(x, yy))));
+        assert!(soft, "scale {scale}: the slanted edges are anti-aliased");
+        let (b0, b1) = (s.edge(5), s.edge(6));
+        assert_eq!(s.at(b1 - 1, y), opaque(roles.pill_bg), "scale {scale}: left-pointing, its base against the clock");
+        let tip = s.at(b0, y);
+        assert!(tip != opaque(roles.pill_bg) && tip != bar, "scale {scale}: its tip on the left, partly covered, got {tip:?}");
+        assert_eq!(s.at(b0 - 1, y), bar, "scale {scale}: one cell wide");
+        assert_eq!(s.at(s.edge(10) - 1, y), opaque(roles.raised), "scale {scale}: the launcher's arrow in its colour");
+    }
+}
+
+/// One free cell between a left-side block and a right-side block holds one arrow: the left
+/// block's. The title ends at the split (cell 4): it is on the left side.
+#[test]
+fn powerline_a_shared_free_cell_holds_the_left_blocks_arrow_only() {
+    let roles = Roles::default();
+    let groups = vec![group(GroupKind::Title, 1, 4, None), group(GroupKind::Status, 5, 8, None)];
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Icons, &groups);
+        let s = Painted::new(&mut p, &split_grid(4), &roles, &bg, scale, DEFAULT_HEIGHT);
+        let y = s.h / 2;
+        assert_eq!(s.at(s.edge(4), y), opaque(roles.pill_bg), "scale {scale}: the title's arrow, pointing right");
+        assert_ne!(s.at(s.edge(5) - 1, y), opaque(roles.raised), "scale {scale}: no left-pointing status arrow over it");
+    }
+}
+
+/// Spec § 1 and § 3: under pills a hued block and its arrow take the hue, its text the picked ink,
+/// and a state still wins.
+#[test]
+fn powerline_pills_blocks_and_arrows_take_the_hue() {
+    let roles = Roles::default();
+    let green = roles.hues.green;
+    let groups = powerline_groups(Some(Hue::Green));
+    let mut grid = split_grid(5);
+    grid.write(7, 9, "█", Style::NORMAL);
+    grid.write(8, 9, "█", Style::WARN);
+    let mut p = fonts();
+    for scale in [1, 2] {
+        let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Pills, &groups);
+        let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT);
+        let y = s.h / 2;
+        assert_eq!(s.at(s.mid(6), y), opaque(green), "scale {scale}: the clock's block in its hue");
+        assert_eq!(s.at(s.edge(6) - 1, y), opaque(green), "scale {scale}: its arrow in its hue");
+        assert_eq!(s.at(s.mid(7), y), opaque(blocks::on_fill(&roles, green)), "scale {scale}: the picked ink");
+        assert_eq!(s.at(s.mid(8), y), opaque(roles.warn), "scale {scale}: warn wins over the pick");
+        assert_eq!(s.at(s.mid(1), y), opaque(roles.accent_container), "scale {scale}: no hue, the style's colour");
+    }
+}
+
+/// Spec § 1 under powerline: pills text reads on its block for every hue, in a dark and a light
+/// theme. The glyph is painted in the higher-contrast of bar_bg and fg against the block's own
+/// fill, never against flat's bar_bg (which would hide it on a hue close to the bar).
+#[test]
+fn powerline_pills_text_contrasts_with_its_block() {
+    let light = alpheus_commun::theme::presets::preset("catppuccin").unwrap().light.unwrap();
+    let mut p = fonts();
+    for roles in [Roles::default(), light] {
+        for hue in [Hue::Red, Hue::Orange, Hue::Yellow, Hue::Green, Hue::Cyan, Hue::Blue, Hue::Purple] {
+            let fill = color(&roles, roles.bar_bg, Tint::Hue(hue));
+            let groups = powerline_groups(Some(hue));
+            let mut grid = split_grid(5);
+            grid.write(7, 9, "█", Style::hue(hue));
+            let bg = background(BarStyle::Powerline, 0.8, ModuleColors::Pills, &groups);
+            let s = Painted::new(&mut p, &grid, &roles, &bg, 1, DEFAULT_HEIGHT);
+            let (block, text) = (s.at(s.mid(6), s.h / 2), s.at(s.mid(7), s.h / 2));
+            assert_eq!(block, opaque(fill), "{hue:?}: the block is filled with its hue");
+            let rgb = |[r, g, b, _]: [u8; 4]| Rgb(r, g, b);
+            let best = ratio(roles.bar_bg, fill).max(ratio(roles.fg, fill));
+            assert_eq!(ratio(rgb(text), rgb(block)), best, "{hue:?}: the text takes the best contrast with its block");
+            assert_ne!(text, block, "{hue:?}: the text is visible on its block");
+        }
+    }
+}
+
+/// Ruling 11, the block's inset rectangle: a cell background outside every block (a stray active
+/// cell in a gap) is not painted under the block styles; inside a block it is.
+#[test]
+fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
+    let roles = Roles::default();
+    let groups = powerline_groups(None);
+    let mut grid = split_grid(5);
+    grid.write(4, 5, " ", Style::ACTIVE);
+    grid.write(7, 8, " ", Style::ACTIVE);
+    let empty = split_grid(5);
+    let mut p = fonts();
+    for style in [BarStyle::Islands, BarStyle::Translucent, BarStyle::Powerline] {
+        for scale in [1, 2] {
+            let bg = background(style, 0.8, ModuleColors::Icons, &groups);
+            let (s, bare) = (
+                Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT),
+                Painted::new(&mut p, &empty, &roles, &bg, scale, DEFAULT_HEIGHT),
+            );
+            let y = s.h / 2;
+            for x in s.edge(4)..s.edge(5) {
+                assert_eq!(s.at(x, y), bare.at(x, y), "{style:?} scale {scale}: the gap cell's background at x {x} not painted");
+            }
+            assert_eq!(s.at(s.mid(7), y), opaque(roles.accent_container), "{style:?} scale {scale}: inside a block, painted");
+        }
+    }
+    let flat = background(BarStyle::Flat, 0.8, ModuleColors::Icons, &groups);
+    let s = Painted::new(&mut p, &grid, &roles, &flat, 1, DEFAULT_HEIGHT);
+    assert_eq!(s.at(s.mid(4), s.h / 2), opaque(roles.accent_container), "flat: no blocks, no clipping");
+}

@@ -14,13 +14,14 @@
 //! the paint is skipped.
 
 pub(crate) mod blocks;
+mod powerline;
 #[cfg(test)]
 mod shape_tests;
 
 use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
-use crate::grid::{CONT, Grid, Hue, Tint};
+use crate::grid::{CONT, Grid, Group, Hue, Tint};
 use crate::list::Boxed;
 use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
@@ -488,7 +489,8 @@ impl Fonts {
 
     /// A bar in its style (shapes spec § 3):
     /// - the style's background pass;
-    /// - the cell backgrounds (under islands and translucent, clipped to the blocks' rows);
+    /// - the cell backgrounds (under the block styles, clipped to their block: its x span, and
+    ///   under islands and translucent its inset rows);
     /// - islands' and translucent's edges pass (rounded corners and borders, over the cell
     ///   backgrounds);
     /// - the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
@@ -517,10 +519,14 @@ impl Fonts {
                 blocks::background(px, width, height, scale, advance, roles, bg, outside);
                 rows = blocks::island_y(height, scale);
             }
-            // Powerline (task 5) and floating (task 6): flat's pass until then.
+            (BarStyle::Powerline, _) => powerline::background(px, width, height, advance, roles, bg, grid.split()),
+            // Floating (task 6): flat's pass until then.
             _ => fill(px, width, 0, width, height, roles.bar_bg),
         }
-        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, height, 0, rows);
+        // The block styles keep a cell background inside its block (ruling 11); flat and underline
+        // draw no block and clip nothing.
+        let clip = matches!(bg.style, BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline).then_some(bg.groups);
+        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, height, 0, rows, clip);
         if let Some(outside) = outside {
             blocks::round_islands(&mut self.masks, px, width, height, scale, advance, roles, bg, outside);
         }
@@ -547,20 +553,39 @@ impl Fonts {
     /// the pills inks `on`). The band's own background is the caller's.
     #[allow(clippy::too_many_arguments)]
     fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
-        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height));
+        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height), None);
         self.glyphs(grid, roles, base, px, width, height, x0, on);
     }
 
     /// The backgrounds of `grid`'s cells that differ from the surface's (`base`), in the band's
-    /// `rows` [top, bottom) only.
+    /// `rows` [top, bottom) only. With `clip` (the block styles' groups), each stays inside the
+    /// x span of the block holding its cell, and a cell outside every block gets none.
     #[allow(clippy::too_many_arguments)]
-    fn cell_backgrounds(&self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, rows: (u32, u32)) {
+    fn cell_backgrounds(
+        &self,
+        grid: &Grid,
+        roles: &Roles,
+        base: Rgb,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        x0: u32,
+        rows: (u32, u32),
+        clip: Option<&[Group]>,
+    ) {
         let advance = self.advance;
         let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
-            if c.style.bg != Tint::Bg {
-                rect(px, width, height, (edge(col), edge(col + 1)), rows, color(roles, base, c.style.bg));
+            if c.style.bg == Tint::Bg {
+                continue;
             }
+            let mut x = (edge(col), edge(col + 1));
+            if let Some(groups) = clip {
+                let Some(g) = groups.iter().find(|g| usize::from(g.start) <= col && col < usize::from(g.end)) else { continue };
+                let (b0, b1) = blocks::block_x(g, advance);
+                x = (x.0.max(x0 + b0), x.1.min(x0 + b1));
+            }
+            rect(px, width, height, x, rows, color(roles, base, c.style.bg));
         }
     }
 
