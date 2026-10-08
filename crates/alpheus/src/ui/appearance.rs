@@ -144,7 +144,7 @@ fn frame(buf: &mut Buffer, clip: Rect, r: Rect, bg: Style, border: Style) {
     put(buf, clip, r.x, r.bottom() - 1, &line("└", "─", "┘"), border);
 }
 
-/// The bar of the previewed theme: workspaces, a title, four modules (sound, network, battery,
+/// The bar of the previewed theme: workspaces (one visible on another output), a title, four modules (sound, network, battery,
 /// memory) tinted by `colors` with the theme's hues, and a clock. The battery is low, so it shows
 /// the warn colour whatever the setting (a state wins over its hue).
 fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColors) {
@@ -156,7 +156,8 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColo
     let on = |c| bg.fg(color(c));
     let mut cx = x;
     cx += put(buf, inner, cx, y, " 1 ", Style::default().fg(color(p.on_accent)).bg(color(p.accent_container)).add_modifier(Modifier::BOLD));
-    cx += put(buf, inner, cx, y, " 2 ", bg);
+    // Visible on another output: the daemon's `Style::SURFACE`, fg on pill_bg.
+    cx += put(buf, inner, cx, y, " 2 ", bg.bg(color(p.pill_bg)));
     cx += put(buf, inner, cx, y, " 3!", on(p.urgent));
     put(buf, inner, cx + 1, y, "notes.md", bg);
     // Right-aligned, only when it fits after the title.
@@ -546,7 +547,7 @@ mod tests {
         let b = buffer(&a);
         // The bar's content row (body y = 2, frame at 3, content at 4).
         assert_eq!(cell(&b, 4, "1"), (rgb(p.on_accent), rgb(p.accent_container)), "active workspace");
-        assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.bar_bg)), "inactive workspace");
+        assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.pill_bg)), "workspace visible on another output");
         assert_eq!(cell(&b, 4, "!").0, rgb(p.urgent), "urgent workspace");
         assert_eq!(cell(&b, 4, "n"), (rgb(p.fg), rgb(p.bar_bg)), "window title");
         assert_eq!(cell(&b, 4, "▮").0, rgb(p.warn), "low battery");
@@ -869,6 +870,21 @@ mod tests {
             let two = find(&b, 4, "2");
             assert_eq!(b[(two + 1, 4)].bg, rgb(block), "{style} {colors}: the cell after it, the block's");
         }
+    }
+
+    /// Under flat the visible workspace's label is the daemon's `Style::SURFACE`: fg on `pill_bg`,
+    /// its padding included, on the bar's background.
+    #[test]
+    fn under_flat_a_visible_workspace_is_on_pill_bg() {
+        let p = preset("tokyo-night").unwrap().dark;
+        assert_ne!(p.pill_bg, p.bar_bg, "the test bites only if the two differ");
+        let a = styled("prev-visible-flat", "flat", "icons");
+        let b = buffer(&a);
+        assert_eq!(cell(&b, 4, "2"), (rgb(p.fg), rgb(p.pill_bg)), "the visible workspace");
+        let two = find(&b, 4, "2");
+        assert_eq!((b[(two - 1, 4)].bg, b[(two + 1, 4)].bg), (rgb(p.pill_bg), rgb(p.pill_bg)), "its padding");
+        assert_eq!(b[(two + 2, 4)].bg, rgb(p.bar_bg), "the next label, on the bar");
+        assert!(!b[(two, 4)].modifier.contains(Modifier::BOLD), "not bold, as SURFACE");
     }
 
     #[test]
