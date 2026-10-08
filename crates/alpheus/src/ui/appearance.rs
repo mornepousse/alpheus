@@ -304,7 +304,9 @@ fn fit(left: &mut Vec<Block>, right: &mut Vec<Block>, width: u16, powerline: boo
         return;
     }
     if let Some(full) = left.get(TITLE).and_then(|b| b.runs.first()).map(|r| r.text) {
-        for k in (TITLE_MIN..full.len()).rev() {
+        // Cut at character boundaries (a block's width counts characters): never inside one.
+        let cuts: Vec<usize> = full.char_indices().map(|(i, _)| i).skip(TITLE_MIN).collect();
+        for &k in cuts.iter().rev() {
             left[TITLE].runs[0].text = &full[..k];
             if fits(left, right) {
                 return;
@@ -887,6 +889,26 @@ mod tests {
         // Narrower: the clock goes next, then the modules; the workspaces stay.
         assert!(row(70).contains("♪") && !row(70).contains("14:05"), "{:?}", row(70));
         assert!(row(60).contains("1 2 3!") && !row(60).contains("♪"), "{:?}", row(60));
+    }
+
+    /// A title is shortened by characters, never by bytes: a multibyte one never panics and keeps
+    /// whole characters, as many as fit.
+    #[test]
+    fn a_multibyte_title_is_shortened_by_characters() {
+        let run = |text| Run { text, fg: Rgb(0, 0, 0), bg: None, state: false };
+        let block = |text| Block { runs: vec![run(text)], hue: None };
+        for width in 10..40 {
+            let mut left = vec![block("1 2"), block("café–über–ñ✓")];
+            let mut right = vec![block("♪ 84%")];
+            fit(&mut left, &mut right, width, false);
+            if let Some(title) = left.get(TITLE) {
+                let t = title.runs[0].text;
+                assert!("café–über–ñ✓".starts_with(t) && t.chars().count() >= TITLE_MIN, "{width}: {t:?}");
+            }
+        }
+        let mut left = vec![block("1 2"), block("café–über–ñ✓")];
+        fit(&mut left, &mut vec![block("♪ 84%")], 24, false);
+        assert_eq!(left[TITLE].runs[0].text, "café–übe", "24 columns: eight characters fit");
     }
 
     #[test]
