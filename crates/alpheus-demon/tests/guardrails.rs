@@ -807,6 +807,10 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             "RemoveMatch",
             "RegisterStatusNotifierHost",
             "ReadOne",
+            "GetAll",
+            "PlayPause",
+            "Next",
+            "Previous",
         ]
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();

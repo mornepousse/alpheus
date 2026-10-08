@@ -27,6 +27,19 @@ pub const SETTINGS_INTERFACE: &str = "org.freedesktop.portal.Settings";
 pub const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
 pub const COLOR_SCHEME_KEY: &str = "color-scheme";
 pub const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
+/// The properties interface: `Get`, `GetAll`, `PropertiesChanged`.
+pub const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
+/// MPRIS (media spec § 3): every player's object, its root and player interfaces.
+pub const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
+pub const MPRIS_INTERFACE: &str = "org.mpris.MediaPlayer2";
+pub const MPRIS_PLAYER_INTERFACE: &str = "org.mpris.MediaPlayer2.Player";
+/// Players arriving, leaving and restarting: the bus driver's NameOwnerChanged in the MPRIS namespace.
+pub const MPRIS_OWNER_RULE: &str = "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0namespace='org.mpris.MediaPlayer2'";
+/// Every player's Player properties, on its MPRIS object.
+pub const MPRIS_PROPERTIES_RULE: &str = "type='signal',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',path='/org/mpris/MediaPlayer2',arg0='org.mpris.MediaPlayer2.Player'";
+/// Seeked, added only while the media popup is open.
+pub const MPRIS_SEEKED_RULE: &str =
+    "type='signal',interface='org.mpris.MediaPlayer2.Player',member='Seeked',path='/org/mpris/MediaPlayer2'";
 /// Well-known name prefixes the startup inventory probes.
 pub const ITEM_NAME_PREFIXES: [&str; 2] = ["org.kde.StatusNotifierItem-", "org.freedesktop.StatusNotifierItem-"];
 /// Bounds against misbehaving applications (spec § 3).
@@ -179,5 +192,24 @@ mod tests {
         assert_eq!(Status::parse("NeedsAttention"), Status::NeedsAttention);
         assert_eq!(Status::parse("Passive"), Status::Passive);
         assert_eq!(Status::parse("passive"), Status::Active, "anything else");
+    }
+
+    /// The three MPRIS rules: signals only, from the namespace, the Player interface, the MPRIS object.
+    #[test]
+    fn the_mpris_rules_are_narrow() {
+        assert_eq!(
+            MPRIS_OWNER_RULE,
+            format!(
+                "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0namespace='{MPRIS_INTERFACE}'"
+            )
+        );
+        assert_eq!(
+            MPRIS_PROPERTIES_RULE,
+            format!(
+                "type='signal',interface='{PROPERTIES_INTERFACE}',member='PropertiesChanged',path='{MPRIS_PATH}',arg0='{MPRIS_PLAYER_INTERFACE}'"
+            )
+        );
+        assert_eq!(MPRIS_SEEKED_RULE, format!("type='signal',interface='{MPRIS_PLAYER_INTERFACE}',member='Seeked',path='{MPRIS_PATH}'"));
+        assert_eq!(format!("{MPRIS_INTERFACE}."), crate::media::MPRIS_PREFIX, "the namespace is the prefix without its dot");
     }
 }

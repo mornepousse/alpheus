@@ -8,9 +8,10 @@
 //! start a service.
 
 use super::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, Orientation, PORTAL_NAME, PORTAL_PATH, Prop,
-    SETTINGS_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH, MPRIS_PLAYER_INTERFACE,
+    Orientation, PORTAL_NAME, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, SETTINGS_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
 };
+use crate::media::Control;
 use dbus::Message;
 use dbus::arg::Variant;
 use dbus::channel::Channel;
@@ -27,7 +28,7 @@ pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const DBUS_NAME_FLAG_DO_NOT_QUEUE: u32 = 4;
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
-const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
+const PROPERTIES: &str = PROPERTIES_INTERFACE;
 
 /// The call allowlist (spec § 3 + controller decision 3): nothing else can be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,10 +50,16 @@ pub enum Method {
     RegisterStatusNotifierHost,
     /// The portal's color-scheme (themes task 6).
     ReadOne,
+    /// A player's Player properties, at once (media spec § 3).
+    GetAll,
+    /// The media controls, sent without a reply.
+    PlayPause,
+    Next,
+    Previous,
 }
 
 impl Method {
-    pub const ALL: [Method; 16] = [
+    pub const ALL: [Method; 20] = [
         Method::Get,
         Method::Activate,
         Method::SecondaryActivate,
@@ -69,6 +76,10 @@ impl Method {
         Method::RemoveMatch,
         Method::RegisterStatusNotifierHost,
         Method::ReadOne,
+        Method::GetAll,
+        Method::PlayPause,
+        Method::Next,
+        Method::Previous,
     ];
 
     pub fn name(self) -> &'static str {
@@ -89,12 +100,16 @@ impl Method {
             Method::RemoveMatch => "RemoveMatch",
             Method::RegisterStatusNotifierHost => "RegisterStatusNotifierHost",
             Method::ReadOne => "ReadOne",
+            Method::GetAll => "GetAll",
+            Method::PlayPause => "PlayPause",
+            Method::Next => "Next",
+            Method::Previous => "Previous",
         }
     }
 
     pub fn interface(self) -> &'static str {
         match self {
-            Method::Get => PROPERTIES,
+            Method::Get | Method::GetAll => PROPERTIES,
             Method::Activate | Method::SecondaryActivate | Method::ContextMenu | Method::Scroll => ITEM_INTERFACE,
             Method::AboutToShow | Method::GetLayout | Method::Event => MENU_INTERFACE,
             Method::RequestName
@@ -105,6 +120,7 @@ impl Method {
             | Method::RemoveMatch => DBUS,
             Method::RegisterStatusNotifierHost => WATCHER_INTERFACE,
             Method::ReadOne => SETTINGS_INTERFACE,
+            Method::PlayPause | Method::Next | Method::Previous => MPRIS_PLAYER_INTERFACE,
         }
     }
 }
@@ -188,6 +204,27 @@ pub enum Call {
     },
     /// `ReadOne(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY)` on the portal: nothing else of the portal can be read.
     ReadOne,
+    /// `GetAll(MPRIS_PLAYER_INTERFACE)` on a player's MPRIS object (media spec § 3).
+    PlayerGetAll {
+        dest: String,
+    },
+    /// `Get(MPRIS_INTERFACE, "Identity")`: the player's name.
+    PlayerIdentity {
+        dest: String,
+    },
+    /// `Get(MPRIS_PLAYER_INTERFACE, "Metadata")`: re-read after it came invalidated.
+    PlayerMetadata {
+        dest: String,
+    },
+    /// `Get(MPRIS_PLAYER_INTERFACE, "Position")`: the popup's resync.
+    PlayerPosition {
+        dest: String,
+    },
+    /// PlayPause, Next or Previous, through `Outbox::send` (no reply).
+    PlayerControl {
+        dest: String,
+        member: Control,
+    },
 }
 
 impl Call {
@@ -209,6 +246,11 @@ impl Call {
             Call::RemoveMatch { .. } => Method::RemoveMatch,
             Call::RegisterStatusNotifierHost { .. } => Method::RegisterStatusNotifierHost,
             Call::ReadOne => Method::ReadOne,
+            Call::PlayerGetAll { .. } => Method::GetAll,
+            Call::PlayerIdentity { .. } | Call::PlayerMetadata { .. } | Call::PlayerPosition { .. } => Method::Get,
+            Call::PlayerControl { member: Control::PlayPause, .. } => Method::PlayPause,
+            Call::PlayerControl { member: Control::Next, .. } => Method::Next,
+            Call::PlayerControl { member: Control::Previous, .. } => Method::Previous,
         }
     }
 
@@ -225,6 +267,11 @@ impl Call {
             | Call::Event { destination, path, .. } => (destination, path),
             Call::RegisterStatusNotifierHost { destination, .. } => (destination, WATCHER_PATH),
             Call::ReadOne => (PORTAL_NAME, PORTAL_PATH),
+            Call::PlayerGetAll { dest }
+            | Call::PlayerIdentity { dest }
+            | Call::PlayerMetadata { dest }
+            | Call::PlayerPosition { dest }
+            | Call::PlayerControl { dest, .. } => (dest, MPRIS_PATH),
             Call::RequestName
             | Call::GetNameOwner { .. }
             | Call::GetConnectionUnixProcessID { .. }
@@ -311,6 +358,11 @@ pub fn message(call: &Call) -> Message {
         Call::AddMatch { rule } | Call::RemoveMatch { rule } => m.append1(rule.as_str()),
         Call::RegisterStatusNotifierHost { host, .. } => m.append1(host.as_str()),
         Call::ReadOne => m.append2(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY),
+        Call::PlayerGetAll { .. } => m.append1(MPRIS_PLAYER_INTERFACE),
+        Call::PlayerIdentity { .. } => m.append2(MPRIS_INTERFACE, "Identity"),
+        Call::PlayerMetadata { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Metadata"),
+        Call::PlayerPosition { .. } => m.append2(MPRIS_PLAYER_INTERFACE, "Position"),
+        Call::PlayerControl { .. } => m,
     };
     m.set_auto_start(false);
     if method == Method::Event {
@@ -607,6 +659,10 @@ mod tests {
             Method::RemoveMatch => Call::RemoveMatch { rule: "type='signal'".into() },
             Method::RegisterStatusNotifierHost => Call::RegisterStatusNotifierHost { destination, host: ":1.3".into() },
             Method::ReadOne => Call::ReadOne,
+            Method::GetAll => Call::PlayerGetAll { dest: destination },
+            Method::PlayPause => Call::PlayerControl { dest: destination, member: Control::PlayPause },
+            Method::Next => Call::PlayerControl { dest: destination, member: Control::Next },
+            Method::Previous => Call::PlayerControl { dest: destination, member: Control::Previous },
         }
     }
 
@@ -677,6 +733,61 @@ mod tests {
         let host = message(&app(Method::RegisterStatusNotifierHost));
         assert_eq!((host.destination().as_deref(), host.path().as_deref()), (Some(":1.7"), Some(WATCHER_PATH)));
         assert_eq!(host.read1::<&str>().unwrap(), ":1.3");
+    }
+
+    /// Every MPRIS call goes to the player's unique name and MPRIS object, never starting anything.
+    #[test]
+    fn player_calls_name_the_mpris_object_and_never_start_a_player() {
+        let dest = || ":1.42".to_string();
+        let head = |m: &Message| {
+            (
+                m.destination().map(|d| d.to_string()),
+                m.path().map(|p| p.to_string()),
+                m.interface().map(|i| i.to_string()),
+                m.member().map(|x| x.to_string()),
+            )
+        };
+        let some = |s: &str| Some(s.to_string());
+        let get_all = message(&Call::PlayerGetAll { dest: dest() });
+        assert_eq!(head(&get_all), (some(":1.42"), some(MPRIS_PATH), some(PROPERTIES_INTERFACE), some("GetAll")));
+        assert_eq!(signatures(&get_all), ["s"]);
+        assert_eq!(get_all.read1::<&str>().unwrap(), MPRIS_PLAYER_INTERFACE);
+        for (call, interface, property) in [
+            (Call::PlayerIdentity { dest: dest() }, MPRIS_INTERFACE, "Identity"),
+            (Call::PlayerMetadata { dest: dest() }, MPRIS_PLAYER_INTERFACE, "Metadata"),
+            (Call::PlayerPosition { dest: dest() }, MPRIS_PLAYER_INTERFACE, "Position"),
+        ] {
+            let m = message(&call);
+            assert_eq!(head(&m), (some(":1.42"), some(MPRIS_PATH), some(PROPERTIES_INTERFACE), some("Get")), "{call:?}");
+            assert_eq!(signatures(&m), ["s", "s"], "{call:?}");
+            assert_eq!(m.read2::<&str, &str>().unwrap(), (interface, property), "{call:?}");
+            assert!(!m.get_auto_start() && !m.get_no_reply(), "{call:?}: its answer is read");
+        }
+        for (member, name) in [(Control::PlayPause, "PlayPause"), (Control::Next, "Next"), (Control::Previous, "Previous")] {
+            let m = message(&Call::PlayerControl { dest: dest(), member });
+            assert_eq!(head(&m), (some(":1.42"), some(MPRIS_PATH), some(MPRIS_PLAYER_INTERFACE), some(name)));
+            assert!(signatures(&m).is_empty(), "{name}: no argument");
+            assert!(!m.get_auto_start(), "{name}: never starts a player");
+        }
+        assert!(!get_all.get_auto_start());
+    }
+
+    #[test]
+    fn controls_are_sent_and_reads_are_called() {
+        let mut out = FakeOutbox::default();
+        out.send(Call::PlayerControl { dest: ":1.42".into(), member: Control::Next });
+        let id = out.call(Call::PlayerGetAll { dest: ":1.42".into() });
+        assert_eq!(out.sent, [Call::PlayerControl { dest: ":1.42".into(), member: Control::Next }], "no pending entry, no deadline");
+        assert_eq!(out.ids(Method::GetAll), [id]);
+        assert_eq!(Call::PlayerPosition { dest: ":1.42".into() }.method(), Method::Get, "Identity, Metadata and Position are Gets");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "unique name")]
+    fn a_player_call_to_its_well_known_name_is_a_bug() {
+        // The name may change hands between two calls; and a well-known name could start a player.
+        message(&Call::PlayerGetAll { dest: "org.mpris.MediaPlayer2.spotify".into() });
     }
 
     #[test]

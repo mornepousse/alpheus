@@ -8,8 +8,10 @@
 use super::bus::{Call, CallError, Property};
 use super::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MAX_ITEMS, MAX_MENU_DEPTH, MAX_MENU_ENTRIES, MAX_TEXT, MENU_INTERFACE,
-    PORTAL_PATH, Prop, PropSet, PropValue, SETTINGS_INTERFACE, Status, WATCHER_INTERFACE,
+    MPRIS_PATH, MPRIS_PLAYER_INTERFACE, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, PropSet, PropValue, SETTINGS_INTERFACE, Status,
+    WATCHER_INTERFACE,
 };
+use crate::media::Value;
 use crate::sources::dbus::dbusrs_bus::sig;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -24,6 +26,11 @@ const MAX_NAMES: usize = 64 * MAX_ITEMS;
 /// (a bus name is at most 255 bytes, plus an object path): passed uncut for
 /// `host::split_service` to validate, refused beyond.
 pub const MAX_SERVICE: usize = 1024;
+
+/// Most entries read from one `a{sv}` (a player's properties, its metadata): the rest is never decoded.
+pub const MAX_ENTRIES: usize = 64;
+/// Most strings read from one `as` (artists, invalidated names).
+pub const MAX_LIST: usize = 32;
 
 /// A decoded answer, by the call it answers.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +49,12 @@ pub enum Reply {
     Layout(Layout),
     /// ReadOne's color-scheme (0 no preference, 1 dark, 2 light; any other value is kept, `portal_mode` maps it).
     ColorScheme(u32),
+    /// A player's properties: GetAll's, or `[("Metadata", Map)]` from PlayerMetadata.
+    Props(Vec<(String, Value)>),
+    /// PlayerIdentity's name, cleaned.
+    Text(String),
+    /// PlayerPosition's µs (as sent: the model clamps it).
+    Position(i64),
 }
 
 fn bad(what: impl Into<String>) -> CallError {
@@ -68,7 +81,8 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
         | Call::AddMatch { .. }
         | Call::RemoveMatch { .. }
         | Call::RegisterStatusNotifierHost { .. }
-        | Call::Event { .. } => Ok(Reply::Unit),
+        | Call::Event { .. }
+        | Call::PlayerControl { .. } => Ok(Reply::Unit),
         Call::Get { property: Property::Item(p), .. } => item_property(*p, &mut it).map(Reply::Prop),
         Call::Get { property: Property::RegisteredItems, .. } => {
             let mut v = it.recurse(ArgType::Variant).ok_or_else(|| bad("RegisteredStatusNotifierItems: not a variant"))?;
@@ -81,7 +95,98 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
         Call::AboutToShow { .. } => read::<bool>(&mut it, "AboutToShow").map(Reply::NeedUpdate),
         Call::GetLayout { .. } => layout(&mut it).map(Reply::Layout),
         Call::ReadOne => color_scheme(&mut it).map(Reply::ColorScheme).ok_or_else(|| bad(format!("color-scheme is {:?}", sig(&mut it)))),
+        Call::PlayerGetAll { .. } => props(&mut it, true).map(Reply::Props).ok_or_else(|| bad(format!("GetAll is {:?}", sig(&mut it)))),
+        Call::PlayerMetadata { .. } => match variant(&mut it) {
+            Some(map @ Value::Map(_)) => Ok(Reply::Props(vec![("Metadata".into(), map)])),
+            _ => Err(bad("Metadata: not an a{sv} in a variant")),
+        },
+        Call::PlayerIdentity { .. } => match variant(&mut it) {
+            Some(Value::Str(name)) => Ok(Reply::Text(name)),
+            _ => Err(bad("Identity: not a string in a variant")),
+        },
+        Call::PlayerPosition { .. } => match variant(&mut it) {
+            Some(Value::Int(us)) => Ok(Reply::Position(us)),
+            _ => Err(bad("Position: not an integer in a variant")),
+        },
     }
+}
+
+/// The value inside the variant at `it` (a `Get` reply); None when `it` holds no variant.
+fn variant(it: &mut Iter<'_>) -> Option<Value> {
+    let mut v = it.recurse(ArgType::Variant)?;
+    Some(value(&mut v, true))
+}
+
+/// One property value at `it`, inside its variant (media spec § 3, Tolerance): `s` and `o` as
+/// cleaned strings, every integer type as `Int` (a `t` beyond i64::MAX is `Other`), `d` as `Float`,
+/// `b`, `as` (at most MAX_LIST, cleaned), and `a{sv}` as a `Map` only where `maps` allows it (the
+/// metadata, one level down); anything else `Other`, never an error.
+fn value(it: &mut Iter<'_>, maps: bool) -> Value {
+    let v = match sig(it).as_deref() {
+        Some("s") => it.get::<&str>().map(|s| Value::Str(clean(s))),
+        Some("o") => it.get::<Path>().map(|p| Value::Str(clean(&p))),
+        Some("x") => it.get::<i64>().map(Value::Int),
+        Some("i") => it.get::<i32>().map(|n| Value::Int(n.into())),
+        Some("u") => it.get::<u32>().map(|n| Value::Int(n.into())),
+        Some("t") => it.get::<u64>().and_then(|n| i64::try_from(n).ok()).map(Value::Int),
+        Some("n") => it.get::<i16>().map(|n| Value::Int(n.into())),
+        Some("q") => it.get::<u16>().map(|n| Value::Int(n.into())),
+        Some("y") => it.get::<u8>().map(|n| Value::Int(n.into())),
+        Some("d") => it.get::<f64>().map(Value::Float),
+        Some("b") => it.get::<bool>().map(Value::Bool),
+        Some("as") => strings(it).map(Value::StrList),
+        Some("a{sv}") if maps => props(it, false).map(Value::Map),
+        _ => None,
+    };
+    v.unwrap_or(Value::Other)
+}
+
+/// `as` at `it`: at most MAX_LIST strings, each cleaned.
+fn strings(it: &mut Iter<'_>) -> Option<Vec<String>> {
+    let mut a = it.recurse(ArgType::Array)?;
+    let mut out = Vec::new();
+    while out.len() < MAX_LIST
+        && let Some(s) = a.get::<&str>()
+    {
+        out.push(clean(s));
+        a.next();
+    }
+    Some(out)
+}
+
+/// `a{sv}` at `it`: at most MAX_ENTRIES entries, a key longer than MAX_TEXT bytes skipped, each value
+/// decoded by `value` (`maps`: whether a value may itself be an `a{sv}`).
+fn props(it: &mut Iter<'_>, maps: bool) -> Option<Vec<(String, Value)>> {
+    if sig(it).as_deref() != Some("a{sv}") {
+        return None;
+    }
+    let mut entries = it.recurse(ArgType::Array)?;
+    let mut out = Vec::new();
+    while out.len() < MAX_ENTRIES
+        && let Some(mut entry) = entries.recurse(ArgType::DictEntry)
+    {
+        let key = entry.read::<&str>().ok()?;
+        let mut v = entry.recurse(ArgType::Variant)?;
+        if key.len() <= MAX_TEXT {
+            out.push((key.to_string(), value(&mut v, maps)));
+        }
+        entries.next();
+    }
+    Some(out)
+}
+
+/// PropertiesChanged's `sa{sv}as` for the Player interface: its changed properties and the names it
+/// invalidated (absent: none). Another interface → None.
+#[allow(clippy::type_complexity)]
+fn player_props(it: &mut Iter<'_>) -> Option<(Vec<(String, Value)>, Vec<String>)> {
+    if it.get::<&str>()? != MPRIS_PLAYER_INTERFACE {
+        return None;
+    }
+    it.next();
+    let changed = props(it, true)?;
+    it.next();
+    let invalidated = if sig(it).as_deref() == Some("as") { strings(it)? } else { Vec::new() };
+    Some((changed, invalidated))
 }
 
 /// A D-Bus error message → CallError::Remote(its name).
@@ -174,6 +279,18 @@ pub enum Signal {
     },
     /// The portal's SettingChanged for (APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY) on PORTAL_PATH; any other key → Other.
     ColorScheme(u32),
+    /// A player's PropertiesChanged on MPRIS_PATH for the Player interface; the sender (its unique
+    /// name) maps it to the player.
+    PlayerProps {
+        sender: String,
+        changed: Vec<(String, Value)>,
+        invalidated: Vec<String>,
+    },
+    /// A player's Seeked on MPRIS_PATH: its new position, in µs.
+    Seeked {
+        sender: String,
+        us: i64,
+    },
     /// Anything else, or a body that does not parse.
     Other,
 }
@@ -230,6 +347,16 @@ pub fn signal(m: &Message) -> Signal {
                 _ => Signal::Other,
             }
         }
+        // Like the portal's: a unicast signal reaches us whatever the rules say; only broadcasts count.
+        (PROPERTIES_INTERFACE, "PropertiesChanged") | (MPRIS_PLAYER_INTERFACE, "Seeked") if m.destination().is_some() => Signal::Other,
+        (PROPERTIES_INTERFACE, "PropertiesChanged") if path == MPRIS_PATH => match player_props(&mut it) {
+            Some((changed, invalidated)) => Signal::PlayerProps { sender, changed, invalidated },
+            None => Signal::Other,
+        },
+        (MPRIS_PLAYER_INTERFACE, "Seeked") if path == MPRIS_PATH => match it.get::<i64>() {
+            Some(us) => Signal::Seeked { sender, us },
+            None => Signal::Other,
+        },
         (MENU_INTERFACE, "ItemsPropertiesUpdated") => match properties_updated(&mut it) {
             Some((updated, removed)) => Signal::ItemsPropertiesUpdated { sender, path, updated, removed },
             None => Signal::Other,
@@ -603,6 +730,7 @@ fn node(it: &mut Iter<'_>, depth: usize, budget: &mut usize) -> Option<MenuNode>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::media::Control;
     use crate::tray::DEFAULT_ITEM_PATH;
     use dbus::arg::{IterAppend, Variant};
     use dbus::strings::Signature;
@@ -881,6 +1009,10 @@ mod tests {
             Call::AboutToShow { destination: ":1.7".into(), path: "/m".into(), id: 0 },
             layout_call(),
             Call::ReadOne,
+            Call::PlayerGetAll { dest: ":1.42".into() },
+            Call::PlayerIdentity { dest: ":1.42".into() },
+            Call::PlayerMetadata { dest: ":1.42".into() },
+            Call::PlayerPosition { dest: ":1.42".into() },
         ] {
             assert!(matches!(call(c.clone()), Err(CallError::BadReply(_))), "{c:?}");
         }
@@ -1111,6 +1243,279 @@ mod tests {
             "ZWNJ/ZWJ are legitimate text shaping (Arabic, emoji sequences), kept"
         );
         assert_eq!(clean("a\u{61c}b"), "ab", "the Arabic Letter Mark is a bidi control too, removed");
+    }
+
+    // ---- MPRIS (media spec § 3) ----
+
+    /// A property value, written inside its variant by `write`.
+    #[derive(Clone)]
+    enum W {
+        S(String),
+        O(&'static str),
+        As(Vec<String>),
+        X(i64),
+        I(i32),
+        U(u32),
+        T(u64),
+        D(f64),
+        B(bool),
+        Bytes(usize),
+        Map(Vec<(String, W)>),
+    }
+
+    fn st(s: &str) -> W {
+        W::S(s.into())
+    }
+
+    fn map(entries: &[(&str, W)]) -> W {
+        W::Map(entries.iter().map(|(k, w)| (k.to_string(), w.clone())).collect())
+    }
+
+    fn write(e: &mut IterAppend<'_>, w: &W) {
+        match w {
+            W::S(s) => e.append(Variant(s.as_str())),
+            W::O(p) => e.append(Variant(Path::new(*p).unwrap())),
+            W::As(v) => e.append(Variant(v.clone())),
+            W::X(n) => e.append(Variant(*n)),
+            W::I(n) => e.append(Variant(*n)),
+            W::U(n) => e.append(Variant(*n)),
+            W::T(n) => e.append(Variant(*n)),
+            W::D(n) => e.append(Variant(*n)),
+            W::B(b) => e.append(Variant(*b)),
+            W::Bytes(n) => e.append(Variant(vec![0u8; *n])),
+            W::Map(entries) => e.append_variant(&signature("a{sv}"), |v| dict(v, entries)),
+        }
+    }
+
+    /// An `a{sv}`.
+    fn dict<K: AsRef<str>>(i: &mut IterAppend<'_>, entries: &[(K, W)]) {
+        i.append_dict(&signature("s"), &signature("v"), |d| {
+            for (key, w) in entries {
+                d.append_dict_entry(|e| {
+                    e.append(key.as_ref());
+                    write(e, w);
+                });
+            }
+        });
+    }
+
+    /// A player's answer to one of our calls: a method return whose body `f` writes.
+    fn returned(f: impl FnOnce(&mut IterAppend<'_>)) -> Message {
+        let mut call = Message::new_method_call(":1.42", MPRIS_PATH, PROPERTIES_INTERFACE, "GetAll").unwrap();
+        call.set_serial(7);
+        let mut r = call.method_return();
+        f(&mut IterAppend::new(&mut r));
+        r
+    }
+
+    fn get_all() -> Call {
+        Call::PlayerGetAll { dest: ":1.42".into() }
+    }
+
+    /// A player's PropertiesChanged, broadcast from :1.42.
+    fn changed_signal(f: impl FnOnce(&mut IterAppend<'_>)) -> Message {
+        let mut m = Message::new_signal(MPRIS_PATH, PROPERTIES_INTERFACE, "PropertiesChanged").unwrap();
+        m.set_sender(Some(":1.42".into()));
+        f(&mut IterAppend::new(&mut m));
+        m
+    }
+
+    #[test]
+    fn get_all_decodes_a_player() {
+        let m = returned(|i| {
+            dict(
+                i,
+                &[
+                    ("PlaybackStatus", st("Playing")),
+                    ("Rate", W::D(1.0)),
+                    ("CanGoNext", W::B(true)),
+                    ("Position", W::X(42_000_000)),
+                    (
+                        "Metadata",
+                        map(&[
+                            ("mpris:trackid", W::O("/org/mpris/MediaPlayer2/Track/1")),
+                            ("xesam:title", st("Bohemian Rhapsody")),
+                            ("xesam:artist", W::As(vec!["Queen".into()])),
+                            ("mpris:length", W::X(355_000_000)),
+                            ("mpris:artUrl", W::Bytes(16)),
+                        ]),
+                    ),
+                ],
+            )
+        });
+        let text = |s: &str| Value::Str(s.into());
+        let want = vec![
+            ("PlaybackStatus".to_string(), text("Playing")),
+            ("Rate".into(), Value::Float(1.0)),
+            ("CanGoNext".into(), Value::Bool(true)),
+            ("Position".into(), Value::Int(42_000_000)),
+            (
+                "Metadata".into(),
+                Value::Map(vec![
+                    ("mpris:trackid".into(), text("/org/mpris/MediaPlayer2/Track/1")),
+                    ("xesam:title".into(), text("Bohemian Rhapsody")),
+                    ("xesam:artist".into(), Value::StrList(vec!["Queen".into()])),
+                    ("mpris:length".into(), Value::Int(355_000_000)),
+                    ("mpris:artUrl".into(), Value::Other),
+                ]),
+            ),
+        ];
+        assert_eq!(reply(&get_all(), &m), Ok(Reply::Props(want)));
+    }
+
+    /// The codec keeps the type it found; `media::Track` decides what it means (spec § 3, Tolerance).
+    #[test]
+    fn every_integer_type_is_an_int_and_odd_types_are_other() {
+        let length = |w: W| {
+            let m = returned(|i| dict(i, &[("Metadata", map(&[("mpris:length", w)]))]));
+            match reply(&get_all(), &m) {
+                Ok(Reply::Props(p)) => match &p[..] {
+                    [(_, Value::Map(meta))] => meta[0].1.clone(),
+                    other => panic!("{other:?}"),
+                },
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(length(W::X(-5)), Value::Int(-5), "kept as sent: the model calls it unknown");
+        assert_eq!(length(W::I(7)), Value::Int(7));
+        assert_eq!(length(W::U(8)), Value::Int(8));
+        assert_eq!(length(W::T(9)), Value::Int(9));
+        assert_eq!(length(W::T(u64::MAX)), Value::Other, "beyond i64");
+        assert_eq!(length(W::D(1.5)), Value::Float(1.5));
+        assert_eq!(length(st("355000000")), Value::Str("355000000".into()), "a string stays a string; the model: unknown");
+        assert_eq!(length(W::Bytes(4)), Value::Other);
+        assert_eq!(length(map(&[("deeper", W::B(true))])), Value::Other, "no map below the metadata");
+        assert_eq!(length(W::As(vec![])), Value::StrList(vec![]), "an empty artist list stays empty");
+    }
+
+    /// Review focus: a 100 KB title is cut while decoding; lists, maps and keys are bounded.
+    #[test]
+    fn player_strings_lists_and_maps_are_bounded() {
+        let huge = "é\n".repeat(50_000);
+        assert!(huge.len() >= 100_000);
+        let artists: Vec<String> = (0..1000).map(|i| format!("Artist {i}")).collect();
+        let m = returned(|i| {
+            let mut entries =
+                vec![("Metadata".to_string(), map(&[("xesam:title", W::S(huge.clone())), ("xesam:artist", W::As(artists.clone()))]))];
+            entries.extend((0..200).map(|n| (format!("X-{n}"), W::B(true))));
+            dict(i, &entries)
+        });
+        let Ok(Reply::Props(p)) = reply(&get_all(), &m) else { panic!("not decoded") };
+        assert_eq!(p.len(), MAX_ENTRIES, "the first 64 entries");
+        let Value::Map(meta) = &p[0].1 else { panic!("{:?}", p[0]) };
+        let Value::Str(title) = &meta[0].1 else { panic!("{:?}", meta[0]) };
+        assert_eq!(title.chars().count(), MAX_TEXT);
+        assert!(!title.contains('\n'), "line breaks spaced");
+        assert_eq!(meta[1].1, Value::StrList((0..MAX_LIST).map(|i| format!("Artist {i}")).collect()), "the first 32 artists");
+        let long_key = "k".repeat(MAX_TEXT + 1);
+        let m = returned(|i| dict(i, &[(long_key.as_str(), W::B(true)), ("CanPlay", W::B(true))]));
+        assert_eq!(
+            reply(&get_all(), &m),
+            Ok(Reply::Props(vec![("CanPlay".into(), Value::Bool(true))])),
+            "a key too long: skipped, never cut"
+        );
+    }
+
+    #[test]
+    fn player_gets_decode_their_one_value() {
+        let dest = || ":1.42".to_string();
+        let meta = returned(|i| write(i, &map(&[("xesam:title", st("Song"))])));
+        assert_eq!(
+            reply(&Call::PlayerMetadata { dest: dest() }, &meta),
+            Ok(Reply::Props(vec![("Metadata".into(), Value::Map(vec![("xesam:title".into(), Value::Str("Song".into()))]))]))
+        );
+        assert_eq!(
+            reply(&Call::PlayerIdentity { dest: dest() }, &returned(|i| write(i, &st("Spotify")))),
+            Ok(Reply::Text("Spotify".into()))
+        );
+        let position = |w: W| reply(&Call::PlayerPosition { dest: dest() }, &returned(|i| write(i, &w)));
+        assert_eq!(position(W::X(102_000_000)), Ok(Reply::Position(102_000_000)));
+        assert_eq!(position(W::U(5)), Ok(Reply::Position(5)), "any integer type");
+        let bad_reply = |r: Result<Reply, CallError>| matches!(r, Err(CallError::BadReply(_)));
+        assert!(bad_reply(position(st("1:42"))));
+        assert!(bad_reply(reply(&Call::PlayerPosition { dest: dest() }, &returned(|i| i.append(5i64)))), "not in a variant");
+        assert!(bad_reply(reply(&Call::PlayerMetadata { dest: dest() }, &returned(|i| write(i, &st("not a map"))))));
+        assert!(bad_reply(reply(&Call::PlayerIdentity { dest: dest() }, &returned(|i| write(i, &W::I(3))))));
+        assert!(bad_reply(reply(&get_all(), &returned(|i| i.append("Playing")))));
+        assert_eq!(reply(&Call::PlayerControl { dest: dest(), member: Control::Next }, &returned(|_| {})), Ok(Reply::Unit));
+        let mut call = Message::new_method_call(":1.42", MPRIS_PATH, PROPERTIES_INTERFACE, "GetAll").unwrap();
+        call.set_serial(3);
+        let gone = call.error(&"org.freedesktop.DBus.Error.ServiceUnknown".into(), c"gone");
+        assert_eq!(
+            reply(&get_all(), &gone),
+            Err(CallError::Remote("org.freedesktop.DBus.Error.ServiceUnknown".into())),
+            "the consumer removes the player"
+        );
+    }
+
+    #[test]
+    fn properties_changed_is_read_for_the_player_interface_only() {
+        let m = changed_signal(|i| {
+            i.append(MPRIS_PLAYER_INTERFACE);
+            dict(i, &[("PlaybackStatus", st("Paused"))]);
+            i.append(vec!["Metadata"]);
+        });
+        assert_eq!(
+            signal(&m),
+            Signal::PlayerProps {
+                sender: ":1.42".into(),
+                changed: vec![("PlaybackStatus".into(), Value::Str("Paused".into()))],
+                invalidated: vec!["Metadata".into()]
+            }
+        );
+        let short = changed_signal(|i| {
+            i.append(MPRIS_PLAYER_INTERFACE);
+            dict(i, &[("Rate", W::D(1.0))]);
+        });
+        assert_eq!(
+            signal(&short),
+            Signal::PlayerProps { sender: ":1.42".into(), changed: vec![("Rate".into(), Value::Float(1.0))], invalidated: vec![] },
+            "without its invalidated list"
+        );
+        let root = changed_signal(|i| {
+            i.append(crate::tray::MPRIS_INTERFACE);
+            dict(i, &[("Identity", st("Spotify"))]);
+            i.append(Vec::<&str>::new());
+        });
+        assert_eq!(signal(&root), Signal::Other, "the root interface is not read");
+        let elsewhere = signal_from(":1.42", "/org/mpris/MediaPlayer2/other", PROPERTIES_INTERFACE, "PropertiesChanged", |i| {
+            i.append(MPRIS_PLAYER_INTERFACE);
+            dict(i, &[("Rate", W::D(1.0))]);
+            i.append(Vec::<&str>::new());
+        });
+        assert_eq!(elsewhere, Signal::Other, "not the MPRIS object");
+        assert_eq!(signal(&changed_signal(|i| i.append(MPRIS_PLAYER_INTERFACE))), Signal::Other, "no changed properties");
+    }
+
+    /// Like the portal's SettingChanged: a unicast PropertiesChanged or Seeked is a peer's, not a broadcast.
+    #[test]
+    fn a_unicast_player_signal_is_refused() {
+        let mut m = changed_signal(|i| {
+            i.append(MPRIS_PLAYER_INTERFACE);
+            dict(i, &[("PlaybackStatus", st("Playing"))]);
+            i.append(Vec::<&str>::new());
+        });
+        assert!(matches!(signal(&m), Signal::PlayerProps { .. }), "broadcast: read");
+        m.set_destination(Some(":1.9".into()));
+        assert_eq!(signal(&m), Signal::Other, "addressed to us alone");
+        let mut s = Message::new_signal(MPRIS_PATH, MPRIS_PLAYER_INTERFACE, "Seeked").unwrap().append1(5_000_000i64);
+        s.set_sender(Some(":1.42".into()));
+        assert_eq!(signal(&s), Signal::Seeked { sender: ":1.42".into(), us: 5_000_000 }, "broadcast: read");
+        s.set_destination(Some(":1.9".into()));
+        assert_eq!(signal(&s), Signal::Other, "addressed to us alone");
+    }
+
+    #[test]
+    fn seeked_carries_its_position() {
+        let seeked = |path: &str, f: &dyn Fn(&mut IterAppend<'_>)| signal_from(":1.42", path, MPRIS_PLAYER_INTERFACE, "Seeked", f);
+        assert_eq!(
+            seeked(MPRIS_PATH, &|i| i.append(-3i64)),
+            Signal::Seeked { sender: ":1.42".into(), us: -3 },
+            "as sent: the model clamps"
+        );
+        assert_eq!(seeked(MPRIS_PATH, &|i| i.append(3u32)), Signal::Other, "not an x");
+        assert_eq!(seeked(MPRIS_PATH, &|_| {}), Signal::Other, "empty");
+        assert_eq!(seeked("/elsewhere", &|i| i.append(3i64)), Signal::Other, "not the MPRIS object");
     }
 
     #[test]
