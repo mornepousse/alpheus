@@ -184,6 +184,9 @@ pub struct Wanted {
     pub resources: bool,
     /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
     pub tray: bool,
+    /// The media module's MPRIS players (media task 5): on the tray's connection, or on the bar's
+    /// link when the tray is off; false: no connection, no rule, no call.
+    pub media: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
@@ -193,7 +196,13 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         .filter(|(m, _)| has(*m))
         .map(|(_, d)| d)
         .collect();
-    Wanted { sound: has(ModuleId::Volume), dbus, resources: has(ModuleId::Resources), tray: has(ModuleId::Tray) }
+    Wanted {
+        sound: has(ModuleId::Volume),
+        dbus,
+        resources: has(ModuleId::Resources),
+        tray: has(ModuleId::Tray),
+        media: has(ModuleId::Media),
+    }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {
@@ -657,10 +666,13 @@ pub fn run() -> i32 {
     if want.tray {
         start_tray(&mut state, &handle);
     }
+    // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
+    state.start_media(want.media);
     // The mode file for the TUI (themes task 6): $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
-    // mode = "auto": the portal on the tray's connection, or on one of its own when the tray is off
-    // (themes task 6). Never a second connection, never a retry.
+    // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
+    // module) when the tray is off (themes task 6, media task 5). Never a second connection, never a
+    // retry.
     state.follow_portal_if_auto();
     // Written now, once the mode is known: dark until the portal answers (then rewritten).
     state.publish_mode();
@@ -759,22 +771,28 @@ mod tests {
     #[test]
     fn only_the_sources_the_modules_need() {
         let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
-        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true, tray: true });
+        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true, tray: true, media: true });
         assert_eq!(
             wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![], resources: false, tray: false }
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false }
         );
-        assert_eq!(wanted(&[ModuleId::Battery]), Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false });
+        assert_eq!(
+            wanted(&[ModuleId::Battery]),
+            Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false, media: false }
+        );
         assert_eq!(
             wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false }
+            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false, media: false }
         );
         assert_eq!(
             wanted(&[ModuleId::Battery, ModuleId::Network]),
-            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false, tray: false },
+            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false, tray: false, media: false },
             "reading order, whatever the bar's order"
         );
-        assert_eq!(wanted(&[ModuleId::Volume, ModuleId::Resources]), Wanted { sound: true, dbus: vec![], resources: true, tray: false });
+        assert_eq!(
+            wanted(&[ModuleId::Volume, ModuleId::Resources]),
+            Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false }
+        );
     }
 
     #[test]
@@ -783,7 +801,23 @@ mod tests {
         assert!(wanted(&[ModuleId::Workspaces, ModuleId::Tray, ModuleId::Clock]).tray);
         let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Tray).collect();
         assert!(!wanted(&without).tray, "every other module: no session bus");
-        assert_eq!(wanted(&[ModuleId::Tray]), Wanted { sound: false, dbus: vec![], resources: false, tray: true }, "the tray alone");
+        assert_eq!(
+            wanted(&[ModuleId::Tray]),
+            Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false },
+            "the tray alone"
+        );
+    }
+
+    #[test]
+    fn wanted_media_only_with_the_module() {
+        assert!(wanted(&[ModuleId::Media]).media);
+        let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Media).collect();
+        assert!(!wanted(&without).media, "every other module: no MPRIS");
+        assert_eq!(
+            wanted(&[ModuleId::Media]),
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true },
+            "media alone needs no other source"
+        );
     }
 
     #[test]

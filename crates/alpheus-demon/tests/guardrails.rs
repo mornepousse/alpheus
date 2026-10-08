@@ -650,9 +650,11 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
         // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
         ("watch.rs", "Generic::new", 1),
-        // The portal's own session-bus fd (themes task 6): only with mode = "auto" and the tray
-        // module off; readable only when the portal answers or its setting changes.
-        ("appearance.rs", "Generic::new", 1),
+        // The bar's own session link (themes task 6, media task 5): only when the tray module is off
+        // and mode = "auto" or the media module needs the session bus, ONE connection for both;
+        // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
+        // armed only while one of its calls is pending.
+        ("link.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
         ("launcher/scan.rs", "thread::Builder", 1),
         // The keyboard, shared by the launcher and the grabbing popups: bound
@@ -852,7 +854,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 12] = [
+const NO_THREAD_NOR_COMMAND: [&str; 13] = [
     "tray/",
     "media.rs",
     "popup.rs",
@@ -862,6 +864,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 12] = [
     "keys.rs",
     "watch.rs",
     "appearance.rs",
+    "link.rs",
     "background.rs",
     "painter/",
     "placement.rs",

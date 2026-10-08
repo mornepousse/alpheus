@@ -5,13 +5,16 @@
 
 mod common;
 
+use alpheus_commun::theme::Mode;
 use alpheus_demon::config::MediaConfig;
+use alpheus_demon::link::{LinkOutput, SessionLink};
 use alpheus_demon::media::{Control, MAX_PLAYERS, MediaView};
 use alpheus_demon::tray::bus::{Call, Incoming, SessionBus, refusal};
 use alpheus_demon::tray::codec;
 use alpheus_demon::tray::mpris::Mpris;
 use alpheus_demon::tray::router::{Role, Tray, TrayOutput};
 use common::mpris::{FakePlayer, Spec, metadata};
+use common::portal::FakePortal;
 use common::sni::FakeWatcher;
 use common::{Peer, PrivateBus};
 use std::cell::RefCell;
@@ -473,4 +476,75 @@ fn a_dead_session_bus_takes_the_media_module_away() {
     assert_eq!(closed.media, Some(None), "the module goes with the bus");
     assert_eq!(tray.next_deadline(), None, "nothing left pending");
     assert_eq!(tray.on_readable(), TrayOutput::default(), "a read afterwards does nothing");
+}
+
+/// Pumps `link` until `done` holds or `within` passes; every non-empty output.
+fn pump_link(link: &mut SessionLink, within: Duration, done: impl Fn(&SessionLink) -> bool) -> Vec<LinkOutput> {
+    let end = Instant::now() + within;
+    let mut outs = Vec::new();
+    while !done(&*link) && Instant::now() < end {
+        let mut out = link.on_readable();
+        if link.next_deadline().is_some_and(|d| d <= Instant::now()) {
+            out.merge(link.on_deadline(Instant::now()));
+        }
+        if out != LinkOutput::default() {
+            outs.push(out);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    outs
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn one_link_serves_the_players_and_the_portal() {
+    let bus = PrivateBus::start("media-link-both");
+    let portal = FakePortal::start(&bus, 2);
+    let tidewave = FakePlayer::start(&bus, Spec::playing("tidewave", "Harbor Lights"));
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    // The bar's order at startup: the media module opens the link, the portal joins it.
+    link.start_media(&MediaConfig::default());
+    link.start_appearance();
+    let outs = pump_link(&mut link, Duration::from_secs(5), |l| {
+        l.pending() == 0 && l.portal().is_some() && l.media().is_some_and(|m| m.view().is_some())
+    });
+    assert!(outs.iter().any(|o| o.mode == Some(Mode::Light)), "{outs:?}");
+    assert!(outs.iter().any(|o| o.media == Some(shown(true, "Harbor Lights"))), "{outs:?}");
+    assert_eq!(portal.calls().len(), 1, "one ReadOne");
+    assert_eq!(tidewave.calls(), [GET_ALL, IDENTITY]);
+    link.media_do(|m, bus| m.control(bus, Control::PlayPause));
+    assert!(tidewave.wait_call("PlayPause", Duration::from_secs(5)).is_some());
+    let outs = pump_link(&mut link, Duration::from_secs(5), |l| l.media().is_some_and(|m| m.view() == shown(false, "Harbor Lights")));
+    assert_eq!(outs.last().and_then(|o| o.media.clone()), Some(shown(false, "Harbor Lights")), "the pause seen on the link: {outs:?}");
+    assert_eq!((link.pending(), link.next_deadline()), (0, None), "nothing pending: no timer at rest");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_link_for_the_players_alone_never_asks_the_portal() {
+    let bus = PrivateBus::start("media-link-alone");
+    let portal = FakePortal::start(&bus, 2);
+    let _tidewave = FakePlayer::start(&bus, Spec::playing("tidewave", "Harbor Lights"));
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    link.start_media(&MediaConfig::default());
+    pump_link(&mut link, Duration::from_secs(5), |l| l.pending() == 0 && l.media().is_some_and(|m| m.view().is_some()));
+    portal.set(1);
+    let outs = pump_link(&mut link, Duration::from_millis(300), |_| false);
+    assert!(outs.iter().all(|o| o.mode.is_none()), "no rule for the portal: {outs:?}");
+    assert_eq!((portal.calls().len(), link.portal(), link.follows_portal()), (0, None, false));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_dead_bus_closes_the_link_and_hides_the_media() {
+    let mut bus = PrivateBus::start("media-link-dies");
+    let _tidewave = FakePlayer::start(&bus, Spec::playing("tidewave", "Harbor Lights"));
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    link.start_media(&MediaConfig::default());
+    pump_link(&mut link, Duration::from_secs(5), |l| l.pending() == 0 && l.media().is_some_and(|m| m.view().is_some()));
+    bus.kill();
+    let outs = pump_link(&mut link, Duration::from_secs(5), |_| false);
+    let closed = outs.iter().find(|o| o.closed).expect("closed");
+    assert_eq!(closed.media, Some(None));
+    assert_eq!((link.pending(), link.next_deadline()), (0, None));
 }

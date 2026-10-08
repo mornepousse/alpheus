@@ -17,6 +17,7 @@ pub mod keys;
 pub mod launch;
 pub mod launcher;
 pub mod layout;
+pub mod link;
 pub mod list;
 pub mod lock;
 pub mod log;

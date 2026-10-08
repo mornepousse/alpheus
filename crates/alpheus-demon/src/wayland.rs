@@ -13,6 +13,7 @@ use crate::grid::{Grid, Target};
 use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
+use crate::media::MediaView;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
@@ -420,12 +421,15 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
-    /// The portal's own connection when the tray module is off and the mode is auto (themes task 6);
-    /// None otherwise, or once its bus closed (never reconnected).
-    pub(crate) portal: Option<crate::appearance::PortalLink>,
-    /// Armed only while its ReadOne is pending (2 s); never at rest.
-    pub(crate) portal_timer: DeadlineTimer,
-    /// `follow_portal_if_auto` already acted: never a second connection nor a second attempt.
+    /// The bar's own session link (link.rs): when the tray module is off and mode = "auto" or the
+    /// media module needs the session bus, ONE connection for both. None otherwise, or once its bus
+    /// closed (never reconnected).
+    pub(crate) link: Option<crate::link::SessionLink>,
+    /// Armed only while one of the link's calls is pending (2 s); never at rest.
+    pub(crate) link_timer: DeadlineTimer,
+    /// `open_link` already ran, successfully or not: never a second connection nor a second attempt.
+    pub(crate) link_tried: bool,
+    /// `follow_portal_if_auto` already acted: never a second attempt.
     pub(crate) portal_tried: bool,
     /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes (themes task 6); None: unset, nothing written.
     pub(crate) mode_runtime: Option<std::path::PathBuf>,
@@ -604,8 +608,9 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
-            portal: None,
-            portal_timer: DeadlineTimer::new(),
+            link: None,
+            link_timer: DeadlineTimer::new(),
+            link_tried: false,
             portal_tried: false,
             mode_runtime: None,
             mode_written: None,
@@ -849,6 +854,18 @@ impl App {
         s.last = Some(grid);
     }
 
+    /// The media module's view from either connection. The bars repaint only when what they show
+    /// changes (`Bar::apply`), and one line marks the module appearing or going.
+    pub(crate) fn media_view(&mut self, view: Option<MediaView>) {
+        let (before, after) = (self.bar.media.is_some(), view.is_some());
+        if self.bar.apply(Msg::Media(view)) {
+            self.dirty = true;
+        }
+        if before != after {
+            log(if after { "media: shown" } else { "media: hidden" });
+        }
+    }
+
     /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
     /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
     /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
@@ -859,7 +876,13 @@ impl App {
         }
         if out.bus_closed {
             log("tray: the session bus closed; the tray stays empty");
+            if self.tray.as_ref().is_some_and(|t| t.media().is_some()) {
+                log("media: the session bus closed");
+            }
             self.tray = None;
+        }
+        if let Some(view) = out.media {
+            self.media_view(view);
         }
         if out.redraw || out.bus_closed {
             // The hovered item leaving the tray closes its tooltip outright (ItemGone), whatever

@@ -2,31 +2,27 @@
 //! `org.freedesktop.appearance` `color-scheme` is read once (`ReadOne`: 2 s deadline, auto-start
 //! off), then followed (`SettingChanged`, through one match rule narrowed to that key).
 //!
-//! It rides the tray's session-bus connection when the tray module is on. Otherwise it uses a
-//! `PortalLink` of its own. Either way there is one connection, opened only when the mode is
-//! `auto` or the tray is on.
+//! It rides the tray's session-bus connection when the tray module is on. Otherwise it rides the
+//! bar's own session link (link.rs), which it may share with the media module. Either way there is
+//! one connection.
 //!
 //! Calls and decoding reuse the tray's typed allowlist (`Call::ReadOne`, `codec`): one pending
 //! table, one deadline rule, and this file never names the dbus crate. Never name a function
 //! `method_call` here: the guardrails count that substring.
 
-use crate::config::ModuleId;
+use crate::link::{Host, LinkOutput, host};
 use crate::log::write as log;
-use crate::tray::bus::{Call, CallError, CallId, Incoming, Outbox, SessionBus, refusal};
-use crate::tray::codec::{self, Reply, Signal};
+use crate::tray::bus::{Call, CallError, CallId, Outbox};
+use crate::tray::codec::Reply;
 use crate::tray::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
 use alpheus_commun::theme::mode_file::{MODE_DIR, mode_path, mode_text};
 use alpheus_commun::theme::settings::{ModeSetting, effective_mode, portal_mode};
-use smithay_client_toolkit::reexports::calloop::generic::Generic;
-use smithay_client_toolkit::reexports::calloop::{Interest, Mode as Trigger, PostAction};
 use std::fs::DirBuilder;
 use std::io;
-use std::os::fd::OwnedFd;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
-use std::time::Instant;
 
 #[cfg(test)]
 use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
@@ -185,111 +181,9 @@ pub fn publish(
     }
 }
 
-/// What a link callback changed.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LinkOutput {
-    /// The portal's word changed.
-    pub mode: Option<Mode>,
-    /// The session bus closed: the wiring drops the link (never reconnected; the mode stays).
-    pub closed: bool,
-}
-
-/// The session bus for the portal alone (tray module off): one `SessionBus`, routed here, driven by
-/// the bar's loop (no thread), like the tray's. It stays open after the mode leaves `auto` (no
-/// retry, no teardown: one idle connection costs nothing at rest).
-pub struct PortalLink {
-    bus: SessionBus,
-    appearance: Appearance,
-}
-
-impl PortalLink {
-    /// The rule and the ReadOne leave at once (flushed). Never blocks after the connect.
-    pub fn start(mut bus: SessionBus) -> PortalLink {
-        let appearance = Appearance::start(&mut bus);
-        bus.flush();
-        PortalLink { bus, appearance }
-    }
-
-    pub fn watch_fd(&mut self) -> io::Result<OwnedFd> {
-        self.bus.watch_fd()
-    }
-
-    pub fn on_readable(&mut self) -> LinkOutput {
-        let incoming = self.bus.read();
-        self.route(incoming)
-    }
-
-    /// The deadline timer fired: what already arrived is read first (an answer waiting in the queue is
-    /// never reported as a timeout, as the tray does), then an unanswered ReadOne ends as Timeout
-    /// (logged once, dark).
-    pub fn on_deadline(&mut self, now: Instant) -> LinkOutput {
-        let mut incoming = self.bus.read();
-        incoming.extend(self.bus.expire(Instant::now().max(now)));
-        self.route(incoming)
-    }
-
-    pub fn next_deadline(&self) -> Option<Instant> {
-        self.bus.next_deadline()
-    }
-
-    pub fn pending(&self) -> usize {
-        self.bus.pending()
-    }
-
-    pub fn portal(&self) -> Option<Mode> {
-        self.appearance.portal()
-    }
-
-    fn route(&mut self, incoming: Vec<Incoming>) -> LinkOutput {
-        let mut out = LinkOutput::default();
-        for i in incoming {
-            match i {
-                Incoming::Answer { id, call, result } => {
-                    let result = result.and_then(|m| codec::reply(&call, &m));
-                    if let Some(mode) = self.appearance.answer(id, result) {
-                        out.mode = Some(mode);
-                    }
-                }
-                Incoming::Signal(m) => {
-                    if let Signal::ColorScheme(value) = codec::signal(&m)
-                        && let Some(mode) = self.appearance.changed(value)
-                    {
-                        out.mode = Some(mode);
-                    }
-                }
-                // Nothing is served here: refused, never left unanswered.
-                Incoming::MethodCall(m) => self.bus.send_message(refusal(&m)),
-                Incoming::Closed => out.closed = true,
-            }
-        }
-        self.bus.flush();
-        out
-    }
-}
-
-/// How to follow the portal, decided purely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortalStart {
-    /// Not `auto`, or already tried: nothing.
-    Nothing,
-    /// The tray runs: its connection carries the portal too.
-    OnTray,
-    /// The tray module is off: a connection of our own.
-    OwnBus,
-    /// The tray module is on but its bus failed or closed: no second attempt.
-    NoBus,
-}
-
-pub fn portal_start(mode: ModeSetting, tried: bool, tray_wanted: bool, tray_running: bool) -> PortalStart {
-    if mode != ModeSetting::Auto || tried {
-        PortalStart::Nothing
-    } else if tray_running {
-        PortalStart::OnTray
-    } else if tray_wanted {
-        PortalStart::NoBus
-    } else {
-        PortalStart::OwnBus
-    }
+/// Whether the portal is to be followed now: mode `auto`, not yet tried.
+pub fn portal_wanted(mode: ModeSetting, tried: bool) -> bool {
+    mode == ModeSetting::Auto && !tried
 }
 
 /// Whether the portal moving to `after` changes the mode in effect (a repaint), from `before`.
@@ -298,89 +192,32 @@ pub fn repaint_needed(setting: ModeSetting, before: Option<Mode>, after: Mode) -
 }
 
 impl App {
-    /// With `mode = "auto"`, follows the portal once: on the tray's connection when it runs, else on a
-    /// connection of its own (tray module off). Called after `start_tray` at startup and in
-    /// `theme_changed` right after the new settings are stored (a switch to auto in theme.toml), so a
-    /// single connection serves both, at most.
+    /// With `mode = "auto"`, follows the portal once. It goes on the tray's connection when the tray
+    /// runs; otherwise on the bar's link, opened here or joined (the media module may have opened it).
+    /// Called after `start_tray` and `start_media` at startup, and in `theme_changed` right after the
+    /// new settings are stored. Either way one connection serves everything.
     pub(crate) fn follow_portal_if_auto(&mut self) {
-        let tray_wanted = self.bar.config.modules.contains(&ModuleId::Tray);
-        match portal_start(self.theme_settings.mode, self.portal_tried, tray_wanted, self.tray.is_some()) {
-            PortalStart::Nothing => return,
-            PortalStart::OnTray => {
+        match host(portal_wanted(self.theme_settings.mode, self.portal_tried), self.buses()) {
+            Host::Nothing => return,
+            Host::OnTray => {
                 if let Some(tray) = self.tray.as_mut() {
                     tray.start_appearance();
                 }
                 // Its ReadOne is pending: the tray's deadline timer is armed for it.
                 self.tray_output(TrayOutput::default());
             }
-            PortalStart::NoBus => log("appearance: no session bus; dark"),
-            PortalStart::OwnBus => self.open_portal_link(),
+            Host::NoBus => log("appearance: no session bus; dark"),
+            Host::OnLink | Host::OwnBus => {
+                if self.link.is_some() || self.open_link("appearance") {
+                    if let Some(link) = self.link.as_mut() {
+                        link.start_appearance();
+                    }
+                    // Its ReadOne is pending: the link's deadline timer is armed for it.
+                    self.link_output(LinkOutput::default());
+                }
+            }
         }
         self.portal_tried = true;
-    }
-
-    fn open_portal_link(&mut self) {
-        let Some(handle) = self.loop_handle.clone() else { return };
-        let bus = match SessionBus::session() {
-            Ok(b) => b,
-            Err(e) => {
-                log(&format!("appearance: no session bus ({e}); dark"));
-                return;
-            }
-        };
-        let mut link = PortalLink::start(bus);
-        let fd = match link.watch_fd() {
-            Ok(fd) => fd,
-            Err(e) => {
-                log(&format!("appearance: connected, but could not watch the session bus's fd ({e}); dark"));
-                return;
-            }
-        };
-        // Level-triggered, like the tray's; removes itself once the link is gone (bus closed).
-        let inserted = handle.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
-            app.portal_readable();
-            Ok(if app.portal.is_some() { PostAction::Continue } else { PostAction::Remove })
-        });
-        if inserted.is_err() {
-            log("appearance: event loop refused the session bus source; dark");
-            return;
-        }
-        self.portal = Some(link);
-        self.portal_sync();
-    }
-
-    /// The portal link's fd is readable (calloop callback).
-    pub(crate) fn portal_readable(&mut self) {
-        let Some(link) = self.portal.as_mut() else { return };
-        let out = link.on_readable();
-        self.portal_output(out);
-    }
-
-    /// Its deadline timer fired (calloop callback; the source is dropped).
-    pub(crate) fn portal_deadline(app: &mut App, now: Instant) {
-        app.portal_timer.fired();
-        let Some(link) = app.portal.as_mut() else { return };
-        let out = link.on_deadline(now);
-        app.portal_output(out);
-    }
-
-    fn portal_output(&mut self, out: LinkOutput) {
-        if out.closed {
-            log("appearance: the session bus closed; the mode stays as it is");
-            self.portal = None;
-        }
-        if let Some(mode) = out.mode {
-            self.portal_said(mode);
-        }
-        self.portal_sync();
-    }
-
-    /// The timer follows the pending ReadOne: none pending, no timer.
-    fn portal_sync(&mut self) {
-        let deadline = self.portal.as_ref().and_then(PortalLink::next_deadline);
-        if let Some(handle) = &self.loop_handle {
-            self.portal_timer.sync(handle, deadline, App::portal_deadline);
-        }
     }
 
     /// The portal's word, from either connection: re-resolved and repainted (task 5's hook) only when
@@ -475,14 +312,11 @@ mod tests {
     }
 
     #[test]
-    fn the_portal_starts_only_in_auto_and_once() {
-        use PortalStart::*;
-        assert_eq!(portal_start(ModeSetting::Dark, false, false, false), Nothing);
-        assert_eq!(portal_start(ModeSetting::Light, false, true, true), Nothing);
-        assert_eq!(portal_start(ModeSetting::Auto, true, false, false), Nothing, "tried once: never again");
-        assert_eq!(portal_start(ModeSetting::Auto, false, true, true), OnTray, "one connection: the tray's");
-        assert_eq!(portal_start(ModeSetting::Auto, false, false, false), OwnBus);
-        assert_eq!(portal_start(ModeSetting::Auto, false, true, false), NoBus, "the tray's bus failed or closed: no second attempt");
+    fn the_portal_is_wanted_only_in_auto_and_once() {
+        assert!(!portal_wanted(ModeSetting::Dark, false));
+        assert!(!portal_wanted(ModeSetting::Light, false));
+        assert!(!portal_wanted(ModeSetting::Auto, true), "tried once: never again");
+        assert!(portal_wanted(ModeSetting::Auto, false));
     }
 
     #[test]

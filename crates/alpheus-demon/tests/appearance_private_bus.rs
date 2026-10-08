@@ -8,7 +8,7 @@ use alpheus_commun::theme::Mode;
 use alpheus_commun::theme::Roles;
 use alpheus_commun::theme::presets::preset;
 use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, effective_mode, resolve};
-use alpheus_demon::appearance::{LinkOutput, PortalLink};
+use alpheus_demon::link::{LinkOutput, SessionLink};
 use alpheus_demon::tray::PORTAL_NAME;
 use alpheus_demon::tray::bus::{SessionBus, TIMEOUT};
 use alpheus_demon::tray::router::Tray;
@@ -47,7 +47,7 @@ fn with_the_tray_the_portal_follows_on_its_connection() {
 
 /// Pumps `link` as the bar's loop does (readable, then any due deadline) until `done` holds or
 /// `within` passes; every non-empty output, in order.
-fn pump(link: &mut PortalLink, within: Duration, done: impl Fn(&PortalLink) -> bool) -> Vec<LinkOutput> {
+fn pump(link: &mut SessionLink, within: Duration, done: impl Fn(&SessionLink) -> bool) -> Vec<LinkOutput> {
     let end = Instant::now() + within;
     let mut outs = Vec::new();
     while !done(link) && Instant::now() < end {
@@ -63,6 +63,13 @@ fn pump(link: &mut PortalLink, within: Duration, done: impl Fn(&PortalLink) -> b
     outs
 }
 
+/// The bar's link following the portal alone (mode auto, tray off, no media module).
+fn portal_link(bus: SessionBus) -> SessionLink {
+    let mut link = SessionLink::new(bus);
+    link.start_appearance();
+    link
+}
+
 /// The palette in effect for `mode = "auto"` and this portal word: catppuccin (the default), no colour files.
 fn palette(portal: Option<Mode>) -> Roles {
     let dir = std::env::temp_dir().join(format!("alpheus-appearance-{}", std::process::id()));
@@ -75,13 +82,13 @@ fn palette(portal: Option<Mode>) -> Roles {
 fn read_one_then_setting_changed_turns_the_palette_light() {
     let bus = PrivateBus::start("appearance-follow");
     let portal = FakePortal::start(&bus, 1);
-    let mut link = PortalLink::start(SessionBus::at(&bus.address).unwrap());
+    let mut link = portal_link(SessionBus::at(&bus.address).unwrap());
     let outs = pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0);
-    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Dark), closed: false }]);
+    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Dark), ..LinkOutput::default() }]);
     assert_eq!(palette(link.portal()), preset("catppuccin").unwrap().dark);
     portal.set(2);
     let outs = pump(&mut link, Duration::from_secs(5), |l| l.portal() == Some(Mode::Light));
-    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Light), closed: false }]);
+    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Light), ..LinkOutput::default() }]);
     assert_eq!(palette(link.portal()), preset("catppuccin").unwrap().light.unwrap(), "the palette turns light");
     assert_eq!(
         portal.calls(),
@@ -96,9 +103,9 @@ fn read_one_then_setting_changed_turns_the_palette_light() {
 fn a_nested_variant_reads_the_same() {
     let bus = PrivateBus::start("appearance-nested");
     let _portal = FakePortal::start_nested(&bus, 2);
-    let mut link = PortalLink::start(SessionBus::at(&bus.address).unwrap());
+    let mut link = portal_link(SessionBus::at(&bus.address).unwrap());
     let outs = pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0);
-    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Light), closed: false }]);
+    assert_eq!(outs, [LinkOutput { mode: Some(Mode::Light), ..LinkOutput::default() }]);
 }
 
 #[test]
@@ -106,7 +113,7 @@ fn a_nested_variant_reads_the_same() {
 fn another_key_or_namespace_changes_nothing() {
     let bus = PrivateBus::start("appearance-unrelated");
     let portal = FakePortal::start(&bus, 2);
-    let mut link = PortalLink::start(SessionBus::at(&bus.address).unwrap());
+    let mut link = portal_link(SessionBus::at(&bus.address).unwrap());
     pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0);
     assert_eq!(link.portal(), Some(Mode::Light));
     portal.emit_unrelated();
@@ -119,7 +126,7 @@ fn another_key_or_namespace_changes_nothing() {
 #[ignore = "private dbus-daemon (nix develop)"]
 fn no_portal_is_dark_with_nothing_pending() {
     let bus = PrivateBus::start("appearance-none");
-    let mut link = PortalLink::start(SessionBus::at(&bus.address).unwrap());
+    let mut link = portal_link(SessionBus::at(&bus.address).unwrap());
     let started = Instant::now();
     let outs = pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0);
     assert!(started.elapsed() < TIMEOUT, "auto-start off: the bus answers ServiceUnknown at once, no 2 s wait");
@@ -135,7 +142,7 @@ fn a_silent_portal_times_out_once_then_dark() {
     let bus = PrivateBus::start("appearance-silent");
     let silent = Peer::connect(&bus);
     silent.own(PORTAL_NAME); // owns the name, never reads its socket again
-    let mut link = PortalLink::start(SessionBus::at(&bus.address).unwrap());
+    let mut link = portal_link(SessionBus::at(&bus.address).unwrap());
     let started = Instant::now();
     let outs = pump(&mut link, Duration::from_secs(4), |l| l.pending() == 0);
     assert!(started.elapsed() >= TIMEOUT, "given up at its deadline, not before");
@@ -150,7 +157,7 @@ fn a_peer_cannot_set_the_mode_with_a_unicast_signal() {
     let bus = PrivateBus::start("appearance-spoof");
     let session = SessionBus::at(&bus.address).unwrap();
     let ours = session.unique_name().to_string();
-    let mut link = PortalLink::start(session);
+    let mut link = portal_link(session);
     pump(&mut link, Duration::from_secs(5), |l| l.pending() == 0); // no portal: answered at once
     let spoofer = Peer::connect(&bus);
     let mut spoof = dbus::Message::new_signal(PORTAL_PATH, SETTINGS_INTERFACE, "SettingChanged").unwrap().append3(

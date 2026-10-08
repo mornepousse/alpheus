@@ -9,6 +9,7 @@ use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
+use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
@@ -1790,4 +1791,131 @@ fn a_late_portal_paints_dark_first_then_light() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some(light)), "{:?}", d.log());
     assert!(wait_for_mode_file(&sway, "light\n"), "{:?}", mode_file(&sway));
     assert_eq!(d.count("appearance: no portal"), 0, "1 s is within the 2 s deadline: {:?}", d.log());
+}
+
+/// How many connections `pid` holds on `bus`, as the bus driver sees them (each unique name's process).
+fn connections_of(bus: &PrivateBus, pid: u32) -> usize {
+    let peer = Peer::connect(bus);
+    let call = |member: &str| {
+        dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", member).unwrap()
+    };
+    let names: Vec<String> = peer.call(call("ListNames")).unwrap().read1().unwrap();
+    names
+        .iter()
+        .filter(|n| n.starts_with(':'))
+        .filter(|n| {
+            // `String::as_str`, not `RefArg::as_str` (in scope here), which gives an Option.
+            let m = call("GetConnectionUnixProcessID").append1(String::as_str(n));
+            peer.call(m).ok().and_then(|r| r.read1::<u32>().ok()) == Some(pid)
+        })
+        .count()
+}
+
+/// The media module at the left of the bar (`modules`), on a private session bus, with one fake
+/// player playing "Harbor Lights" (fictional) started before the daemon; `theme` written to
+/// theme.toml when given.
+fn media_daemon(name: &str, modules: &str, theme: Option<&str>) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakePlayer) {
+    let bus = PrivateBus::start(name);
+    let player = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    if let Some(text) = theme {
+        let config = sway.runtime.join("config/alpheus");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("theme.toml"), text).unwrap();
+    }
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(modules), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, sway, hypr, d, player)
+}
+
+const MEDIA_LINK_BAR: &str = "modules = [\"media\", \"clock\"]\n";
+const MEDIA_TRAY_BAR: &str = "modules = [\"media\", \"tray\", \"clock\"]\n";
+const GET_ALL: &str = "org.freedesktop.DBus.Properties.GetAll(org.mpris.MediaPlayer2.Player)";
+const IDENTITY: &str = "org.freedesktop.DBus.Properties.Get(org.mpris.MediaPlayer2, Identity)";
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn with_the_tray_the_media_module_adds_no_connection() {
+    let (bus, _sway, _hypr, d, player) = media_daemon("media-on-tray", MEDIA_TRAY_BAR, None);
+    assert!(d.wait_for("media: on the tray's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "the tray's connection carries it: {:?}", d.log());
+    assert_eq!(player.calls(), [GET_ALL, IDENTITY]);
+    assert_eq!(d.count("media: on the bar's session bus"), 0, "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn without_the_tray_in_mode_auto_one_connection_serves_the_portal_and_the_players() {
+    let (bus, _sway, _hypr, d, player) = media_daemon("media-auto", MEDIA_LINK_BAR, None);
+    let portal = FakePortal::start(&bus, 2);
+    // The portal came up after the daemon's ReadOne may have gone: its answer, or none, is fine;
+    // what matters is that one connection asked both.
+    assert!(d.wait_for("media: on the bar's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("appearance:", DELAY), "the portal was followed on the same link: {:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "never two: {:?}", d.log());
+    assert_eq!(player.calls(), [GET_ALL, IDENTITY]);
+    assert!(portal.calls().len() <= 1, "{:?}", portal.calls());
+    assert_eq!(d.count("tray:"), 0, "the tray module is off: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn without_the_tray_in_a_fixed_mode_the_connection_is_for_the_players_alone() {
+    let (bus, _sway, _hypr, d, _player) = media_daemon("media-dark", MEDIA_LINK_BAR, Some("mode = \"dark\"\n"));
+    let portal = FakePortal::start(&bus, 2);
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(connections_of(&bus, d.pid()), 1, "{:?}", d.log());
+    assert_eq!(portal.calls(), Vec::<String>::new(), "a fixed mode never asks");
+    assert_eq!(d.count("appearance:"), 0, "{:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn switching_to_auto_joins_the_media_connection() {
+    let (bus, sway, _hypr, d, _player) = media_daemon("media-join", MEDIA_LINK_BAR, Some("mode = \"dark\"\n"));
+    let portal = FakePortal::start(&bus, 2);
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    write_atomically(&sway.runtime.join("config/alpheus"), "theme.toml", "mode = \"auto\"\n");
+    assert!(d.wait_for("appearance: the portal says light", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "joined, never a second connection: {:?}", d.log());
+    assert_eq!(portal.calls().len(), 1);
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn without_the_media_module_nothing_touches_the_players() {
+    let (bus, _sway, _hypr, d, player) = media_daemon("media-absent", "modules = [\"clock\"]\n", Some("mode = \"dark\"\n"));
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(connections_of(&bus, d.pid()), 0, "no connection, so no rule and no call: {:?}", d.log());
+    assert_eq!(player.calls(), Vec::<String>::new());
+    assert_eq!(d.count("media:"), 0, "{:?}", d.log());
+}
+
+/// Review Focus: the private session bus dying — the media module goes away, nothing spins.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
+    let (mut bus, _sway, _hypr, mut d, player) = media_daemon("media-bus-dies", MEDIA_LINK_BAR, None);
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    // Playing to paused: the module stays, so no second "shown" line.
+    player.set("PlaybackStatus", text("Paused"));
+    std::thread::sleep(Duration::from_millis(500));
+    bus.kill();
+    assert!(d.wait_for("media: the session bus closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media: hidden", DELAY), "{:?}", d.log());
+    // The dead socket stays readable: its source must be gone, or the loop spins.
+    std::thread::sleep(Duration::from_millis(500));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_millis(4500));
+    let wakeups = d.main_thread_wakeups() - before;
+    assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_eq!(d.count("media: the session bus closed"), 1, "{:?}", d.log());
+    assert_eq!((d.count("media: shown"), d.count("media: hidden")), (1, 1), "one line each way: {:?}", d.log());
+    assert_eq!(d.count("media: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
