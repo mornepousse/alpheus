@@ -10,13 +10,20 @@
 //! (resources, the tray, media, title, then Bluetooth, network, volume,
 //! battery, and last the launcher button); workspaces and the clock always
 //! stay.
+//!
+//! Groups (shapes spec § 2): consecutive modules of one kind (`group_kind`) make one block, never
+//! across the free space. `flat` and `underline` keep the "│" separators; the block styles put
+//! one blank pad cell inside each end of a block, one blank cell between blocks (powerline's
+//! arrow cell) and two blank cells between the modules of one block. The grid records the
+//! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
 
 use crate::compositor::{CompositorState, Workspace};
 use crate::config::ModuleId;
 use crate::grid::{Grid, Hue, Style, Target, text_width, truncate};
+pub use crate::grid::{Group, GroupKind};
 use crate::state::{Bar, Feed};
 use crate::{clock, icons, segments};
-use alpheus_commun::theme::settings::ModuleColors;
+use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
 /// Order of disappearance when space runs short: the spec's (resources,
 /// media, title), then the system indicators (Q9); the tray goes right
@@ -43,6 +50,57 @@ const MAX_NAME: u16 = 12;
 const SEPARATOR: &str = " │ ";
 /// Margin of one cell at each end.
 const MARGIN: u16 = 1;
+/// Block styles: blank cells inside each end of a block.
+const PAD: u16 = 1;
+/// Block styles: blank cells between two blocks (powerline draws its arrow there).
+const GAP: u16 = 1;
+/// Block styles: blank cells between two modules of one block, in place of " │ ".
+const INNER: u16 = 2;
+
+/// How a style spaces the modules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Spacing {
+    /// " │ " between modules: `flat`, `underline`.
+    Separators,
+    /// Pads, gaps, blank cells: `islands`, `powerline`, `floating`, `translucent`.
+    Blocks,
+}
+
+fn spacing(style: BarStyle) -> Spacing {
+    match style {
+        BarStyle::Flat | BarStyle::Underline => Spacing::Separators,
+        BarStyle::Islands | BarStyle::Powerline | BarStyle::Floating | BarStyle::Translucent => Spacing::Blocks,
+    }
+}
+
+/// The block a module belongs to (shapes spec § 2). Media and notifications (delivery 5) join the
+/// status block.
+pub fn group_kind(m: ModuleId) -> GroupKind {
+    match m {
+        ModuleId::Launcher => GroupKind::Launcher,
+        ModuleId::Workspaces => GroupKind::Workspaces,
+        ModuleId::Window => GroupKind::Title,
+        ModuleId::Media | ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications => {
+            GroupKind::Status
+        }
+        ModuleId::Resources => GroupKind::Resources,
+        ModuleId::Tray => GroupKind::Tray,
+        ModuleId::Clock => GroupKind::Clock,
+    }
+}
+
+/// A module's fixed hue (themes spec § 9; the CPU's orange for resources), None for the modules
+/// without one.
+pub fn module_hue(m: ModuleId) -> Option<Hue> {
+    match m {
+        ModuleId::Window | ModuleId::Bluetooth => Some(Hue::Purple),
+        ModuleId::Volume => Some(Hue::Blue),
+        ModuleId::Network => Some(Hue::Cyan),
+        ModuleId::Battery => Some(Hue::Green),
+        ModuleId::Resources => Some(Hue::Orange),
+        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Media | ModuleId::Tray | ModuleId::Notifications | ModuleId::Clock => None,
+    }
+}
 
 pub(crate) struct Piece {
     pub(crate) text: String,
@@ -171,26 +229,58 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
     }
 }
 
-fn separators(n: usize) -> u16 {
-    text_width(SEPARATOR).saturating_mul(n.saturating_sub(1) as u16)
+/// The segment the free space goes before when none is elastic: `gap_at` (the absent window
+/// module's slot), or else the last one. None with an elastic segment (it takes the free space) or
+/// fewer than two segments.
+fn space_before(segs: &[Segment], gap_at: Option<usize>) -> Option<usize> {
+    if segs.len() < 2 || segs.iter().any(|s| s.elastic) {
+        return None;
+    }
+    match gap_at {
+        Some(i) if i < segs.len() => Some(i),
+        _ => Some(segs.len() - 1),
+    }
 }
 
-/// Minimum width: margins, separators, segments (title at MIN_TITLE).
-fn needed(segs: &[Segment]) -> u16 {
-    segs.iter().map(Segment::min_width).fold(2 * MARGIN + separators(segs.len()), u16::saturating_add)
+/// True when segment `i` starts a block: the first one, another kind than the one before it, or
+/// right after the free space.
+fn opens_group(segs: &[Segment], i: usize, space: Option<usize>) -> bool {
+    i == 0 || space == Some(i) || group_kind(segs[i - 1].module) != group_kind(segs[i].module)
+}
+
+/// Cells between segment `i - 1` and segment `i` (`i > 0`), the free space aside.
+fn joint(segs: &[Segment], i: usize, space: Option<usize>, spacing: Spacing) -> u16 {
+    match spacing {
+        Spacing::Separators => text_width(SEPARATOR),
+        Spacing::Blocks if opens_group(segs, i, space) => PAD + GAP + PAD,
+        Spacing::Blocks => INNER,
+    }
+}
+
+/// Every cell that is not a segment's: margins, joints and, for the block styles, the pads at
+/// both ends.
+fn spacing_width(segs: &[Segment], space: Option<usize>, spacing: Spacing) -> u16 {
+    let ends = if spacing == Spacing::Blocks && !segs.is_empty() { 2 * PAD } else { 0 };
+    (1..segs.len()).map(|i| joint(segs, i, space, spacing)).fold(2 * MARGIN + ends, u16::saturating_add)
+}
+
+/// Minimum width: the spacing, segments (title at MIN_TITLE).
+fn needed(segs: &[Segment], space: Option<usize>, spacing: Spacing) -> u16 {
+    segs.iter().map(Segment::min_width).fold(spacing_width(segs, space, spacing), u16::saturating_add)
 }
 
 impl Bar {
     pub fn grid(&self, output: &str, columns: u16) -> Grid {
         let mut segs: Vec<Segment> = self.config.modules.iter().filter_map(|m| segment(self, *m, output)).collect();
+        let spacing = spacing(self.style);
         for removed in REMOVAL {
-            if needed(&segs) <= columns {
+            if needed(&segs, space_before(&segs, self.window_gap(&segs)), spacing) <= columns {
                 break;
             }
             segs.retain(|s| s.module != removed);
         }
         let gap_at = self.window_gap(&segs);
-        lay_out(&segs, columns, gap_at)
+        lay_out_styled(&segs, columns, gap_at, self.style)
     }
 
     /// When the window module is configured but has no segment (no active
@@ -212,30 +302,49 @@ impl Bar {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn lay_out(segs: &[Segment], columns: u16, gap_at: Option<usize>) -> Grid {
+    lay_out_styled(segs, columns, gap_at, BarStyle::Flat)
+}
+
+pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usize>, style: BarStyle) -> Grid {
+    let spacing = spacing(style);
     let mut g = Grid::empty(columns);
     let end = columns.saturating_sub(MARGIN);
-    let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(2 * MARGIN + separators(segs.len()), u16::saturating_add);
+    let space = space_before(segs, gap_at);
+    let fixed = segs.iter().filter(|s| !s.elastic).map(Segment::width).fold(spacing_width(segs, space, spacing), u16::saturating_add);
     let free = columns.saturating_sub(fixed);
-    let has_elastic = segs.iter().any(|s| s.elastic);
-    // Without an elastic segment, the free space goes where `gap_at` says
-    // (the absent window module's configured position), or, lacking that,
-    // before the last segment.
-    let space_before = if has_elastic || segs.len() < 2 {
-        None
-    } else {
-        match gap_at {
-            Some(i) if i < segs.len() => Some(i),
-            _ => Some(segs.len() - 1),
-        }
-    };
+    let pad = if spacing == Spacing::Blocks { PAD } else { 0 };
+    // `flat` paints no block: its grid records none, exactly today's.
+    let record = style != BarStyle::Flat;
+    // The block being laid out: its kind, first cell and hue; and where the last segment's text ended.
+    let mut open: Option<(GroupKind, u16, Option<Hue>)> = None;
+    let mut text_end = MARGIN;
     let mut x = MARGIN;
     for (i, s) in segs.iter().enumerate() {
-        if space_before == Some(i) {
+        let opens = opens_group(segs, i, space);
+        if opens && i > 0 && spacing == Spacing::Blocks {
+            x = x.saturating_add(PAD); // the closing pad of the block before
+        }
+        if space == Some(i) {
             x = x.saturating_add(free);
+            g.set_split(x);
         }
         if i > 0 {
-            x = g.write(x, end, SEPARATOR, Style::MUTED);
+            x = match spacing {
+                Spacing::Separators => g.write(x, end, SEPARATOR, Style::MUTED),
+                Spacing::Blocks if opens => x.saturating_add(GAP),
+                Spacing::Blocks => x.saturating_add(INNER),
+            };
+        }
+        if opens {
+            if let Some((kind, start, hue)) = open.take()
+                && record
+            {
+                g.group(Group { kind, start, end: text_end.saturating_add(pad), hue });
+            }
+            open = Some((group_kind(s.module), x, module_hue(s.module)));
+            x = x.saturating_add(pad);
         }
         let limit = if s.elastic { x.saturating_add(free).min(end) } else { end };
         let segment_start = x;
@@ -250,9 +359,16 @@ pub(crate) fn lay_out(segs: &[Segment], columns: u16, gap_at: Option<usize>) -> 
         if let Some(t) = &s.target {
             g.zone(segment_start, x, t.clone());
         }
+        text_end = x;
         if s.elastic {
             x = limit;
+            g.set_split(x);
         }
+    }
+    if let Some((kind, start, hue)) = open
+        && record
+    {
+        g.group(Group { kind, start, end: text_end.saturating_add(pad), hue });
     }
     g
 }
@@ -265,7 +381,7 @@ mod tests {
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
     use crate::state::Msg;
     use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
-    use alpheus_commun::theme::settings::ModuleColors;
+    use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 
@@ -611,5 +727,151 @@ mod tests {
             vol_at_old_rule,
             got.text()
         );
+    }
+
+    // ---- groups and per-style spacing (shapes spec § 2) ----
+
+    const BLOCK_STYLES: [BarStyle; 4] = [BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Translucent];
+
+    fn styled(mut b: Bar, style: BarStyle) -> Bar {
+        b.style = style;
+        b
+    }
+
+    fn group(kind: GroupKind, start: u16, end: u16, hue: Option<Hue>) -> Group {
+        Group { kind, start, end, hue }
+    }
+
+    /// `flat` records no block: its grid is exactly today's (the snapshots above), groups included.
+    #[test]
+    fn flat_records_no_group() {
+        for w in [100u16, 60, 40] {
+            let g = bar().grid("HDMI-A-1", w);
+            assert_eq!(g.groups(), &[], "{w} columns");
+        }
+        assert_eq!(bar_with_right_modules().grid("HDMI-A-1", 100).groups(), &[]);
+    }
+
+    /// `underline` keeps flat's cells and zones to the cell; it only records the blocks, each from
+    /// its first module's first cell to its last module's last.
+    #[test]
+    fn underline_keeps_the_flat_cells_and_records_the_blocks() {
+        for b in [bar(), bar_with_right_modules()] {
+            for w in [100u16, 60, 40, 20] {
+                let (flat, under) = (b.grid("HDMI-A-1", w), styled(b.clone(), BarStyle::Underline).grid("HDMI-A-1", w));
+                assert_eq!((under.text(), under.styles(), under.zones()), (flat.text(), flat.styles(), flat.zones()), "{w}");
+            }
+        }
+        let g = styled(bar_with_right_modules(), BarStyle::Underline).grid("HDMI-A-1", 100);
+        assert_eq!(
+            g.groups(),
+            &[
+                group(GroupKind::Launcher, 1, 2, None),
+                group(GroupKind::Workspaces, 5, 21, None),
+                group(GroupKind::Title, 24, 52, Some(Hue::Purple)),
+                group(GroupKind::Status, 56, 81, Some(Hue::Blue)),
+                group(GroupKind::Clock, 84, 99, None),
+            ],
+            "{}",
+            g.text()
+        );
+    }
+
+    /// The block styles: no "│", a pad cell inside each end of a block, one blank cell between
+    /// blocks, the title's block around its text only (the free space stays outside it).
+    #[test]
+    fn block_styles_drop_the_separators_and_pad_each_block() {
+        let g = styled(bar(), BarStyle::Islands).grid("HDMI-A-1", 100);
+        let t = g.text();
+        assert!(!t.contains('│'), "{t}");
+        assert!(t.starts_with("  \u{f0349}    2·  4!····+  5    \u{f0239} Web page — Mozilla Firefox "), "{t}");
+        assert!(t.ends_with(" Sun 4 Oct 14:05  "), "the clock's pad, then the margin: {t}");
+        assert_eq!(
+            g.groups(),
+            &[
+                group(GroupKind::Launcher, 1, 4, None),
+                group(GroupKind::Workspaces, 5, 23, None),
+                group(GroupKind::Title, 24, 54, Some(Hue::Purple)),
+                group(GroupKind::Clock, 82, 99, None),
+            ]
+        );
+        assert_eq!(g.split(), 80, "the title's free space ends where the right-hand side starts");
+        assert_eq!(g.target_at(2), Some(&Target::Module(ModuleId::Launcher)), "the zones follow the cells");
+        assert_eq!(g.target_at(6), Some(&Target::Workspace { reference: "2".into(), output: "HDMI-A-1".into() }));
+        insta::assert_snapshot!("blocks_hdmi_100", snapshot(&g));
+        for style in BLOCK_STYLES {
+            let other = styled(bar(), style).grid("HDMI-A-1", 100);
+            assert_eq!(other, g, "{style:?}: every block style lays out alike, only the painter differs");
+        }
+    }
+
+    /// Consecutive modules of one kind share one block, two blank cells apart; its hue is its
+    /// first module's.
+    #[test]
+    fn a_block_holds_consecutive_modules_of_one_kind() {
+        let g = styled(bar_with_right_modules(), BarStyle::Islands).grid("HDMI-A-1", 100);
+        let status: Vec<&Group> = g.groups().iter().filter(|x| x.kind == GroupKind::Status).collect();
+        assert_eq!(status, [&group(GroupKind::Status, 56, 81, Some(Hue::Blue))], "volume, network and battery: one block");
+        let t: String = g.cells()[56..81].iter().filter(|c| c.ch != crate::grid::CONT).map(|c| c.ch).collect();
+        assert_eq!(t, " \u{f0580} ▁▃▅▆▇▇  55%  \u{f05a9}  \u{f0081} 80% ");
+        insta::assert_snapshot!("blocks_right_modules_100", snapshot(&g));
+        // Without volume, the block starts with the network: cyan.
+        let mut b = styled(bar_with_right_modules(), BarStyle::Islands);
+        b.config.modules.retain(|m| *m != ModuleId::Volume);
+        let g = b.grid("HDMI-A-1", 100);
+        assert_eq!(g.groups().iter().find(|x| x.kind == GroupKind::Status).map(|x| x.hue), Some(Some(Hue::Cyan)));
+    }
+
+    /// No block spans the free space: the window module's slot between two status modules splits
+    /// them into two blocks, and the right-hand side starts after it.
+    #[test]
+    fn the_free_space_splits_a_block() {
+        let mut b = styled(bar_with_right_modules(), BarStyle::Islands);
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Volume, ModuleId::Window, ModuleId::Network, ModuleId::Clock];
+        let mut e = example();
+        e.window = None;
+        b.apply(Msg::Compositor(Some(e)));
+        let g = b.grid("HDMI-A-1", 100);
+        let kinds: Vec<GroupKind> = g.groups().iter().map(|x| x.kind).collect();
+        assert_eq!(kinds, [GroupKind::Workspaces, GroupKind::Status, GroupKind::Status, GroupKind::Clock], "{}", g.text());
+        let (left, right) = (g.groups()[1], g.groups()[2]);
+        assert!(left.end < g.split() && right.start >= g.split(), "{left:?} {right:?} split {}", g.split());
+        assert_eq!((left.hue, right.hue), (Some(Hue::Blue), Some(Hue::Cyan)));
+    }
+
+    /// Every width, every style: the bar is exactly as wide as asked, the workspaces and the clock
+    /// stay whole (the block styles' spacing is counted before a module is removed: the clock's pad
+    /// and the margin end the bar), and the modules leave in REMOVAL's order.
+    #[test]
+    fn narrow_outputs_drop_modules_in_order_under_every_style() {
+        // This bar's removable modules, in REMOVAL's order.
+        let removable = [ModuleId::Window, ModuleId::Network, ModuleId::Volume, ModuleId::Battery, ModuleId::Launcher];
+        assert!(removable.windows(2).all(|p| REMOVAL.iter().position(|m| *m == p[0]) < REMOVAL.iter().position(|m| *m == p[1])));
+        for style in BarStyle::ALL {
+            let b = styled(bar_with_right_modules(), style);
+            let mut removed_at = Vec::new();
+            for w in (45u16..=140).rev() {
+                let g = b.grid("HDMI-A-1", w);
+                let t = g.text();
+                assert_eq!(g.width(), w, "{style:?}");
+                let tail = if spacing(style) == Spacing::Blocks { " 14:05  " } else { " 14:05 " };
+                assert!(t.ends_with(tail) && t.contains(" 4!····+ "), "{style:?} at {w}: {t}");
+                let shown = |m: ModuleId| match m {
+                    ModuleId::Window => t.contains("Web"),
+                    m => g.zones().iter().any(|z| z.target == Target::Module(m)),
+                };
+                let gone = removable.iter().filter(|m| !shown(**m)).count();
+                assert!(removable[gone..].iter().all(|m| shown(*m)), "{style:?} at {w}: out of REMOVAL's order: {t}");
+                // Review focus 3: a block always holds something; no lone border around blank cells.
+                for x in g.groups() {
+                    let cells = &g.cells()[usize::from(x.start)..usize::from(x.end)];
+                    assert!(cells.iter().any(|c| c.ch != ' '), "{style:?} at {w}: an empty block {x:?}: {t}");
+                }
+                while removed_at.len() < gone {
+                    removed_at.push(w);
+                }
+            }
+            assert_eq!(removed_at.len(), 4, "{style:?}: all but the launcher leave by 45 columns ({removed_at:?})");
+        }
     }
 }

@@ -6,7 +6,7 @@ use crate::compositor::CompositorState;
 use crate::config::BarConfig;
 use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
 use crate::tray::icons::TrayIcon;
-use alpheus_commun::theme::settings::ModuleColors;
+use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Feed<T> {
@@ -47,6 +47,9 @@ pub struct Bar {
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
     /// at start and on every theme reload. `None` until then, the look of delivery 1.
     pub module_colors: ModuleColors,
+    /// The bar's shape (shapes spec § 2): its block spacing here, its pixels in the painter. Written
+    /// by the wiring like `module_colors`; `Flat` until then.
+    pub style: BarStyle,
 }
 
 /// Puts `v` in `slot` (None: down); true if it changed.
@@ -87,6 +90,7 @@ impl Bar {
             resources: Resources::default(),
             tray: Vec::new(),
             module_colors: ModuleColors::None,
+            style: BarStyle::Flat,
         }
     }
 
