@@ -33,7 +33,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Component | Memory | Notes |
 |---|---:|---|
 | Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.1 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.8–8.9 MB with the tray and 10 fake items, but that test runs without the launcher module) |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.9–9.2 MB | stable, 0 wake-ups at rest, the theme watch adds no wake-up, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.6–9.7 MB | stable, 0 wake-ups at rest, the theme watch adds no wake-up, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
 | Tray, module present, no item | ≈ 0.4 MB | watcher + session connection only, no thread (376–392 KB) |
 | Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 488–496 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: +32 KB in each of 3 runs) |
 | Tray, linked in but unused (no `tray` in `modules`, no session bus) | +0.4–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (stripped 4.49 → 5.36 MB, +864 KB: libdbus linkage, menus, popups, calendar); measured back to back in release, a real cost, like the launcher's |
@@ -196,7 +196,7 @@ Coming next: now-playing and notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.1 MB
-of memory at start (≈ 8.8–8.9 MB with a tray of 10 items, launcher module off) and ≈ 8.9–9.2 MB under load,
+of memory at start (≈ 8.8–8.9 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
 on three outputs. The
 compositor is only **read** (Hyprland or niri event stream); switching
 workspace goes through a configurable command. Sound comes from
