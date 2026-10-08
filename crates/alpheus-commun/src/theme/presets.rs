@@ -171,7 +171,7 @@ const TOKYO_NIGHT_LIGHT: Roles = Roles {
     bar_bg: h(0xe1e2e7),            // bg (fg on bg_dark is 3.99:1)
     pill_bg: h(0xd0d5e3),           // bg_dark
     popup_bg: h(0xe1e2e7),          // bg
-    raised: h(0xd0d5e3),            // bg_dark
+    raised: h(0xc4c8da),            // bg_highlight (Mae, 2026-10-08)
     selection: h(0xc4c8da),         // bg_highlight
     fg: h(0x3760bf),                // fg
     fg_dim: h(0x68709a),            // dark5
@@ -374,7 +374,7 @@ const SOLARIZED_DARK: Roles = Roles {
     bar_bg: h(0x002b36),            // base03
     pill_bg: h(0x073642),           // base02
     popup_bg: h(0x002b36),          // base03
-    raised: h(0x073642),            // base02
+    raised: h(0x1b4a56),            // base02, one step up (Mae, 2026-10-08)
     selection: h(0x073642),         // base02
     fg: h(0x839496),                // base0
     fg_dim: h(0x657b83),            // base00
@@ -403,7 +403,7 @@ const SOLARIZED_LIGHT: Roles = Roles {
     bar_bg: h(0xfdf6e3),            // base3
     pill_bg: h(0xeee8d5),           // base2
     popup_bg: h(0xfdf6e3),          // base3
-    raised: h(0xeee8d5),            // base2
+    raised: h(0xdad4c1),            // base2, one step down (Mae, 2026-10-08)
     selection: h(0xeee8d5),         // base2
     fg: h(0x586e75),                // base01 (base00 is 4.13:1)
     fg_dim: h(0x657b83),            // base00

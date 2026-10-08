@@ -878,13 +878,12 @@ fn a_visible_workspace_on_a_pill_bg_block_is_raised() {
 
 /// A visible workspace is told apart from its block (and powerline's blocks from their neighbours)
 /// only if `raised` is not `pill_bg`: true of a wallpaper theme from a legacy file (derived one step
-/// up) and of every preset half but three, whose palettes give both roles the same tone. Those
-/// three await Mae's choice of a `raised` (fix wave B, 2026-10-08): the list may only shrink.
+/// up) and of every preset half (Mae chose a derived step for the three whose palettes gave both
+/// roles the same tone, 2026-10-08).
 #[test]
 fn raised_differs_from_pill_bg_in_every_theme() {
     use alpheus_commun::theme::presets::PRESETS;
     use alpheus_commun::theme::{Mode, parse_colors};
-    const PENDING: [&str; 3] = ["tokyo-night light", "solarized dark", "solarized light"];
     let mut same = Vec::new();
     for preset in PRESETS {
         for (half, roles) in [("dark", Some(preset.dark)), ("light", preset.light)] {
@@ -893,7 +892,7 @@ fn raised_differs_from_pill_bg_in_every_theme() {
             }
         }
     }
-    assert_eq!(same, PENDING, "preset halves whose raised is their pill_bg");
+    assert!(same.is_empty(), "preset halves whose raised is their pill_bg: {same:?}");
     let legacy = "bg = \"#1e1e2e\"\nfg = \"#cdd6f4\"\naccent = \"#cba6f7\"\nmuted = \"#6c7086\"\nsurface = \"#313244\"\nerror = \"#f38ba8\"\nok = \"#a6e3a1\"\n";
     for mode in [Mode::Dark, Mode::Light] {
         let r = parse_colors(legacy, mode).expect("a legacy wallpaper file");
