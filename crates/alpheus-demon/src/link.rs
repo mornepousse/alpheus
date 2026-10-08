@@ -280,7 +280,7 @@ impl App {
         let bus = match SessionBus::session() {
             Ok(b) => b,
             Err(e) => {
-                log(&format!("{who}: no session bus ({e})"));
+                log(&link_failed(who, &format!("no session bus ({e})")));
                 return false;
             }
         };
@@ -288,7 +288,7 @@ impl App {
         let fd = match link.watch_fd() {
             Ok(fd) => fd,
             Err(e) => {
-                log(&format!("{who}: connected, but could not watch the session bus's fd ({e})"));
+                log(&link_failed(who, &format!("connected, but could not watch the session bus's fd ({e})")));
                 return false;
             }
         };
@@ -297,7 +297,7 @@ impl App {
             Ok(if app.link.is_some() { PostAction::Continue } else { PostAction::Remove })
         });
         if inserted.is_err() {
-            log(&format!("{who}: event loop refused the session bus source"));
+            log(&link_failed(who, "event loop refused the session bus source"));
             return false;
         }
         self.link = Some(link);
@@ -349,6 +349,12 @@ impl App {
     }
 }
 
+/// A failure line of `open_link`: the appearance's says the mode falls back to dark; the media
+/// module simply is not there.
+fn link_failed(who: &str, what: &str) -> String {
+    if who == "appearance" { format!("{who}: {what}; dark") } else { format!("{who}: {what}") }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +372,12 @@ mod tests {
         assert_eq!(host(true, buses(false, false, false, false)), OwnBus, "no tray, no link: open one");
         assert_eq!(host(true, buses(false, false, true, true)), OnLink, "the link is open: joined, never a second one");
         assert_eq!(host(true, buses(false, false, false, true)), NoBus, "the link was tried and is gone: never again");
+    }
+
+    #[test]
+    fn a_link_failure_tells_the_appearance_it_stays_dark() {
+        assert_eq!(link_failed("appearance", "no session bus (x)"), "appearance: no session bus (x); dark");
+        assert_eq!(link_failed("media", "no session bus (x)"), "media: no session bus (x)", "the module is simply not there");
     }
 
     #[test]

@@ -142,10 +142,13 @@ impl Mpris {
 
     /// `bus_name` was released by `unique`: its player goes, only if it is that name's. One
     /// connection may own two MPRIS names (only the first is followed): the second one released
-    /// leaves the first one's player alone.
-    fn release(&mut self, bus_name: &str, unique: &str) {
+    /// leaves the first one's player alone. When the player goes, that connection may still own a
+    /// second name: one ListNames, whatever `listed` says, finds it (`answer` skips the names
+    /// already followed or resolving).
+    fn release(&mut self, out: &mut impl Outbox, bus_name: &str, unique: &str) {
         if self.players.get(unique).is_some_and(|p| p.bus_name == bus_name) {
             self.leave(unique);
+            self.ask(out, Call::ListNames, Ask::List(true));
         }
     }
 
@@ -241,7 +244,7 @@ impl Mpris {
                     self.asks.retain(|_, a| !matches!(a, Ask::Owner(n, _) if n == name));
                     // A restart is one signal with both owners: the old one goes, the new one comes.
                     if !old.is_empty() {
-                        self.release(name, old);
+                        self.release(out, name, old);
                     }
                     if !new.is_empty() {
                         self.arrive(out, name, new);
@@ -454,7 +457,11 @@ mod tests {
         out.take();
         assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.7", ":1.8")));
         let asked: Vec<Call> = out.calls.iter().map(|(_, c)| c.clone()).collect();
-        assert_eq!(asked, [get_all(":1.8"), identity(":1.8")], "the new owner is read; no GetNameOwner");
+        assert_eq!(
+            asked,
+            [Call::ListNames, get_all(":1.8"), identity(":1.8")],
+            "the old owner's other names listed, the new owner read; no GetNameOwner"
+        );
         assert_eq!(m.players().len(), 1, "replaced, not doubled");
         assert_eq!(m.view(), None, "the new owner's state is not known before its GetAll");
         let all = id(&out, &get_all(":1.8"));
@@ -492,6 +499,7 @@ mod tests {
         assert_eq!(lines("players already followed"), 1, "one line while full");
         // One leaves: room for one more, then full again: a new episode, a new line.
         assert!(m.signal(&mut out, &owner_changed(&names[0], ":1.100", "")));
+        assert_eq!(out.take().into_iter().map(|(_, c)| c).collect::<Vec<_>>(), [Call::ListNames], "a release lists again");
         assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.later", "", ":1.201")));
         assert_eq!(out.take().len(), 2, "GetAll + Identity for the one that fits");
         assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.latest", "", ":1.202")));
@@ -728,6 +736,31 @@ mod tests {
         assert_eq!(m.view(), view(true, "Harbor Lights"));
         assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.7", "")));
         assert_eq!(m.players().len(), 0, "its own name released: gone");
+    }
+
+    /// Task 5's review: when a followed player's name is released, the same connection may still own a
+    /// second MPRIS name (never followed while the first one was): one ListNames, even once listed,
+    /// picks it up. A release that removes nothing lists nothing.
+    #[test]
+    fn a_released_player_lists_again_so_a_second_name_of_its_connection_is_followed() {
+        let (mut out, mut m) = started();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(vec![])));
+        loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, "", ":1.7")));
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, ":1.7", "")));
+        assert!(out.take().is_empty(), "LANTERN was never followed: nothing removed, nothing listed");
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, "", ":1.7")));
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.7", "")));
+        let asked = out.take();
+        assert_eq!(asked.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::ListNames], "one listing, though listed already");
+        m.answer(&mut out, asked[0].0, Ok(Reply::Names(vec![LANTERN.into()])));
+        let owner = out.take();
+        assert_eq!(owner.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::GetNameOwner { name: LANTERN.into() }]);
+        m.answer(&mut out, owner[0].0, Ok(Reply::Owner(":1.7".into())));
+        assert_eq!(out.take().into_iter().map(|(_, c)| c).collect::<Vec<_>>(), [get_all(":1.7"), identity(":1.7")]);
+        assert_eq!(m.players().get(":1.7").map(|p| p.bus_name.as_str()), Some(LANTERN), "the second name followed now");
     }
 
     /// Task 4's review (login): a ListNames lost to our timeout is asked once more at once; if that

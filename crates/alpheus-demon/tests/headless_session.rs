@@ -1815,8 +1815,21 @@ fn connections_of(bus: &PrivateBus, pid: u32) -> usize {
 /// player playing "Harbor Lights" (fictional) started before the daemon; `theme` written to
 /// theme.toml when given.
 fn media_daemon(name: &str, modules: &str, theme: Option<&str>) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakePlayer) {
+    let (bus, sway, hypr, d, player, ()) = media_daemon_with(name, modules, theme, |_| ());
+    (bus, sway, hypr, d, player)
+}
+
+/// `media_daemon`, with `before` run on the bus once the player is up and before the daemon starts
+/// (a peer the daemon must find there, like the portal); its result is handed back last.
+fn media_daemon_with<T>(
+    name: &str,
+    modules: &str,
+    theme: Option<&str>,
+    before: impl FnOnce(&PrivateBus) -> T,
+) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakePlayer, T) {
     let bus = PrivateBus::start(name);
     let player = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let extra = before(&bus);
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     if let Some(text) = theme {
@@ -1827,7 +1840,13 @@ fn media_daemon(name: &str, modules: &str, theme: Option<&str>) -> (PrivateBus, 
     let d =
         start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(modules), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    (bus, sway, hypr, d, player)
+    (bus, sway, hypr, d, player, extra)
+}
+
+/// The pixels of the media module at the bar's left edge ("▶ Harbor Lights", cells 1 to 16 at
+/// ≈ 8.4 px), the clock's cells left out.
+fn media_cells(s: &Ppm) -> Vec<[u8; 3]> {
+    (2..20).flat_map(|y| (8..130).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
 const MEDIA_LINK_BAR: &str = "modules = [\"media\", \"clock\"]\n";
@@ -1849,16 +1868,14 @@ fn with_the_tray_the_media_module_adds_no_connection() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn without_the_tray_in_mode_auto_one_connection_serves_the_portal_and_the_players() {
-    let (bus, _sway, _hypr, d, player) = media_daemon("media-auto", MEDIA_LINK_BAR, None);
-    let portal = FakePortal::start(&bus, 2);
-    // The portal came up after the daemon's ReadOne may have gone: its answer, or none, is fine;
-    // what matters is that one connection asked both.
+    // The portal is up before the daemon: its ReadOne is answered on the media module's link.
+    let (bus, _sway, _hypr, d, player, portal) = media_daemon_with("media-auto", MEDIA_LINK_BAR, None, |bus| FakePortal::start(bus, 2));
     assert!(d.wait_for("media: on the bar's session bus", DELAY), "{:?}", d.log());
     assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
-    assert!(d.wait_for("appearance:", DELAY), "the portal was followed on the same link: {:?}", d.log());
+    assert!(d.wait_for("appearance: the portal says light", DELAY), "the portal was followed on the same link: {:?}", d.log());
     assert_eq!(connections_of(&bus, d.pid()), 1, "never two: {:?}", d.log());
     assert_eq!(player.calls(), [GET_ALL, IDENTITY]);
-    assert!(portal.calls().len() <= 1, "{:?}", portal.calls());
+    assert_eq!(portal.calls().len(), 1, "{:?}", portal.calls());
     assert_eq!(d.count("tray:"), 0, "the tray module is off: {:?}", d.log());
 }
 
@@ -1900,11 +1917,15 @@ fn without_the_media_module_nothing_touches_the_players() {
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
-    let (mut bus, _sway, _hypr, mut d, player) = media_daemon("media-bus-dies", MEDIA_LINK_BAR, None);
+    let (mut bus, sway, _hypr, mut d, player) = media_daemon("media-bus-dies", MEDIA_LINK_BAR, None);
     assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    // Playing: the module's play glyph takes the purple (catppuccin dark, mode auto without a
+    // portal); paused, the whole module is muted.
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn playing: {:?}", d.log());
     // Playing to paused: the module stays, so no second "shown" line.
     player.set("PlaybackStatus", text("Paused"));
-    std::thread::sleep(Duration::from_millis(500));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !media_cells(s).contains(&purple)), "never repainted paused: {:?}", d.log());
     bus.kill();
     assert!(d.wait_for("media: the session bus closed", DELAY), "{:?}", d.log());
     assert!(d.wait_for("media: hidden", DELAY), "{:?}", d.log());
@@ -1918,4 +1939,43 @@ fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
     assert_eq!((d.count("media: shown"), d.count("media: hidden")), (1, 1), "one line each way: {:?}", d.log());
     assert_eq!(d.count("media: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// Inside "▶ Harbor Lights" at the bar's left edge (cells 1 to 16, ≈ 8.4 px each): the title's
+/// third cell.
+const MEDIA_AT: (u32, u32) = (30, 10);
+
+/// A middle click and one wheel notch each way on the media module reach the fake player: one
+/// call per gesture, in order, and no popup.
+fn clicks_reach_the_player(name: &str, modules: &str) {
+    let (_bus, sway, _hypr, d, player) = media_daemon(name, modules, Some("mode = \"dark\"\n"));
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // drawn
+    let (x, y) = MEDIA_AT;
+    sway.click(x, y, "button2");
+    assert_eq!(player.wait_call("PlayPause", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.PlayPause()"), "{:?}", d.log());
+    sway.scroll(x, y, "up", 1);
+    assert_eq!(player.wait_call("Next", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.Next()"), "{:?}", d.log());
+    sway.scroll(x, y, "down", 1);
+    assert_eq!(player.wait_call("Previous", DELAY).as_deref(), Some("org.mpris.MediaPlayer2.Player.Previous()"), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    let controls: Vec<String> = player.calls().into_iter().filter(|c| c.starts_with("org.mpris.MediaPlayer2.Player.")).collect();
+    assert_eq!(
+        controls,
+        ["org.mpris.MediaPlayer2.Player.PlayPause()", "org.mpris.MediaPlayer2.Player.Next()", "org.mpris.MediaPlayer2.Player.Previous()"],
+        "one call per gesture"
+    );
+    assert_eq!(d.count("popup"), 0, "a middle click or the wheel opens nothing: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_middle_click_and_the_wheel_reach_the_player_on_the_bars_link() {
+    clicks_reach_the_player("media-clicks-link", MEDIA_LINK_BAR);
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_middle_click_and_the_wheel_reach_the_player_through_the_tray() {
+    clicks_reach_the_player("media-clicks-tray", MEDIA_TRAY_BAR);
 }

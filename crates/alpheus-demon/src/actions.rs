@@ -6,6 +6,7 @@
 use crate::compositor::Workspace;
 use crate::config::ModuleId;
 use crate::grid::{Grid, Target};
+use crate::media::Control;
 use crate::painter::column_under;
 use crate::state::{Bar, Feed};
 use crate::tray::{Gesture, Orientation};
@@ -135,6 +136,17 @@ pub fn toggles_launcher(target: &Target, b: Button) -> bool {
     b == Button::Left && *target == Target::Module(ModuleId::Launcher)
 }
 
+/// The media module's middle button and wheel (spec § 1): a D-Bus call to the active player
+/// (`Mpris::control`), never a command; the left button is its popup's (`ModulePopup`).
+pub fn media_control(target: &Target, b: Button) -> Option<Control> {
+    match (target, b) {
+        (Target::Module(ModuleId::Media), Button::Middle) => Some(Control::PlayPause),
+        (Target::Module(ModuleId::Media), Button::WheelUp) => Some(Control::Next),
+        (Target::Module(ModuleId::Media), Button::WheelDown) => Some(Control::Previous),
+        _ => None,
+    }
+}
+
 /// Runs the command without waiting for it; a failure goes to the log.
 pub fn run(exec: &dyn Executor, argv: &[String]) {
     let Some((prog, args)) = argv.split_first() else { return };
@@ -260,6 +272,26 @@ mod tests {
     use crate::state::Msg;
     use crate::system::*;
     use alpheus_commun::exec::fake::FakeExecutor;
+
+    #[test]
+    fn the_media_module_answers_the_middle_button_and_the_wheel() {
+        use crate::media::Control;
+        let media = Target::Module(ModuleId::Media);
+        assert_eq!(media_control(&media, Button::Middle), Some(Control::PlayPause));
+        assert_eq!(media_control(&media, Button::WheelUp), Some(Control::Next), "spec § 1: up is next");
+        assert_eq!(media_control(&media, Button::WheelDown), Some(Control::Previous));
+        assert_eq!(media_control(&media, Button::Left), None, "the popup's (task 7), not a control");
+        assert_eq!(media_control(&media, Button::Right), None);
+        assert_eq!(media_control(&Target::Module(ModuleId::Volume), Button::Middle), None, "another module: its own action");
+    }
+
+    #[test]
+    fn no_media_click_is_a_command() {
+        let bar = bar();
+        for b in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert_eq!(command(&bar, "DP-1", &Target::Module(ModuleId::Media), b), None, "{b:?}: a D-Bus call, never a process");
+        }
+    }
 
     #[test]
     fn wheel_scrolls_vertical_and_horizontal() {

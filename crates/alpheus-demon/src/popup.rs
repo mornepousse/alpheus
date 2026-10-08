@@ -17,6 +17,8 @@
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
+use crate::config::ModuleId;
+use crate::grid::Target;
 use crate::keys::{self, Key, Mods};
 use crate::list::{self, Boxed};
 use crate::log::write as log;
@@ -192,6 +194,34 @@ pub enum PopupBody {
     Calendar(Calendar),
     /// One row of text (task 16).
     Tooltip(String),
+}
+
+/// A bar module whose left click toggles a popup of its own: the clock's calendar (media task 7 adds
+/// the media popup). It is the anchor's and the press race's single source of truth (wayland.rs
+/// `module_popup_at`, `closed_by_done`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModulePopup {
+    Calendar,
+}
+
+impl ModulePopup {
+    /// The popup a press of `b` on `target` toggles: a left press on its module's zone.
+    pub fn of(target: &Target, b: Button) -> Option<ModulePopup> {
+        match (target, b) {
+            (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
+            _ => None,
+        }
+    }
+}
+
+impl PopupBody {
+    /// The module whose click opened this popup, if any.
+    pub fn module_popup(&self) -> Option<ModulePopup> {
+        match self {
+            PopupBody::Calendar(_) => Some(ModulePopup::Calendar),
+            PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,9 +510,12 @@ impl App {
                 self.recently_closed_menu = Some((key, button, Instant::now()));
             }
         }
-        // The same race for the calendar (a left press on the clock only closes, wayland.rs).
-        if why == PopupClose::Dismissed && matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_))) {
-            self.recently_closed_calendar = Some(Instant::now());
+        // The same race for a module's popup (the calendar; the media popup, task 7): a left press on
+        // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).
+        if why == PopupClose::Dismissed
+            && let Some(p) = self.popup.as_ref().and_then(|o| o.body.module_popup())
+        {
+            self.recently_closed_popup = Some((p, Instant::now()));
         }
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
@@ -790,6 +823,19 @@ impl WindowHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_left_press_on_the_clock_toggles_its_popup() {
+        use crate::config::ModuleId;
+        use crate::grid::Target;
+        let clock = Target::Module(ModuleId::Clock);
+        assert_eq!(ModulePopup::of(&clock, Button::Left), Some(ModulePopup::Calendar));
+        for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert_eq!(ModulePopup::of(&clock, b), None, "{b:?}");
+        }
+        assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Volume), Button::Left), None);
+        assert_eq!(PopupBody::Tooltip("x".into()).module_popup(), None, "a tooltip belongs to no module");
+    }
 
     fn under(output: &str, start: u16, end: u16) -> Anchor {
         Anchor { output: output.into(), start, end }

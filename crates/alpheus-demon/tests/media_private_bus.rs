@@ -224,7 +224,8 @@ fn a_player_leaving_is_removed() {
     let mut d = Driver::start(&bus);
     d.until("read", |d| d.mpris.view().is_some() && settled(d));
     tidewave.kill();
-    d.until("removed", |d| d.mpris.players().is_empty());
+    // Its connection might own another MPRIS name: one listing follows, answered with nothing.
+    d.until("removed", |d| d.mpris.players().is_empty() && settled(d));
     assert_eq!(d.mpris.view(), None);
     assert_eq!(d.views.last(), Some(&None), "the module hides");
     assert_eq!(d.drained(), (0, None));
