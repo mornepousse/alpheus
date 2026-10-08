@@ -11,9 +11,9 @@
 
 use super::bus::{Call, CallError, CallId, Outbox};
 use super::codec::{Reply, Signal};
-use super::{MPRIS_OWNER_RULE, MPRIS_PROPERTIES_RULE};
+use super::{MPRIS_OWNER_RULE, MPRIS_PROPERTIES_RULE, MPRIS_SEEKED_RULE};
 use crate::config::MediaConfig;
-use crate::media::{self, Control, MAX_PLAYERS, MPRIS_PREFIX, MediaView, Need, Players, PositionSync, Value};
+use crate::media::{self, Control, MAX_PLAYERS, MPRIS_PREFIX, MediaView, Need, Players, PositionSync, Status, Track, Value};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -42,6 +42,8 @@ enum Ask {
     Identity(String),
     /// Get(Player, Metadata), after an invalidation.
     Metadata(String),
+    /// Get(Player, Position): the popup opened, or the track or status changed while it is open.
+    Position(String),
 }
 
 pub struct Mpris {
@@ -59,6 +61,8 @@ pub struct Mpris {
     /// A ListNames was answered. Until then (lost twice to our timeout, at login on a slow bus), the
     /// next MPRIS arrival lists again: players already running are found without a timer.
     listed: bool,
+    /// The Seeked rule is on: the popup is open.
+    seeked_rule: bool,
     log: fn(&str),
     /// How many times `take_view_change` built the view (the tests' witness of `stale`).
     #[cfg(test)]
@@ -84,6 +88,7 @@ impl Mpris {
             stale: false,
             full: false,
             listed: false,
+            seeked_rule: false,
             log,
             #[cfg(test)]
             built: 0,
@@ -148,6 +153,10 @@ impl Mpris {
     fn release(&mut self, out: &mut impl Outbox, bus_name: &str, unique: &str) {
         if self.players.get(unique).is_some_and(|p| p.bus_name == bus_name) {
             self.leave(unique);
+            // Not `relist`, which asks only while no listing ever succeeded: here one did, and it
+            // skipped that connection's second name (its owner was followed already). That name
+            // keeps its owner, so no NameOwnerChanged will ever announce it: only a new listing
+            // finds it.
             self.ask(out, Call::ListNames, Ask::List(true));
         }
     }
@@ -172,6 +181,10 @@ impl Mpris {
         if self.players.get(unique).is_none() {
             return;
         }
+        // While the popup is open, a status or track change moves the position elsewhere: read it
+        // again. Closed, nothing is cloned and the position Players::apply cleared stays unknown
+        // until `popup_opened` reads it.
+        let before = if self.seeked_rule { self.moment(unique) } else { None };
         let applied = self.players.apply(unique, changed, invalidated);
         self.stale |= applied.visible;
         if let Need::Metadata(u) = applied.need {
@@ -179,6 +192,9 @@ impl Mpris {
             if !asked {
                 self.ask_player(out, &u, |dest| Call::PlayerMetadata { dest }, Ask::Metadata);
             }
+        }
+        if before.is_some() && before != self.moment(unique) {
+            self.ask_position(out, unique.to_string());
         }
     }
 
@@ -224,7 +240,12 @@ impl Mpris {
                     self.stale = true;
                 }
             }
-            (Ask::State(u) | Ask::Identity(u) | Ask::Metadata(u), Err(CallError::Remote(e))) if GONE.contains(&e.as_str()) => {
+            (Ask::Position(u), Ok(Reply::Position(us))) => {
+                self.players.set_position(&u, PositionSync { at: Instant::now(), us: u64::try_from(us).unwrap_or(0) })
+            }
+            (Ask::State(u) | Ask::Identity(u) | Ask::Metadata(u) | Ask::Position(u), Err(CallError::Remote(e)))
+                if GONE.contains(&e.as_str()) =>
+            {
                 self.leave(&u)
             }
             // A timeout, a malformed answer, a missing Identity: the player stays as it is.
@@ -261,8 +282,12 @@ impl Mpris {
                 true
             }
             Signal::Seeked { sender, us } => {
-                // The position is not in the bar's view: nothing to rebuild.
-                self.players.set_position(sender, PositionSync { at: Instant::now(), us: u64::try_from(*us).unwrap_or(0) });
+                // Followed only while the popup is open (the rule exists only then); a stray one
+                // after the RemoveMatch, or from a sender that is no player, changes nothing. The
+                // position is not in the bar's view: nothing to rebuild.
+                if self.seeked_rule && self.players.get(sender).is_some() {
+                    self.players.set_position(sender, PositionSync { at: Instant::now(), us: u64::try_from(*us).unwrap_or(0) });
+                }
                 true
             }
             _ => false,
@@ -284,6 +309,43 @@ impl Mpris {
             self.players.pin(bus_name);
             self.stale = true;
         }
+    }
+
+    /// The popup opened (spec § 3): `Seeked` is followed from now on (once), and the active player's
+    /// position is read — never trusted from an earlier open, since a seek in the player's own
+    /// window may have sent no Seeked at all.
+    pub fn popup_opened(&mut self, out: &mut impl Outbox) {
+        if !self.seeked_rule {
+            out.send(Call::AddMatch { rule: MPRIS_SEEKED_RULE.to_string() });
+            self.seeked_rule = true;
+        }
+        self.resync_active(out);
+    }
+
+    /// The popup closed: the Seeked rule goes (once). Positions already read stay; they are read
+    /// again at the next open.
+    pub fn popup_closed(&mut self, out: &mut impl Outbox) {
+        if self.seeked_rule {
+            out.send(Call::RemoveMatch { rule: MPRIS_SEEKED_RULE.to_string() });
+            self.seeked_rule = false;
+        }
+    }
+
+    /// One `Get Position` for the active player (the popup opened, a player was pinned in it).
+    pub fn resync_active(&mut self, out: &mut impl Outbox) {
+        if let Some(unique) = self.players.active().map(|p| p.unique.clone()) {
+            self.ask_position(out, unique);
+        }
+    }
+
+    fn ask_position(&mut self, out: &mut impl Outbox, unique: String) {
+        self.ask(out, Call::PlayerPosition { dest: unique.clone() }, Ask::Position(unique));
+    }
+
+    /// What, of `unique`'s state, moves its position elsewhere: its status and its track — exactly
+    /// what makes `Players::apply` forget the position (Task 1).
+    fn moment(&self, unique: &str) -> Option<(Status, Track)> {
+        self.players.get(unique).map(|p| (p.status, p.track.clone()))
     }
 
     pub fn players(&self) -> &Players {
@@ -627,6 +689,7 @@ mod tests {
     fn seeked_resyncs_the_position() {
         let (mut out, mut m) = started();
         loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
+        m.popup_opened(&mut out);
         assert!(m.signal(&mut out, &Signal::Seeked { sender: ":1.7".into(), us: 5_000_000 }));
         assert_eq!(m.players().active().and_then(|p| p.position).map(|s| s.us), Some(5_000_000));
         assert!(m.signal(&mut out, &Signal::Seeked { sender: ":1.7".into(), us: -3 }));
@@ -810,5 +873,173 @@ mod tests {
         out.take();
         m.answer(&mut out, first[0], Err(CallError::Remote("org.freedesktop.DBus.Error.NameHasNoOwner".into())));
         assert!(out.take().is_empty());
+    }
+
+    const FAKE: &str = "org.mpris.MediaPlayer2.fake";
+    const UNIQUE: &str = ":1.7";
+
+    fn meta(title: &str, length_us: i64) -> Value {
+        Value::Map(vec![
+            ("mpris:trackid".to_string(), Value::Str(format!("/fake/{title}"))),
+            ("xesam:title".to_string(), Value::Str(title.to_string())),
+            ("mpris:length".to_string(), Value::Int(length_us)),
+        ])
+    }
+
+    fn fake_props(status: &str) -> Vec<(String, Value)> {
+        vec![
+            ("PlaybackStatus".to_string(), Value::Str(status.to_string())),
+            ("Metadata".to_string(), meta("Paper Lanterns", 245_000_000)),
+            ("CanPlay".to_string(), Value::Bool(true)),
+            ("CanPause".to_string(), Value::Bool(true)),
+        ]
+    }
+
+    /// Answers every call `m` made as the one fake player would, until it asks nothing more.
+    fn serve(m: &mut Mpris, out: &mut FakeOutbox, status: &str, position_us: i64) {
+        for _ in 0..16 {
+            let calls = out.take();
+            if calls.is_empty() {
+                return;
+            }
+            for (id, call) in calls {
+                let reply = match call {
+                    Call::ListNames => Reply::Names(vec!["org.freedesktop.DBus".to_string(), FAKE.to_string()]),
+                    Call::GetNameOwner { .. } => Reply::Owner(UNIQUE.to_string()),
+                    Call::PlayerGetAll { .. } => Reply::Props(fake_props(status)),
+                    Call::PlayerIdentity { .. } => Reply::Text("Fake Player".to_string()),
+                    Call::PlayerMetadata { .. } => Reply::Props(vec![("Metadata".to_string(), meta("Paper Lanterns", 245_000_000))]),
+                    Call::PlayerPosition { .. } => Reply::Position(position_us),
+                    _ => Reply::Unit,
+                };
+                m.answer(out, id, Ok(reply));
+            }
+        }
+        panic!("Mpris kept asking");
+    }
+
+    /// Discovered, every call answered, the sends forgotten.
+    fn discovered(status: &str) -> (Mpris, FakeOutbox) {
+        let mut out = FakeOutbox::default();
+        let mut m = Mpris::start(&mut out, &MediaConfig::default());
+        serve(&mut m, &mut out, status, 0);
+        assert!(m.players().get(UNIQUE).is_some(), "the fake player is known");
+        out.sent.clear();
+        (m, out)
+    }
+
+    fn position(m: &Mpris) -> Option<u64> {
+        m.players().get(UNIQUE).and_then(|p| p.position).map(|s| s.us)
+    }
+
+    fn positions_asked(out: &FakeOutbox) -> Vec<CallId> {
+        out.calls.iter().filter(|(_, c)| matches!(c, Call::PlayerPosition { .. })).map(|(id, _)| *id).collect()
+    }
+
+    fn seeked_rules(out: &FakeOutbox, add: bool) -> usize {
+        out.sent
+            .iter()
+            .filter(|c| match c {
+                Call::AddMatch { rule } if add => rule == MPRIS_SEEKED_RULE,
+                Call::RemoveMatch { rule } if !add => rule == MPRIS_SEEKED_RULE,
+                _ => false,
+            })
+            .count()
+    }
+
+    #[test]
+    fn the_popup_adds_the_seeked_rule_once_and_reads_the_position() {
+        let (mut m, mut out) = discovered("Playing");
+        m.popup_opened(&mut out);
+        m.popup_opened(&mut out);
+        assert_eq!(seeked_rules(&out, true), 1, "one rule, however often it is asked");
+        let asked: Vec<Call> = out.calls.iter().map(|(_, c)| c.clone()).collect();
+        let read = Call::PlayerPosition { dest: UNIQUE.to_string() };
+        assert_eq!(asked, [read.clone(), read], "one read per open, to the unique name, nothing else");
+        serve(&mut m, &mut out, "Playing", 100_000_000);
+        assert_eq!(position(&m), Some(100_000_000));
+        m.popup_closed(&mut out);
+        m.popup_closed(&mut out);
+        assert_eq!(seeked_rules(&out, false), 1, "removed once");
+    }
+
+    #[test]
+    fn seeked_moves_the_position_only_while_the_popup_is_open() {
+        let (mut m, mut out) = discovered("Playing");
+        let seeked = Signal::Seeked { sender: UNIQUE.to_string(), us: 5_000_000 };
+        assert!(m.signal(&mut out, &seeked), "an MPRIS signal is ours even when ignored");
+        assert_eq!(position(&m), None, "closed: a stray Seeked changes nothing");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 1_000_000);
+        assert!(m.signal(&mut out, &seeked));
+        assert_eq!(position(&m), Some(5_000_000));
+        let stranger = Signal::Seeked { sender: ":1.99".to_string(), us: 9_000_000 };
+        m.signal(&mut out, &stranger);
+        assert_eq!(position(&m), Some(5_000_000), "a sender that is no player");
+    }
+
+    /// Review Focus: a player that never sends Seeked after a seek in its own UI. Reopening reads the
+    /// position again; nothing kept from the last open is trusted.
+    #[test]
+    fn reopening_reads_the_position_again() {
+        let (mut m, mut out) = discovered("Playing");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 10_000_000);
+        m.popup_closed(&mut out);
+        // The user seeks to 1:40 in the player's own window; no Seeked comes.
+        m.popup_opened(&mut out);
+        assert_eq!(positions_asked(&out).len(), 1, "one more read at the reopen");
+        serve(&mut m, &mut out, "Playing", 100_000_000);
+        assert_eq!(position(&m), Some(100_000_000));
+    }
+
+    /// Review Focus: the track changes while the popup is open. The position is read again (the
+    /// new track starts elsewhere); with the popup closed, nothing is asked.
+    #[test]
+    fn a_track_or_status_change_rereads_the_position_only_while_open() {
+        let (mut m, mut out) = discovered("Playing");
+        let next_track = Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("Metadata".to_string(), meta("Second Song", 200_000_000))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &next_track);
+        assert!(positions_asked(&out).is_empty(), "closed: no read");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 50_000_000);
+        let third = Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("Metadata".to_string(), meta("Third Song", 180_000_000))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &third);
+        assert_eq!(positions_asked(&out).len(), 1, "a new track while open: read");
+        serve(&mut m, &mut out, "Playing", 0);
+        assert_eq!(position(&m), Some(0));
+        let pause = Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("PlaybackStatus".to_string(), Value::Str("Paused".to_string()))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &pause);
+        assert_eq!(positions_asked(&out).len(), 1, "a pause while open: read");
+        serve(&mut m, &mut out, "Paused", 3_000_000);
+        let volume_only = Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("Volume".to_string(), Value::Float(0.5))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &volume_only);
+        assert!(positions_asked(&out).is_empty(), "neither status nor track: no read");
+    }
+
+    #[test]
+    fn a_pin_in_the_open_popup_reads_the_pinned_position() {
+        let (mut m, mut out) = discovered("Playing");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 0);
+        m.pin(FAKE);
+        m.resync_active(&mut out);
+        assert_eq!(out.calls.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::PlayerPosition { dest: UNIQUE.to_string() }]);
     }
 }
