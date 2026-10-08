@@ -283,6 +283,9 @@ fn dmenu_round_trip_and_cancel() {
     let (code, out, _) = menu.join().unwrap();
     assert_eq!((code, out.as_str()), (EXIT_CANCELLED, ""));
     assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    // Each close by a key (Return, then Escape) released the keyboard, though the key was still
+    // down: its focus, the launcher's box, died with it (fix round 1 of media task 7).
+    assert!(d.wait_for_count("keyboard released", 2, DELAY), "the keyboard stayed bound at rest: {:?}", d.log());
     // Free text with no lines (tools-menu's "Cible (IP / hôte)"): Enter returns what was typed.
     let menu = script(&sway, &["--dmenu", "--prompt", "Target"], "");
     assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
@@ -2013,12 +2016,18 @@ fn popup_cell(bar_x: u32, column: u32, row: u32) -> (u32, u32) {
     (bar_x + 8 + 4 + (column * 84 + 42) / 10, 22 + 7 + row * 22 + 11)
 }
 
+/// Waits until the minute's turn (the clock's redraw, one per bar) is neither about to come nor
+/// just past: seconds 2 to 50.
+fn away_from_the_minute() {
+    while !(2..=50).contains(&alpheus_demon::clock::LocalTime::now().0.second) {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// The loop thread's wake-ups over 5 s, away from the minute's turn (the clock is the bar's only
 /// other timer).
 fn wakeups_over_5_s(d: &Daemon) -> u64 {
-    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    away_from_the_minute();
     std::thread::sleep(Duration::from_millis(300));
     let before = d.main_thread_wakeups();
     std::thread::sleep(Duration::from_secs(5));
@@ -2028,9 +2037,7 @@ fn wakeups_over_5_s(d: &Daemon) -> u64 {
 /// The loop's wake-ups while `player` broadcasts five Seeked over 1.5 s: none once the popup closed,
 /// since the bar's Seeked match rule goes with it (the bus then delivers it nothing).
 fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
-    while alpheus_demon::clock::LocalTime::now().0.second > 50 {
-        std::thread::sleep(Duration::from_millis(200));
-    }
+    away_from_the_minute();
     let before = d.main_thread_wakeups();
     for us in 1..=5 {
         player.seeked(us * 1_000_000);

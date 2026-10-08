@@ -69,7 +69,7 @@ pub enum Value {
     Other,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct Track {
     pub title: Option<String>,
     pub artists: Vec<String>,

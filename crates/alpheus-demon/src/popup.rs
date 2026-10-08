@@ -306,12 +306,53 @@ pub(crate) fn key_to(launcher_open: bool, grabbing_popup: bool) -> KeyTo {
     }
 }
 
+/// Most keys `KeysDown` follows at once (more than a hand can hold).
+pub(crate) const MAX_KEYS_DOWN: usize = 16;
+
+/// The keys down on the bound keyboard, by raw code: those `enter` reports already held, then each
+/// press until its release; a leave clears them. A set, so a release of a key never counted (held
+/// before the keyboard was bound and not reported) cannot make another one look up.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct KeysDown {
+    codes: Vec<u32>,
+}
+
+impl KeysDown {
+    pub(crate) fn entered(&mut self, held: &[u32]) {
+        self.codes.clear();
+        held.iter().for_each(|&c| self.pressed(c));
+    }
+
+    pub(crate) fn pressed(&mut self, code: u32) {
+        if !self.codes.contains(&code) && self.codes.len() < MAX_KEYS_DOWN {
+            self.codes.push(code);
+        }
+    }
+
+    pub(crate) fn released(&mut self, code: u32) {
+        self.codes.retain(|&c| c != code);
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.codes.clear();
+    }
+
+    pub(crate) fn any(&self) -> bool {
+        !self.codes.is_empty()
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.codes.len()
+    }
+}
+
 /// What `keyboard_release` does with the keyboard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Release {
     /// The launcher or a grabbing popup still needs it.
     Keep,
-    /// A key is down: kept until it is up or the focus leaves (`keys_down`).
+    /// A key is down on a live focus: kept until every key is up or the focus leaves.
     Defer,
     Now,
 }
@@ -319,11 +360,13 @@ enum Release {
 /// SCTK repeats a held key on a calloop timer that stops only on that key's release, a leave, or
 /// the focused surface dying. Under a grab on sway or niri the focus is the bar's own layer surface
 /// (`exclusive_during_grab`), which lives on: a keyboard released while the key that closed the
-/// popup is still down gets neither event, and its timer repeats that key forever.
-fn release_decision(wanted: bool, keys_down: u32) -> Release {
+/// popup is still down gets neither event, and its timer repeats that key forever — so the release
+/// waits. A dead focus (the launcher's box, a popup on Hyprland) already stops the repeat, and may
+/// never bring the key-up nor a leave: released at once.
+fn release_decision(wanted: bool, keys: &KeysDown, focus_alive: bool) -> Release {
     if wanted {
         Release::Keep
-    } else if keys_down > 0 {
+    } else if keys.any() && focus_alive {
         Release::Defer
     } else {
         Release::Now
@@ -773,7 +816,8 @@ impl App {
     /// release() once neither the launcher nor a grabbing popup needs it, and no key is down
     /// (`release_decision`): else at that key's release or the focus leaving.
     pub(crate) fn keyboard_release(&mut self) {
-        match release_decision(self.keyboard_wanted(), self.keys_down) {
+        let focus_alive = self.keyboard_focus.as_ref().is_some_and(Proxy::is_alive);
+        match release_decision(self.keyboard_wanted(), &self.keys_down, focus_alive) {
             Release::Keep => return,
             Release::Defer => {
                 self.release_deferred = true;
@@ -784,7 +828,11 @@ impl App {
         self.release_deferred = false;
         if let Some(k) = self.keyboard.take() {
             release(k);
+            log("keyboard released");
         }
+        // What the released keyboard reported is gone with it.
+        self.keys_down.clear();
+        self.keyboard_focus = None;
         self.mods = Mods::default();
     }
 
@@ -801,7 +849,7 @@ impl App {
         if let Some(k) = self.keyboard.take() {
             release(k);
         }
-        (self.keys_down, self.release_deferred) = (0, false);
+        (self.keys_down, self.keyboard_focus, self.release_deferred) = (KeysDown::default(), None, false);
         self.mods = Mods::default();
     }
 
@@ -829,16 +877,20 @@ impl KeyboardHandler for App {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
-        _: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _: u32,
-        _: &[u32],
+        held: &[u32],
         _: &[Keysym],
     ) {
+        // The keys already down count: their release must not make another key look up.
+        self.keys_down.entered(held);
+        self.keyboard_focus = Some(surface.clone());
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
         // A leave ends every repeat (SCTK): no key counts as down any more.
-        self.keys_down = 0;
+        self.keys_down.clear();
+        self.keyboard_focus = None;
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("focus", |app| app.launcher_close(crate::launcher::surface::CloseReason::FocusLost));
         }
@@ -846,7 +898,7 @@ impl KeyboardHandler for App {
     }
 
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.keys_down = self.keys_down.saturating_add(1);
+        self.keys_down.pressed(event.raw_code);
         self.key_event(event);
     }
 
@@ -856,8 +908,8 @@ impl KeyboardHandler for App {
         self.key_event(event);
     }
 
-    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, _: KeyEvent) {
-        self.keys_down = self.keys_down.saturating_sub(1);
+    fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
+        self.keys_down.released(event.raw_code);
         self.keyboard_release_deferred();
     }
 
@@ -1049,10 +1101,41 @@ mod tests {
     /// key repeated at the compositor's rate forever (media task 7, found by the tick test).
     #[test]
     fn the_keyboard_goes_only_once_its_keys_are_up() {
-        assert_eq!(release_decision(true, 0), Release::Keep, "still wanted: the launcher or a grabbing popup");
-        assert_eq!(release_decision(true, 2), Release::Keep);
-        assert_eq!(release_decision(false, 1), Release::Defer, "the key that closed the popup is still down");
-        assert_eq!(release_decision(false, 0), Release::Now);
+        const SHIFT: u32 = 42;
+        const ESCAPE: u32 = 1;
+        let mut k = KeysDown::default();
+        assert_eq!(release_decision(false, &k, true), Release::Now, "nothing down");
+        // Shift already held when the grab gives the bar the keyboard: `enter` lists it.
+        k.entered(&[SHIFT]);
+        assert_eq!(release_decision(false, &k, true), Release::Defer, "Shift, held since before the keyboard came, counts");
+        k.pressed(ESCAPE); // closes the popup
+        assert_eq!(release_decision(true, &k, true), Release::Keep, "still wanted: the launcher or a grabbing popup");
+        assert_eq!(release_decision(false, &k, true), Release::Defer, "Escape and Shift down");
+        k.released(SHIFT);
+        assert_eq!(release_decision(false, &k, true), Release::Defer, "Shift up, Escape still down: its repeat still runs");
+        k.released(ESCAPE);
+        assert_eq!(release_decision(false, &k, true), Release::Now, "every key up");
+        k.released(ESCAPE);
+        k.released(SHIFT);
+        assert!(!k.any(), "a release of a key not down changes nothing");
+        // A press seen twice (a missed release) is still one key: one release clears it.
+        k.pressed(ESCAPE);
+        k.pressed(ESCAPE);
+        k.released(ESCAPE);
+        assert!(!k.any());
+        // The focused surface is gone (the launcher's box, a popup on Hyprland): SCTK's repeat
+        // stops by itself, and neither the key-up nor a leave may ever come to us.
+        k.pressed(ESCAPE);
+        assert_eq!(release_decision(false, &k, false), Release::Now, "a dead focus never defers");
+        // A leave ends every repeat: nothing counts as down.
+        k.clear();
+        assert!(!k.any());
+        assert_eq!(release_decision(false, &k, true), Release::Now);
+        // Bounded: a flood of presses keeps at most MAX_KEYS_DOWN codes.
+        (0..1000).for_each(|c| k.pressed(c));
+        assert_eq!(k.len(), MAX_KEYS_DOWN);
+        k.entered(&[SHIFT, SHIFT]);
+        assert_eq!(k.len(), 1, "enter starts afresh, each key once");
     }
 
     #[test]

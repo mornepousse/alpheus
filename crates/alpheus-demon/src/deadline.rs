@@ -65,6 +65,11 @@ impl DeadlineTimer {
         self.at = None;
     }
 
+    /// The deadline armed, if any.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.at.filter(|_| self.token.is_some())
+    }
+
     pub fn is_armed(&self) -> bool {
         self.token.is_some()
     }

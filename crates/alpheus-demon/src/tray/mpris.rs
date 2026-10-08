@@ -13,8 +13,9 @@ use super::bus::{Call, CallError, CallId, Outbox};
 use super::codec::{Reply, Signal};
 use super::{MPRIS_OWNER_RULE, MPRIS_PROPERTIES_RULE, MPRIS_SEEKED_RULE};
 use crate::config::MediaConfig;
-use crate::media::{self, Control, MAX_PLAYERS, MPRIS_PREFIX, MediaView, Need, Players, PositionSync, Status, Track, Value};
+use crate::media::{self, Control, MAX_PLAYERS, MPRIS_PREFIX, MediaView, Need, Players, PositionSync, Status, Value};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
 /// Error replies meaning the player is gone or is no MPRIS player (spec § 3): its entry goes. Our own
@@ -343,9 +344,14 @@ impl Mpris {
     }
 
     /// What, of `unique`'s state, moves its position elsewhere: its status and its track — exactly
-    /// what makes `Players::apply` forget the position (Task 1).
-    fn moment(&self, unique: &str) -> Option<(Status, Track)> {
-        self.players.get(unique).map(|p| (p.status, p.track.clone()))
+    /// what makes `Players::apply` forget the position (Task 1), any field of the track included.
+    /// The track as a hash: compared once before and once after a change, never cloned.
+    fn moment(&self, unique: &str) -> Option<(Status, u64)> {
+        self.players.get(unique).map(|p| {
+            let mut h = DefaultHasher::new();
+            p.track.hash(&mut h);
+            (p.status, h.finish())
+        })
     }
 
     pub fn players(&self) -> &Players {
@@ -1031,6 +1037,28 @@ mod tests {
         };
         m.signal(&mut out, &volume_only);
         assert!(positions_asked(&out).is_empty(), "neither status nor track: no read");
+    }
+
+    /// Reconciliation 5: `Players::apply` forgets the position on ANY change of the track — an
+    /// artist corrected alone too — so `moment` must see it, or the popup stays at 0:00 unread.
+    #[test]
+    fn an_artist_only_change_while_open_rereads_the_position() {
+        let (mut m, mut out) = discovered("Playing");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 50_000_000);
+        let mut entries = match meta("Paper Lanterns", 245_000_000) {
+            Value::Map(e) => e,
+            _ => unreachable!(),
+        };
+        entries.push(("xesam:artist".to_string(), Value::StrList(vec!["Someone Else".to_string()])));
+        let artist = Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("Metadata".to_string(), Value::Map(entries))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &artist);
+        assert_eq!(position(&m), None, "apply forgot it");
+        assert_eq!(positions_asked(&out).len(), 1, "so it is read again");
     }
 
     #[test]

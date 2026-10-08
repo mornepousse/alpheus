@@ -13,7 +13,7 @@ use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::link::SessionLink;
-use crate::media::{self, MediaView, Players, Status};
+use crate::media::{MediaView, Players};
 use crate::media_popup::{self, MediaAction, MediaPopup};
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
@@ -466,9 +466,11 @@ pub struct App {
     /// The keyboard, bound only while the launcher or a grabbing popup needs it.
     pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
     pub(crate) mods: Mods,
-    /// Keys pressed on `keyboard` and not yet released (a leave resets it): the keyboard is never
-    /// released while one is down (`popup::release_decision`).
-    pub(crate) keys_down: u32,
+    /// Keys down on `keyboard` (`popup::KeysDown`): it is never released while one is down on a
+    /// live focus (`popup::release_decision`).
+    pub(crate) keys_down: crate::popup::KeysDown,
+    /// The surface `keyboard` entered, until its leave: alive or not decides whether a release waits.
+    pub(crate) keyboard_focus: Option<wl_surface::WlSurface>,
     /// `keyboard_release` was asked while a key was down: done at its release or a leave.
     pub(crate) release_deferred: bool,
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
@@ -637,7 +639,8 @@ impl App {
             popup: None,
             keyboard: None,
             mods: Mods::default(),
-            keys_down: 0,
+            keys_down: crate::popup::KeysDown::default(),
+            keyboard_focus: None,
             release_deferred: false,
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
@@ -1190,16 +1193,18 @@ impl App {
         self.media_timer_sync();
     }
 
-    /// The tick follows `media_popup::tick_due`: armed only while the popup is open and the active
-    /// player plays, before the end of its track; removed otherwise.
+    /// The tick follows `media_popup::player_tick`: armed only while the popup is open and the active
+    /// player plays, its position known, before the end of its track; removed otherwise. An armed
+    /// tick still ahead is kept (`next_deadline`).
     pub(crate) fn media_timer_sync(&mut self) {
         let now = Instant::now();
         let open = self.media_shown();
-        let due = mpris_of(self.tray.as_ref(), self.link.as_ref()).and_then(|m| m.players().active()).and_then(|p| {
-            media_popup::tick_due(open, p.status == Status::Playing, p.rate, media::position_now(p, now).unwrap_or(0), p.track.length_us)
-        });
+        let due = mpris_of(self.tray.as_ref(), self.link.as_ref())
+            .and_then(|m| m.players().active())
+            .and_then(|p| media_popup::player_tick(open, p, now));
+        let at = media_popup::next_deadline(due, self.media_timer.deadline(), now);
         if let Some(handle) = self.loop_handle.clone() {
-            self.media_timer.sync(&handle, due.map(|d| now + d), App::media_tick);
+            self.media_timer.sync(&handle, at, App::media_tick);
         }
     }
 

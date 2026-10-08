@@ -300,6 +300,23 @@ pub fn tick_due(open: bool, playing: bool, rate: f64, position_us: u64, length_u
     Some(Duration::from_micros(real_us) + SLACK)
 }
 
+/// The open popup's next tick for `p` at `now` (`tick_due`); none while its position is unknown:
+/// the time row stands at 0:00 until the read answers, nothing to redraw.
+pub fn player_tick(open: bool, p: &Player, now: Instant) -> Option<Duration> {
+    let position = media::position_now(p, now)?;
+    tick_due(open, p.status == Status::Playing, p.rate, position, p.track.length_us)
+}
+
+/// The tick's deadline: one `armed` and still ahead is kept (a refresh never moves it), else `due`
+/// from now; none when no tick is due.
+pub fn next_deadline(due: Option<Duration>, armed: Option<Instant>, now: Instant) -> Option<Instant> {
+    let due = due?;
+    match armed {
+        Some(at) if at > now => Some(at),
+        _ => Some(now + due),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,6 +595,32 @@ mod tests {
         assert_eq!(tick_due(true, p.status == Status::Playing, p.rate, 102_000_000, p.track.length_us), None);
         let b = rows(&players, &MediaPopup::new(&players), t0, WIDTH);
         assert_eq!(b.rows[3].cells()[16].ch, PLAY);
+    }
+
+    /// Fix round 1: until the position is read (the popup just opened, or the read failed), the
+    /// time row stands at 0:00 — nothing to redraw, so no tick.
+    #[test]
+    fn an_unknown_position_never_ticks() {
+        let t0 = Instant::now();
+        let mut players = Players::default();
+        let u = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &[], Some(LEN)));
+        let p = players.get(&u).unwrap();
+        assert_eq!(player_tick(true, p, t0), None, "position unknown");
+        players.set_position(&u, PositionSync { at: t0, us: 102_250_000 });
+        let p = players.get(&u).unwrap();
+        assert_eq!(player_tick(true, p, t0), Some(Duration::from_millis(750) + SLACK), "read: the next whole second");
+        assert_eq!(player_tick(false, p, t0), None, "closed");
+    }
+
+    /// Fix round 1: a refresh (a key, a host output) never moves a tick already armed ahead.
+    #[test]
+    fn a_refresh_keeps_the_armed_tick() {
+        let now = Instant::now();
+        let second = Some(Duration::from_secs(1));
+        assert_eq!(next_deadline(second, Some(now + Duration::from_millis(300)), now), Some(now + Duration::from_millis(300)), "kept");
+        assert_eq!(next_deadline(second, Some(now), now), Some(now + Duration::from_secs(1)), "due now or past: a new one");
+        assert_eq!(next_deadline(second, None, now), Some(now + Duration::from_secs(1)), "none armed");
+        assert_eq!(next_deadline(None, Some(now + Duration::from_millis(300)), now), None, "no tick due: removed");
     }
 
     /// Controller reconciliation 10: the "media popup shown" line carries what the popup shows on
