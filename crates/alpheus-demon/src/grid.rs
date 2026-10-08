@@ -131,10 +131,41 @@ pub struct Zone {
     pub target: Target,
 }
 
+/// A block of the bar (shapes spec § 2): the modules one style draws as one shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupKind {
+    Workspaces,
+    Title,
+    /// Sound, network, Bluetooth, battery: those present.
+    Status,
+    /// CPU, RAM, temperature.
+    Resources,
+    Tray,
+    Clock,
+    Launcher,
+}
+
+/// One block: cells [start, end) of the bar's grid, its pads included under the block styles;
+/// `hue`, its first module's hue (`pills`), None when that module has none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Group {
+    pub kind: GroupKind,
+    pub start: u16,
+    /// Excluded.
+    pub end: u16,
+    pub hue: Option<Hue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grid {
     cells: Vec<Cell>,
     zones: Vec<Zone>,
+    /// The bar's blocks, left to right; empty under `flat` (nothing paints them) and on every
+    /// other surface.
+    groups: Vec<Group>,
+    /// First column of the bar's right-hand side: where the free space ends (the grid's width
+    /// when there is none).
+    split: u16,
 }
 
 /// C0/C1 controls, and Unicode line/paragraph separators (U+2028, U+2029):
@@ -213,7 +244,12 @@ pub fn truncate(s: &str, max: u16) -> String {
 
 impl Grid {
     pub fn empty(columns: u16) -> Grid {
-        Grid { cells: vec![Cell { ch: ' ', style: Style::NORMAL }; columns as usize], zones: Vec::new() }
+        Grid {
+            cells: vec![Cell { ch: ' ', style: Style::NORMAL }; columns as usize],
+            zones: Vec::new(),
+            groups: Vec::new(),
+            split: columns,
+        }
     }
 
     pub fn width(&self) -> u16 {
@@ -228,7 +264,7 @@ impl Grid {
     /// zones are not kept.
     pub fn without_edges(&self) -> Grid {
         let inner = self.cells.get(1..self.cells.len().saturating_sub(1)).unwrap_or(&[]);
-        Grid { cells: inner.to_vec(), zones: Vec::new() }
+        Grid { cells: inner.to_vec(), zones: Vec::new(), groups: Vec::new(), split: inner.len() as u16 }
     }
 
     pub fn zones(&self) -> &[Zone] {
@@ -283,6 +319,26 @@ impl Grid {
         }
     }
 
+    /// Records a block, cut to the grid; an empty one (`start >= end` once cut) is not kept.
+    pub fn group(&mut self, g: Group) {
+        let end = g.end.min(self.width());
+        if g.start < end {
+            self.groups.push(Group { end, ..g });
+        }
+    }
+
+    pub fn groups(&self) -> &[Group] {
+        &self.groups
+    }
+
+    pub fn split(&self) -> u16 {
+        self.split
+    }
+
+    pub fn set_split(&mut self, col: u16) {
+        self.split = col.min(self.width());
+    }
+
     pub fn target_at(&self, col: u16) -> Option<&Target> {
         self.zone_at(col).map(|z| &z.target)
     }
@@ -320,6 +376,23 @@ mod tests {
         assert_eq!((g.zone_at(3), g.zone_at(4)), (Some(&wide), Some(&wide)), "both cells give the whole zone");
         assert_eq!(g.zone_at(5), None);
         assert_eq!(g.target_at(4), Some(&Target::TrayItem(key(2))), "target_at agrees");
+    }
+
+    /// A block is kept cut to the grid; an empty one is dropped. A fresh grid has none, and its
+    /// right-hand side starts past its last cell.
+    #[test]
+    fn groups_are_cut_to_the_grid_and_empty_ones_dropped() {
+        let mut g = Grid::empty(10);
+        assert_eq!((g.groups(), g.split()), (&[][..], 10));
+        let clock = |start, end| Group { kind: GroupKind::Clock, start, end, hue: None };
+        g.group(clock(2, 5));
+        g.group(clock(4, 4));
+        g.group(clock(8, 30));
+        g.group(clock(12, 30));
+        assert_eq!(g.groups(), &[clock(2, 5), clock(8, 10)]);
+        g.set_split(40);
+        assert_eq!(g.split(), 10, "cut to the grid too");
+        assert_eq!(g.without_edges().groups(), &[], "a boxed row carries no block");
     }
 
     /// Every style has its own snapshot letter: a snapshot never confuses two roles.

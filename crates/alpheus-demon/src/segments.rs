@@ -65,9 +65,11 @@ pub(crate) fn icon_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
     if mc == ModuleColors::None { base } else { Style::hue(hue) }
 }
 
-/// A module's text: its hue only under `module_colors = "full"`, `base` otherwise.
+/// A module's text: its hue only under `module_colors = "full"` or `"pills"`, `base` otherwise. The
+/// grid of `pills` is the grid of `full`: the block styles' painter puts the hue behind the text and
+/// picks the text's colour by contrast (shapes spec § 1); `flat` and `underline` show it as `full`.
 pub(crate) fn text_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
-    if mc == ModuleColors::Full { Style::hue(hue) } else { base }
+    if matches!(mc, ModuleColors::Full | ModuleColors::Pills) { Style::hue(hue) } else { base }
 }
 
 fn module_segment(module: ModuleId, pieces: Vec<Piece>) -> Segment {
@@ -853,14 +855,14 @@ mod tests {
     #[test]
     fn states_win_over_the_hues() {
         let d = &BatteryConfig::default();
-        for mc in [ICONS, FULL] {
+        for mc in [ICONS, FULL, ModuleColors::Pills] {
             assert_eq!(draw(&super::battery(&discharging(15), d, mc).unwrap()).1, "wwwww", "low battery stays warn under {mc:?}");
             assert_eq!(draw(&super::battery(&discharging(9), d, mc).unwrap()).1, "eeee", "critical stays error under {mc:?}");
             let charging = Feed::Ready(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] });
             let want = match mc {
                 ModuleColors::None => "aaaaa",
                 ModuleColors::Icons => "gg...",
-                ModuleColors::Full => "ggggg",
+                ModuleColors::Full | ModuleColors::Pills => "ggggg",
             };
             assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, want, "charging: accent under None, green otherwise ({mc:?})");
             let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
@@ -888,6 +890,17 @@ mod tests {
         b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 55, charge: Charge::Discharging }), peripherals: vec![] })));
         b.module_colors = mc;
         b
+    }
+
+    /// `pills` lays out exactly as `full`: only the block styles' painter tells them apart.
+    #[test]
+    fn the_grid_of_pills_is_the_grid_of_full() {
+        for w in [160u16, 120, 60] {
+            let (pills, full) = (hue_bar(ModuleColors::Pills).grid("HDMI-A-1", w), hue_bar(FULL).grid("HDMI-A-1", w));
+            assert_eq!(snapshot(&pills), snapshot(&full), "{w} columns");
+        }
+        let v = sound(84, false);
+        assert_eq!(draw(&super::volume(&v, ModuleColors::Pills).unwrap()).1, "BBaaaaaaBBBBB", "the number in blue, as under full");
     }
 
     #[test]

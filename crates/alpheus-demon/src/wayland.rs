@@ -13,7 +13,8 @@ use crate::grid::{Grid, Target};
 use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::painter::{self, Fonts};
+use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
+use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::hover::{self, Hover, HoverChange};
@@ -42,7 +43,7 @@ use smithay_client_toolkit::shm::{
     slot::{Buffer, SlotPool},
 };
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
     delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
     output::{OutputHandler, OutputState},
@@ -213,9 +214,48 @@ fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPla
 /// shrink, while `s.buffers` correctly empties with it). Picking an
 /// ineligible surface would mean the compositor never fires a frame
 /// callback (nothing attached to repaint), blocking `tray_frame_pending`
-/// forever.
-fn eligible_for_frame(configured: bool, has_buffer: bool) -> bool {
-    configured && has_buffer
+/// forever. Nor a bar waiting for the configure of a new placement (`Surface.placing`): its
+/// attached buffer has the old size, and the commit would show it under the new placement.
+fn eligible_for_frame(configured: bool, has_buffer: bool, placing: bool) -> bool {
+    configured && has_buffer && !placing
+}
+
+/// Whether bar `draw` may paint: configured, with a width, and not waiting for the configure of a
+/// new placement.
+fn drawable(configured: bool, width: u32, placing: bool) -> bool {
+    configured && width != 0 && !placing
+}
+
+/// Whether a bar is still waiting for its placement after a configure `height` logical px tall.
+/// Only a configure that clearly answers the PREVIOUS placement (`previous`, its surface height)
+/// keeps the hold: two quick restyles, or a configure already in flight. The placements differ by
+/// floating's shadow, so their heights tell them apart. Any other configure ends it: the latest
+/// placement's height, 0 (the size left to the client), or a height the compositor clamped or
+/// rounded. A bar must never freeze waiting for an exact echo: only the FIRST configure after a
+/// placement (`answered`, those already received since it, is 0) can keep it; the second ends it
+/// whatever its height, so a compositor that refuses the resize cannot hold the bar.
+fn still_placing(placing: bool, height: u32, previous: u32, answered: u8) -> bool {
+    placing && answered == 0 && height == previous
+}
+
+/// Applies `p` to `layer`, uncommitted: margin, size, exclusive zone, and the input region (the
+/// bar only under floating; the default whole surface otherwise).
+fn apply_placement(compositor: &CompositorState, layer: &LayerSurface, p: &Placement) {
+    let (top, right, bottom, left) = p.margin;
+    layer.set_margin(top, right, bottom, left);
+    layer.set_size(0, p.surface_height);
+    layer.set_exclusive_zone(p.exclusive_zone);
+    match input_rect(p) {
+        None => layer.set_input_region(None),
+        Some((x, y, w, h)) => match Region::new(compositor) {
+            Ok(region) => {
+                region.add(x, y, w, h);
+                // Copied by the request: the region may be destroyed (dropped) right after.
+                layer.set_input_region(Some(region.wl_region()));
+            }
+            Err(e) => log(&format!("input region: {e}")),
+        },
+    }
 }
 
 /// Allocates a fresh ARGB8888 buffer `width` × `height` physical px in
@@ -287,6 +327,18 @@ pub(crate) struct Surface {
     width: u32,
     pub(crate) scale: i32,
     pub(crate) configured: bool,
+    /// Where this bar's layer surface is placed (margin, size, exclusive zone, input region): the
+    /// style's `Placement` it was last given.
+    pub(crate) placement: Placement,
+    /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile
+    /// (spec § 4), since a buffer of the old size would not match.
+    placing: bool,
+    /// The surface height of the placement before the latest one: a configure of that height
+    /// answers an earlier request, and keeps the hold (`still_placing`).
+    placed_from: u32,
+    /// Configures received since the latest placement (saturating): only the first can keep the
+    /// hold (`still_placing`).
+    answered: u8,
     /// Last grid drawn: no redraw if nothing changed.
     last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
@@ -299,6 +351,12 @@ pub(crate) struct Surface {
     /// invalidated by a pool recreation (`shrink_pool_if_needed`: a buffer
     /// only belongs to the pool that created it).
     buffers: Vec<(Buffer, u32, u32)>,
+    /// The opaque region last sent (logical px, `painter::opaque_rects`): sent again only when it
+    /// changes. Empty before the first draw.
+    opaque: Vec<Rect>,
+    /// The last attempt to send the opaque region failed: retried on every frame, logged once
+    /// (`first_failure`).
+    opaque_failing: bool,
 }
 
 pub struct App {
@@ -322,6 +380,9 @@ pub struct App {
     pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
     /// The resolver's warnings at the last resolve: a reload logs only new ones.
     pub(crate) theme_warnings: Vec<String>,
+    /// An empty theme.toml that kept the settings during a reload was logged (once per run: editors
+    /// that truncate before writing would log every save otherwise).
+    pub(crate) blank_theme_noted: bool,
     /// The inotify watch on the config directory; None: the theme files are read at startup only.
     pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
     pub(crate) fonts: Fonts,
@@ -449,6 +510,49 @@ pub struct App {
     /// suspiciously long (show the message after all) — task 13 fix round,
     /// review item 1.
     pub(crate) scan_started: Option<Instant>,
+    /// `draw`'s room for a bar's opaque rects, swapped with the surface's when they differ: no
+    /// allocation once both have held a bar's rects.
+    opaque_scratch: Vec<Rect>,
+}
+
+/// Sends `wanted` as a surface's opaque region when it differs from the one last `sent`, then
+/// records it: `set` makes and sets the region. When that fails, `clear` withdraws the surface's
+/// claim, so a stale region never covers what is now transparent, and nothing is recorded as sent:
+/// the next frame tries again.
+fn send_opaque<E>(
+    sent: &mut Vec<Rect>,
+    wanted: &mut Vec<Rect>,
+    set: impl FnOnce(&[Rect]) -> Result<(), E>,
+    clear: impl FnOnce(),
+) -> Result<(), E> {
+    if *wanted == *sent {
+        return Ok(());
+    }
+    match set(wanted) {
+        Ok(()) => {
+            std::mem::swap(sent, wanted);
+            Ok(())
+        }
+        Err(e) => {
+            clear();
+            sent.clear();
+            Err(e)
+        }
+    }
+}
+
+/// Records whether the last attempt `failed` in `failing`; true only for the first failure after a
+/// success (or ever): what is logged, so a region that keeps failing never floods the log.
+fn first_failure(failing: &mut bool, failed: bool) -> bool {
+    let first = failed && !*failing;
+    *failing = failed;
+    first
+}
+
+/// The background a bar paints with: the bar's style and module colours (set by the wiring from
+/// theme.toml), the theme's opacity, the grid's blocks.
+pub(crate) fn bar_background<'a>(bar: &Bar, settings: &ThemeSettings, grid: &'a Grid) -> Background<'a> {
+    Background { style: bar.style, opacity: settings.opacity, module_colors: bar.module_colors, groups: grid.groups() }
 }
 
 impl App {
@@ -484,6 +588,7 @@ impl App {
             theme_settings,
             portal_mode: None,
             theme_warnings: Vec::new(),
+            blank_theme_noted: false,
             theme_watch: None,
             roles,
             fonts,
@@ -536,6 +641,7 @@ impl App {
             hover_surface: None,
             windows_dirty: false,
             scan_started: None,
+            opaque_scratch: Vec::new(),
         })
     }
 
@@ -543,16 +649,31 @@ impl App {
         let info = self.outputs.info(&output);
         let name = info.as_ref().and_then(|i| i.name.clone()).unwrap_or_default();
         let scale = info.map(|i| i.scale_factor).unwrap_or(1);
-        let height = self.bar.config.height;
+        // The bar's style (reconciliation 2): set from theme.toml at startup and on reload (task 7).
+        let placement = Placement::for_style(self.bar.style, self.bar.config.height);
         let surface = self.compositor.create_surface(qh);
         let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some("alpheus-bar"), Some(&output));
         layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
-        layer.set_size(0, height);
-        layer.set_exclusive_zone(height as i32);
+        apply_placement(&self.compositor, &layer, &placement);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.commit();
         log(&format!("bar placed on {}", log_name(&name, &output)));
-        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None, buffers: Vec::new() });
+        self.surfaces.push(Surface {
+            output,
+            name,
+            layer,
+            width: 0,
+            scale,
+            configured: false,
+            placement,
+            placing: false,
+            placed_from: placement.surface_height,
+            answered: 0,
+            last: None,
+            buffers: Vec::new(),
+            opaque: Vec::new(),
+            opaque_failing: false,
+        });
     }
 
     /// Returns the removed surface's output, so the caller can decide to
@@ -580,8 +701,7 @@ impl App {
     /// footprint of a large unplugged screen stays in memory forever
     /// ("running on a potato").
     fn shrink_pool_if_needed(&mut self) {
-        let height = self.bar.config.height;
-        let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, height, s.scale)).collect();
+        let needs: Vec<usize> = self.surfaces.iter().map(|s| buffer_size(s.width, s.placement.surface_height, s.scale)).collect();
         if let Some(size) = target_pool(self.pool.len(), &needs) {
             match SlotPool::new(size, &self.shm) {
                 Ok(p) => {
@@ -618,6 +738,50 @@ impl App {
         self.redraw_all();
     }
 
+    /// Re-places every bar for the bar's current `style` (themes delivery 2, spec § 4). Called after
+    /// a theme reload (task 7). A bar whose `Placement` changes (a switch to or from floating) gets
+    /// its new margin, size, exclusive zone and input region, and paints again only on the
+    /// compositor's configure (its size always changes, so that configure always comes). A no-op for
+    /// a bar already placed right, so it can be called on every reload.
+    ///
+    /// Review Focus 1: a popup (menu, tooltip, calendar) is anchored to its bar's surface at the old
+    /// size; it is closed before that bar moves, never left hanging from a stale geometry. The
+    /// launcher is its own layer surface, not anchored to a bar: it stays open.
+    pub(crate) fn apply_bar_placement(&mut self) {
+        let wanted = Placement::for_style(self.bar.style, self.bar.config.height);
+        let moving: Vec<wl_surface::WlSurface> =
+            self.surfaces.iter().filter(|s| s.placement != wanted).map(|s| s.layer.wl_surface().clone()).collect();
+        for parent in &moving {
+            self.popup_close_if_parent(parent, PopupClose::Restyled);
+        }
+        let App { surfaces, compositor, .. } = self;
+        for s in surfaces.iter_mut().filter(|s| s.placement != wanted) {
+            apply_placement(compositor, &s.layer, &wanted);
+            s.placed_from = s.placement.surface_height;
+            s.placement = wanted;
+            // Assumption: a configure always follows this change. The surface's size changes with
+            // the placement (floating's margin and shadow), and a compositor answers a size change
+            // with a configure; until then `placing` holds the bar's paint.
+            s.placing = true;
+            s.answered = 0;
+            s.last = None;
+            s.layer.commit();
+        }
+    }
+
+    /// A reload changed the bar's shape (shapes spec § 4).
+    /// - To or from `floating`, every bar is re-placed first (`apply_bar_placement`, task 6): margin,
+    ///   size, exclusive zone, input region, an open popup on a moved bar closed; each moved bar
+    ///   holds its paint until its configure (`Surface.placing`).
+    /// - Then every surface is repainted once: the bars that may paint, an open popup, the
+    ///   launcher box.
+    pub(crate) fn restyle(&mut self, placement: bool) {
+        if placement {
+            self.apply_bar_placement();
+        }
+        self.repaint_all();
+    }
+
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
     /// (`launch::run`): places the bar back on every output `closed` marked
     /// for restoration this batch and that is still known now — see
@@ -632,13 +796,14 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, roles, pool, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, theme_settings, compositor, opaque_scratch, .. } = self;
         let s = &mut surfaces[i];
-        if !s.configured || s.width == 0 {
+        if !drawable(s.configured, s.width, s.placing) {
             return;
         }
         let e = s.scale.max(1);
-        let (w, h) = (s.width * e as u32, bar.config.height * e as u32);
+        // The surface: the bar, plus floating's shadow below it (`Placement::surface_height`).
+        let (w, h) = (s.width * e as u32, s.placement.surface_height * e as u32);
         let grid = bar.grid(&s.name, painter::columns(w, fonts.advance(e)));
         if s.last.as_ref() == Some(&grid) {
             return; // nothing changed on this screen
@@ -651,8 +816,30 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint(&grid, roles, pixels, w, h, e);
+        fonts.paint_bar(&grid, roles, &bar_background(bar, theme_settings, &grid), pixels, w, h, e);
         let surface = s.layer.wl_surface();
+        // The compositor skips blending what the style paints opaque (shapes spec § 3): told again only
+        // when it changes (a new width, style or block layout).
+        let geometry = BarGeometry { width: s.width, height: bar.config.height, advance: fonts.advance(e), scale: e };
+        painter::opaque_rects(bar.style, grid.groups(), &geometry, opaque_scratch);
+        let sent = send_opaque(
+            &mut s.opaque,
+            opaque_scratch,
+            |rects| {
+                let region = Region::new(&*compositor)?;
+                for r in rects {
+                    region.add(r.x, r.y, r.width, r.height);
+                }
+                surface.set_opaque_region(Some(region.wl_region()));
+                Ok::<(), smithay_client_toolkit::error::GlobalError>(())
+            },
+            || surface.set_opaque_region(None),
+        );
+        if first_failure(&mut s.opaque_failing, sent.is_err())
+            && let Err(e) = sent
+        {
+            log(&format!("opaque region: {e}"));
+        }
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
         if s.buffers[used].0.attach_to(surface).is_err() {
@@ -767,8 +954,11 @@ impl App {
         if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
             return;
         }
-        let Some(surface) =
-            self.surfaces.iter().find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty())).map(|s| s.layer.wl_surface().clone())
+        let Some(surface) = self
+            .surfaces
+            .iter()
+            .find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty(), s.placing))
+            .map(|s| s.layer.wl_surface().clone())
         else {
             return;
         };
@@ -1101,6 +1291,15 @@ impl LayerShellHandler for App {
         // pending) succeeded, the output can again be restored in the
         // future if the compositor closes its surface again.
         let first_configure = !self.surfaces[i].configured;
+        // Any configure but the answer to an earlier placement ends a style switch's hold: paint
+        // again, at the new size.
+        let s = &mut self.surfaces[i];
+        let held = s.placing;
+        s.placing = still_placing(s.placing, c.new_size.1, s.placed_from, s.answered);
+        s.answered = s.answered.saturating_add(1);
+        if held && !s.placing {
+            s.last = None;
+        }
         if self.surfaces[i].width != c.new_size.0 {
             self.surfaces[i].last = None;
         }
@@ -1682,6 +1881,57 @@ impl crate::launch::WindowsFeed for App {
 mod tests {
     use super::*;
 
+    /// Task 4 review: the opaque region is sent only when it changes; a region that cannot be made
+    /// clears the surface's claim (never a stale one over transparent gaps) and is retried later.
+    #[test]
+    fn a_failed_opaque_region_clears_the_claim_and_is_retried() {
+        let rect = |x: i32| Rect { x, y: 0, width: 10, height: 22 };
+        let (mut sent, mut wanted) = (vec![rect(0)], vec![rect(5)]);
+        let (mut set, mut cleared) = (0, 0);
+        let r = send_opaque(&mut sent, &mut wanted, |_| Err("no region"), || cleared += 1);
+        assert_eq!(r, Err("no region"), "the error is handed back for the log");
+        assert_eq!(cleared, 1, "the stale claim is withdrawn");
+        assert!(sent.is_empty(), "nothing recorded as sent");
+        let r = send_opaque(
+            &mut sent,
+            &mut wanted,
+            |rs: &[Rect]| {
+                assert_eq!(rs, &[rect(5)]);
+                set += 1;
+                Ok::<(), &str>(())
+            },
+            || cleared += 1,
+        );
+        assert_eq!((r, set, cleared), (Ok(()), 1, 1), "the next frame retries and sends it");
+        assert_eq!(sent, vec![rect(5)]);
+        wanted = vec![rect(5)];
+        let r =
+            send_opaque(&mut sent, &mut wanted, |_| -> Result<(), &str> { panic!("unchanged: not sent again") }, || panic!("unchanged"));
+        assert_eq!(r, Ok(()));
+    }
+
+    /// Task 5 review: a region that keeps failing is retried on every frame but logged once, until
+    /// it succeeds again.
+    #[test]
+    fn a_failing_opaque_region_is_logged_once_per_outage() {
+        let mut failing = false;
+        assert!(first_failure(&mut failing, true), "the first failure is logged");
+        assert!(!first_failure(&mut failing, true), "the retries are not");
+        assert!(!first_failure(&mut failing, true));
+        assert!(!first_failure(&mut failing, false), "a success logs nothing");
+        assert!(first_failure(&mut failing, true), "a new outage is logged again");
+    }
+
+    /// Spec § 4: a bar re-placed for a new style waits for the compositor's configure before it
+    /// paints again (its buffer must match the new size).
+    #[test]
+    fn a_bar_waiting_for_its_new_placement_is_not_drawn() {
+        assert!(drawable(true, 800, false));
+        assert!(!drawable(true, 800, true), "re-placed: the configure paints");
+        assert!(!drawable(false, 800, false), "never configured");
+        assert!(!drawable(true, 0, false), "no width yet");
+    }
+
     /// Final review R2: the press remembered for an Activate answer is spent by the first answer
     /// that uses it; a second (late) answer, or one for another icon, finds nothing.
     #[test]
@@ -1840,9 +2090,54 @@ mod tests {
     /// every later re-read.
     #[test]
     fn tray_sync_never_picks_a_surface_with_no_attached_buffer() {
-        assert!(!eligible_for_frame(true, false), "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)");
-        assert!(!eligible_for_frame(false, true), "not configured yet: no commit belongs to it either");
-        assert!(eligible_for_frame(true, true), "configured and holding an attached buffer");
+        assert!(
+            !eligible_for_frame(true, false, false),
+            "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)"
+        );
+        assert!(!eligible_for_frame(false, true, false), "not configured yet: no commit belongs to it either");
+        assert!(eligible_for_frame(true, true, false), "configured and holding an attached buffer");
+    }
+
+    /// Task 6 review: a bar re-placed for a new style holds its old-size buffer until its configure;
+    /// a frame request committed on it meanwhile would commit that stale buffer under the new
+    /// placement.
+    #[test]
+    fn tray_sync_never_picks_a_bar_waiting_for_its_new_placement() {
+        assert!(!eligible_for_frame(true, true, true), "re-placed, its configure not come yet");
+    }
+
+    /// Task 6 and 7 reviews: the hold ends on any configure except one that clearly answers the
+    /// PREVIOUS placement (its height), so a bar can never freeze. Two quick restyles (floating ->
+    /// flat -> floating before any configure) get the answer to the flat one first: it keeps holding,
+    /// since painting then would draw a floating bar at the flat size.
+    #[test]
+    fn only_the_answer_to_the_previous_placement_keeps_holding() {
+        use alpheus_commun::theme::settings::BarStyle;
+        let flat = Placement::for_style(BarStyle::Flat, 22).surface_height;
+        let floating = Placement::for_style(BarStyle::Floating, 22).surface_height;
+        assert_ne!(flat, floating, "the check bites only if the two placements differ in height");
+        // floating -> flat -> floating: the placement before the latest one is flat.
+        let previous = flat;
+        assert!(still_placing(true, flat, previous, 0), "the answer to the first restyle (flat) keeps holding");
+        assert!(!still_placing(true, floating, previous, 0), "the answer to the latest one ends the hold");
+        assert!(!still_placing(true, 0, previous, 0), "a size left to the client (0) ends the hold");
+        assert!(!still_placing(false, flat, previous, 0), "not placing: nothing to end");
+        // A compositor that clamps or rounds the height (25 or 27 for 26) must never freeze the bar.
+        assert!(!still_placing(true, 25, previous, 0), "an unexpected height ends the hold");
+        assert!(!still_placing(true, 27, previous, 0), "an unexpected height ends the hold");
+    }
+
+    /// Fix wave A: a compositor that refuses the resize answers every configure at the previous
+    /// height. The second configure after a placement ends the hold whatever its height, so the bar
+    /// can never stay held.
+    #[test]
+    fn the_second_configure_after_a_placement_always_ends_the_hold() {
+        use alpheus_commun::theme::settings::BarStyle;
+        let previous = Placement::for_style(BarStyle::Flat, 22).surface_height;
+        assert!(still_placing(true, previous, previous, 0), "the first, at the previous height: holds");
+        for answered in [1, 2, u8::MAX] {
+            assert!(!still_placing(true, previous, previous, answered), "after {answered} configure(s): the hold ends");
+        }
     }
 
     /// Review items M3/M4, final review slice 3: the same check used by
@@ -1959,5 +2254,23 @@ mod tests {
     #[test]
     fn pending_restores_preserves_the_marked_order() {
         assert_eq!(pending_restores(&[3, 1, 2], [1, 2, 3].into_iter()), vec![3, 1, 2]);
+    }
+
+    /// The bar paints with its own style and module colours and the theme's opacity, over the
+    /// grid's blocks: what `draw` hands `paint_bar`.
+    #[test]
+    fn a_bar_paints_with_its_style_its_module_colours_and_the_theme_opacity() {
+        use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+        let mut bar = Bar::new(crate::config::BarConfig::default());
+        bar.apply(Msg::Compositor(Some(crate::compositor::example())));
+        bar.style = BarStyle::Underline;
+        bar.module_colors = ModuleColors::Pills;
+        let settings =
+            ThemeSettings { opacity: 0.55, style: BarStyle::Islands, module_colors: ModuleColors::None, ..ThemeSettings::default() };
+        let grid = bar.grid("HDMI-A-1", 100);
+        assert!(!grid.groups().is_empty());
+        let bg = bar_background(&bar, &settings, &grid);
+        assert_eq!((bg.style, bg.opacity, bg.module_colors), (BarStyle::Underline, 0.55, ModuleColors::Pills), "the bar's, not the file's");
+        assert_eq!(bg.groups, grid.groups());
     }
 }

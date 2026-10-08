@@ -32,13 +32,16 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.1 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.8–8.9 MB with the tray and 10 fake items, but that test runs without the launcher module) |
-| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 8.9–9.2 MB | stable, 0 wake-ups at rest, the theme watch adds no wake-up, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.0 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused: `startup_pss_per_source` ("everything", 3 runs: 8,144–8,246 KB); ≈ 8.4–8.5 MB with the tray and 10 fake items (`startup_pss_with_the_tray_under_15_mb`, 3 runs: 8,614–8,701 KB, without the launcher module) |
+| Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.6–9.7 MB | stable, 0 wake-ups at rest, the theme watch adds no wake-up, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
 | Tray, module present, no item | ≈ 0.4 MB | watcher + session connection only, no thread (376–392 KB) |
 | Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 488–496 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: +32 KB in each of 3 runs) |
 | Tray, linked in but unused (no `tray` in `modules`, no session bus) | +0.4–0.7 MB vs. the delivery before this one | one-time cost of a bigger binary (stripped 4.49 → 5.36 MB, +864 KB: libdbus linkage, menus, popups, calendar); measured back to back in release, a real cost, like the launcher's |
 | Themes, linked in (9 presets, resolver, inotify watch, portal following) | +144–224 KB vs. the delivery before this one | one-time cost; binary 5.11 → 5.18 MiB (+76 KiB stripped); measured `c85c0df` vs this delivery, release, back to back, 2 runs each; an unused preset is rodata only |
 | Themes, 50 reloads (3 outputs repainted each time) | +0–444 KB | `theme_reloads_no_growth`: 0 KB in four of five runs, 444 KB in the first run after a build; 0 loop wake-ups at rest after a reload |
+| Bar shapes, linked in (6 styles, corner masks, placement) | within noise (−48…+156 KB) vs. the delivery before this one | one-time cost; binary 5.20 → 5.24 MiB (+44 KiB stripped); measured `6a6df10` vs this delivery, release, back to back, 3 runs each, separate target directories; `flat` pays only the style match |
+| Bar shapes, per style at start (all modules, 3 outputs) | flat ≈ 8.0 MB; others −76…+116 KB over flat | `startup_pss_per_style`, 3 runs (flat 8,142–8,224 KB: the same bar as the start row above); corner masks on first use −32…+88 KB (islands − flat), +36…+116 KB (floating − flat, its taller buffer included) (computed: 128 B for islands, 200 B for floating, at scale 1; one per radius and scale used) |
+| Bar shapes, 48 style switches (3 outputs; floating reconfigures every bar) | +20 KB | `style_switches_no_growth`, +20 KB in each of 3 runs; 0 loop wake-ups at rest under each of the six styles (`at_rest_no_wakeups_under_each_style`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -56,7 +59,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > per-component deltas are the stable figures. Ranges are over 2–3 release runs
 > (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
 > from the tray-delivery measurement (three runs); the themes rows from two
-> alternated runs against the delivery before.
+> alternated runs against the delivery before; the bar shapes rows likewise
+> (three alternated runs, HEAD and base built in separate target directories).
 >
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
@@ -118,7 +122,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | OSD (volume, brightness) | 🚧 (swayosd ≈ 49.5 MB until then) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
-| Bar styles (islands, powerline, floating…) | 🚧 themes 2 | ✅ | ✅ | ➖ | ➖ |
+| Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
 | Appearance settings | 🚧 TUI tab, themes 3 | ✅ | ✅ | ❌ | ❌ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
@@ -152,7 +156,7 @@ checks this.
 Seven tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
 **Displays** (enable, place, set resolution and scale, profiles, with
 automatic rollback after 15 s if not confirmed), **Theme** (choose a
-theme, the light/dark mode and the module colours, with a preview; `--tab theme`).
+theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`).
 
 | Key | Action |
 |---|---|
@@ -167,8 +171,8 @@ theme, the light/dark mode and the module colours, with a preview; `--tab theme`
 
 ### The bar (`alpheus-demon`)
 
-A line of monospace characters on the theme's bar colour, modules separated by
-`│`, the active workspace on the theme's accent (see [Themes](#themes)).
+In the default `flat` style, a line of monospace characters on the theme's bar colour, modules separated by
+`│`, the active workspace on the theme's accent (see [Themes](#themes) and [Bar styles](#bar-styles)).
 
 ![The alpheus bar, sample data, real font, default theme (catppuccin, dark) (zoomed ×2, split in two halves)](docs/images/bar.png)
 
@@ -191,8 +195,8 @@ workspaces and the clock remain.
 Coming next: now-playing and notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.1 MB
-of memory at start (≈ 8.8–8.9 MB with a tray of 10 items, launcher module off) and ≈ 8.9–9.2 MB under load,
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
+of memory at start (≈ 8.4–8.5 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
 on three outputs. The
 compositor is only **read** (Hyprland or niri event stream); switching
 workspace goes through a configurable command. Sound comes from
@@ -242,7 +246,9 @@ replacing the link is not seen until the bar restarts (the bar logs it once at s
 # ~/.config/alpheus/theme.toml — every key optional
 theme = "catppuccin"   # a preset below, or "wallpaper"
 mode  = "auto"         # "auto" (follow the desktop), "dark", "light"
-module_colors = "icons" # "none", "icons" (default), "full": see Module colours below
+module_colors = "icons" # "none", "icons" (default), "full", "pills": see Module colours below
+style   = "flat"        # "islands", "powerline", "floating", "underline", "translucent": see Bar styles below
+opacity = 0.8           # translucent only
 
 [colors]               # override any role, whatever the theme and mode
 # accent = "#ff9e64"
@@ -279,9 +285,9 @@ A theme is 16 colours, named by use:
 | Role | Used for |
 |---|---|
 | `bar_bg` | the bar's background |
-| `pill_bg` | raised cells of the bar (a visible workspace) |
+| `pill_bg` | raised cells of the bar (a visible workspace); the blocks of the block styles |
 | `popup_bg` | menus, calendar, tooltip, launcher |
-| `raised` | hover (reserved: no surface uses it yet; delivery 2) |
+| `raised` | reserved for hover; powerline's alternate blocks; a visible workspace inside a block |
 | `selection` | the selected row |
 | `fg`, `fg_dim` | text, secondary text (frames are `fg_dim` at 40 %) |
 | `on_accent` | text on an accent |
@@ -303,6 +309,7 @@ much of each module wears its hue:
 | `none` | no hue: the bar looks as before the hues existed |
 | `icons` (default) | each module's icon takes its hue |
 | `full` | the icon and the module's text |
+| `pills` | each block filled with its hue (block styles, see Bar styles below) |
 
 The mapping is fixed:
 
@@ -327,12 +334,70 @@ down module, an urgent workspace and a tray item that needs attention keep
 their state colours whatever `module_colors` says. A charging battery is
 green at any level (its glyph shows it charges, so it never warns); under `none` it
 keeps the accent. The Theme tab of the
-control center has a "Module colours" row (None, Icons, Full) with a preview.
+control center has a "Module colours" row (None, Icons, Full, Pills) with a preview.
 
 A colour file may carry the seven hues as optional keys (`red = "#f38ba8"`,
 and so on); a hue that is absent is derived from Catppuccin's (Mocha for dark,
 Latte for light) mixed 30 % toward the accent, so it stays in tune with the
 theme. `[colors]` in `theme.toml` can override a hue like any role.
+
+#### Bar styles
+
+The bar has six shapes. `flat`, the default, is the bar as it always was.
+
+```toml
+# ~/.config/alpheus/theme.toml
+style   = "islands"  # "flat" (default), "islands", "powerline", "floating", "underline", "translucent"
+opacity = 0.8        # translucent only: 0.3 to 1.0 (clamped, with one line in the log)
+```
+
+Only `translucent` uses `opacity`; a value out of range still logs its warning under any other style.
+
+| `style` | Look |
+|---|---|
+| `flat` | one line on the bar colour, modules separated by `│` |
+| `islands` | each group of modules in its own rounded block; the bar between them is transparent |
+| `powerline` | full-height blocks joined by arrows, alternating two tones |
+| `floating` | one rounded bar, 6 px from the top and sides of the screen, with a light shadow |
+| `underline` | blocks one step lighter than the bar, a thin line under it, the active workspace in the accent, underlined |
+| `translucent` | the bar at `opacity` over the wallpaper, solid blocks |
+
+![flat](docs/images/style-flat.png)
+![islands](docs/images/style-islands.png)
+![powerline](docs/images/style-powerline.png)
+![floating](docs/images/style-floating.png)
+![underline](docs/images/style-underline.png)
+![translucent](docs/images/style-translucent.png)
+
+*The six styles on catppuccin (dark), over a fictional wallpaper (sample data, real font, zoomed ×2, each bar split in two halves).*
+
+The groups are the workspaces, the window title, the status modules (sound, network, Bluetooth,
+battery), the resources, the tray, the clock and the launcher button. A module that is absent
+makes no block. The text inside each block is the same in every style; only the background
+changes.
+
+`module_colors = "pills"` fills each block with the hue of its first module. Its text and icons
+take whichever of the bar colour or the text colour reads better on that hue, and states still win
+(a low battery stays `warn`). Pills apply to `islands`, `powerline`, `floating` and `translucent`.
+Under `flat` and `underline`, `pills` looks like `full`.
+
+![pills](docs/images/style-pills.png)
+
+The Theme tab of the control center has a "Style" row with a preview of each style. The preview is
+drawn in terminal cells, so it is an approximation, not the real pixels. `opacity` is set in the
+file only. A change applies at once: `floating` moves the bar 6 px down and in from the sides, and
+windows start right under it (6 px lower than under the other styles), then their usual gaps.
+
+alpheus never asks for blur. On Hyprland, a layer rule on the bar's namespace blurs what is behind
+the `translucent` bar, and behind the `islands` and `floating` blocks:
+
+```
+# hyprland.conf
+layerrule = blur on, ignore_alpha 0, match:namespace alpheus-bar
+```
+
+Clicks in the transparent gaps between `islands` blocks still reach the bar. The shadow under
+`floating` lets clicks through to the window below.
 
 #### Wallpaper colours (matugen)
 
@@ -429,8 +494,8 @@ otherwise in the system's.
 Everything is optional, under `~/.config/alpheus/`. An invalid file falls
 back to default values with a warning, never a crash.
 
-- `theme.toml`: the theme (a preset or the wallpaper), light/dark mode and
-  per-role overrides; `colors.toml` / `colors-light.toml`: the wallpaper's
+- `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
+  per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
   colours, written by matugen. See [Themes](#themes); the bar follows changes
   without a restart, the control center reads them when it opens.
 - `config.toml`: the TUI (keys, tools opened for sound, network,

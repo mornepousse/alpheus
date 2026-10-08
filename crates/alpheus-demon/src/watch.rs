@@ -10,8 +10,11 @@ use crate::launch::describe;
 use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
-use alpheus_commun::theme::Roles;
-use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, ModuleColors, THEME_FILE, effective_mode, resolve_dir};
+use alpheus_commun::theme::settings::{
+    BarStyle, DARK_FILE, LIGHT_FILE, ModeSetting, ModuleColors, Resolved, THEME_FILE, ThemeSettings, effective_mode, load_settings,
+    resolve_detailed, resolve_dir,
+};
+use alpheus_commun::theme::{Mode, Roles};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
 use std::ffi::{CString, OsStr};
@@ -253,10 +256,10 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     state.theme_watch = Some(watch);
 }
 
-/// A reload repaints when the roles changed or the module colours did: the roles can be equal while
-/// the bar's tints are not (themes spec § 9).
-fn repaint_needed(new: &Roles, old: &Roles, colors_changed: bool) -> bool {
-    colors_changed || new != old
+/// A reload repaints when the roles changed or the bar's shape did (module colours, style, opacity):
+/// the roles can be equal while the bar's look is not (themes spec § 9, shapes spec § 4).
+fn repaint_needed(new: &Roles, old: &Roles, shape_changed: bool) -> bool {
+    shape_changed || new != old
 }
 
 fn colours_name(mc: ModuleColors) -> &'static str {
@@ -264,7 +267,64 @@ fn colours_name(mc: ModuleColors) -> &'static str {
         ModuleColors::None => "none",
         ModuleColors::Icons => "icons",
         ModuleColors::Full => "full",
+        ModuleColors::Pills => "pills",
     }
+}
+
+/// What a reload changes in the bar's shape (shapes spec § 4).
+#[derive(Debug, PartialEq)]
+pub(crate) struct ShapeChange {
+    /// The module colours, the style, or the opacity under `translucent` changed: re-lay out and repaint.
+    pub(crate) repaint: bool,
+    /// To or from `floating`: every bar's layer surface is reconfigured before it paints again.
+    pub(crate) placement: bool,
+    /// What changed, for the reload's line: ", module colours full, style islands, opacity 0.6".
+    pub(crate) note: String,
+}
+
+/// Compares the settings in effect with the ones just read. Allocates only on a reload.
+pub(crate) fn shape_change(old: &ThemeSettings, new: &ThemeSettings) -> ShapeChange {
+    let mut note = String::new();
+    if old.module_colors != new.module_colors {
+        note.push_str(", module colours ");
+        note.push_str(colours_name(new.module_colors));
+    }
+    if old.style != new.style {
+        note.push_str(", style ");
+        note.push_str(new.style.name());
+    }
+    // Only `translucent` reads the opacity: under any other style a new value changes no pixel.
+    if new.style == BarStyle::Translucent && old.opacity != new.opacity {
+        note.push_str(&format!(", opacity {}", new.opacity));
+    }
+    let floating = |s: &ThemeSettings| s.style == BarStyle::Floating;
+    ShapeChange { repaint: !note.is_empty(), placement: floating(old) != floating(new), note }
+}
+
+/// What a reload resolved.
+pub(crate) struct Reload {
+    pub(crate) settings: ThemeSettings,
+    pub(crate) resolved: Resolved,
+    /// theme.toml is empty and the settings in effect are not what an empty file means: kept.
+    pub(crate) kept: bool,
+}
+
+/// `resolve_dir` for a reload. When theme.toml exists but holds nothing (empty or whitespace) — an
+/// editor truncating it mid-save, or left empty on purpose — the settings in effect (`previous`)
+/// stay, so a floating bar never flips to flat and back; the colour files and the portal's word
+/// still apply (a new wallpaper, a dark/light switch). Startup does not go through here: an empty
+/// file there is the defaults.
+pub(crate) fn reload_settings(dir: &Path, previous: &ThemeSettings, portal: impl FnOnce() -> Option<Mode>) -> Reload {
+    let blank = matches!(std::fs::read(dir.join(THEME_FILE)), Ok(text) if text.iter().all(u8::is_ascii_whitespace));
+    if !blank {
+        let (settings, resolved) = resolve_dir(dir, portal);
+        return Reload { settings, resolved, kept: false };
+    }
+    // `portal` is asked only in mode auto, as `resolve_dir` does.
+    let portal = if previous.mode == ModeSetting::Auto { portal() } else { None };
+    let resolved = resolve_detailed(previous, effective_mode(previous.mode, portal), dir);
+    let kept = load_settings(dir).0 != *previous;
+    Reload { settings: previous.clone(), resolved, kept }
 }
 
 impl App {
@@ -284,7 +344,11 @@ impl App {
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
         let portal = self.portal_mode;
-        let (settings, resolved) = resolve_dir(&dir, || portal);
+        let Reload { settings, resolved, kept } = reload_settings(&dir, &self.theme_settings, || portal);
+        if kept && !self.blank_theme_noted {
+            self.blank_theme_noted = true;
+            log("theme: theme.toml is empty, keeping the current settings until it is written");
+        }
         let mode = effective_mode(settings.mode, portal);
         let warnings = resolved.lines();
         let mut new_lines = false;
@@ -293,8 +357,11 @@ impl App {
             new_lines = true;
         }
         self.theme_warnings = warnings;
-        let colors_changed = self.bar.module_colors != settings.module_colors;
+        let shape = shape_change(&self.theme_settings, &settings);
         self.bar.module_colors = settings.module_colors;
+        // The layout's spacing and the placement follow the bar's style (tasks 2 and 6): set before
+        // any repaint or re-placement below.
+        self.bar.style = settings.style;
         self.theme_settings = settings;
         // A switch to mode = "auto" starts following the portal (a no-op once tried, or when not
         // auto). After the store, never before: it reads `self.theme_settings`.
@@ -305,20 +372,19 @@ impl App {
             if new_lines {
                 log("theme: keeping the current colours until the colour file is usable");
             }
-            // The setting is read from theme.toml, not from the colour file: it still applies.
-            if colors_changed {
-                log(&format!("theme reloaded: module colours {}", colours_name(self.bar.module_colors)));
-                self.repaint_all();
+            // The shape is read from theme.toml, not from the colour file: it still applies.
+            if shape.repaint {
+                log(&format!("theme reloaded: {}", shape.note.trim_start_matches(", ")));
+                self.restyle(shape.placement);
             }
             return;
         }
-        if !repaint_needed(&resolved.roles, &self.roles, colors_changed) {
+        if !repaint_needed(&resolved.roles, &self.roles, shape.repaint) {
             return;
         }
         self.roles = resolved.roles;
-        let colours = if colors_changed { format!(", module colours {}", colours_name(self.bar.module_colors)) } else { String::new() };
-        log(&format!("theme reloaded: {}{colours}", describe(&self.theme_settings, mode)));
-        self.repaint_all();
+        log(&format!("theme reloaded: {}{}", describe(&self.theme_settings, mode), shape.note));
+        self.restyle(shape.placement);
     }
 
     /// Every surface once, with the current roles: the bars, an open popup, the launcher box.
@@ -341,7 +407,113 @@ mod tests {
         assert!(repaint_needed(&r, &r, true), "equal roles, other module colours: repaint");
         let other = Roles { fg: alpheus_commun::theme::Rgb(1, 2, 3), ..Roles::default() };
         assert!(repaint_needed(&other, &r, false), "other roles: repaint");
-        assert_eq!([ModuleColors::None, ModuleColors::Icons, ModuleColors::Full].map(colours_name), ["none", "icons", "full"]);
+        assert_eq!(
+            [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills].map(colours_name),
+            ["none", "icons", "full", "pills"]
+        );
+    }
+
+    use alpheus_commun::theme::settings::{BarStyle, ThemeSettings};
+
+    fn shaped(style: BarStyle, opacity: f32, module_colors: ModuleColors) -> ThemeSettings {
+        ThemeSettings { style, opacity, module_colors, ..ThemeSettings::default() }
+    }
+
+    #[test]
+    fn a_reload_restyles_on_a_new_style_opacity_or_module_colours() {
+        let flat = shaped(BarStyle::Flat, 0.8, ModuleColors::Icons);
+        let same = shape_change(&flat, &flat.clone());
+        assert_eq!((same.repaint, same.placement, same.note.as_str()), (false, false, ""), "nothing changed");
+        let c = shape_change(&flat, &shaped(BarStyle::Islands, 0.8, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", style islands"));
+        let c = shape_change(&flat, &shaped(BarStyle::Flat, 0.8, ModuleColors::Pills));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", module colours pills"));
+        let translucent = shaped(BarStyle::Translucent, 0.8, ModuleColors::Icons);
+        let c = shape_change(&translucent, &shaped(BarStyle::Translucent, 0.5, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", opacity 0.5"));
+        let c = shape_change(&flat, &shaped(BarStyle::Flat, 0.5, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.note.as_str()), (false, ""), "outside translucent the opacity changes no pixel");
+        let c = shape_change(&flat, &shaped(BarStyle::Translucent, 0.5, ModuleColors::Full));
+        assert_eq!(c.note, ", module colours full, style translucent, opacity 0.5", "every change, in a fixed order");
+    }
+
+    #[test]
+    fn only_a_switch_to_or_from_floating_reconfigures_the_surfaces() {
+        use BarStyle::*;
+        let s = |style| shaped(style, 0.8, ModuleColors::Icons);
+        assert!(shape_change(&s(Flat), &s(Floating)).placement, "flat -> floating");
+        assert!(shape_change(&s(Floating), &s(Islands)).placement, "floating -> islands");
+        for (a, b) in [(Flat, Islands), (Islands, Powerline), (Underline, Translucent), (Translucent, Flat), (Floating, Floating)] {
+            assert!(!shape_change(&s(a), &s(b)).placement, "{a:?} -> {b:?} keeps the placement");
+        }
+    }
+
+    /// An editor that truncates theme.toml before writing it hands a reload an empty file: the
+    /// settings in effect stay (a floating bar never flips to flat and back, closing a popup), and
+    /// the next real file applies. A missing theme.toml is not empty: its defaults apply.
+    #[test]
+    fn an_empty_theme_toml_during_a_reload_keeps_the_settings() {
+        let dir = temp("blank");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(THEME_FILE);
+        let floating = ThemeSettings { style: BarStyle::Floating, ..ThemeSettings::default() };
+        for blank in ["", " \n\t\n"] {
+            std::fs::write(&path, blank).unwrap();
+            let r = reload_settings(&dir, &floating, || None);
+            assert_eq!((r.settings.style, r.kept), (BarStyle::Floating, true), "{blank:?}: kept");
+        }
+        std::fs::write(&path, "style = \"islands\"\n").unwrap();
+        let r = reload_settings(&dir, &floating, || None);
+        assert_eq!((r.settings.style, r.kept), (BarStyle::Islands, false), "a real file applies");
+        std::fs::remove_file(&path).unwrap();
+        let r = reload_settings(&dir, &floating, || None);
+        assert_eq!((r.settings.style, r.kept), (BarStyle::Flat, false), "no file: the defaults apply");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty theme.toml left on purpose (the defaults) keeps only the settings: the colour files
+    /// are read again (matugen's next wallpaper repaints), and nothing worth a line is kept when the
+    /// settings in effect are what an empty file means (startup's catch-up resolve logs nothing).
+    #[test]
+    fn an_empty_theme_toml_still_reads_the_colour_files() {
+        let dir = temp("blank-colours");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(THEME_FILE), "").unwrap();
+        let legacy = |bg: &str| {
+            format!(
+                "bg = \"{bg}\"\nfg = \"#e0e0e0\"\naccent = \"#ffaa00\"\nmuted = \"#808080\"\nsurface = \"#203040\"\nerror = \"#ff5555\"\nok = \"#55ff55\"\n"
+            )
+        };
+        std::fs::write(dir.join(DARK_FILE), legacy("#102030")).unwrap();
+        // What startup resolved: an empty file with a colors.toml is the wallpaper (spec § 2).
+        let (startup, _) = resolve_dir(&dir, || None);
+        let r = reload_settings(&dir, &startup, || None);
+        assert_eq!(r.resolved.roles.bar_bg, alpheus_commun::theme::Rgb(0x10, 0x20, 0x30));
+        assert!(!r.kept, "the settings in effect are the empty file's: nothing to say");
+        std::fs::write(dir.join(DARK_FILE), legacy("#405060")).unwrap();
+        let r = reload_settings(&dir, &startup, || None);
+        assert_eq!(r.resolved.roles.bar_bg, alpheus_commun::theme::Rgb(0x40, 0x50, 0x60), "the new wallpaper");
+        assert_eq!(r.settings, startup);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The portal's word still applies under an empty theme.toml in mode auto (its default).
+    #[test]
+    fn an_empty_theme_toml_still_follows_the_portal() {
+        use alpheus_commun::theme::presets::preset;
+        let dir = temp("blank-portal");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(THEME_FILE), "").unwrap();
+        let auto = ThemeSettings::default();
+        let catppuccin = preset("catppuccin").unwrap();
+        let r = reload_settings(&dir, &auto, || Some(Mode::Light));
+        assert_eq!(r.resolved.roles, catppuccin.light.unwrap(), "light");
+        let r = reload_settings(&dir, &auto, || Some(Mode::Dark));
+        assert_eq!(r.resolved.roles, catppuccin.dark, "dark");
+        let dark = ThemeSettings { mode: alpheus_commun::theme::settings::ModeSetting::Dark, ..auto };
+        let r = reload_settings(&dir, &dark, || panic!("a fixed mode never asks"));
+        assert_eq!(r.resolved.roles, catppuccin.dark);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn no_link(_: &[u8]) -> bool {

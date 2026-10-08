@@ -17,8 +17,8 @@ expression: "draw(&a, 100, 24).0.join(\"\\n\")"
      Dracula       dark only                                                                        
                                                                                                     
  Mode             Auto   Dark   Light                                                               
- Module colours   None   Icons   Full                                                               
-                                                                                                    
+ Module colours   None   Icons   Full   Pills                                                       
+ Style            Flat   Islands   Powerline   Floating   Underline   Translucent                   
                                                                                                     
                                                                                                     
                                                                                                     

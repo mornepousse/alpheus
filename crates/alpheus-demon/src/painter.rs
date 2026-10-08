@@ -13,10 +13,21 @@
 //! check). Its cell keeps the width `Grid::write` already gave it — only
 //! the paint is skipped.
 
+pub(crate) mod blocks;
+pub(crate) mod floating;
+mod powerline;
+#[cfg(test)]
+mod shape_tests;
+
+use crate::background::{self, MaskCache};
+pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
-use crate::grid::{CONT, Grid, Hue, Tint};
+use crate::grid::{CONT, Grid, Group, Hue, Style, Tint};
 use crate::list::Boxed;
+use crate::placement::FLOAT_SHADOW;
+use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
+use blocks::OnBlock;
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -162,6 +173,8 @@ pub struct Fonts {
     /// physical offsets are only valid for the metrics they were measured
     /// at.
     shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
+    /// The bar shapes' corner masks (shapes spec § 3), made on first use per radius and scale.
+    masks: MaskCache,
 }
 
 /// A tint's colour on a surface whose own background is `base` (`Tint::Bg`). The painter picks the
@@ -212,6 +225,37 @@ pub fn column_under(x_logical: f64, scale: i32, advance: f32) -> u16 {
 fn attrs(family: &str, bold: bool) -> Attrs<'_> {
     let a = Attrs::new().family(Family::Name(family));
     if bold { a.weight(Weight::BOLD) } else { a }
+}
+
+/// Which cell backgrounds `cell_backgrounds` keeps inside a block (ruling 11).
+#[derive(Debug, Clone, Copy)]
+enum Clip<'a> {
+    /// No block: every cell background over the band's whole height (flat, underline, floating
+    /// without pills, the boxed surfaces).
+    None,
+    /// Every group is a block (islands, translucent, powerline): a cell background stays inside its
+    /// block, and a cell outside every block gets none. A `Tint::Pill` cell on a block whose fill is
+    /// `pill_bg` is painted `raised` (`on_pill_bg`).
+    Blocks(&'a Background<'a>),
+    /// Only the hued groups are blocks (floating's pills): a cell in one stays inside it, a cell on
+    /// the bar itself is painted as under `None`.
+    Hued(&'a [Group]),
+    /// Underline: as `None`, but the active workspace gets no fill (`underlined`), and a `Tint::Pill`
+    /// cell, on the blocks' `pill_bg`, is painted `raised` (`on_pill_bg`).
+    Underline,
+}
+
+/// A cell background `t` on a surface of `pill_bg` (a block of the block styles, underline's
+/// blocks): `Tint::Pill` there would vanish, so it is painted one step up, `raised` — a workspace
+/// visible on another output (`Style::SURFACE`) stays told apart. Any other tint is its own.
+fn on_pill_bg(roles: &Roles, t: Tint) -> Rgb {
+    if t == Tint::Pill { roles.raised } else { color(roles, roles.pill_bg, t) }
+}
+
+/// A cell's style under `underline` (Mae, 2026-10-08): the active workspace has no fill, its text
+/// is `accent`; the 2 px accent underline marks it. Every other style is the cell's own.
+fn underlined(s: Style) -> Style {
+    if s == Style::ACTIVE { Style { fg: Tint::Accent, bg: Tint::Bg, bold: s.bold } } else { s }
 }
 
 /// Flat fill over [x0, x1) × [0, height).
@@ -284,7 +328,9 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     for k in 0..3 {
         px[o + k] = ((src[k] as u32 * a + px[o + k] as u32 * (255 - a)) / 255) as u8;
     }
-    px[o + 3] = 0xff;
+    // Premultiplied "over": an opaque destination stays exactly 255 (flat, popups: unchanged);
+    // a transparent or translucent one (islands, translucent) keeps a valid premultiplied pixel.
+    px[o + 3] = ((255 * a + px[o + 3] as u32 * (255 - a)) / 255) as u8;
 }
 
 fn has_family(f: &fontdb::FaceInfo, family: &str) -> bool {
@@ -409,6 +455,7 @@ impl Fonts {
             advances: Vec::new(),
             frames: Vec::new(),
             shapes: HashMap::new(),
+            masks: MaskCache::default(),
         };
         p.set_scale(1);
         let warning = (!warnings.is_empty()).then(|| warnings.join(" ; "));
@@ -432,6 +479,11 @@ impl Fonts {
     /// Memoized (char, bold) shapes (memory guard).
     pub fn shaped_glyphs(&self) -> usize {
         self.shapes.len()
+    }
+
+    /// Corner masks made so far (memory guard: none until a rounded style paints).
+    pub fn corner_masks(&self) -> usize {
+        self.masks.len()
     }
 
     /// Size and metrics for scale `e`; measures a cell's advance (memorized
@@ -468,33 +520,181 @@ impl Fonts {
         self.advance
     }
 
-    /// A bar: `grid` on `roles.bar_bg`.
+    /// A bar in its style (shapes spec § 3):
+    /// - the style's background pass;
+    /// - the cell backgrounds (under the block styles, clipped to their block: its x span, and
+    ///   under islands, translucent and floating's pills its inset rows);
+    /// - the edges pass of islands, translucent and floating (rounded corners, borders, floating's
+    ///   shadow), and underline's lines, over the cell backgrounds;
+    /// - last the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
+    ///   (ruling 11).
+    ///
+    /// Under floating the bar's band is the surface minus its shadow rows (`placement::FLOAT_SHADOW`):
+    /// the text never reaches the shadow. Under `flat` it paints exactly what `paint` paints, byte
+    /// for byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_bar(&mut self, grid: &Grid, roles: &Roles, bg: &Background, px: &mut [u8], width: u32, height: u32, scale: i32) {
+        if px.len() < (width as usize) * (height as usize) * 4 {
+            return; // inconsistent buffer: do nothing rather than panic
+        }
+        self.set_scale(scale);
+        let advance = self.advance;
+        let edge = |col: u16| background::cell_edge(col, advance);
+        let band = match bg.style {
+            BarStyle::Floating => height.saturating_sub(FLOAT_SHADOW.saturating_mul(scale.max(1) as u32)),
+            BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Islands | BarStyle::Translucent => height,
+        };
+        // islands: transparent around the blocks; translucent: bar_bg at opacity, premultiplied.
+        let outside = match bg.style {
+            BarStyle::Islands => Some(blocks::CLEAR),
+            BarStyle::Translucent => Some(background::premultiplied(roles.bar_bg, blocks::opacity_alpha(bg.opacity))),
+            BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Floating => None,
+        };
+        let mut rows = (0, band);
+        match (bg.style, outside) {
+            (BarStyle::Underline, _) => background::underline_blocks(px, width, band, roles, bg.groups, edge),
+            (_, Some(outside)) => {
+                blocks::background(px, width, band, scale, advance, roles, bg, outside);
+                rows = blocks::island_y(band, scale);
+            }
+            (BarStyle::Powerline, _) => powerline::background(px, width, band, advance, roles, bg, grid.split()),
+            (BarStyle::Floating, _) => {
+                floating::background(px, width, band, scale, advance, roles, bg);
+                rows = blocks::island_y(band, scale);
+            }
+            _ => fill(px, width, 0, width, band, roles.bar_bg),
+        }
+        // The block styles keep a cell background inside its block (ruling 11); flat, underline and
+        // floating without pills draw no block and clip nothing.
+        let clip = match bg.style {
+            BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline => Clip::Blocks(bg),
+            BarStyle::Floating if blocks::pills(bg) => Clip::Hued(bg.groups),
+            BarStyle::Underline => Clip::Underline,
+            BarStyle::Flat | BarStyle::Floating => Clip::None,
+        };
+        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, band, 0, rows, clip);
+        if let Some(outside) = outside {
+            blocks::round_islands(&mut self.masks, px, width, band, scale, advance, roles, bg, outside);
+        }
+        if bg.style == BarStyle::Floating {
+            // The whole surface: the bar's ends, its pills blocks, and the shadow below the band.
+            floating::edges(&mut self.masks, px, width, height, band, scale, advance, roles, bg);
+        }
+        if bg.style == BarStyle::Underline {
+            // Over the cell backgrounds, under the glyphs: a descender is never cut (ruling 11).
+            background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
+        }
+        // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
+        let (on, n) = blocks::pill_inks(roles, bg);
+        self.glyphs(grid, roles, roles.bar_bg, px, width, band, 0, &on[..n], bg.style == BarStyle::Underline);
+    }
+
+    /// A bar: `grid` on `roles.bar_bg` — `flat`'s reference, which `paint_bar` reproduces byte for byte.
     pub fn paint(&mut self, grid: &Grid, roles: &Roles, px: &mut [u8], width: u32, height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
         self.set_scale(scale);
         fill(px, width, 0, width, height, roles.bar_bg);
-        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0);
+        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0, &[]);
     }
 
     /// `grid`'s cells in a band `height` px tall, the first one `x0` px from the band's left edge:
-    /// the cell backgrounds that differ from the surface's (`base`), then the glyphs. The band's own
-    /// background is the caller's.
+    /// the cell backgrounds that differ from the surface's (`base`), then the glyphs (`glyphs`, with
+    /// the pills inks `on`). The band's own background is the caller's.
     #[allow(clippy::too_many_arguments)]
-    fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32) {
+    fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
+        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height), Clip::None);
+        self.glyphs(grid, roles, base, px, width, height, x0, on, false);
+    }
+
+    /// The backgrounds of `grid`'s cells that differ from the surface's (`base`). A cell inside a
+    /// block (`clip`) stays inside its x span and the block's `rows` [top, bottom); a cell on the
+    /// bar itself takes the band's whole height.
+    #[allow(clippy::too_many_arguments)]
+    fn cell_backgrounds(
+        &self,
+        grid: &Grid,
+        roles: &Roles,
+        base: Rgb,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        x0: u32,
+        rows: (u32, u32),
+        clip: Clip,
+    ) {
         let advance = self.advance;
         let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
-            if c.style.bg != Tint::Bg {
-                fill(px, width, edge(col), edge(col + 1), height, color(roles, base, c.style.bg));
+            let style = if matches!(clip, Clip::Underline) { underlined(c.style) } else { c.style };
+            if style.bg == Tint::Bg {
+                continue;
             }
+            let holds = |g: &&Group| usize::from(g.start) <= col && col < usize::from(g.end);
+            let mut ink = color(roles, base, style.bg);
+            let block = match clip {
+                Clip::None => None,
+                Clip::Underline => {
+                    ink = on_pill_bg(roles, style.bg);
+                    None
+                }
+                Clip::Blocks(bg) => match bg.groups.iter().enumerate().find(|(_, g)| holds(g)) {
+                    Some((i, g)) => {
+                        let otherwise = if bg.style == BarStyle::Powerline { powerline::base(roles, bg.groups, i) } else { roles.pill_bg };
+                        if blocks::block_fill(roles, bg, g, otherwise) == roles.pill_bg {
+                            ink = on_pill_bg(roles, style.bg);
+                        }
+                        Some(g)
+                    }
+                    None => continue,
+                },
+                Clip::Hued(groups) => groups.iter().filter(|g| g.hue.is_some()).find(holds),
+            };
+            let (mut x, mut y) = ((edge(col), edge(col + 1)), (0, height));
+            if let Some(g) = block {
+                let (b0, b1) = blocks::block_x(g, advance);
+                // A guard only: a cell's edges and its block's come from the same rounding
+                // (`cell_edge`), so the cell already lies inside the block's span.
+                x = (x.0.max(x0 + b0), x.1.min(x0 + b1));
+                y = rows;
+            }
+            rect(px, width, height, x, y, ink);
         }
+    }
+
+    /// `grid`'s glyphs. A glyph inside one of the `on` blocks (pills) takes the block's ink (its
+    /// muted ink for a muted cell) unless its cell is in a state (`blocks::in_state`). Under
+    /// `underline`, the active workspace's text is `accent` (`underlined`).
+    #[allow(clippy::too_many_arguments)]
+    fn glyphs(
+        &mut self,
+        grid: &Grid,
+        roles: &Roles,
+        base: Rgb,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        x0: u32,
+        on: &[OnBlock],
+        underline: bool,
+    ) {
+        let advance = self.advance;
+        let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
-            self.glyph(c.ch, c.style.bold, edge(col) as f32, color(roles, base, c.style.fg), px, width, height);
+            let style = if underline { underlined(c.style) } else { c.style };
+            let own = color(roles, base, style.fg);
+            let ink = if blocks::in_state(style) {
+                own
+            } else {
+                on.iter()
+                    .find(|b| usize::from(b.start) <= col && col < usize::from(b.end))
+                    .map_or(own, |b| if c.style.fg == Tint::FgDim { b.muted } else { b.ink })
+            };
+            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, height);
         }
     }
 
@@ -548,7 +748,7 @@ impl Fonts {
         for (i, row) in b.rows.iter().enumerate() {
             let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
             let Some(slice) = px.get_mut(start..start + band) else { break };
-            self.paint_cells(row, roles, base, slice, width, row_height, frame.side);
+            self.paint_cells(row, roles, base, slice, width, row_height, frame.side, &[]);
         }
         // A selection band reaching the frame's top or bottom edge is as far from it as from the
         // sides: the first and last rows' coloured cells bleed into the vertical inset.
@@ -629,6 +829,7 @@ mod tests {
     use crate::config::DEFAULT_HEIGHT;
     use crate::grid::Style;
     use alpheus_commun::theme::Hues;
+    use alpheus_commun::theme::settings::ModuleColors;
 
     fn fonts() -> Fonts {
         let (p, w) = Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT)
@@ -1500,6 +1701,181 @@ mod tests {
         // write overflowed its computed location.
         for o in (0..px.len()).step_by(4) {
             assert_eq!(px[o + 3], 0xff, "unpainted pixel at byte {o}");
+        }
+    }
+
+    // ---- bar shapes (shapes spec § 3) ----
+
+    /// The layout tests' bar (launcher, workspaces, title, clock), hues on.
+    fn fixture_bar() -> crate::state::Bar {
+        use crate::state::{Bar, Msg};
+        let mut b = Bar::new(crate::config::BarConfig::default());
+        b.apply(Msg::Compositor(Some(crate::compositor::example())));
+        b.apply(Msg::Clock(crate::clock::LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 }));
+        b.module_colors = ModuleColors::Full;
+        b
+    }
+
+    /// A bar `columns` wide at `scale`: its physical size and a buffer full of `junk`.
+    fn bar_buffer(p: &mut Fonts, columns: u16, scale: i32, junk: u8) -> (u32, u32, Vec<u8>) {
+        let av = p.advance(scale);
+        let (w, h) = ((av * f32::from(columns)).ceil() as u32, DEFAULT_HEIGHT * scale as u32);
+        (w, h, vec![junk; (w * h * 4) as usize])
+    }
+
+    /// `flat` stays today's bar to the byte (shapes spec § 3): `paint_bar` under flat writes every
+    /// byte `paint` writes, whatever the buffer held, the opacity, the module colours or the groups.
+    #[test]
+    fn paint_bar_under_flat_is_paint_to_the_byte() {
+        let pal = distinct();
+        let mut p = fonts();
+        for (columns, scale) in [(100u16, 1), (60, 1), (100, 2), (40, 2)] {
+            let bar = fixture_bar();
+            let grid = bar.grid("HDMI-A-1", columns);
+            // An underline grid's blocks, handed to flat: it must ignore them.
+            let mut under = fixture_bar();
+            under.style = BarStyle::Underline;
+            let groups = under.grid("HDMI-A-1", columns).groups().to_vec();
+            assert!(!groups.is_empty());
+            let (w, h, mut old) = bar_buffer(&mut p, columns, scale, 0x5a);
+            let mut new = vec![0xa5u8; old.len()];
+            p.paint(&grid, &pal, &mut old, w, h, scale);
+            let bg = Background { style: BarStyle::Flat, opacity: 0.3, module_colors: ModuleColors::Pills, groups: &groups };
+            p.paint_bar(&grid, &pal, &bg, &mut new, w, h, scale);
+            assert!(old == new, "{columns} columns at scale {scale}: flat must be today's paint");
+        }
+        assert_eq!(p.corner_masks(), 0, "flat never makes a corner mask");
+    }
+
+    /// (r, g, b, a) of pixel (x, y) in a `w`-wide buffer.
+    fn rgba(px: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o + 2], px[o + 1], px[o], px[o + 3]]
+    }
+
+    fn opaque(c: Rgb) -> [u8; 4] {
+        [c.0, c.1, c.2, 255]
+    }
+
+    /// A 20-cell grid: an active workspace on cells 1..4, blanks elsewhere; one status block on
+    /// cells 6..12 (hue blue) and one clock block on 14..19 (no hue).
+    fn underline_fixture() -> (Grid, Vec<crate::grid::Group>) {
+        use crate::grid::{Group, GroupKind};
+        let mut g = Grid::empty(20);
+        g.write(1, 20, "   ", Style::ACTIVE);
+        let groups = vec![
+            Group { kind: GroupKind::Status, start: 6, end: 12, hue: Some(Hue::Blue) },
+            Group { kind: GroupKind::Clock, start: 14, end: 19, hue: None },
+        ];
+        (g, groups)
+    }
+
+    /// `underline` (shapes spec § 3): the bar on bar_bg, the blocks on pill_bg, a one logical px
+    /// bottom line in the border colour, two logical px of accent under the active workspace; the
+    /// blocks' hues underline them under the module colours only.
+    #[test]
+    fn underline_paints_blocks_a_bottom_line_and_the_active_underline() {
+        let pal = distinct();
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        for scale in [1, 2] {
+            let s = scale as u32;
+            let (w, h, mut px) = bar_buffer(&mut p, 20, scale, 0x33);
+            let av = p.advance(scale);
+            let mid = |col: f32| ((col + 0.5) * av) as u32;
+            let bg = Background { style: BarStyle::Underline, opacity: 0.8, module_colors: ModuleColors::None, groups: &groups };
+            p.paint_bar(&grid, &pal, &bg, &mut px, w, h, scale);
+            let border = pal.border_over(pal.bar_bg);
+            for x in [0, mid(8.0), w - 1] {
+                assert_eq!(rgba(&px, w, x, h - 1), opaque(border), "the bottom line at x {x}, scale {scale}");
+                assert_eq!(rgba(&px, w, x, h - s), opaque(border), "one logical px thick, scale {scale}");
+            }
+            assert_eq!(rgba(&px, w, mid(0.0), h - s - 1), opaque(pal.bar_bg), "outside a block: bar_bg");
+            assert_eq!(rgba(&px, w, mid(8.0), h / 2), opaque(pal.pill_bg), "a block: pill_bg");
+            assert_eq!(rgba(&px, w, mid(16.0), h / 2), opaque(pal.pill_bg));
+            assert_eq!(rgba(&px, w, mid(13.0), h / 2), opaque(pal.bar_bg), "between blocks");
+            assert_eq!(rgba(&px, w, mid(8.0), h - s - 1), opaque(pal.pill_bg), "no hue underline under none");
+            for y in [h - 3 * s, h - s - 1] {
+                assert_eq!(rgba(&px, w, mid(2.0), y), opaque(pal.accent), "the active underline at y {y}, scale {scale}");
+            }
+            assert_eq!(rgba(&px, w, mid(2.0), h - 3 * s - 1), opaque(pal.bar_bg), "two logical px only: the cell above, unfilled");
+            assert_eq!(rgba(&px, w, mid(0.0), h - 2 * s), opaque(pal.bar_bg), "no underline off the active cells");
+            // Under the module colours, a block with a hue is underlined in it; one without is not.
+            for mc in [ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills] {
+                let bg = Background { module_colors: mc, ..bg };
+                p.paint_bar(&grid, &pal, &bg, &mut px, w, h, scale);
+                assert_eq!(rgba(&px, w, mid(8.0), h - 2 * s), opaque(pal.hues.blue), "{mc:?}: the status block's blue");
+                assert_eq!(rgba(&px, w, mid(16.0), h - 2 * s), opaque(pal.pill_bg), "{mc:?}: the clock has no hue");
+                assert_eq!(rgba(&px, w, mid(2.0), h - 2 * s), opaque(pal.accent), "{mc:?}: the active workspace keeps its accent");
+            }
+        }
+        assert_eq!(p.corner_masks(), 0, "underline is square: no corner mask");
+    }
+
+    /// Mae, 2026-10-08: under underline the active workspace has no accent fill; its text is
+    /// `accent` and the 2 px accent underline marks it, visible against the pixels just above it.
+    /// An urgent workspace keeps its colour.
+    #[test]
+    fn underline_marks_the_active_workspace_by_its_text_and_line_not_a_fill() {
+        use crate::grid::{Group, GroupKind};
+        let pal = distinct();
+        let mut p = fonts();
+        let mut grid = Grid::empty(20);
+        grid.write(1, 2, " ", Style::ACTIVE);
+        grid.write(2, 3, "1", Style::ACTIVE);
+        grid.write(3, 4, " ", Style::ACTIVE);
+        grid.write(5, 6, "3", Style::URGENT);
+        let groups = vec![Group { kind: GroupKind::Workspaces, start: 0, end: 7, hue: None }];
+        for scale in [1, 2] {
+            let s = scale as u32;
+            let (w, h, mut px) = bar_buffer(&mut p, 20, scale, 0x33);
+            let av = p.advance(scale);
+            let cell = |col: u32| ((col as f32 * av).round() as u32, ((col + 1) as f32 * av).round() as u32);
+            let bg = Background { style: BarStyle::Underline, opacity: 0.8, module_colors: ModuleColors::None, groups: &groups };
+            p.paint_bar(&grid, &pal, &bg, &mut px, w, h, scale);
+            let (x0, x1) = (cell(1).0, cell(3).1);
+            let above = h - 3 * s;
+            let colours: Vec<[u8; 4]> = (x0..x1).flat_map(|x| (0..above).map(move |y| (x, y))).map(|(x, y)| rgba(&px, w, x, y)).collect();
+            assert!(!colours.contains(&opaque(pal.accent_container)), "scale {scale}: no accent fill on the active workspace");
+            assert!(!colours.contains(&opaque(pal.on_accent)), "scale {scale}: no on_accent text");
+            let (d0, d1) = cell(2);
+            let digit = (d0..d1).any(|x| (0..above).any(|y| rgba(&px, w, x, y) == opaque(pal.accent)));
+            assert!(digit, "scale {scale}: the active workspace's text in accent");
+            assert_eq!(rgba(&px, w, (x0 + x1) / 2 - 1, above / 2), opaque(pal.pill_bg), "scale {scale}: the block's own fill behind it");
+            for x in [x0, (x0 + x1) / 2, x1 - 1] {
+                for y in [h - 3 * s, h - s - 1] {
+                    assert_eq!(rgba(&px, w, x, y), opaque(pal.accent), "scale {scale}: the underline at ({x}, {y})");
+                }
+                assert_ne!(rgba(&px, w, x, above - 1), opaque(pal.accent), "scale {scale}: visible: the pixel above it differs at x {x}");
+            }
+            let (u0, u1) = cell(5);
+            let urgent = (u0..u1).any(|x| (0..above).any(|y| rgba(&px, w, x, y) == opaque(pal.urgent)));
+            assert!(urgent, "scale {scale}: an urgent workspace keeps its colour");
+            assert_eq!(rgba(&px, w, (u0 + u1) / 2, h - 2 * s), opaque(pal.pill_bg), "scale {scale}: no underline under it");
+        }
+    }
+
+    /// Every pixel of an underline bar is written, opaque: the buffer's previous frame never shows.
+    #[test]
+    fn underline_writes_every_pixel_opaque() {
+        let pal = distinct();
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        let (w, h, mut px) = bar_buffer(&mut p, 20, 1, 0x00);
+        let bg = Background { style: BarStyle::Underline, opacity: 0.8, module_colors: ModuleColors::Icons, groups: &groups };
+        p.paint_bar(&grid, &pal, &bg, &mut px, w, h, 1);
+        assert!(px.chunks(4).all(|c| c[3] == 0xff), "a transparent pixel left");
+    }
+
+    #[test]
+    fn paint_bar_with_a_short_buffer_paints_nothing_and_never_panics() {
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        let mut px = vec![7u8; 16];
+        for style in BarStyle::ALL {
+            let bg = Background { style, opacity: 0.8, module_colors: ModuleColors::Pills, groups: &groups };
+            p.paint_bar(&grid, &distinct(), &bg, &mut px, 100, 22, 1);
+            assert_eq!(px, vec![7u8; 16], "{style:?}");
         }
     }
 }

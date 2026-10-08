@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod appearance;
+pub mod background;
 pub mod calendar;
 pub mod clock;
 pub mod compositor;
@@ -23,6 +24,7 @@ pub mod memory;
 pub mod nonblocking;
 pub mod painter;
 pub mod pipewire;
+pub mod placement;
 pub mod popup;
 pub mod segments;
 pub mod sources;

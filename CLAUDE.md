@@ -93,7 +93,17 @@ breakdown), then the spec of the sub-project currently in progress in
   - **TUI.** Same resolver; no D-Bus. In mode `auto` it reads the mode the daemon publishes in `$XDG_RUNTIME_DIR/alpheus/mode` (dark when the daemon is not running).
   - **Measured in release** (vs `c85c0df`, the tray branch just before the theme code; not the merge-base with `main`, which has no tray yet): a one-time cost of +144–224 KB PSS at start (binary 5.11 → 5.18 MiB stripped, +76 KiB), +0–444 KB over 50 reloads (0 in four of five runs), and 0 loop wake-ups at rest after a reload.
   - **Pending.** Mae's matugen setup in nixos-config is her decision (spec § 5): the 16-role template, the dark and light runs, `-t scheme-vibrant`, and dropping `shell-ctl reload-bar` for colours.
-  - **Next.** Themes delivery 2: the six bar shapes (flat by default; islands, powerline, floating, underline, translucent), chosen from the Theme tab; `module_colors = "pills"` comes with them. The nixos-config branch `alpheus-16-roles` carries the 16-role matugen template (hues still to add).
+  - **Next.** Themes delivery 2 (bar shapes, below): implemented on `feat/shapes`, Mae's trial pending, not merged. The nixos-config branch `alpheus-16-roles` carries the 16-role matugen template (hues still to add).
+- **Themes delivery 2 (bar shapes)** (spec
+  [`docs/specs/2026-10-07-alpheus-shapes-design.md`](docs/specs/2026-10-07-alpheus-shapes-design.md),
+  plan [`docs/plans/2026-10-07-alpheus-shapes-plan-1.md`](docs/plans/2026-10-07-alpheus-shapes-plan-1.md))
+  **implemented on `feat/shapes`** (per-task reviews, a final whole-branch review and its fix waves); Mae's trial pending, not merged:
+  - **Six styles.** `style` in `theme.toml`: `flat` (default, byte-identical to before), `islands`, `powerline`, `floating`, `underline`, `translucent` (`opacity` 0.3–1.0, default 0.8). Plus `module_colors = "pills"` (contrast-picked text, MUTED cells mixed 50 % toward the fill (Mae), states win; like `full` under flat and underline).
+  - **How.** The layout emits groups (one block each). The painter runs a background pass per style before the unchanged text pass: cached anti-aliased corner masks per (radius, scale), analytic powerline triangles, the floating shadow ramp. Wayland side: the opaque region per style; under floating, a 6 px margin, a taller surface for the shadow, an exclusive zone of the bar height (the compositor adds the margin: windows start 28 px down on the default bar, Mae's spec amendment ad309a0), an input region without the shadow, and an open popup closed when its bar is re-placed.
+  - **Hot reload.** A style, opacity or module-colours change repaints. To or from floating, every bar's surface is reconfigured and waits for its configure before painting.
+  - **TUI.** A Style row in the Theme tab, with a preview approximated in cells.
+  - **Measured in release** (vs `6a6df10`, back to back, 3 runs each, separate target directories): one-time cost within noise (−48…+156 KB) (binary 5.20 → 5.24 MiB, +44 KiB stripped), per style within −76…+116 KB of flat (flat 7.9–8.0 MB), masks −32…+88 KB (islands − flat) and +36…+116 KB (floating − flat, its taller buffer included) on first use (computed: 128 B and 200 B at scale 1), +20 KB over 48 style switches, 0 loop wake-ups at rest under every style.
+  - **Hyprland blur** is documented, never requested: `layerrule = blur on, ignore_alpha 0, match:namespace alpheus-bar` in Mae's hyprland.conf is her decision.
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
@@ -152,7 +162,7 @@ breakdown), then the spec of the sub-project currently in progress in
   depth, transparency, light variants…) and **preset colour themes** for
   users who don't follow their wallpaper (matugen stays the default for Mae).
   Lightness rules apply: a theme costs nothing when unused. Delivery 1
-  (colours) done, see above.
+  (colours) and delivery 2 (bar shapes) done, see above.
 - **README tables are the yardstick (Mae, 2026-10-05)**: the README keeps a
   memory comparison (alpheus vs other shells, then alpheus per component)
   and a feature comparison (alpheus vs DMS, Noctalia, ashell, waybar stack)
