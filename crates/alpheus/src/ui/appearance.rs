@@ -1,14 +1,16 @@
 //! The Appearance tab: the theme list on the left, the preview of the theme under the cursor on
-//! the right (a mini bar and a mini menu, drawn with the previewed theme's own roles), and the mode
-//! and module-colours rows below. Everything is cells; nothing here reads a file.
+//! the right (a mini bar in the chosen style and a mini menu, drawn with the previewed theme's own
+//! roles), and the mode, module-colours and style rows below. Everything is cells; nothing here
+//! reads a file.
 
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use crate::app::App;
-use crate::app::appearance::{COLORS, MODES, colors_label, mode_label};
+use crate::app::appearance::{COLORS, MODES, STYLES, colors_label, mode_label, style_label};
 use crate::theme::color;
-use alpheus_commun::theme::settings::ModuleColors;
-use alpheus_commun::theme::{Mode, Roles};
+use alpheus_commun::theme::contrast::ratio;
+use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+use alpheus_commun::theme::{Mode, Rgb, Roles};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -19,7 +21,9 @@ const GAP: u16 = 2;
 /// The preview's frames: widest, and narrowest worth drawing.
 const PREVIEW_W: u16 = 46;
 const PREVIEW_MIN: u16 = 22;
-/// Column of the chips of the mode and module-colours rows, from the body's left edge.
+/// The preview's frame under a style other than `flat`: the blocks need more room than the flat line.
+const PREVIEW_BLOCKS_W: u16 = 54;
+/// Column of the chips of the mode, module-colours and style rows, from the body's left edge.
 const CHIPS_X: u16 = 16;
 /// Column of the "dark only" tags in a list row.
 const TAG_X: u16 = 18;
@@ -33,9 +37,10 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     // The mode row sits under the list when it fits, else on the body's last row with the list
     // scrolled so the cursor stays visible. Nothing is drawn or made clickable outside `body`.
     let n = ap.entries.len();
-    // A blank row sits between the list and the two chip rows when everything fits with it.
-    let gap = usize::from(usize::from(body.height) >= n + 4);
-    let room = usize::from(body.height).saturating_sub(3 + gap);
+    // A blank row sits between the list and the three chip rows when everything fits with it.
+    let gap = usize::from(usize::from(body.height) >= n + 5);
+    // The cursor's row always shows: on the tiniest bodies the last chip rows are clipped instead.
+    let room = usize::from(body.height).saturating_sub(4 + gap).max(1);
     let shown = n.min(room);
     let offset = if ap.cursor >= shown { ap.cursor + 1 - shown } else { 0 };
     let mode_y = body.y + 1 + (shown + gap) as u16;
@@ -82,6 +87,17 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
         hits.push(Rect::new(x, colors_y, w, 1).intersection(body), Target::AppearanceColors(m));
         x = x.saturating_add(w + 1);
     }
+    let style_y = colors_y + 1;
+    put(buf, body, body.x, style_y, "Style", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
+    // Six chips: the usual one-cell gap when they fit, chip against chip otherwise (80 columns).
+    let full: u16 = STYLES.iter().map(|s| style_label(*s).len() as u16 + 3).sum::<u16>() - 1;
+    let step = u16::from(body.width >= CHIPS_X + full);
+    let mut x = body.x + CHIPS_X;
+    for s in STYLES {
+        let w = put(buf, body, x, style_y, &format!(" {} ", style_label(s)), chip(s == ap.style, ap.style_focus, th));
+        hits.push(Rect::new(x, style_y, w, 1).intersection(body), Target::AppearanceStyle(s));
+        x = x.saturating_add(w + step);
+    }
     if let (Some(roles), Some(entry)) = (&ap.preview, ap.cursor_entry()) {
         let px = body.x + LIST_W + GAP;
         let avail = body.right().saturating_sub(px);
@@ -96,8 +112,12 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
                 &format!("Preview — {}, {mode}", entry.label),
                 Style::default().fg(th.muted).add_modifier(Modifier::BOLD),
             );
+            if ap.style == BarStyle::Flat {
+                mini_bar(buf, body, Rect::new(px, body.y + 1, avail.min(PREVIEW_W), 3), roles, ap.module_colors);
+            } else {
+                mini_blocks(buf, body, Rect::new(px, body.y + 1, avail.min(PREVIEW_BLOCKS_W), 3), roles, ap.module_colors, ap.style);
+            }
             let w = avail.min(PREVIEW_W);
-            mini_bar(buf, body, Rect::new(px, body.y + 1, w, 3), roles, ap.module_colors);
             mini_menu(buf, body, Rect::new(px, body.y + 5, (MENU_W + 2).min(w), 5), roles);
             if let Some(note) = &ap.preview_note {
                 put(buf, body, px, body.y + 10, &truncate(note, usize::from(avail)), Style::default().fg(th.error));
@@ -140,8 +160,9 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColo
     let modules = MODULES_W + 1 + CLOCK_W;
     let tx = inner.right().saturating_sub(modules + 1);
     if tx > cx + 9 {
-        let icon = |hue: alpheus_commun::theme::Rgb| if colors == ModuleColors::None { bg } else { on(hue) };
-        let text = |hue: alpheus_commun::theme::Rgb| if colors == ModuleColors::Full { on(hue) } else { bg };
+        let icon = |hue: Rgb| if colors == ModuleColors::None { bg } else { on(hue) };
+        // Pills under flat is full (shapes spec § 1).
+        let text = |hue: Rgb| if matches!(colors, ModuleColors::Full | ModuleColors::Pills) { on(hue) } else { bg };
         let h = &p.hues;
         let mut mx = tx;
         mx += put(buf, inner, mx, y, "♪", icon(h.blue));
@@ -158,6 +179,197 @@ fn mini_bar(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColo
 /// Cells of the mini bar's four modules ("♪ 84% ≈ ▮ 15% ▤ 6G") and of its clock.
 const MODULES_W: u16 = 18;
 const CLOCK_W: u16 = 5;
+
+/// A run of the mini bar under a block style: its text (one cell per char), its colour, its own
+/// background (the active workspace), and whether its colour is a state (warn, urgent), which wins
+/// over `pills`' contrast-picked text.
+#[derive(Clone, Copy)]
+struct Run {
+    text: &'static str,
+    fg: Rgb,
+    bg: Option<Rgb>,
+    state: bool,
+}
+
+/// A block of the mini bar, as the real bar groups its modules (shapes spec § 2), and the hue
+/// `pills` fills it with (its first module's).
+struct Block {
+    runs: Vec<Run>,
+    hue: Option<Rgb>,
+}
+
+impl Block {
+    fn width(&self) -> u16 {
+        self.runs.iter().map(|r| r.text.chars().count() as u16).sum()
+    }
+}
+
+/// The mini bar's blocks, left then right: the flat line's content, grouped as workspaces, title |
+/// status (sound, network, battery), resources (memory), clock.
+fn blocks(p: &Roles, colors: ModuleColors) -> (Vec<Block>, Vec<Block>) {
+    let run = |text, fg| Run { text, fg, bg: None, state: false };
+    let state = |text, fg| Run { text, fg, bg: None, state: true };
+    let icon = |hue| if colors == ModuleColors::None { p.fg } else { hue };
+    let text = |hue| if matches!(colors, ModuleColors::Full | ModuleColors::Pills) { hue } else { p.fg };
+    let h = &p.hues;
+    let active = Run { text: "1", fg: p.on_accent, bg: Some(p.accent_container), state: false };
+    let left = vec![
+        Block { runs: vec![active, run(" 2 ", p.fg), state("3!", p.urgent)], hue: None },
+        Block { runs: vec![run("notes.md", p.fg)], hue: None },
+    ];
+    let right = vec![
+        Block {
+            runs: vec![
+                run("♪", icon(h.blue)),
+                run(" 84% ", text(h.blue)),
+                run("≈ ", icon(h.cyan)),
+                state("▮", p.warn),
+                state(" 15%", p.warn),
+            ],
+            hue: Some(h.blue),
+        },
+        Block { runs: vec![run("▤", icon(h.yellow)), run(" 6G", text(h.yellow))], hue: Some(h.yellow) },
+        Block { runs: vec![run("14:05", p.accent)], hue: None },
+    ];
+    (left, right)
+}
+
+/// Text on a `pills` block: whichever of `bar_bg` and `fg` contrasts more with the hue (a tie: bar_bg).
+fn on_hue(p: &Roles, hue: Rgb) -> Rgb {
+    if ratio(p.bar_bg, hue) >= ratio(p.fg, hue) { p.bar_bg } else { p.fg }
+}
+
+/// A block's background under `style`; None where the bar's own background shows. `i` is the
+/// block's index over both sides (0: the workspaces), for powerline's alternation.
+fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -> Option<Rgb> {
+    let pill = (colors == ModuleColors::Pills).then(|| b.hue.unwrap_or(p.pill_bg));
+    match style {
+        BarStyle::Flat => None,
+        BarStyle::Underline => Some(p.pill_bg),
+        BarStyle::Islands | BarStyle::Translucent => Some(pill.unwrap_or(p.pill_bg)),
+        // One bar; under pills only the hued blocks are drawn inside it (task 6).
+        BarStyle::Floating => {
+            if colors == ModuleColors::Pills {
+                b.hue
+            } else {
+                None
+            }
+        }
+        BarStyle::Powerline if i == 0 => Some(p.accent_container),
+        BarStyle::Powerline => match (colors, b.hue) {
+            (ModuleColors::Pills, Some(hue)) => Some(hue),
+            _ if i % 2 == 1 => Some(p.pill_bg),
+            _ => Some(p.raised),
+        },
+    }
+}
+
+/// `style` with `c` as its background when there is one: None leaves the cell's own background
+/// (the tab's), which is how the preview shows a transparent bar.
+fn on(style: Style, c: Option<Rgb>) -> Style {
+    match c {
+        Some(c) => style.bg(color(c)),
+        None => style,
+    }
+}
+
+/// The mini bar under a style other than `flat`, approximated in cells (shapes spec § 4).
+/// - Blocks are cell backgrounds.
+/// - Rounded ends are half-blocks in the block's colour.
+/// - Powerline arrows are U+E0B0 / U+E0B2.
+/// - The underline is `━` on the frame's bottom row.
+/// - `islands` and `floating` leave the bar itself transparent, so the tab's background shows
+///   there. `translucent` cannot blend in cells: its bar is drawn on `bar_bg`.
+fn mini_blocks(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles, colors: ModuleColors, style: BarStyle) {
+    let hole = matches!(style, BarStyle::Islands | BarStyle::Floating);
+    let bar = (!hole).then_some(p.bar_bg);
+    frame(buf, clip, r, on(Style::default().fg(color(p.fg)), bar), on(Style::default().fg(color(p.border_over(p.bar_bg))), bar));
+    if r.width < 4 || r.height < 3 {
+        return;
+    }
+    let y = r.y + 1;
+    let inner = Rect::new(r.x + 1, y, r.width - 2, 1).intersection(clip);
+    // Floating: one rounded bar on bar_bg across the row, its ends as half-blocks.
+    let (area, row) = if style == BarStyle::Floating {
+        put(buf, inner, inner.x, y, "▐", Style::default().fg(color(p.bar_bg)));
+        put(buf, inner, inner.x + 1, y, &" ".repeat(usize::from(inner.width.saturating_sub(2))), on(Style::default(), Some(p.bar_bg)));
+        put(buf, inner, inner.right().saturating_sub(1), y, "▌", Style::default().fg(color(p.bar_bg)));
+        (Rect::new(inner.x + 1, y, inner.width.saturating_sub(2), 1), Some(p.bar_bg))
+    } else {
+        (inner, bar)
+    };
+    let (left, right) = blocks(p, colors);
+    let fills: Vec<Option<Rgb>> = left.iter().chain(&right).enumerate().map(|(i, b)| fill(p, style, colors, b, i)).collect();
+    let (lfill, rfill) = fills.split_at(left.len());
+    let rounded = matches!(style, BarStyle::Islands | BarStyle::Translucent | BarStyle::Floating);
+    let powerline = style == BarStyle::Powerline;
+    // Pills fills and picks the text under the block styles only; under underline it is `full`
+    // (spec § 1), which `blocks` already gives its runs.
+    let pills = colors == ModuleColors::Pills && style != BarStyle::Underline;
+    // One block: lead cell, runs, trail cell; returns the x after it.
+    let block = |buf: &mut Buffer, x: u16, b: &Block, f: Option<Rgb>, workspaces: bool| -> u16 {
+        let end = |glyph: &'static str| match (rounded, f) {
+            (true, Some(f)) => (glyph, on(Style::default().fg(color(f)), row)),
+            _ => (" ", on(Style::default(), f.or(row))),
+        };
+        let mut cx = x;
+        let (g, s) = end("▐");
+        cx += put(buf, area, cx, y, g, s);
+        for run in &b.runs {
+            let ink = match f {
+                Some(f) if pills && b.hue.is_some() && !run.state && run.bg.is_none() => on_hue(p, f),
+                Some(_) if powerline && workspaces && !run.state && run.bg.is_none() => p.on_accent,
+                _ => run.fg,
+            };
+            cx += put(buf, area, cx, y, run.text, on(Style::default().fg(color(ink)), run.bg.or(f).or(row)));
+        }
+        let (g, s) = end("▌");
+        cx + put(buf, area, cx, y, g, s)
+    };
+    let arrow = |buf: &mut Buffer, x: u16, glyph: &str, from: Option<Rgb>, into: Option<Rgb>| -> u16 {
+        put(buf, area, x, y, glyph, on(Style::default().fg(color(from.unwrap_or(p.bar_bg))), into.or(row)))
+    };
+    // Left: blocks with one blank cell between them (powerline: an arrow out of each block).
+    let mut x = area.x;
+    for (i, b) in left.iter().enumerate() {
+        x = block(buf, x, b, lfill[i], i == 0);
+        x += if powerline { arrow(buf, x, "\u{e0b0}", lfill[i], lfill.get(i + 1).copied().flatten()) } else { 1 };
+    }
+    let left_end = if powerline { x } else { x.saturating_sub(1) };
+    // Right, right-aligned, only when it fits after the left side.
+    let width: u16 = right.iter().map(|b| b.width() + 2).sum::<u16>() + right.len() as u16 - u16::from(!powerline);
+    let start = area.right().saturating_sub(width);
+    if start > left_end {
+        let mut x = start;
+        for (j, b) in right.iter().enumerate() {
+            if powerline {
+                let behind = if j == 0 { None } else { rfill[j - 1] };
+                x += arrow(buf, x, "\u{e0b2}", rfill[j], behind);
+            } else if j > 0 {
+                x += 1;
+            }
+            x = block(buf, x, b, rfill[j], false);
+        }
+    }
+    // Underline: a rule on the frame's bottom row, in accent under the active workspace and, with
+    // module colours icons, full or pills, in each hued block's hue under that block (reconciliation 9).
+    if style == BarStyle::Underline {
+        let bottom = r.bottom() - 1;
+        let rule = |buf: &mut Buffer, x: u16, w: u16, c: Rgb| {
+            put(buf, clip, x, bottom, &"━".repeat(usize::from(w)), on(Style::default().fg(color(c)), Some(p.bar_bg)));
+        };
+        rule(buf, area.x + 1, 1, p.accent); // the "1" sits right after the workspaces block's lead cell
+        if colors != ModuleColors::None && start > left_end {
+            let mut x = start;
+            for b in &right {
+                if let Some(hue) = b.hue {
+                    rule(buf, x, b.width() + 2, hue);
+                }
+                x += b.width() + 3;
+            }
+        }
+    }
+}
 
 /// The menu of the previewed theme: a selected row, a checked row and a plain one.
 fn mini_menu(buf: &mut Buffer, clip: Rect, r: Rect, p: &Roles) {
@@ -180,8 +392,9 @@ mod tests {
     use crate::app::action::{Action, Tab};
     use crate::app::appearance::tests::open;
     use alpheus_commun::theme::Rgb;
+    use alpheus_commun::theme::contrast::ratio;
     use alpheus_commun::theme::presets::preset;
-    use alpheus_commun::theme::settings::ModuleColors;
+    use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -303,11 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn the_module_colours_row_is_drawn_with_its_three_values_and_regions() {
+    fn the_module_colours_row_is_drawn_with_its_four_values_and_regions() {
         let (a, _) = open("colors-row", &[("theme.toml", "module_colors = \"full\"\n")]);
         let (rows, hits) = draw(&a, 100, 24);
         let row = rows.iter().find(|r| r.contains("Module colours")).expect("the row");
-        assert!(row.contains("None") && row.contains("Icons") && row.contains("Full"), "{row:?}");
+        assert!(row.contains("None") && row.contains("Icons") && row.contains("Full") && row.contains("Pills"), "{row:?}");
         for m in COLORS {
             assert!(hits.find(Target::AppearanceColors(m)).is_some(), "{m:?}");
         }
@@ -328,6 +541,8 @@ mod tests {
         assert!(last(&a).contains("Tab Mode"), "{:?}", last(&a));
         a.on_key_action(Action::NextTab);
         assert!(last(&a).contains("Tab Colours"), "{:?}", last(&a));
+        a.on_key_action(Action::NextTab);
+        assert!(last(&a).contains("Tab Style"), "{:?}", last(&a));
         a.on_key_action(Action::NextTab);
         assert!(last(&a).contains("Tab Theme"), "{:?}", last(&a));
     }
@@ -387,6 +602,11 @@ mod tests {
                         assert_eq!(r.intersection(body), r, "module colours outside the body at height {h}");
                     }
                 }
+                for s in STYLES {
+                    if let Some(r) = hits.find(Target::AppearanceStyle(s)) {
+                        assert_eq!(r.intersection(body), r, "style outside the body at height {h}");
+                    }
+                }
                 let row = hits.find(Target::AppearanceTheme(cursor));
                 assert!(row.is_some(), "cursor {cursor} not drawn at height {h}");
                 if let Some(r) = row {
@@ -395,8 +615,157 @@ mod tests {
                 if h >= 9 {
                     assert!(hits.find(Target::AppearanceMode(MODES[0])).is_some(), "mode row visible at height {h}");
                     assert!(hits.find(Target::AppearanceColors(COLORS[0])).is_some(), "module colours row visible at height {h}");
+                    assert!(hits.find(Target::AppearanceStyle(STYLES[0])).is_some(), "style row visible at height {h}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_style_row_is_drawn_under_the_colours_with_six_values_and_regions() {
+        let (a, _) = open("style-row", &[("theme.toml", "style = \"powerline\"\n")]);
+        let (rows, hits) = draw(&a, 100, 24);
+        let row = rows.iter().find(|r| r.starts_with(" Style")).expect("the row");
+        for label in ["Flat", "Islands", "Powerline", "Floating", "Underline", "Translucent"] {
+            assert!(row.contains(label), "{label} in {row:?}");
+        }
+        for s in STYLES {
+            assert!(hits.find(Target::AppearanceStyle(s)).is_some(), "{s:?}");
+        }
+        let colors_y = hits.find(Target::AppearanceColors(COLORS[0])).unwrap().y;
+        assert_eq!(hits.find(Target::AppearanceStyle(STYLES[0])).unwrap().y, colors_y + 1, "right under Module colours");
+        let b = buffer(&a);
+        let on = hits.find(Target::AppearanceStyle(BarStyle::Powerline)).unwrap();
+        let off = hits.find(Target::AppearanceStyle(BarStyle::Flat)).unwrap();
+        assert_ne!(b[(on.x + 1, on.y)].bg, b[(off.x + 1, off.y)].bg, "the loaded value is highlighted");
+        // 80 columns: chip against chip, all six inside the body.
+        let (rows, hits) = draw(&a, 80, 24);
+        assert!(rows.iter().any(|r| r.contains("Translucent")), "not clipped at 80 columns");
+        let last = hits.find(Target::AppearanceStyle(BarStyle::Translucent)).unwrap();
+        assert!(last.right() <= 79, "{last:?}");
+    }
+
+    /// x of the first cell showing `sym` in row `y` of the preview column (from x = 33).
+    fn find(b: &ratatui::buffer::Buffer, y: u16, sym: &str) -> u16 {
+        (33..100).find(|x| b[(*x, y)].symbol() == sym).unwrap_or_else(|| panic!("{sym:?} not in row {y}"))
+    }
+
+    /// The Appearance tab with catppuccin APPLIED (the tab's own background) and Tokyo Night under
+    /// the cursor (the previewed roles), in `style` and `colors`: the two backgrounds differ, so a
+    /// transparent cell is told apart from the bar's.
+    fn styled(name: &str, style: &str, colors: &str) -> crate::app::App {
+        let toml = format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\nmodule_colors = \"{colors}\"\n");
+        let (mut a, _) = open(name, &[("theme.toml", toml.as_str())]);
+        goto(&mut a, "tokyo-night");
+        a
+    }
+
+    #[test]
+    fn islands_previews_rounded_blocks_with_transparent_gaps() {
+        let a = styled("prev-islands", "islands", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        let tab_bg = a.theme.bg;
+        assert_ne!(tab_bg, rgb(p.bar_bg), "the test bites only if the two backgrounds differ");
+        let n = find(&b, 4, "n"); // notes.md: the title's block
+        assert_eq!(b[(n, 4)].bg, rgb(p.pill_bg), "a block is pill_bg");
+        assert_eq!((b[(n - 1, 4)].symbol(), b[(n - 1, 4)].fg, b[(n - 1, 4)].bg), ("▐", rgb(p.pill_bg), tab_bg), "its rounded end");
+        assert_eq!(b[(n - 2, 4)].bg, tab_bg, "the gap shows what is behind the bar");
+        assert_eq!(cell(&b, 4, "1"), (rgb(p.on_accent), rgb(p.accent_container)), "the active workspace keeps its colours");
+        assert_eq!(b[(find(&b, 4, "▌"), 4)].fg, rgb(p.pill_bg), "the closing end");
+    }
+
+    #[test]
+    fn translucent_previews_the_blocks_on_the_bar_colour() {
+        let a = styled("prev-translucent", "translucent", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        let n = find(&b, 4, "n");
+        assert_eq!(b[(n, 4)].bg, rgb(p.pill_bg));
+        assert_eq!((b[(n - 1, 4)].fg, b[(n - 1, 4)].bg), (rgb(p.pill_bg), rgb(p.bar_bg)), "the end over bar_bg");
+        assert_eq!(b[(n - 2, 4)].bg, rgb(p.bar_bg), "the gap is the bar (cells cannot blend)");
+    }
+
+    #[test]
+    fn powerline_previews_full_blocks_and_arrows() {
+        let a = styled("prev-powerline", "powerline", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        // Left: workspaces on accent_container, an arrow into the title's block (pill_bg), and one
+        // out of it into the bar.
+        assert_eq!(cell(&b, 4, "\u{e0b0}"), (rgb(p.accent_container), rgb(p.pill_bg)), "workspaces -> title");
+        let second = (find(&b, 4, "\u{e0b0}") + 1..100).find(|x| b[(*x, 4)].symbol() == "\u{e0b0}").expect("a second arrow");
+        assert_eq!((b[(second, 4)].fg, b[(second, 4)].bg), (rgb(p.pill_bg), rgb(p.bar_bg)), "title -> bar");
+        assert_eq!(cell(&b, 4, "2").1, rgb(p.accent_container), "inactive workspaces inside the block");
+        // Right: the first arrow comes out of the bar into the status block (raised).
+        assert_eq!(cell(&b, 4, "\u{e0b2}"), (rgb(p.raised), rgb(p.bar_bg)), "bar -> status");
+        assert_eq!(cell(&b, 4, "♪").1, rgb(p.raised));
+    }
+
+    #[test]
+    fn floating_previews_one_rounded_bar_over_what_is_behind() {
+        let a = styled("prev-floating", "floating", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        let end = find(&b, 4, "▐");
+        assert_eq!((b[(end, 4)].fg, b[(end, 4)].bg), (rgb(p.bar_bg), a.theme.bg), "the bar's rounded left end");
+        assert_eq!(b[(end + 1, 4)].bg, rgb(p.bar_bg));
+        assert_eq!(cell(&b, 4, "n").1, rgb(p.bar_bg), "blocks are not filled without pills");
+        assert_eq!(b[(end, 3)].bg, a.theme.bg, "the margin above the bar shows what is behind");
+        // Under pills, only the hued blocks are drawn inside the bar (task 6).
+        let a = styled("prev-floating-pills", "floating", "pills");
+        let b = buffer(&a);
+        assert_eq!(cell(&b, 4, "♪").1, rgb(p.hues.blue), "pills: the status block in its hue");
+        assert_eq!(cell(&b, 4, "n").1, rgb(p.bar_bg), "pills: the title has no hue, no block");
+    }
+
+    #[test]
+    fn underline_previews_a_rule_under_the_active_workspace_and_the_hued_blocks() {
+        let a = styled("prev-underline", "underline", "icons");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        let one = find(&b, 4, "1");
+        assert_eq!((b[(one, 5)].symbol(), b[(one, 5)].fg), ("━", rgb(p.accent)), "under the active workspace");
+        assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "under the sound block, its hue");
+        assert_eq!(cell(&b, 4, "n").1, rgb(p.pill_bg), "blocks on pill_bg");
+        let a = styled("prev-underline-none", "underline", "none");
+        let b = buffer(&a);
+        assert_eq!((33..100).filter(|x| b[(*x, 5)].symbol() == "━").count(), 1, "module colours none: the workspace only");
+        // Pills under underline is full (spec § 1): the hue rules stay, the text takes its hue on pill_bg.
+        let a = styled("prev-underline-pills", "underline", "pills");
+        let b = buffer(&a);
+        assert_eq!(b[(find(&b, 4, "♪"), 5)].fg, rgb(p.hues.blue), "pills: the sound block's rule in its hue");
+        assert_eq!(cell(&b, 4, "8"), (rgb(p.hues.blue), rgb(p.pill_bg)), "pills: the text in its hue, as under full");
+    }
+
+    #[test]
+    fn pills_fill_each_block_with_its_hue_and_pick_the_text_by_contrast() {
+        let a = styled("prev-pills", "islands", "pills");
+        let p = preset("tokyo-night").unwrap().dark;
+        let b = buffer(&a);
+        let blue = p.hues.blue;
+        let want = if ratio(p.bar_bg, blue) >= ratio(p.fg, blue) { p.bar_bg } else { p.fg };
+        assert_ne!(want, p.fg, "on Tokyo Night's blue, bar_bg contrasts more: the pick bites");
+        assert_eq!(cell(&b, 4, "♪"), (rgb(want), rgb(blue)), "the status block on its first module's hue");
+        assert_eq!(cell(&b, 4, "≈").0, rgb(want), "every plain run of the block");
+        assert_eq!(cell(&b, 4, "▮"), (rgb(p.warn), rgb(blue)), "a state wins over the pick");
+        assert_eq!(cell(&b, 4, ":"), (rgb(p.accent), rgb(p.pill_bg)), "no hue: pill_bg, colours kept");
+    }
+
+    #[test]
+    fn under_flat_pills_previews_like_full() {
+        let a = styled("prev-flat-pills", "flat", "pills");
+        let p = preset("tokyo-night").unwrap().dark;
+        assert_eq!(cell(&buffer(&a), 4, "8"), (rgb(p.hues.blue), rgb(p.bar_bg)), "the text takes its hue");
+    }
+
+    #[test]
+    fn each_style_snapshot() {
+        for style in ["flat", "islands", "powerline", "floating", "underline", "translucent"] {
+            let a = styled(&format!("snap-{style}"), style, "icons");
+            let rows = draw(&a, 100, 24).0;
+            let preview: Vec<String> = rows[3..=5].iter().map(|r| r.chars().skip(33).take(54).collect()).collect();
+            insta::assert_snapshot!(format!("appearance_style_{style}"), preview.join("\n"));
         }
     }
 }

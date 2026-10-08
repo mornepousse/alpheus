@@ -82,6 +82,7 @@ impl App {
             Target::AppearanceTheme(i) => self.appearance_click_theme(i, now),
             Target::AppearanceMode(m) => self.appearance_click_mode(m, now),
             Target::AppearanceColors(m) => self.appearance_click_colors(m, now),
+            Target::AppearanceStyle(s) => self.appearance_click_style(s, now),
             Target::OutputToggle(i) => {
                 self.focus = i;
                 if let Some(Item::Output(name)) = self.focused() {
@@ -353,6 +354,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmodule_colors = \"full\"\n");
         assert!(a.appearance.colors_focus && !a.appearance.mode_focus);
         assert_eq!(a.appearance.applied_module_colors, ModuleColors::Full);
+    }
+
+    #[test]
+    fn a_click_on_a_style_applies_it() {
+        use alpheus_commun::theme::settings::BarStyle;
+        let (mut a, dir) = open("mouse-style", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (x, y) = center(&a, Target::AppearanceStyle(BarStyle::Powerline));
+        click(&mut a, x, y);
+        assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nstyle = \"powerline\"\n");
+        assert!(a.appearance.style_focus && !a.appearance.mode_focus && !a.appearance.colors_focus);
+        assert_eq!(a.appearance.applied_style, BarStyle::Powerline);
+        // The rightmost chip is reachable even at 80 columns (`center` draws 80×24).
+        let (x, y) = center(&a, Target::AppearanceStyle(BarStyle::Translucent));
+        click(&mut a, x, y);
+        assert!(std::fs::read_to_string(dir.join("theme.toml")).unwrap().contains("style = \"translucent\""));
     }
 
     #[test]

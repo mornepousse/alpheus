@@ -1,5 +1,5 @@
-//! The Appearance tab: choose a theme, the light/dark mode and the module colours, preview them,
-//! write theme.toml.
+//! The Appearance tab: choose a theme, the light/dark mode, the module colours and the bar style,
+//! preview them, write theme.toml.
 //! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor only changes
 //! the preview; Enter writes (`crate::appearance::write_settings`) and reloads the TUI's own theme.
 //! The daemon follows through its inotify reload; the TUI never touches D-Bus.
@@ -10,7 +10,7 @@ use crate::appearance::{Entry, WALLPAPER, entries, write_settings};
 use crate::theme::Theme;
 use alpheus_commun::theme::mode_file::read_mode;
 use alpheus_commun::theme::settings::{
-    ModeSetting, ModuleColors, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve,
+    BarStyle, ModeSetting, ModuleColors, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve,
 };
 use alpheus_commun::theme::{Mode, Roles};
 use std::path::PathBuf;
@@ -37,7 +37,7 @@ fn mode_value(m: ModeSetting) -> &'static str {
 }
 
 /// The module-colours chips, in display order.
-pub const COLORS: [ModuleColors; 3] = [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full];
+pub const COLORS: [ModuleColors; 4] = [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills];
 
 pub fn colors_label(m: ModuleColors) -> &'static str {
     match m {
@@ -55,6 +55,21 @@ fn colors_value(m: ModuleColors) -> &'static str {
         ModuleColors::Icons => "icons",
         ModuleColors::Full => "full",
         ModuleColors::Pills => "pills",
+    }
+}
+
+/// The bar styles, in display order (shapes spec § 4). theme.toml's value for a style is
+/// `BarStyle::name()`: no second table to keep in step.
+pub const STYLES: [BarStyle; 6] = BarStyle::ALL;
+
+pub fn style_label(s: BarStyle) -> &'static str {
+    match s {
+        BarStyle::Flat => "Flat",
+        BarStyle::Islands => "Islands",
+        BarStyle::Powerline => "Powerline",
+        BarStyle::Floating => "Floating",
+        BarStyle::Underline => "Underline",
+        BarStyle::Translucent => "Translucent",
     }
 }
 
@@ -81,6 +96,12 @@ pub struct AppearanceTab {
     pub applied_module_colors: ModuleColors,
     /// Keyboard focus is on the module-colours row (never together with `mode_focus`).
     pub colors_focus: bool,
+    /// The bar style chosen (previewed; written by Enter).
+    pub style: BarStyle,
+    /// The bar style in effect, as theme.toml says.
+    pub applied_style: BarStyle,
+    /// Keyboard focus is on the style row (never together with `mode_focus` or `colors_focus`).
+    pub style_focus: bool,
     /// The roles under the cursor, for the chosen mode.
     pub preview: Option<Roles>,
     /// The user's `[colors]` overrides: the preview shows what Enter will produce.
@@ -107,6 +128,9 @@ impl Default for AppearanceTab {
             module_colors: ModuleColors::default(),
             applied_module_colors: ModuleColors::default(),
             colors_focus: false,
+            style: BarStyle::default(),
+            applied_style: BarStyle::default(),
+            style_focus: false,
             preview: None,
             preview_note: None,
             overrides: Overrides::default(),
@@ -179,6 +203,9 @@ impl App {
         a.module_colors = settings.module_colors;
         a.applied_module_colors = settings.module_colors;
         a.colors_focus = false;
+        a.style = settings.style;
+        a.applied_style = settings.style;
+        a.style_focus = false;
         a.auto_mode = read_mode(a.runtime.as_deref());
         a.wallpaper = None;
         a.refresh_preview();
@@ -188,18 +215,27 @@ impl App {
     pub(crate) fn appearance_action(&mut self, a: Action, now: Instant) -> bool {
         let last = self.appearance.entries.len().saturating_sub(1);
         let ap = &mut self.appearance;
-        // Focus: 0 the list, 1 the mode row, 2 the module-colours row. Tab cycles, Up and Down walk.
-        let focus = usize::from(ap.mode_focus) + 2 * usize::from(ap.colors_focus);
-        let focus = if focus == 3 { 0 } else { focus };
+        // Focus: 0 the list, 1 the mode row, 2 the module-colours row, 3 the style row. Tab cycles,
+        // Up and Down walk.
+        let focus = if ap.mode_focus {
+            1
+        } else if ap.colors_focus {
+            2
+        } else if ap.style_focus {
+            3
+        } else {
+            0
+        };
         let set_focus = |ap: &mut AppearanceTab, f: usize| {
             ap.mode_focus = f == 1;
             ap.colors_focus = f == 2;
+            ap.style_focus = f == 3;
         };
         match a {
-            Action::NextTab => set_focus(ap, (focus + 1) % 3),
-            Action::PrevTab => set_focus(ap, (focus + 2) % 3),
+            Action::NextTab => set_focus(ap, (focus + 1) % 4),
+            Action::PrevTab => set_focus(ap, (focus + 3) % 4),
             Action::Up if focus > 0 => set_focus(ap, focus - 1),
-            Action::Down if focus > 0 => set_focus(ap, (focus + 1).min(2)),
+            Action::Down if focus > 0 => set_focus(ap, (focus + 1).min(3)),
             Action::PageUp | Action::PageDown | Action::Home | Action::End if focus > 0 => {}
             Action::Up => self.appearance_move(-1),
             Action::Down => self.appearance_move(1),
@@ -211,6 +247,8 @@ impl App {
             Action::Right | Action::Increase if focus == 1 => self.appearance_step(1),
             Action::Left | Action::Decrease if focus == 2 => self.appearance_step_colors(-1),
             Action::Right | Action::Increase if focus == 2 => self.appearance_step_colors(1),
+            Action::Left | Action::Decrease if focus == 3 => self.appearance_step_style(-1),
+            Action::Right | Action::Increase if focus == 3 => self.appearance_step_style(1),
             Action::Left | Action::Right | Action::Decrease | Action::Increase => {}
             Action::Activate => self.appearance_apply(now),
             _ => return false,
@@ -239,11 +277,19 @@ impl App {
         a.refresh_preview();
     }
 
+    /// The preview's roles do not depend on the style: nothing to refresh, the next draw shows it.
+    fn appearance_step_style(&mut self, delta: i32) {
+        let a = &mut self.appearance;
+        let i = STYLES.iter().position(|s| *s == a.style).unwrap_or(0) as i32;
+        a.style = STYLES[(i + delta).clamp(0, STYLES.len() as i32 - 1) as usize];
+    }
+
     /// A click on a theme: selects it; a click on the row already under the cursor applies it.
     pub(crate) fn appearance_click_theme(&mut self, i: usize, now: Instant) {
         let a = &mut self.appearance;
         a.mode_focus = false;
         a.colors_focus = false;
+        a.style_focus = false;
         if i >= a.entries.len() {
             return;
         }
@@ -260,6 +306,7 @@ impl App {
         let a = &mut self.appearance;
         a.mode_focus = true;
         a.colors_focus = false;
+        a.style_focus = false;
         a.mode = m;
         a.refresh_preview();
         self.appearance_apply(now);
@@ -270,24 +317,36 @@ impl App {
         let a = &mut self.appearance;
         a.colors_focus = true;
         a.mode_focus = false;
+        a.style_focus = false;
         a.module_colors = m;
         a.refresh_preview();
         self.appearance_apply(now);
     }
 
+    /// A click on a style applies it at once.
+    pub(crate) fn appearance_click_style(&mut self, s: BarStyle, now: Instant) {
+        let a = &mut self.appearance;
+        a.style_focus = true;
+        a.mode_focus = false;
+        a.colors_focus = false;
+        a.style = s;
+        self.appearance_apply(now);
+    }
+
     /// Writes theme.toml: the theme when the list has the focus (or the cursor moved off the one in
     /// effect), the mode when the mode row has it (or the chosen mode differs from the one in
-    /// effect), the module colours likewise. Then the TUI reloads its own theme; the daemon reloads from the file. A failed
+    /// effect), the module colours likewise, the style likewise. Then the TUI reloads its own theme; the daemon reloads from the file. A failed
     /// write changes nothing but the status line.
     pub(crate) fn appearance_apply(&mut self, now: Instant) {
         let a = &self.appearance;
         let Some(entry) = a.cursor_entry().copied() else { return };
-        let on_list = !a.mode_focus && !a.colors_focus;
+        let on_list = !a.mode_focus && !a.colors_focus && !a.style_focus;
         let theme = (on_list || a.applied != Some(a.cursor)).then_some(entry.key);
         let mode = (a.mode_focus || a.mode != a.applied_mode).then(|| mode_value(a.mode));
         let colors = (a.colors_focus || a.module_colors != a.applied_module_colors).then(|| colors_value(a.module_colors));
+        let style = (a.style_focus || a.style != a.applied_style).then(|| a.style.name());
         let written = match &a.dir {
-            Some(dir) => write_settings(dir, theme, mode, colors).map_err(|e| e.to_string()),
+            Some(dir) => write_settings(dir, theme, mode, colors, style).map_err(|e| e.to_string()),
             None => Err("no config directory".to_string()),
         };
         if let Err(e) = written {
@@ -302,6 +361,7 @@ impl App {
         }
         a.applied_mode = a.mode;
         a.applied_module_colors = a.module_colors;
+        a.applied_style = a.style;
         a.auto_mode = read_mode(a.runtime.as_deref());
         a.refresh_preview();
         if let Some(dir) = a.dir.clone() {
@@ -311,6 +371,9 @@ impl App {
         let mut msg = format!("Theme: {}, {}", entry.label, mode_label(self.appearance.mode).to_lowercase());
         if let Some(c) = colors {
             msg.push_str(&format!(", module colours {c}"));
+        }
+        if let Some(s) = style {
+            msg.push_str(&format!(", style {s}"));
         }
         self.status.last = Some(msg.clone());
         self.toast(msg, false, now);
@@ -324,7 +387,7 @@ pub(crate) mod tests {
     use super::*;
     use alpheus_commun::theme::Rgb;
     use alpheus_commun::theme::presets::preset;
-    use alpheus_commun::theme::settings::ModuleColors;
+    use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
     use ratatui::style::Color;
 
     /// A fresh config directory holding `files`, and an App opened on the Appearance tab with it.
@@ -471,26 +534,81 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn tab_walks_the_list_the_mode_row_the_colours_row_and_back() {
-        let (mut a, _) = open("tab3", &[]);
-        let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus);
-        assert_eq!(at(&a), (false, false));
+    fn tab_walks_the_list_the_mode_the_colours_the_style_rows_and_back() {
+        let (mut a, _) = open("tab4", &[]);
+        let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus, a.appearance.style_focus);
+        assert_eq!(at(&a), (false, false, false));
         act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (true, false));
+        assert_eq!(at(&a), (true, false, false));
         act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (false, true));
+        assert_eq!(at(&a), (false, true, false));
         act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (false, false));
+        assert_eq!(at(&a), (false, false, true));
+        act(&mut a, Action::NextTab);
+        assert_eq!(at(&a), (false, false, false), "around to the list");
         act(&mut a, Action::PrevTab);
-        assert_eq!(at(&a), (false, true), "backwards");
+        assert_eq!(at(&a), (false, false, true), "backwards: the style row");
         act(&mut a, Action::Up);
-        assert_eq!(at(&a), (true, false), "Up walks back one row");
+        assert_eq!(at(&a), (false, true, false), "Up walks back one row");
         act(&mut a, Action::Down);
         act(&mut a, Action::Down);
-        assert_eq!(at(&a), (false, true), "Down stops on the last row");
+        assert_eq!(at(&a), (false, false, true), "Down stops on the last row");
         act(&mut a, Action::Up);
         act(&mut a, Action::Up);
-        assert_eq!(at(&a), (false, false));
+        act(&mut a, Action::Up);
+        assert_eq!(at(&a), (false, false, false));
+    }
+
+    #[test]
+    fn the_style_row_chooses_with_the_arrows_and_applies_with_enter_writing_only_its_key() {
+        let (mut a, dir) = open("style-keys", &[("theme.toml", "# mine\ntheme = \"nord\"\nmode = \"dark\"\nopacity = 0.6\n")]);
+        assert_eq!((a.appearance.style, a.appearance.applied_style), (BarStyle::Flat, BarStyle::Flat), "the default");
+        for _ in 0..3 {
+            act(&mut a, Action::NextTab);
+        }
+        act(&mut a, Action::Right);
+        assert_eq!(a.appearance.style, BarStyle::Islands);
+        for _ in 0..9 {
+            act(&mut a, Action::Right);
+        }
+        assert_eq!(a.appearance.style, BarStyle::Translucent, "bounded");
+        act(&mut a, Action::Left);
+        act(&mut a, Action::Left);
+        assert_eq!(a.appearance.style, BarStyle::Floating);
+        assert_eq!(theme_toml(&dir), "# mine\ntheme = \"nord\"\nmode = \"dark\"\nopacity = 0.6\n", "choosing writes nothing");
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "# mine\ntheme = \"nord\"\nmode = \"dark\"\nopacity = 0.6\nstyle = \"floating\"\n");
+        assert_eq!(a.appearance.applied_style, BarStyle::Floating);
+        assert_eq!(a.status.last.as_deref(), Some("Theme: Nord, dark, style floating"));
+        // A fresh read of the file gives it back.
+        a.go_tab(Tab::Home, Instant::now());
+        a.go_tab(Tab::Appearance, Instant::now());
+        assert_eq!(a.appearance.style, BarStyle::Floating);
+    }
+
+    #[test]
+    fn the_loaded_style_survives_a_theme_write_and_a_chosen_one_rides_along() {
+        let (mut a, dir) = open("style-carried", &[("theme.toml", "theme = \"nord\"\nstyle = \"powerline\"\n")]);
+        assert_eq!((a.appearance.style, a.appearance.applied_style), (BarStyle::Powerline, BarStyle::Powerline));
+        act(&mut a, Action::Home); // Wallpaper
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nstyle = \"powerline\"\n", "a theme write leaves the style alone");
+        a.appearance.style_focus = true;
+        act(&mut a, Action::Right); // Powerline -> Floating
+        a.appearance.style_focus = false;
+        act(&mut a, Action::Activate); // Enter in the list: the chosen style is applied too
+        assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nstyle = \"floating\"\n");
+    }
+
+    #[test]
+    fn the_colours_row_offers_pills() {
+        let (mut a, dir) = open("pills", &[("theme.toml", "theme = \"nord\"\nmodule_colors = \"full\"\n")]);
+        act(&mut a, Action::NextTab);
+        act(&mut a, Action::NextTab);
+        act(&mut a, Action::Right);
+        assert_eq!(a.appearance.module_colors, ModuleColors::Pills);
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "theme = \"nord\"\nmodule_colors = \"pills\"\n");
     }
 
     #[test]
@@ -506,7 +624,10 @@ pub(crate) mod tests {
         act(&mut a, Action::Right);
         assert_eq!(a.appearance.module_colors, ModuleColors::Full);
         act(&mut a, Action::Right);
-        assert_eq!(a.appearance.module_colors, ModuleColors::Full, "bounded");
+        assert_eq!(a.appearance.module_colors, ModuleColors::Pills, "Pills after Full");
+        act(&mut a, Action::Right);
+        assert_eq!(a.appearance.module_colors, ModuleColors::Pills, "bounded");
+        act(&mut a, Action::Left);
         act(&mut a, Action::Left);
         act(&mut a, Action::Left);
         assert_eq!(a.appearance.module_colors, ModuleColors::None);
