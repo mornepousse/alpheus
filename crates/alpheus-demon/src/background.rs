@@ -83,7 +83,7 @@ pub fn opaque_rects(style: BarStyle, groups: &[Group], geometry: &BarGeometry, o
             for g in groups {
                 let (x0, x1) = geometry.inside(g.start, g.end);
                 let physical = geometry.edge(g.end).saturating_sub(geometry.edge(g.start));
-                let r = fitted_radius(radius, physical, rows * e, geometry.scale) as i32;
+                let r = fitted_radius(radius, physical, rows.saturating_mul(e), geometry.scale) as i32;
                 let (w, h, y) = (x1 - x0, rows as i32, top as i32);
                 if w > 2 * r && h > 0 {
                     out.push(Rect { x: x0 + r, y, width: w - 2 * r, height: h });
@@ -165,6 +165,12 @@ impl CornerMask {
 
 /// Corner masks per (logical radius, scale), each created on its first use and kept: a style
 /// that never draws a rounded shape never makes one, and a repaint reuses them (a few KB each).
+///
+/// Bound: the cache never evicts, its callers bound it. Every radius they ask is fitted
+/// (`blocks::fitted_radius`) from the island radius (at most 8) or `floating::FLOAT_RADIUS` (10),
+/// so 0..=10: at most 11 masks per scale seen (one or two per session), each
+/// 2 × (radius × scale)² bytes with its physical radius capped at `MAX_MASK_RADIUS`. At scale 1
+/// and 2 together that is at most 22 masks and about 4 KB.
 #[derive(Debug, Default)]
 pub struct MaskCache {
     masks: Vec<((u32, i32), CornerMask)>,
@@ -214,52 +220,6 @@ pub fn fill_rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32,
     }
 }
 
-/// `src` (premultiplied) at `coverage` over `dst` (premultiplied): Porter-Duff source-over.
-fn over(dst: &mut [u8], src: [u8; 4], coverage: u8) {
-    let cov = u32::from(coverage);
-    let src_a = u32::from(src[3]) * cov / 255;
-    for k in 0..4 {
-        let s = u32::from(src[k]) * cov / 255;
-        dst[k] = (s + u32::from(dst[k]) * (255 - src_a) / 255).min(255) as u8;
-    }
-}
-
-/// A rounded rectangle [x.0, x.1) × [y.0, y.1) of `pixel` (premultiplied, any alpha): the inside
-/// and every corner pixel the disc fully covers replace the buffer, the arc's partly covered
-/// pixels are laid over it by `mask`'s outer coverage (outside the disc, the buffer stays as it
-/// was). Too small for its corners (narrower or lower than twice the
-/// mask's radius), or past the buffer, it draws nothing (shapes spec § 5).
-pub fn fill_rounded(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), mask: &CornerMask, pixel: [u8; 4]) {
-    let r = mask.radius;
-    let (w, h) = (x.1.saturating_sub(x.0), y.1.saturating_sub(y.0));
-    if w < 2 * r || h < 2 * r || w == 0 || h == 0 || x.1 > width || y.1 > height {
-        return;
-    }
-    fill_rect(px, width, height, (x.0 + r, x.1 - r), y, pixel);
-    fill_rect(px, width, height, (x.0, x.0 + r), (y.0 + r, y.1 - r), pixel);
-    fill_rect(px, width, height, (x.1 - r, x.1), (y.0 + r, y.1 - r), pixel);
-    for cy in 0..r {
-        for cx in 0..r {
-            let coverage = mask.outer_at(cx, cy);
-            if coverage == 0 {
-                continue;
-            }
-            for (xx, yy) in [(x.0 + cx, y.0 + cy), (x.1 - 1 - cx, y.0 + cy), (x.0 + cx, y.1 - 1 - cy), (x.1 - 1 - cx, y.1 - 1 - cy)] {
-                let o = (yy as usize * width as usize + xx as usize) * 4;
-                if let Some(dst) = px.get_mut(o..o + 4) {
-                    // Fully covered: the inside's own pixel. Laid over the buffer, a translucent
-                    // fill would show it through there and nowhere else (visible corner squares).
-                    if coverage == 255 {
-                        dst.copy_from_slice(&pixel);
-                    } else {
-                        over(dst, pixel, coverage);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// `underline`'s background (shapes spec § 3): the bar on `bar_bg`, each block one tonal step up on
 /// `pill_bg`, square. `edge` is the painter's cell edge (physical px).
 pub fn underline_blocks(px: &mut [u8], width: u32, height: u32, roles: &Roles, groups: &[Group], edge: impl Fn(u16) -> u32) {
@@ -287,7 +247,7 @@ pub fn underline_lines(
 ) {
     let s = scale.max(1) as u32;
     let line = (height.saturating_sub(s), height);
-    let under = (height.saturating_sub(3 * s), height.saturating_sub(s));
+    let under = (height.saturating_sub(s.saturating_mul(3)), height.saturating_sub(s));
     fill_rect(px, width, height, (0, width), line, premultiplied(roles.border_over(roles.bar_bg), 255));
     if bg.module_colors != ModuleColors::None {
         for g in bg.groups {
@@ -474,91 +434,6 @@ mod tests {
         assert_eq!(premultiplied(Rgb(255, 128, 0), 255), [0, 128, 255, 255]);
         assert_eq!(premultiplied(Rgb(255, 128, 0), 128), [0, 64, 128, 128]);
         assert_eq!(premultiplied(Rgb(255, 255, 255), 0), [0, 0, 0, 0]);
-    }
-
-    fn rgba(px: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
-        let o = ((y * w + x) * 4) as usize;
-        [px[o], px[o + 1], px[o + 2], px[o + 3]]
-    }
-
-    /// A rounded rectangle on a transparent buffer: its four corners transparent, its arcs partly
-    /// covered, its inside opaque; at scales 1 and 2.
-    #[test]
-    fn a_rounded_rectangle_has_transparent_corners_and_an_opaque_inside() {
-        for e in [1u32, 2] {
-            let mut cache = MaskCache::default();
-            let m = cache.get(8, e as i32);
-            let (w, h) = (40 * e, 22 * e);
-            let mut px = vec![0u8; (w * h * 4) as usize];
-            let pill = premultiplied(Rgb(10, 200, 30), 255);
-            fill_rounded(&mut px, w, h, (0, w), (0, h), m, pill);
-            for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
-                assert_eq!(rgba(&px, w, x, y), [0, 0, 0, 0], "corner ({x}, {y}) at scale {e}");
-            }
-            assert_eq!(rgba(&px, w, w / 2, h / 2), pill, "inside");
-            assert_eq!(rgba(&px, w, w / 2, 0), pill, "the straight top edge");
-            assert_eq!(rgba(&px, w, 0, h / 2), pill, "the straight left edge");
-            let arc = (0..8 * e).map(|i| rgba(&px, w, i, i)[3]).find(|a| *a > 0 && *a < 255);
-            assert!(arc.is_some(), "an anti-aliased arc at scale {e}");
-            let a = rgba(&px, w, 2 * e, 2 * e);
-            assert!(a[0] <= a[3] && a[1] <= a[3] && a[2] <= a[3], "premultiplied: {a:?}");
-        }
-    }
-
-    /// The corners lie over what is there (source-over): on an opaque bar they stay opaque, and a
-    /// translucent fill keeps its alpha inside.
-    #[test]
-    fn rounded_corners_lie_over_the_buffer() {
-        let mut cache = MaskCache::default();
-        let m = cache.get(8, 1);
-        let (w, h) = (40u32, 22u32);
-        let bar = premultiplied(Rgb(1, 2, 3), 255);
-        let mut px = vec![0u8; (w * h * 4) as usize];
-        fill_rect(&mut px, w, h, (0, w), (0, h), bar);
-        fill_rounded(&mut px, w, h, (0, w), (0, h), m, premultiplied(Rgb(200, 200, 200), 128));
-        assert_eq!(rgba(&px, w, 0, 0), bar, "outside the disc: the bar as it was");
-        assert_eq!(rgba(&px, w, w / 2, h / 2), premultiplied(Rgb(200, 200, 200), 128), "inside: replaced, alpha kept");
-        assert_eq!(rgba(&px, w, 2, 2)[3], 255, "the arc over an opaque bar stays opaque");
-    }
-
-    /// A translucent rounded fill over a painted buffer: a corner pixel the disc fully covers is the
-    /// inside's pixel, never the buffer showing through (no visible corner squares).
-    #[test]
-    fn a_translucent_rounded_fill_has_no_corner_squares() {
-        for e in [1u32, 2] {
-            let mut cache = MaskCache::default();
-            let m = cache.get(8, e as i32);
-            let (w, h) = (40 * e, 22 * e);
-            let mut px = vec![0u8; (w * h * 4) as usize];
-            fill_rect(&mut px, w, h, (0, w), (0, h), premultiplied(Rgb(1, 2, 3), 255));
-            let glass = premultiplied(Rgb(200, 100, 50), 128);
-            fill_rounded(&mut px, w, h, (0, w), (0, h), m, glass);
-            let inside = rgba(&px, w, w / 2, h / 2);
-            assert_eq!(inside, glass);
-            let r = m.radius;
-            let full: Vec<_> = (0..r).flat_map(|y| (0..r).map(move |x| (x, y))).filter(|&(x, y)| m.outer_at(x, y) == 255).collect();
-            assert!(!full.is_empty(), "scale {e}: the corner has fully covered pixels");
-            for (x, y) in full {
-                for (xx, yy) in [(x, y), (w - 1 - x, y), (x, h - 1 - y), (w - 1 - x, h - 1 - y)] {
-                    assert_eq!(rgba(&px, w, xx, yy), inside, "scale {e}: corner pixel ({xx}, {yy}) fully covered");
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_rectangle_too_small_for_its_corners_draws_nothing() {
-        let mut cache = MaskCache::default();
-        let m = cache.get(8, 1);
-        let (w, h) = (40u32, 22u32);
-        let mut px = vec![9u8; (w * h * 4) as usize];
-        let pill = premultiplied(Rgb(10, 200, 30), 255);
-        for (x, y) in [((0, 15), (0, h)), ((5, 5), (0, h)), ((0, w), (0, 15)), ((30, 50), (0, h)), ((0, w), (10, 40))] {
-            fill_rounded(&mut px, w, h, x, y, m, pill);
-            assert!(px.iter().all(|b| *b == 9), "{x:?} {y:?}");
-        }
-        fill_rect(&mut px, w, h, (35, 99), (20, 99), pill); // clipped, no panic
-        assert_eq!(rgba(&px, w, 39, 21), pill);
     }
 
     #[test]

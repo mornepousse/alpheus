@@ -6,7 +6,9 @@
 
 use super::{Background, color};
 use crate::background::{CornerMask, MaskCache, cell_edge, premultiplied};
+use crate::config::ModuleId;
 use crate::grid::{Group, Style, Tint};
+use crate::layout::module_hue;
 use alpheus_commun::theme::contrast::ratio;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use alpheus_commun::theme::{Rgb, Roles};
@@ -17,8 +19,21 @@ pub(crate) type Px = [u8; 4];
 /// Fully transparent.
 pub(crate) const CLEAR: Px = [0, 0, 0, 0];
 
-/// One block per group kind at most.
-pub(crate) const MAX_BLOCKS: usize = 7;
+/// The pills inks `pill_inks` keeps, on the stack: one per hued module. A block's hue is its first
+/// module's (`layout::module_hue`) and bar.toml rejects a duplicate module, so a bar never has more
+/// hued blocks than hued modules. Counted from the modules, a module given a hue later grows it.
+pub(crate) const MAX_BLOCKS: usize = hued_modules();
+
+const fn hued_modules() -> usize {
+    let (mut n, mut i) = (0, 0);
+    while i < ModuleId::ALL.len() {
+        if module_hue(ModuleId::ALL[i]).is_some() {
+            n += 1;
+        }
+        i += 1;
+    }
+    n
+}
 
 /// Logical px cap of an island's corner radius (spec § 3).
 const ISLAND_RADIUS_CAP: u32 = 8;
@@ -68,7 +83,7 @@ pub(crate) fn island_radius(bar_height: u32) -> u32 {
 /// An island block's physical rows [top, bottom) in a band `height` physical px tall at `scale`:
 /// `ISLAND_INSET` logical px off each edge, never past the middle.
 pub(crate) fn island_y(height: u32, scale: i32) -> (u32, u32) {
-    let top = (ISLAND_INSET * scale.max(1) as u32).min(height / 2);
+    let top = ISLAND_INSET.saturating_mul(scale.max(1) as u32).min(height / 2);
     (top, height - top)
 }
 
@@ -76,7 +91,8 @@ pub(crate) fn island_y(height: u32, scale: i32) -> (u32, u32) {
 /// the block is too small for it (0 for a degenerate block).
 pub(crate) fn fitted_radius(radius: u32, w: u32, h: u32, scale: i32) -> u32 {
     let e = scale.max(1) as u32;
-    radius.min(w / (2 * e)).min(h / (2 * e))
+    let d = e.saturating_mul(2);
+    radius.min(w / d).min(h / d)
 }
 
 /// A group's physical x span: its cells' edges, rounded as `paint_cells` rounds them.
@@ -268,6 +284,98 @@ mod tests {
         assert_eq!(over([255, 255, 255, 255], CLEAR, 0), CLEAR);
         assert_eq!(over([200, 100, 0, 255], CLEAR, 128), [100, 50, 0, 128]);
         assert_eq!(over([0, 0, 0, 255], [200, 200, 200, 255], 128), [100, 100, 100, 255], "opaque over opaque stays opaque");
+    }
+
+    fn rgba(px: &[u8], w: u32, x: u32, y: u32) -> Px {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o], px[o + 1], px[o + 2], px[o + 3]]
+    }
+
+    /// A block rounded toward a transparent bar: its four corners transparent, its arcs partly
+    /// covered, its straight edges and inside its own pixel, premultiplied; at scales 1 and 2.
+    #[test]
+    fn a_rounded_block_has_transparent_corners_and_an_opaque_inside() {
+        for e in [1u32, 2] {
+            let mut cache = MaskCache::default();
+            let m = cache.get(8, e as i32);
+            let (w, h) = (40 * e, 22 * e);
+            let pill = premultiplied(Rgb(10, 200, 30), 255);
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            fill_px(&mut px, w, h, (0, w), (0, h), pill);
+            round_block(&mut px, w, h, (0, w), (0, h), m, CLEAR, None);
+            for (x, y) in [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)] {
+                assert_eq!(rgba(&px, w, x, y), CLEAR, "corner ({x}, {y}) at scale {e}");
+            }
+            assert_eq!(rgba(&px, w, w / 2, h / 2), pill, "inside");
+            assert_eq!(rgba(&px, w, w / 2, 0), pill, "the straight top edge");
+            assert_eq!(rgba(&px, w, 0, h / 2), pill, "the straight left edge");
+            let arc = (0..8 * e).map(|i| rgba(&px, w, i, i)[3]).find(|a| *a > 0 && *a < 255);
+            assert!(arc.is_some(), "an anti-aliased arc at scale {e}");
+            let a = rgba(&px, w, 2 * e, 2 * e);
+            assert!(a[0] <= a[3] && a[1] <= a[3] && a[2] <= a[3], "premultiplied: {a:?}");
+        }
+    }
+
+    /// Toward a translucent bar (translucent's `outside`): a corner pixel the disc fully covers is
+    /// the block's own, never the bar showing through (no corner squares); one beyond the arc is the
+    /// bar.
+    #[test]
+    fn a_block_rounded_toward_a_translucent_bar_has_no_corner_squares() {
+        for e in [1u32, 2] {
+            let mut cache = MaskCache::default();
+            let m = cache.get(8, e as i32);
+            let (w, h) = (40 * e, 22 * e);
+            let (pill, glass) = (premultiplied(Rgb(10, 200, 30), 255), premultiplied(Rgb(200, 100, 50), 128));
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            fill_px(&mut px, w, h, (0, w), (0, h), pill);
+            round_block(&mut px, w, h, (0, w), (0, h), m, glass, None);
+            assert_eq!(rgba(&px, w, 0, 0), glass, "scale {e}: beyond the arc, the bar");
+            let r = m.radius;
+            let full: Vec<_> = (0..r).flat_map(|y| (0..r).map(move |x| (x, y))).filter(|&(x, y)| m.outer_at(x, y) == 255).collect();
+            assert!(!full.is_empty(), "scale {e}: the corner has fully covered pixels");
+            for (x, y) in full {
+                for (xx, yy) in [(x, y), (w - 1 - x, y), (x, h - 1 - y), (w - 1 - x, h - 1 - y)] {
+                    assert_eq!(rgba(&px, w, xx, yy), pill, "scale {e}: corner pixel ({xx}, {yy}) fully covered");
+                }
+            }
+        }
+    }
+
+    /// A block narrower or lower than twice the radius gets no corner (callers fit the radius,
+    /// `fitted_radius`); a fill past the buffer is clipped, never a panic.
+    #[test]
+    fn a_block_too_small_for_its_corners_is_left_square() {
+        let mut cache = MaskCache::default();
+        let m = cache.get(8, 1);
+        let (w, h) = (40u32, 22u32);
+        let pill = premultiplied(Rgb(10, 200, 30), 255);
+        for (x, y) in [((0, 15), (0, h)), ((0, w), (0, 15)), ((5, 5), (0, h))] {
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            fill_px(&mut px, w, h, x, y, pill);
+            let before = px.clone();
+            round_block(&mut px, w, h, x, y, m, CLEAR, None);
+            assert!(px == before, "{x:?} {y:?}");
+        }
+        let mut px = vec![9u8; (w * h * 4) as usize];
+        fill_px(&mut px, w, h, (35, 99), (20, 99), pill);
+        assert_eq!(rgba(&px, w, 39, 21), pill, "clipped, no panic");
+    }
+
+    /// Every hued block gets its ink, even with each hued module in a block of its own (the most a
+    /// bar can have: bar.toml rejects duplicates): none is left in `fg` on its hue.
+    #[test]
+    fn every_hued_block_gets_its_pills_ink() {
+        use crate::grid::GroupKind;
+        let roles = Roles::default();
+        let groups: Vec<Group> = (0u16..)
+            .zip(ModuleId::ALL.iter().filter_map(|&m| module_hue(m)))
+            .map(|(i, hue)| Group { kind: GroupKind::Status, start: 2 * i, end: 2 * i + 1, hue: Some(hue) })
+            .collect();
+        assert!(groups.len() >= 6, "the hued modules: {}", groups.len());
+        let bg = Background { style: BarStyle::Islands, opacity: 0.8, module_colors: ModuleColors::Pills, groups: &groups };
+        let (on, n) = pill_inks(&roles, &bg);
+        assert_eq!(n, groups.len(), "one ink per hued block");
+        assert_eq!(on[n - 1].start, groups[n - 1].start, "the last one included");
     }
 
     /// Spec § 3: half the bar height minus 2 px, capped at 8.

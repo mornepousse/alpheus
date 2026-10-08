@@ -91,7 +91,7 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
 
 /// A module's fixed hue (themes spec § 9; the CPU's orange for resources), None for the modules
 /// without one.
-pub fn module_hue(m: ModuleId) -> Option<Hue> {
+pub const fn module_hue(m: ModuleId) -> Option<Hue> {
     match m {
         ModuleId::Window | ModuleId::Bluetooth => Some(Hue::Purple),
         ModuleId::Volume => Some(Hue::Blue),

@@ -541,7 +541,7 @@ impl Fonts {
         let advance = self.advance;
         let edge = |col: u16| background::cell_edge(col, advance);
         let band = match bg.style {
-            BarStyle::Floating => height.saturating_sub(FLOAT_SHADOW * scale.max(1) as u32),
+            BarStyle::Floating => height.saturating_sub(FLOAT_SHADOW.saturating_mul(scale.max(1) as u32)),
             BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Islands | BarStyle::Translucent => height,
         };
         // islands: transparent around the blocks; translucent: bar_bg at opacity, premultiplied.

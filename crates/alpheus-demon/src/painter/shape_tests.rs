@@ -900,3 +900,68 @@ fn raised_differs_from_pill_bg_in_every_theme() {
         assert_ne!(r.raised, r.pill_bg, "a wallpaper theme, {mode:?}");
     }
 }
+
+/// Spec § 3, buffers: the opaque region a style claims (`opaque_rects`) is painted opaque. Every
+/// physical pixel of every claimed logical px has alpha 255, for each style, with and without
+/// pills, at scales 1 and 2: a compositor that skips blending there never shows a half-painted
+/// pixel.
+#[test]
+fn every_claimed_opaque_px_is_painted_opaque() {
+    let roles = Roles::default();
+    let groups = two_blocks(Some(Hue::Blue));
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(1, 3, "1 ", Style::ACTIVE);
+    grid.write(7, 9, "ab", Style::NORMAL);
+    grid.write(0, 1, "█", Style::NORMAL);
+    let mut p = fonts();
+    let mut rects = Vec::new();
+    let styles = [BarStyle::Flat, BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Underline, BarStyle::Translucent];
+    for style in styles {
+        for mc in [ModuleColors::Icons, ModuleColors::Pills] {
+            for scale in [1, 2] {
+                let rows = if style == BarStyle::Floating { FLOATING } else { DEFAULT_HEIGHT };
+                let s = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, mc, &groups), scale, rows);
+                let geometry = BarGeometry { width: s.w / s.e, height: DEFAULT_HEIGHT, advance: s.advance, scale };
+                opaque_rects(style, &groups, &geometry, &mut rects);
+                assert!(!rects.is_empty(), "{style:?} {mc:?} scale {scale}: something is claimed");
+                for r in &rects {
+                    let (x0, y0) = (r.x as u32 * s.e, r.y as u32 * s.e);
+                    for y in y0..y0 + r.height as u32 * s.e {
+                        for x in x0..x0 + r.width as u32 * s.e {
+                            assert_eq!(s.at(x, y)[3], 255, "{style:?} {mc:?} scale {scale}: ({x}, {y}) claimed in {r:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Spec § 5, degenerate sizes: scale 3, a bar 1 logical px tall, and a floating surface shorter
+/// than its shadow (no band left) paint without a panic, every pixel valid premultiplied ARGB
+/// (no channel above its alpha), for every style, with and without pills.
+#[test]
+fn degenerate_sizes_never_panic_and_stay_premultiplied() {
+    // Bright: a channel left unpremultiplied at translucent's alpha 0.5 would exceed it.
+    let roles = Roles { fg: Rgb(0xff, 0xff, 0xff), bar_bg: Rgb(0xf0, 0xe0, 0xd0), ..Roles::default() };
+    let groups = two_blocks(Some(Hue::Blue));
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(0, COLUMNS, "█g1 █g2 █g3 ", Style::NORMAL);
+    grid.write(2, 3, "1", Style::ACTIVE);
+    let mut p = fonts();
+    let styles = [BarStyle::Flat, BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Underline, BarStyle::Translucent];
+    let sizes = [(3, DEFAULT_HEIGHT + FLOAT_SHADOW), (1, 1), (2, 1), (1, FLOAT_SHADOW - 1), (2, FLOAT_SHADOW / 2)];
+    for style in styles {
+        for mc in [ModuleColors::Icons, ModuleColors::Pills] {
+            for (scale, rows) in sizes {
+                let s = Painted::new(&mut p, &grid, &roles, &background(style, 0.5, mc, &groups), scale, rows);
+                for y in 0..s.h {
+                    for x in 0..s.w {
+                        let [r, g, b, a] = s.at(x, y);
+                        assert!(r <= a && g <= a && b <= a, "{style:?} {mc:?} scale {scale}, {rows} px: ({x}, {y}) = {:?}", [r, g, b, a]);
+                    }
+                }
+            }
+        }
+    }
+}
