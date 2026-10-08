@@ -968,7 +968,7 @@ mod tests {
 
     #[test]
     fn a_paused_media_block_takes_no_hue_even_with_pills() {
-        for style in [BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating] {
+        for style in BLOCK_STYLES {
             for (playing, want) in [(true, Some(Hue::Purple)), (false, None)] {
                 let mut b = styled(bar_with_media(playing), style);
                 b.module_colors = ModuleColors::Pills;
