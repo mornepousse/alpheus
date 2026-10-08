@@ -32,7 +32,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Component | Memory | Notes |
 |---|---:|---|
-| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.1 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused (≈ 8.8–8.9 MB with the tray and 10 fake items, but that test runs without the launcher module) |
+| Bar daemon, all modules + launcher, 3 outputs — at start | ≈ 8.0 MB | headless sway test, `tests/memory.rs`, recorded D-Bus services on a private bus; libdbus shared with the session; tray unused: `startup_pss_per_source` ("everything", 3 runs: 8,144–8,246 KB); ≈ 8.4–8.5 MB with the tray and 10 fake items (`startup_pss_with_the_tray_under_15_mb`, 3 runs: 8,614–8,701 KB, without the launcher module) |
 | Bar daemon — after 8,300 events and 5 plug cycles | ≈ 9.6–9.7 MB | stable, 0 wake-ups at rest, the theme watch adds no wake-up, 6 threads (D-Bus through dbus-rs/libdbus: one thread; the launcher and the tray add none) |
 | Tray, module present, no item | ≈ 0.4 MB | watcher + session connection only, no thread (376–392 KB) |
 | Tray, 10 fake items (5 KDE-, 2 Qt-, 2 Chromium-style, 1 Steam-like) | ≈ 0.5 MB | 488–496 KB, ≤ 2 MB budget, `ten_fake_items_cost_at_most_2_mb`; menu and calendar popups freed on close (20 cycles: +32 KB in each of 3 runs) |
@@ -40,7 +40,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Themes, linked in (9 presets, resolver, inotify watch, portal following) | +144–224 KB vs. the delivery before this one | one-time cost; binary 5.11 → 5.18 MiB (+76 KiB stripped); measured `c85c0df` vs this delivery, release, back to back, 2 runs each; an unused preset is rodata only |
 | Themes, 50 reloads (3 outputs repainted each time) | +0–444 KB | `theme_reloads_no_growth`: 0 KB in four of five runs, 444 KB in the first run after a build; 0 loop wake-ups at rest after a reload |
 | Bar shapes, linked in (6 styles, corner masks, placement) | within noise (−48…+156 KB) vs. the delivery before this one | one-time cost; binary 5.20 → 5.24 MiB (+44 KiB stripped); measured `6a6df10` vs this delivery, release, back to back, 3 runs each, separate target directories; `flat` pays only the style match |
-| Bar shapes, per style at start (all modules, 3 outputs) | flat 7.9–8.0 MB; others −76…+116 KB over flat | `startup_pss_per_style`, 3 runs; corner masks on first use −32…+88 KB (islands − flat), +36…+116 KB (floating − flat, its taller buffer included) (computed: 128 B for islands, 200 B for floating, at scale 1; one per radius and scale used) |
+| Bar shapes, per style at start (all modules, 3 outputs) | flat ≈ 8.0 MB; others −76…+116 KB over flat | `startup_pss_per_style`, 3 runs (flat 8,142–8,224 KB: the same bar as the start row above); corner masks on first use −32…+88 KB (islands − flat), +36…+116 KB (floating − flat, its taller buffer included) (computed: 128 B for islands, 200 B for floating, at scale 1; one per radius and scale used) |
 | Bar shapes, 48 style switches (3 outputs; floating reconfigures every bar) | +20 KB | `style_switches_no_growth`, +20 KB in each of 3 runs; 0 loop wake-ups at rest under each of the six styles (`at_rest_no_wakeups_under_each_style`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
@@ -195,8 +195,8 @@ workspaces and the clock remain.
 Coming next: now-playing and notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
-resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.1 MB
-of memory at start (≈ 8.8–8.9 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
+resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
+of memory at start (≈ 8.4–8.5 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
 on three outputs. The
 compositor is only **read** (Hyprland or niri event stream); switching
 workspace goes through a configurable command. Sound comes from
@@ -287,7 +287,7 @@ A theme is 16 colours, named by use:
 | `bar_bg` | the bar's background |
 | `pill_bg` | raised cells of the bar (a visible workspace); the blocks of the block styles |
 | `popup_bg` | menus, calendar, tooltip, launcher |
-| `raised` | hover; powerline's alternate blocks |
+| `raised` | reserved for hover; powerline's alternate blocks; a visible workspace inside a block |
 | `selection` | the selected row |
 | `fg`, `fg_dim` | text, secondary text (frames are `fg_dim` at 40 %) |
 | `on_accent` | text on an accent |
@@ -350,6 +350,8 @@ The bar has six shapes. `flat`, the default, is the bar as it always was.
 style   = "islands"  # "flat" (default), "islands", "powerline", "floating", "underline", "translucent"
 opacity = 0.8        # translucent only: 0.3 to 1.0 (clamped, with one line in the log)
 ```
+
+Only `translucent` uses `opacity`; a value out of range still logs its warning under any other style.
 
 | `style` | Look |
 |---|---|
