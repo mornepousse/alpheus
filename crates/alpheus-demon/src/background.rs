@@ -39,10 +39,16 @@ pub struct BarGeometry {
     pub scale: i32,
 }
 
+/// Physical x of cell `col`'s left edge for cells `advance` physical px wide: the painter's own
+/// rounding (`paint_cells`), shared by every pass and the opaque region.
+pub fn cell_edge(col: u16, advance: f32) -> u32 {
+    (f32::from(col) * advance).round().max(0.0) as u32
+}
+
 impl BarGeometry {
-    /// Physical x of cell `col`'s left edge: the painter's own rounding (`paint_cells`).
+    /// Physical x of cell `col`'s left edge: the painter's own rounding (`cell_edge`).
     pub fn edge(&self, col: u16) -> u32 {
-        (f32::from(col) * self.advance).round().max(0.0) as u32
+        cell_edge(col, self.advance)
     }
 
     /// Cells [start, end) as logical x, shrunk to whole logical px inside them (left edge rounded
@@ -63,11 +69,33 @@ pub fn opaque_rects(style: BarStyle, groups: &[Group], geometry: &BarGeometry, o
         BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline => {
             out.push(Rect { x: 0, y: 0, width: geometry.width as i32, height: geometry.height as i32 });
         }
-        // The blocks (task 4) and the rounded bar without its corners (task 6). Until then nothing is
-        // claimed: always correct, only slower to composite.
-        BarStyle::Islands | BarStyle::Translucent | BarStyle::Floating => {
-            let _ = groups;
+        // Each block, inset (`island_y`) and shrunk to whole logical px (`inside`), as two rectangles
+        // that leave its rounded corners out; the radius is the painter's own (`fitted_radius` over
+        // the block's physical size), so the claim never covers a corner pixel.
+        BarStyle::Islands | BarStyle::Translucent => {
+            use crate::painter::blocks::{fitted_radius, island_radius, island_y};
+            let e = geometry.scale.max(1) as u32;
+            // The painter's physical rows, shrunk to whole logical px (a tiny bar's odd inset).
+            let (y0, y1) = island_y(geometry.height.saturating_mul(e), geometry.scale);
+            let (top, bottom) = (y0.div_ceil(e), y1 / e);
+            let rows = bottom.saturating_sub(top);
+            let radius = island_radius(geometry.height);
+            for g in groups {
+                let (x0, x1) = geometry.inside(g.start, g.end);
+                let physical = geometry.edge(g.end).saturating_sub(geometry.edge(g.start));
+                let r = fitted_radius(radius, physical, rows * e, geometry.scale) as i32;
+                let (w, h, y) = (x1 - x0, rows as i32, top as i32);
+                if w > 2 * r && h > 0 {
+                    out.push(Rect { x: x0 + r, y, width: w - 2 * r, height: h });
+                }
+                if h > 2 * r && w > 0 {
+                    out.push(Rect { x: x0, y: y + r, width: w, height: h - 2 * r });
+                }
+            }
         }
+        // The rounded bar without its corners (task 6). Until then nothing is claimed: always
+        // correct, only slower to composite.
+        BarStyle::Floating => {}
     }
 }
 
@@ -183,8 +211,9 @@ fn over(dst: &mut [u8], src: [u8; 4], coverage: u8) {
 }
 
 /// A rounded rectangle [x.0, x.1) × [y.0, y.1) of `pixel` (premultiplied, any alpha): the inside
-/// replaces the buffer, the four corners are laid over it by `mask`'s outer coverage (outside the
-/// disc, the buffer stays as it was). Too small for its corners (narrower or lower than twice the
+/// and every corner pixel the disc fully covers replace the buffer, the arc's partly covered
+/// pixels are laid over it by `mask`'s outer coverage (outside the disc, the buffer stays as it
+/// was). Too small for its corners (narrower or lower than twice the
 /// mask's radius), or past the buffer, it draws nothing (shapes spec § 5).
 pub fn fill_rounded(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), mask: &CornerMask, pixel: [u8; 4]) {
     let r = mask.radius;
@@ -204,7 +233,13 @@ pub fn fill_rounded(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u
             for (xx, yy) in [(x.0 + cx, y.0 + cy), (x.1 - 1 - cx, y.0 + cy), (x.0 + cx, y.1 - 1 - cy), (x.1 - 1 - cx, y.1 - 1 - cy)] {
                 let o = (yy as usize * width as usize + xx as usize) * 4;
                 if let Some(dst) = px.get_mut(o..o + 4) {
-                    over(dst, pixel, coverage);
+                    // Fully covered: the inside's own pixel. Laid over the buffer, a translucent
+                    // fill would show it through there and nowhere else (visible corner squares).
+                    if coverage == 255 {
+                        dst.copy_from_slice(&pixel);
+                    } else {
+                        over(dst, pixel, coverage);
+                    }
                 }
             }
         }
@@ -294,15 +329,37 @@ mod tests {
         assert_eq!(out, [Rect { x: 0, y: 0, width: 960, height: 30 }], "logical px, not physical");
     }
 
-    /// Islands, translucent and floating claim nothing yet (tasks 4 and 6 claim their opaque parts):
-    /// claiming less than is opaque is always correct.
+    /// Floating claims nothing yet (task 6 claims the rounded bar): claiming less than is opaque is
+    /// always correct.
     #[test]
-    fn the_styles_with_transparency_claim_nothing_until_their_tasks() {
+    fn floating_claims_nothing_until_task_6() {
+        let groups = [Group { kind: GroupKind::Clock, start: 10, end: 20, hue: None }];
         let mut out = vec![Rect { x: 1, y: 1, width: 1, height: 1 }];
-        for style in [BarStyle::Islands, BarStyle::Translucent, BarStyle::Floating] {
-            opaque_rects(style, &[], &GEOMETRY, &mut out);
-            assert_eq!(out, [], "{style:?}: cleared, nothing claimed");
+        opaque_rects(BarStyle::Floating, &groups, &GEOMETRY, &mut out);
+        assert_eq!(out, [], "cleared, nothing claimed");
+    }
+
+    /// Spec § 3: islands and translucent claim their blocks, inset, without the rounded corners; in
+    /// logical px at every scale; nothing without a block.
+    #[test]
+    fn islands_and_translucent_claim_their_blocks_without_the_corners() {
+        let groups = [Group { kind: GroupKind::Clock, start: 10, end: 20, hue: None }];
+        // Cells 10..20 at 8 px: x 80..160; rows 2..20; radius 8.
+        let want = [Rect { x: 88, y: 2, width: 64, height: 18 }, Rect { x: 80, y: 10, width: 80, height: 2 }];
+        let mut out = Vec::new();
+        for style in [BarStyle::Islands, BarStyle::Translucent] {
+            opaque_rects(style, &groups, &BarGeometry { width: 1280, height: 22, advance: 8.0, scale: 1 }, &mut out);
+            assert_eq!(out, want, "{style:?}");
         }
+        opaque_rects(BarStyle::Islands, &groups, &BarGeometry { width: 640, height: 22, advance: 16.0, scale: 2 }, &mut out);
+        assert_eq!(out, want, "logical px at scale 2");
+        opaque_rects(BarStyle::Islands, &[], &GEOMETRY, &mut out);
+        assert_eq!(out, [], "no block, nothing claimed");
+        // A block narrower than its corners: the fitted radius, never a negative or a corner claimed.
+        let narrow = [Group { kind: GroupKind::Clock, start: 10, end: 12, hue: None }];
+        opaque_rects(BarStyle::Islands, &narrow, &BarGeometry { width: 1280, height: 22, advance: 8.0, scale: 1 }, &mut out);
+        // Cells 10..12: x 80..96, radius min(8, 16 / 2, 18 / 2) = 8: no straight top edge left.
+        assert_eq!(out, [Rect { x: 80, y: 10, width: 16, height: 2 }]);
     }
 
     /// `opaque_rects` reuses `out`: no allocation per frame once it held a bar's rects.
@@ -387,6 +444,9 @@ mod tests {
         let huge = cache.get(10, 100_000);
         assert_eq!(huge.radius, MAX_MASK_RADIUS, "capped");
         assert_eq!(cache.get(u32::MAX, i32::MAX).radius, MAX_MASK_RADIUS);
+        assert_eq!(cache.len(), 3, "one entry per (radius, scale) asked, whatever its size");
+        cache.get(u32::MAX, i32::MAX);
+        assert_eq!(cache.len(), 3, "asked again: reused");
     }
 
     // ---- fills ----
@@ -441,6 +501,31 @@ mod tests {
         assert_eq!(rgba(&px, w, 0, 0), bar, "outside the disc: the bar as it was");
         assert_eq!(rgba(&px, w, w / 2, h / 2), premultiplied(Rgb(200, 200, 200), 128), "inside: replaced, alpha kept");
         assert_eq!(rgba(&px, w, 2, 2)[3], 255, "the arc over an opaque bar stays opaque");
+    }
+
+    /// A translucent rounded fill over a painted buffer: a corner pixel the disc fully covers is the
+    /// inside's pixel, never the buffer showing through (no visible corner squares).
+    #[test]
+    fn a_translucent_rounded_fill_has_no_corner_squares() {
+        for e in [1u32, 2] {
+            let mut cache = MaskCache::default();
+            let m = cache.get(8, e as i32);
+            let (w, h) = (40 * e, 22 * e);
+            let mut px = vec![0u8; (w * h * 4) as usize];
+            fill_rect(&mut px, w, h, (0, w), (0, h), premultiplied(Rgb(1, 2, 3), 255));
+            let glass = premultiplied(Rgb(200, 100, 50), 128);
+            fill_rounded(&mut px, w, h, (0, w), (0, h), m, glass);
+            let inside = rgba(&px, w, w / 2, h / 2);
+            assert_eq!(inside, glass);
+            let r = m.radius;
+            let full: Vec<_> = (0..r).flat_map(|y| (0..r).map(move |x| (x, y))).filter(|&(x, y)| m.outer_at(x, y) == 255).collect();
+            assert!(!full.is_empty(), "scale {e}: the corner has fully covered pixels");
+            for (x, y) in full {
+                for (xx, yy) in [(x, y), (w - 1 - x, y), (x, h - 1 - y), (w - 1 - x, h - 1 - y)] {
+                    assert_eq!(rgba(&px, w, xx, yy), inside, "scale {e}: corner pixel ({xx}, {yy}) fully covered");
+                }
+            }
+        }
     }
 
     #[test]

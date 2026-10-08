@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn states_win_over_the_hues() {
         let d = &BatteryConfig::default();
-        for mc in [ICONS, FULL] {
+        for mc in [ICONS, FULL, ModuleColors::Pills] {
             assert_eq!(draw(&super::battery(&discharging(15), d, mc).unwrap()).1, "wwwww", "low battery stays warn under {mc:?}");
             assert_eq!(draw(&super::battery(&discharging(9), d, mc).unwrap()).1, "eeee", "critical stays error under {mc:?}");
             let charging = Feed::Ready(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] });

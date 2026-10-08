@@ -13,6 +13,10 @@
 //! check). Its cell keeps the width `Grid::write` already gave it — only
 //! the paint is skipped.
 
+pub(crate) mod blocks;
+#[cfg(test)]
+mod shape_tests;
+
 use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
@@ -20,6 +24,7 @@ use crate::grid::{CONT, Grid, Hue, Tint};
 use crate::list::Boxed;
 use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
+use blocks::OnBlock;
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -289,7 +294,9 @@ fn blend(px: &mut [u8], width: u32, height: u32, x: i32, y: i32, c: Color) {
     for k in 0..3 {
         px[o + k] = ((src[k] as u32 * a + px[o + k] as u32 * (255 - a)) / 255) as u8;
     }
-    px[o + 3] = 0xff;
+    // Premultiplied "over": an opaque destination stays exactly 255 (flat, popups: unchanged);
+    // a transparent or translucent one (islands, translucent) keeps a valid premultiplied pixel.
+    px[o + 3] = ((255 * a + px[o + 3] as u32 * (255 - a)) / 255) as u8;
 }
 
 fn has_family(f: &fontdb::FaceInfo, family: &str) -> bool {
@@ -479,9 +486,16 @@ impl Fonts {
         self.advance
     }
 
-    /// A bar in its style (shapes spec § 3): the style's background pass, `grid`'s cells (the text
-    /// pass, the same for every style), then the style's lines. Under `flat` it paints exactly what
-    /// `paint` paints, byte for byte.
+    /// A bar in its style (shapes spec § 3):
+    /// - the style's background pass;
+    /// - the cell backgrounds (under islands and translucent, clipped to the blocks' rows);
+    /// - islands' and translucent's edges pass (rounded corners and borders, over the cell
+    ///   backgrounds);
+    /// - the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
+    ///   (ruling 11);
+    /// - underline's lines.
+    ///
+    /// Under `flat` it paints exactly what `paint` paints, byte for byte.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_bar(&mut self, grid: &Grid, roles: &Roles, bg: &Background, px: &mut [u8], width: u32, height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
@@ -489,15 +503,30 @@ impl Fonts {
         }
         self.set_scale(scale);
         let advance = self.advance;
-        let edge = |col: u16| (f32::from(col) * advance).round() as u32;
-        match bg.style {
-            BarStyle::Underline => background::underline_blocks(px, width, height, roles, bg.groups, edge),
-            // Islands, powerline, floating and translucent arrive with tasks 4 to 6: flat's pass until then.
-            BarStyle::Flat | BarStyle::Islands | BarStyle::Powerline | BarStyle::Floating | BarStyle::Translucent => {
-                fill(px, width, 0, width, height, roles.bar_bg)
+        let edge = |col: u16| background::cell_edge(col, advance);
+        // islands: transparent around the blocks; translucent: bar_bg at opacity, premultiplied.
+        let outside = match bg.style {
+            BarStyle::Islands => Some(blocks::CLEAR),
+            BarStyle::Translucent => Some(background::premultiplied(roles.bar_bg, blocks::opacity_alpha(bg.opacity))),
+            BarStyle::Flat | BarStyle::Underline | BarStyle::Powerline | BarStyle::Floating => None,
+        };
+        let mut rows = (0, height);
+        match (bg.style, outside) {
+            (BarStyle::Underline, _) => background::underline_blocks(px, width, height, roles, bg.groups, edge),
+            (_, Some(outside)) => {
+                blocks::background(px, width, height, scale, advance, roles, bg, outside);
+                rows = blocks::island_y(height, scale);
             }
+            // Powerline (task 5) and floating (task 6): flat's pass until then.
+            _ => fill(px, width, 0, width, height, roles.bar_bg),
         }
-        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0);
+        self.cell_backgrounds(grid, roles, roles.bar_bg, px, width, height, 0, rows);
+        if let Some(outside) = outside {
+            blocks::round_islands(&mut self.masks, px, width, height, scale, advance, roles, bg, outside);
+        }
+        // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.
+        let (on, n) = blocks::pill_inks(roles, bg);
+        self.glyphs(grid, roles, roles.bar_bg, px, width, height, 0, &on[..n]);
         if bg.style == BarStyle::Underline {
             background::underline_lines(px, width, height, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
         }
@@ -510,26 +539,48 @@ impl Fonts {
         }
         self.set_scale(scale);
         fill(px, width, 0, width, height, roles.bar_bg);
-        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0);
+        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0, &[]);
     }
 
     /// `grid`'s cells in a band `height` px tall, the first one `x0` px from the band's left edge:
-    /// the cell backgrounds that differ from the surface's (`base`), then the glyphs. The band's own
-    /// background is the caller's.
+    /// the cell backgrounds that differ from the surface's (`base`), then the glyphs (`glyphs`, with
+    /// the pills inks `on`). The band's own background is the caller's.
     #[allow(clippy::too_many_arguments)]
-    fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32) {
+    fn paint_cells(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
+        self.cell_backgrounds(grid, roles, base, px, width, height, x0, (0, height));
+        self.glyphs(grid, roles, base, px, width, height, x0, on);
+    }
+
+    /// The backgrounds of `grid`'s cells that differ from the surface's (`base`), in the band's
+    /// `rows` [top, bottom) only.
+    #[allow(clippy::too_many_arguments)]
+    fn cell_backgrounds(&self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, rows: (u32, u32)) {
         let advance = self.advance;
         let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
             if c.style.bg != Tint::Bg {
-                fill(px, width, edge(col), edge(col + 1), height, color(roles, base, c.style.bg));
+                rect(px, width, height, (edge(col), edge(col + 1)), rows, color(roles, base, c.style.bg));
             }
         }
+    }
+
+    /// `grid`'s glyphs. A glyph inside one of the `on` blocks (pills) takes the block's ink unless
+    /// its cell is in a state (`blocks::in_state`).
+    #[allow(clippy::too_many_arguments)]
+    fn glyphs(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
+        let advance = self.advance;
+        let edge = |col: usize| x0 + ((col as f32) * advance).round() as u32;
         for (col, c) in grid.cells().iter().enumerate() {
             if c.ch == ' ' || c.ch == CONT {
                 continue;
             }
-            self.glyph(c.ch, c.style.bold, edge(col) as f32, color(roles, base, c.style.fg), px, width, height);
+            let own = color(roles, base, c.style.fg);
+            let ink = if blocks::in_state(c.style) {
+                own
+            } else {
+                on.iter().find(|b| usize::from(b.start) <= col && col < usize::from(b.end)).map_or(own, |b| b.ink)
+            };
+            self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, height);
         }
     }
 
@@ -583,7 +634,7 @@ impl Fonts {
         for (i, row) in b.rows.iter().enumerate() {
             let start = (frame.top as usize + i * row_height as usize) * width as usize * 4;
             let Some(slice) = px.get_mut(start..start + band) else { break };
-            self.paint_cells(row, roles, base, slice, width, row_height, frame.side);
+            self.paint_cells(row, roles, base, slice, width, row_height, frame.side, &[]);
         }
         // A selection band reaching the frame's top or bottom edge is as far from it as from the
         // sides: the first and last rows' coloured cells bleed into the vertical inset.

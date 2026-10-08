@@ -687,10 +687,11 @@ impl App {
                         region.add(r.x, r.y, r.width, r.height);
                     }
                     surface.set_opaque_region(Some(region.wl_region()));
+                    std::mem::swap(&mut s.opaque, opaque_scratch);
                 }
+                // Not recorded: the next frame tries again.
                 Err(e) => log(&format!("opaque region: {e}")),
             }
-            std::mem::swap(&mut s.opaque, opaque_scratch);
         }
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
