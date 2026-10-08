@@ -13,7 +13,7 @@ use crate::grid::{Grid, Target};
 use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::painter::{self, Fonts};
+use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::popup::{Anchor as PopupAnchor, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
 use crate::tray::hover::{self, Hover, HoverChange};
@@ -42,7 +42,7 @@ use smithay_client_toolkit::shm::{
     slot::{Buffer, SlotPool},
 };
 use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
+    compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
     delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
     output::{OutputHandler, OutputState},
@@ -299,6 +299,9 @@ pub(crate) struct Surface {
     /// invalidated by a pool recreation (`shrink_pool_if_needed`: a buffer
     /// only belongs to the pool that created it).
     buffers: Vec<(Buffer, u32, u32)>,
+    /// The opaque region last sent (logical px, `painter::opaque_rects`): sent again only when it
+    /// changes. Empty before the first draw.
+    opaque: Vec<Rect>,
 }
 
 pub struct App {
@@ -449,6 +452,15 @@ pub struct App {
     /// suspiciously long (show the message after all) — task 13 fix round,
     /// review item 1.
     pub(crate) scan_started: Option<Instant>,
+    /// `draw`'s room for a bar's opaque rects, swapped with the surface's when they differ: no
+    /// allocation once both have held a bar's rects.
+    opaque_scratch: Vec<Rect>,
+}
+
+/// The background a bar paints with: the bar's style and module colours (set by the wiring from
+/// theme.toml), the theme's opacity, the grid's blocks.
+pub(crate) fn bar_background<'a>(bar: &Bar, settings: &ThemeSettings, grid: &'a Grid) -> Background<'a> {
+    Background { style: bar.style, opacity: settings.opacity, module_colors: bar.module_colors, groups: grid.groups() }
 }
 
 impl App {
@@ -536,6 +548,7 @@ impl App {
             hover_surface: None,
             windows_dirty: false,
             scan_started: None,
+            opaque_scratch: Vec::new(),
         })
     }
 
@@ -552,7 +565,17 @@ impl App {
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer.commit();
         log(&format!("bar placed on {}", log_name(&name, &output)));
-        self.surfaces.push(Surface { output, name, layer, width: 0, scale, configured: false, last: None, buffers: Vec::new() });
+        self.surfaces.push(Surface {
+            output,
+            name,
+            layer,
+            width: 0,
+            scale,
+            configured: false,
+            last: None,
+            buffers: Vec::new(),
+            opaque: Vec::new(),
+        });
     }
 
     /// Returns the removed surface's output, so the caller can decide to
@@ -632,7 +655,7 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, roles, pool, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, theme_settings, compositor, opaque_scratch, .. } = self;
         let s = &mut surfaces[i];
         if !s.configured || s.width == 0 {
             return;
@@ -651,8 +674,24 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint(&grid, roles, pixels, w, h, e);
+        fonts.paint_bar(&grid, roles, &bar_background(bar, theme_settings, &grid), pixels, w, h, e);
         let surface = s.layer.wl_surface();
+        // The compositor skips blending what the style paints opaque (shapes spec § 3): told again only
+        // when it changes (a new width, style or block layout).
+        let geometry = BarGeometry { width: s.width, height: bar.config.height, advance: fonts.advance(e), scale: e };
+        painter::opaque_rects(bar.style, grid.groups(), &geometry, opaque_scratch);
+        if *opaque_scratch != s.opaque {
+            match Region::new(&*compositor) {
+                Ok(region) => {
+                    for r in opaque_scratch.iter() {
+                        region.add(r.x, r.y, r.width, r.height);
+                    }
+                    surface.set_opaque_region(Some(region.wl_region()));
+                }
+                Err(e) => log(&format!("opaque region: {e}")),
+            }
+            std::mem::swap(&mut s.opaque, opaque_scratch);
+        }
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);
         if s.buffers[used].0.attach_to(surface).is_err() {
@@ -1959,5 +1998,23 @@ mod tests {
     #[test]
     fn pending_restores_preserves_the_marked_order() {
         assert_eq!(pending_restores(&[3, 1, 2], [1, 2, 3].into_iter()), vec![3, 1, 2]);
+    }
+
+    /// The bar paints with its own style and module colours and the theme's opacity, over the
+    /// grid's blocks: what `draw` hands `paint_bar`.
+    #[test]
+    fn a_bar_paints_with_its_style_its_module_colours_and_the_theme_opacity() {
+        use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+        let mut bar = Bar::new(crate::config::BarConfig::default());
+        bar.apply(Msg::Compositor(Some(crate::compositor::example())));
+        bar.style = BarStyle::Underline;
+        bar.module_colors = ModuleColors::Pills;
+        let settings =
+            ThemeSettings { opacity: 0.55, style: BarStyle::Islands, module_colors: ModuleColors::None, ..ThemeSettings::default() };
+        let grid = bar.grid("HDMI-A-1", 100);
+        assert!(!grid.groups().is_empty());
+        let bg = bar_background(&bar, &settings, &grid);
+        assert_eq!((bg.style, bg.opacity, bg.module_colors), (BarStyle::Underline, 0.55, ModuleColors::Pills), "the bar's, not the file's");
+        assert_eq!(bg.groups, grid.groups());
     }
 }

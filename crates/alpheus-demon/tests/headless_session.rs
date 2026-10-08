@@ -1329,6 +1329,27 @@ fn writing_theme_toml_repaints_the_bar_in_the_new_bar_bg() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
+/// Shapes task 3, end to end: a style set at startup reaches the painter, and the opaque region the
+/// bar now sends is accepted (a bad one would end the client). Under underline the bar's last row is
+/// the border line; above it, the margin stays on bar_bg.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn a_style_set_at_startup_is_painted() {
+    let sway = Sway::start("shapes-underline", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"underline\"\n").unwrap();
+    let mut d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let mocha = preset("catppuccin").unwrap().dark;
+    let (line, bg) = (rgb(mocha.border_over(mocha.bar_bg)), rgb(mocha.bar_bg));
+    let (x, y) = BAR_BACKGROUND;
+    let bottom = 22 - 1; // bar.toml's default height, scale 1
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, bottom) == Some(line) && s.at(x, y) == Some(bg)), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn a_module_colours_change_alone_repaints_the_bar() {

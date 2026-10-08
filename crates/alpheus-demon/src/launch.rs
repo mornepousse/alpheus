@@ -583,9 +583,11 @@ pub fn run() -> i32 {
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
-    // The bar's tints follow `module_colors` from its first paint (`Bar::new` starts at none).
+    // The bar's tints and shape follow `module_colors` and `style` from its first paint (`Bar::new`
+    // starts at none and flat).
     let mut bar = Bar::new(config);
     bar.module_colors = theme_settings.module_colors;
+    bar.style = theme_settings.style;
     let mut state = match App::new(&globals, &qh, bar, theme_settings, roles, fonts, exec.clone()) {
         Ok(e) => e,
         Err(m) => {

@@ -13,9 +13,12 @@
 //! check). Its cell keeps the width `Grid::write` already gave it — only
 //! the paint is skipped.
 
+use crate::background::{self, MaskCache};
+pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Hue, Tint};
 use crate::list::Boxed;
+use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
 use cosmic_text::{Attrs, Buffer, CacheKey, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, fontdb};
 use std::collections::HashMap;
@@ -162,6 +165,8 @@ pub struct Fonts {
     /// physical offsets are only valid for the metrics they were measured
     /// at.
     shapes: HashMap<(char, bool), Vec<ShapedGlyph>>,
+    /// The bar shapes' corner masks (shapes spec § 3), made on first use per radius and scale.
+    masks: MaskCache,
 }
 
 /// A tint's colour on a surface whose own background is `base` (`Tint::Bg`). The painter picks the
@@ -409,6 +414,7 @@ impl Fonts {
             advances: Vec::new(),
             frames: Vec::new(),
             shapes: HashMap::new(),
+            masks: MaskCache::default(),
         };
         p.set_scale(1);
         let warning = (!warnings.is_empty()).then(|| warnings.join(" ; "));
@@ -432,6 +438,11 @@ impl Fonts {
     /// Memoized (char, bold) shapes (memory guard).
     pub fn shaped_glyphs(&self) -> usize {
         self.shapes.len()
+    }
+
+    /// Corner masks made so far (memory guard: none until a rounded style paints).
+    pub fn corner_masks(&self) -> usize {
+        self.masks.len()
     }
 
     /// Size and metrics for scale `e`; measures a cell's advance (memorized
@@ -468,7 +479,31 @@ impl Fonts {
         self.advance
     }
 
-    /// A bar: `grid` on `roles.bar_bg`.
+    /// A bar in its style (shapes spec § 3): the style's background pass, `grid`'s cells (the text
+    /// pass, the same for every style), then the style's lines. Under `flat` it paints exactly what
+    /// `paint` paints, byte for byte.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint_bar(&mut self, grid: &Grid, roles: &Roles, bg: &Background, px: &mut [u8], width: u32, height: u32, scale: i32) {
+        if px.len() < (width as usize) * (height as usize) * 4 {
+            return; // inconsistent buffer: do nothing rather than panic
+        }
+        self.set_scale(scale);
+        let advance = self.advance;
+        let edge = |col: u16| (f32::from(col) * advance).round() as u32;
+        match bg.style {
+            BarStyle::Underline => background::underline_blocks(px, width, height, roles, bg.groups, edge),
+            // Islands, powerline, floating and translucent arrive with tasks 4 to 6: flat's pass until then.
+            BarStyle::Flat | BarStyle::Islands | BarStyle::Powerline | BarStyle::Floating | BarStyle::Translucent => {
+                fill(px, width, 0, width, height, roles.bar_bg)
+            }
+        }
+        self.paint_cells(grid, roles, roles.bar_bg, px, width, height, 0);
+        if bg.style == BarStyle::Underline {
+            background::underline_lines(px, width, height, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
+        }
+    }
+
+    /// A bar: `grid` on `roles.bar_bg` — `flat`'s reference, which `paint_bar` reproduces byte for byte.
     pub fn paint(&mut self, grid: &Grid, roles: &Roles, px: &mut [u8], width: u32, height: u32, scale: i32) {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
@@ -629,6 +664,7 @@ mod tests {
     use crate::config::DEFAULT_HEIGHT;
     use crate::grid::Style;
     use alpheus_commun::theme::Hues;
+    use alpheus_commun::theme::settings::ModuleColors;
 
     fn fonts() -> Fonts {
         let (p, w) = Fonts::load(&FontConfig::default(), DEFAULT_HEIGHT)
@@ -1500,6 +1536,138 @@ mod tests {
         // write overflowed its computed location.
         for o in (0..px.len()).step_by(4) {
             assert_eq!(px[o + 3], 0xff, "unpainted pixel at byte {o}");
+        }
+    }
+
+    // ---- bar shapes (shapes spec § 3) ----
+
+    /// The layout tests' bar (launcher, workspaces, title, clock), hues on.
+    fn fixture_bar() -> crate::state::Bar {
+        use crate::state::{Bar, Msg};
+        let mut b = Bar::new(crate::config::BarConfig::default());
+        b.apply(Msg::Compositor(Some(crate::compositor::example())));
+        b.apply(Msg::Clock(crate::clock::LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 }));
+        b.module_colors = ModuleColors::Full;
+        b
+    }
+
+    /// A bar `columns` wide at `scale`: its physical size and a buffer full of `junk`.
+    fn bar_buffer(p: &mut Fonts, columns: u16, scale: i32, junk: u8) -> (u32, u32, Vec<u8>) {
+        let av = p.advance(scale);
+        let (w, h) = ((av * f32::from(columns)).ceil() as u32, DEFAULT_HEIGHT * scale as u32);
+        (w, h, vec![junk; (w * h * 4) as usize])
+    }
+
+    /// `flat` stays today's bar to the byte (shapes spec § 3): `paint_bar` under flat writes every
+    /// byte `paint` writes, whatever the buffer held, the opacity, the module colours or the groups.
+    #[test]
+    fn paint_bar_under_flat_is_paint_to_the_byte() {
+        let pal = distinct();
+        let mut p = fonts();
+        for (columns, scale) in [(100u16, 1), (60, 1), (100, 2), (40, 2)] {
+            let bar = fixture_bar();
+            let grid = bar.grid("HDMI-A-1", columns);
+            // An underline grid's blocks, handed to flat: it must ignore them.
+            let mut under = fixture_bar();
+            under.style = BarStyle::Underline;
+            let groups = under.grid("HDMI-A-1", columns).groups().to_vec();
+            assert!(!groups.is_empty());
+            let (w, h, mut old) = bar_buffer(&mut p, columns, scale, 0x5a);
+            let mut new = vec![0xa5u8; old.len()];
+            p.paint(&grid, &pal, &mut old, w, h, scale);
+            let bg = Background { style: BarStyle::Flat, opacity: 0.3, module_colors: ModuleColors::Pills, groups: &groups };
+            p.paint_bar(&grid, &pal, &bg, &mut new, w, h, scale);
+            assert!(old == new, "{columns} columns at scale {scale}: flat must be today's paint");
+        }
+        assert_eq!(p.corner_masks(), 0, "flat never makes a corner mask");
+    }
+
+    /// (r, g, b, a) of pixel (x, y) in a `w`-wide buffer.
+    fn rgba(px: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
+        let o = ((y * w + x) * 4) as usize;
+        [px[o + 2], px[o + 1], px[o], px[o + 3]]
+    }
+
+    fn opaque(c: Rgb) -> [u8; 4] {
+        [c.0, c.1, c.2, 255]
+    }
+
+    /// A 20-cell grid: an active workspace on cells 1..4, blanks elsewhere; one status block on
+    /// cells 6..12 (hue blue) and one clock block on 14..19 (no hue).
+    fn underline_fixture() -> (Grid, Vec<crate::grid::Group>) {
+        use crate::grid::{Group, GroupKind};
+        let mut g = Grid::empty(20);
+        g.write(1, 20, "   ", Style::ACTIVE);
+        let groups = vec![
+            Group { kind: GroupKind::Status, start: 6, end: 12, hue: Some(Hue::Blue) },
+            Group { kind: GroupKind::Clock, start: 14, end: 19, hue: None },
+        ];
+        (g, groups)
+    }
+
+    /// `underline` (shapes spec § 3): the bar on bar_bg, the blocks on pill_bg, a one logical px
+    /// bottom line in the border colour, two logical px of accent under the active workspace; the
+    /// blocks' hues underline them under the module colours only.
+    #[test]
+    fn underline_paints_blocks_a_bottom_line_and_the_active_underline() {
+        let pal = distinct();
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        for scale in [1, 2] {
+            let s = scale as u32;
+            let (w, h, mut px) = bar_buffer(&mut p, 20, scale, 0x33);
+            let av = p.advance(scale);
+            let mid = |col: f32| ((col + 0.5) * av) as u32;
+            let bg = Background { style: BarStyle::Underline, opacity: 0.8, module_colors: ModuleColors::None, groups: &groups };
+            p.paint_bar(&grid, &pal, &bg, &mut px, w, h, scale);
+            let border = pal.border_over(pal.bar_bg);
+            for x in [0, mid(8.0), w - 1] {
+                assert_eq!(rgba(&px, w, x, h - 1), opaque(border), "the bottom line at x {x}, scale {scale}");
+                assert_eq!(rgba(&px, w, x, h - s), opaque(border), "one logical px thick, scale {scale}");
+            }
+            assert_eq!(rgba(&px, w, mid(0.0), h - s - 1), opaque(pal.bar_bg), "outside a block: bar_bg");
+            assert_eq!(rgba(&px, w, mid(8.0), h / 2), opaque(pal.pill_bg), "a block: pill_bg");
+            assert_eq!(rgba(&px, w, mid(16.0), h / 2), opaque(pal.pill_bg));
+            assert_eq!(rgba(&px, w, mid(13.0), h / 2), opaque(pal.bar_bg), "between blocks");
+            assert_eq!(rgba(&px, w, mid(8.0), h - s - 1), opaque(pal.pill_bg), "no hue underline under none");
+            for y in [h - 3 * s, h - s - 1] {
+                assert_eq!(rgba(&px, w, mid(2.0), y), opaque(pal.accent), "the active underline at y {y}, scale {scale}");
+            }
+            assert_eq!(rgba(&px, w, mid(2.0), h - 3 * s - 1), opaque(pal.accent_container), "two logical px only: the cell above");
+            assert_eq!(rgba(&px, w, mid(0.0), h - 2 * s), opaque(pal.bar_bg), "no underline off the active cells");
+            // Under the module colours, a block with a hue is underlined in it; one without is not.
+            for mc in [ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills] {
+                let bg = Background { module_colors: mc, ..bg };
+                p.paint_bar(&grid, &pal, &bg, &mut px, w, h, scale);
+                assert_eq!(rgba(&px, w, mid(8.0), h - 2 * s), opaque(pal.hues.blue), "{mc:?}: the status block's blue");
+                assert_eq!(rgba(&px, w, mid(16.0), h - 2 * s), opaque(pal.pill_bg), "{mc:?}: the clock has no hue");
+                assert_eq!(rgba(&px, w, mid(2.0), h - 2 * s), opaque(pal.accent), "{mc:?}: the active workspace keeps its accent");
+            }
+        }
+        assert_eq!(p.corner_masks(), 0, "underline is square: no corner mask");
+    }
+
+    /// Every pixel of an underline bar is written, opaque: the buffer's previous frame never shows.
+    #[test]
+    fn underline_writes_every_pixel_opaque() {
+        let pal = distinct();
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        let (w, h, mut px) = bar_buffer(&mut p, 20, 1, 0x00);
+        let bg = Background { style: BarStyle::Underline, opacity: 0.8, module_colors: ModuleColors::Icons, groups: &groups };
+        p.paint_bar(&grid, &pal, &bg, &mut px, w, h, 1);
+        assert!(px.chunks(4).all(|c| c[3] == 0xff), "a transparent pixel left");
+    }
+
+    #[test]
+    fn paint_bar_with_a_short_buffer_paints_nothing_and_never_panics() {
+        let mut p = fonts();
+        let (grid, groups) = underline_fixture();
+        let mut px = vec![7u8; 16];
+        for style in BarStyle::ALL {
+            let bg = Background { style, opacity: 0.8, module_colors: ModuleColors::Pills, groups: &groups };
+            p.paint_bar(&grid, &distinct(), &bg, &mut px, 100, 22, 1);
+            assert_eq!(px, vec![7u8; 16], "{style:?}");
         }
     }
 }

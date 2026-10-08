@@ -5,6 +5,7 @@
 
 pub mod actions;
 pub mod appearance;
+pub mod background;
 pub mod calendar;
 pub mod clock;
 pub mod compositor;
