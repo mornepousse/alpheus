@@ -11,7 +11,8 @@ use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
 use alpheus_commun::theme::settings::{
-    BarStyle, DARK_FILE, LIGHT_FILE, ModuleColors, Resolved, THEME_FILE, ThemeSettings, effective_mode, resolve_dir,
+    BarStyle, DARK_FILE, LIGHT_FILE, ModeSetting, ModuleColors, Resolved, THEME_FILE, ThemeSettings, effective_mode, load_settings,
+    resolve_detailed, resolve_dir,
 };
 use alpheus_commun::theme::{Mode, Roles};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
@@ -300,16 +301,30 @@ pub(crate) fn shape_change(old: &ThemeSettings, new: &ThemeSettings) -> ShapeCha
     ShapeChange { repaint: !note.is_empty(), placement: floating(old) != floating(new), note }
 }
 
-/// `resolve_dir` for a reload, or None when theme.toml exists but holds nothing (empty or
-/// whitespace): an editor truncating it mid-save, most likely. The settings and colours in effect
-/// then stay, as a colour file caught mid-write keeps the colours (themes delivery 1); the next
-/// write of the file re-resolves. Startup does not go through here: an empty file there is the
-/// defaults.
-pub(crate) fn reload_settings(dir: &Path, portal: impl FnOnce() -> Option<Mode>) -> Option<(ThemeSettings, Resolved)> {
-    match std::fs::read(dir.join(THEME_FILE)) {
-        Ok(text) if text.iter().all(u8::is_ascii_whitespace) => None,
-        _ => Some(resolve_dir(dir, portal)),
+/// What a reload resolved.
+pub(crate) struct Reload {
+    pub(crate) settings: ThemeSettings,
+    pub(crate) resolved: Resolved,
+    /// theme.toml is empty and the settings in effect are not what an empty file means: kept.
+    pub(crate) kept: bool,
+}
+
+/// `resolve_dir` for a reload. When theme.toml exists but holds nothing (empty or whitespace) — an
+/// editor truncating it mid-save, or left empty on purpose — the settings in effect (`previous`)
+/// stay, so a floating bar never flips to flat and back; the colour files and the portal's word
+/// still apply (a new wallpaper, a dark/light switch). Startup does not go through here: an empty
+/// file there is the defaults.
+pub(crate) fn reload_settings(dir: &Path, previous: &ThemeSettings, portal: impl FnOnce() -> Option<Mode>) -> Reload {
+    let blank = matches!(std::fs::read(dir.join(THEME_FILE)), Ok(text) if text.iter().all(u8::is_ascii_whitespace));
+    if !blank {
+        let (settings, resolved) = resolve_dir(dir, portal);
+        return Reload { settings, resolved, kept: false };
     }
+    // `portal` is asked only in mode auto, as `resolve_dir` does.
+    let portal = if previous.mode == ModeSetting::Auto { portal() } else { None };
+    let resolved = resolve_detailed(previous, effective_mode(previous.mode, portal), dir);
+    let kept = load_settings(dir).0 != *previous;
+    Reload { settings: previous.clone(), resolved, kept }
 }
 
 impl App {
@@ -329,13 +344,11 @@ impl App {
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
         let portal = self.portal_mode;
-        let Some((settings, resolved)) = reload_settings(&dir, || portal) else {
-            if !self.blank_theme_noted {
-                self.blank_theme_noted = true;
-                log("theme: theme.toml is empty, keeping the current settings until it is written");
-            }
-            return;
-        };
+        let Reload { settings, resolved, kept } = reload_settings(&dir, &self.theme_settings, || portal);
+        if kept && !self.blank_theme_noted {
+            self.blank_theme_noted = true;
+            log("theme: theme.toml is empty, keeping the current settings until it is written");
+        }
         let mode = effective_mode(settings.mode, portal);
         let warnings = resolved.lines();
         let mut new_lines = false;
@@ -443,16 +456,63 @@ mod tests {
         let dir = temp("blank");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(THEME_FILE);
+        let floating = ThemeSettings { style: BarStyle::Floating, ..ThemeSettings::default() };
         for blank in ["", " \n\t\n"] {
             std::fs::write(&path, blank).unwrap();
-            assert!(reload_settings(&dir, || None).is_none(), "{blank:?}: kept");
+            let r = reload_settings(&dir, &floating, || None);
+            assert_eq!((r.settings.style, r.kept), (BarStyle::Floating, true), "{blank:?}: kept");
         }
-        std::fs::write(&path, "style = \"floating\"\n").unwrap();
-        let (settings, _) = reload_settings(&dir, || None).expect("a real file applies");
-        assert_eq!(settings.style, BarStyle::Floating);
+        std::fs::write(&path, "style = \"islands\"\n").unwrap();
+        let r = reload_settings(&dir, &floating, || None);
+        assert_eq!((r.settings.style, r.kept), (BarStyle::Islands, false), "a real file applies");
         std::fs::remove_file(&path).unwrap();
-        let (settings, _) = reload_settings(&dir, || None).expect("no file: the defaults apply");
-        assert_eq!(settings.style, BarStyle::Flat);
+        let r = reload_settings(&dir, &floating, || None);
+        assert_eq!((r.settings.style, r.kept), (BarStyle::Flat, false), "no file: the defaults apply");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty theme.toml left on purpose (the defaults) keeps only the settings: the colour files
+    /// are read again (matugen's next wallpaper repaints), and nothing worth a line is kept when the
+    /// settings in effect are what an empty file means (startup's catch-up resolve logs nothing).
+    #[test]
+    fn an_empty_theme_toml_still_reads_the_colour_files() {
+        let dir = temp("blank-colours");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(THEME_FILE), "").unwrap();
+        let legacy = |bg: &str| {
+            format!(
+                "bg = \"{bg}\"\nfg = \"#e0e0e0\"\naccent = \"#ffaa00\"\nmuted = \"#808080\"\nsurface = \"#203040\"\nerror = \"#ff5555\"\nok = \"#55ff55\"\n"
+            )
+        };
+        std::fs::write(dir.join(DARK_FILE), legacy("#102030")).unwrap();
+        // What startup resolved: an empty file with a colors.toml is the wallpaper (spec § 2).
+        let (startup, _) = resolve_dir(&dir, || None);
+        let r = reload_settings(&dir, &startup, || None);
+        assert_eq!(r.resolved.roles.bar_bg, alpheus_commun::theme::Rgb(0x10, 0x20, 0x30));
+        assert!(!r.kept, "the settings in effect are the empty file's: nothing to say");
+        std::fs::write(dir.join(DARK_FILE), legacy("#405060")).unwrap();
+        let r = reload_settings(&dir, &startup, || None);
+        assert_eq!(r.resolved.roles.bar_bg, alpheus_commun::theme::Rgb(0x40, 0x50, 0x60), "the new wallpaper");
+        assert_eq!(r.settings, startup);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The portal's word still applies under an empty theme.toml in mode auto (its default).
+    #[test]
+    fn an_empty_theme_toml_still_follows_the_portal() {
+        use alpheus_commun::theme::presets::preset;
+        let dir = temp("blank-portal");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(THEME_FILE), "").unwrap();
+        let auto = ThemeSettings::default();
+        let catppuccin = preset("catppuccin").unwrap();
+        let r = reload_settings(&dir, &auto, || Some(Mode::Light));
+        assert_eq!(r.resolved.roles, catppuccin.light.unwrap(), "light");
+        let r = reload_settings(&dir, &auto, || Some(Mode::Dark));
+        assert_eq!(r.resolved.roles, catppuccin.dark, "dark");
+        let dark = ThemeSettings { mode: alpheus_commun::theme::settings::ModeSetting::Dark, ..auto };
+        let r = reload_settings(&dir, &dark, || panic!("a fixed mode never asks"));
+        assert_eq!(r.resolved.roles, catppuccin.dark);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

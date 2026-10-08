@@ -380,8 +380,8 @@ pub struct App {
     pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
     /// The resolver's warnings at the last resolve: a reload logs only new ones.
     pub(crate) theme_warnings: Vec<String>,
-    /// An empty theme.toml met during a reload was logged (once per run: editors that truncate
-    /// before writing would log every save otherwise).
+    /// An empty theme.toml that kept the settings during a reload was logged (once per run: editors
+    /// that truncate before writing would log every save otherwise).
     pub(crate) blank_theme_noted: bool,
     /// The inotify watch on the config directory; None: the theme files are read at startup only.
     pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,

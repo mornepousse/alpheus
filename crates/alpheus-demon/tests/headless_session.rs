@@ -1690,6 +1690,84 @@ fn switching_to_auto_turns_the_bar_light_and_the_mode_file_follows() {
     assert_eq!(perms, 0o700, "owner-only");
 }
 
+/// A legacy wallpaper colour file whose `bg` (the bar's background) is `bg`.
+fn wallpaper(bg: &str) -> String {
+    format!(
+        "bg = \"{bg}\"\nfg = \"#e0e0e0\"\naccent = \"#ffaa00\"\nmuted = \"#808080\"\nsurface = \"#203040\"\nerror = \"#ff5555\"\nok = \"#55ff55\"\n"
+    )
+}
+
+/// An empty theme.toml left on purpose means the defaults: at startup with no line about it, and on
+/// a reload the colour files are still read, so matugen's next wallpaper repaints the bar.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn an_empty_theme_toml_repaints_on_a_new_wallpaper() {
+    let sway = Sway::start("theme-blank-wallpaper", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "").unwrap();
+    std::fs::write(config.join("colors.toml"), wallpaper("#102030")).unwrap();
+    let mut d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let (x, y) = BAR_BACKGROUND;
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some([0x10, 0x20, 0x30])), "{:?}", d.log());
+    write_atomically(&config, "colors.toml", &wallpaper("#405060"));
+    assert!(d.wait_for("theme reloaded: wallpaper, dark", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some([0x40, 0x50, 0x60])), "{:?}", d.log());
+    assert_eq!(d.count("theme.toml is empty"), 0, "an empty file is the defaults, no fault: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// An editor truncating theme.toml mid-save: the islands bar stays islands (never flat and back),
+/// one line says so, and a new wallpaper written meanwhile still repaints it.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn a_truncated_theme_toml_keeps_the_style_and_still_reads_a_new_wallpaper() {
+    let (sway, _hypr, mut d, config, behind) = shape_bar("theme-truncated");
+    let end = |s: &Ppm| s.at(s.width - 20, MIDDLE);
+    std::fs::write(config.join("colors.toml"), wallpaper("#102030")).unwrap();
+    write_atomically(&config, "theme.toml", "theme = \"wallpaper\"\nmode = \"dark\"\nstyle = \"islands\"\n");
+    assert!(d.wait_for("theme reloaded: wallpaper, dark, style islands", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| end(s) == Some(behind)), "{:?}", d.log());
+    std::fs::write(config.join("theme.toml"), "").unwrap();
+    assert!(d.wait_for("theme.toml is empty", DELAY), "{:?}", d.log());
+    write_atomically(&config, "colors.toml", &wallpaper("#405060"));
+    assert!(d.wait_for_count("theme reloaded:", 2, DELAY), "{:?}", d.log());
+    assert!(d.log().iter().any(|l| l.ends_with("theme reloaded: wallpaper, dark")), "the colours alone: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| end(s) == Some(behind)), "still islands: {:?}", d.log());
+    assert_eq!(d.count("theme.toml is empty"), 1, "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// An empty theme.toml is mode auto: the portal's switch to light repaints the bar and rewrites the
+/// mode file the TUI reads.
+#[test]
+#[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
+fn an_empty_theme_toml_follows_the_portal_and_the_mode_file_too() {
+    let bus = PrivateBus::start("appearance-blank");
+    let portal = FakePortal::start(&bus, 1);
+    let sway = Sway::start("appearance-blank", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "").unwrap();
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("appearance: the portal says dark", DELAY), "{:?}", d.log());
+    let (x, y) = BAR_BACKGROUND;
+    let (dark, light) = (bar_bg("catppuccin"), rgb(preset("catppuccin").unwrap().light.unwrap().bar_bg));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some(dark)), "{:?}", d.log());
+    assert!(wait_for_mode_file(&sway, "dark\n"), "{:?}", mode_file(&sway));
+    portal.set(2);
+    assert!(d.wait_for("appearance: the portal says light", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some(light)), "{:?}", d.log());
+    assert!(wait_for_mode_file(&sway, "light\n"), "{:?}", mode_file(&sway));
+    assert_eq!(d.count("theme.toml is empty"), 0, "{:?}", d.log());
+}
+
 /// A portal answering late never blocks the bar. A dark first frame (and a dark mode file, written
 /// at startup), then light when the answer comes after 1 s.
 #[test]
