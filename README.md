@@ -42,6 +42,10 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Bar shapes, linked in (6 styles, corner masks, placement) | within noise (−48…+156 KB) vs. the delivery before this one | one-time cost; binary 5.20 → 5.24 MiB (+44 KiB stripped); measured `6a6df10` vs this delivery, release, back to back, 3 runs each, separate target directories; `flat` pays only the style match |
 | Bar shapes, per style at start (all modules, 3 outputs) | flat ≈ 8.0 MB; others −76…+116 KB over flat | `startup_pss_per_style`, 3 runs (flat 8,142–8,224 KB: the same bar as the start row above); corner masks on first use −32…+88 KB (islands − flat), +36…+116 KB (floating − flat, its taller buffer included) (computed: 128 B for islands, 200 B for floating, at scale 1; one per radius and scale used) |
 | Bar shapes, 48 style switches (3 outputs; floating reconfigures every bar) | +20 KB | `style_switches_no_growth`, +20 KB in each of 3 runs; 0 loop wake-ups at rest under each of the six styles (`at_rest_no_wakeups_under_each_style`) |
+| Media, linked in but unused (no `media` in `modules`) | within noise (−52…+32 KB) vs. the delivery before this one | binary 5.24 → 5.33 MiB (+92 KiB stripped); measured `55ba754` vs this delivery, release, back to back, 3 runs each, separate target directories |
+| Media module, no player (on the bar's own session connection, tray off) | 0–4 KB | `media_module_pss_without_and_with_players`, 3 runs (7.2 MB with it, 1 output): that connection is the light/dark portal's, already open in mode `auto`; with the tray on it shares the tray's connection |
+| Media, 3 fake players | 112 KB | same test, 112 KB in each of 3 runs; at most 16 players, strings capped at 256 characters, 8 artists |
+| Media, 100 track changes | +0 KB | `track_changes_no_growth`, +0 KB in each of 3 runs (the titles reuse glyphs already drawn: the glyph cache's own bound is measured by the 8,300-events row); 0 loop wake-ups at rest with a player playing and the popup closed, tray on and off (`at_rest_no_wakeups_with_a_playing_player`); the popup's 1 s tick runs only while it is open and the track plays |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -60,7 +64,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
 > from the tray-delivery measurement (three runs); the themes rows from two
 > alternated runs against the delivery before; the bar shapes rows likewise
-> (three alternated runs, HEAD and base built in separate target directories).
+> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise.
 >
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
@@ -99,7 +103,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Volume, network, Bluetooth, battery | ✅ | ✅ | ✅ | ✅ | ✅ |
 | CPU, memory, temperature | ✅ | ✅ | ➖ | ✅ | ✅ |
 | System tray (icons and menus) | ✅ Nerd Font glyphs, no images | ✅ | ✅ | ✅ | ✅ |
-| Media (MPRIS) | 🚧 bar 5 | ✅ | ✅ | ✅ | ✅ |
+| Media (MPRIS) | ✅ `▶ Title` in the bar, middle click play/pause, wheel next/previous; a popup with time, progress, ⏮ ⏯ ⏭ and the player choice | ✅ | ✅ | ✅ | ✅ |
 | Notification counter, do-not-disturb | 🚧 bar 5 | ✅ | ✅ | ➖ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
@@ -178,10 +182,13 @@ In the default `flat` style, a line of monospace characters on the theme's bar c
 
 ![The tray with fictional apps, one icon's menu and the calendar (sample data, real font, default theme (catppuccin, dark), zoomed ×2; the two popups composed in one image)](docs/images/bar-tray.png)
 
+![The media module and its popup, fictional players and track (sample data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/bar-media.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
-window** (app icon and title), **volume** (gauge, wheel ±5 %, right click
+window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
+**volume** (gauge, wheel ±5 %, right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU graph,
 memory, temperature), **tray** (status icons of running apps as Nerd
@@ -192,7 +199,7 @@ of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: now-playing and notifications, the OSD, notification toasts.
+Coming next: notifications, the OSD, notification toasts.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
@@ -203,7 +210,9 @@ workspace goes through a configurable command. Sound comes from
 `pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
 resources from `/proc`. The tray talks to the session bus
 (StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
-thread. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
+thread. The media module speaks MPRIS on that same connection (or on one of its own when the tray is off,
+shared with the light/dark portal): players found at start and on arrival, their changes read from
+signals, never polled; while its popup is open the time ticks once a second, and only then. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
 
@@ -316,6 +325,7 @@ The mapping is fixed:
 | Module | Hue |
 |---|---|
 | window title (its icon) | purple |
+| media | purple |
 | sound | blue |
 | network | cyan |
 | Bluetooth | purple |
@@ -530,6 +540,10 @@ tooltips = true     # the item's name after ½ s of hovering
 [tray.icons]        # glyph overrides, keyed like the built-in table (id, icon name, title, process)
 # keepassxc = "󰌋"
 
+[media]
+title_max = 30            # cells of the title in the bar (8 to 80)
+ignore = ["kdeconnect"]   # bus-name substrings never queried; playerctld is always ignored
+
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
 
@@ -556,7 +570,7 @@ today will stay valid.
 
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
 - [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
-  bar, launcher, tray, themes).
+  bar, launcher, tray, themes, media).
 - [`docs/plans/`](docs/plans/): the implementation plans.
 
 ## License

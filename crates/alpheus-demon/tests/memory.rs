@@ -18,6 +18,7 @@
 mod common;
 
 use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with,
@@ -904,4 +905,105 @@ fn style_switches_no_growth() {
     let end = d.pss_kb();
     eprintln!("style switches: PSS {baseline} KB after 12 warm-up switches, {end} KB after 48 more (3 outputs)");
     assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 48 style switches");
+}
+
+/// The media module on the bar's own session link (tray off): its connection, Mpris, nothing else.
+const MEDIA_BAR: &str = "modules = [\"workspaces\", \"window\", \"media\", \"clock\"]\n";
+const NO_MEDIA_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+
+/// `names` as fake players on `session`, each read by the daemon (its GetAll answered).
+fn fake_players(session: &PrivateBus, names: &[&str]) -> Vec<FakePlayer> {
+    let players: Vec<FakePlayer> = names.iter().map(|n| FakePlayer::start(session, PlayerSpec::playing(n, "Paper Lanterns"))).collect();
+    for p in &players {
+        assert!(p.wait_call("GetAll", DELAY).is_some(), "the daemon never read a fake player");
+    }
+    players
+}
+
+/// Bar step 5: what the media module costs at start with no player (its session connection and
+/// match rules), and what 3 players add. Each configuration alone, its daemon gone before the next.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn media_module_pss_without_and_with_players() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("media-cost");
+    let measure = |name: &str, toml: &str, players: &[&str]| {
+        let session = PrivateBus::start(&format!("{name}-session"));
+        let (_sway, _hypr, d) = start(name, 1, &bus, Some(&session), Some(toml), PwDump::Silent);
+        // A cost of 0 must come from a module that runs, not from one that never started.
+        if toml.contains("\"media\"") {
+            assert!(d.wait_for("media: on the bar's session bus", DELAY), "{:?}", d.log());
+        }
+        let _players = fake_players(&session, players);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let base = measure("media-cost-a", NO_MEDIA_BAR, &[]);
+    let empty = measure("media-cost-b", MEDIA_BAR, &[]);
+    let three = measure("media-cost-c", MEDIA_BAR, &["alpha", "beta", "gamma"]);
+    let (module_cost, players_cost) = (empty.saturating_sub(base), three.saturating_sub(empty));
+    eprintln!(
+        "media PSS (KB): {base} without the module, {empty} with it and no player (module cost {module_cost}), \
+         {three} with 3 fake players (players cost {players_cost})"
+    );
+    assert!(three < STARTUP_MAX_KB, "{three} KB >= 15 MB — report to Mae, never raise");
+    assert!(module_cost <= 1024, "the module alone costs {module_cost} KB (a session connection and three rules: ≤ 1 MB)");
+    assert!(players_cost <= 512, "3 players cost {players_cost} KB (bounded strings: ≤ 512 KB)");
+}
+
+/// Bar step 5: 100 track changes (each a new title, drawn) leave no growth behind. The titles
+/// cycle through the glyphs the warm-up already drew: fresh glyphs on every title would only
+/// measure the bounded glyph cache filling up (`painter::MAX_CACHE`, 2,048 glyphs; its bound is
+/// `pss_under_30mb_and_stable`'s), not the media path.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn track_changes_no_growth() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("media-tracks");
+    let session = PrivateBus::start("media-tracks-session");
+    let (_sway, _hypr, d) = start("media-tracks", 1, &bus, Some(&session), Some(MEDIA_BAR), PwDump::Silent);
+    let players = fake_players(&session, &["lumen"]);
+    let change = |n: i64| {
+        players[0].set_track(
+            &format!("Track {n} — 日本語 {}", varied_glyphs(n as u64 % 10)),
+            "The Quiet Hours",
+            200_000_000 + n * 1_000_000,
+        );
+        std::thread::sleep(Duration::from_millis(30));
+    };
+    for n in 0..10 {
+        change(n); // warm-up
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let baseline = d.pss_kb();
+    for n in 10..110 {
+        change(n);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    let end = d.pss_kb();
+    eprintln!("media track changes: PSS {baseline} KB after 10 warm-up changes, {end} KB after 100 more");
+    assert!(end <= baseline + 512, "growth: {baseline} -> {end} KB over 100 track changes");
+}
+
+/// Bar step 5: a player playing, the popup closed — nothing ticks, on either host of the module.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_a_playing_player() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("media-rest");
+    for (tray, toml) in [("off", MEDIA_BAR), ("on", "modules = [\"workspaces\", \"window\", \"media\", \"tray\", \"clock\"]\n")] {
+        let session = PrivateBus::start(&format!("media-rest-{tray}-session"));
+        let (_sway, _hypr, d) = start(&format!("media-rest-{tray}"), 1, &bus, Some(&session), Some(toml), PwDump::Silent);
+        let _players = fake_players(&session, &["lumen"]);
+        std::thread::sleep(TRAY_SETTLE);
+        const REST: Duration = Duration::from_secs(10);
+        away_from_the_minute(REST);
+        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        std::thread::sleep(REST);
+        let delta = d.wakeups().saturating_sub(before);
+        let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+        eprintln!("wake-ups at rest with a playing player (10 s, tray {tray}): {delta} whole daemon, {main_delta} loop thread");
+        assert_eq!(main_delta, 0, "tray {tray}: {main_delta} loop-thread wake-ups in 10 s with a player playing, popup closed");
+        assert!(delta <= 8, "tray {tray}: {delta} wake-ups in 10 s");
+    }
 }

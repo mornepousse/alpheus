@@ -106,6 +106,14 @@ breakdown), then the spec of the sub-project currently in progress in
   - **TUI.** A Style row in the Theme tab, with a preview approximated in cells.
   - **Measured in release** (vs `6a6df10`, back to back, 3 runs each, separate target directories): one-time cost within noise (−48…+156 KB) (binary 5.20 → 5.24 MiB, +44 KiB stripped), per style within −76…+116 KB of flat (flat 7.9–8.0 MB), masks −32…+88 KB (islands − flat) and +36…+116 KB (floating − flat, its taller buffer included) on first use (computed: 128 B and 200 B at scale 1), +20 KB over 48 style switches, 0 loop wake-ups at rest under every style.
   - **Hyprland blur** is documented, never requested: `layerrule = blur on, ignore_alpha 0, match:namespace alpheus-bar` in Mae's hyprland.conf is her decision.
+- **Bar step 5, delivery 1 (media)** (spec
+  [`docs/specs/2026-10-08-alpheus-media-design.md`](docs/specs/2026-10-08-alpheus-media-design.md),
+  plan [`docs/plans/2026-10-08-alpheus-media-plan-1.md`](docs/plans/2026-10-08-alpheus-media-plan-1.md))
+  **implemented on `feat/media`** (per-task reviews); not merged, final review and Mae's trial pending:
+  - **Bar.** `▶/⏸ Title` (Purple, its own block), hidden when nothing plays; middle click PlayPause, wheel Next/Previous, a capability the player lacks a no-op.
+  - **Popup.** Title, artist, `m:ss` with a progress bar (hidden for an unknown length), ⏮ ⏯ ⏭ (dim when incapable), the players with ● from two up (Enter or a click pins one); keys and mouse as the menus; closes on Esc, an outside click, a restyle that moves its bar, or `player gone`.
+  - **How.** `media.rs` (pure model) fed by `tray/mpris.rs` through the closed Call/Reply/Signal enums; on the tray's connection, else on one own link shared with the portal; Seeked followed and the position read only while the popup is open; a 1 s `DeadlineTimer` only while it is open and the track plays.
+  - **Measured in release** (vs `55ba754`, back to back, 3 runs each, separate target directories): one-time cost within noise (−52…+32 KB) (binary 5.24 → 5.33 MiB, +92 KiB stripped), module with no player 0–4 KB (its link is the portal's, already open), 3 players 112 KB, +0 KB over 100 track changes, 0 loop wake-ups at rest with a player playing (tray on and off). With media now in the default `modules`, `pss_under_30mb_and_stable` (no session bus) starts +33…+123 KB over the base.
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
@@ -141,8 +149,7 @@ breakdown), then the spec of the sub-project currently in progress in
   folded in: held terminal on Enter, detached on Ctrl+Enter, apps before
   windows on an empty query); `feat/launcher-1` merged into alpheus
   `main` on 2026-10-05.
-- Next, in order: bar step 5 (media,
-  notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
+- Next, in order: bar step 5, delivery 2 (notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
   notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
 - **Later, goal "replace as many costly pieces as possible" (Mae,
   2026-10-05)**: a **lock screen** replacing hyprlock (measure hyprlock's
