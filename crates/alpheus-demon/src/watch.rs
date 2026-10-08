@@ -11,7 +11,9 @@ use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
 use alpheus_commun::theme::Roles;
-use alpheus_commun::theme::settings::{DARK_FILE, LIGHT_FILE, ModuleColors, THEME_FILE, effective_mode, resolve_dir};
+use alpheus_commun::theme::settings::{
+    BarStyle, DARK_FILE, LIGHT_FILE, ModuleColors, THEME_FILE, ThemeSettings, effective_mode, resolve_dir,
+};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
 use std::ffi::{CString, OsStr};
@@ -253,10 +255,10 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     state.theme_watch = Some(watch);
 }
 
-/// A reload repaints when the roles changed or the module colours did: the roles can be equal while
-/// the bar's tints are not (themes spec § 9).
-fn repaint_needed(new: &Roles, old: &Roles, colors_changed: bool) -> bool {
-    colors_changed || new != old
+/// A reload repaints when the roles changed or the bar's shape did (module colours, style, opacity):
+/// the roles can be equal while the bar's look is not (themes spec § 9, shapes spec § 4).
+fn repaint_needed(new: &Roles, old: &Roles, shape_changed: bool) -> bool {
+    shape_changed || new != old
 }
 
 fn colours_name(mc: ModuleColors) -> &'static str {
@@ -266,6 +268,36 @@ fn colours_name(mc: ModuleColors) -> &'static str {
         ModuleColors::Full => "full",
         ModuleColors::Pills => "pills",
     }
+}
+
+/// What a reload changes in the bar's shape (shapes spec § 4).
+#[derive(Debug, PartialEq)]
+pub(crate) struct ShapeChange {
+    /// The module colours, the style, or the opacity under `translucent` changed: re-lay out and repaint.
+    pub(crate) repaint: bool,
+    /// To or from `floating`: every bar's layer surface is reconfigured before it paints again.
+    pub(crate) placement: bool,
+    /// What changed, for the reload's line: ", module colours full, style islands, opacity 0.6".
+    pub(crate) note: String,
+}
+
+/// Compares the settings in effect with the ones just read. Allocates only on a reload.
+pub(crate) fn shape_change(old: &ThemeSettings, new: &ThemeSettings) -> ShapeChange {
+    let mut note = String::new();
+    if old.module_colors != new.module_colors {
+        note.push_str(", module colours ");
+        note.push_str(colours_name(new.module_colors));
+    }
+    if old.style != new.style {
+        note.push_str(", style ");
+        note.push_str(new.style.name());
+    }
+    // Only `translucent` reads the opacity: under any other style a new value changes no pixel.
+    if new.style == BarStyle::Translucent && old.opacity != new.opacity {
+        note.push_str(&format!(", opacity {}", new.opacity));
+    }
+    let floating = |s: &ThemeSettings| s.style == BarStyle::Floating;
+    ShapeChange { repaint: !note.is_empty(), placement: floating(old) != floating(new), note }
 }
 
 impl App {
@@ -294,8 +326,11 @@ impl App {
             new_lines = true;
         }
         self.theme_warnings = warnings;
-        let colors_changed = self.bar.module_colors != settings.module_colors;
+        let shape = shape_change(&self.theme_settings, &settings);
         self.bar.module_colors = settings.module_colors;
+        // The layout's spacing and the placement follow the bar's style (tasks 2 and 6): set before
+        // any repaint or re-placement below.
+        self.bar.style = settings.style;
         self.theme_settings = settings;
         // A switch to mode = "auto" starts following the portal (a no-op once tried, or when not
         // auto). After the store, never before: it reads `self.theme_settings`.
@@ -306,20 +341,19 @@ impl App {
             if new_lines {
                 log("theme: keeping the current colours until the colour file is usable");
             }
-            // The setting is read from theme.toml, not from the colour file: it still applies.
-            if colors_changed {
-                log(&format!("theme reloaded: module colours {}", colours_name(self.bar.module_colors)));
-                self.repaint_all();
+            // The shape is read from theme.toml, not from the colour file: it still applies.
+            if shape.repaint {
+                log(&format!("theme reloaded: {}", shape.note.trim_start_matches(", ")));
+                self.restyle(shape.placement);
             }
             return;
         }
-        if !repaint_needed(&resolved.roles, &self.roles, colors_changed) {
+        if !repaint_needed(&resolved.roles, &self.roles, shape.repaint) {
             return;
         }
         self.roles = resolved.roles;
-        let colours = if colors_changed { format!(", module colours {}", colours_name(self.bar.module_colors)) } else { String::new() };
-        log(&format!("theme reloaded: {}{colours}", describe(&self.theme_settings, mode)));
-        self.repaint_all();
+        log(&format!("theme reloaded: {}{}", describe(&self.theme_settings, mode), shape.note));
+        self.restyle(shape.placement);
     }
 
     /// Every surface once, with the current roles: the bars, an open popup, the launcher box.
@@ -346,6 +380,41 @@ mod tests {
             [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills].map(colours_name),
             ["none", "icons", "full", "pills"]
         );
+    }
+
+    use alpheus_commun::theme::settings::{BarStyle, ThemeSettings};
+
+    fn shaped(style: BarStyle, opacity: f32, module_colors: ModuleColors) -> ThemeSettings {
+        ThemeSettings { style, opacity, module_colors, ..ThemeSettings::default() }
+    }
+
+    #[test]
+    fn a_reload_restyles_on_a_new_style_opacity_or_module_colours() {
+        let flat = shaped(BarStyle::Flat, 0.8, ModuleColors::Icons);
+        let same = shape_change(&flat, &flat.clone());
+        assert_eq!((same.repaint, same.placement, same.note.as_str()), (false, false, ""), "nothing changed");
+        let c = shape_change(&flat, &shaped(BarStyle::Islands, 0.8, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", style islands"));
+        let c = shape_change(&flat, &shaped(BarStyle::Flat, 0.8, ModuleColors::Pills));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", module colours pills"));
+        let translucent = shaped(BarStyle::Translucent, 0.8, ModuleColors::Icons);
+        let c = shape_change(&translucent, &shaped(BarStyle::Translucent, 0.5, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.placement, c.note.as_str()), (true, false, ", opacity 0.5"));
+        let c = shape_change(&flat, &shaped(BarStyle::Flat, 0.5, ModuleColors::Icons));
+        assert_eq!((c.repaint, c.note.as_str()), (false, ""), "outside translucent the opacity changes no pixel");
+        let c = shape_change(&flat, &shaped(BarStyle::Translucent, 0.5, ModuleColors::Full));
+        assert_eq!(c.note, ", module colours full, style translucent, opacity 0.5", "every change, in a fixed order");
+    }
+
+    #[test]
+    fn only_a_switch_to_or_from_floating_reconfigures_the_surfaces() {
+        use BarStyle::*;
+        let s = |style| shaped(style, 0.8, ModuleColors::Icons);
+        assert!(shape_change(&s(Flat), &s(Floating)).placement, "flat -> floating");
+        assert!(shape_change(&s(Floating), &s(Islands)).placement, "floating -> islands");
+        for (a, b) in [(Flat, Islands), (Islands, Powerline), (Underline, Translucent), (Translucent, Flat), (Floating, Floating)] {
+            assert!(!shape_change(&s(a), &s(b)).placement, "{a:?} -> {b:?} keeps the placement");
+        }
     }
 
     fn no_link(_: &[u8]) -> bool {

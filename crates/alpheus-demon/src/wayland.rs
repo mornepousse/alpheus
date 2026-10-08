@@ -214,15 +214,25 @@ fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPla
 /// shrink, while `s.buffers` correctly empties with it). Picking an
 /// ineligible surface would mean the compositor never fires a frame
 /// callback (nothing attached to repaint), blocking `tray_frame_pending`
-/// forever.
-fn eligible_for_frame(configured: bool, has_buffer: bool) -> bool {
-    configured && has_buffer
+/// forever. Nor a bar waiting for the configure of a new placement (`Surface.placing`): its
+/// attached buffer has the old size, and the commit would show it under the new placement.
+fn eligible_for_frame(configured: bool, has_buffer: bool, placing: bool) -> bool {
+    configured && has_buffer && !placing
 }
 
 /// Whether bar `draw` may paint: configured, with a width, and not waiting for the configure of a
 /// new placement.
 fn drawable(configured: bool, width: u32, placing: bool) -> bool {
     configured && width != 0 && !placing
+}
+
+/// Whether a bar is still waiting for its placement after a configure `height` logical px tall:
+/// only the configure answering the latest placement (`wanted`, its surface height) ends the hold.
+/// The answer to an earlier one (two quick restyles, or a configure already in flight) has another
+/// height, since the placements differ by floating's shadow. 0 (the size left to the client) ends it
+/// too, so a bar never holds forever.
+fn still_placing(placing: bool, height: u32, wanted: u32) -> bool {
+    placing && height != 0 && height != wanted
 }
 
 /// Applies `p` to `layer`, uncommitted: margin, size, exclusive zone, and the input region (the
@@ -722,7 +732,6 @@ impl App {
     /// Review Focus 1: a popup (menu, tooltip, calendar) is anchored to its bar's surface at the old
     /// size; it is closed before that bar moves, never left hanging from a stale geometry. The
     /// launcher is its own layer surface, not anchored to a bar: it stays open.
-    #[expect(dead_code, reason = "called by the theme reload (shapes task 7)")]
     pub(crate) fn apply_bar_placement(&mut self) {
         let wanted = Placement::for_style(self.bar.style, self.bar.config.height);
         let moving: Vec<wl_surface::WlSurface> =
@@ -738,6 +747,19 @@ impl App {
             s.last = None;
             s.layer.commit();
         }
+    }
+
+    /// A reload changed the bar's shape (shapes spec § 4).
+    /// - To or from `floating`, every bar is re-placed first (`apply_bar_placement`, task 6): margin,
+    ///   size, exclusive zone, input region, an open popup on a moved bar closed; each moved bar
+    ///   holds its paint until its configure (`Surface.placing`).
+    /// - Then every surface is repainted once: the bars that may paint, an open popup, the
+    ///   launcher box.
+    pub(crate) fn restyle(&mut self, placement: bool) {
+        if placement {
+            self.apply_bar_placement();
+        }
+        self.repaint_all();
     }
 
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
@@ -912,8 +934,11 @@ impl App {
         if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
             return;
         }
-        let Some(surface) =
-            self.surfaces.iter().find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty())).map(|s| s.layer.wl_surface().clone())
+        let Some(surface) = self
+            .surfaces
+            .iter()
+            .find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty(), s.placing))
+            .map(|s| s.layer.wl_surface().clone())
         else {
             return;
         };
@@ -1246,10 +1271,11 @@ impl LayerShellHandler for App {
         // pending) succeeded, the output can again be restored in the
         // future if the compositor closes its surface again.
         let first_configure = !self.surfaces[i].configured;
-        // The configure of a new placement (a style switch): paint again, at the new size.
-        if self.surfaces[i].placing {
-            self.surfaces[i].placing = false;
-            self.surfaces[i].last = None;
+        // The configure of the latest placement (a style switch): paint again, at the new size.
+        let s = &mut self.surfaces[i];
+        if s.placing && !still_placing(s.placing, c.new_size.1, s.placement.surface_height) {
+            s.placing = false;
+            s.last = None;
         }
         if self.surfaces[i].width != c.new_size.0 {
             self.surfaces[i].last = None;
@@ -2041,9 +2067,36 @@ mod tests {
     /// every later re-read.
     #[test]
     fn tray_sync_never_picks_a_surface_with_no_attached_buffer() {
-        assert!(!eligible_for_frame(true, false), "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)");
-        assert!(!eligible_for_frame(false, true), "not configured yet: no commit belongs to it either");
-        assert!(eligible_for_frame(true, true), "configured and holding an attached buffer");
+        assert!(
+            !eligible_for_frame(true, false, false),
+            "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)"
+        );
+        assert!(!eligible_for_frame(false, true, false), "not configured yet: no commit belongs to it either");
+        assert!(eligible_for_frame(true, true, false), "configured and holding an attached buffer");
+    }
+
+    /// Task 6 review: a bar re-placed for a new style holds its old-size buffer until its configure;
+    /// a frame request committed on it meanwhile would commit that stale buffer under the new
+    /// placement.
+    #[test]
+    fn tray_sync_never_picks_a_bar_waiting_for_its_new_placement() {
+        assert!(!eligible_for_frame(true, true, true), "re-placed, its configure not come yet");
+    }
+
+    /// Task 6 review: only the configure answering the LATEST placement ends the hold. Two quick
+    /// restyles (floating -> flat -> floating before any configure) get the answer to the first one
+    /// first: painting then would draw a floating bar at the flat size.
+    #[test]
+    fn only_the_configure_of_the_latest_placement_ends_the_hold() {
+        use alpheus_commun::theme::settings::BarStyle;
+        let flat = Placement::for_style(BarStyle::Flat, 22).surface_height;
+        let floating = Placement::for_style(BarStyle::Floating, 22).surface_height;
+        assert_ne!(flat, floating, "the check bites only if the two placements differ in height");
+        let wanted = floating;
+        assert!(still_placing(true, flat, wanted), "the answer to the first restyle (flat) keeps holding");
+        assert!(!still_placing(true, floating, wanted), "the answer to the latest one ends the hold");
+        assert!(!still_placing(true, 0, wanted), "a size left to the client (0) never holds forever");
+        assert!(!still_placing(false, flat, wanted), "not placing: nothing to end");
     }
 
     /// Review items M3/M4, final review slice 3: the same check used by

@@ -799,3 +799,37 @@ fn theme_reloads_no_growth() {
     eprintln!("theme reloads: PSS {baseline} KB after 4 warm-up reloads, {end} KB after 50 more (3 outputs)");
     assert!(end <= baseline + 768, "growth: {baseline} -> {end} KB over 50 reloads");
 }
+
+/// Shapes delivery: every style, in the order the tests switch to them (`flat` last, so the
+/// switch back from translucent is measured too).
+const STYLES: [&str; 6] = ["islands", "powerline", "floating", "underline", "translucent", "flat"];
+
+/// Shapes task 7: no style adds a wake-up at rest, `floating`'s reconfigured surfaces included.
+/// Three outputs, 5 s per style, away from the minute so the clock never ticks inside a window.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_under_each_style() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("style-rest");
+    let toml = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+    let (sway, _hypr, d) = start("style-rest", 3, &bus, None, Some(toml), PwDump::Silent);
+    let config = sway.runtime.join("config/alpheus");
+    const REST: Duration = Duration::from_secs(5);
+    let mut report = Vec::new();
+    for style in STYLES {
+        write_atomically(&config, "theme.toml", &format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\n"));
+        assert!(d.wait_for(&format!(", style {style}"), DELAY), "{style}: {:?}", d.log());
+        std::thread::sleep(Duration::from_secs(1)); // the repaint and, for floating, the configures settled
+        away_from_the_minute(REST);
+        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        std::thread::sleep(REST);
+        let delta = d.wakeups().saturating_sub(before);
+        let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+        report.push((style, delta, main_delta));
+    }
+    eprintln!("wake-ups at rest per style (5 s each, 3 outputs; style, whole daemon, loop thread): {report:?}");
+    for (style, delta, main_delta) in &report {
+        assert_eq!(*main_delta, 0, "{style}: loop-thread wake-ups at rest: {report:?}");
+        assert!(*delta <= 4, "{style}: {delta} wake-ups in 5 s at rest: {report:?}");
+    }
+}

@@ -958,6 +958,18 @@ impl Sway {
         Ppm::parse(&out.stdout)
     }
 
+    /// y of the first workspace's rect, from THIS test's sway (its own IPC socket): where tiled
+    /// windows start (sway's default gaps are 0), below the space reserved at the top by exclusive
+    /// zones and their margins. None if swaymsg fails or prints no rect.
+    pub fn workspace_y(&self) -> Option<u32> {
+        let out = Command::new("swaymsg").arg("-s").arg(&self.ipc).args(["-t", "get_workspaces", "-r"]).output().ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        let rect = &text[text.find("\"rect\"")?..];
+        let after = rect[rect.find("\"y\"")? + 3..].trim_start().strip_prefix(':')?.trim_start();
+        let end = after.find(|c: char| !c.is_ascii_digit())?;
+        after[..end].parse().ok()
+    }
+
     /// Screenshots `output` until `ok` holds, 10 s at most: the daemon paints asynchronously.
     pub fn wait_for_screen(&self, output: &str, ok: impl Fn(&Ppm) -> bool) -> bool {
         let t = Instant::now();

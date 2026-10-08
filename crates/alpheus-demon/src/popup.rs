@@ -617,7 +617,6 @@ impl App {
     }
 
     /// Closes the open popup if it hangs from `parent` (a bar about to be re-placed, shapes task 6).
-    #[expect(dead_code, reason = "called by the theme reload (shapes task 7)")]
     pub(crate) fn popup_close_if_parent(&mut self, parent: &wl_surface::WlSurface, why: PopupClose) {
         if self.popup.as_ref().is_some_and(|p| &p.parent == parent) {
             self.popup_close(why);

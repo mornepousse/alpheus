@@ -517,17 +517,18 @@ fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
 
 /// Mae (2026-10-08): inside a pill a MUTED cell (the gauge's unlit cells, Bluetooth off, offline,
 /// an outage's "–") is the pill's ink mixed 50 % toward the fill, so it reads paler than normal
-/// text, which keeps the full ink; states still win.
+/// text, which keeps the full ink; states still win. Floating's pills blocks too (task 6 review).
 #[test]
 fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
     let roles = Roles::default();
     let mut p = fonts();
     let rgb = |[r, g, b, _]: [u8; 4]| [r, g, b];
     let cases = [
-        (BarStyle::Islands, Hue::Blue, two_blocks(Some(Hue::Blue)), Grid::empty(COLUMNS)),
-        (BarStyle::Powerline, Hue::Green, powerline_groups(Some(Hue::Green)), split_grid(5)),
+        (BarStyle::Islands, Hue::Blue, two_blocks(Some(Hue::Blue)), Grid::empty(COLUMNS), DEFAULT_HEIGHT),
+        (BarStyle::Powerline, Hue::Green, powerline_groups(Some(Hue::Green)), split_grid(5), DEFAULT_HEIGHT),
+        (BarStyle::Floating, Hue::Purple, two_blocks(Some(Hue::Purple)), Grid::empty(COLUMNS), FLOATING),
     ];
-    for (style, hue, groups, mut grid) in cases {
+    for (style, hue, groups, mut grid, height) in cases {
         grid.write(6, 7, "█", Style::MUTED);
         grid.write(7, 8, "█", Style::NORMAL);
         grid.write(8, 9, "█", Style::WARN);
@@ -535,8 +536,9 @@ fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
         let ink = blocks::on_fill(&roles, fill);
         for scale in [1, 2] {
             let bg = background(style, 0.8, ModuleColors::Pills, &groups);
-            let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT);
-            let y = s.h / 2;
+            let s = Painted::new(&mut p, &grid, &roles, &bg, scale, height);
+            // The bar's middle row: floating's surface also holds its shadow, below the bar.
+            let y = DEFAULT_HEIGHT * s.e / 2;
             let muted = rgb(s.at(s.mid(6), y));
             for (k, (m, (i, f))) in muted.into_iter().zip(rgb(opaque(ink)).into_iter().zip(rgb(opaque(fill)))).enumerate() {
                 let half = (i32::from(i) + i32::from(f)) / 2;
@@ -546,7 +548,7 @@ fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
             assert!(muted != rgb(opaque(ink)) && muted != rgb(opaque(fill)), "{style:?} scale {scale}: strictly between");
             assert_eq!(s.at(s.mid(7), y), opaque(ink), "{style:?} scale {scale}: normal text keeps the full ink");
             assert_eq!(s.at(s.mid(8), y), opaque(roles.warn), "{style:?} scale {scale}: a state still wins");
-            let icons = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, ModuleColors::Icons, &groups), scale, DEFAULT_HEIGHT);
+            let icons = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, ModuleColors::Icons, &groups), scale, height);
             assert_eq!(icons.at(s.mid(6), y), opaque(roles.fg_dim), "{style:?} scale {scale}: without pills, muted is fg_dim");
         }
     }

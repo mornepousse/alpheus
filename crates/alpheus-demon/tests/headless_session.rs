@@ -1454,6 +1454,153 @@ fn a_truncated_colour_file_keeps_the_colours_until_the_full_one() {
     assert_eq!(d.count("keeping the current colours"), 1, "{:?}", d.log());
 }
 
+/// The bar's middle row (22 px high by default).
+const MIDDLE: u32 = 11;
+
+/// Polls `ok` for 10 s at most.
+fn wait_until(ok: impl Fn() -> bool) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < DELAY {
+        if ok() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Shapes task 7: a bar on catppuccin dark holding only the clock, at the left edge. Also returns
+/// what the compositor draws where the bar's right end will be, read BEFORE the bar exists: what a
+/// transparent pixel there must show (grim drops alpha, and there is no swaybg in these tests).
+fn shape_bar(name: &str) -> (Sway, FakeHyprland, Daemon, PathBuf, [u8; 3]) {
+    let sway = Sway::start(name, 1);
+    let t = Instant::now();
+    let behind = loop {
+        if let Some(p) = sway.screenshot("HEADLESS-1").and_then(|s| s.at(s.width - 20, MIDDLE)) {
+            break p;
+        }
+        assert!(t.elapsed() < DELAY, "grim never read the empty output");
+        thread::sleep(Duration::from_millis(50));
+    };
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(CLOCK_BAR), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let mocha = bar_bg("catppuccin");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(s.width - 20, MIDDLE) == Some(mocha)), "flat, end to end: {:?}", d.log());
+    assert_ne!(behind, mocha, "the checks bite only if the compositor's background differs from bar_bg");
+    (sway, hypr, d, config, behind)
+}
+
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn islands_gaps_show_what_is_behind_the_bar_and_translucent_blends_it() {
+    let (sway, _hypr, d, config, behind) = shape_bar("shape-islands");
+    let mocha = bar_bg("catppuccin");
+    let pill = rgb(preset("catppuccin").unwrap().dark.pill_bg);
+    assert_ne!(behind, pill, "the block check bites only if the background differs from pill_bg");
+    let end = |s: &Ppm| s.at(s.width - 20, MIDDLE);
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"islands\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style islands", DELAY), "{:?}", d.log());
+    // The empty right end is a gap: transparent. The clock's block is drawn on pill_bg: a bar that
+    // drew nothing at all would show the background at the end too.
+    let islands = |s: &Ppm| end(s) == Some(behind) && (0..s.width / 2).any(|x| s.at(x, MIDDLE) == Some(pill));
+    assert!(sway.wait_for_screen("HEADLESS-1", islands), "{:?}", d.log());
+    // Translucent at 0.5: bar_bg premultiplied by α = 128/255, over what is behind.
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"translucent\"\nopacity = 0.5\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style translucent, opacity 0.5", DELAY), "{:?}", d.log());
+    let blend = |c: usize| {
+        let a = 128.0 / 255.0;
+        f32::from(mocha[c]) * a + f32::from(behind[c]) * (1.0 - a)
+    };
+    assert!((0..3).any(|c| (blend(c) - f32::from(mocha[c])).abs() > 2.0), "the blend check bites only if it differs from opaque");
+    let blended = |s: &Ppm| end(s).is_some_and(|p| (0..3).all(|c| (f32::from(p[c]) - blend(c)).abs() <= 2.0));
+    assert!(sway.wait_for_screen("HEADLESS-1", blended), "{:?}", d.log());
+    // Back to flat: opaque again, end to end.
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"flat\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style flat", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| end(s) == Some(mocha)), "{:?}", d.log());
+    assert_eq!(d.count("theme reloaded:"), 3, "one reload per write: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn floating_moves_the_bar_down_by_its_margin_and_back() {
+    let (sway, _hypr, mut d, config, behind) = shape_bar("shape-floating");
+    let mocha = bar_bg("catppuccin");
+    // The middle column crosses the bar's empty middle (the clock sits at the left edge).
+    let first_row = |s: &Ppm| (0..s.height).find(|y| s.at(s.width / 2, *y) == Some(mocha));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| first_row(s) == Some(0)), "flat: from the top edge: {:?}", d.log());
+    assert!(wait_until(|| sway.workspace_y() == Some(22)), "flat reserves the bar's height: {:?}", sway.workspace_y());
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style floating", DELAY), "{:?}", d.log());
+    // 6 px lower, the margin above showing what is behind, the top-left corner rounded off. A bar
+    // that never repainted after its new configure would still show its old flat buffer at (6, 6).
+    let floating = |s: &Ppm| first_row(s) == Some(6) && (0..6).all(|y| s.at(s.width / 2, y) == Some(behind)) && s.at(6, 6) == Some(behind);
+    assert!(sway.wait_for_screen("HEADLESS-1", floating), "{:?}", d.log());
+    // Reconciliation 5: the exclusive zone is the bar height and the compositor adds the 6 px
+    // top margin, so tiled windows start at 6 + 22, just under the floating bar.
+    assert!(wait_until(|| sway.workspace_y() == Some(28)), "floating: windows start at 6 + 22: {:?}", sway.workspace_y());
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"flat\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style flat", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| first_row(s) == Some(0) && s.at(6, 6) == Some(mocha)), "{:?}", d.log());
+    assert!(wait_until(|| sway.workspace_y() == Some(22)), "back to 22: {:?}", sway.workspace_y());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// Review Focus 1: the calendar hangs from the bar's surface; a switch to floating moves and resizes
+/// that surface, so the calendar is closed first, and opens again on the moved bar.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn a_switch_to_floating_closes_a_popup_hanging_from_the_bar() {
+    let (sway, _hypr, mut d, config, _behind) = shape_bar("shape-popup");
+    let (x, y) = CLOCK_AT;
+    sway.click(x, y, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\n");
+    assert!(d.wait_for("popup closed (restyled)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style floating", DELAY), "{:?}", d.log());
+    let popup = d.log().iter().position(|l| l.contains("popup closed (restyled)"));
+    let reload = d.log().iter().position(|l| l.contains("theme reloaded:"));
+    assert!(popup.is_some() && reload.is_some(), "{:?}", d.log());
+    // The moved bar: the clock is 6 px further right and down.
+    thread::sleep(Duration::from_millis(300)); // the configure and the repaint
+    sway.click(x + 6, y + 6, "button1");
+    assert!(d.wait_for_count("calendar shown", 2, DELAY), "the calendar opens again on the moved bar: {:?}", d.log());
+    // A style switch that keeps the placement leaves an open popup alone.
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"floating\"\nmodule_colors = \"full\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, module colours full", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("popup closed"), 1, "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// Review Focus 5: an invalid style is one warning and `flat`, with one repaint; reading the same
+/// file again repeats neither the warning nor the reload.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn an_invalid_style_warns_once_and_falls_back_to_flat() {
+    let (sway, _hypr, mut d, config, behind) = shape_bar("shape-invalid");
+    let mocha = bar_bg("catppuccin");
+    let end = |s: &Ppm| s.at(s.width - 20, MIDDLE);
+    write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"islands\"\n");
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style islands", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| end(s) == Some(behind)), "{:?}", d.log());
+    let bad = "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"round\"\n";
+    write_atomically(&config, "theme.toml", bad);
+    assert!(d.wait_for("style must be one of", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("theme reloaded: catppuccin, dark, style flat", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| end(s) == Some(mocha)), "flat again: {:?}", d.log());
+    // The same file again, then with a comment: two more reads, nothing new to say.
+    write_atomically(&config, "theme.toml", bad);
+    write_atomically(&config, "theme.toml", &format!("# still round\n{bad}"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("style must be one of"), 1, "the warning is not repeated: {:?}", d.log());
+    assert_eq!(d.count("theme reloaded:"), 2, "islands, then flat once: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
 /// The mode file the TUI reads (themes task 6), or None.
 fn mode_file(sway: &Sway) -> Option<String> {
     std::fs::read_to_string(sway.runtime.join("alpheus/mode")).ok()
