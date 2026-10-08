@@ -114,6 +114,9 @@ pub(crate) struct Segment {
     /// Click zone covering the whole segment (system modules); `None`: only
     /// the pieces' own zones (workspaces), or none (title, clock).
     pub(crate) target: Option<Target>,
+    /// The block styles give this segment's block no hue (the neutral fill): a state wins over the
+    /// hue (a paused media).
+    pub(crate) withhold_hue: bool,
 }
 
 impl Segment {
@@ -174,7 +177,7 @@ fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
             m
         }
     };
-    Some(Segment { module: ModuleId::Workspaces, pieces, elastic: false, target: None })
+    Some(Segment { module: ModuleId::Workspaces, pieces, elastic: false, target: None, withhold_hue: false })
 }
 
 /// `None` with no active window: no empty segment (no "│ <empty> │"),
@@ -189,7 +192,7 @@ fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
         ],
         Feed::Ready(_) => return None,
     };
-    Some(Segment { module: ModuleId::Window, pieces, elastic: true, target: None })
+    Some(Segment { module: ModuleId::Window, pieces, elastic: true, target: None, withhold_hue: false })
 }
 
 /// The clock is a click zone only when a left click opens the calendar (`[clock] calendar`).
@@ -207,7 +210,7 @@ fn bar_clock(bar: &Bar) -> Segment {
         }
     };
     let target = bar.config.clock.calendar.then_some(Target::Module(ModuleId::Clock));
-    Segment { module: ModuleId::Clock, pieces, elastic: false, target }
+    Segment { module: ModuleId::Clock, pieces, elastic: false, target, withhold_hue: false }
 }
 
 /// A module's segment, or None if it has nothing to show.
@@ -351,7 +354,7 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
             {
                 record_block(&mut g, Group { kind, start, end: text_end.saturating_add(pad), hue });
             }
-            open = Some((group_kind(s.module), x, module_hue(s.module)));
+            open = Some((group_kind(s.module), x, if s.withhold_hue { None } else { module_hue(s.module) }));
             x = x.saturating_add(pad);
         }
         let limit = if s.elastic { x.saturating_add(free).min(end) } else { end };
@@ -961,6 +964,19 @@ mod tests {
         }
         let g = styled(bar_with_media(true), BarStyle::Islands).grid("HDMI-A-1", 100);
         insta::assert_snapshot!("media_islands_100", snapshot(&g));
+    }
+
+    #[test]
+    fn a_paused_media_block_takes_no_hue_even_with_pills() {
+        for style in [BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating] {
+            for (playing, want) in [(true, Some(Hue::Purple)), (false, None)] {
+                let mut b = styled(bar_with_media(playing), style);
+                b.module_colors = ModuleColors::Pills;
+                let g = b.grid("HDMI-A-1", 100);
+                let media = g.groups().iter().find(|x| x.kind == GroupKind::Media).expect("a media block");
+                assert_eq!(media.hue, want, "{style:?}, playing {playing}: a paused block stays neutral");
+            }
+        }
     }
 
     #[test]

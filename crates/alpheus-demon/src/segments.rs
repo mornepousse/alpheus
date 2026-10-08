@@ -79,7 +79,7 @@ pub(crate) fn text_style(mc: ModuleColors, hue: Hue, base: Style) -> Style {
 }
 
 fn module_segment(module: ModuleId, pieces: Vec<Piece>) -> Segment {
-    Segment { module, pieces, elastic: false, target: Some(Target::Module(module)) }
+    Segment { module, pieces, elastic: false, target: Some(Target::Module(module)), withhold_hue: false }
 }
 
 /// A source that is down: its icon then "–", dimmed (spec § 3).
@@ -364,7 +364,9 @@ pub(crate) fn media(view: Option<&MediaView>, mc: ModuleColors) -> Option<Segmen
     } else {
         vec![piece(format!("{mark} "), icon), piece(v.title.clone(), text)]
     };
-    Some(module_segment(ModuleId::Media, pieces))
+    let mut segment = module_segment(ModuleId::Media, pieces);
+    segment.withhold_hue = !v.playing;
+    Some(segment)
 }
 
 /// One tray icon (spec § 1 Icons): a glyph NORMAL, a letter BOLD_ACCENT (the
@@ -399,7 +401,7 @@ pub(crate) fn tray(icons: &[TrayIcon], config: &TrayConfig) -> Option<Segment> {
     if pieces.is_empty() {
         return None;
     }
-    Some(Segment { module: ModuleId::Tray, pieces, elastic: false, target: None })
+    Some(Segment { module: ModuleId::Tray, pieces, elastic: false, target: None, withhold_hue: false })
 }
 
 #[cfg(test)]
@@ -622,6 +624,8 @@ mod tests {
         assert_eq!(at(true, ModuleColors::Pills), "pppppp", "pills lays out as full");
         for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
             assert_eq!(at(false, mc), "mmmmmm", "paused stays dim under {mc:?}");
+            let flags = |playing| super::media(Some(&song(playing, "Song")), mc).unwrap().withhold_hue;
+            assert_eq!((flags(true), flags(false)), (false, true), "only a paused block withholds its hue ({mc:?})");
         }
     }
 
