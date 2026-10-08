@@ -22,6 +22,7 @@ pub mod list;
 pub mod lock;
 pub mod log;
 pub mod media;
+pub mod media_popup;
 pub mod memory;
 pub mod nonblocking;
 pub mod painter;
