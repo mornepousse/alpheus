@@ -514,3 +514,51 @@ fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
     let s = Painted::new(&mut p, &grid, &roles, &flat, 1, DEFAULT_HEIGHT);
     assert_eq!(s.at(s.mid(4), s.h / 2), opaque(roles.accent_container), "flat: no blocks, no clipping");
 }
+
+/// Mae (2026-10-08): inside a pill a MUTED cell (the gauge's unlit cells, Bluetooth off, offline,
+/// an outage's "–") is the pill's ink mixed 50 % toward the fill, so it reads paler than normal
+/// text, which keeps the full ink; states still win.
+#[test]
+fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
+    let roles = Roles::default();
+    let mut p = fonts();
+    let rgb = |[r, g, b, _]: [u8; 4]| [r, g, b];
+    let cases = [
+        (BarStyle::Islands, Hue::Blue, two_blocks(Some(Hue::Blue)), Grid::empty(COLUMNS)),
+        (BarStyle::Powerline, Hue::Green, powerline_groups(Some(Hue::Green)), split_grid(5)),
+    ];
+    for (style, hue, groups, mut grid) in cases {
+        grid.write(6, 7, "█", Style::MUTED);
+        grid.write(7, 8, "█", Style::NORMAL);
+        grid.write(8, 9, "█", Style::WARN);
+        let fill = color(&roles, roles.bar_bg, Tint::Hue(hue));
+        let ink = blocks::on_fill(&roles, fill);
+        for scale in [1, 2] {
+            let bg = background(style, 0.8, ModuleColors::Pills, &groups);
+            let s = Painted::new(&mut p, &grid, &roles, &bg, scale, DEFAULT_HEIGHT);
+            let y = s.h / 2;
+            let muted = rgb(s.at(s.mid(6), y));
+            for (k, (m, (i, f))) in muted.into_iter().zip(rgb(opaque(ink)).into_iter().zip(rgb(opaque(fill)))).enumerate() {
+                let half = (i32::from(i) + i32::from(f)) / 2;
+                assert!((i32::from(m) - half).abs() <= 1, "{style:?} scale {scale}: channel {k} = {m}, halfway {half}");
+                assert!(m >= i.min(f) && m <= i.max(f), "{style:?} scale {scale}: channel {k} between ink and fill");
+            }
+            assert!(muted != rgb(opaque(ink)) && muted != rgb(opaque(fill)), "{style:?} scale {scale}: strictly between");
+            assert_eq!(s.at(s.mid(7), y), opaque(ink), "{style:?} scale {scale}: normal text keeps the full ink");
+            assert_eq!(s.at(s.mid(8), y), opaque(roles.warn), "{style:?} scale {scale}: a state still wins");
+            let icons = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, ModuleColors::Icons, &groups), scale, DEFAULT_HEIGHT);
+            assert_eq!(icons.at(s.mid(6), y), opaque(roles.fg_dim), "{style:?} scale {scale}: without pills, muted is fg_dim");
+        }
+    }
+    // Flat and underline: pills paints as full, muted cells included.
+    let groups = two_blocks(Some(Hue::Blue));
+    let mut grid = Grid::empty(COLUMNS);
+    grid.write(6, 10, "████", Style::MUTED);
+    for style in [BarStyle::Flat, BarStyle::Underline] {
+        for scale in [1, 2] {
+            let pills = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, ModuleColors::Pills, &groups), scale, DEFAULT_HEIGHT);
+            let full = Painted::new(&mut p, &grid, &roles, &background(style, 0.8, ModuleColors::Full, &groups), scale, DEFAULT_HEIGHT);
+            assert!(pills.px == full.px, "{style:?} scale {scale}: muted unchanged");
+        }
+    }
+}

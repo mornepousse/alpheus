@@ -589,8 +589,8 @@ impl Fonts {
         }
     }
 
-    /// `grid`'s glyphs. A glyph inside one of the `on` blocks (pills) takes the block's ink unless
-    /// its cell is in a state (`blocks::in_state`).
+    /// `grid`'s glyphs. A glyph inside one of the `on` blocks (pills) takes the block's ink (its
+    /// muted ink for a muted cell) unless its cell is in a state (`blocks::in_state`).
     #[allow(clippy::too_many_arguments)]
     fn glyphs(&mut self, grid: &Grid, roles: &Roles, base: Rgb, px: &mut [u8], width: u32, height: u32, x0: u32, on: &[OnBlock]) {
         let advance = self.advance;
@@ -603,7 +603,9 @@ impl Fonts {
             let ink = if blocks::in_state(c.style) {
                 own
             } else {
-                on.iter().find(|b| usize::from(b.start) <= col && col < usize::from(b.end)).map_or(own, |b| b.ink)
+                on.iter()
+                    .find(|b| usize::from(b.start) <= col && col < usize::from(b.end))
+                    .map_or(own, |b| if c.style.fg == Tint::FgDim { b.muted } else { b.ink })
             };
             self.glyph(c.ch, c.style.bold, edge(col) as f32, ink, px, width, height);
         }

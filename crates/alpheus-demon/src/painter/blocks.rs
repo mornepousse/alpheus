@@ -30,12 +30,14 @@ pub(crate) const ISLAND_INSET: u32 = 2;
 /// Task 3's fill (`background::fill_rect`), under the name the block passes use.
 pub(crate) use crate::background::fill_rect as fill_px;
 
-/// The pills text colour over the cells [start, end) of one block.
+/// The pills text colours over the cells [start, end) of one block: `ink` for normal text, `muted`
+/// for a muted cell (`Tint::FgDim`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OnBlock {
     pub start: u16,
     pub end: u16,
     pub ink: Rgb,
+    pub muted: Rgb,
 }
 
 pub(crate) fn opaque(c: Rgb) -> Px {
@@ -102,6 +104,13 @@ pub(crate) fn on_fill(roles: &Roles, fill: Rgb) -> Rgb {
     if ratio(roles.bar_bg, fill) >= ratio(roles.fg, fill) { roles.bar_bg } else { roles.fg }
 }
 
+/// A muted cell's ink on a pill (Mae, 2026-10-08): the pill's `ink` mixed 50 % toward its `fill`,
+/// paler than normal text, as `fg_dim` is beside `fg` on the bar.
+pub(crate) fn muted_on_fill(ink: Rgb, fill: Rgb) -> Rgb {
+    let half = |a: u8, b: u8| (u16::from(a) + u16::from(b)).div_ceil(2) as u8;
+    Rgb(half(ink.0, fill.0), half(ink.1, fill.1), half(ink.2, fill.2))
+}
+
 /// A cell whose colours win over a pill's ink: warn, error (attention), urgent, or any cell with
 /// its own background (the active workspace on `accent_container`).
 pub(crate) fn in_state(s: Style) -> bool {
@@ -111,7 +120,7 @@ pub(crate) fn in_state(s: Style) -> bool {
 /// The pills ink of every hued block, on the stack (no allocation per frame); none when pills does
 /// not apply, so the text pass is then exactly today's.
 pub(crate) fn pill_inks(roles: &Roles, bg: &Background) -> ([OnBlock; MAX_BLOCKS], usize) {
-    let mut on = [OnBlock { start: 0, end: 0, ink: roles.fg }; MAX_BLOCKS];
+    let mut on = [OnBlock { start: 0, end: 0, ink: roles.fg, muted: roles.fg_dim }; MAX_BLOCKS];
     let mut n = 0;
     if pills(bg) {
         for g in bg.groups {
@@ -119,7 +128,9 @@ pub(crate) fn pill_inks(roles: &Roles, bg: &Background) -> ([OnBlock; MAX_BLOCKS
             if n == MAX_BLOCKS {
                 break;
             }
-            on[n] = OnBlock { start: g.start, end: g.end, ink: on_fill(roles, color(roles, roles.bar_bg, Tint::Hue(h))) };
+            let fill = color(roles, roles.bar_bg, Tint::Hue(h));
+            let ink = on_fill(roles, fill);
+            on[n] = OnBlock { start: g.start, end: g.end, ink, muted: muted_on_fill(ink, fill) };
             n += 1;
         }
     }
