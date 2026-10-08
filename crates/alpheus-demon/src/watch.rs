@@ -10,10 +10,10 @@ use crate::launch::describe;
 use crate::log::write as log;
 use crate::wayland::App;
 use alpheus_commun::paths;
-use alpheus_commun::theme::Roles;
 use alpheus_commun::theme::settings::{
-    BarStyle, DARK_FILE, LIGHT_FILE, ModuleColors, THEME_FILE, ThemeSettings, effective_mode, resolve_dir,
+    BarStyle, DARK_FILE, LIGHT_FILE, ModuleColors, Resolved, THEME_FILE, ThemeSettings, effective_mode, resolve_dir,
 };
+use alpheus_commun::theme::{Mode, Roles};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
 use std::ffi::{CString, OsStr};
@@ -300,6 +300,18 @@ pub(crate) fn shape_change(old: &ThemeSettings, new: &ThemeSettings) -> ShapeCha
     ShapeChange { repaint: !note.is_empty(), placement: floating(old) != floating(new), note }
 }
 
+/// `resolve_dir` for a reload, or None when theme.toml exists but holds nothing (empty or
+/// whitespace): an editor truncating it mid-save, most likely. The settings and colours in effect
+/// then stay, as a colour file caught mid-write keeps the colours (themes delivery 1); the next
+/// write of the file re-resolves. Startup does not go through here: an empty file there is the
+/// defaults.
+pub(crate) fn reload_settings(dir: &Path, portal: impl FnOnce() -> Option<Mode>) -> Option<(ThemeSettings, Resolved)> {
+    match std::fs::read(dir.join(THEME_FILE)) {
+        Ok(text) if text.iter().all(u8::is_ascii_whitespace) => None,
+        _ => Some(resolve_dir(dir, portal)),
+    }
+}
+
 impl App {
     /// The inotify fd is readable (calloop callback): every queued record drained, one re-resolve at most.
     pub(crate) fn theme_readable(&mut self) {
@@ -317,7 +329,13 @@ impl App {
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
         let portal = self.portal_mode;
-        let (settings, resolved) = resolve_dir(&dir, || portal);
+        let Some((settings, resolved)) = reload_settings(&dir, || portal) else {
+            if !self.blank_theme_noted {
+                self.blank_theme_noted = true;
+                log("theme: theme.toml is empty, keeping the current settings until it is written");
+            }
+            return;
+        };
         let mode = effective_mode(settings.mode, portal);
         let warnings = resolved.lines();
         let mut new_lines = false;
@@ -415,6 +433,27 @@ mod tests {
         for (a, b) in [(Flat, Islands), (Islands, Powerline), (Underline, Translucent), (Translucent, Flat), (Floating, Floating)] {
             assert!(!shape_change(&s(a), &s(b)).placement, "{a:?} -> {b:?} keeps the placement");
         }
+    }
+
+    /// An editor that truncates theme.toml before writing it hands a reload an empty file: the
+    /// settings in effect stay (a floating bar never flips to flat and back, closing a popup), and
+    /// the next real file applies. A missing theme.toml is not empty: its defaults apply.
+    #[test]
+    fn an_empty_theme_toml_during_a_reload_keeps_the_settings() {
+        let dir = temp("blank");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(THEME_FILE);
+        for blank in ["", " \n\t\n"] {
+            std::fs::write(&path, blank).unwrap();
+            assert!(reload_settings(&dir, || None).is_none(), "{blank:?}: kept");
+        }
+        std::fs::write(&path, "style = \"floating\"\n").unwrap();
+        let (settings, _) = reload_settings(&dir, || None).expect("a real file applies");
+        assert_eq!(settings.style, BarStyle::Floating);
+        std::fs::remove_file(&path).unwrap();
+        let (settings, _) = reload_settings(&dir, || None).expect("no file: the defaults apply");
+        assert_eq!(settings.style, BarStyle::Flat);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn no_link(_: &[u8]) -> bool {

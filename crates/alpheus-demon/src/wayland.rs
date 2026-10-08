@@ -380,6 +380,9 @@ pub struct App {
     pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
     /// The resolver's warnings at the last resolve: a reload logs only new ones.
     pub(crate) theme_warnings: Vec<String>,
+    /// An empty theme.toml met during a reload was logged (once per run: editors that truncate
+    /// before writing would log every save otherwise).
+    pub(crate) blank_theme_noted: bool,
     /// The inotify watch on the config directory; None: the theme files are read at startup only.
     pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
     pub(crate) fonts: Fonts,
@@ -585,6 +588,7 @@ impl App {
             theme_settings,
             portal_mode: None,
             theme_warnings: Vec::new(),
+            blank_theme_noted: false,
             theme_watch: None,
             roles,
             fonts,
@@ -755,6 +759,9 @@ impl App {
             apply_placement(compositor, &s.layer, &wanted);
             s.placed_from = s.placement.surface_height;
             s.placement = wanted;
+            // Assumption: a configure always follows this change. The surface's size changes with
+            // the placement (floating's margin and shadow), and a compositor answers a size change
+            // with a configure; until then `placing` holds the bar's paint.
             s.placing = true;
             s.answered = 0;
             s.last = None;
