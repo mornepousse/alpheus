@@ -264,6 +264,7 @@ fn colours_name(mc: ModuleColors) -> &'static str {
         ModuleColors::None => "none",
         ModuleColors::Icons => "icons",
         ModuleColors::Full => "full",
+        ModuleColors::Pills => "pills",
     }
 }
 
@@ -341,7 +342,10 @@ mod tests {
         assert!(repaint_needed(&r, &r, true), "equal roles, other module colours: repaint");
         let other = Roles { fg: alpheus_commun::theme::Rgb(1, 2, 3), ..Roles::default() };
         assert!(repaint_needed(&other, &r, false), "other roles: repaint");
-        assert_eq!([ModuleColors::None, ModuleColors::Icons, ModuleColors::Full].map(colours_name), ["none", "icons", "full"]);
+        assert_eq!(
+            [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills].map(colours_name),
+            ["none", "icons", "full", "pills"]
+        );
     }
 
     fn no_link(_: &[u8]) -> bool {

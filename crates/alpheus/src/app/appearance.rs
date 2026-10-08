@@ -44,6 +44,7 @@ pub fn colors_label(m: ModuleColors) -> &'static str {
         ModuleColors::None => "None",
         ModuleColors::Icons => "Icons",
         ModuleColors::Full => "Full",
+        ModuleColors::Pills => "Pills",
     }
 }
 
@@ -53,6 +54,7 @@ fn colors_value(m: ModuleColors) -> &'static str {
         ModuleColors::None => "none",
         ModuleColors::Icons => "icons",
         ModuleColors::Full => "full",
+        ModuleColors::Pills => "pills",
     }
 }
 
@@ -130,8 +132,13 @@ impl AppearanceTab {
         let Some(entry) = self.entries.get(self.cursor).copied() else { return };
         let mode = self.effective_mode();
         let dir = self.dir.clone().unwrap_or_default();
-        let settings =
-            |source| ThemeSettings { source, mode: self.mode, overrides: self.overrides.clone(), module_colors: self.module_colors };
+        let settings = |source| ThemeSettings {
+            source,
+            mode: self.mode,
+            overrides: self.overrides.clone(),
+            module_colors: self.module_colors,
+            ..ThemeSettings::default()
+        };
         if entry.key == WALLPAPER {
             if self.wallpaper.as_ref().is_none_or(|(m, ..)| *m != mode) {
                 let (roles, warnings) = resolve(&settings(ThemeSource::Wallpaper), mode, &dir);
@@ -647,5 +654,16 @@ pub(crate) mod tests {
         assert_eq!(a.appearance.preview.unwrap().bar_bg, preset("dracula").unwrap().dark.bar_bg, "only fg is overridden");
         let (a, _) = open("no-overrides", &[("theme.toml", "theme = \"nord\"\n")]);
         assert_eq!(a.appearance.preview, Some(preset("nord").unwrap().dark));
+    }
+
+    /// Every module-colours value the TUI can write is one theme.toml reads back, `pills` included.
+    #[test]
+    fn every_module_colours_value_reads_back() {
+        use alpheus_commun::theme::settings::parse_settings;
+        for m in [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills] {
+            let (s, w) = parse_settings(&format!("module_colors = \"{}\"\n", colors_value(m)));
+            assert_eq!((s.module_colors, w), (m, Vec::<String>::new()), "{m:?}");
+        }
+        assert_eq!(colors_label(ModuleColors::Pills), "Pills");
     }
 }

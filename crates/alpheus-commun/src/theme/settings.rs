@@ -39,7 +39,58 @@ pub enum ModuleColors {
     Icons,
     /// The icon and the text.
     Full,
+    /// The block styles fill each block with its first module's hue, its text and icons in
+    /// `bar_bg` or `fg`, whichever contrasts more (shapes spec § 1); under `flat` and
+    /// `underline`, as `Full`.
+    Pills,
 }
+
+/// `style` in theme.toml (shapes spec § 1): the bar's shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarStyle {
+    /// Today's bar.
+    #[default]
+    Flat,
+    Islands,
+    Powerline,
+    Floating,
+    Underline,
+    Translucent,
+}
+
+impl BarStyle {
+    /// Every style, in the Theme tab's order.
+    pub const ALL: [BarStyle; 6] =
+        [BarStyle::Flat, BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Underline, BarStyle::Translucent];
+
+    /// Its value in theme.toml.
+    pub fn name(self) -> &'static str {
+        match self {
+            BarStyle::Flat => "flat",
+            BarStyle::Islands => "islands",
+            BarStyle::Powerline => "powerline",
+            BarStyle::Floating => "floating",
+            BarStyle::Underline => "underline",
+            BarStyle::Translucent => "translucent",
+        }
+    }
+
+    /// The style theme.toml names `name` (exact, lower case), None otherwise.
+    pub fn from_name(name: &str) -> Option<BarStyle> {
+        BarStyle::ALL.into_iter().find(|s| s.name() == name)
+    }
+}
+
+/// `opacity` in theme.toml (shapes spec § 1): the bar's alpha under `translucent`.
+pub const OPACITY_DEFAULT: f32 = 0.8;
+/// The lowest `opacity`; below, clamped with one warning.
+pub const OPACITY_MIN: f32 = 0.3;
+/// The highest `opacity`; above, clamped with one warning.
+pub const OPACITY_MAX: f32 = 1.0;
+// The same bounds in f64, the type TOML reads: clamping in f32 would turn `0.3` into a warning
+// (0.3 in f32 is 0.30000001…, not the 0.3 the file holds).
+const OPACITY_MIN_F64: f64 = 0.3;
+const OPACITY_MAX_F64: f64 = 1.0;
 
 /// Validated `[colors]` entries, in file order.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -58,12 +109,15 @@ impl Overrides {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Not `Eq`: `opacity` is a float (always within `OPACITY_MIN..=OPACITY_MAX`, never NaN, once parsed).
+#[derive(Debug, Clone, PartialEq)]
 pub struct ThemeSettings {
     pub source: ThemeSource,
     pub mode: ModeSetting,
     pub overrides: Overrides,
     pub module_colors: ModuleColors,
+    pub style: BarStyle,
+    pub opacity: f32,
 }
 
 impl Default for ThemeSettings {
@@ -73,6 +127,8 @@ impl Default for ThemeSettings {
             mode: ModeSetting::Auto,
             overrides: Overrides::default(),
             module_colors: ModuleColors::default(),
+            style: BarStyle::default(),
+            opacity: OPACITY_DEFAULT,
         }
     }
 }
@@ -80,6 +136,11 @@ impl Default for ThemeSettings {
 /// "catppuccin, gruvbox, …, dracula": for the unknown-theme line.
 fn known() -> String {
     PRESETS.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
+}
+
+/// "flat", "islands", …: for the bad-style line.
+fn style_names() -> String {
+    BarStyle::ALL.iter().map(|s| format!("{:?}", s.name())).collect::<Vec<_>>().join(", ")
 }
 
 /// theme.toml's text. Warnings: one line each, never fatal; whatever is
@@ -128,7 +189,24 @@ fn parse_settings_or(text: &str, source: ThemeSource) -> (ThemeSettings, Vec<Str
                 Some("none") => s.module_colors = ModuleColors::None,
                 Some("icons") => s.module_colors = ModuleColors::Icons,
                 Some("full") => s.module_colors = ModuleColors::Full,
-                _ => w.push(format!("{THEME_FILE}: module_colors must be \"none\", \"icons\" or \"full\", got {value}; using \"icons\"")),
+                Some("pills") => s.module_colors = ModuleColors::Pills,
+                _ => w.push(format!(
+                    "{THEME_FILE}: module_colors must be \"none\", \"icons\", \"full\" or \"pills\", got {value}; using \"icons\""
+                )),
+            },
+            "style" => match value.as_str().and_then(BarStyle::from_name) {
+                Some(style) => s.style = style,
+                None => w.push(format!("{THEME_FILE}: style must be one of {}, got {value}; using \"flat\"", style_names())),
+            },
+            "opacity" => match value.as_float().or_else(|| value.as_integer().map(|i| i as f64)) {
+                Some(v) if !v.is_nan() => {
+                    let clamped = v.clamp(OPACITY_MIN_F64, OPACITY_MAX_F64);
+                    if clamped != v {
+                        w.push(format!("{THEME_FILE}: opacity {v} is outside 0.3..=1.0, using {clamped}"));
+                    }
+                    s.opacity = clamped as f32;
+                }
+                _ => w.push(format!("{THEME_FILE}: opacity must be a number from 0.3 to 1.0, got {value}; using {OPACITY_DEFAULT}")),
             },
             "colors" => match value.as_table() {
                 Some(colors) => {
@@ -409,6 +487,8 @@ mod tests {
                 mode: ModeSetting::Auto,
                 overrides: Overrides::default(),
                 module_colors: ModuleColors::Icons,
+                style: BarStyle::Flat,
+                opacity: 0.8,
             }
         );
         assert_eq!(parse_settings(""), (d, NONE));
@@ -452,10 +532,12 @@ mod tests {
     }
 
     #[test]
-    fn module_colors_is_read_in_its_three_values_and_defaults_to_icons() {
+    fn module_colors_is_read_in_its_four_values_and_defaults_to_icons() {
         assert_eq!(ModuleColors::default(), ModuleColors::Icons);
         assert_eq!(parse_settings("").0.module_colors, ModuleColors::Icons);
-        for (text, want) in [("none", ModuleColors::None), ("icons", ModuleColors::Icons), ("full", ModuleColors::Full)] {
+        for (text, want) in
+            [("none", ModuleColors::None), ("icons", ModuleColors::Icons), ("full", ModuleColors::Full), ("pills", ModuleColors::Pills)]
+        {
             let (s, w) = parse_settings(&format!("module_colors = \"{text}\"\n"));
             assert_eq!((s.module_colors, w), (want, NONE), "{text}");
         }
@@ -463,15 +545,20 @@ mod tests {
 
     #[test]
     fn a_bad_module_colors_warns_once_and_falls_back_to_icons() {
-        // "pills" arrives with the shapes (delivery 2): for now it is a bad value like any other.
-        for text in ["module_colors = \"pills\"\n", "module_colors = \"Full\"\n", "module_colors = 3\n", "module_colors = true\n"] {
+        for text in [
+            "module_colors = \"Pills\"\n",
+            "module_colors = \"pill\"\n",
+            "module_colors = \"Full\"\n",
+            "module_colors = 3\n",
+            "module_colors = true\n",
+        ] {
             let (s, w) = parse_settings(text);
             assert_eq!(s.module_colors, ModuleColors::Icons, "{text}");
             assert_eq!(w.len(), 1, "{text}: {w:?}");
-            assert!(w[0].contains("module_colors") && w[0].contains("\"none\""), "{w:?}");
+            assert!(w[0].contains("module_colors") && w[0].contains("\"none\"") && w[0].contains("\"pills\""), "{w:?}");
         }
         // The valid keys around it are kept.
-        let (s, w) = parse_settings("theme = \"nord\"\nmodule_colors = \"pills\"\nmode = \"dark\"\n");
+        let (s, w) = parse_settings("theme = \"nord\"\nmodule_colors = \"pill\"\nmode = \"dark\"\n");
         assert_eq!((s.source, s.mode, s.module_colors, w.len()), (ThemeSource::Preset("nord"), ModeSetting::Dark, ModuleColors::Icons, 1));
     }
 
@@ -486,6 +573,79 @@ mod tests {
         assert_eq!(s.module_colors, ModuleColors::Full);
         dir.write(THEME_FILE, "module_colors = \"none\"\nmode = \"light\"\n");
         assert_eq!(resolve_dir(&dir, || None).0.module_colors, ModuleColors::None);
+    }
+
+    // ---- style and opacity (shapes spec § 1) ----
+
+    #[test]
+    fn every_style_is_read_and_flat_is_the_default() {
+        assert_eq!((BarStyle::default(), parse_settings("").0.style), (BarStyle::Flat, BarStyle::Flat));
+        let names: Vec<&str> = BarStyle::ALL.iter().map(|s| s.name()).collect();
+        assert_eq!(names, ["flat", "islands", "powerline", "floating", "underline", "translucent"]);
+        for style in BarStyle::ALL {
+            let (s, w) = parse_settings(&format!("style = \"{}\"\n", style.name()));
+            assert_eq!((s.style, w), (style, NONE), "{style:?}");
+            assert_eq!(BarStyle::from_name(style.name()), Some(style));
+        }
+    }
+
+    #[test]
+    fn an_unknown_style_warns_once_and_falls_back_to_flat() {
+        for text in ["style = \"pills\"\n", "style = \"Islands\"\n", "style = \"\"\n", "style = 2\n", "style = [\"flat\"]\n"] {
+            let (s, w) = parse_settings(text);
+            assert_eq!(s.style, BarStyle::Flat, "{text}");
+            assert_eq!(w.len(), 1, "{text}: {w:?}");
+            assert!(w[0].contains("style") && w[0].contains("\"translucent\"") && w[0].contains("using \"flat\""), "{w:?}");
+        }
+        // The valid keys around it are kept.
+        let (s, w) = parse_settings("theme = \"nord\"\nstyle = \"round\"\nmodule_colors = \"full\"\n");
+        assert_eq!((s.source, s.style, s.module_colors, w.len()), (ThemeSource::Preset("nord"), BarStyle::Flat, ModuleColors::Full, 1));
+    }
+
+    #[test]
+    fn opacity_is_read_and_defaults_to_0_8() {
+        assert_eq!(parse_settings("").0.opacity, 0.8);
+        for (text, want) in [("0.3", 0.3), ("0.55", 0.55), ("1.0", 1.0), ("1", 1.0)] {
+            let (s, w) = parse_settings(&format!("opacity = {text}\n"));
+            assert_eq!((s.opacity, w), (want, NONE), "{text}");
+        }
+    }
+
+    #[test]
+    fn an_opacity_out_of_range_is_clamped_with_one_warning() {
+        for (text, want) in [("0.1", 0.3), ("0", 0.3), ("-2", 0.3), ("1.5", 1.0), ("7", 1.0), ("inf", 1.0), ("-inf", 0.3)] {
+            let (s, w) = parse_settings(&format!("opacity = {text}\n"));
+            assert_eq!(s.opacity, want, "{text}");
+            assert_eq!(w.len(), 1, "{text}: {w:?}");
+            assert!(w[0].contains("opacity") && w[0].contains("0.3..=1.0"), "{w:?}");
+        }
+    }
+
+    #[test]
+    fn a_bad_opacity_warns_once_and_keeps_0_8() {
+        for text in ["opacity = \"0.5\"\n", "opacity = nan\n", "opacity = true\n", "opacity = [0.5]\n"] {
+            let (s, w) = parse_settings(text);
+            assert_eq!(s.opacity, 0.8, "{text}");
+            assert_eq!(w.len(), 1, "{text}: {w:?}");
+            assert!(w[0].contains("opacity must be a number"), "{w:?}");
+        }
+    }
+
+    #[test]
+    fn style_and_opacity_are_carried_through_load_settings_and_resolve_dir() {
+        let dir = TempDir::new("theme-style");
+        let (s, w) = load_settings(&dir);
+        assert_eq!((s.style, s.opacity, w), (BarStyle::Flat, 0.8, NONE));
+        dir.write(THEME_FILE, "style = \"translucent\"\nopacity = 0.6\n");
+        let (s, w) = load_settings(&dir);
+        assert_eq!((s.style, s.opacity, w), (BarStyle::Translucent, 0.6, NONE));
+        let (s, r) = resolve_dir(&dir, || None);
+        assert_eq!((s.style, s.opacity), (BarStyle::Translucent, 0.6));
+        assert_eq!(r.warnings, NONE);
+        dir.write(THEME_FILE, "style = \"islands\"\nopacity = 0.1\n");
+        let (s, r) = resolve_dir(&dir, || None);
+        assert_eq!((s.style, s.opacity), (BarStyle::Islands, 0.3));
+        assert!(r.warnings.len() == 1 && r.warnings[0].contains("opacity"), "the clamp's line reaches the daemon's log: {r:?}");
     }
 
     #[test]
@@ -519,9 +679,9 @@ mod tests {
 
     #[test]
     fn unknown_keys_and_invalid_toml_warn_without_failing() {
-        let (s, w) = parse_settings("style = \"islands\"\ntheme = \"dracula\"\n");
+        let (s, w) = parse_settings("shape = \"islands\"\ntheme = \"dracula\"\n");
         assert_eq!((s.source, w.len()), (ThemeSource::Preset("dracula"), 1));
-        assert!(w[0].contains("\"style\""), "{w:?}");
+        assert!(w[0].contains("\"shape\""), "{w:?}");
         let (s, w) = parse_settings("theme = \n");
         assert_eq!((s, w.len()), (ThemeSettings::default(), 1));
         assert!(w[0].contains("theme.toml"), "{w:?}");
