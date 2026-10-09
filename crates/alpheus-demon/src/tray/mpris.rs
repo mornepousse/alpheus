@@ -268,7 +268,11 @@ impl Mpris {
             }
             // Lost to our own timeout: asked once more, in the slot it frees.
             (Ask::Owner(name, false), Err(CallError::Timeout)) => {
-                self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
+                if self.room(&name) {
+                    self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
+                } else {
+                    self.resolve_waiting(out);
+                }
             }
             // Gone between ListNames and GetNameOwner (NameHasNoOwner), or lost twice: nothing to
             // follow, and its slot goes to a waiting name.
@@ -305,6 +309,8 @@ impl Mpris {
                     // answer is dropped, the wait ends.
                     self.asks.retain(|_, a| !matches!(a, Ask::Owner(n, _) if n == name));
                     self.waiting.retain(|n| n != name);
+                    // The slot it held, if it was in flight, goes to a waiting name.
+                    self.resolve_waiting(out);
                     // A restart is one signal with both owners: the old one goes, the new one comes.
                     if !old.is_empty() {
                         self.release(out, name, old);
@@ -878,6 +884,42 @@ mod tests {
         m.answer(&mut out, asked[0].0, Ok(Reply::Owner(":1.300".into())));
         assert_eq!(m.players().len(), MAX_PLAYERS, "15 + the 17th");
         assert_eq!(lines("players already followed"), 0, "nobody was turned away");
+    }
+
+    /// Fix wave B: the last resolution in flight ends because its name vanishes (a NameOwnerChanged
+    /// with no new owner), not because its answer came: the waiting name still gets the slot.
+    #[test]
+    fn a_name_vanishing_mid_resolution_frees_its_slot_for_a_waiting_name() {
+        let (mut out, mut m) = started();
+        let names: Vec<String> = (0..=MAX_PLAYERS).map(|i| format!("org.mpris.MediaPlayer2.fake{i}")).collect();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(names.clone())));
+        let owners = out.ids(Method::GetNameOwner);
+        out.take();
+        for (n, owner) in owners.iter().enumerate().take(MAX_PLAYERS - 1) {
+            m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
+        }
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(&names[MAX_PLAYERS - 1], ":1.999", "")));
+        let asked: Vec<Call> = out.take().into_iter().map(|(_, c)| c).collect();
+        assert_eq!(asked, [Call::GetNameOwner { name: names[MAX_PLAYERS].clone() }], "the 17th, in the freed slot");
+    }
+
+    /// Fix wave B: a timed-out resolution is asked once more only if there is room, as the first
+    /// ask is; a player that arrived meanwhile took the slot.
+    #[test]
+    fn a_lost_get_name_owner_is_not_retried_without_room() {
+        let (mut out, mut m) = started();
+        let names: Vec<String> = (0..MAX_PLAYERS).map(|i| format!("org.mpris.MediaPlayer2.fake{i}")).collect();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(names)));
+        let owners = out.ids(Method::GetNameOwner);
+        for (n, owner) in owners.iter().enumerate().take(MAX_PLAYERS - 1) {
+            m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
+        }
+        assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.late", "", ":1.500")));
+        out.take();
+        assert_eq!(m.players().len(), MAX_PLAYERS);
+        m.answer(&mut out, owners[MAX_PLAYERS - 1], Err(CallError::Timeout));
+        assert!(!out.take().iter().any(|(_, c)| matches!(c, Call::GetNameOwner { .. })), "full: no retry");
     }
 
     /// Fix wave A: only followed players fill the cap. A player arriving while 16 listed names are
