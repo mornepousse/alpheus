@@ -8,7 +8,7 @@
 use crate::config::NotificationsConfig;
 use crate::grid::text_width;
 use crate::icons;
-use crate::tray::codec::invisible;
+use crate::text::invisible;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 

@@ -47,6 +47,27 @@ impl DndVerb {
     }
 }
 
+/// `--osd`'s word: what the on-screen display reads, then shows (OSD spec § 2). Volume and the
+/// microphone have none: the bar follows them on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsdVerb {
+    Brightness,
+}
+
+impl OsdVerb {
+    pub const ALL: [OsdVerb; 1] = [OsdVerb::Brightness];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            OsdVerb::Brightness => "brightness",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<OsdVerb> {
+        OsdVerb::ALL.into_iter().find(|v| v.word() == s)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Toggle,
@@ -59,11 +80,14 @@ pub enum Request {
     Dnd(DndVerb),
     /// Empties the notification history (notifications task 5): answered Done.
     ClearNotifications,
+    /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
+    /// module off or no backlight (nothing shown).
+    Osd(OsdVerb),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    /// toggle / close / dnd / clear-notifications handled.
+    /// toggle / close / dnd / clear-notifications / osd handled.
     Done,
     /// dmenu: the chosen line, or the typed text when nothing matched.
     Chosen(String),
@@ -95,6 +119,7 @@ impl fmt::Display for IpcError {
 /// Wire format (all text UTF-8):
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
+///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>\n" <prompt bytes> <body bytes>
 /// body = lines joined by '\n' (no trailing '\n'). Lines are expected not to
 /// contain '\n' themselves (`split_lines` guarantees it), but this is not
@@ -110,6 +135,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Close => format!("{MAGIC} close\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
+        Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
         Request::Dmenu { prompt, lines } => {
             let body = lines.join("\n");
             let prompt_len = prompt.as_ref().map_or_else(|| "-".to_string(), |p| p.len().to_string());
@@ -130,6 +156,7 @@ enum Header {
     Dmenu { prompt: Option<usize>, body: usize },
     Dnd(DndVerb),
     ClearNotifications,
+    Osd(OsdVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -255,6 +282,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Close => Some(Request::Close),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
+        Header::Osd(v) => Some(Request::Osd(v)),
         Header::Dmenu { .. } => None,
     }
 }
@@ -272,6 +300,9 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
         }
         ["clear-notifications"] => Ok(Header::ClearNotifications),
+        ["osd", word] => {
+            OsdVerb::parse(word).map(Header::Osd).ok_or_else(|| IpcError::Malformed(format!("unknown osd word {:?}", cut(word))))
+        }
         ["dmenu", prompt, body] => {
             let prompt = if *prompt == "-" { None } else { Some(number(prompt, "prompt length")?) };
             let body = number(body, "dmenu length")?;
@@ -390,6 +421,7 @@ mod tests {
             Request::Dnd(DndVerb::Off),
             Request::Dnd(DndVerb::Toggle),
             Request::ClearNotifications,
+            Request::Osd(OsdVerb::Brightness),
         ]
     }
 
@@ -428,6 +460,7 @@ mod tests {
         assert_eq!(encode_request(&Request::Dnd(DndVerb::Off)), b"alpheus-launcher/1 dnd off\n");
         assert_eq!(encode_request(&Request::Dnd(DndVerb::Toggle)), b"alpheus-launcher/1 dnd toggle\n");
         assert_eq!(encode_request(&Request::ClearNotifications), b"alpheus-launcher/1 clear-notifications\n");
+        assert_eq!(encode_request(&Request::Osd(OsdVerb::Brightness)), b"alpheus-launcher/1 osd brightness\n");
         assert_eq!(encode_request(&Request::Dmenu { prompt: None, lines: vec![] }), b"alpheus-launcher/1 dmenu - 0\n");
         let dmenu = Request::Dmenu { prompt: Some("Go: ".into()), lines: vec!["a".into(), "bé".into()] };
         assert_eq!(encode_request(&dmenu), "alpheus-launcher/1 dmenu 4 5\nGo: a\nbé".as_bytes());
@@ -459,6 +492,10 @@ mod tests {
             b"alpheus-launcher/1 dnd on now\n",
             b"alpheus-launcher/1 dnd  on\n",
             b"alpheus-launcher/1 clear-notifications now\n",
+            b"alpheus-launcher/1 osd\n",
+            b"alpheus-launcher/1 osd volume\n",
+            b"alpheus-launcher/1 osd brightness now\n",
+            b"alpheus-launcher/1 osd  brightness\n",
         ] {
             assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} → {:?}", String::from_utf8_lossy(h), decode(h));
         }
@@ -470,6 +507,7 @@ mod tests {
         assert!(matches!(decode(b"alpheus-launcher/1 dmenu - 1\nab"), Err(IpcError::Malformed(_))));
         assert!(matches!(decode(b"alpheus-launcher/1 dnd on\nx"), Err(IpcError::Malformed(_))));
         assert!(matches!(decode(b"alpheus-launcher/1 clear-notifications\nx"), Err(IpcError::Malformed(_))));
+        assert!(matches!(decode(b"alpheus-launcher/1 osd brightness\nx"), Err(IpcError::Malformed(_))));
         let mut d = RequestDecoder::new();
         assert_eq!(d.feed(b"alpheus-launcher/1 close\n"), Ok(Some(Request::Close)));
         assert!(matches!(d.feed(b"x"), Err(IpcError::Malformed(_))), "a second message on the same connection");
@@ -482,6 +520,15 @@ mod tests {
         }
         assert_eq!(DndVerb::parse("On"), None, "the words are exact");
         assert_eq!(DndVerb::parse(""), None);
+    }
+
+    #[test]
+    fn every_osd_word_parses_back() {
+        for v in OsdVerb::ALL {
+            assert_eq!(OsdVerb::parse(v.word()), Some(v));
+        }
+        assert_eq!(OsdVerb::parse("Brightness"), None, "the words are exact");
+        assert_eq!(OsdVerb::parse("volume"), None, "volume is passive: no verb");
     }
 
     #[test]

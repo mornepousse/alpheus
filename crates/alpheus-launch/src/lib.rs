@@ -11,7 +11,7 @@
 //! to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, Reply, Request, decode_reply, encode_request, split_lines,
+    DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, Reply, Request, decode_reply, encode_request, split_lines,
 };
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
@@ -33,7 +33,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --dnd on|off|toggle
-                      | --clear-notifications | --help]
+                      | --clear-notifications | --osd brightness | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -41,10 +41,11 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --dnd on|o
   -p, --prompt TEXT       with --dmenu: text shown before the input
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
   --clear-notifications   empty the bar's notification history
+  --osd brightness        show the laptop's backlight level (read once; never changed)
   -h, --help              show this help
 
-Exit codes: 0 done or chosen, 1 menu cancelled, 2 error (another menu open,
-bad usage, no answer, the bar restarting mid-request, the notifications
+Exit codes: 0 done or chosen (--osd: also when there is nothing to show), 1 menu cancelled,
+2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
@@ -58,6 +59,7 @@ pub enum Invocation {
     Dmenu { prompt: Option<String> },
     Dnd(DndVerb),
     ClearNotifications,
+    Osd(OsdVerb),
     Help,
 }
 
@@ -81,6 +83,12 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 choose(&mut mode, Invocation::Dnd(verb))?
             }
             "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
+            "--osd" => {
+                let value = it.next().ok_or_else(|| "--osd needs brightness".to_string())?;
+                let value = utf8(value)?;
+                let verb = OsdVerb::parse(value).ok_or_else(|| format!("--osd takes brightness, not {value:?}"))?;
+                choose(&mut mode, Invocation::Osd(verb))?
+            }
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -105,7 +113,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
-        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --help".into());
+        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --help".into());
     }
     *slot = Some(i);
     Ok(())
@@ -145,7 +153,7 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
     // that a daemon trickling one byte at a time could restart forever).
     let timeout = match request {
         Request::Dmenu { .. } => None,
-        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications => Some(CLIENT_REPLY_TIMEOUT),
+        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) => Some(CLIENT_REPLY_TIMEOUT),
     };
     stream.set_write_timeout(timeout).map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
     let deadline = timeout.map(|t| Instant::now() + t);
@@ -238,6 +246,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::Close) => Request::Close,
         Ok(Invocation::Dnd(v)) => Request::Dnd(v),
         Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
+        Ok(Invocation::Osd(v)) => Request::Osd(v),
         Ok(Invocation::Dmenu { prompt }) => match read_lines(stdin) {
             Ok(lines) => Request::Dmenu { prompt, lines },
             Err(m) => return fail(&m),
@@ -260,7 +269,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             }
         }
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
-        (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications, Reply::Done) => EXIT_OK,
+        (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), Reply::Done) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
         (_, other) => fail(&format!("unexpected answer from alpheus-demon: {other:?}")),
@@ -298,6 +307,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off)));
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
+        assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
     }
 
     #[test]
@@ -320,6 +330,10 @@ mod tests {
             (&["--clear-notifications", "--dnd", "on"], "only one of"),
             (&["--dnd", "on", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--clear-notifications", "now"], "unknown option"),
+            (&["--osd"][..], "--osd needs brightness"),
+            (&["--osd", "volume"], "--osd takes brightness"),
+            (&["--osd", "brightness", "--close"], "only one of"),
+            (&["--osd", "brightness", "-p", "x"], "--prompt only goes with --dmenu"),
         ] {
             let e = parse_args(&args(a)).unwrap_err();
             assert!(e.contains(needle), "{a:?}: {e}");
@@ -328,5 +342,15 @@ mod tests {
         assert!(parse_args(&args(&["--dmenu", "-p", &long])).unwrap_err().contains("prompt longer"));
         let bad = vec![OsString::from("--dmenu"), OsString::from("-p"), OsString::from_vec(vec![0xff])];
         assert!(parse_args(&bad).unwrap_err().contains("UTF-8"));
+    }
+
+    /// OSD spec § 4: the daemon unreachable is exit 3 for `--osd` too (the caller's fallback is to
+    /// show nothing).
+    #[test]
+    fn osd_against_no_daemon_exits_3() {
+        let socket = std::env::temp_dir().join(format!("alpheus-launch-{}-no-daemon.sock", std::process::id()));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = run(&args(&["--osd", "brightness"]), &socket, &mut std::io::empty(), &mut out, &mut err);
+        assert_eq!(code, EXIT_UNREACHABLE, "{}", String::from_utf8_lossy(&err));
     }
 }

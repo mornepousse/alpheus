@@ -17,6 +17,8 @@ use crate::link::SessionLink;
 use crate::media::{MediaView, Players};
 use crate::media_popup::{self, MediaAction, MediaPopup};
 use crate::notify::Center;
+use crate::osd::Osd;
+use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::panel::{self, Panel, PanelAction};
 use crate::placement::{Placement, input_rect};
@@ -499,6 +501,12 @@ pub struct App {
     pub(crate) bubble_timer: DeadlineTimer,
     /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
     pub(crate) bubble_closes: Closes,
+    /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
+    pub(crate) osd: Osd,
+    /// The OSD's surface while the pill shows (osd_surface.rs); None at rest.
+    pub(crate) osd_open: Option<OpenOsd>,
+    /// The pill's hide timer: armed only while it shows.
+    pub(crate) osd_timer: DeadlineTimer,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
     /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
@@ -672,6 +680,9 @@ impl App {
             bubbles: None,
             bubble_timer: DeadlineTimer::new(),
             bubble_closes: Closes::default(),
+            osd: Osd::default(),
+            osd_open: None,
+            osd_timer: DeadlineTimer::new(),
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
@@ -1570,6 +1581,9 @@ impl CompositorHandler for App {
         if self.bubbles_scale(surface, f) {
             return;
         }
+        if self.osd_scale(surface, f) {
+            return;
+        }
         if self.popup_scale(surface, f) {
             return;
         }
@@ -1623,6 +1637,7 @@ impl OutputHandler for App {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
         self.bubbles_output_gone(&output);
+        self.osd_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -1652,6 +1667,10 @@ impl LayerShellHandler for App {
         if self.bubbles_owns(layer.wl_surface()) {
             self.bubbles_layer_closed();
             return; // the bubbles' surface: the bar's restore logic is not involved
+        }
+        if self.osd_owns(layer.wl_surface()) {
+            self.osd_layer_closed();
+            return; // the pill's surface: the bar's restore logic is not involved
         }
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
@@ -1697,6 +1716,10 @@ impl LayerShellHandler for App {
         }
         if self.bubbles_owns(layer.wl_surface()) {
             self.bubbles_configured(c.new_size);
+            return;
+        }
+        if self.osd_owns(layer.wl_surface()) {
+            self.osd_configured(c.new_size);
             return;
         }
         let Some(i) = self.index(layer.wl_surface()) else { return };
@@ -1790,6 +1813,11 @@ impl PointerHandler for App {
                 continue;
             }
             if self.bubbles_pointer(conn, ev) {
+                continue;
+            }
+            if self.osd_owns(&ev.surface) {
+                // Its input region is empty (OSD spec § 3): an event here is a bug, never the bar's.
+                log("osd: a pointer event reached the pill");
                 continue;
             }
             if self.popup.as_ref().is_some_and(|p| p.wl_surface() == &ev.surface) {
@@ -2282,6 +2310,9 @@ impl crate::launch::DeferredRedraw for App {
     }
     fn redraw_now(&mut self) {
         self.redraw_all();
+    }
+    fn flush_osd(&mut self) {
+        self.osd_draw();
     }
 }
 

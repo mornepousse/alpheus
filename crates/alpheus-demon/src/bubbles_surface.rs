@@ -147,8 +147,9 @@ impl App {
     }
 
     /// The focused output, by name among the bar's outputs, and that name; (None, None): unknown, the
-    /// compositor chooses (as the launcher's box does).
-    fn bubbles_target(&self) -> (Option<wl_output::WlOutput>, Option<String>) {
+    /// compositor chooses (as the launcher's box does). Also the OSD's (osd_surface.rs): the
+    /// focused-output rule, one place.
+    pub(crate) fn bubbles_target(&self) -> (Option<wl_output::WlOutput>, Option<String>) {
         let wanted = match &self.bar.compositor {
             Feed::Ready(c) => c.focused_output().map(str::to_owned),
             _ => None,

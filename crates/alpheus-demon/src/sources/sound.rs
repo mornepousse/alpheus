@@ -6,7 +6,7 @@
 
 use crate::log::write as log;
 use crate::memory::release_memory;
-use crate::pipewire;
+use crate::pipewire::{self, Scope};
 use crate::sources::spawn_source;
 use crate::system::SoundState;
 use alpheus_commun::exec::{ExecError, Executor};
@@ -19,13 +19,13 @@ use std::sync::Arc;
 /// structure, not by line, so this changes nothing there.
 pub const COMMAND: [&str; 4] = ["pw-dump", "-m", "-N", "-R"];
 
-pub fn session(exec: &dyn Executor, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
+pub fn session(exec: &dyn Executor, scope: Scope, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
     let output = exec.stream(COMMAND[0], &COMMAND[1..]).map_err(|e| match e {
         ExecError::NotFound => io::Error::new(io::ErrorKind::NotFound, "pw-dump not found"),
         e => io::Error::other(format!("pw-dump: {e:?}")),
     })?;
     let mut first = true;
-    pipewire::follow(output, &mut |s| {
+    pipewire::follow(output, scope, &mut |s| {
         let go_on = publish(s);
         if std::mem::take(&mut first) {
             // The initial dump (≈ 600 KB) is parsed and dropped by now:
@@ -36,9 +36,10 @@ pub fn session(exec: &dyn Executor, publish: &mut dyn FnMut(SoundState) -> bool)
     })
 }
 
-/// Starts the sound source in its thread (`sound`), for the whole session.
-pub fn start(exec: Arc<dyn Executor>, send: impl Fn(Option<SoundState>) -> bool + Send + 'static) {
-    if let Err(e) = spawn_source("sound", move |p| session(exec.as_ref(), p), send) {
+/// Starts the sound source in its thread (`sound`), for the whole session. `scope`: what is read
+/// of it (the OSD's needs, or the bar's alone), so a change nobody draws publishes nothing.
+pub fn start(exec: Arc<dyn Executor>, scope: Scope, send: impl Fn(Option<SoundState>) -> bool + Send + 'static) {
+    if let Err(e) = spawn_source("sound", move |p| session(exec.as_ref(), scope, p), send) {
         log(&format!("sound thread: {e}"));
     }
 }
@@ -60,12 +61,12 @@ mod tests {
         let fake = FakeExecutor::new();
         fake.stream_ok("pw-dump -m -N -R", INITIAL.as_bytes());
         let mut seen = Vec::new();
-        let r = session(&fake, &mut |s| {
+        let r = session(&fake, Scope::Osd, &mut |s| {
             seen.push(s);
             true
         });
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "pw-dump ending is an outage");
-        assert_eq!(seen, [SoundState { sink: Some(Volume { percent: 84, muted: false }) }]);
+        assert_eq!(seen.iter().map(|s| s.sink).collect::<Vec<_>>(), [Some(Volume { percent: 84, muted: false })]);
         assert_eq!(fake.calls(), ["pw-dump -m -N -R"]);
     }
 
@@ -77,7 +78,7 @@ mod tests {
         let fake = FakeExecutor::new();
         fake.stream_ok("pw-dump -m -N -R", format!("{INITIAL}{DELTAS}").as_bytes());
         let mut seen = Vec::new();
-        let r = session(&fake, &mut |s| {
+        let r = session(&fake, Scope::Osd, &mut |s| {
             seen.push(s.sink.map(|v| v.percent));
             true
         });
@@ -88,7 +89,7 @@ mod tests {
     #[test]
     fn missing_pw_dump_is_an_outage() {
         let fake = FakeExecutor::new();
-        assert_eq!(session(&fake, &mut |_| true).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(session(&fake, Scope::Osd, &mut |_| true).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
@@ -98,7 +99,7 @@ mod tests {
         let sends = RefCell::new(Vec::new());
         let delays = RefCell::new(Vec::new());
         supervise(
-            |p| session(&fake, p),
+            |p| session(&fake, Scope::Osd, p),
             |s: Option<SoundState>| {
                 let mut v = sends.borrow_mut();
                 v.push(s.map(|s| s.sink.map(|v| v.percent)));

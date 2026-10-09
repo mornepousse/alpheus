@@ -6,12 +6,13 @@
 //! coalesced to one re-read per frame, every bound applied.
 
 use super::bus::{Call, CallError, CallId, Outbox, Property};
-use super::codec::{Reply, Signal, clean};
+use super::codec::{Reply, Signal};
 use super::{
     DEFAULT_ITEM_PATH, Gesture, ITEM_INTERFACE, ITEM_NAME_PREFIXES, ItemKey, MAX_ITEMS, MAX_ITEMS_PER_OWNER, Prop, PropSet, PropValue,
     Status,
 };
 use crate::log::write as log;
+use crate::text::clean;
 use std::collections::HashMap;
 use std::path::PathBuf;
 

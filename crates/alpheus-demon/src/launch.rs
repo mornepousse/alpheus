@@ -13,6 +13,7 @@ use crate::launcher::surface::CloseReason;
 use crate::lock;
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
+use crate::pipewire::Scope;
 use crate::sources;
 use crate::sources::dbus::Domain;
 use crate::sources::resources;
@@ -127,6 +128,9 @@ pub trait DeferredRedraw {
     fn bar_mut(&mut self) -> &mut Bar;
     fn dirty_mut(&mut self) -> &mut bool;
     fn redraw_now(&mut self);
+    /// The OSD's pill drawn if its row changed during the pass (`osd_sound` only updates the
+    /// model and the row): a burst of sound messages paints it once.
+    fn flush_osd(&mut self);
 }
 
 /// Called by every callback (channel message, clock tick): never a redraw
@@ -138,11 +142,13 @@ pub fn on_message(target: &mut impl DeferredRedraw, m: Msg, now: impl Fn() -> Lo
 }
 
 /// Called exactly once after `loop.dispatch()` returns: redraws if the flag
-/// was raised by the burst just processed, and clears it in every case.
+/// was raised by the burst just processed, and clears it in every case; then
+/// the OSD's pill, if its row changed.
 pub fn after_dispatch(target: &mut impl DeferredRedraw) {
     if std::mem::take(target.dirty_mut()) {
         target.redraw_now();
     }
+    target.flush_osd();
 }
 
 /// Mirrors `DeferredRedraw` for the launcher's windows (task 13, carried
@@ -178,6 +184,7 @@ use crate::log::write as log;
 /// (no thread, no child process, no timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
+    /// The pw-dump child: for the volume module or the OSD (its passive trigger).
     pub sound: bool,
     /// The D-Bus domains to read and follow; empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
@@ -200,13 +207,19 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         .map(|(_, d)| d)
         .collect();
     Wanted {
-        sound: has(ModuleId::Volume),
+        sound: has(ModuleId::Volume) || has(ModuleId::Osd),
         dbus,
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
         media: has(ModuleId::Media),
         notifications: has(ModuleId::Notifications),
     }
+}
+
+/// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
+/// microphone or a label change wakes nothing).
+pub fn sound_scope(modules: &[ModuleId]) -> Scope {
+    if modules.contains(&ModuleId::Osd) { Scope::Osd } else { Scope::Bar }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {
@@ -466,6 +479,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 let reply = state.notifications_verb(&request);
                 reply_guarded(conn, &reply);
             }
+            // The OSD's verb (osd task 4): a sysfs read and a pill, answered here like the
+            // notifications verbs, before the launcher's guard.
+            Progress::Ready(request @ Request::Osd(_)) => {
+                let reply = state.osd_verb(&request);
+                reply_guarded(conn, &reply);
+            }
             Progress::Ready(request) => {
                 // A dmenu request may have buffered up to 4 MiB: once it
                 // reached RELEASE_AFTER, give the pages back as soon as it
@@ -599,6 +618,7 @@ pub fn run() -> i32 {
     let qh = file.handle();
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
     let want = wanted(&config.modules);
+    let scope = sound_scope(&config.modules);
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
@@ -639,6 +659,11 @@ pub fn run() -> i32 {
     // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
         channel::Event::Msg(Mail::Bar(m)) => {
+            // The OSD reads every sound message first (osd task 3): its trigger rules compare it
+            // with the last one; the bar then keeps it.
+            if let Msg::Sound(s) = &m {
+                state.osd_sound(s.as_ref());
+            }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);
         }
@@ -702,7 +727,7 @@ pub fn run() -> i32 {
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        sources::sound::start(exec.clone(), move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+        sources::sound::start(exec.clone(), scope, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
@@ -868,12 +893,12 @@ mod tests {
 
     #[test]
     fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
-        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
         let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
         }
-        on_message(&mut c, Msg::Sound(Some(SoundState { sink: None })), || AFTER);
+        on_message(&mut c, Msg::Sound(Some(SoundState::default())), || AFTER);
         assert_eq!(c.bar.clock, None, "network, bluetooth, battery, sound: not a clock-refreshing event");
         on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None }), || AFTER);
         after_dispatch(&mut c);
@@ -905,6 +930,7 @@ mod tests {
         bar: Bar,
         dirty: bool,
         redraws: u32,
+        osd_flushes: u32,
     }
 
     impl DeferredRedraw for Counter {
@@ -917,11 +943,33 @@ mod tests {
         fn redraw_now(&mut self) {
             self.redraws += 1;
         }
+        fn flush_osd(&mut self) {
+            self.osd_flushes += 1;
+        }
+    }
+
+    /// Final review (slice B): a burst of sound messages updates the OSD's model each time but draws
+    /// its pill once, after the pass, whether the bar redraws or not (a microphone flip alone does
+    /// not redraw the bar).
+    #[test]
+    fn the_osd_is_drawn_once_per_pass_with_or_without_a_bar_redraw() {
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
+        after_dispatch(&mut c);
+        assert_eq!((c.redraws, c.osd_flushes), (0, 1), "no bar redraw, the pill's draw still flushed");
+        for p in [40, 41, 42] {
+            on_message(
+                &mut c,
+                Msg::Sound(Some(SoundState { sink: Some(Volume { percent: p, muted: false }), ..SoundState::default() })),
+                || AFTER,
+            );
+        }
+        after_dispatch(&mut c);
+        assert_eq!((c.redraws, c.osd_flushes), (1, 2), "one of each per pass");
     }
 
     #[test]
     fn a_burst_of_messages_redraws_only_once() {
-        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
         // A burst of 9 messages that EACH change the display (toggling
         // Some/None, like the up to 9 grids from a single niri burst over 3
         // screens): each one calls `on_message`, none draws directly —
@@ -1133,5 +1181,19 @@ mod tests {
         note_compositor_message(&mut c, &Msg::Clock(BEFORE));
         after_dispatch_windows(&mut c);
         assert_eq!(c.feeds, 1, "nothing compositor-related this pass: no re-rank");
+    }
+
+    #[test]
+    fn the_sound_source_publishes_for_the_osd_only_with_its_module() {
+        assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Osd]), Scope::Osd);
+        assert_eq!(sound_scope(&[ModuleId::Osd]), Scope::Osd);
+        assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Clock]), Scope::Bar, "bar-only: the sink's volume alone");
+    }
+
+    #[test]
+    fn the_osd_alone_starts_the_sound_source() {
+        assert!(wanted(&[ModuleId::Osd]).sound, "the OSD reads pw-dump even without the volume module");
+        assert!(wanted(&[ModuleId::Volume]).sound);
+        assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
     }
 }

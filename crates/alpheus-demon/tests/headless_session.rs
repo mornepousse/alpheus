@@ -5,7 +5,7 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
@@ -14,16 +14,18 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, assert_no_spin, fake_program, launcher,
-    process_alive, start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway,
+    TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send,
+    start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -3142,4 +3144,440 @@ fn no_card_marks_read(name: &str, modules: &str) {
     assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// OSD task 1: the `Fifo` fake prints the initial dump, then each array a test sends, in order, and
+/// once killed nothing is left reading the pipe (it `exec`s its `cat`: the daemon's PDEATHSIG
+/// reaches it).
+#[test]
+fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
+    // Declared first, so dropped last: removed after the child's group is gone, even on a failure.
+    let tmp = TempDir::new("alpheus-it-pw-fifo");
+    let dir = tmp.0.clone();
+    let bin = fake_pw_dump_in(&dir, PwDump::Fifo);
+    // Reaped with its whole group even when an assert below fails: a `cat` orphaned by a failure
+    // would never exit, and would hold the caller's pipe (`cargo test | tail` hanging).
+    let mut child = GroupChild::spawn(Command::new(bin.join("pw-dump")).stdout(Stdio::piped()));
+    let mut out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        let mut buf = vec![0u8; 1 << 16];
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut seen = Vec::new();
+    let mut read_until = |needle: &str| -> usize {
+        let t = Instant::now();
+        loop {
+            if let Some(at) = String::from_utf8_lossy(&seen).find(needle) {
+                return at;
+            }
+            assert!(t.elapsed() < DELAY, "the fake never printed {needle}");
+            if let Ok(b) = rx.recv_timeout(Duration::from_millis(100)) {
+                seen.extend(b);
+            }
+        }
+    };
+    read_until(r#""id":123,"#);
+    let (first, second) = (volume_delta(AG06_SINK, 90, false), default_sink_delta(SPEAKER_SINK));
+    pw_dump_send(&dir, &first);
+    pw_dump_send(&dir, &second);
+    let (a, b) = (read_until(&first), read_until(&second));
+    assert!(a < b, "in the order sent");
+    // The leader only, as the daemon's PDEATHSIG does: what this test proves is that nothing else
+    // of the fake (no un-exec'd `cat`) is left reading the pipe. The guard's group kill comes after,
+    // as cleanup (an empty group by then when the fake is right).
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(child.reaped(), "reaped by the test: the guard never signals its group again");
+    use std::os::unix::fs::OpenOptionsExt;
+    let left = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(dir.join("pw-dump.fifo"));
+    assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
+}
+
+/// The harness's guards (final review, slice B): a `GroupChild` the test reaped is never signalled
+/// again (its pid may be reused); one never waited for is killed with its group and reaped on drop.
+/// A `TempDir` is removed on drop.
+#[test]
+fn a_reaped_group_child_is_left_alone_and_a_temp_dir_goes_with_its_guard() {
+    let tmp = TempDir::new("alpheus-it-guards");
+    let dir = tmp.0.clone();
+    let mut done = GroupChild::spawn(&mut Command::new("true"));
+    assert!(!done.reaped());
+    done.wait().unwrap();
+    assert!(done.reaped(), "wait reaps");
+    drop(done);
+    let mut quick = GroupChild::spawn(&mut Command::new("true"));
+    while quick.try_wait().unwrap().is_none() {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(quick.reaped(), "try_wait reaps once it exited");
+    let mut left = GroupChild::spawn(Command::new("sleep").arg("30"));
+    assert!(left.try_wait().unwrap().is_none() && !left.reaped());
+    let pid = left.id() as i32;
+    let t = Instant::now();
+    drop(left);
+    assert!(t.elapsed() < Duration::from_secs(5), "killed, not waited for: {:?}", t.elapsed());
+    // SAFETY: signal 0 only checks that the pid exists; ours until reaped, reaped by the drop.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "killed and reaped by the guard");
+    drop(tmp);
+    assert!(!dir.exists(), "the temp dir went with its guard");
+}
+
+/// A send above PIPE_BUF would not be atomic: refused loudly, before the pipe is even opened.
+#[test]
+#[should_panic(expected = "PIPE_BUF")]
+fn a_pw_dump_send_above_pipe_buf_fails_clearly() {
+    pw_dump_send(Path::new("/nonexistent-alpheus-it"), &"x".repeat(4096));
+}
+
+// ---- The OSD (osd plan, tasks 3 and 4). The fake pw-dump is `Fifo`; the backlight a fake tree
+// under the test's runtime directory, never /sys. ----
+
+/// The OSD's tests' bar: the volume (its sound source), the OSD, the clock. `extra`: more `[osd]`
+/// lines.
+fn osd_bar(sway: &Sway, extra: &str) -> String {
+    format!(
+        "modules = [\"workspaces\", \"volume\", \"osd\", \"clock\"]\n[osd]\nbacklight_dir = \"{}\"\n{extra}",
+        sway.runtime.join("backlight").display()
+    )
+}
+
+/// After the baseline, past the start-up grace (OSD spec § 2: 1 s).
+const GRACE_OVER: Duration = Duration::from_millis(1300);
+
+/// A daemon on `outputs` headless outputs (the fixture's focus on HEADLESS-2 when there are two),
+/// catppuccin dark, the `Fifo` fake pw-dump. Returned once the OSD took its sound baseline and the
+/// grace is over. `before`: what the test puts in place first (a fake backlight).
+fn osd_daemon(name: &str, outputs: u32, extra: &str, before: impl FnOnce(&Sway)) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, outputs);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    before(&sway);
+    let toml = osd_bar(&sway, extra);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
+    thread::sleep(GRACE_OVER);
+    (sway, hypr, d)
+}
+
+/// The pill on `s` in the colour `bg`: its gap to the bottom edge (px below its last background
+/// row, down the output's centre column) and its leftmost and rightmost background pixels 3 px
+/// above that row (inside its bottom inset, where no glyph is). None: no pill on that column.
+fn osd_box_in(s: &Ppm, bg: [u8; 3]) -> Option<(u32, u32, u32)> {
+    let cx = s.width / 2;
+    let bottom = (0..s.height).rev().find(|&y| s.at(cx, y) == Some(bg))?;
+    let y = bottom.checked_sub(3)?;
+    let (mut left, mut right) = (cx, cx);
+    while left > 0 && s.at(left - 1, y) == Some(bg) {
+        left -= 1;
+    }
+    while s.at(right + 1, y) == Some(bg) {
+        right += 1;
+    }
+    Some((s.height - 1 - bottom, left, right))
+}
+
+fn osd_box(s: &Ppm) -> Option<(u32, u32, u32)> {
+    osd_box_in(s, popup_bg("catppuccin"))
+}
+
+/// OSD spec § 1, § 3: a volume change shows the pill bottom centre, `margin` px above the edge, on
+/// the focused output only; it goes `timeout_ms` after the change.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_volume_change_shows_the_pill_bottom_centre_then_it_goes() {
+    let (sway, _hypr, d) = osd_daemon("osd-place", 2, "", |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    for o in ["HEADLESS-1", "HEADLESS-2"] {
+        assert_eq!(osd_box(&sway.screenshot(o).expect("grim")), None, "{o}: the checks bite only if no pill is there yet");
+    }
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on HEADLESS-2: volume 90%", DELAY), "the fixture's focused output: {:?}", d.log());
+    let shown = Instant::now();
+    assert!(
+        sway.wait_for_screen("HEADLESS-2", |s| osd_box(s)
+            .is_some_and(|(gap, l, r)| (48..=52).contains(&gap) && (l + r).abs_diff(s.width) <= 4)),
+        "48 px above the bottom edge (plus the frame's stroke), centred: {:?}",
+        d.log()
+    );
+    assert_eq!(osd_box(&sway.screenshot("HEADLESS-1").expect("grim")), None, "nothing on the other output");
+    assert!(d.wait_for("osd surface dropped (timeout, 1 shown)", DELAY), "{:?}", d.log());
+    let after = shown.elapsed();
+    assert!(after >= Duration::from_millis(1000) && after <= Duration::from_millis(2500), "gone {after:?} after it showed (timeout 1.3 s)");
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| osd_box(s).is_none()), "gone from the screen too");
+}
+
+/// OSD spec § 2: the state pw-dump starts with is the baseline; nothing shows.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_start_up_state_shows_nothing() {
+    let (sway, _hypr, d) = osd_daemon("osd-start", 1, "", |_| ());
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("osd surface on"), 0, "the first dump is the baseline: {:?}", d.log());
+    assert_eq!(osd_box(&sway.screenshot("HEADLESS-1").expect("grim")), None);
+}
+
+/// OSD spec § 3: a held key (30 changes at 25 Hz) keeps ONE pill up, its content replaced, then it
+/// goes once, `timeout_ms` after the last change.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_held_key_keeps_one_pill_up_until_the_last_change() {
+    let (sway, _hypr, d) = osd_daemon("osd-held", 1, "", |_| ());
+    for n in 0..30u32 {
+        pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 40 + n, false));
+        thread::sleep(Duration::from_millis(40));
+    }
+    let last = Instant::now();
+    assert!(d.wait_for("osd surface dropped (timeout, 30 shown)", DELAY), "{:?}", d.log());
+    let gone = last.elapsed();
+    assert!(gone >= Duration::from_millis(1000), "it stayed {gone:?} after the last change (timeout 1.3 s)");
+    assert_eq!(d.count("osd surface on"), 1, "one surface for the whole hold: {:?}", d.log());
+}
+
+/// OSD spec § 3: the input region is empty. A click on the pill never reaches it, and leaves it
+/// alone.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_pill_never_takes_a_click() {
+    let (sway, _hypr, d) = osd_daemon("osd-click", 1, "timeout_ms = 5000\n", |_| ());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    let found = Cell::new(None);
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| {
+            found.set(osd_box(s).map(|b| (b, s.height)));
+            found.get().is_some()
+        }),
+        "{:?}",
+        d.log()
+    );
+    let ((gap, left, right), height) = found.get().unwrap();
+    let (x, y) = ((left + right) / 2, height - 1 - gap - 10);
+    sway.hover(x, y);
+    sway.click(x, y, "button1");
+    sway.click(x, y, "button3");
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd: a pointer event reached the pill"), 0, "its input region is empty: {:?}", d.log());
+    assert_eq!(d.count("osd surface dropped"), 0, "and the clicks left it alone");
+}
+
+/// OSD spec § 1, § 2: the microphone's mute shows its pill, its level never does. A switch of the default sink shows its
+/// name and level, the fixture's speaker at 94 %.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_microphone_and_a_default_sink_switch_show_their_pills() {
+    // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
+    let (sway, _hypr, d) = osd_daemon("osd-mic", 1, "timeout_ms = 5000\n", |_| ());
+    // Mae (2026-10-09): a call's gain control moving the microphone's level shows nothing.
+    for level in [80, 65, 90] {
+        pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, level, false));
+    }
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd surface on"), 0, "a microphone level alone: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, 100, true));
+    assert!(d.wait_for("mic 100% muted", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("osd surface dropped (timeout, 1 shown)", DELAY), "{:?}", d.log());
+    pw_dump_send(&sway.runtime, &default_sink_delta(SPEAKER_SINK));
+    assert!(d.wait_for("default sink changed, 94%", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "{:?}", d.log());
+}
+
+/// OSD spec § 3: a change while the pill shows repaints its level on the same surface. The lit
+/// part of the bar is counted in the accent colour, below the screen's middle: the bar's own volume
+/// gauge, at the top, is never counted.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_change_while_shown_repaints_the_level() {
+    let (sway, _hypr, d) = osd_daemon("osd-level", 1, "timeout_ms = 5000\n", |_| ());
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    let lit = |s: &Ppm| -> usize { (s.height / 2..s.height).map(|y| (0..s.width).filter(|&x| s.at(x, y) == Some(accent)).count()).sum() };
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 10, false));
+    let low = Cell::new(0);
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| {
+            low.set(lit(s));
+            osd_box(s).is_some() && low.get() > 0
+        }),
+        "{:?}",
+        d.log()
+    );
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 100, false));
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| lit(s) > 3 * low.get()),
+        "10 % lights 2 of 25 cells, 100 % all of them: {} px lit at 10 %: {:?}",
+        low.get(),
+        d.log()
+    );
+    assert_eq!(d.count("osd surface on"), 1, "the same surface");
+}
+
+/// OSD spec § 3: a theme change while the pill shows repaints it in place.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_theme_change_repaints_the_shown_pill() {
+    let (sway, _hypr, d) = osd_daemon("osd-theme", 1, "timeout_ms = 5000\n", |_| ());
+    let config = sway.runtime.join("config/alpheus");
+    let (old, new) = (popup_bg("catppuccin"), popup_bg("gruvbox"));
+    assert_ne!(old, new);
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box_in(s, old).is_some()), "{:?}", d.log());
+    write_atomically(&config, "theme.toml", "theme = \"gruvbox\"\nmode = \"dark\"\n");
+    assert!(d.wait_for("theme reloaded: gruvbox, dark", DELAY), "{:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| osd_box_in(s, new).is_some() && osd_box_in(s, old).is_none()),
+        "repainted: {:?}",
+        d.log()
+    );
+    assert_eq!(d.count("osd surface on"), 1, "in place, never recreated");
+}
+
+/// OSD spec, success criteria: at rest nothing is mapped and the loop never wakes, before any pill
+/// and once one went (the CPU checked too: a spin makes no wake-up).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_no_wakeup_at_rest_before_or_after_a_pill() {
+    let (sway, _hypr, d) = osd_daemon("osd-rest", 1, "", |_| ());
+    sway.hover(20, 400);
+    let before = rest_over_5_s(&d);
+    assert_eq!(before, 0, "nothing shown yet ({before} wake-ups): {:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    let after = rest_over_5_s(&d);
+    assert_eq!(after, 0, "the pill gone: no timer left ({after} wake-ups): {:?}", d.log());
+}
+
+/// OSD task 3: without `osd` in `modules`, the OSD is never fed: no baseline, no pill, though the
+/// volume module's sound reaches the bar (its gauge repainted: the messages did get through).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_off_never_reads_the_sound() {
+    let sway = Sway::start("osd-off", 1);
+    let _hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    // The volume alone: nothing else on the bar may change its pixels (no clock).
+    let toml = "modules = [\"volume\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    let band =
+        |s: &Ppm| -> Vec<Option<[u8; 3]>> { (0..20).flat_map(|y| (0..s.width).map(move |x| (x, y))).map(|(x, y)| s.at(x, y)).collect() };
+    // The initial dump drawn (the gauge's ink on the bar), and past what would be the OSD's
+    // start-up grace.
+    let bg = bar_bg("catppuccin");
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| band(s).iter().any(|p| p.is_some_and(|p| p != bg))),
+        "the initial gauge is drawn: {:?}",
+        d.log()
+    );
+    thread::sleep(GRACE_OVER);
+    let before = sway.screenshot("HEADLESS-1").expect("grim");
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| band(s) != band(&before)), "the bar's gauge moved: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd: sound baseline"), 0, "the OSD heard nothing: {:?}", d.log());
+    assert_eq!(d.count("osd surface"), 0, "{:?}", d.log());
+    assert_eq!(osd_box(&sway.screenshot("HEADLESS-1").expect("grim")), None);
+}
+
+/// A fake backlight device under the test's runtime directory (`osd_bar`'s `backlight_dir`), as
+/// sysfs shows it: a number and a newline in each file.
+fn fake_backlight(sway: &Sway, name: &str, brightness: u32, max: u32) -> PathBuf {
+    let dir = sway.runtime.join("backlight").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("brightness"), format!("{brightness}\n")).unwrap();
+    std::fs::write(dir.join("max_brightness"), format!("{max}\n")).unwrap();
+    dir
+}
+
+fn osd_brightness(sway: &Sway) -> i32 {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args = [OsString::from("--osd"), OsString::from(OsdVerb::Brightness.word())];
+    run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
+}
+
+/// OSD spec § 2: `alpheus-launch --osd brightness` reads the fake backlight once and shows its
+/// level; the files are never written.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill() {
+    // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
+    let (sway, _hypr, d) = osd_daemon("osd-bright", 1, "timeout_ms = 5000\n", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    let dir = sway.runtime.join("backlight/intel_backlight");
+    let before = std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap();
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("brightness 50%", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(dir.join("brightness")).unwrap(), "9696\n", "read, never written");
+    assert_eq!(std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap(), before);
+}
+
+/// OSD spec § 3: a volume change while the brightness pill shows replaces its content on the same
+/// surface and pushes its deadline back: it goes `timeout_ms` after the volume change, not after
+/// the brightness. The volume lights more of the bar (90 % against 50 %), counted in the accent
+/// below the screen's middle (the bar's own gauge, at the top, is never counted).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_volume_change_replaces_the_brightness_pill_and_pushes_its_deadline_back() {
+    let (sway, _hypr, d) = osd_daemon("osd-replace", 1, "", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    let lit = |s: &Ppm| -> usize { (s.height / 2..s.height).map(|y| (0..s.width).filter(|&x| s.at(x, y) == Some(accent)).count()).sum() };
+    let asked = Instant::now();
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for(": brightness 50%", DELAY), "{:?}", d.log());
+    let brightness = Cell::new(0);
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| {
+            brightness.set(lit(s));
+            osd_box(s).is_some() && brightness.get() > 0
+        }),
+        "{:?}",
+        d.log()
+    );
+    // Well inside the brightness pill's 1.3 s, late enough that its own deadline comes first.
+    thread::sleep(Duration::from_millis(700).saturating_sub(asked.elapsed()));
+    let changed = Instant::now();
+    assert!(changed - asked < Duration::from_millis(1100), "the brightness pill may be gone already ({:?})", changed - asked);
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| lit(s) * 2 > brightness.get() * 3),
+        "90 % lights more than 50 %: {} px lit at 50 %: {:?}",
+        brightness.get(),
+        d.log()
+    );
+    assert!(d.wait_for("osd surface dropped (timeout, 2 shown)", DELAY), "{:?}", d.log());
+    let gone = changed.elapsed();
+    assert!(gone >= Duration::from_millis(1000), "it went {gone:?} after the volume change (timeout 1.3 s): not pushed back");
+    assert_eq!(d.count("osd surface on"), 1, "one surface, its content replaced: {:?}", d.log());
+}
+
+/// OSD spec § 4: with no backlight device, or without the module, the verb answers Done (exit 0)
+/// and nothing shows.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
+    let (sway, _hypr, d) = osd_daemon("osd-nobright", 1, "", |_| ());
+    assert_eq!(osd_brightness(&sway), EXIT_OK, "no backlight device");
+    assert!(d.wait_for("osd: no backlight device, nothing shown", DELAY), "{:?}", d.log());
+    let off = Sway::start("osd-bright-off", 1);
+    let _hypr_off = FakeHyprland::start_on_headless(&off.runtime, SIGNATURE);
+    fake_backlight(&off, "intel_backlight", 9696, 19393);
+    let toml = format!("modules = [\"workspaces\", \"clock\"]\n[osd]\nbacklight_dir = \"{}\"\n", off.runtime.join("backlight").display());
+    let d_off = start_daemon_with(&off, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d_off.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d_off.log());
+    assert_eq!(osd_brightness(&off), EXIT_OK, "the module off: exit 0 all the same");
+    assert!(d_off.wait_for("the osd module is not in modules", DELAY), "{:?}", d_off.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
 }

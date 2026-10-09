@@ -1436,6 +1436,15 @@ mod tests {
         assert!(ink_b, "the character right after the masked one is still drawn, at its own column (consistent width)");
     }
 
+    /// The OSD's own glyphs (osd.rs) are in the bar's font: shaped, never masked.
+    #[test]
+    fn the_osd_glyphs_are_in_the_font() {
+        let mut p = fonts();
+        for c in [crate::osd::MIC_ON, crate::osd::MIC_OFF, crate::osd::BRIGHTNESS] {
+            assert!(!p.shaped(c, false).is_empty(), "U+{:X} has no glyph in the bar's font", u32::from(c));
+        }
+    }
+
     #[test]
     fn only_useful_faces_are_loaded() {
         // Regular + bold of the family, plus regular + bold of DejaVu Sans
