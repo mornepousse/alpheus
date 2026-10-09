@@ -12,8 +12,9 @@ pub struct SoundState {
     pub sink: Option<Volume>,
     /// The default source (the microphone); None: none, or its volume not known yet.
     pub source: Option<Volume>,
-    /// The default sink's and source's node, when the default resolves to one: what tells a default
-    /// switched from a level moved (`osd::Watch`).
+    /// The default sink's and source's node: what tells a default switched from a level moved
+    /// (`osd::Watch`). A default the metadata names before its node is in the dump is that node
+    /// already, labelled with its node name, its volume unknown; one whose node went is None.
     pub sink_name: Option<DeviceName>,
     pub source_name: Option<DeviceName>,
 }

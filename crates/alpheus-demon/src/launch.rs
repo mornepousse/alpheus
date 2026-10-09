@@ -13,6 +13,7 @@ use crate::launcher::surface::CloseReason;
 use crate::lock;
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
+use crate::pipewire::Scope;
 use crate::sources;
 use crate::sources::dbus::Domain;
 use crate::sources::resources;
@@ -208,6 +209,12 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         media: has(ModuleId::Media),
         notifications: has(ModuleId::Notifications),
     }
+}
+
+/// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
+/// microphone or a label change wakes nothing).
+pub fn sound_scope(modules: &[ModuleId]) -> Scope {
+    if modules.contains(&ModuleId::Osd) { Scope::Osd } else { Scope::Bar }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {
@@ -606,6 +613,7 @@ pub fn run() -> i32 {
     let qh = file.handle();
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
     let want = wanted(&config.modules);
+    let scope = sound_scope(&config.modules);
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
@@ -714,7 +722,7 @@ pub fn run() -> i32 {
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        sources::sound::start(exec.clone(), move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+        sources::sound::start(exec.clone(), scope, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
@@ -1145,6 +1153,13 @@ mod tests {
         note_compositor_message(&mut c, &Msg::Clock(BEFORE));
         after_dispatch_windows(&mut c);
         assert_eq!(c.feeds, 1, "nothing compositor-related this pass: no re-rank");
+    }
+
+    #[test]
+    fn the_sound_source_publishes_for_the_osd_only_with_its_module() {
+        assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Osd]), Scope::Osd);
+        assert_eq!(sound_scope(&[ModuleId::Osd]), Scope::Osd);
+        assert_eq!(sound_scope(&[ModuleId::Volume, ModuleId::Clock]), Scope::Bar, "bar-only: the sink's volume alone");
     }
 
     #[test]

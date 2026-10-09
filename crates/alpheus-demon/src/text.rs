@@ -6,8 +6,9 @@
 pub const MAX_TEXT: usize = 256;
 
 /// Text from an application, drawable on one line: `\n`, `\r`, `\t` → a space, every other control
-/// character and the invisible formatting characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069)
-/// removed, at most MAX_TEXT characters.
+/// character and the invisible formatting characters `invisible` names (U+200B, U+200E, U+200F,
+/// U+061C, U+202A–U+202E, U+2066–U+2069) removed, at most MAX_TEXT characters. ZWNJ (U+200C) and
+/// ZWJ (U+200D) are kept on purpose: they shape ordinary text (see `invisible`).
 pub fn clean(s: &str) -> String {
     s.chars()
         .filter_map(|c| match c {

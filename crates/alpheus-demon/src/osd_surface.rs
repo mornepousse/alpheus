@@ -58,7 +58,7 @@ impl App {
             return;
         }
         let now = Instant::now();
-        match self.osd.watch.sound(s, now) {
+        match self.osd.sound(s, now) {
             Heard::Baseline => log("osd: sound baseline"),
             Heard::Show(pill) => self.osd_show(pill, now),
             Heard::Quiet => {}
