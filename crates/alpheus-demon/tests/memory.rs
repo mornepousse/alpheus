@@ -21,8 +21,8 @@ use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, launcher,
-    start_daemon_with, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, launcher,
+    pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -1185,4 +1185,67 @@ fn at_rest_no_wakeups_with_notifications() {
         assert_eq!(main_delta, 0, "{what}: {main_delta} loop-thread wake-ups in 10 s");
         assert!(delta <= 8, "{what}: {delta} wake-ups in 10 s");
     }
+}
+
+/// The OSD's bars: the volume module (the sound source either way), with and without the OSD. A
+/// 5 s timeout, so the pill is still up when its PSS is read.
+const OSD_BAR: &str = "modules = [\"workspaces\", \"window\", \"volume\", \"osd\", \"clock\"]\n[osd]\ntimeout_ms = 5000\n";
+const NO_OSD_BAR: &str = "modules = [\"workspaces\", \"window\", \"volume\", \"clock\"]\n";
+
+/// The OSD delivery: the module on with nothing shown (its cost over the same bar without it), one
+/// pill shown, then gone. The module off runs on a daemon of its own; the rest in sequence on one.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn osd_pss_idle_shown_and_gone() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("osd-cost");
+    let base = {
+        let (_sway, _hypr, d) = start("osd-cost-a", 1, &bus, None, Some(NO_OSD_BAR), PwDump::Fifo);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let (sway, _hypr, d) = start("osd-cost-b", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
+    assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface on", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted; up until 5 s
+    let shown = d.pss_kb();
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let gone = d.pss_kb();
+    let (module_cost, pill_cost) = (idle.saturating_sub(base), shown.saturating_sub(idle));
+    eprintln!(
+        "osd PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
+         {shown} with the pill shown (pill cost {pill_cost}), {gone} once gone"
+    );
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(module_cost <= 256, "the OSD at rest costs {module_cost} KB (a sound state and three instants: ≤ 256 KB)");
+    assert!(pill_cost <= 1024, "one pill costs {pill_cost} KB (its own pool, two buffers of one row: ≤ 1 MB)");
+    assert!(gone <= idle + 256, "gone: {gone} KB vs {idle} KB before it — the surface and its pool must go");
+}
+
+/// The OSD delivery: once a pill went, no timer, no wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_osd() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("osd-rest");
+    let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
+    assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(1300)); // the start-up grace
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the pill");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after the osd (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }

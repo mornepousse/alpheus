@@ -17,7 +17,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 71 MB** | bar ≈ 14 MB + mako, swayosd, swaybg still borrowed ≈ 57 MB |
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 71 MB** | bar ≈ 14 MB + borrowed pieces ≈ 57 MB (live figure before the OSD; to be measured again after the switch — it counted swayosd at a figure since found wrong, 7.6 MB PSS measured); once switched, only swaybg (optional) is still borrowed |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 120 MB | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
@@ -50,6 +50,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Notifications server and bell, serving with nothing (own session connection, tray off) | 0–4 KB | `notifications_pss_idle_history_and_bubbles`, 3 runs (10.9 MB with it, 1 output): in mode `auto` that connection is the light/dark portal's, already open, as for the media row; with the tray on, it shares the tray's connection |
 | Notifications, 50-entry history | 192–198 KB | same test; capped: app 64 B, summary 256 B, body 1 KiB, 6 actions; history in memory only |
 | Notifications, 4 bubbles shown | 326–774 KB, −84…+76 KB once closed | same test; their surface and pool exist only while a bubble shows; 0 loop wake-ups at rest with a sticky bubble shown and once every bubble went (`at_rest_no_wakeups_with_notifications`) |
+| OSD, linked in but unused (no `osd` in `modules`) | within noise (−28…+172 KB) vs. the delivery before this one | binary 5.48 → 5.54 MiB (+56 KiB stripped); measured `1662cb4` vs this delivery, release, back to back, 3 runs each, separate target directories |
+| OSD, module on, nothing shown | 0–96 KB | `osd_pss_idle_shown_and_gone`, 3 runs (10.9–11.0 MB with it, 1 output): the last sound state and three instants; no surface, no timer, no sysfs read until `alpheus-launch --osd brightness` |
+| OSD, one pill shown | 4–30 KB, −38…−12 KB once gone | same test; its surface and pool exist only while it shows (1.3 s after the last change); a held key keeps one surface; 0 loop wake-ups at rest once it went (`at_rest_no_wakeups_after_the_osd`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -61,7 +64,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, 100,000-line dmenu | ≈ +6.6–6.8 MB open, back to +0.5 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
-| Borrowed for now: swaybg / swayosd | 1.4 / 49.5 MB | swayosd to be replaced by the alpheus OSD |
+| swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
+| Borrowed for now: swaybg | 1.4 MB | optional |
 
 > **Memory note:** absolute PSS shifts with machine state, by about ±0.5 MB
 > between boots, because shared libraries are counted proportionally; the
@@ -69,7 +73,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
 > from the tray-delivery measurement (three runs); the themes rows from two
 > alternated runs against the delivery before; the bar shapes rows likewise
-> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise.
+> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise; the OSD rows likewise.
 >
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
@@ -128,7 +132,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
-| OSD (volume, brightness) | 🚧 (swayosd ≈ 49.5 MB until then) | ✅ | ✅ | ✅ | ✅ |
+| OSD (volume, brightness) | ✅ volume, mute and microphone from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
@@ -193,6 +197,8 @@ In the default `flat` style, a line of monospace characters on the theme's bar c
 
 ![The notifications panel under the bell: the player, the history, do-not-disturb (fictional data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/notifications-panel.png)
 
+![The OSD: volume, microphone muted, brightness (fictional levels, real font, default theme (catppuccin, dark))](docs/images/osd.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
@@ -207,13 +213,13 @@ app's menu in a popup, keyboard and mouse),
 server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **clock** (a click opens the
+clicked), **OSD** (a pill bottom centre on the focused output for the volume, mute and the microphone, read from PipeWire's own state — any app, any key, a headset's buttons — and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **clock** (a click opens the
 month's calendar). Clicking a module opens the matching tab
 of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: the OSD.
+Coming next: the lock screen; the wallpaper (swaybg) is optional.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
@@ -234,7 +240,8 @@ stripped, never rendered, and images are skipped unread. A noisy app is rate-lim
 exist only while one shows. One timer is armed for the earliest expiry, and none at rest. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
 do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
-is not running. A known
+is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
+show, or the `osd` module is off; 3 when the bar is not running). A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -542,7 +549,7 @@ back to default values with a warning, never a crash.
 ```toml
 # bar.toml — default values
 modules = ["launcher", "workspaces", "window", "media", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "clock"]
+           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "clock"]
 height = 22
 
 [font]
@@ -575,6 +582,13 @@ max_visible = 4      # bubbles shown at once; more wait
 width = 40           # cells (24 to 80)
 history = 50         # entries kept in memory (0 to 200)
 
+[osd]
+timeout_ms = 1300    # how long the pill stays after the last change (600 to 5000)
+width = 32           # cells of its row (24 to 60)
+margin = 48          # px above the bottom edge (0 to 400)
+backlight = ""       # a device in backlight_dir; "": the first one, in sorted order
+backlight_dir = "/sys/class/backlight"   # read only, and only on `alpheus-launch --osd brightness`
+
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
 
@@ -601,7 +615,7 @@ today will stay valid.
 
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
 - [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
-  bar, launcher, tray, themes, media, notifications).
+  bar, launcher, tray, themes, media, notifications, OSD).
 - [`docs/plans/`](docs/plans/): the implementation plans.
 
 ## License
