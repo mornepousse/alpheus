@@ -277,30 +277,27 @@ fn mako_disconnecting_hands_the_name_over_too() {
     assert!(client.notify(&Note::new("Fictional", "hello")).is_ok_and(|id| id < MAKO_FIRST_ID));
 }
 
-/// Review Focus: mako restarting while alpheus holds the name. It queues behind us (flags 0, as we
-/// do), nothing changes for the clients, and once alpheus exits the bus hands mako the name: the
-/// fallback the spec intends.
+/// Review Focus: mako restarting while alpheus holds the name. Real mako asks through sd-bus,
+/// which adds DO_NOT_QUEUE: it is refused (EXISTS) and exits ("File exists"); alpheus keeps the
+/// name, nothing changes for the clients and the bell never dims.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
-fn a_restarted_mako_queues_behind_alpheus_and_nothing_breaks() {
+fn a_mako_started_late_is_refused_and_alpheus_keeps_the_name() {
     let bus = PrivateBus::start("notify-mako-restarts");
     let server = serving(&bus, false);
+    let me = server.with(|d| d.unique());
     let client = FakeClient::connect(&bus);
     let first = client.notify(&Note::new("Fictional", "before")).unwrap();
-    let mako = FakeMako::queue(&bus);
+    assert_eq!(FakeMako::try_start(&bus).err(), Some(3), "refused: DBUS_REQUEST_NAME_REPLY_EXISTS, mako exits");
     let second = client.notify(&Note::new("Fictional", "after")).unwrap();
     assert!(second > first && second < MAKO_FIRST_ID, "still ours: {first} then {second}");
     thread::sleep(QUIET);
-    assert!(!mako.holds());
-    assert!(mako.calls().is_empty(), "nothing reached the queued mako");
+    assert_eq!(client.owner(NAME).as_deref(), Some(me.as_str()), "alpheus keeps the name");
     server.with(|d| {
-        assert!(d.n.held(), "no NameLost for a newcomer in the queue");
+        assert!(d.n.held(), "no NameLost");
         let lit = d.views.iter().position(|v| v.serving).expect("served");
         assert!(d.views[lit..].iter().all(|v| v.serving), "the bell never dimmed: {:?}", d.views);
     });
-    drop(server);
-    assert!(mako.wait_holds(Duration::from_secs(5)), "alpheus gone: the waiting mako takes the name");
-    assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(MAKO_FIRST_ID));
 }
 
 /// NameAcquired and NameLost count only from the bus driver: a stranger sending copies of them,

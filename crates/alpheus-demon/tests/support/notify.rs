@@ -6,10 +6,12 @@
 //! `CloseNotification`, `GetCapabilities`, `GetServerInformation`), raw sends for bursts, and the
 //! two broadcast signals it hears (`NotificationClosed`, `ActionInvoked`), kept in arrival order.
 //!
-//! `FakeMako` owns `org.freedesktop.Notifications` with flags 0, as mako does, on its own thread.
-//! It answers like a server (its ids start at 1000, so a test can tell who served), records every
-//! call, and on command gives the name up (`ReleaseName`) or disconnects (`kill`). `FakeMako::queue`
-//! starts one that waits behind whoever holds the name: mako restarting while alpheus holds it.
+//! `FakeMako` asks for `org.freedesktop.Notifications` as real mako does: sd-bus's
+//! `sd_bus_request_name(…, 0)` sends DO_NOT_QUEUE (4) unless asked to queue, so a mako started while
+//! the name is held is refused (EXISTS, 3) and exits ("File exists"). Holding the name, it serves on
+//! its own thread, answers like a server (its ids start at 1000, so a test can tell who served),
+//! records every call, and on command gives the name up (`ReleaseName`) or disconnects (`kill`).
+//! `FakeMako::try_start` is a mako started late: refused, it exits at once.
 
 use super::{Peer, PrivateBus};
 use dbus::Message;
@@ -31,6 +33,8 @@ const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 /// How long a fake waits on its socket before looking at its commands (as support/portal.rs).
 const POLL: Duration = Duration::from_millis(20);
+/// DBUS_NAME_FLAG_DO_NOT_QUEUE: what sd-bus adds to a RequestName made with flags 0, as mako's is.
+const DO_NOT_QUEUE: u32 = 4;
 /// FakeMako's first id: far above anything alpheus hands out in these tests.
 pub const MAKO_FIRST_ID: u32 = 1000;
 
@@ -305,31 +309,31 @@ pub struct FakeMako {
 }
 
 impl FakeMako {
-    /// Requests the name with flags 0, as mako does; nobody holds it, so the reply must be 1.
+    /// Requests the name as mako does (DO_NOT_QUEUE); nobody holds it, so the reply must be 1.
     pub fn start(bus: &PrivateBus) -> FakeMako {
-        Self::spawn(bus, 1)
+        Self::try_start(bus).unwrap_or_else(|code| panic!("RequestName({NAME}, DO_NOT_QUEUE) answered {code}, not 1"))
     }
 
-    /// Requests the name while alpheus holds it: the reply must be 2 (queued). It serves once the bus
-    /// hands it the name (NameAcquired).
-    pub fn queue(bus: &PrivateBus) -> FakeMako {
-        Self::spawn(bus, 2)
-    }
-
-    fn spawn(bus: &PrivateBus, expected: u32) -> FakeMako {
+    /// Requests the name as mako does (DO_NOT_QUEUE): Ok holding it (reply 1); Err(the reply) when
+    /// someone else holds it (3, EXISTS), after which it disconnects at once, as mako exits with
+    /// "File exists".
+    pub fn try_start(bus: &PrivateBus) -> Result<FakeMako, u32> {
         let peer = Peer::connect(bus);
-        let ask = Message::new_method_call(DBUS, DBUS_PATH, DBUS, "RequestName").unwrap().append2(NAME, 0u32);
-        assert_eq!(peer.call(ask).unwrap().read1::<u32>().unwrap(), expected, "RequestName({NAME}, 0)");
+        let ask = Message::new_method_call(DBUS, DBUS_PATH, DBUS, "RequestName").unwrap().append2(NAME, DO_NOT_QUEUE);
+        let code = peer.call(ask).unwrap().read1::<u32>().unwrap();
+        if code != 1 {
+            return Err(code);
+        }
         let name = peer.name.clone();
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let holds = Arc::new(AtomicBool::new(expected == 1));
+        let holds = Arc::new(AtomicBool::new(true));
         let (commands, rx) = mpsc::channel();
         let (c, h) = (calls.clone(), holds.clone());
         let thread = thread::spawn(move || serve(peer, c, h, rx));
-        FakeMako { name, commands, calls, holds, thread: Some(thread) }
+        Ok(FakeMako { name, commands, calls, holds, thread: Some(thread) })
     }
 
-    /// `systemctl --user stop mako` without disconnecting: ReleaseName.
+    /// mako giving the name up without exiting: ReleaseName.
     pub fn release(&self) {
         let _ = self.commands.send(Command::Release);
     }

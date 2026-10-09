@@ -1062,7 +1062,12 @@ mod tests {
         let volume_gone =
             (30u16..=100).rev().find(|&w| !b.grid("HDMI-A-1", w).text().contains('\u{f057e}')).expect("narrow enough, the volume leaves");
         assert!(volume_gone >= 50, "the volume leaves at {volume_gone} columns");
-        for w in 50u16..=100 {
+        // Down to the narrowest bar that still holds the whole clock: workspaces, bell and clock.
+        let floor = (0u16..=100).find(|&w| b.grid("HDMI-A-1", w).text().contains("Sun 4 Oct 14:05")).expect("the clock fits somewhere");
+        assert!(floor < 50, "the check goes below 50 columns: {floor}");
+        let t = b.grid("HDMI-A-1", floor).text();
+        assert!(!t.contains('\u{f057e}'), "at {floor} only the workspaces, the bell and the clock: {t}");
+        for w in floor..=100 {
             let t = b.grid("HDMI-A-1", w).text();
             assert!(t.contains("\u{f009a} 3"), "{w}: the bell stays: {t}");
         }

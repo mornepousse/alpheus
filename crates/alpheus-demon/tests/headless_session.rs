@@ -2509,7 +2509,7 @@ fn mako_holding_the_name_dims_the_bell_until_it_stops() {
     assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(1000), "nothing changes while mako runs");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("bell: serving"), 0, "{:?}", d.log());
-    mako.kill(); // systemctl --user stop mako
+    mako.kill(); // mako exits (pkill mako): its connection closes
     assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
     assert!(client.notify(&Note::new("Fictional", "to alpheus")).is_ok_and(|id| id < 1000));
 }

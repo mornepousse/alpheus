@@ -229,9 +229,9 @@ shared with the light/dark portal): players found at start and on arrival, their
 signals, never polled; while its popup is open the time ticks once a second, and only then.
 The notifications module is the `org.freedesktop.Notifications` server on that same connection. It
 waits in the D-Bus queue while another server (mako) holds the name, and takes over as soon as it is
-released. Text is capped and cleaned (no markup, no images, ever decoded), a noisy app is
-rate-limited, and the bubbles exist only while one shows. One timer is armed for the earliest
-expiry, and none at rest. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
+released; a mako started after it is refused and exits. Text is capped and cleaned: markup is
+stripped, never rendered, and images are skipped unread. A noisy app is rate-limited, and the bubbles
+exist only while one shows. One timer is armed for the earliest expiry, and none at rest. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
 do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
 is not running. A known
