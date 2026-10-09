@@ -1220,20 +1220,25 @@ impl App {
                 self.mpris_do(|m, out| m.control(out, c));
                 self.media_popup_refresh();
             }
-            // A pin changes the active player with no D-Bus traffic to carry the bar's view: it is
-            // taken here, at once (the one place it changes outside an output).
             MediaAction::Pin(name) => {
-                let mut change = None;
-                self.mpris_do(|m, out| {
-                    m.pin(&name);
-                    m.resync_active(out);
-                    change = m.take_view_change();
-                });
-                if let Some(view) = change {
-                    self.media_view(view);
-                }
+                self.media_pin(&name);
                 self.media_popup_refresh();
             }
+        }
+    }
+
+    /// Pins `name` (the media popup's or the panel's card). A pin changes the active player with no
+    /// D-Bus traffic to carry the bar's view: it is taken here, at once (the one place it changes
+    /// outside an output).
+    fn media_pin(&mut self, name: &str) {
+        let mut change = None;
+        self.mpris_do(|m, out| {
+            m.pin(name);
+            m.resync_active(out);
+            change = m.take_view_change();
+        });
+        if let Some(view) = change {
+            self.media_view(view);
         }
     }
 
@@ -1298,7 +1303,6 @@ impl App {
         }
         let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else { return };
         let room = self.popup_room(i).1.saturating_sub(1);
-        self.notify_do(|n| n.center_mut().mark_read());
         let now = Instant::now();
         let built = {
             let App { tray, link, .. } = &*self;
@@ -1317,6 +1321,8 @@ impl App {
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Panel(p), columns, height, true) {
             self.popup_paint(rows);
+            // Only once it shows: a refused open leaves the count on the bell.
+            self.notify_do(|n| n.center_mut().mark_read());
             self.mpris_do(|m, out| m.popup_opened(out));
             self.media_timer_sync();
             log(&format!("panel shown (entries: {entries}, card: {})", if card { "yes" } else { "no" }));
@@ -1353,17 +1359,8 @@ impl App {
                     self.mpris_do(|m, out| m.control(out, c));
                     self.panel_refresh();
                 }
-                // As the media popup's pin: the bar's view taken at once.
                 MediaAction::Pin(name) => {
-                    let mut change = None;
-                    self.mpris_do(|m, out| {
-                        m.pin(&name);
-                        m.resync_active(out);
-                        change = m.take_view_change();
-                    });
-                    if let Some(view) = change {
-                        self.media_view(view);
-                    }
+                    self.media_pin(&name);
                     self.panel_refresh();
                 }
             },

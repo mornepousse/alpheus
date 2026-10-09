@@ -404,6 +404,20 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
 }
 
+/// Panel fix round 1: opening the panel marks everything read (spec § 4), but only once it shows:
+/// a `popup_open` that refuses (no shared buffer, no positioner) must leave the count on the bell.
+/// Those refusals need a failing compositor or allocator, so the order is checked in the source.
+#[test]
+fn the_panel_marks_read_only_after_it_opened() {
+    let files = source_files();
+    let wayland = production_code(&files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1);
+    let body = function_body(&wayland, "pub(crate) fn panel_toggle(");
+    let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
+    let read = body.find("mark_read()").expect("panel_toggle marks read");
+    assert_eq!(body.matches("mark_read()").count(), 1, "one mark, on the shown path: {body}");
+    assert!(open < read, "marked read only once `popup_open` answered true: {body}");
+}
+
 /// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one

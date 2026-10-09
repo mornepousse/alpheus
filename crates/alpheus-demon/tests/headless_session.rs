@@ -3030,6 +3030,34 @@ fn a_notification_arriving_while_the_panel_is_open_shows_in_it_read() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
+/// Mae's keyboard crash (see `a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive`),
+/// through the panel, whose Down then a click outside is its likeliest trigger: (a) the panel
+/// closed by an outside click past Down's repeat delay, wtype still alive; (b) reopened, Down,
+/// wtype gone (`keyboard_lost`), then the outside click.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_panel_closed_after_a_repeat_delay_keeps_the_bar_alive() {
+    let (_bus, sway, _hypr, mut d, _client, _player) = panel_daemon("panel-keyboard");
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Down", "-s", "2500"]);
+    thread::sleep(Duration::from_secs(1));
+    sway.click(640, 400, "button1");
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("keyboard released", DELAY), "{:?}", d.log());
+    survives(&mut d, "the panel closed with wtype alive");
+    let _ = held.wait();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for_count("panel shown", 2, DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Down"]).success());
+    thread::sleep(Duration::from_millis(1500));
+    sway.click(640, 400, "button1");
+    assert!(d.wait_for_count("popup closed", 2, DELAY), "{:?}", d.log());
+    survives(&mut d, "the panel closed after wtype left");
+}
+
 /// Spec § 4: the media card's 1 s tick runs while the panel shows it and the player plays, and
 /// stops with the panel, its Seeked rule too.
 #[test]
@@ -3060,7 +3088,26 @@ fn the_panel_ticks_only_while_its_card_plays() {
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn without_a_card_opening_and_arrivals_mark_read_at_once() {
-    let (bus, sway, _hypr, d, ()) = bell_daemon("panel-no-card", BELL_BAR, |_| ());
+    no_card_marks_read("panel-no-card", BELL_BAR);
+}
+
+/// The same with the tray, as Mae runs it: the server then lives on the tray's connection, and the
+/// tray's output (not the link's) is what refreshes the open panel.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn with_the_tray_arrivals_refresh_the_open_panel() {
+    no_card_marks_read("panel-no-card-tray", "modules = [\"notifications\", \"tray\", \"clock\"]\n");
+}
+
+/// Waits until the panel is on screen with its newest entry selected: the selection band in its
+/// first row (catppuccin dark, the default with no theme file).
+fn wait_for_the_panel_drawn(sway: &Sway, d: &Daemon) {
+    let band = rgb(preset("catppuccin").unwrap().dark.selection);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&band)), "the panel drawn: {:?}", d.log());
+}
+
+fn no_card_marks_read(name: &str, modules: &str) {
+    let (bus, sway, _hypr, d, ()) = bell_daemon(name, modules, |_| ());
     wait_for_the_server(&bus);
     assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
     // The bell drawn: something other than the bar's background left of its count.
@@ -3079,6 +3126,7 @@ fn without_a_card_opening_and_arrivals_mark_read_at_once() {
     sway.click(BELL_AT.0, BELL_AT.1, "button1");
     assert!(d.wait_for("panel shown (entries: 1, card: no)", DELAY), "{:?}", d.log());
     assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != unread), "opening marks it read: the count goes");
+    wait_for_the_panel_drawn(&sway, &d);
     thread::sleep(Duration::from_millis(300));
     let read = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
     client.notify(&Note::new("Calendar", "Standup in 5 minutes").critical()).unwrap();

@@ -733,18 +733,15 @@ impl App {
                     self.media_action(action);
                 }
             }
-            // A press acts on its row; the wheel moves the selection, a notch a row.
+            // A press acts on its row; the wheel moves the selection, a notch a row, one repaint.
             PopupBody::Panel(_) => match (kind, cell) {
                 (PopupPointer::Press(b), Some(c)) => {
                     let action = self.panel_with(|p, center, players| panel::press(p, center, players, c, b));
                     self.panel_action(action);
                 }
                 (PopupPointer::Scroll(steps), _) => {
-                    let k = if steps < 0 { Key::Up } else { Key::Down };
-                    for _ in 0..steps.unsigned_abs().min(10) {
-                        let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
-                        self.panel_action(action);
-                    }
+                    let action = self.panel_with(|p, center, players| panel::scroll(p, center, players, steps));
+                    self.panel_action(action);
                 }
                 _ => {}
             },

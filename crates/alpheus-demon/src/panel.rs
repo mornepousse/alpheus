@@ -32,6 +32,17 @@ pub enum Item {
     Clear,
 }
 
+/// What is selected, by what it is rather than by its row: arrivals and removals above it move
+/// its row, never the selection off it (as `media_popup::Chosen`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chosen {
+    Card,
+    /// A history entry, by notification id.
+    Entry(u32),
+    Dnd,
+    Clear,
+}
+
 /// One row of the panel as drawn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Line {
@@ -48,8 +59,10 @@ enum Line {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Panel {
-    /// Index in `items()`.
+    /// Index in `items()`, found again from `chosen` before each use.
     pub selected: usize,
+    /// What `selected` points at, kept across changes to the history.
+    pub chosen: Option<Chosen>,
     /// The first history entry shown.
     pub top: usize,
     /// The card's own selection (its buttons, its players).
@@ -124,15 +137,47 @@ impl Panel {
         let selected =
             items.iter().position(|i| matches!(i, Item::Entry(_))).or_else(|| items.iter().position(|i| *i == Item::Card)).unwrap_or(0);
         let media = players.map_or(MediaPopup { selected: usize::MAX, button: 1, chosen: None }, MediaPopup::new);
-        Panel { selected, top: 0, media, room, entries: center.history().count() }
+        let mut p = Panel { selected, chosen: None, top: 0, media, room, entries: center.history().count() };
+        p.remember(center, &items);
+        p
+    }
+
+    /// `chosen` from `selected` (after a fit, a key, a press).
+    fn remember(&mut self, center: &Center, items: &[Item]) {
+        self.chosen = match items.get(self.selected) {
+            Some(Item::Card) => Some(Chosen::Card),
+            Some(Item::Entry(i)) => center.history().nth(*i).map(|e| Chosen::Entry(e.id)),
+            Some(Item::Dnd) => Some(Chosen::Dnd),
+            Some(Item::Clear) => Some(Chosen::Clear),
+            None => None,
+        };
+    }
+
+    /// The selection on `chosen`'s row where it now is; gone, on the row it had (clamped), and
+    /// that row remembered anew.
+    fn fit(&mut self, center: &Center, items: &[Item]) {
+        let found = self.chosen.and_then(|c| match c {
+            Chosen::Card => items.iter().position(|i| *i == Item::Card),
+            Chosen::Entry(id) => center.history().position(|e| e.id == id).and_then(|n| items.iter().position(|i| *i == Item::Entry(n))),
+            Chosen::Dnd => items.iter().position(|i| *i == Item::Dnd),
+            Chosen::Clear => items.iter().position(|i| *i == Item::Clear),
+        });
+        match found {
+            Some(i) => self.selected = i,
+            None => {
+                self.selected = self.selected.min(items.len().saturating_sub(1));
+                self.remember(center, items);
+            }
+        }
     }
 }
 
-/// Before drawing: the selection on an item that exists, the card's own selection re-fitted (a
-/// player gone, a capability lost), the window over the history following the selected entry.
+/// Before drawing: the selection found again on what it chose (an arrival above an entry moves
+/// its row, not the selection), the card's own selection re-fitted (a player gone, a capability
+/// lost), the window over the history following the selected entry.
 pub fn scroll_into_view(p: &mut Panel, center: &Center, players: Option<&Players>) {
     let items = items(center, players);
-    p.selected = p.selected.min(items.len().saturating_sub(1));
+    p.fit(center, &items);
     if let Some(pl) = players {
         p.media.fit(pl);
     }
@@ -230,8 +275,26 @@ pub fn key(p: &mut Panel, center: &Center, players: Option<&Players>, k: Key) ->
         return PanelAction::Close;
     }
     let items = items(center, players);
+    p.fit(center, &items);
+    let action = key_on(p, center, players, &items, k);
+    p.remember(center, &items);
+    action
+}
+
+/// The wheel: `steps` notches (negative up), at most 10, each a row as ↑ ↓ moves; one action for
+/// them all, so the wiring repaints once. Redraw when any notch moved.
+pub fn scroll(p: &mut Panel, center: &Center, players: Option<&Players>, steps: i32) -> PanelAction {
+    let k = if steps < 0 { Key::Up } else { Key::Down };
+    let mut moved = false;
+    for _ in 0..steps.unsigned_abs().min(10) {
+        moved |= key(p, center, players, k) != PanelAction::Nothing;
+    }
+    if moved { PanelAction::Redraw } else { PanelAction::Nothing }
+}
+
+/// `key` on the selection fitted, before it is remembered.
+fn key_on(p: &mut Panel, center: &Center, players: Option<&Players>, items: &[Item], k: Key) -> PanelAction {
     let last = items.len().saturating_sub(1);
-    p.selected = p.selected.min(last);
     if let (Some(Item::Card), Some(pl)) = (items.get(p.selected), players)
         && matches!(k, Key::Up | Key::Down | Key::CtrlP | Key::CtrlN | Key::Left | Key::Right | Key::Enter)
     {
@@ -268,10 +331,12 @@ pub fn key(p: &mut Panel, center: &Center, players: Option<&Players>, k: Key) ->
 /// footer a left press acts like Enter. The press selects what it ran.
 pub fn press(p: &mut Panel, center: &Center, players: Option<&Players>, cell: (u16, u16), button: Button) -> PanelAction {
     let items = items(center, players);
+    p.fit(center, &items);
     let select = |p: &mut Panel, item: Item| -> bool {
         let Some(i) = items.iter().position(|x| *x == item) else { return false };
         let moved = p.selected != i;
         p.selected = i;
+        p.remember(center, &items);
         moved
     };
     let line = layout(center, players, p).get(usize::from(cell.1)).copied();
@@ -550,6 +615,93 @@ mod tests {
         assert_eq!(rows(&c, None, &tiny, t0).cells().1, 2 + 3, "at least one entry, whatever the room");
     }
 
+    /// Fix round 1: the selection is the entry, not its row. A notification arriving above it moves
+    /// the highlight down with it, so Enter and Delete still hit the entry the user chose, never the
+    /// newcomer (whose default action is another app's).
+    #[test]
+    fn the_selection_follows_its_entry_when_one_arrives_above() {
+        let t0 = Instant::now();
+        let (mut c, _, chat) = center(t0);
+        let mut p = Panel::new(&c, None, 40);
+        assert_eq!(items(&c, None)[p.selected], Item::Entry(0), "Chat, the newest, selected");
+        let calendar = c.notify(
+            incoming("Calendar", "Standup in 5 minutes", &[("default", "Join")], Urgency::Normal),
+            t0 + Duration::from_secs(40),
+            14 * 60 + 5,
+        );
+        assert_eq!(c.history().next().unwrap().id, calendar, "the newcomer is first");
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(p.selected, 1, "the highlight moved down with Chat");
+        let b = rows(&c, None, &p, t0);
+        assert_eq!(b.rows[2].styles(), "S".repeat(32), "Chat's row on the band");
+        assert!(!b.rows[0].styles().contains('S'), "not the newcomer's");
+        let revision = c.history().nth(1).unwrap().revision;
+        assert_eq!(
+            key(&mut p, &c, None, Key::Enter),
+            PanelAction::Invoke(chat, revision, "default".into()),
+            "Chat's action, not Calendar's"
+        );
+        // Without a refresh in between (a key right after the arrival), the same.
+        let _ = c.notify(incoming("Mailer", "Invoice", &[("default", "Open")], Urgency::Normal), t0 + Duration::from_secs(41), 14 * 60 + 6);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(chat));
+        // The footer rows keep theirs too.
+        assert_eq!(key(&mut p, &c, None, Key::End), PanelAction::Redraw);
+        let _ = c.notify(incoming("Mailer", "Receipt", &[], Urgency::Normal), t0 + Duration::from_secs(42), 14 * 60 + 7);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(items(&c, None)[p.selected], Item::Clear);
+    }
+
+    /// What a press selected is followed as a key's choice is.
+    #[test]
+    fn a_pressed_entry_is_followed_when_one_arrives_above() {
+        let t0 = Instant::now();
+        let (mut c, old, _) = center(t0);
+        let mut p = Panel::new(&c, None, 40);
+        // Rows: 0-1 Chat, 2-3 Mailer.
+        assert_eq!(press(&mut p, &c, None, (5, 2), Button::Left), PanelAction::Redraw, "Mailer selected");
+        let _ = c.notify(incoming("Calendar", "Standup in 5 minutes", &[], Urgency::Normal), t0 + Duration::from_secs(40), 14 * 60 + 5);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(old));
+    }
+
+    /// The wheel: every notch applied, one action for them all (the wiring repaints once), Redraw
+    /// when any moved; at most 10 notches.
+    #[test]
+    fn the_wheel_moves_by_its_notches_in_one_action() {
+        let t0 = Instant::now();
+        let (c, _, _) = center(t0);
+        let mut p = Panel::new(&c, None, 40);
+        assert_eq!(scroll(&mut p, &c, None, 2), PanelAction::Redraw);
+        assert_eq!(items(&c, None)[p.selected], Item::Dnd, "two rows down: Mailer, then DND");
+        assert_eq!(scroll(&mut p, &c, None, 5), PanelAction::Redraw, "clamped at Clear all, still moved");
+        assert_eq!(items(&c, None)[p.selected], Item::Clear);
+        assert_eq!(scroll(&mut p, &c, None, 1), PanelAction::Nothing, "already at the end");
+        assert_eq!(scroll(&mut p, &c, None, -1), PanelAction::Redraw);
+        assert_eq!(items(&c, None)[p.selected], Item::Dnd);
+        let mut long = Center::new(&NotificationsConfig::default(), false);
+        for n in 0..30u64 {
+            let _ = long.notify(incoming("App", &format!("Event {n}"), &[], Urgency::Critical), t0 + Duration::from_secs(n), 600);
+        }
+        let mut q = Panel::new(&long, None, 40);
+        assert_eq!(scroll(&mut q, &long, None, 25), PanelAction::Redraw);
+        assert_eq!(q.selected, 10, "ten notches at most");
+    }
+
+    /// The selected entry gone (removed, cleared): the selection stays at its row, on what now
+    /// shows there, and follows that one from then on.
+    #[test]
+    fn a_removed_selection_falls_to_the_row_that_takes_its_place() {
+        let t0 = Instant::now();
+        let (mut c, old, new) = center(t0);
+        let mut p = Panel::new(&c, None, 40);
+        c.remove(new);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(p.selected, 0, "Mailer, now first");
+        let _ = c.notify(incoming("Calendar", "Standup in 5 minutes", &[], Urgency::Normal), t0 + Duration::from_secs(40), 14 * 60 + 5);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(old), "Mailer followed");
+    }
+
     /// Review Focus: a notification arriving while the panel is open shows first, and the selection
     /// stays on a row that exists.
     #[test]
@@ -557,7 +709,7 @@ mod tests {
         let t0 = Instant::now();
         let (mut c, _, _) = center(t0);
         let mut p = Panel::new(&c, None, 40);
-        p.selected = 1; // the older entry
+        assert_eq!(key(&mut p, &c, None, Key::Down), PanelAction::Redraw); // the older entry
         let before = rows(&c, None, &p, t0);
         let _ = c.notify(incoming("Calendar", "Standup in 5 minutes", &[], Urgency::Normal), t0 + Duration::from_secs(40), 14 * 60 + 5);
         scroll_into_view(&mut p, &c, None);
