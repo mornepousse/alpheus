@@ -554,7 +554,7 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -568,7 +568,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
     let all = [
         Request::Toggle,
         Request::Close,
-        Request::Dmenu { prompt: None, lines: vec![] },
+        Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),

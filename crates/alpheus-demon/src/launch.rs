@@ -793,6 +793,7 @@ mod tests {
     use crate::config::{ModuleId, ResourcesConfig};
     use crate::sources::dbus::{Domain, SystemState, messages};
     use crate::system::*;
+    use alpheus_commun::launcher_ipc::DmenuFlags;
 
     const BEFORE: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
     const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
@@ -1069,9 +1070,15 @@ mod tests {
 
     #[test]
     fn only_a_large_dmenu_request_releases_memory_once_consumed() {
-        assert!(releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }, RELEASE_AFTER), "reached the threshold");
         assert!(
-            !releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![] }, RELEASE_AFTER - 1),
+            releases_memory_once_consumed(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }, RELEASE_AFTER),
+            "reached the threshold"
+        );
+        assert!(
+            !releases_memory_once_consumed(
+                &Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
+                RELEASE_AFTER - 1
+            ),
             "a small dmenu list: not worth a malloc_trim (it walks the whole heap)"
         );
         assert!(!releases_memory_once_consumed(&Request::Toggle, RELEASE_AFTER), "a tiny header: nothing to release");

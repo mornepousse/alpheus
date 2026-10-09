@@ -2,7 +2,9 @@
 //! socket that decodes and records the request, then answers a scripted
 //! reply. Never the session's real socket.
 
-use alpheus_commun::launcher_ipc::{DndVerb, MAX_DMENU_BYTES, MAX_LINES, Reply, Request, RequestDecoder, encode_reply, socket_path};
+use alpheus_commun::launcher_ipc::{
+    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_LINES, Reply, Request, RequestDecoder, encode_reply, socket_path,
+};
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
@@ -205,14 +207,71 @@ fn dmenu_sends_prompt_and_lines_and_prints_the_choice() {
     let (code, out, err) = launch(&["--dmenu", "--prompt", "Pick: "], &socket, b"alpha\nbeta gamma\r\n\ndelta");
     assert_eq!((code, out.as_str(), err.as_str()), (EXIT_OK, "beta gamma\n", ""));
     let lines = vec!["alpha".to_string(), "beta gamma".into(), "delta".into()];
-    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Pick: ".into()), lines });
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Pick: ".into()), lines, flags: DmenuFlags::default() });
+}
+
+/// `--index` (audio-switcher, bzmenu): the chosen line's position on stdin, as fuzzel prints it.
+#[test]
+fn index_sends_the_flag_and_prints_the_position() {
+    let (socket, daemon) = answering("index", Reply::Index(Some(2)));
+    assert_eq!(launch(&["--dmenu", "--index"], &socket, b"a\nb\nc\n"), (EXIT_OK, "2\n".into(), String::new()));
+    let flags = DmenuFlags { index: true, password: false };
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into(), "c".into()], flags });
+}
+
+/// Typed text that matched no line: fuzzel 1.14 prints -1 and exits 0 (`execute_selected`,
+/// wayland.c), and so does alpheus.
+#[test]
+fn index_of_typed_text_is_minus_one() {
+    let (socket, daemon) = answering("index-none", Reply::Index(None));
+    assert_eq!(launch(&["--dmenu", "--index"], &socket, b"a\n"), (EXIT_OK, "-1\n".into(), String::new()));
+    daemon.join().unwrap();
+}
+
+/// A reply of the other kind is a protocol error, and never echoes a chosen text (it may be a
+/// password) to stderr.
+#[test]
+fn a_reply_of_the_wrong_kind_exits_2_without_its_text() {
+    let (socket, daemon) = answering("index-chosen", Reply::Chosen("hunter2".into()));
+    let (code, out, err) = launch(&["--dmenu", "--index", "--password"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""));
+    assert!(err.contains("unexpected answer") && !err.contains("hunter2"), "{err}");
+    daemon.join().unwrap();
+    let (socket, daemon) = answering("chosen-index", Reply::Index(Some(0)));
+    let (code, out, err) = launch(&["--dmenu"], &socket, b"a\n");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""));
+    assert!(err.contains("unexpected answer"), "{err}");
+    daemon.join().unwrap();
+}
+
+/// `--password` (networkmanager_dmenu's Wi-Fi key): stdin is read, then ignored (fuzzel accepts
+/// it too): no line leaves the client; the typed text comes back as is.
+#[test]
+fn password_sends_no_lines_and_prints_the_typed_text() {
+    let (socket, daemon) = answering("password", Reply::Chosen(" pass word ".into()));
+    assert_eq!(
+        launch(&["--dmenu", "--password", "-p", "Key: "], &socket, b"saved\nlines\n"),
+        (EXIT_OK, " pass word \n".into(), String::new())
+    );
+    let flags = DmenuFlags { index: false, password: true };
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Key: ".into()), lines: vec![], flags });
+}
+
+/// fuzzel's `--placeholder`, `--width` and `--lines` are accepted and change nothing: nothing of
+/// them goes over the wire.
+#[test]
+fn placeholder_width_and_lines_are_ignored() {
+    let (socket, daemon) = answering("ignored", Reply::Chosen("a".into()));
+    let args = ["--dmenu", "--placeholder", "Search…", "--width", "50", "--lines=0", "--width=46", "--lines", "16", "--placeholder=x"];
+    assert_eq!(launch(&args, &socket, b"a\n"), (EXIT_OK, "a\n".into(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags::default() });
 }
 
 #[test]
 fn free_text_with_empty_stdin_prints_what_was_typed() {
     let (socket, daemon) = answering("free-text", Reply::Chosen("192.0.2.7".into()));
     assert_eq!(launch(&["--dmenu", "-p", "Target: "], &socket, b""), (EXIT_OK, "192.0.2.7\n".into(), String::new()));
-    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Target: ".into()), lines: vec![] });
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Target: ".into()), lines: vec![], flags: DmenuFlags::default() });
 }
 
 #[test]
@@ -373,13 +432,16 @@ fn stdin_at_the_limit_is_sent() {
 fn non_utf8_lines_are_replaced() {
     let (socket, daemon) = answering("lossy", Reply::Chosen("caf\u{FFFD}".into()));
     assert_eq!(launch(&["--dmenu"], &socket, b"caf\xe9\nok\n"), (EXIT_OK, "caf\u{FFFD}\n".into(), String::new()));
-    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["caf\u{FFFD}".into(), "ok".into()] });
+    assert_eq!(
+        daemon.join().unwrap(),
+        Request::Dmenu { prompt: None, lines: vec!["caf\u{FFFD}".into(), "ok".into()], flags: DmenuFlags::default() }
+    );
 }
 
 #[test]
 fn usage_errors_exit_2_without_connecting() {
     let (socket, connections, stop, daemon) = counting_daemon("usage");
-    for args in [&["--dmenu", "--width", "40"][..], &["--prompt", "x"], &["--toggle", "--close"]] {
+    for args in [&["--dmenu", "--width", "wide"][..], &["--prompt", "x"], &["--toggle", "--close"], &["--dmenu", "-l", "3"]] {
         let (code, out, err) = launch(args, &socket, b"a\n");
         assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{args:?}");
         assert!(err.starts_with("alpheus-launch: ") && err.contains("--help"), "{args:?}: {err}");
@@ -392,6 +454,9 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
+    for option in ["--index", "--password", "--placeholder TEXT", "--width N", "--lines N"] {
+        assert!(out.contains(option), "{option} undocumented: {out}");
+    }
 }
 
 #[test]

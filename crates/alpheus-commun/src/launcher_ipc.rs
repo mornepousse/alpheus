@@ -68,6 +68,17 @@ impl OsdVerb {
     }
 }
 
+/// `--dmenu`'s options that change what the daemon does (the dmenu inventory, 2026-10-09):
+/// optional trailing words of the dmenu header, so a request without them reads as before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DmenuFlags {
+    /// `--index`: answer the chosen line's position on standard input (`Reply::Index`), not its text.
+    pub index: bool,
+    /// `--password`: the input drawn as one `•` per character, no list, the text never logged
+    /// nor kept.
+    pub password: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Toggle,
@@ -75,6 +86,7 @@ pub enum Request {
     Dmenu {
         prompt: Option<String>,
         lines: Vec<String>,
+        flags: DmenuFlags,
     },
     /// The notifications module's do-not-disturb (notifications task 5): answered Done.
     Dnd(DndVerb),
@@ -91,6 +103,9 @@ pub enum Reply {
     Done,
     /// dmenu: the chosen line, or the typed text when nothing matched.
     Chosen(String),
+    /// dmenu with `index`: the chosen line's 0-based position in the order the client sent the
+    /// lines; None for typed text that matched no line (the client prints -1, as fuzzel does).
+    Index(Option<usize>),
     /// dmenu: Escape, toggle, close, focus lost, output gone.
     Cancelled,
     /// dmenu refused: another dmenu is already open.
@@ -120,8 +135,11 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
 ///   "alpheus-launcher/1 osd brightness\n"
-///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>\n" <prompt bytes> <body bytes>
-/// body = lines joined by '\n' (no trailing '\n'). Lines are expected not to
+///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password]\n" <prompt bytes> <body bytes>
+/// body = lines joined by '\n' (no trailing '\n'). The flag words (`DmenuFlags`) are optional,
+/// each at most once and in this order: a client that sends none is read as before, so the
+/// header stays `alpheus-launcher/1`; a daemon older than the flags refuses them as malformed
+/// (an `error` reply, exit 2), never misreads them. Lines are expected not to
 /// contain '\n' themselves (`split_lines` guarantees it), but this is not
 /// enforced here: a line that does is split consistently with decoding, not
 /// refused, because the wire format has no other way to tell "one line
@@ -136,10 +154,12 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
         Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
-        Request::Dmenu { prompt, lines } => {
+        Request::Dmenu { prompt, lines, flags } => {
             let body = lines.join("\n");
             let prompt_len = prompt.as_ref().map_or_else(|| "-".to_string(), |p| p.len().to_string());
-            let mut out = format!("{MAGIC} dmenu {prompt_len} {}\n", body.len()).into_bytes();
+            let index = if flags.index { " index" } else { "" };
+            let password = if flags.password { " password" } else { "" };
+            let mut out = format!("{MAGIC} dmenu {prompt_len} {}{index}{password}\n", body.len()).into_bytes();
             if let Some(p) = prompt {
                 out.extend_from_slice(p.as_bytes());
             }
@@ -153,7 +173,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
 enum Header {
     Toggle,
     Close,
-    Dmenu { prompt: Option<usize>, body: usize },
+    Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
     ClearNotifications,
     Osd(OsdVerb),
@@ -217,7 +237,7 @@ impl RequestDecoder {
                 self.buf.extend_from_slice(&window[..end]);
                 let h = parse_header(&self.buf)?;
                 self.buf = Vec::new();
-                if let Header::Dmenu { prompt, body } = h {
+                if let Header::Dmenu { prompt, body, .. } = h {
                     // Bounded by the header check; the pages are only touched as the body arrives.
                     self.buf.reserve_exact(prompt.unwrap_or(0) + body);
                 }
@@ -227,7 +247,7 @@ impl RequestDecoder {
             }
         };
         match header {
-            Header::Dmenu { prompt, body } => {
+            Header::Dmenu { prompt, body, flags } => {
                 let prompt_len = prompt.unwrap_or(0);
                 let total = prompt_len + body;
                 if self.buf.len() + bytes.len() > total {
@@ -255,7 +275,7 @@ impl RequestDecoder {
                 // The dmenu rule: a blank line carries nothing, so it is dropped
                 // rather than turned into an empty entry (matches fuzzel/wofi).
                 let lines = body.split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect();
-                Ok(Some(Request::Dmenu { prompt, lines }))
+                Ok(Some(Request::Dmenu { prompt, lines, flags }))
             }
             bare => {
                 if !bytes.is_empty() {
@@ -303,7 +323,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["osd", word] => {
             OsdVerb::parse(word).map(Header::Osd).ok_or_else(|| IpcError::Malformed(format!("unknown osd word {:?}", cut(word))))
         }
-        ["dmenu", prompt, body] => {
+        ["dmenu", prompt, body, flags @ ..] => {
             let prompt = if *prompt == "-" { None } else { Some(number(prompt, "prompt length")?) };
             let body = number(body, "dmenu length")?;
             if prompt.is_some_and(|n| n > MAX_PROMPT) {
@@ -312,10 +332,28 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
             if body > MAX_DMENU_BYTES {
                 return Err(IpcError::TooLarge("dmenu input"));
             }
-            Ok(Header::Dmenu { prompt, body })
+            Ok(Header::Dmenu { prompt, body, flags: dmenu_flags(flags)? })
         }
         [verb, ..] => Err(IpcError::Malformed(format!("unknown request {:?}", cut(verb)))),
         [] => Err(IpcError::Malformed("empty request".into())),
+    }
+}
+
+/// The dmenu header's optional flag words: each at most once, in the documented order.
+fn dmenu_flags(words: &[&str]) -> Result<DmenuFlags, IpcError> {
+    let mut flags = DmenuFlags::default();
+    let mut rest = words;
+    if let ["index", tail @ ..] = rest {
+        flags.index = true;
+        rest = tail;
+    }
+    if let ["password", tail @ ..] = rest {
+        flags.password = true;
+        rest = tail;
+    }
+    match rest {
+        [] => Ok(flags),
+        [word, ..] => Err(IpcError::Malformed(format!("unknown dmenu flag {:?}", cut(word)))),
     }
 }
 
@@ -335,7 +373,7 @@ fn cut(s: &str) -> String {
     s.chars().take(64).collect()
 }
 
-/// "done\n" | "chosen <len>\n<bytes>" | "cancelled\n" | "busy\n" | "error <text>\n"
+/// "done\n" | "chosen <len>\n<bytes>" | "index <n>\n" | "index -\n" | "cancelled\n" | "busy\n" | "error <text>\n"
 pub fn encode_reply(r: &Reply) -> Vec<u8> {
     match r {
         Reply::Done => b"done\n".to_vec(),
@@ -346,6 +384,8 @@ pub fn encode_reply(r: &Reply) -> Vec<u8> {
         }
         Reply::Cancelled => b"cancelled\n".to_vec(),
         Reply::Busy => b"busy\n".to_vec(),
+        Reply::Index(Some(i)) => format!("index {i}\n").into_bytes(),
+        Reply::Index(None) => b"index -\n".to_vec(),
         Reply::Error(t) => format!("error {}\n", one_line(t)).into_bytes(),
     }
 }
@@ -382,6 +422,14 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, IpcError> {
             }
             alone(Reply::Error(t.to_string()))
         }
+        Some(("index", "-")) => alone(Reply::Index(None)),
+        Some(("index", n)) => {
+            let n = number(n, "index")?;
+            if n >= MAX_LINES {
+                return Err(IpcError::TooLarge("index"));
+            }
+            alone(Reply::Index(Some(n)))
+        }
         Some(("chosen", len)) => {
             let n = number(len, "chosen length")?;
             if n > MAX_DMENU_BYTES {
@@ -395,6 +443,23 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, IpcError> {
         }
         Some((verb, _)) => Err(IpcError::Malformed(format!("unknown reply {:?}", cut(verb)))),
     }
+}
+
+/// Writes zeros over all of `v`'s allocation, its spare capacity included (`len` becomes the
+/// capacity), so a secret's bytes do not outlive it in freed memory. Safe code only, no
+/// dependency: `resize` writes the spare capacity, `black_box` keeps the writes from being
+/// elided before the free.
+pub fn zero(v: &mut Vec<u8>) {
+    v.fill(0);
+    let capacity = v.capacity();
+    v.resize(capacity, 0);
+    std::hint::black_box(&mut *v);
+}
+
+/// Empties `s` after overwriting its bytes (`zero`): `--password`'s text, where practical.
+pub fn wipe(s: &mut String) {
+    let mut bytes = std::mem::take(s).into_bytes();
+    zero(&mut bytes);
 }
 
 /// dmenu stdin → lines: split on '\n', one trailing '\r' stripped per line,
@@ -411,12 +476,16 @@ mod tests {
         vec![
             Request::Toggle,
             Request::Close,
-            Request::Dmenu { prompt: None, lines: vec![] },
-            Request::Dmenu { prompt: Some(String::new()), lines: vec!["one".into()] },
+            Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
+            Request::Dmenu { prompt: Some(String::new()), lines: vec!["one".into()], flags: DmenuFlags::default() },
             Request::Dmenu {
                 prompt: Some("Target (IP / host): ".into()),
                 lines: vec!["a b c".into(), "tab\there".into(), "cr\rinside".into(), "café ☕ 日本".into(), "  padded  ".into()],
+                flags: DmenuFlags::default(),
             },
+            Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags { index: true, password: false } },
+            Request::Dmenu { prompt: Some("Key: ".into()), lines: vec![], flags: DmenuFlags { index: false, password: true } },
+            Request::Dmenu { prompt: Some("x".into()), lines: vec!["l".into()], flags: DmenuFlags { index: true, password: true } },
             Request::Dnd(DndVerb::On),
             Request::Dnd(DndVerb::Off),
             Request::Dnd(DndVerb::Toggle),
@@ -461,9 +530,18 @@ mod tests {
         assert_eq!(encode_request(&Request::Dnd(DndVerb::Toggle)), b"alpheus-launcher/1 dnd toggle\n");
         assert_eq!(encode_request(&Request::ClearNotifications), b"alpheus-launcher/1 clear-notifications\n");
         assert_eq!(encode_request(&Request::Osd(OsdVerb::Brightness)), b"alpheus-launcher/1 osd brightness\n");
-        assert_eq!(encode_request(&Request::Dmenu { prompt: None, lines: vec![] }), b"alpheus-launcher/1 dmenu - 0\n");
-        let dmenu = Request::Dmenu { prompt: Some("Go: ".into()), lines: vec!["a".into(), "bé".into()] };
+        assert_eq!(
+            encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
+            b"alpheus-launcher/1 dmenu - 0\n"
+        );
+        let dmenu = Request::Dmenu { prompt: Some("Go: ".into()), lines: vec!["a".into(), "bé".into()], flags: DmenuFlags::default() };
         assert_eq!(encode_request(&dmenu), "alpheus-launcher/1 dmenu 4 5\nGo: a\nbé".as_bytes());
+        let flagged = |index, password| Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags { index, password } };
+        assert_eq!(encode_request(&flagged(true, false)), b"alpheus-launcher/1 dmenu - 1 index\na");
+        assert_eq!(encode_request(&flagged(false, true)), b"alpheus-launcher/1 dmenu - 1 password\na");
+        assert_eq!(encode_request(&flagged(true, true)), b"alpheus-launcher/1 dmenu - 1 index password\na");
+        assert_eq!(encode_reply(&Reply::Index(Some(2))), b"index 2\n");
+        assert_eq!(encode_reply(&Reply::Index(None)), b"index -\n");
         assert_eq!(encode_reply(&Reply::Done), b"done\n");
         assert_eq!(encode_reply(&Reply::Chosen("bé".into())), "chosen 3\nbé".as_bytes());
         assert_eq!(encode_reply(&Reply::Cancelled), b"cancelled\n");
@@ -496,9 +574,26 @@ mod tests {
             b"alpheus-launcher/1 osd volume\n",
             b"alpheus-launcher/1 osd brightness now\n",
             b"alpheus-launcher/1 osd  brightness\n",
+            b"alpheus-launcher/1 dmenu - 0 indexes\n",
+            b"alpheus-launcher/1 dmenu - 0 index index\n",
+            b"alpheus-launcher/1 dmenu - 0 password password\n",
+            b"alpheus-launcher/1 dmenu - 0 password index\n",
+            b"alpheus-launcher/1 dmenu - 0  index\n",
+            b"alpheus-launcher/1 dmenu - 0 index \n",
+            b"alpheus-launcher/1 dmenu - 0 Index\n",
         ] {
             assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} → {:?}", String::from_utf8_lossy(h), decode(h));
         }
+    }
+
+    /// A request from a client that knows no flags (the trailing words are optional) still reads,
+    /// as no flag: the header stays `alpheus-launcher/1`.
+    #[test]
+    fn a_dmenu_header_without_flags_still_decodes() {
+        assert_eq!(
+            decode(b"alpheus-launcher/1 dmenu - 3\na\nb"),
+            Ok(Some(Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }))
+        );
     }
 
     #[test]
@@ -582,12 +677,16 @@ mod tests {
             assert_eq!(d.feed(chunk), Ok(None));
         }
         assert_eq!(d.buf.capacity(), prompt.len() + body.len(), "reserved once, never doubled");
-        assert_eq!(d.feed(&last), Ok(Some(Request::Dmenu { prompt: Some(prompt.into()), lines: vec![body] })));
+        assert_eq!(
+            d.feed(&last),
+            Ok(Some(Request::Dmenu { prompt: Some(prompt.into()), lines: vec![body], flags: DmenuFlags::default() }))
+        );
     }
 
     #[test]
     fn exactly_max_lines_is_accepted() {
-        let r = Request::Dmenu { prompt: None, lines: (0..MAX_LINES).map(|i| (i % 10).to_string()).collect() };
+        let r =
+            Request::Dmenu { prompt: None, lines: (0..MAX_LINES).map(|i| (i % 10).to_string()).collect(), flags: DmenuFlags::default() };
         assert_eq!(decode(&encode_request(&r)), Ok(Some(r)));
     }
 
@@ -612,6 +711,9 @@ mod tests {
             Reply::Chosen("two\nlines".into()),
             Reply::Error("launcher closed".into()),
             Reply::Error(String::new()),
+            Reply::Index(Some(0)),
+            Reply::Index(Some(MAX_LINES - 1)),
+            Reply::Index(None),
         ] {
             assert_eq!(decode_reply(&encode_reply(&r)), Ok(r.clone()), "{r:?}");
         }
@@ -629,10 +731,23 @@ mod tests {
         assert_eq!(decode_reply(b""), Err(IpcError::Truncated));
         assert_eq!(decode_reply(b"done"), Err(IpcError::Truncated));
         assert_eq!(decode_reply(b"chosen 5\nab"), Err(IpcError::Truncated));
-        for bad in [&b"chosen 1\nab"[..], b"done\nx", b"chosen x\n", b"hello\n", b"chosen\n", b"\xff\n"] {
+        for bad in [
+            &b"chosen 1\nab"[..],
+            b"done\nx",
+            b"chosen x\n",
+            b"hello\n",
+            b"chosen\n",
+            b"\xff\n",
+            b"index\n",
+            b"index x\n",
+            b"index -1\n",
+            b"index 1\nx",
+            b"index  1\n",
+        ] {
             assert!(matches!(decode_reply(bad), Err(IpcError::Malformed(_))), "{:?}", String::from_utf8_lossy(bad));
         }
         assert_eq!(decode_reply(format!("chosen {}\n", MAX_DMENU_BYTES + 1).as_bytes()), Err(IpcError::TooLarge("chosen line")));
+        assert_eq!(decode_reply(format!("index {MAX_LINES}\n").as_bytes()), Err(IpcError::TooLarge("index")), "past the last line");
     }
 
     #[test]
@@ -642,6 +757,23 @@ mod tests {
         assert_eq!(split_lines("\n\n a \n\r\n"), [" a "]);
         assert_eq!(split_lines("x\r\r\n"), ["x\r"], "one '\\r' stripped, not all");
         assert!(split_lines("").is_empty());
+    }
+
+    /// A password's bytes are overwritten before they are freed, spare capacity included (what a
+    /// Backspace popped, what a push left behind).
+    #[test]
+    fn zeroed_overwrites_the_whole_allocation() {
+        let mut v = b"hunter2".to_vec();
+        v.reserve(9);
+        v.truncate(3);
+        let capacity = v.capacity();
+        zero(&mut v);
+        assert_eq!(v.len(), capacity, "the spare capacity is written too");
+        assert!(v.iter().all(|&b| b == 0), "{v:?}");
+        let mut s = String::from("hunter2");
+        s.pop();
+        wipe(&mut s);
+        assert!(s.is_empty());
     }
 
     #[test]
@@ -672,10 +804,10 @@ mod tests {
     #[test]
     fn empty_dmenu_lines_are_dropped() {
         // The dmenu rule: a line holding nothing is not a line.
-        let r = Request::Dmenu { prompt: None, lines: vec![String::new()] };
+        let r = Request::Dmenu { prompt: None, lines: vec![String::new()], flags: DmenuFlags::default() };
         assert_eq!(
             decode(&encode_request(&r)),
-            Ok(Some(Request::Dmenu { prompt: None, lines: vec![] })),
+            Ok(Some(Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() })),
             "vec![\"\"] round-trips to vec![]"
         );
 
@@ -683,6 +815,9 @@ mod tests {
         let body = "a\n\nb\n";
         let mut d = RequestDecoder::new();
         assert_eq!(d.feed(format!("{MAGIC} dmenu - {}\n", body.len()).as_bytes()), Ok(None));
-        assert_eq!(d.feed(body.as_bytes()), Ok(Some(Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()] })));
+        assert_eq!(
+            d.feed(body.as_bytes()),
+            Ok(Some(Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }))
+        );
     }
 }

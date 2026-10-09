@@ -20,7 +20,7 @@ use crate::painter::{self, Frame, FrameInk};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, pick_buffer};
-use alpheus_commun::launcher_ipc::Reply;
+use alpheus_commun::launcher_ipc::{Reply, wipe};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_shm, wl_surface};
@@ -630,7 +630,8 @@ impl App {
     }
 
     /// Applies an Outcome: Activate → run::perform (Err → model.show_message + redraw;
-    /// Ok(Done::Reply) → reply Chosen + close; Ok(Done::Close) → close Activated).
+    /// Ok(Done::Reply) → that reply (Chosen or Index; a password's text wiped once sent) + close;
+    /// Ok(Done::Close) → close Activated).
     pub fn launcher_outcome(&mut self, o: Outcome) {
         match o {
             Outcome::Nothing => {}
@@ -656,9 +657,12 @@ impl App {
                         open.model.show_message(m);
                         self.launcher_redraw();
                     }
-                    Ok(Done::Reply(line)) => {
+                    Ok(Done::Reply(mut reply)) => {
                         if let Some(p) = open.reply.take() {
-                            p.reply(&Reply::Chosen(line));
+                            p.reply(&reply);
+                        }
+                        if let (Reply::Chosen(text), true) = (&mut reply, open.model.password) {
+                            wipe(text);
                         }
                         self.launcher_close(CloseReason::Activated);
                     }

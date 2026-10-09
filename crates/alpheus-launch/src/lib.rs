@@ -11,7 +11,8 @@
 //! to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, Reply, Request, decode_reply, encode_request, split_lines,
+    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, Reply, Request, decode_reply, encode_request,
+    split_lines, wipe, zero,
 };
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
@@ -32,13 +33,19 @@ pub const EXIT_UNREACHABLE: i32 = 3;
 pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
-Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --dnd on|off|toggle
-                      | --clear-notifications | --osd brightness | --help]
+Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password]
+                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
   --dmenu                 show the lines read on standard input, print the chosen one
   -p, --prompt TEXT       with --dmenu: text shown before the input
+  --index                 with --dmenu: print the chosen line's position (from 0) instead of
+                          its text; -1 for typed text that matches no line
+  --password              with --dmenu: show the typed text as dots and no list (standard
+                          input is ignored); the text is printed as typed, never logged
+  --placeholder TEXT, --width N, --lines N
+                          with --dmenu: accepted for fuzzel's sake, ignored
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
@@ -56,26 +63,31 @@ person takes to pick a line, however long that is.
 pub enum Invocation {
     Toggle,
     Close,
-    Dmenu { prompt: Option<String> },
+    Dmenu { prompt: Option<String>, flags: DmenuFlags },
     Dnd(DndVerb),
     ClearNotifications,
     Osd(OsdVerb),
     Help,
 }
 
-/// No argument or --toggle → Toggle; --close; --dmenu [--prompt TEXT | --prompt=TEXT | -p TEXT];
-/// -h/--help. --prompt without --dmenu, unknown options, repeats → Err(usage message).
+/// No argument or --toggle → Toggle; --close; --dmenu [--prompt TEXT | --prompt=TEXT | -p TEXT]
+/// [--index] [--password] [--placeholder TEXT] [--width N] [--lines N]; -h/--help. The last three
+/// are fuzzel's, accepted (also as `--name=value`) and ignored: nothing of them is sent. A dmenu
+/// option without --dmenu, unknown options, two modes, a second prompt → Err(usage message).
 /// `args` excludes the program name.
 pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
     let mut mode: Option<Invocation> = None;
     let mut prompt: Option<String> = None;
+    let mut flags = DmenuFlags::default();
+    // The first dmenu-only option seen, for the message when --dmenu is missing.
+    let mut dmenu_only: Option<&'static str> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         let arg = utf8(arg)?;
         match arg {
             "--toggle" => choose(&mut mode, Invocation::Toggle)?,
             "--close" => choose(&mut mode, Invocation::Close)?,
-            "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None })?,
+            "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() })?,
             "--dnd" => {
                 let value = it.next().ok_or_else(|| "--dnd needs on, off or toggle".to_string())?;
                 let value = utf8(value)?;
@@ -93,18 +105,56 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
                 set_prompt(&mut prompt, utf8(value)?)?;
+                dmenu_only.get_or_insert("--prompt");
             }
-            _ => match arg.strip_prefix("--prompt=") {
-                Some(value) => set_prompt(&mut prompt, value)?,
-                None => return Err(format!("unknown option {arg:?}")),
-            },
+            "--index" => {
+                flags.index = true;
+                dmenu_only.get_or_insert("--index");
+            }
+            "--password" => {
+                flags.password = true;
+                dmenu_only.get_or_insert("--password");
+            }
+            _ => {
+                let (name, inline) = match arg.split_once('=') {
+                    Some((name, value)) => (name, Some(value)),
+                    None => (arg, None),
+                };
+                if let ("--prompt", Some(value)) = (name, inline) {
+                    set_prompt(&mut prompt, value)?;
+                    dmenu_only.get_or_insert("--prompt");
+                    continue;
+                }
+                let Some(&name) = IGNORED.iter().find(|&&n| n == name) else {
+                    return Err(format!("unknown option {arg:?}"));
+                };
+                let value = match inline {
+                    Some(value) => value,
+                    None => utf8(it.next().ok_or_else(|| format!("{name} needs a value"))?)?,
+                };
+                ignored(name, value, &mut dmenu_only)?;
+            }
         }
     }
-    match (mode, prompt) {
-        (Some(Invocation::Dmenu { .. }), prompt) => Ok(Invocation::Dmenu { prompt }),
-        (_, Some(_)) => Err("--prompt only goes with --dmenu".into()),
+    match (mode, dmenu_only) {
+        (Some(Invocation::Dmenu { .. }), _) => Ok(Invocation::Dmenu { prompt, flags }),
+        (_, Some(option)) => Err(format!("{option} only goes with --dmenu")),
         (mode, None) => Ok(mode.unwrap_or(Invocation::Toggle)),
     }
+}
+
+/// fuzzel's options that `--dmenu` accepts and ignores.
+const IGNORED: [&str; 3] = ["--placeholder", "--width", "--lines"];
+
+/// fuzzel's `--placeholder TEXT`, `--width N`, `--lines N`: checked like fuzzel checks them
+/// (a number for the last two), then dropped — the box keeps its own size and shows no
+/// placeholder.
+fn ignored(name: &'static str, value: &str, dmenu_only: &mut Option<&'static str>) -> Result<(), String> {
+    if name != "--placeholder" && value.parse::<u32>().is_err() {
+        return Err(format!("{name} takes a number, not {value:?}"));
+    }
+    dmenu_only.get_or_insert(name);
+    Ok(())
 }
 
 fn utf8(arg: &OsString) -> Result<&str, String> {
@@ -160,8 +210,18 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
     let sent = stream.write_all(&encode_request(request));
     let mut answer = Vec::new();
     let read = read_reply(&mut stream, &mut answer, deadline);
+    let reply = answer_of(sent, read, &answer);
+    // The reply's bytes held the typed password: overwritten before they are freed.
+    if matches!(request, Request::Dmenu { flags, .. } if flags.password) {
+        zero(&mut answer);
+    }
+    reply
+}
+
+/// The reply in `answer`, or why there is none.
+fn answer_of(sent: io::Result<()>, read: io::Result<()>, answer: &[u8]) -> Result<Reply, ClientError> {
     // A daemon that refuses early (request too large) answers before we finished sending.
-    if let Ok(reply) = decode_reply(&answer) {
+    if let Ok(reply) = decode_reply(answer) {
         return Ok(reply);
     }
     if let Err(e) = sent {
@@ -172,7 +232,7 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
             Err(ClientError::Protocol(format!("no answer from alpheus-demon within {} s", CLIENT_REPLY_TIMEOUT.as_secs())))
         }
         Err(e) => Err(ClientError::Protocol(format!("cannot read the answer: {e}"))),
-        Ok(()) => decode_reply(&answer).map_err(|e| ClientError::Protocol(format!("unexpected answer from alpheus-demon: {e}"))),
+        Ok(()) => decode_reply(answer).map_err(|e| ClientError::Protocol(format!("unexpected answer from alpheus-demon: {e}"))),
     }
 }
 
@@ -247,8 +307,10 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::Dnd(v)) => Request::Dnd(v),
         Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
         Ok(Invocation::Osd(v)) => Request::Osd(v),
-        Ok(Invocation::Dmenu { prompt }) => match read_lines(stdin) {
-            Ok(lines) => Request::Dmenu { prompt, lines },
+        // --password: stdin is still read (a writer is never cut off), then ignored — fuzzel
+        // accepts it too; no line leaves the client.
+        Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin) {
+            Ok(lines) => Request::Dmenu { prompt, lines: if flags.password { Vec::new() } else { lines }, flags },
             Err(m) => return fail(&m),
         },
     };
@@ -260,18 +322,28 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         }
         Err(ClientError::Protocol(m)) => return fail(&m),
     };
+    let mut print = |text: &str| if writeln!(stdout, "{text}").and_then(|()| stdout.flush()).is_ok() { EXIT_OK } else { EXIT_ERROR };
     match (&request, reply) {
-        (Request::Dmenu { .. }, Reply::Chosen(line)) => {
-            if writeln!(stdout, "{line}").and_then(|()| stdout.flush()).is_ok() {
-                EXIT_OK
-            } else {
-                EXIT_ERROR
+        (Request::Dmenu { flags, .. }, Reply::Chosen(mut line)) if !flags.index => {
+            let code = print(&line);
+            if flags.password {
+                wipe(&mut line);
             }
+            code
+        }
+        // fuzzel prints -1 for typed text that matched no line, and exits 0.
+        (Request::Dmenu { flags, .. }, Reply::Index(index)) if flags.index => {
+            print(&index.map_or_else(|| "-1".to_string(), |i| i.to_string()))
         }
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
         (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), Reply::Done) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
+        // Never the chosen text itself: with --password, it is the secret.
+        (_, Reply::Chosen(mut line)) => {
+            wipe(&mut line);
+            fail("unexpected answer from alpheus-demon: a chosen line")
+        }
         (_, other) => fail(&format!("unexpected answer from alpheus-demon: {other:?}")),
     }
 }
@@ -290,17 +362,27 @@ mod tests {
         assert_eq!(parse_args(&args(&[])), Ok(Invocation::Toggle));
         assert_eq!(parse_args(&args(&["--toggle"])), Ok(Invocation::Toggle));
         assert_eq!(parse_args(&args(&["--close"])), Ok(Invocation::Close));
-        assert_eq!(parse_args(&args(&["--dmenu"])), Ok(Invocation::Dmenu { prompt: None }));
+        assert_eq!(parse_args(&args(&["--dmenu"])), Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() }));
         for a in [
             &["--dmenu", "--prompt", "Pick: "][..],
             &["--prompt", "Pick: ", "--dmenu"],
             &["--dmenu", "--prompt=Pick: "],
             &["-p", "Pick: ", "--dmenu"],
         ] {
-            assert_eq!(parse_args(&args(a)), Ok(Invocation::Dmenu { prompt: Some("Pick: ".into()) }), "{a:?}");
+            assert_eq!(
+                parse_args(&args(a)),
+                Ok(Invocation::Dmenu { prompt: Some("Pick: ".into()), flags: DmenuFlags::default() }),
+                "{a:?}"
+            );
         }
-        assert_eq!(parse_args(&args(&["--dmenu", "--prompt", ""])), Ok(Invocation::Dmenu { prompt: Some(String::new()) }));
-        assert_eq!(parse_args(&args(&["--dmenu", "-p", "-x"])), Ok(Invocation::Dmenu { prompt: Some("-x".into()) }));
+        assert_eq!(
+            parse_args(&args(&["--dmenu", "--prompt", ""])),
+            Ok(Invocation::Dmenu { prompt: Some(String::new()), flags: DmenuFlags::default() })
+        );
+        assert_eq!(
+            parse_args(&args(&["--dmenu", "-p", "-x"])),
+            Ok(Invocation::Dmenu { prompt: Some("-x".into()), flags: DmenuFlags::default() })
+        );
         assert_eq!(parse_args(&args(&["-h"])), Ok(Invocation::Help));
         assert_eq!(parse_args(&args(&["--help"])), Ok(Invocation::Help));
         assert_eq!(parse_args(&args(&["--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On)));
@@ -308,6 +390,26 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
+        let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password } });
+        assert_eq!(parse_args(&args(&["--dmenu", "--index"])), dmenu(true, false));
+        assert_eq!(parse_args(&args(&["--password", "--dmenu"])), dmenu(false, true));
+        assert_eq!(parse_args(&args(&["--index", "--dmenu", "--password"])), dmenu(true, true));
+        assert_eq!(parse_args(&args(&["--dmenu", "--index", "--index"])), dmenu(true, false), "repeated, as fuzzel allows");
+        for a in [
+            &["--dmenu", "--placeholder", "Search"][..],
+            &["--dmenu", "--placeholder", "--index"],
+            &["--dmenu", "--placeholder="],
+            &["--width", "46", "--dmenu", "--lines", "16"],
+            &["--dmenu", "--width=50", "--lines=0"],
+            &["--dmenu", "--lines", "0", "--lines", "3"],
+        ] {
+            assert_eq!(parse_args(&args(a)), dmenu(false, false), "{a:?}: accepted, ignored (`--placeholder` takes one argument)");
+        }
+        assert_eq!(
+            parse_args(&args(&["--dmenu", "--placeholder", "x", "-p", "Go: "])),
+            Ok(Invocation::Dmenu { prompt: Some("Go: ".into()), flags: DmenuFlags::default() }),
+            "the placeholder is not the prompt"
+        );
     }
 
     #[test]
@@ -315,9 +417,17 @@ mod tests {
         for (a, needle) in [
             (&["--prompt", "x"][..], "--prompt only goes with --dmenu"),
             (&["--close", "-p", "x"], "--prompt only goes with --dmenu"),
-            (&["--dmenu", "--width", "40"], "unknown option"),
-            (&["--dmenu", "--lines", "10"], "unknown option"),
-            (&["--dmenu", "--index"], "unknown option"),
+            (&["--index"], "--index only goes with --dmenu"),
+            (&["--close", "--password"], "--password only goes with --dmenu"),
+            (&["--placeholder", "x"], "--placeholder only goes with --dmenu"),
+            (&["--toggle", "--width", "40"], "--width only goes with --dmenu"),
+            (&["--lines=3"], "--lines only goes with --dmenu"),
+            (&["--dmenu", "--placeholder"], "needs a value"),
+            (&["--dmenu", "--width"], "needs a value"),
+            (&["--dmenu", "--lines", "many"], "--lines takes a number"),
+            (&["--dmenu", "--width=-1"], "--width takes a number"),
+            (&["--dmenu", "--password=*"], "unknown option"),
+            (&["--dmenu", "-l", "3"], "unknown option"),
             (&["firefox"], "unknown option"),
             (&["--dmenu", "--dmenu"], "only one of"),
             (&["--toggle", "--close"], "only one of"),

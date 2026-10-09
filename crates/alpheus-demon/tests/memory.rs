@@ -17,7 +17,7 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, Reply, Request, encode_request, socket_path};
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
@@ -284,7 +284,7 @@ fn at_rest_no_wakeups_after_a_launcher_cycle() {
     key_cycle(&sway, &d, 1);
     // A script menu whose client goes away: its watch must go with it.
     let mut client = UnixStream::connect(socket_path(&sway.runtime)).unwrap();
-    client.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()] })).unwrap();
+    client.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags::default() })).unwrap();
     assert!(d.wait_for_count("launcher shown on", 2, DELAY), "{:?}", d.log());
     drop(client);
     assert!(d.wait_for("launcher closed (close)", DELAY), "{:?}", d.log());
@@ -333,7 +333,9 @@ fn large_dmenu_pss_is_reported() {
     let closed = d.pss_kb();
     let socket = socket_path(&sway.runtime);
     let lines: Vec<String> = (0..100_000).map(|i| format!("entry-{i}")).collect();
-    let menu = std::thread::spawn(move || alpheus_launch::exchange(&socket, &Request::Dmenu { prompt: None, lines }));
+    let menu = std::thread::spawn(move || {
+        alpheus_launch::exchange(&socket, &Request::Dmenu { prompt: None, lines, flags: DmenuFlags::default() })
+    });
     assert!(d.wait_for("launcher shown on", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1)); // ranked and drawn
     let open = d.pss_kb();

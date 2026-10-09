@@ -19,7 +19,7 @@
 //! proves this with a duplicated fd, not only by relying on `Drop`).
 
 use crate::log::write as log;
-use alpheus_commun::launcher_ipc::{IpcError, Reply, Request, RequestDecoder, encode_reply};
+use alpheus_commun::launcher_ipc::{IpcError, Reply, Request, RequestDecoder, encode_reply, zero};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
@@ -94,8 +94,13 @@ fn send_within(stream: &UnixStream, bytes: &[u8], limit: Duration) -> io::Result
 /// client must see EOF now, not whenever the caller happens to drop its
 /// last handle to this fd (see the module doc).
 fn finish(stream: UnixStream, r: &Reply) {
-    if let Err(e) = send_within(&stream, &encode_reply(r), REPLY_TIMEOUT) {
+    let mut bytes = encode_reply(r);
+    if let Err(e) = send_within(&stream, &bytes, REPLY_TIMEOUT) {
         log(&format!("launcher socket: reply not delivered: {e}"));
+    }
+    // A chosen text may be a `--password`: its encoded copy is overwritten before it is freed.
+    if matches!(r, Reply::Chosen(_)) {
+        zero(&mut bytes);
     }
     let _ = stream.shutdown(Shutdown::Both);
 }

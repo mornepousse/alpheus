@@ -14,6 +14,7 @@ use crate::launcher::model::{Activation, Launcher};
 use crate::launcher::scan::has_program;
 use crate::log::write as log;
 use alpheus_commun::exec::{ExecError, Executor};
+use alpheus_commun::launcher_ipc::{Reply, wipe};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,8 +81,9 @@ pub struct RunContext<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Done {
     Close,
-    /// Script mode: send Reply::Chosen(line) to the waiting client, then close.
-    Reply(String),
+    /// Script mode: send this (Reply::Chosen, or Reply::Index under `--index`) to the waiting
+    /// client, then close.
+    Reply(Reply),
 }
 
 fn spawn(exec: &dyn Executor, argv: &[String]) -> Result<(), ExecError> {
@@ -141,7 +143,12 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
 pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done, String> {
     let gone = || "the list changed: try again".to_string();
     match a {
-        Activation::Choose(line) => return Ok(Done::Reply(line)),
+        // Never recorded (spec § 3: no typed text, and a dmenu line is not an app).
+        Activation::Choose { mut text, line } if l.index => {
+            wipe(&mut text);
+            return Ok(Done::Reply(Reply::Index(line)));
+        }
+        Activation::Choose { text, .. } => return Ok(Done::Reply(Reply::Chosen(text))),
         Activation::App { index, action } => {
             let entry = l.catalog.as_ref().and_then(|c| c.apps.get(index)).ok_or_else(gone)?;
             let argv = app_argv(entry, action, &l.config.terminal)?;
@@ -179,6 +186,7 @@ mod tests {
     use crate::launcher::scan::Catalog;
     use crate::launcher::testing::TempDir;
     use alpheus_commun::exec::fake::FakeExecutor;
+    use alpheus_commun::launcher_ipc::DmenuFlags;
     use std::path::PathBuf;
 
     const NOW: u64 = 1_800_000_000;
@@ -456,9 +464,29 @@ mod tests {
         let f = FakeExecutor::new();
         let mut l = Launcher::for_script(LauncherConfig::default(), None, v(&["a"]));
         assert_eq!(
-            perform(&mut l, Activation::Choose("a".into()), &ctx(&f, Spawner::SystemdScope, None, &[])),
-            Ok(Done::Reply("a".into()))
+            perform(&mut l, Activation::Choose { text: "a".into(), line: Some(0) }, &ctx(&f, Spawner::SystemdScope, None, &[])),
+            Ok(Done::Reply(Reply::Chosen("a".into())))
         );
+        assert!(f.calls().is_empty());
+    }
+
+    /// `--index` answers the position (None for typed text), `--password` the text as typed; a
+    /// script menu never writes the history, whatever its flags.
+    #[test]
+    fn script_mode_answers_the_index_or_the_text_and_never_records() {
+        let f = FakeExecutor::new();
+        let d = TempDir::new("run-script-history");
+        let h = d.join("launcher-history");
+        let c = ctx(&f, Spawner::SystemdScope, Some(&h), &[]);
+        let index = DmenuFlags { index: true, password: false };
+        let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, v(&["a", "b"]), index);
+        assert_eq!(perform(&mut l, Activation::Choose { text: "b".into(), line: Some(1) }, &c), Ok(Done::Reply(Reply::Index(Some(1)))));
+        assert_eq!(perform(&mut l, Activation::Choose { text: "zz".into(), line: None }, &c), Ok(Done::Reply(Reply::Index(None))));
+        let password = DmenuFlags { index: false, password: true };
+        let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], password);
+        let typed = Activation::Choose { text: " hunter 2".into(), line: None };
+        assert_eq!(perform(&mut l, typed, &c), Ok(Done::Reply(Reply::Chosen(" hunter 2".into()))));
+        assert!(!h.exists(), "nothing recorded");
         assert!(f.calls().is_empty());
     }
 

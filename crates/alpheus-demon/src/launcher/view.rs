@@ -87,6 +87,9 @@ fn modes_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     }
 }
 
+/// What `--password` draws for each character typed.
+const MASK: char = '•';
+
 fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     let end = b.pane_end();
     let prompt = match (&l.prompt, l.is_script()) {
@@ -100,7 +103,9 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     }
     // One cell kept for the cursor, one for the margin.
     let room = end.saturating_sub(x).saturating_sub(2);
-    x = g.write(x, end, &tail(&l.query, room), Style::NORMAL);
+    // `--password`: one dot per character, never the text itself.
+    let shown = if l.password { tail(&MASK.to_string().repeat(l.query.chars().count()), room) } else { tail(&l.query, room) };
+    x = g.write(x, end, &shown, Style::NORMAL);
     g.write(x, end, " ", Style::ACTIVE);
 }
 
@@ -251,7 +256,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         let index = l.top + r;
         if index < l.results.len() {
             result_row(l, b, &mut g, index);
-        } else if r == 0 && l.results.is_empty() {
+        } else if r == 0 && l.results.is_empty() && !l.password {
             let text = if l.catalog.is_none() && !l.is_script() { "scanning…" } else { "no match" };
             g.write(2, end, text, Style::MUTED);
         }
@@ -331,6 +336,7 @@ mod tests {
     use crate::launcher::desktop::{DesktopAction, DesktopEntry};
     use crate::launcher::history::History;
     use crate::launcher::scan::Catalog;
+    use alpheus_commun::launcher_ipc::DmenuFlags;
     use std::path::PathBuf;
 
     const NOW: u64 = 1_800_000_000;
@@ -463,6 +469,24 @@ mod tests {
         let mut l = Launcher::for_script(LauncherConfig::default(), None, lines);
         let (_, rows) = draw(&mut l, 100);
         insta::assert_snapshot!("script", snapshot(&rows));
+    }
+
+    /// `--password`: one `•` per character typed (not per byte), never the text; no list, not
+    /// even "no match".
+    #[test]
+    fn password_mode_draws_dots_and_no_list() {
+        let flags = DmenuFlags { index: false, password: true };
+        let mut l = Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), vec!["saved".into()], flags);
+        typed(&mut l, "pä ss");
+        let (b, rows) = draw(&mut l, 100);
+        let text = snapshot(&rows);
+        assert!(text.contains("Key: •••••"), "{text}");
+        assert!(!text.contains("••••••"), "one dot per character: {text}");
+        let input = rows.rows.iter().map(|r| r.text()).find(|t| t.contains("Key:")).expect("the input row");
+        assert!(!input.contains(['p', 'ä', 's']), "typed text shown: {input}");
+        assert!(!text.contains("saved") && !text.contains("no match"), "{text}");
+        let list: Vec<String> = rows.rows[usize::from(b.list_top) - 1..][..usize::from(b.list_rows)].iter().map(|r| r.text()).collect();
+        assert!(list.iter().all(|r| r.trim().is_empty() || r.trim() == "│"), "the list stays blank: {list:?}");
     }
 
     /// Helper shared with other tests: the preview panel's text, one entry per interior row.

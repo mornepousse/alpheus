@@ -279,6 +279,15 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 0 wake-ups in 5 s at rest after use (2 in one of three runs). A 100,000-line dmenu peaks at
 +6.6–6.8 MB and drops back to +0.5 MB a second after it is cancelled.
 
+`alpheus-launch --dmenu` takes fuzzel's dmenu options that scripts use:
+
+| Option | What it does |
+|---|---|
+| `-p`, `--prompt TEXT` | text shown before the input |
+| `--index` | print the chosen line's 0-based position on standard input instead of its text (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
+| `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close |
+| `--placeholder TEXT`, `--width N`, `--lines N` | accepted and ignored (the box keeps its own size) |
+
 ### Themes
 
 Colours come from a **theme**: one of nine compiled-in presets, or your

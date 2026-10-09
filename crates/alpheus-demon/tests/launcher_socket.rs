@@ -4,7 +4,7 @@
 //! `UnixStream::connect` anywhere in src/ outside src/sources/ (test modules
 //! included), and these tests need a connecting client.
 
-use alpheus_commun::launcher_ipc::{MAX_DMENU_BYTES, Reply, Request, decode_reply, encode_request};
+use alpheus_commun::launcher_ipc::{DmenuFlags, MAX_DMENU_BYTES, Reply, Request, decode_reply, encode_request};
 use alpheus_demon::launcher::socket::{Conn, Progress, REPLY_TIMEOUT, REQUEST_DEADLINE, Server};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
@@ -225,7 +225,7 @@ fn a_request_sent_byte_by_byte_arrives_whole() {
     let d = dir("bytes");
     let server = Server::bind(&sock(&d)).unwrap();
     let mut c = client(&sock(&d));
-    let request = Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a b".into(), "é".into()] };
+    let request = Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a b".into(), "é".into()], flags: DmenuFlags::default() };
     let bytes = encode_request(&request);
     let mut conn = accepted(&server);
     for (i, b) in bytes.iter().enumerate() {
@@ -306,7 +306,7 @@ fn replies_are_decodable_by_the_client() {
     }
     // A dmenu answer goes through Pending.
     let mut c = client(&sock(&d));
-    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["x".into()] })).unwrap();
+    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["x".into()], flags: DmenuFlags::default() })).unwrap();
     let mut conn = accepted(&server);
     assert!(matches!(until_done(&mut conn), Progress::Ready(Request::Dmenu { .. })));
     conn.into_pending().reply(&Reply::Chosen("é ok".into()));
@@ -318,7 +318,7 @@ fn a_dmenu_client_hanging_up_is_detected() {
     let d = dir("hangup");
     let server = Server::bind(&sock(&d)).unwrap();
     let mut c = client(&sock(&d));
-    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()] })).unwrap();
+    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags::default() })).unwrap();
     let mut conn = accepted(&server);
     assert!(matches!(until_done(&mut conn), Progress::Ready(_)));
     let pending = conn.into_pending();
@@ -338,7 +338,7 @@ fn a_reply_to_a_client_that_never_reads_gives_up_within_the_timeout() {
     let d = dir("stuck");
     let server = Server::bind(&sock(&d)).unwrap();
     let mut c = client(&sock(&d));
-    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()] })).unwrap();
+    c.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags::default() })).unwrap();
     let mut conn = accepted(&server);
     assert!(matches!(until_done(&mut conn), Progress::Ready(_)));
     let pending = conn.into_pending();

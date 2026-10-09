@@ -11,7 +11,11 @@ use crate::launcher::history::History;
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::scan::Catalog;
 use crate::list;
+use alpheus_commun::launcher_ipc::{DmenuFlags, wipe};
 use std::path::PathBuf;
+
+/// Bytes reserved for a password's query at open (`for_dmenu`).
+const PASSWORD_ROOM: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Activation {
@@ -33,8 +37,12 @@ pub enum Activation {
         text: String,
         terminal: bool,
     },
-    /// Script mode: the chosen line, or the typed text when nothing matched.
-    Choose(String),
+    /// Script mode: the chosen line and its position in the client's order (`--index`), or the
+    /// typed text when nothing matched (line None).
+    Choose {
+        text: String,
+        line: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +82,10 @@ pub struct Launcher {
     /// Script mode only: set once by `for_script`, never mutated afterward (no `set_lines` —
     /// the dmenu line list is fixed for the life of one open).
     pub lines: Vec<String>,
+    /// Script mode, `--index`: Enter answers the line's position (`Reply::Index`), not its text.
+    pub index: bool,
+    /// Script mode, `--password`: no list, the query drawn as dots, wiped on drop (`Drop`).
+    pub password: bool,
     /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
     /// preview falls back to naming $PATH alone.
@@ -112,6 +124,8 @@ impl Launcher {
             catalog: None,
             windows: Vec::new(),
             lines: Vec::new(),
+            index: false,
+            password: false,
             path_dirs: Vec::new(),
             history: History::empty(0),
             now: 0,
@@ -136,9 +150,22 @@ impl Launcher {
 
     /// The dmenu menu: the client's lines, its prompt, no modes, no history.
     pub fn for_script(config: LauncherConfig, prompt: Option<String>, lines: Vec<String>) -> Launcher {
+        Launcher::for_dmenu(config, prompt, lines, DmenuFlags::default())
+    }
+
+    /// `for_script` with the client's flags. `password`: the lines are dropped (no list), and
+    /// the query gets room up front, so typing a usual password never reallocates (each
+    /// reallocation would leave a copy behind in freed memory that the drop cannot wipe).
+    pub fn for_dmenu(config: LauncherConfig, prompt: Option<String>, lines: Vec<String>, flags: DmenuFlags) -> Launcher {
         let mut l = Launcher::new(config, Mode::Script);
         l.prompt = prompt;
-        l.lines = lines;
+        l.index = flags.index;
+        l.password = flags.password;
+        if flags.password {
+            l.query = String::with_capacity(PASSWORD_ROOM);
+        } else {
+            l.lines = lines;
+        }
         l.refilter();
         l
     }
@@ -364,8 +391,8 @@ impl Launcher {
         let hit = self.selected_hit();
         match self.mode {
             Mode::Script => match hit {
-                Some(Hit { source: Source::Line(i), .. }) => Outcome::Activate(Activation::Choose(self.lines[i].clone())),
-                _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose(self.query.clone())),
+                Some(Hit { source: Source::Line(i), .. }) => self.choose_line(i),
+                _ if !self.query.is_empty() => Outcome::Activate(Activation::Choose { text: self.query.clone(), line: None }),
                 _ => Outcome::Nothing,
             },
             Mode::Commands if hit.is_none() || self.query.contains(char::is_whitespace) => self.shell(true),
@@ -373,9 +400,17 @@ impl Launcher {
                 Some(Source::App(index)) => Outcome::Activate(Activation::App { index, action: None }),
                 Some(Source::Window(i)) => Outcome::Activate(Activation::Window(i)),
                 Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: true }),
-                Some(Source::Line(i)) => Outcome::Activate(Activation::Choose(self.lines[i].clone())),
+                Some(Source::Line(i)) => self.choose_line(i),
                 None => Outcome::Nothing,
             },
+        }
+    }
+
+    /// Line `i` of the client's (its position on stdin, whatever the ranking did).
+    fn choose_line(&self, i: usize) -> Outcome {
+        match self.lines.get(i) {
+            Some(text) => Outcome::Activate(Activation::Choose { text: text.clone(), line: Some(i) }),
+            None => Outcome::Nothing,
         }
     }
 
@@ -432,6 +467,16 @@ impl Launcher {
 
     pub fn show_message(&mut self, m: String) {
         self.message = Some(m);
+    }
+}
+
+/// `--password`: the typed text is overwritten before it is freed (where practical: the copies
+/// SCTK and xkbcommon made of each key are out of reach).
+impl Drop for Launcher {
+    fn drop(&mut self) {
+        if self.password {
+            wipe(&mut self.query);
+        }
     }
 }
 
@@ -794,15 +839,51 @@ mod tests {
         assert_eq!(s.prompt.as_deref(), Some("Target"));
         assert_eq!(s.key(Key::Enter), Outcome::Nothing, "no line, nothing typed");
         typed(&mut s, "10.0.0.1");
-        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("10.0.0.1".into())), "free text (tools-menu's prompts)");
+        assert_eq!(s.key(Key::Enter), choose("10.0.0.1", None), "free text (tools-menu's prompts)");
         let mut s = Launcher::for_script(LauncherConfig::default(), None, vec!["alpha".into(), "beta".into()]);
         assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)]);
         typed(&mut s, "bet");
-        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("beta".into())), "the matching line, as shown");
+        assert_eq!(s.key(Key::Enter), choose("beta", Some(1)), "the matching line, as shown");
         typed(&mut s, "zzz");
-        assert_eq!(s.key(Key::Enter), activate(Activation::Choose("betzzz".into())), "nothing matches: the typed text");
-        assert_eq!(s.key(Key::CtrlEnter), activate(Activation::Choose("betzzz".into())), "Ctrl+Enter as Enter");
+        assert_eq!(s.key(Key::Enter), choose("betzzz", None), "nothing matches: the typed text");
+        assert_eq!(s.key(Key::CtrlEnter), choose("betzzz", None), "Ctrl+Enter as Enter");
         assert_eq!(s.key(Key::Escape), Outcome::Close);
+    }
+
+    fn choose(text: &str, line: Option<usize>) -> Outcome {
+        activate(Activation::Choose { text: text.into(), line })
+    }
+
+    /// `--index`: the line's position in the client's order survives the filtering and the
+    /// ranking (a fuzzy score puts "gamma" first here, at results[0]).
+    #[test]
+    fn a_chosen_line_keeps_its_position_on_stdin_through_filtering() {
+        let lines = ["alpha", "beta", "gamma", "delta", "gamma"].map(String::from).to_vec();
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines, DmenuFlags { index: true, password: false });
+        typed(&mut s, "gam");
+        assert_eq!(sources(&s), [Source::Line(2), Source::Line(4)], "the two gammas, in input order");
+        assert_eq!(s.key(Key::Down), Outcome::Redraw);
+        assert_eq!(s.key(Key::Enter), choose("gamma", Some(4)), "the second gamma: duplicates told apart by position");
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, ["a b", "b"].map(String::from).to_vec(), DmenuFlags::default());
+        typed(&mut s, "b");
+        assert_eq!(sources(&s), [Source::Line(1), Source::Line(0)], "the exact match ranks first");
+        assert_eq!(s.click(0, false), choose("b", Some(1)), "a click too: the first result is the second line");
+    }
+
+    /// `--password`: no list (the lines are dropped at open, nothing is ranked or shown), Enter
+    /// returns the typed text as is, spaces included; nothing typed → nothing.
+    #[test]
+    fn password_mode_has_no_list_and_returns_the_typed_text() {
+        let lines = ["alpha", "beta"].map(String::from).to_vec();
+        let mut s =
+            Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), lines, DmenuFlags { index: false, password: true });
+        assert!(s.password && s.lines.is_empty() && s.results.is_empty(), "no list");
+        assert_eq!(s.key(Key::Enter), Outcome::Nothing, "nothing typed");
+        typed(&mut s, " al pha");
+        assert!(s.results.is_empty(), "nothing filtered either: {:?}", sources(&s));
+        assert_eq!(s.key(Key::Down), Outcome::Nothing);
+        assert_eq!(s.key(Key::Enter), choose(" al pha", None));
+        assert_eq!(s.key(Key::CtrlEnter), choose(" al pha", None));
     }
 
     #[test]

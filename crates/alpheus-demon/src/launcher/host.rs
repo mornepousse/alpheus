@@ -16,7 +16,7 @@ use crate::log::write as log;
 use crate::sources::panic_text;
 use crate::state::Feed;
 use crate::wayland::App;
-use alpheus_commun::launcher_ipc::{Reply, Request};
+use alpheus_commun::launcher_ipc::{DmenuFlags, Reply, Request};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, Mode, PostAction};
@@ -77,6 +77,7 @@ pub enum Action {
     OpenScript {
         prompt: Option<String>,
         lines: Vec<String>,
+        flags: DmenuFlags,
     },
 }
 
@@ -95,7 +96,7 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Close, None) => (Action::Nothing, Some(Reply::Done)),
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
         (Request::Dmenu { .. }, Some(true)) => (Action::Nothing, Some(Reply::Busy)),
-        (Request::Dmenu { prompt, lines }, _) => (Action::OpenScript { prompt, lines }, None),
+        (Request::Dmenu { prompt, lines, flags }, _) => (Action::OpenScript { prompt, lines, flags }, None),
         // Not the launcher's (notifications task 5, osd task 4): `watch_connection` answers them
         // before they could reach here. Answered all the same, never a panic.
         (Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), _) => {
@@ -238,12 +239,12 @@ impl App {
         let open = self.launcher.as_ref().map(|o| o.model.is_script());
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
         match decide(request, open, since_open) {
-            (Action::OpenScript { prompt, lines }, _) => {
+            (Action::OpenScript { prompt, lines, flags }, _) => {
                 if self.launcher_is_open() {
                     self.launcher_close(CloseReason::Replaced);
                 }
                 let config = read_config(&paths::config_dir(), &mut |m| log(m));
-                let model = Launcher::for_script(config, prompt, lines);
+                let model = Launcher::for_dmenu(config, prompt, lines, flags);
                 self.launcher_open(qh, model, Some(conn.into_pending()), requested_at);
                 self.launcher_watch_client();
             }
@@ -426,7 +427,7 @@ mod tests {
     use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb};
 
     fn dmenu() -> Request {
-        Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()] }
+        Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }
     }
 
     /// A Duration safely past `TOGGLE_DEBOUNCE`, for rows that exercise the
@@ -436,7 +437,8 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
-        let script = Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()] };
+        let script =
+            Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
         let rows = [
             (Request::Toggle, None, Action::OpenApps, Some(Reply::Done)),
             (Request::Toggle, Some(false), Action::Close(R::Toggle), Some(Reply::Done)),
@@ -504,6 +506,13 @@ mod tests {
         let (action, reply) = decide(dmenu(), open, PAST_DEBOUNCE);
         assert_eq!((action.clone(), reply), (Action::Nothing, Some(Reply::Busy)));
         assert_eq!(open_after(open, &action), Some(true), "the first script menu stays open");
+    }
+
+    #[test]
+    fn a_dmenus_flags_reach_the_menu() {
+        let flags = DmenuFlags { index: true, password: true };
+        let (action, _) = decide(Request::Dmenu { prompt: None, lines: vec![], flags }, None, PAST_DEBOUNCE);
+        assert_eq!(action, Action::OpenScript { prompt: None, lines: vec![], flags });
     }
 
     #[test]

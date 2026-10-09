@@ -5,7 +5,7 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{OsdVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
@@ -298,6 +298,82 @@ fn dmenu_round_trip_and_cancel() {
     assert_eq!((code, out.as_str()), (EXIT_OK, "10.0.0.1\n"));
 }
 
+/// The output's pixels below the bar (whose clock may tick between two shots): the launcher box.
+fn below_the_bar(sway: &Sway) -> Vec<[u8; 3]> {
+    let s = sway.screenshot("HEADLESS-1").expect("grim reads the output");
+    (100..s.height).flat_map(|y| (0..s.width).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// A dmenu menu that types `text` (then waits before Enter): what the box showed once the text
+/// was drawn, and what the client got.
+fn typed_menu(sway: &Sway, d: &Daemon, shown: usize, args: &[&str], text: &str) -> (Vec<[u8; 3]>, (i32, String, String)) {
+    let menu = script(sway, args, "");
+    assert!(d.wait_for_count(SHOWN, shown, DELAY), "{:?}", d.log());
+    // The box drawn (its first frame committed, then given time to reach the screen), nothing
+    // typed yet: the frame to tell typing from.
+    thread::sleep(Duration::from_millis(200));
+    let empty = below_the_bar(sway);
+    let keys = wtype_spawn(sway, &["-s", "300", text, "-s", "3000", "-k", "Return"]);
+    let t = Instant::now();
+    let mut last = empty.clone();
+    let drawn = loop {
+        assert!(t.elapsed() < DELAY, "the typed text was never drawn");
+        thread::sleep(Duration::from_millis(150));
+        let now = below_the_bar(sway);
+        if now != empty && now == last {
+            break now;
+        }
+        last = now;
+    };
+    assert!(keys.wait().unwrap().success());
+    (drawn, menu.join().unwrap())
+}
+
+/// `--dmenu --password` (networkmanager_dmenu's Wi-Fi key): the typed characters come back as
+/// is; the box showed dots — two passwords of one length draw the same pixels, where the same
+/// text without `--password` draws others —; the daemon's log never holds the text, and the
+/// launcher's history never sees it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn dmenu_password_shows_dots_and_keeps_nothing() {
+    let sway = Sway::start("launcher-password", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon(&sway);
+    ready(&d);
+    let (first, got) = typed_menu(&sway, &d, 1, &["--dmenu", "--password", "-p", "Key"], "hunter2");
+    assert_eq!(got, (EXIT_OK, "hunter2\n".into(), String::new()));
+    let (second, got) = typed_menu(&sway, &d, 2, &["--dmenu", "--password", "-p", "Key"], "abcdefg");
+    assert_eq!(got, (EXIT_OK, "abcdefg\n".into(), String::new()));
+    assert!(first == second, "seven dots both times, whatever was typed");
+    let (plain, got) = typed_menu(&sway, &d, 3, &["--dmenu", "-p", "Key"], "hunter2");
+    assert_eq!(got.1, "hunter2\n");
+    assert!(plain != first, "without --password the text itself is drawn");
+    assert!(d.wait_for_count("launcher closed (activated)", 3, DELAY), "{:?}", d.log());
+    let log = d.log();
+    assert!(!log.iter().any(|l| l.contains("abcdefg") || l.contains("hunter2")), "typed text in the daemon's log: {log:?}");
+    let history = std::fs::read_to_string(sway.runtime.join("state/alpheus/launcher-history")).unwrap_or_default();
+    assert!(!history.contains("hunter2") && !history.contains("abcdefg"), "{history:?}");
+}
+
+/// `--dmenu --index` (audio-switcher, bzmenu): the third line prints 2; typed text that matches
+/// no line prints -1, as fuzzel does, and exits 0.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn dmenu_index_prints_the_position() {
+    let sway = Sway::start("launcher-index", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon(&sway);
+    ready(&d);
+    let menu = script(&sway, &["--dmenu", "--index"], "alpha\nbeta\ngamma\ndelta\n");
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Down", "-k", "Down", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "2\n".into(), String::new()));
+    let menu = script(&sway, &["--dmenu", "--index"], "alpha\nbeta\n");
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "zzz", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "-1\n".into(), String::new()));
+}
+
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn dmenu_client_killed_closes_the_launcher() {
@@ -306,7 +382,9 @@ fn dmenu_client_killed_closes_the_launcher() {
     let d = start_daemon(&sway);
     ready(&d);
     let mut client = UnixStream::connect(socket_path(&sway.runtime)).unwrap();
-    client.write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()] })).unwrap();
+    client
+        .write_all(&encode_request(&Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }))
+        .unwrap();
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
     drop(client); // the script killed (Ctrl-C, a timeout) while its menu is open
     assert!(d.wait_for("the dmenu client hung up", DELAY), "{:?}", d.log());
