@@ -188,8 +188,8 @@ impl App {
         self.osd_resize(size);
     }
 
-    /// A new size is asked (its configure draws), the same one is drawn now, nothing before the
-    /// first configure.
+    /// A new size is asked (its configure draws), the same one is drawn after the dispatch pass
+    /// (`flush_osd`: a burst of changes paints once), nothing before the first configure.
     fn osd_resize(&mut self, wanted: (u32, u32)) {
         let Some(open) = self.osd_open.as_mut() else { return };
         match plan_redraw(open.size, wanted, open.configured) {
@@ -199,14 +199,16 @@ impl App {
                 open.layer.commit();
                 open.last = None;
             }
-            Redraw::Draw => self.osd_draw(),
+            // `open.boxed` differs from `open.last`: `osd_draw` paints it once the pass is over.
+            Redraw::Draw => {}
             Redraw::Wait => open.layer.commit(),
         }
     }
 
     /// Paints the row as a boxed surface (the popups' pixel frame, on `popup_bg`). An unchanged row
-    /// commits nothing.
-    fn osd_draw(&mut self) {
+    /// commits nothing, so it is cheap to call after every dispatch pass (`flush_osd`), and a
+    /// no-op at rest (no pill).
+    pub(crate) fn osd_draw(&mut self) {
         let height = self.bar.config.height;
         let App { osd_open, fonts, roles, .. } = self;
         let Some(open) = osd_open.as_mut() else { return };

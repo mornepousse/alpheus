@@ -2311,6 +2311,9 @@ impl crate::launch::DeferredRedraw for App {
     fn redraw_now(&mut self) {
         self.redraw_all();
     }
+    fn flush_osd(&mut self) {
+        self.osd_draw();
+    }
 }
 
 impl crate::launch::WindowsFeed for App {

@@ -128,6 +128,9 @@ pub trait DeferredRedraw {
     fn bar_mut(&mut self) -> &mut Bar;
     fn dirty_mut(&mut self) -> &mut bool;
     fn redraw_now(&mut self);
+    /// The OSD's pill drawn if its row changed during the pass (`osd_sound` only updates the
+    /// model and the row): a burst of sound messages paints it once.
+    fn flush_osd(&mut self);
 }
 
 /// Called by every callback (channel message, clock tick): never a redraw
@@ -139,11 +142,13 @@ pub fn on_message(target: &mut impl DeferredRedraw, m: Msg, now: impl Fn() -> Lo
 }
 
 /// Called exactly once after `loop.dispatch()` returns: redraws if the flag
-/// was raised by the burst just processed, and clears it in every case.
+/// was raised by the burst just processed, and clears it in every case; then
+/// the OSD's pill, if its row changed.
 pub fn after_dispatch(target: &mut impl DeferredRedraw) {
     if std::mem::take(target.dirty_mut()) {
         target.redraw_now();
     }
+    target.flush_osd();
 }
 
 /// Mirrors `DeferredRedraw` for the launcher's windows (task 13, carried
@@ -888,7 +893,7 @@ mod tests {
 
     #[test]
     fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
-        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
         let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
@@ -925,6 +930,7 @@ mod tests {
         bar: Bar,
         dirty: bool,
         redraws: u32,
+        osd_flushes: u32,
     }
 
     impl DeferredRedraw for Counter {
@@ -937,11 +943,33 @@ mod tests {
         fn redraw_now(&mut self) {
             self.redraws += 1;
         }
+        fn flush_osd(&mut self) {
+            self.osd_flushes += 1;
+        }
+    }
+
+    /// Final review (slice B): a burst of sound messages updates the OSD's model each time but draws
+    /// its pill once, after the pass, whether the bar redraws or not (a microphone flip alone does
+    /// not redraw the bar).
+    #[test]
+    fn the_osd_is_drawn_once_per_pass_with_or_without_a_bar_redraw() {
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
+        after_dispatch(&mut c);
+        assert_eq!((c.redraws, c.osd_flushes), (0, 1), "no bar redraw, the pill's draw still flushed");
+        for p in [40, 41, 42] {
+            on_message(
+                &mut c,
+                Msg::Sound(Some(SoundState { sink: Some(Volume { percent: p, muted: false }), ..SoundState::default() })),
+                || AFTER,
+            );
+        }
+        after_dispatch(&mut c);
+        assert_eq!((c.redraws, c.osd_flushes), (1, 2), "one of each per pass");
     }
 
     #[test]
     fn a_burst_of_messages_redraws_only_once() {
-        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0 };
+        let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
         // A burst of 9 messages that EACH change the display (toggling
         // Some/None, like the up to 9 grids from a single niri burst over 3
         // screens): each one calls `on_message`, none draws directly —

@@ -15,8 +15,8 @@ use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
     AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway,
-    Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send, start_daemon,
-    start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send,
+    start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -3151,9 +3151,9 @@ fn no_card_marks_read(name: &str, modules: &str) {
 /// reaches it).
 #[test]
 fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
-    let dir = std::env::temp_dir().join(format!("alpheus-it-pw-fifo-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    // Declared first, so dropped last: removed after the child's group is gone, even on a failure.
+    let tmp = TempDir::new("alpheus-it-pw-fifo");
+    let dir = tmp.0.clone();
     let bin = fake_pw_dump_in(&dir, PwDump::Fifo);
     // Reaped with its whole group even when an assert below fails: a `cat` orphaned by a failure
     // would never exit, and would hold the caller's pipe (`cargo test | tail` hanging).
@@ -3192,11 +3192,39 @@ fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
     // as cleanup (an empty group by then when the fake is right).
     child.kill().unwrap();
     child.wait().unwrap();
+    assert!(child.reaped(), "reaped by the test: the guard never signals its group again");
     use std::os::unix::fs::OpenOptionsExt;
     let left = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(dir.join("pw-dump.fifo"));
     assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
-    drop(child);
-    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The harness's guards (final review, slice B): a `GroupChild` the test reaped is never signalled
+/// again (its pid may be reused); one never waited for is killed with its group and reaped on drop.
+/// A `TempDir` is removed on drop.
+#[test]
+fn a_reaped_group_child_is_left_alone_and_a_temp_dir_goes_with_its_guard() {
+    let tmp = TempDir::new("alpheus-it-guards");
+    let dir = tmp.0.clone();
+    let mut done = GroupChild::spawn(&mut Command::new("true"));
+    assert!(!done.reaped());
+    done.wait().unwrap();
+    assert!(done.reaped(), "wait reaps");
+    drop(done);
+    let mut quick = GroupChild::spawn(&mut Command::new("true"));
+    while quick.try_wait().unwrap().is_none() {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(quick.reaped(), "try_wait reaps once it exited");
+    let mut left = GroupChild::spawn(Command::new("sleep").arg("30"));
+    assert!(left.try_wait().unwrap().is_none() && !left.reaped());
+    let pid = left.id() as i32;
+    let t = Instant::now();
+    drop(left);
+    assert!(t.elapsed() < Duration::from_secs(5), "killed, not waited for: {:?}", t.elapsed());
+    // SAFETY: signal 0 only checks that the pid exists; ours until reaped, reaped by the drop.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "killed and reaped by the guard");
+    drop(tmp);
+    assert!(!dir.exists(), "the temp dir went with its guard");
 }
 
 /// A send above PIPE_BUF would not be atomic: refused loudly, before the pipe is even opened.
@@ -3340,12 +3368,19 @@ fn osd_the_pill_never_takes_a_click() {
     assert_eq!(d.count("osd surface dropped"), 0, "and the clicks left it alone");
 }
 
-/// OSD spec § 1, § 2: the microphone's mute shows its pill. A switch of the default sink shows its
+/// OSD spec § 1, § 2: the microphone's mute shows its pill, its level never does. A switch of the default sink shows its
 /// name and level, the fixture's speaker at 94 %.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn osd_the_microphone_and_a_default_sink_switch_show_their_pills() {
-    let (sway, _hypr, d) = osd_daemon("osd-mic", 1, "", |_| ());
+    // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
+    let (sway, _hypr, d) = osd_daemon("osd-mic", 1, "timeout_ms = 5000\n", |_| ());
+    // Mae (2026-10-09): a call's gain control moving the microphone's level shows nothing.
+    for level in [80, 65, 90] {
+        pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, level, false));
+    }
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("osd surface on"), 0, "a microphone level alone: {:?}", d.log());
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, 100, true));
     assert!(d.wait_for("mic 100% muted", DELAY), "{:?}", d.log());
     assert!(d.wait_for("osd surface dropped (timeout, 1 shown)", DELAY), "{:?}", d.log());
@@ -3473,7 +3508,8 @@ fn osd_brightness(sway: &Sway) -> i32 {
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill() {
-    let (sway, _hypr, d) = osd_daemon("osd-bright", 1, "", |sway| {
+    // The pill's timeout is not what this test measures: a long one keeps it on screen while it looks.
+    let (sway, _hypr, d) = osd_daemon("osd-bright", 1, "timeout_ms = 5000\n", |sway| {
         fake_backlight(sway, "intel_backlight", 9696, 19393);
     });
     let dir = sway.runtime.join("backlight/intel_backlight");

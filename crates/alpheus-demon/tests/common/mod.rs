@@ -395,34 +395,78 @@ fn full_size_initial_dump(fixtures: &Path, to: &Path) {
 /// A child run in its own process group (never the test's), its stderr discarded: on drop, even
 /// while a failed assert unwinds, the whole group is killed and the child reaped. A fake that a
 /// failure leaves behind (the `Fifo` fake's `cat`) would never exit, and would hold the caller's
-/// pipe open (`cargo test | tail` hanging).
-pub struct GroupChild(Child);
+/// pipe open (`cargo test | tail` hanging). Once the test reaped the child itself (`wait`,
+/// `try_wait`), its pid, and so its group id, may already be someone else's: never signalled then.
+pub struct GroupChild {
+    child: Child,
+    reaped: bool,
+}
 
 impl GroupChild {
     pub fn spawn(command: &mut Command) -> GroupChild {
-        GroupChild(command.process_group(0).stderr(Stdio::null()).spawn().unwrap())
+        GroupChild { child: command.process_group(0).stderr(Stdio::null()).spawn().unwrap(), reaped: false }
+    }
+
+    /// `Child::wait`, remembering that the child is reaped.
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        let status = self.child.wait()?;
+        self.reaped = true;
+        Ok(status)
+    }
+
+    /// `Child::try_wait`, remembering when the child is reaped.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let status = self.child.try_wait()?;
+        self.reaped |= status.is_some();
+        Ok(status)
+    }
+
+    pub fn reaped(&self) -> bool {
+        self.reaped
     }
 }
 
 impl std::ops::Deref for GroupChild {
     type Target = Child;
     fn deref(&self) -> &Child {
-        &self.0
+        &self.child
     }
 }
 
 impl std::ops::DerefMut for GroupChild {
     fn deref_mut(&mut self) -> &mut Child {
-        &mut self.0
+        &mut self.child
     }
 }
 
 impl Drop for GroupChild {
     fn drop(&mut self) {
+        if self.reaped {
+            return;
+        }
         // SAFETY: plain kill(2) on our child's own group (process_group(0) at spawn), not reaped
         // yet: still ours, never -1 nor 0.
-        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
-        let _ = self.0.wait();
+        unsafe { libc::kill(-(self.child.id() as i32), libc::SIGKILL) };
+        let _ = self.child.wait();
+    }
+}
+
+/// A test's own temporary directory, removed on drop (even while a failed assert unwinds).
+pub struct TempDir(pub PathBuf);
+
+impl TempDir {
+    /// `$TMPDIR/<name>-<pid>`, emptied first.
+    pub fn new(name: &str) -> TempDir {
+        let dir = std::env::temp_dir().join(format!("{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        TempDir(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
