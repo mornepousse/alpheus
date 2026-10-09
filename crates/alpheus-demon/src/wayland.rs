@@ -1035,6 +1035,8 @@ impl App {
     pub(crate) fn notify_do(&mut self, f: impl FnOnce(&mut Notifications)) {
         if let Some(tray) = self.tray.as_mut().filter(|t| t.notifications().is_some()) {
             tray.notifications_do(f);
+            // The one prompt delivery of the tray's deferred view and bubbles (the idle `tray_sync`
+            // queues): without it they would wait for the next event on the tray's connection.
             self.tray_sync();
             return;
         }

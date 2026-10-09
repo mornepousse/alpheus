@@ -325,7 +325,11 @@ impl App {
         let Some(open) = self.bubbles.as_mut() else { return };
         if let Some(imposed) = plan_configure(open.size, size) {
             open.size = imposed;
+            // The input region follows the width the bubbles are painted at (the draw commits it).
+            let Some(open) = self.bubbles.as_ref() else { return };
+            self.bubbles_input(&open.layer, &open.spans, imposed.0);
         }
+        let Some(open) = self.bubbles.as_mut() else { return };
         open.configured = true;
         open.last = None;
         self.bubbles_draw();
@@ -350,7 +354,7 @@ impl App {
     /// batch (sctk still lists the output during `output_destroyed`), on the focused output or the
     /// compositor's choice.
     pub(crate) fn bubbles_output_gone(&mut self, output: &wl_output::WlOutput) {
-        if !self.bubbles.as_ref().is_some_and(|o| o.output.as_ref() == Some(output)) {
+        if !self.bubbles.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
             return;
         }
         self.bubbles_drop("output gone");

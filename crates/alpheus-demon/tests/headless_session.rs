@@ -14,8 +14,8 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive,
-    start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, assert_no_spin, fake_program, launcher,
+    process_alive, start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -468,10 +468,11 @@ fn a_closed_session_bus_empties_the_tray_once() {
     assert!(d.wait_for("tray: icons shown: 0", DELAY), "the tray emptied: {:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
     std::thread::sleep(Duration::from_millis(500));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
     let log = d.log();
     assert_eq!(log.iter().filter(|l| l.contains("session bus closed")).count(), 1, "{log:?}");
     assert_eq!(
@@ -528,10 +529,11 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     sway.hover(1260, 10); // the clock, at the right end
     // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
     std::thread::sleep(Duration::from_millis(200));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the clock");
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
@@ -642,8 +644,9 @@ fn tooltips_false_gives_no_timer_and_no_tooltip() {
     std::thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon: armed with tooltips on, never with them off
     std::thread::sleep(Duration::from_millis(200));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(2));
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(2), "tooltips = false");
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the icon: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
@@ -972,9 +975,10 @@ fn a_silent_menu_never_opens_and_leaves_nothing_pending() {
     while alpheus_demon::clock::LocalTime::now().0.second > 50 {
         std::thread::sleep(Duration::from_millis(200));
     }
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "{:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(3), "nothing pending");
 }
 
 #[test]
@@ -1215,10 +1219,11 @@ fn a_click_elsewhere_closes_it_and_leaves_no_timer() {
         std::thread::sleep(Duration::from_millis(200));
     }
     std::thread::sleep(Duration::from_millis(300));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times at rest after the calendar: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "after the calendar");
 }
 
 #[test]
@@ -1309,6 +1314,19 @@ fn wakeups_count_voluntary_switches_only() {
     let status = "Name:\talpheus-demon\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t7\n";
     assert_eq!(common::switches(status), 12);
     assert_eq!(common::switches(""), 0);
+}
+
+/// A busy spin never blocks, so it makes no voluntary switch: the at-rest checks also read the CPU
+/// time (utime + stime, fields 14 and 15 of a /proc stat line, after the command in parentheses,
+/// which may hold spaces and parentheses itself).
+#[test]
+fn cpu_ticks_are_utime_plus_stime() {
+    let stat = "4242 (alpheus (demon) x) S 1 4242 4242 0 -1 4194560 900 0 0 0 31 12 0 0 20 0 6 0 100 0";
+    assert_eq!(common::cpu_ticks(stat), 43);
+    assert_eq!(common::cpu_ticks(""), 0);
+    assert_eq!(common::rest_ticks(Duration::from_secs(5)), common::REST_TICKS);
+    assert_eq!(common::rest_ticks(Duration::from_secs(10)), 2 * common::REST_TICKS);
+    assert_eq!(common::rest_ticks(Duration::from_secs(2)), common::REST_TICKS, "never below the 5 s allowance");
 }
 
 #[test]
@@ -1946,10 +1964,11 @@ fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
     assert!(d.wait_for("media: hidden", DELAY), "{:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
     std::thread::sleep(Duration::from_millis(500));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
     assert_eq!(d.count("media: the session bus closed"), 1, "{:?}", d.log());
     assert_eq!((d.count("media: shown"), d.count("media: hidden")), (1, 1), "one line each way: {:?}", d.log());
     assert_eq!(d.count("media: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
@@ -2044,25 +2063,38 @@ fn away_from_the_minute() {
     }
 }
 
-/// The loop thread's wake-ups over 5 s, away from the minute's turn (the clock is the bar's only
-/// other timer).
-fn wakeups_over_5_s(d: &Daemon) -> u64 {
+/// The loop thread's wake-ups and CPU ticks over 5 s, away from the minute's turn (the clock is the
+/// bar's only other timer).
+fn activity_over_5_s(d: &Daemon) -> (u64, u64) {
     away_from_the_minute();
     std::thread::sleep(Duration::from_millis(300));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
-    d.main_thread_wakeups().saturating_sub(before)
+    (d.main_thread_wakeups().saturating_sub(before), d.main_thread_cpu_ticks().saturating_sub(ticks))
+}
+
+/// The loop thread's wake-ups over 5 s while something ticks.
+fn wakeups_over_5_s(d: &Daemon) -> u64 {
+    activity_over_5_s(d).0
+}
+
+/// The loop thread's wake-ups over 5 s at rest, its CPU checked too: a busy spin makes no wake-up.
+fn rest_over_5_s(d: &Daemon) -> u64 {
+    let (wakeups, ticks) = activity_over_5_s(d);
+    assert_no_spin(ticks, Duration::from_secs(5), "the loop thread");
+    wakeups
 }
 
 /// The loop's wake-ups while `player` broadcasts five Seeked over 1.5 s: none once the popup closed,
 /// since the bar's Seeked match rule goes with it (the bus then delivers it nothing).
 fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
     away_from_the_minute();
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     for us in 1..=5 {
         player.seeked(us * 1_000_000);
         std::thread::sleep(Duration::from_millis(300));
     }
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_millis(1500), "the loop thread");
     d.main_thread_wakeups().saturating_sub(before)
 }
 
@@ -2137,7 +2169,7 @@ fn a_bar_removed_while_escape_is_down_releases_the_keyboard() {
 fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-tick", 1, &[]);
     sway.hover(640, 400);
-    let closed = wakeups_over_5_s(&d);
+    let closed = rest_over_5_s(&d);
     assert_eq!(closed, 0, "the loop woke {closed} times at rest, popup closed, player playing: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
@@ -2145,7 +2177,7 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     assert!((4..=12).contains(&open), "about one tick a second while open and playing: {open}");
     players[0].set_status("Paused");
     std::thread::sleep(Duration::from_secs(1));
-    let paused = wakeups_over_5_s(&d);
+    let paused = rest_over_5_s(&d);
     assert_eq!(paused, 0, "paused while open: the tick is disarmed ({paused} wake-ups)");
     players[0].set_status("Playing");
     std::thread::sleep(Duration::from_secs(1));
@@ -2156,7 +2188,7 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     // SCTK arms its key repeat timer at the press of Escape and, at the release, only forgets the
     // key: the timer fires once at the repeat delay (600 ms on sway), finds no key and drops itself.
     std::thread::sleep(Duration::from_secs(1));
-    let after = wakeups_over_5_s(&d);
+    let after = rest_over_5_s(&d);
     assert_eq!(after, 0, "closed: nothing armed is left ({after} wake-ups)");
     let seeked = wakeups_over_seeked(&d, &players[0]);
     assert_eq!(seeked, 0, "closed: the Seeked rule went with the popup ({seeked} wake-ups)");
@@ -2230,7 +2262,7 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("popup closed"), 1, "closed once, though both bars moved: {:?}", d.log());
     sway.hover(640, 400);
-    assert_eq!(wakeups_over_5_s(&d), 0, "the timer went with the popup");
+    assert_eq!(rest_over_5_s(&d), 0, "the timer went with the popup");
     assert_eq!(wakeups_over_seeked(&d, &players[0]), 0, "and the Seeked rule");
     // Floating: the bar 6 px down and in.
     sway.click(3000 + MEDIA_AT.0 + 6, MEDIA_AT.1 + 6, "button1");
@@ -2388,10 +2420,11 @@ fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
     assert!(d.wait_for("notifications: the session bus closed", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("bell: not serving", before + 1, DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(500));
-    let wakeups = d.main_thread_wakeups();
+    let (wakeups, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - wakeups;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
     assert_eq!(d.count("notifications: the session bus closed"), 1, "{:?}", d.log());
     assert_eq!(d.count("notifications: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
@@ -2504,6 +2537,19 @@ fn bubbles_on(s: &Ppm, x: u32) -> usize {
     runs + usize::from(run >= 10)
 }
 
+/// The first bubble's frame on `s`: the pixel just left of its background, halfway down its header
+/// (clear of the rounded corners and of the text).
+fn bubble_frame(s: &Ppm) -> Option<[u8; 3]> {
+    // From the top inset's leftmost background (no text there), on along the header row through the
+    // pad cell (no text either) to the stroke.
+    let (top, mut x, _) = bubble_box(s, 3)?;
+    let (y, bg) = (top + 12, popup_bg("catppuccin"));
+    while x > 0 && s.at(x - 1, y) == Some(bg) {
+        x -= 1;
+    }
+    s.at(x.checked_sub(1)?, y)
+}
+
 /// A layout point in the first bubble on a single output placed at (0, 0): the middle of its header.
 fn bubble_at(sway: &Sway, output: &str) -> (u32, u32) {
     let found = Cell::new(None);
@@ -2551,6 +2597,9 @@ fn a_left_click_runs_the_default_action_then_closes_unless_resident() {
     let id = client.notify(&open(Note::new("Mailer", "Weekly report ready"))).unwrap();
     assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
     let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    let frame = bubble_frame(&sway.screenshot("HEADLESS-1").expect("grim"));
+    let urgent = rgb(preset("catppuccin").unwrap().dark.urgent);
+    assert!(frame.is_some_and(|f| f != urgent && f != popup_bg("catppuccin")), "a normal bubble keeps the border: {frame:?}");
     sway.click(x, y, "button1");
     assert!(client.wait_heard(&Heard::Invoked(id, "default".into())), "{:?}", d.log());
     assert!(client.wait_heard(&Heard::Closed(id, 2)), "then dismissed");
@@ -2608,6 +2657,9 @@ fn do_not_disturb_shows_only_critical_bubbles() {
     let critical = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
     assert!(d.wait_for("bubbles shown: 1", DELAY), "a critical one still shows: {:?}", d.log());
     let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    let urgent = rgb(preset("catppuccin").unwrap().dark.urgent);
+    let frame = bubble_frame(&sway.screenshot("HEADLESS-1").expect("grim"));
+    assert_eq!(frame, Some(urgent), "spec § 3: a critical bubble is framed in urgent");
     sway.click(x, y, "button3");
     assert!(client.wait_heard(&Heard::Closed(critical, 2)), "{:?}", d.log());
 }
@@ -2621,11 +2673,11 @@ fn no_wakeup_at_rest_after_the_bubbles_expire_or_under_a_sticky_one() {
     sway.hover(20, 400);
     let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
     assert!(client.wait_heard(&Heard::Closed(id, 1)), "{:?}", d.log());
-    let after = wakeups_over_5_s(&d);
+    let after = rest_over_5_s(&d);
     assert_eq!(after, 0, "expired: nothing armed ({after} wake-ups): {:?}", d.log());
     client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
     assert!(d.wait_for_count("bubbles shown: 1", 2, DELAY), "{:?}", d.log());
-    let sticky = wakeups_over_5_s(&d);
+    let sticky = rest_over_5_s(&d);
     assert_eq!(sticky, 0, "a sticky bubble arms no timer ({sticky} wake-ups)");
 }
 

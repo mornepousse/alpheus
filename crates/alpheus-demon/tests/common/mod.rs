@@ -588,6 +588,29 @@ pub fn switches(status: &str) -> u64 {
         .sum()
 }
 
+/// CPU clock ticks (utime + stime) in a /proc stat line: what a busy spin burns while it makes no
+/// voluntary switch (it never blocks), so no wake-up count ever sees it.
+pub fn cpu_ticks(stat: &str) -> u64 {
+    let Some((_, rest)) = stat.rsplit_once(')') else { return 0 };
+    // After the command: the state is field 3, utime and stime fields 14 and 15.
+    rest.split_whitespace().skip(11).take(2).filter_map(|v| v.parse::<u64>().ok()).sum()
+}
+
+/// CPU ticks a loop at rest may use over 5 s (the clock's tick is 10 ms on Linux): a spin uses
+/// hundreds.
+pub const REST_TICKS: u64 = 2;
+
+/// The CPU ticks allowed at rest over `window`: `REST_TICKS` per 5 s, never less than that.
+pub fn rest_ticks(window: Duration) -> u64 {
+    (REST_TICKS * window.as_secs().div_ceil(5)).max(REST_TICKS)
+}
+
+/// Asserts that `ticks` of CPU over an at-rest `window` are no spin.
+pub fn assert_no_spin(ticks: u64, window: Duration, what: &str) {
+    let allowed = rest_ticks(window);
+    assert!(ticks <= allowed, "{what}: {ticks} CPU ticks in {window:?} at rest (≤ {allowed}): the loop spins");
+}
+
 impl Daemon {
     pub fn pid(&self) -> u32 {
         self.child.id()
@@ -651,6 +674,16 @@ impl Daemon {
             .flatten()
             .map(|t| switches(&fs::read_to_string(t.path().join("status")).unwrap_or_default()))
             .sum()
+    }
+
+    /// CPU ticks (utime + stime) of the whole daemon, every thread.
+    pub fn cpu_ticks(&self) -> u64 {
+        cpu_ticks(&fs::read_to_string(format!("/proc/{}/stat", self.pid())).unwrap_or_default())
+    }
+
+    /// CPU ticks (utime + stime) of the event loop's thread only (the main thread).
+    pub fn main_thread_cpu_ticks(&self) -> u64 {
+        cpu_ticks(&fs::read_to_string(format!("/proc/{0}/task/{0}/stat", self.pid())).unwrap_or_default())
     }
 
     /// Voluntary context switches (wake-ups) of the event loop's thread only (the main thread).

@@ -153,6 +153,12 @@ pub fn moves(stack_changed: bool, focused: Option<&str>, on: Option<&str>) -> bo
     stack_changed && focused.is_some() && focused != on
 }
 
+/// Whether the output that went (`gone`) holds the bubbles placed on `on`. None (the compositor's
+/// choice) is never held here: the compositor's own `closed` takes them down.
+pub fn holds<T: PartialEq>(on: Option<&T>, gone: &T) -> bool {
+    on == Some(gone)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +295,15 @@ mod tests {
         assert!(!moves(true, Some("HEADLESS-2"), Some("HEADLESS-2")));
         assert!(!moves(true, None, Some("HEADLESS-2")), "no known focus: where they are");
         assert!(moves(true, Some("HEADLESS-1"), None), "from the compositor's choice to a known focus");
+    }
+
+    /// Review Focus: an output unplugged. Only the one the bubbles were placed on takes them down;
+    /// placed by the compositor (no output asked), they wait for its `closed`.
+    #[test]
+    fn only_the_output_holding_the_bubbles_takes_them_down() {
+        assert!(holds(Some(&"HEADLESS-2"), &"HEADLESS-2"));
+        assert!(!holds(Some(&"HEADLESS-2"), &"HEADLESS-1"), "another output going changes nothing");
+        assert!(!holds(None, &"HEADLESS-1"), "the compositor's choice: its own closed tells");
     }
 
     fn incoming(summary: &str, urgency: Urgency) -> Incoming {

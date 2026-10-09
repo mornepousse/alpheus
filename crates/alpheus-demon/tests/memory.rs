@@ -21,8 +21,8 @@ use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with,
-    write_atomically, wtype, wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, launcher,
+    start_daemon_with, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -291,9 +291,10 @@ fn at_rest_no_wakeups_after_a_launcher_cycle() {
     // Past REQUEST_DEADLINE: a timer that keeps re-arming, a keyboard repeat
     // or a watch left behind shows up below as wake-ups.
     std::thread::sleep(Duration::from_secs(3));
-    let before = d.wakeups();
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a launcher cycle");
     eprintln!("wake-ups at rest after a launcher cycle (5 s): {delta}; threads {} (before the cycle: {threads})", d.threads());
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the launcher was used");
     assert_eq!(d.threads(), threads, "no thread left by the launcher");
@@ -459,7 +460,9 @@ fn at_rest_no_wakeups() {
     let sound_before = d.thread_wakeups("sound").expect("the sound thread runs");
     let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread runs");
     let threads = d.threads();
+    let ticks = d.cpu_ticks();
     std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon at rest");
     let delta = d.wakeups().saturating_sub(before);
     let sound = d.thread_wakeups("sound").unwrap().saturating_sub(sound_before);
     let dbus = d.thread_wakeups("D-Bus").unwrap().saturating_sub(dbus_before);
@@ -646,7 +649,9 @@ fn at_rest_no_wakeups_with_a_populated_tray() {
     away_from_the_minute(REST);
     let before = d.wakeups();
     let main_before = d.main_thread_wakeups();
+    let ticks = d.cpu_ticks();
     std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon with a populated tray");
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest with a populated tray (10 s): {delta} whole daemon, {main_delta} loop thread");
@@ -761,8 +766,9 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
     std::thread::sleep(Duration::from_secs(1));
     const REST: Duration = Duration::from_secs(10);
     away_from_the_minute(REST);
-    let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
     std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon after a theme reload");
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after a theme reload (10 s): {delta} whole daemon, {main_delta} loop thread");
@@ -822,8 +828,9 @@ fn at_rest_no_wakeups_under_each_style() {
         assert!(d.wait_for(&format!(", style {style}"), DELAY), "{style}: {:?}", d.log());
         std::thread::sleep(Duration::from_secs(1)); // the repaint and, for floating, the configures settled
         away_from_the_minute(REST);
-        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
         std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, style);
         let delta = d.wakeups().saturating_sub(before);
         let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
         report.push((style, delta, main_delta));
@@ -1024,8 +1031,9 @@ fn at_rest_no_wakeups_with_a_playing_player() {
         std::thread::sleep(TRAY_SETTLE);
         const REST: Duration = Duration::from_secs(10);
         away_from_the_minute(REST);
-        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
         std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon with a playing player");
         let delta = d.wakeups().saturating_sub(before);
         let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
         eprintln!("wake-ups at rest with a playing player (10 s, tray {tray}): {delta} whole daemon, {main_delta} loop thread");
