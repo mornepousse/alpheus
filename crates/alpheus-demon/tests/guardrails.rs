@@ -252,6 +252,26 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
     assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
 }
 
+/// OSD spec § 1 and the bubbles' (notifications spec § 3): the pill and the bubbles live on the
+/// Overlay layer, the only one Hyprland draws above a fullscreen window (the launcher box's rule,
+/// above). A headless sway cannot tell the layers apart (no fullscreen window there), so this
+/// checks the one call that would regress it: each file creates exactly one layer surface, in its
+/// create function, on `Layer::Overlay`.
+#[test]
+fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
+    let files = source_files();
+    for (name, create) in [("osd_surface.rs", "fn osd_create("), ("bubbles_surface.rs", "fn bubbles_create(")] {
+        let text = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let prod = production_code(text);
+        assert_eq!(prod.matches("create_layer_surface(").count(), 1, "one layer surface in {name}");
+        let body = function_body(&prod, create);
+        let call =
+            &body[body.find("create_layer_surface(").unwrap_or_else(|| panic!("the layer surface is created in {name}'s {create}"))..];
+        let args = &call[..call.find(';').unwrap_or(call.len())];
+        assert!(args.contains("Layer::Overlay"), "{name}: {args}");
+    }
+}
+
 /// Review item M6, final review slice 3: every seat/keyboard entry point
 /// that can reach launcher code goes through `launcher_guarded` — a panic
 /// there must close the launcher, never take the bar down with it.
@@ -534,7 +554,7 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DndVerb, Request};
+    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -542,6 +562,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::ClearNotifications => "clear-notifications",
+            Request::Osd(_) => "osd",
         }
     }
     let all = [
@@ -550,8 +571,9 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Dmenu { prompt: None, lines: vec![] },
         Request::Dnd(DndVerb::Toggle),
         Request::ClearNotifications,
+        Request::Osd(OsdVerb::Brightness),
     ];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications"]);
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -954,12 +976,13 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 23] = [
+const NO_THREAD_NOR_COMMAND: [&str; 24] = [
     "tray/",
     "media.rs",
     "notify.rs",
     "osd.rs",
     "osd_surface.rs",
+    "backlight.rs",
     "bubbles.rs",
     "bubbles_surface.rs",
     "panel.rs",
@@ -1287,4 +1310,39 @@ fn the_notification_server_has_no_panicking_path() {
     let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
     let end = bus.find("pub fn session_address").expect("the builders end before session_address");
     assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");
+}
+
+/// OSD spec § 2 and its guardrails: the OSD reads sysfs and shows, nothing else. Its three files
+/// write no file, create nothing, change no permission (and, through `NO_THREAD_NOR_COMMAND`, run
+/// no command). Production code only.
+#[test]
+fn the_osd_only_reads() {
+    let mut checked = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !["osd.rs", "osd_surface.rs", "backlight.rs"].contains(&name.as_str()) {
+            continue;
+        }
+        checked += 1;
+        let prod = production_code(&t);
+        for never in ["fs::write", "OpenOptions", "File::create", "set_permissions", "remove_file", "create_dir", "fs::rename", "fs::copy"]
+        {
+            assert!(!prod.contains(never), "{never} in {name}: the OSD only reads");
+        }
+    }
+    assert_eq!(checked, 3, "osd.rs, osd_surface.rs and backlight.rs");
+}
+
+/// No panic in the OSD's production code (spec § 5): with its tests left out, each file has no
+/// `.expect(`, `.unwrap()` nor `panic!(`.
+#[test]
+fn the_osd_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["osd.rs", "osd_surface.rs", "backlight.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
 }

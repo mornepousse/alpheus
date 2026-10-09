@@ -5,7 +5,7 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
@@ -3432,15 +3432,75 @@ fn osd_off_never_reads_the_sound() {
     let toml = "modules = [\"volume\"]\n";
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
-    // The initial dump drawn, past what would be the OSD's start-up grace.
-    thread::sleep(GRACE_OVER);
-    let before = sway.screenshot("HEADLESS-1").expect("grim");
     let band =
         |s: &Ppm| -> Vec<Option<[u8; 3]>> { (0..20).flat_map(|y| (0..s.width).map(move |x| (x, y))).map(|(x, y)| s.at(x, y)).collect() };
+    // The initial dump drawn (the gauge's ink on the bar), and past what would be the OSD's
+    // start-up grace.
+    let bg = bar_bg("catppuccin");
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| band(s).iter().any(|p| p.is_some_and(|p| p != bg))),
+        "the initial gauge is drawn: {:?}",
+        d.log()
+    );
+    thread::sleep(GRACE_OVER);
+    let before = sway.screenshot("HEADLESS-1").expect("grim");
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
     assert!(sway.wait_for_screen("HEADLESS-1", |s| band(s) != band(&before)), "the bar's gauge moved: {:?}", d.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!(d.count("osd: sound baseline"), 0, "the OSD heard nothing: {:?}", d.log());
     assert_eq!(d.count("osd surface"), 0, "{:?}", d.log());
     assert_eq!(osd_box(&sway.screenshot("HEADLESS-1").expect("grim")), None);
+}
+
+/// A fake backlight device under the test's runtime directory (`osd_bar`'s `backlight_dir`), as
+/// sysfs shows it: a number and a newline in each file.
+fn fake_backlight(sway: &Sway, name: &str, brightness: u32, max: u32) -> PathBuf {
+    let dir = sway.runtime.join("backlight").join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("brightness"), format!("{brightness}\n")).unwrap();
+    std::fs::write(dir.join("max_brightness"), format!("{max}\n")).unwrap();
+    dir
+}
+
+fn osd_brightness(sway: &Sway) -> i32 {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args = [OsString::from("--osd"), OsString::from(OsdVerb::Brightness.word())];
+    run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
+}
+
+/// OSD spec § 2: `alpheus-launch --osd brightness` reads the fake backlight once and shows its
+/// level; the files are never written.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill() {
+    let (sway, _hypr, d) = osd_daemon("osd-bright", 1, "", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    let dir = sway.runtime.join("backlight/intel_backlight");
+    let before = std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap();
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for("brightness 50%", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| osd_box(s).is_some()), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(dir.join("brightness")).unwrap(), "9696\n", "read, never written");
+    assert_eq!(std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap(), before);
+}
+
+/// OSD spec § 4: with no backlight device, or without the module, the verb answers Done (exit 0)
+/// and nothing shows.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
+    let (sway, _hypr, d) = osd_daemon("osd-nobright", 1, "", |_| ());
+    assert_eq!(osd_brightness(&sway), EXIT_OK, "no backlight device");
+    assert!(d.wait_for("osd: no backlight device, nothing shown", DELAY), "{:?}", d.log());
+    let off = Sway::start("osd-bright-off", 1);
+    let _hypr_off = FakeHyprland::start_on_headless(&off.runtime, SIGNATURE);
+    fake_backlight(&off, "intel_backlight", 9696, 19393);
+    let toml = format!("modules = [\"workspaces\", \"clock\"]\n[osd]\nbacklight_dir = \"{}\"\n", off.runtime.join("backlight").display());
+    let d_off = start_daemon_with(&off, &DaemonOptions { bar_toml: Some(&toml), ..DaemonOptions::default() });
+    assert!(d_off.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d_off.log());
+    assert_eq!(osd_brightness(&off), EXIT_OK, "the module off: exit 0 all the same");
+    assert!(d_off.wait_for("the osd module is not in modules", DELAY), "{:?}", d_off.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
 }

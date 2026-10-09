@@ -5,6 +5,7 @@
 //! resident. One `DeadlineTimer` (`App::osd_timer`) hides it `timeout_ms` after the last change.
 //! Overlay, because Hyprland draws Top under a fullscreen window.
 
+use crate::backlight;
 use crate::bubbles;
 use crate::config::ModuleId;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
@@ -15,6 +16,7 @@ use crate::painter::FrameInk;
 use crate::popup::box_size;
 use crate::system::SoundState;
 use crate::wayland::{App, pick_buffer};
+use alpheus_commun::launcher_ipc::{OsdVerb, Reply, Request};
 use smithay_client_toolkit::compositor::Region;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -70,6 +72,24 @@ impl App {
         let what = osd::describe(&pill);
         self.osd.show(pill, now, timeout);
         self.osd_sync(&what);
+    }
+
+    /// `alpheus-launch --osd brightness` (spec § 2, § 4): the backlight read once, then the pill.
+    /// Always Done: with the module off or no backlight, nothing shows (exit 0).
+    pub(crate) fn osd_verb(&mut self, request: &Request) -> Reply {
+        if !matches!(request, Request::Osd(OsdVerb::Brightness)) {
+            return Reply::Done;
+        }
+        if !self.osd_enabled() {
+            log("osd: brightness asked, but the osd module is not in modules");
+            return Reply::Done;
+        }
+        let cfg = &self.bar.config.osd;
+        match backlight::level(&cfg.backlight_dir, &cfg.backlight) {
+            Some(p) => self.osd_show(Pill::Brightness(p), Instant::now()),
+            None => log("osd: no backlight device, nothing shown"),
+        }
+        Reply::Done
     }
 
     /// The surface follows the model: none when nothing shows; created on the focused output, or

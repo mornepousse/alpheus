@@ -90,6 +90,8 @@ fn side(
         }
         (Some(_), Some(_)) => match (old.1, new.1) {
             (Some(a), Some(b)) if !quiet && moved(a, b) => Change::Level(b),
+            // Inside the grace, unmoved, or a volume not known before (known again: the new
+            // level is the baseline) or not known now: no pill.
             _ => Change::Nothing,
         },
         (None, None) => Change::Nothing,
@@ -378,6 +380,11 @@ mod tests {
         assert_eq!(w.sound(Some(&none), late), Heard::Quiet, "the default sink went");
         assert_eq!(w.sound(Some(&state(84, false, 100, false)), late + ms(100)), Heard::Quiet, "it came back");
         assert_eq!(w.sound(Some(&state(85, false, 100, false)), late + ms(900)), Heard::Quiet, "inside its grace");
+        assert_eq!(
+            w.sound(Some(&state(87, false, 100, false)), late + ms(1050)),
+            Heard::Quiet,
+            "the grace counts from when it came back, not from when it went"
+        );
         assert_eq!(w.sound(Some(&state(86, false, 100, false)), late + ms(1100)), Heard::Show(Pill::Volume(vol(86, false))));
     }
 
@@ -388,6 +395,11 @@ mod tests {
         assert_eq!(w.sound(Some(&none), late), Heard::Quiet, "the default source went");
         assert_eq!(w.sound(Some(&state(84, false, 100, true)), late + ms(100)), Heard::Quiet, "it came back");
         assert_eq!(w.sound(Some(&state(84, false, 90, true)), late + ms(900)), Heard::Quiet, "inside its grace");
+        assert_eq!(
+            w.sound(Some(&state(84, false, 85, true)), late + ms(1050)),
+            Heard::Quiet,
+            "the grace counts from when it came back, not from when it went"
+        );
         assert_eq!(w.sound(Some(&state(84, false, 80, true)), late + ms(1101)), Heard::Show(Pill::Mic(vol(80, true))));
     }
 

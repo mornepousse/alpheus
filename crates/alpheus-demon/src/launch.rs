@@ -467,6 +467,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 let reply = state.notifications_verb(&request);
                 reply_guarded(conn, &reply);
             }
+            // The OSD's verb (osd task 4): a sysfs read and a pill, answered here like the
+            // notifications verbs, before the launcher's guard.
+            Progress::Ready(request @ Request::Osd(_)) => {
+                let reply = state.osd_verb(&request);
+                reply_guarded(conn, &reply);
+            }
             Progress::Ready(request) => {
                 // A dmenu request may have buffered up to 4 MiB: once it
                 // reached RELEASE_AFTER, give the pages back as soon as it
