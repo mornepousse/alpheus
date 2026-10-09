@@ -2919,22 +2919,28 @@ fn with_the_tray_dnd_from_alpheus_launch_updates_the_bell() {
     assert!(sway.runtime.join("state/alpheus/dnd").exists());
 }
 
-/// Task 5's review: with no session bus there is no server and no bell line, but the change is still
-/// saved and logged.
+/// Task 5's review, then fix wave A: with no session bus there is no server, but the bell is drawn
+/// muted ("not serving"), so its middle click still toggles do-not-disturb; every change is saved,
+/// logged and shown (the crossed bell).
 #[test]
 #[ignore = "headless sway (nix develop)"]
-fn dnd_without_a_session_bus_is_saved_and_logged() {
+fn without_a_session_bus_the_bell_is_muted_and_still_toggles_dnd() {
     let sway = Sway::start("bell-no-bus", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), ..DaemonOptions::default() });
     assert!(d.wait_for("notifications: no session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: not serving", DELAY), "the bell drawn muted: {:?}", d.log());
     ready(&d);
-    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
     assert!(d.wait_for("notifications: do not disturb on", DELAY), "{:?}", d.log());
-    assert!(sway.runtime.join("state/alpheus/dnd").exists());
+    assert!(d.wait_for("bell: dnd on", DELAY), "the crossed bell: {:?}", d.log());
+    assert!(file.exists());
     assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
     assert!(d.wait_for("notifications: do not disturb off", DELAY), "{:?}", d.log());
-    assert_eq!(d.count("bell:"), 0, "no server, no bell line: {:?}", d.log());
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists());
+    assert_eq!(d.count("bell: serving"), 0, "never serving: {:?}", d.log());
 }
 
 // ---- The panel (notifications task 7) ----

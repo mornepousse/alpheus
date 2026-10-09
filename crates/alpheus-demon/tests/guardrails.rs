@@ -1255,3 +1255,32 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
         assert!(at(before) < last, "{before} must come before the startup re-resolve");
     }
 }
+
+/// No panic in the notification server's production code (notifications fix wave A): its model,
+/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
+/// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
+#[test]
+fn the_notification_server_has_no_panicking_path() {
+    let panics = |text: &str| [".expect(", ".unwrap()", "panic!("].iter().any(|p| text.contains(p));
+    let files = source_files();
+    let text =
+        |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("{name}"));
+    for name in [
+        "notify.rs",
+        "tray/notifications.rs",
+        "notify_app.rs",
+        "bubbles.rs",
+        "bubbles_surface.rs",
+        "panel.rs",
+        "state_file.rs",
+        "tray/codec.rs",
+    ] {
+        let t = text(name);
+        let production = t.split("#[cfg(").next().unwrap_or_default();
+        assert!(!panics(production), "a panicking call in {name}'s production code");
+    }
+    let bus = text("tray/bus.rs");
+    let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
+    let end = bus.find("pub fn session_address").expect("the builders end before session_address");
+    assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");
+}

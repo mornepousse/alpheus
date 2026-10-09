@@ -408,17 +408,21 @@ pub fn empty_reply(call: &Message) -> Message {
 }
 
 /// `NotificationClosed(id, reason)`, broadcast as mako does (1 expired, 2 dismissed, 3 closed by call).
-pub fn closed_signal(id: u32, reason: u32) -> Message {
-    notifications_signal("NotificationClosed").append2(id, reason)
+pub fn closed_signal(id: u32, reason: u32) -> Option<Message> {
+    Some(notifications_signal("NotificationClosed")?.append2(id, reason))
 }
 
 /// `ActionInvoked(id, key)`, broadcast: the key as the client sent it.
-pub fn invoked_signal(id: u32, key: &str) -> Message {
-    notifications_signal("ActionInvoked").append2(id, key)
+pub fn invoked_signal(id: u32, key: &str) -> Option<Message> {
+    Some(notifications_signal("ActionInvoked")?.append2(id, key))
 }
 
-fn notifications_signal(member: &str) -> Message {
-    Message::new_signal(NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, member).expect("a constant path, interface and member")
+/// A signal on the Notifications object. Its path, interface and member are constants libdbus
+/// accepts; were one ever refused, the signal is dropped (and logged), never a panic.
+fn notifications_signal(member: &str) -> Option<Message> {
+    Message::new_signal(NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, member)
+        .inspect_err(|e| crate::log::write(&format!("notifications: {member} not built: {e}")))
+        .ok()
 }
 
 /// The session bus address, pure (decision 1): `var("DBUS_SESSION_BUS_ADDRESS")` if set, non-empty
@@ -929,7 +933,7 @@ mod tests {
             (m.msg_type(), m.path().map(|p| p.to_string()), m.interface().map(|i| i.to_string()), m.member().map(|x| x.to_string()))
         };
         let some = |s: &str| Some(s.to_string());
-        let closed = closed_signal(7, 2);
+        let closed = closed_signal(7, 2).unwrap();
         assert_eq!(
             head(&closed),
             (MessageType::Signal, some(NOTIFICATIONS_PATH), some(NOTIFICATIONS_INTERFACE), some("NotificationClosed"))
@@ -937,7 +941,7 @@ mod tests {
         assert!(closed.destination().is_none(), "broadcast, as mako does");
         assert_eq!(signatures(&closed), ["u", "u"]);
         assert_eq!(closed.read2::<u32, u32>().unwrap(), (7, 2));
-        let invoked = invoked_signal(7, "default");
+        let invoked = invoked_signal(7, "default").unwrap();
         assert_eq!(head(&invoked), (MessageType::Signal, some(NOTIFICATIONS_PATH), some(NOTIFICATIONS_INTERFACE), some("ActionInvoked")));
         assert!(invoked.destination().is_none());
         assert_eq!(signatures(&invoked), ["u", "s"]);

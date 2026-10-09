@@ -45,7 +45,10 @@ impl App {
     pub(crate) fn start_notifications(&mut self, wanted: bool) {
         match host(wanted, self.buses()) {
             Host::Nothing => {}
-            Host::NoBus => log("notifications: no session bus"),
+            Host::NoBus => {
+                log("notifications: no session bus");
+                self.bell_without_server();
+            }
             Host::OnTray => {
                 if let Some(tray) = self.tray.as_mut() {
                     tray.start_notifications(&self.bar.config.notifications, self.dnd);
@@ -56,6 +59,7 @@ impl App {
             }
             Host::OnLink | Host::OwnBus => {
                 if self.link.is_none() && !self.open_link(LinkUser::Notifications) {
+                    self.bell_without_server();
                     return;
                 }
                 if let Some(link) = self.link.as_mut() {
@@ -68,8 +72,13 @@ impl App {
         }
     }
 
+    /// In `modules` with no server (no session bus, or its link failed): the bell is drawn muted
+    /// ("not serving"), its middle click still toggling do-not-disturb, its cross following it.
+    fn bell_without_server(&mut self) {
+        self.notify_view(NotifyView { unread: 0, dnd: self.dnd, serving: false });
+    }
+
     /// The server, wherever it lives (`notifications_of`, kept free for split borrows).
-    #[allow(dead_code)] // the bubbles borrow split (`notifications_of`); the panel (task 7) reads it
     pub(crate) fn notifications(&self) -> Option<&Notifications> {
         notifications_of(self.tray.as_ref(), self.link.as_ref())
     }
@@ -105,6 +114,10 @@ impl App {
                 Vec::new()
             })
         });
+        // No server: the muted bell shows the change itself.
+        if self.notifications().is_none() && self.bar.notifications.is_some() {
+            self.bell_without_server();
+        }
     }
 
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).

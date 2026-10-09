@@ -54,22 +54,43 @@ fn keys(stack: &[BubbleBox]) -> Vec<(u32, u32)> {
 /// What the compositor closing the bubbles' surface leaves behind: it is opened again once per
 /// stack; closed again for that same stack, it stays closed until the stack changes. Never a
 /// create/close loop.
+/// A close followed, in the same dispatch batch, by an output going is that output's loss (an
+/// unplug), not the compositor's choice: it reopens without spending the stack's one reopen.
 #[derive(Debug, Default)]
 pub(crate) struct Closes {
     reopened: Option<Vec<(u32, u32)>>,
     held: Option<Vec<(u32, u32)>>,
+    /// A close waiting for the batch's end: the stack it showed, and whether an output went since.
+    pending: Option<(Vec<(u32, u32)>, bool)>,
 }
 
 impl Closes {
-    /// The compositor closed the surface while `keys` showed: true, open it again (the first time for
-    /// this stack); false, leave it closed.
-    pub(crate) fn closed(&mut self, keys: Vec<(u32, u32)>) -> bool {
+    /// The compositor closed the surface while `keys` showed: decided by `settle` once the batch is
+    /// over (an output may go in it).
+    pub(crate) fn closed(&mut self, keys: Vec<(u32, u32)>) {
+        self.pending = Some((keys, false));
+    }
+
+    /// An output went in this batch: a pending close was its loss.
+    pub(crate) fn output_lost(&mut self) {
+        if let Some((_, lost)) = self.pending.as_mut() {
+            *lost = true;
+        }
+    }
+
+    /// The pending close decided: Some(true), open it again (an output's loss, or the first close
+    /// for this stack); Some(false), leave it closed; None, no close pending.
+    pub(crate) fn settle(&mut self) -> Option<bool> {
+        let (keys, lost) = self.pending.take()?;
+        if lost {
+            return Some(true);
+        }
         if self.reopened.as_ref() == Some(&keys) {
             self.held = Some(keys);
-            false
+            Some(false)
         } else {
             self.reopened = Some(keys);
-            true
+            Some(true)
         }
     }
 
@@ -186,8 +207,7 @@ impl App {
 
     fn bubbles_create(&mut self, stack: Vec<BubbleBox>) {
         let (output, output_name) = self.bubbles_target();
-        let info = output.clone().or_else(|| self.outputs.outputs().next()).and_then(|o| self.outputs.info(&o));
-        let scale = info.map_or(1, |i| i.scale_factor).max(1);
+        let scale = bubbles::start_scale(output.as_ref().and_then(|o| self.outputs.info(o)).map(|i| i.scale_factor));
         let (spans, size) = self.bubbles_layout(&stack, scale);
         let k = scale as usize;
         let bytes = (size.0 as usize * k) * (size.1 as usize * k) * 4;
@@ -339,17 +359,19 @@ impl App {
     }
 
     /// The compositor closed the bubbles' surface (its output going, or its own reasons): dropped, then
-    /// opened again once the dispatch batch is over (the output list is up to date by then); once per
-    /// stack (`Closes`).
+    /// decided once the dispatch batch is over (the output list is up to date by then, and an output
+    /// gone in the batch makes it an unplug, `Closes`): opened again, once per stack for the
+    /// compositor's own closes.
     pub(crate) fn bubbles_layer_closed(&mut self) {
         let keys = self.bubbles.as_ref().map(|o| keys(&o.stack)).unwrap_or_default();
         self.bubbles_drop("closed by the compositor");
-        if self.bubble_closes.closed(keys) {
-            if let Some(handle) = &self.loop_handle {
-                handle.insert_idle(|app| app.bubbles_sync());
-            }
-        } else {
-            log("bubbles: closed again by the compositor; shown again when they change");
+        self.bubble_closes.closed(keys);
+        if let Some(handle) = &self.loop_handle {
+            handle.insert_idle(|app| match app.bubble_closes.settle() {
+                Some(true) => app.bubbles_sync(),
+                Some(false) => log("bubbles: closed again by the compositor; shown again when they change"),
+                None => {}
+            });
         }
     }
 
@@ -357,6 +379,8 @@ impl App {
     /// batch (sctk still lists the output during `output_destroyed`), on the focused output or the
     /// compositor's choice.
     pub(crate) fn bubbles_output_gone(&mut self, output: &wl_output::WlOutput) {
+        // A close earlier in this batch was this unplug's doing.
+        self.bubble_closes.output_lost();
         if !self.bubbles.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
             return;
         }
@@ -449,17 +473,42 @@ impl App {
 mod tests {
     use super::*;
 
+    /// A close, then the batch over: Some(reopen).
+    fn close(c: &mut Closes, keys: &[(u32, u32)]) -> Option<bool> {
+        c.closed(keys.to_vec());
+        c.settle()
+    }
+
     #[test]
     fn a_compositor_close_reopens_once_per_stack() {
         let mut c = Closes::default();
         let (a, b) = (vec![(1, 1)], vec![(1, 1), (2, 1)]);
         assert!(c.may_open(&a));
-        assert!(c.closed(a.clone()), "the first close: open it again");
+        assert_eq!(close(&mut c, &a), Some(true), "the first close: open it again");
         assert!(c.may_open(&a));
-        assert!(!c.closed(a.clone()), "closed again for the same stack: leave it");
+        assert_eq!(close(&mut c, &a), Some(false), "closed again for the same stack: leave it");
         assert!(!c.may_open(&a), "not until the stack changes");
         assert!(c.may_open(&b), "a new stack opens");
         assert!(c.may_open(&a), "and the hold is gone");
-        assert!(c.closed(b), "another stack: reopened once too");
+        assert_eq!(close(&mut c, &b), Some(true), "another stack: reopened once too");
+        assert_eq!(c.settle(), None, "settled once");
+    }
+
+    /// A close followed by an output going, in the same batch, is the output's loss (an unplug):
+    /// reopened, and never counted as the stack's one reopen, however many unplugs.
+    #[test]
+    fn a_close_from_an_unplug_is_not_the_stacks_one_reopen() {
+        let mut c = Closes::default();
+        let a = vec![(1, 1)];
+        c.output_lost();
+        assert_eq!(c.settle(), None, "an output gone with nothing closed: nothing to settle");
+        for _ in 0..3 {
+            c.closed(a.clone());
+            c.output_lost();
+            assert_eq!(c.settle(), Some(true), "an unplug: open it again");
+            assert!(c.may_open(&a));
+        }
+        assert_eq!(close(&mut c, &a), Some(true), "the compositor's own first close still reopens");
+        assert_eq!(close(&mut c, &a), Some(false), "its second leaves it closed");
     }
 }

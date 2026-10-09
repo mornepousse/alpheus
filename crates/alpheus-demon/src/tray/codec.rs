@@ -449,7 +449,9 @@ pub enum Inbound {
 
 /// `m` decoded, when it is a method call on NOTIFICATIONS_PATH for NOTIFICATIONS_INTERFACE:
 /// `Notify` exactly `susssasa{sv}` and an optional `i`, `CloseNotification(u)`, `GetCapabilities()`,
-/// `GetServerInformation()`; anything else `Unknown`.
+/// `GetServerInformation()`; anything else `Unknown`. A call with no interface header (D-Bus allows
+/// one) is refused too, on purpose: libnotify, GDBus and Chromium always send the interface, and a
+/// bare member could otherwise reach the server from any interface's namesake.
 pub fn inbound(m: &Message) -> Inbound {
     let ours = m.msg_type() == MessageType::MethodCall
         && m.path().is_some_and(|p| &*p == NOTIFICATIONS_PATH)

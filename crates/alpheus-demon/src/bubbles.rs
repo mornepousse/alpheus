@@ -161,6 +161,14 @@ pub fn moves(stack_changed: bool, focused: Option<&str>, on: Option<&str>) -> bo
     stack_changed && focused.is_some() && focused != on
 }
 
+/// The scale a new bubbles surface starts at: its output's (`target`, the focused one) when known;
+/// on the compositor's choice of output, 1, never a guess from another output: the compositor's
+/// `preferred_buffer_scale` (or the surface entering its output) corrects it before the first frame
+/// that matters.
+pub fn start_scale(target: Option<i32>) -> i32 {
+    target.unwrap_or(1).max(1)
+}
+
 /// Whether the output that went (`gone`) holds the bubbles placed on `on`. None (the compositor's
 /// choice) is never held here: the compositor's own `closed` takes them down.
 pub fn holds<T: PartialEq>(on: Option<&T>, gone: &T) -> bool {
@@ -324,6 +332,15 @@ mod tests {
         assert!(!moves(true, Some("HEADLESS-2"), Some("HEADLESS-2")));
         assert!(!moves(true, None, Some("HEADLESS-2")), "no known focus: where they are");
         assert!(moves(true, Some("HEADLESS-1"), None), "from the compositor's choice to a known focus");
+    }
+
+    /// Fix wave A: with no known output (the compositor chooses), a new surface starts at scale 1,
+    /// whatever the outputs' scales; on a known output, at that output's.
+    #[test]
+    fn a_surface_on_an_unknown_output_starts_at_scale_1() {
+        assert_eq!(start_scale(None), 1);
+        assert_eq!(start_scale(Some(2)), 2);
+        assert_eq!(start_scale(Some(0)), 1, "never below 1");
     }
 
     /// Review Focus: an output unplugged. Only the one the bubbles were placed on takes them down;

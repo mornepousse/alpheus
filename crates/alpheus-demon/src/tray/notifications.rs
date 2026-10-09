@@ -171,7 +171,7 @@ impl Notifications {
 
     fn emit(&mut self, effects: Vec<Effect>) {
         if self.held {
-            self.effects.extend(effects.into_iter().map(|e| match e {
+            self.effects.extend(effects.into_iter().filter_map(|e| match e {
                 Effect::Closed(id, reason) => bus::closed_signal(id, reason as u32),
                 Effect::Invoked(id, key) => bus::invoked_signal(id, &key),
             }));

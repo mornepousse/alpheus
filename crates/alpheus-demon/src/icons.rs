@@ -3,7 +3,9 @@
 //! theme will arrive with the tray (delivery 4). Codes checked in
 //! JetBrainsMonoNerdFontMono-Regular.ttf.
 
-/// (pattern looked up in the lowercased class, glyph), first match wins.
+/// (pattern looked up in the lowercased class, glyph), first match wins. A pattern starting with
+/// `=` is a whole label: it matches a part of the class between `.`, `-`, `_` or a space, never a
+/// piece of one ("=element" is element-desktop, never io.elementary.mail).
 const TABLE: [(&str, char); 40] = [
     ("firefox", '\u{f0239}'),   // md-firefox
     ("chrom", '\u{f02af}'),     // md-google_chrome
@@ -38,8 +40,8 @@ const TABLE: [(&str, char); 40] = [
     ("obsidian", '\u{f082e}'),    // md-notebook
     ("github", '\u{f02a4}'),      // md-github
     // Notification apps (notifications spec § 2); checked in the 3.4.0 post table.
-    ("signal", '\u{f0369}'),       // md-message_text
-    ("element", '\u{f0628}'),      // md-matrix
+    ("=signal", '\u{f0369}'),      // md-message_text
+    ("=element", '\u{f0628}'),     // md-matrix
     ("slack", '\u{f04b1}'),        // md-slack
     ("telegram", '\u{f2c6}'),      // fa-telegram (the tray's)
     ("equibop", '\u{f066f}'),      // md-discord
@@ -55,7 +57,11 @@ pub const GENERIC: char = '\u{f08c6}';
 /// nothing matches, so a notification can fall back to its category, then a letter.
 pub fn find(class: &str) -> Option<char> {
     let c = class.to_lowercase();
-    TABLE.iter().find(|(m, _)| c.contains(m)).map(|(_, g)| *g)
+    let matches = |m: &str| match m.strip_prefix('=') {
+        Some(label) => c.split(['.', '-', '_', ' ']).any(|part| part == label),
+        None => c.contains(m),
+    };
+    TABLE.iter().find(|(m, _)| matches(m)).map(|(_, g)| *g)
 }
 
 pub fn glyph(class: &str) -> char {
@@ -95,6 +101,19 @@ mod tests {
         ] {
             assert_eq!(find(app), Some(g), "{app}");
         }
+        for (app, g) in [("org.signal.Signal", '\u{f0369}'), ("element-desktop", '\u{f0628}'), ("signal-desktop-beta", '\u{f0369}')] {
+            assert_eq!(find(app), Some(g), "{app}");
+        }
+    }
+
+    /// "signal" and "element" are whole names, never a part of one: elementary OS's apps and
+    /// any class merely containing the word keep their own glyph or none.
+    #[test]
+    fn signal_and_element_match_a_whole_label_only() {
+        for app in ["io.elementary.mail", "io.elementary.calendar", "elemental", "org.example.SignalWatcher", "nosignal"] {
+            assert_eq!(find(app), None, "{app}");
+        }
+        assert_eq!(glyph("io.elementary.code"), '\u{f0a1e}', "its own table entry still");
     }
 
     #[test]

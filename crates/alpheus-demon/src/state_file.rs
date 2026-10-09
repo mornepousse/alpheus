@@ -76,8 +76,13 @@ pub fn remove_private(dir: &Path, name: &str) -> io::Result<()> {
 }
 
 /// Do-not-disturb as saved: on only for a regular file of ours at `state_dir/dnd` (followed by
-/// nothing). Absent, a symlink, a directory, someone else's: off.
+/// nothing), in a directory that passes `dir_is_ours`, as for writing. Absent, a symlink, a
+/// directory, someone else's: off; a directory not ours is logged (read once, at startup).
 pub fn dnd_on(state_dir: &Path) -> bool {
+    if let Err(e) = dir_is_ours(state_dir) {
+        crate::log::write(&format!("notifications: do-not-disturb read as off: {e}"));
+        return false;
+    }
     std::fs::symlink_metadata(state_dir.join(DND_FILE)).is_ok_and(|m| m.file_type().is_file() && m.uid() == euid())
 }
 
@@ -240,6 +245,24 @@ mod tests {
         assert!(save_dnd(&state, false).is_err(), "nor removes one");
         assert!(state.join(DND_FILE).is_dir() && !dnd_on(&state));
         assert_eq!(names(&state), [DND_FILE], "no temporary file left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Reading checks the directory as writing does: a `dnd` in a directory open to others (or a
+    /// symlinked one) reads as off, whatever the file.
+    #[test]
+    fn a_dnd_in_a_directory_not_ours_reads_as_off() {
+        let root = scratch("dnd-dir");
+        let state = root.join("alpheus");
+        save_dnd(&state, true).unwrap();
+        assert!(dnd_on(&state));
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!dnd_on(&state), "open to others: off");
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&state, &link).unwrap();
+        assert!(!dnd_on(&link), "a symlinked directory: off");
+        assert!(dnd_on(&state));
         let _ = std::fs::remove_dir_all(&root);
     }
 }
