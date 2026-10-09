@@ -478,6 +478,8 @@ pub struct App {
     pub(crate) keyboard_focus: Option<wl_surface::WlSurface>,
     /// `keyboard_release` was asked while a key was down: done at its release or a leave.
     pub(crate) release_deferred: bool,
+    /// Released keyboards still held elsewhere (`retired`): dropped after a `dispatch`, never in one.
+    pub(crate) retired_keyboards: crate::retired::Retired<wl_keyboard::WlKeyboard>,
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
     pub(crate) hover: Hover,
     pub(crate) hover_timer: DeadlineTimer,
@@ -649,6 +651,7 @@ impl App {
             keys_down: crate::popup::KeysDown::default(),
             keyboard_focus: None,
             release_deferred: false,
+            retired_keyboards: Default::default(),
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
