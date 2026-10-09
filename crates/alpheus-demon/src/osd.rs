@@ -341,7 +341,16 @@ mod tests {
         assert_eq!(w.sound(Some(&state(84, true, 100, false)), late + ms(1)), Heard::Show(Pill::Volume(vol(84, true))), "mute flipped");
         let unknown = SoundState { sink: None, ..state(84, true, 100, false) };
         assert_eq!(w.sound(Some(&unknown), late + ms(2)), Heard::Quiet, "a volume not known yet");
-        assert_eq!(w.sound(Some(&state(84, true, 100, false)), late + ms(3)), Heard::Quiet, "known again: the same as before it went");
+        assert_eq!(
+            w.sound(Some(&state(50, false, 100, false)), late + ms(3)),
+            Heard::Quiet,
+            "known again, at another level: the new baseline, no pill"
+        );
+        assert_eq!(
+            w.sound(Some(&state(51, false, 100, false)), late + ms(4)),
+            Heard::Show(Pill::Volume(vol(51, false))),
+            "then compared with it"
+        );
     }
 
     #[test]
@@ -370,6 +379,16 @@ mod tests {
         assert_eq!(w.sound(Some(&state(84, false, 100, false)), late + ms(100)), Heard::Quiet, "it came back");
         assert_eq!(w.sound(Some(&state(85, false, 100, false)), late + ms(900)), Heard::Quiet, "inside its grace");
         assert_eq!(w.sound(Some(&state(86, false, 100, false)), late + ms(1100)), Heard::Show(Pill::Volume(vol(86, false))));
+    }
+
+    #[test]
+    fn a_default_source_appearing_or_going_shows_nothing_and_starts_its_grace() {
+        let (mut w, late) = settled();
+        let none = SoundState { source: None, source_name: None, ..state(84, false, 0, false) };
+        assert_eq!(w.sound(Some(&none), late), Heard::Quiet, "the default source went");
+        assert_eq!(w.sound(Some(&state(84, false, 100, true)), late + ms(100)), Heard::Quiet, "it came back");
+        assert_eq!(w.sound(Some(&state(84, false, 90, true)), late + ms(900)), Heard::Quiet, "inside its grace");
+        assert_eq!(w.sound(Some(&state(84, false, 80, true)), late + ms(1101)), Heard::Show(Pill::Mic(vol(80, true))));
     }
 
     #[test]

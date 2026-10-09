@@ -727,8 +727,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
         // (bar step 5, task 7), armed only while that popup is open and its player plays; the
         // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
-        // or hidden by do-not-disturb) has a finite timeout.
-        ("wayland.rs", "Timer::", 5),
+        // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
+        // only while the pill shows.
+        ("wayland.rs", "Timer::", 6),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -953,11 +954,12 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 22] = [
+const NO_THREAD_NOR_COMMAND: [&str; 23] = [
     "tray/",
     "media.rs",
     "notify.rs",
     "osd.rs",
+    "osd_surface.rs",
     "bubbles.rs",
     "bubbles_surface.rs",
     "panel.rs",

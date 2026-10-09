@@ -1100,8 +1100,16 @@ mod tests {
         with.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         let mut without = with.clone();
         without.config.modules.retain(|m| *m != ModuleId::Osd);
-        for width in [100, 60, 40] {
-            assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{width} cells: no segment, no separator, no gap");
+        // Flat, and a block style: no empty block either.
+        for style in [BarStyle::Flat, BarStyle::Islands] {
+            let (with, without) = (styled(with.clone(), style), styled(without.clone(), style));
+            for width in [100, 60, 40] {
+                assert_eq!(
+                    with.grid("HDMI-A-1", width),
+                    without.grid("HDMI-A-1", width),
+                    "{style:?}, {width} cells: no segment, no separator, no gap"
+                );
+            }
         }
     }
 }

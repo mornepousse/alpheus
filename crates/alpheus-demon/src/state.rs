@@ -3,7 +3,7 @@
 
 use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
-use crate::config::BarConfig;
+use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
@@ -77,13 +77,18 @@ fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
     }
 }
 
-/// What the bar draws of the sound: the sink's volume, or the source's state ("…", "–").
-fn sound_drawing(f: &Feed<SoundState>) -> Feed<Option<crate::system::Volume>> {
-    match f {
+/// What the bar draws of the sound: the sink's volume, or the source's state ("…", "–"); None
+/// without the volume module (the OSD alone keeps pw-dump running): nothing drawn, nothing to
+/// compare.
+fn sound_drawing(f: &Feed<SoundState>, drawn: bool) -> Option<Feed<Option<crate::system::Volume>>> {
+    if !drawn {
+        return None;
+    }
+    Some(match f {
         Feed::Waiting => Feed::Waiting,
         Feed::Down => Feed::Down,
         Feed::Ready(s) => Feed::Ready(s.sink),
-    }
+    })
 }
 
 /// Same bar drawing from the compositor: its workspaces and focused window.
@@ -140,9 +145,10 @@ impl Bar {
             Msg::Sound(s) => {
                 // The bar draws the sink only: a microphone or label change is kept for the OSD
                 // (which reads it from this same message, before) without a redraw.
-                let before = sound_drawing(&self.sound);
+                let drawn = self.config.modules.contains(&ModuleId::Volume);
+                let before = sound_drawing(&self.sound, drawn);
                 update(&mut self.sound, s);
-                before != sound_drawing(&self.sound)
+                before != sound_drawing(&self.sound, drawn)
             }
             Msg::Network(s) => update(&mut self.network, s),
             Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
@@ -251,6 +257,22 @@ mod tests {
         let louder = SoundState { sink: Some(Volume { percent: 85, muted: false }), ..s };
         assert!(b.apply(Msg::Sound(Some(louder))), "the sink moved: redraw");
         assert!(b.apply(Msg::Sound(None)), "down: redraw");
+    }
+
+    /// OSD task 3: with the OSD on and the volume module off, the bar draws no sound at all, so no
+    /// sound message re-lays it out (the OSD alone keeps pw-dump running).
+    #[test]
+    fn without_the_volume_module_a_sound_change_never_redraws_the_bar() {
+        let mut config = BarConfig::default();
+        config.modules.retain(|m| *m != ModuleId::Volume);
+        assert!(config.modules.contains(&ModuleId::Osd));
+        let mut b = Bar::new(config);
+        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() };
+        assert!(!b.apply(Msg::Sound(Some(s.clone()))), "the first state");
+        let louder = SoundState { sink: Some(Volume { percent: 90, muted: true }), ..s };
+        assert!(!b.apply(Msg::Sound(Some(louder.clone()))), "the sink moved");
+        assert_eq!(b.sound, Feed::Ready(louder), "kept all the same");
+        assert!(!b.apply(Msg::Sound(None)), "down");
     }
 
     #[test]

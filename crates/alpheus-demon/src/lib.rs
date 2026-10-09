@@ -30,6 +30,7 @@ pub mod nonblocking;
 pub mod notify;
 pub mod notify_app;
 pub mod osd;
+pub mod osd_surface;
 pub mod painter;
 pub mod panel;
 pub mod pipewire;

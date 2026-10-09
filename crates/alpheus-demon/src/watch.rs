@@ -387,10 +387,12 @@ impl App {
         self.restyle(shape.placement);
     }
 
-    /// Every surface once, with the current roles: the bars, an open popup, the launcher box.
+    /// Every surface once, with the current roles: the bars, an open popup, the shown OSD pill, the
+    /// launcher box.
     pub(crate) fn repaint_all(&mut self) {
         self.bars_repaint();
         self.popup_repaint();
+        self.osd_repaint();
         let _ = self.launcher_guarded("theme", App::launcher_repaint);
     }
 }

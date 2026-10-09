@@ -640,6 +640,11 @@ pub fn run() -> i32 {
     // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
         channel::Event::Msg(Mail::Bar(m)) => {
+            // The OSD reads every sound message first (osd task 3): its trigger rules compare it
+            // with the last one; the bar then keeps it.
+            if let Msg::Sound(s) = &m {
+                state.osd_sound(s.as_ref());
+            }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);
         }
