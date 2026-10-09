@@ -11,6 +11,13 @@
 //!
 //! So a released keyboard is never just dropped: `Retired` holds a clone, and once no one else
 //! does (the map let go, the repeat timer's closure is gone), drops it after `dispatch` returns.
+//!
+//! One case SCTK 0.20 gives no handle on: a keyboard lost (seat capability or seat removed) while
+//! a key repeats on a live surface, with no `leave` first. Its repeat stops only at that key's
+//! release, a `leave`, or the surface dying, and a released `wl_keyboard` gets no more events: the
+//! timer then repeats (`App::key_event`, sent nowhere once nothing is open) until the focused
+//! surface goes, and its closure keeps this keyboard retired until then. SCTK exposes neither the
+//! timer's token nor a way to clear the repeat.
 
 use smithay_client_toolkit::reexports::client::Proxy;
 use smithay_client_toolkit::reexports::client::protocol::wl_keyboard;
@@ -29,8 +36,10 @@ impl Shared for wl_keyboard::WlKeyboard {
     }
 }
 
-/// The released objects still held elsewhere; empty at rest (a `delete_id` follows every
-/// release promptly, and it wakes the loop by itself: nothing is armed here).
+/// The released objects still held elsewhere. Empty at rest: a `delete_id` follows every release
+/// promptly, and a repeat timer's closure goes at its next firing once its key is up or its surface
+/// dead, each waking the loop by itself (nothing is armed here). The exception: a keyboard lost
+/// with a key repeating (module doc).
 #[derive(Debug)]
 pub struct Retired<T: Shared> {
     held: Vec<T>,

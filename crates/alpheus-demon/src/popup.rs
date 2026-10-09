@@ -826,8 +826,10 @@ impl App {
         }
         self.release_deferred = false;
         if let Some(k) = self.keyboard.take() {
+            // The keyboards released before and still held: 0 unless one is still in use elsewhere.
+            let earlier = self.retired_keyboards.len();
             self.keyboard_retire(k);
-            log("keyboard released");
+            log(&format!("keyboard released ({earlier} retired)"));
         }
         // What the released keyboard reported is gone with it.
         self.keys_down.clear();
@@ -844,6 +846,8 @@ impl App {
 
     /// The seat lost its keyboard: the object goes now, whoever wanted it, and with it the
     /// modifiers it reported (a Ctrl held then must not stick to the next keyboard).
+    /// A key repeating then, with no `leave` first, keeps repeating until its surface dies: SCTK
+    /// gives no way to stop it (`retired`'s module doc).
     pub(crate) fn keyboard_lost(&mut self) {
         if let Some(k) = self.keyboard.take() {
             self.keyboard_retire(k);

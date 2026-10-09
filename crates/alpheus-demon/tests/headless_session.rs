@@ -1296,6 +1296,14 @@ fn thirty_launcher_closes_by_key_then_an_outside_click_keep_the_bar_alive() {
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
     survives(&mut d, "sixty launcher closes and an outside click");
     let _ = held.wait();
+    // The retired list never grows: a keyboard released by Enter or Escape may still be held by
+    // that key's repeat timer (600 ms) at the next release, never longer; the outside click, over
+    // a second after the last close, finds none left.
+    let releases: Vec<String> = d.log().into_iter().filter(|l| l.contains("keyboard released")).collect();
+    assert!(releases.len() >= 61, "{releases:?}");
+    let ok = |l: &String| l.ends_with("keyboard released (0 retired)") || l.ends_with("keyboard released (1 retired)");
+    assert!(releases.iter().all(ok), "the retired keyboards pile up: {releases:?}");
+    assert!(releases.last().is_some_and(|l| l.ends_with("(0 retired)")), "{releases:?}");
 }
 
 #[test]
