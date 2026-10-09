@@ -8,8 +8,8 @@
 //! absent from the configuration entirely does the free space fall back to
 //! preceding the last module. Narrow screen: modules disappear by priority
 //! (resources, the tray, media, title, then Bluetooth, network, volume,
-//! battery, and last the launcher button); workspaces and the clock always
-//! stay.
+//! battery, and last the launcher button); workspaces, the clock and the
+//! notifications bell always stay.
 //!
 //! Groups (shapes spec § 2): consecutive modules of one kind (`group_kind`) make one block, never
 //! across the free space. `flat` and `underline` keep the "│" separators; the block styles put
@@ -28,8 +28,8 @@ use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 /// Order of disappearance when space runs short: the spec's (resources,
 /// media, title), then the system indicators (Q9); the tray goes right
 /// after resources (Mae, tray plan 2 question 1), and the launcher button
-/// last (Mae, 2026-10-05: `Mod+Space` still opens the launcher). Workspaces
-/// and the clock always stay.
+/// last (Mae, 2026-10-05: `Mod+Space` still opens the launcher). Workspaces,
+/// the clock and the bell always stay.
 const REMOVAL: [ModuleId; 9] = [
     ModuleId::Resources,
     ModuleId::Tray,
@@ -74,7 +74,7 @@ fn spacing(style: BarStyle) -> Spacing {
 }
 
 /// The block a module belongs to (shapes spec § 2). Media is a block of its own (media spec § 1);
-/// notifications (a later delivery) join the status block.
+/// the bell joins the status block.
 pub fn group_kind(m: ModuleId) -> GroupKind {
     match m {
         ModuleId::Launcher => GroupKind::Launcher,
@@ -227,8 +227,7 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources, bar.module_colors),
         ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
         ModuleId::Media => segments::media(bar.media.as_ref(), bar.module_colors),
-        // A later delivery: not shown yet.
-        ModuleId::Notifications => None,
+        ModuleId::Notifications => segments::notifications(bar.notifications.as_ref()),
     }
 }
 
@@ -392,6 +391,7 @@ mod tests {
     use crate::compositor::{Window, example};
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
     use crate::media::MediaView;
+    use crate::notify::NotifyView;
     use crate::state::Msg;
     use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
     use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
@@ -993,6 +993,83 @@ mod tests {
         for w in 20u16..=100 {
             let (media, title) = shown(w);
             assert!(!media || title, "at {w}: the media outlived the title");
+        }
+    }
+
+    // ---- the bell (notifications spec § 4) ----
+
+    const THREE: NotifyView = NotifyView { unread: 3, dnd: false, serving: true };
+
+    /// The bell between the volume and the clock (its place in `ModuleId::ALL`).
+    fn bar_with_bell(view: NotifyView) -> Bar {
+        let mut b = bar();
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Volume, ModuleId::Notifications, ModuleId::Clock];
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Notifications(view));
+        b
+    }
+
+    #[test]
+    fn the_bell_sits_between_the_volume_and_the_clock() {
+        let g = bar_with_bell(THREE).grid("HDMI-A-1", 100);
+        let t = g.text();
+        assert!(t.contains(" │ \u{f057e} ▁▃▅▆▇▇  84% │ \u{f009a} 3 │ Sun 4 Oct 14:05 "), "{t}");
+        let bell = Target::Module(ModuleId::Notifications);
+        let (start, _) = tail_from(&g, &bell);
+        assert_eq!(g.target_at(start + 2), Some(&bell), "its last cell: 3 cells, one zone");
+        assert_eq!((g.target_at(start - 1), g.target_at(start + 3)), (None, None), "the separators around it");
+        insta::assert_snapshot!("bell_flat_100", snapshot(&g));
+        let mut unheard = bar_with_bell(THREE);
+        unheard.notifications = None;
+        let mut absent = bar_with_bell(THREE);
+        absent.config.modules.retain(|m| *m != ModuleId::Notifications);
+        assert_eq!(unheard.grid("HDMI-A-1", 100), absent.grid("HDMI-A-1", 100), "nothing heard: exactly the bar without the module");
+    }
+
+    #[test]
+    fn the_bell_joins_the_status_block_and_takes_no_hue() {
+        for style in [BarStyle::Underline, BarStyle::Islands, BarStyle::Powerline, BarStyle::Floating, BarStyle::Translucent] {
+            let g = styled(bar_with_bell(THREE), style).grid("HDMI-A-1", 100);
+            let kinds: Vec<GroupKind> = g.groups().iter().map(|x| x.kind).collect();
+            assert_eq!(kinds, [GroupKind::Workspaces, GroupKind::Title, GroupKind::Status, GroupKind::Clock], "{style:?}");
+            let status = g.groups()[2];
+            assert_eq!(status.hue, Some(Hue::Blue), "{style:?}: the volume opens the block");
+            let cells: String = g.cells()[usize::from(status.start)..usize::from(status.end)]
+                .iter()
+                .filter(|c| c.ch != crate::grid::CONT)
+                .map(|c| c.ch)
+                .collect();
+            assert!(
+                cells.contains('\u{f057e}') && (cells.ends_with("\u{f009a} 3") || cells.ends_with("\u{f009a} 3 ")),
+                "{style:?}: {cells:?}"
+            );
+        }
+        for mc in [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills] {
+            let mut b = styled(bar_with_bell(THREE), BarStyle::Islands);
+            b.config.modules = vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Notifications, ModuleId::Volume, ModuleId::Clock];
+            b.module_colors = mc;
+            let g = b.grid("HDMI-A-1", 100);
+            let status = g.groups().iter().find(|x| x.kind == GroupKind::Status).expect("a status block");
+            assert_eq!(status.hue, None, "{mc:?}: the bell opens the block, which stays neutral");
+        }
+        insta::assert_snapshot!("bell_islands_100", snapshot(&styled(bar_with_bell(THREE), BarStyle::Islands).grid("HDMI-A-1", 100)));
+    }
+
+    #[test]
+    fn the_bell_is_never_dropped_on_a_narrow_output() {
+        assert!(!REMOVAL.contains(&ModuleId::Notifications));
+        let b = bar_with_bell(THREE);
+        let volume_gone =
+            (30u16..=100).rev().find(|&w| !b.grid("HDMI-A-1", w).text().contains('\u{f057e}')).expect("narrow enough, the volume leaves");
+        assert!(volume_gone >= 50, "the volume leaves at {volume_gone} columns");
+        // Down to the narrowest bar that still holds the whole clock: workspaces, bell and clock.
+        let floor = (0u16..=100).find(|&w| b.grid("HDMI-A-1", w).text().contains("Sun 4 Oct 14:05")).expect("the clock fits somewhere");
+        assert!(floor < 50, "the check goes below 50 columns: {floor}");
+        let t = b.grid("HDMI-A-1", floor).text();
+        assert!(!t.contains('\u{f057e}'), "at {floor} only the workspaces, the bell and the clock: {t}");
+        for w in floor..=100 {
+            let t = b.grid("HDMI-A-1", w).text();
+            assert!(t.contains("\u{f009a} 3"), "{w}: the bell stays: {t}");
         }
     }
 

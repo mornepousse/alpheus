@@ -187,6 +187,9 @@ pub struct Wanted {
     /// The media module's MPRIS players (media task 5): on the tray's connection, or on the bar's
     /// link when the tray is off; false: no connection, no rule, no call.
     pub media: bool,
+    /// The notifications server and the bell (notifications task 5): on the tray's connection, or
+    /// on the bar's link when the tray is off; false: no RequestName, no surface, no call.
+    pub notifications: bool,
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
@@ -202,6 +205,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
         media: has(ModuleId::Media),
+        notifications: has(ModuleId::Notifications),
     }
 }
 
@@ -456,6 +460,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 *s.borrow_mut() = Some(conn);
                 return Ok(PostAction::Continue);
             }
+            // The notifications verbs (task 5) are answered here, before the launcher's guard: a
+            // panic in there closes the launcher, and these are not the launcher's.
+            Progress::Ready(request @ (Request::Dnd(_) | Request::ClearNotifications)) => {
+                let reply = state.notifications_verb(&request);
+                reply_guarded(conn, &reply);
+            }
             Progress::Ready(request) => {
                 // A dmenu request may have buffered up to 4 MiB: once it
                 // reached RELEASE_AFTER, give the pages back as soon as it
@@ -668,6 +678,12 @@ pub fn run() -> i32 {
     }
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
+    // The notifications server: do-not-disturb as it was left, then the name requested on the
+    // tray's connection or on the bar's link (shared with the media module and the portal).
+    if want.notifications {
+        state.dnd = crate::state_file::dnd_on(&paths::state_dir());
+    }
+    state.start_notifications(want.notifications);
     // The mode file for the TUI (themes task 6): $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
@@ -773,27 +789,37 @@ mod tests {
     #[test]
     fn only_the_sources_the_modules_need() {
         let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
-        assert_eq!(wanted(&ModuleId::ALL), Wanted { sound: true, dbus: all, resources: true, tray: true, media: true });
+        assert_eq!(
+            wanted(&ModuleId::ALL),
+            Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true }
+        );
         assert_eq!(
             wanted(&[ModuleId::Workspaces, ModuleId::Window, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false }
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false }
         );
         assert_eq!(
             wanted(&[ModuleId::Battery]),
-            Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false, media: false }
+            Wanted { sound: false, dbus: vec![Domain::Battery], resources: false, tray: false, media: false, notifications: false }
         );
         assert_eq!(
             wanted(&[ModuleId::Bluetooth, ModuleId::Clock]),
-            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false, media: false }
+            Wanted { sound: false, dbus: vec![Domain::Bluetooth], resources: false, tray: false, media: false, notifications: false }
         );
         assert_eq!(
             wanted(&[ModuleId::Battery, ModuleId::Network]),
-            Wanted { sound: false, dbus: vec![Domain::Network, Domain::Battery], resources: false, tray: false, media: false },
+            Wanted {
+                sound: false,
+                dbus: vec![Domain::Network, Domain::Battery],
+                resources: false,
+                tray: false,
+                media: false,
+                notifications: false
+            },
             "reading order, whatever the bar's order"
         );
         assert_eq!(
             wanted(&[ModuleId::Volume, ModuleId::Resources]),
-            Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false }
+            Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false }
         );
     }
 
@@ -805,7 +831,7 @@ mod tests {
         assert!(!wanted(&without).tray, "every other module: no session bus");
         assert_eq!(
             wanted(&[ModuleId::Tray]),
-            Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false },
+            Wanted { sound: false, dbus: vec![], resources: false, tray: true, media: false, notifications: false },
             "the tray alone"
         );
     }
@@ -817,8 +843,20 @@ mod tests {
         assert!(!wanted(&without).media, "every other module: no MPRIS");
         assert_eq!(
             wanted(&[ModuleId::Media]),
-            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true },
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: true, notifications: false },
             "media alone needs no other source"
+        );
+    }
+
+    #[test]
+    fn wanted_notifications_only_with_the_module() {
+        assert!(wanted(&[ModuleId::Notifications]).notifications);
+        let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Notifications).collect();
+        assert!(!wanted(&without).notifications, "every other module: no RequestName");
+        assert_eq!(
+            wanted(&[ModuleId::Notifications]),
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: true },
+            "the bell alone needs no other source"
         );
     }
 

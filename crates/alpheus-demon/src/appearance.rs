@@ -12,16 +12,15 @@
 
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
+use crate::state_file;
 use crate::tray::bus::{Call, CallError, CallId, Outbox};
 use crate::tray::codec::Reply;
 use crate::tray::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
-use alpheus_commun::theme::mode_file::{MODE_DIR, mode_path, mode_text};
+use alpheus_commun::theme::mode_file::{MODE_DIR, MODE_FILE, mode_path, mode_text};
 use alpheus_commun::theme::settings::{ModeSetting, effective_mode, portal_mode};
-use std::fs::DirBuilder;
 use std::io;
-use std::os::unix::fs::DirBuilderExt;
 use std::path::Path;
 
 #[cfg(test)]
@@ -109,48 +108,12 @@ pub fn mode_to_publish(written: Option<Mode>, now: Mode) -> Option<Mode> {
     (written != Some(now)).then_some(now)
 }
 
-/// Whether `dir` (`runtime/alpheus`) may hold the mode file: a real directory (never a symlink),
-/// owned by us, closed to group and others. Missing is fine (it is created 0700).
-fn dir_is_ours(dir: &Path) -> io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let meta = match std::fs::symlink_metadata(dir) {
-        Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    // SAFETY: geteuid(2) cannot fail.
-    let me = unsafe { libc::geteuid() };
-    if !meta.is_dir() {
-        Err(io::Error::other(format!("{} is not a real directory", dir.display())))
-    } else if meta.uid() != me {
-        Err(io::Error::other(format!("{} is not ours", dir.display())))
-    } else if meta.mode() & 0o077 != 0 {
-        Err(io::Error::other(format!("{} is open to others", dir.display())))
-    } else {
-        Ok(())
-    }
-}
-
-/// The mode in effect to `runtime/alpheus/mode`, for the TUI. The directory is created owner-only
-/// (0700) when missing and refused when it is a symlink, someone else's or open to others; the text
-/// goes to a fresh temporary file in that directory (a stale one removed first, never followed),
-/// then is renamed over the old one, so a reader sees the old text or the new one, never half of
-/// one. Err: the caller logs one line.
+/// The mode in effect to `runtime/alpheus/mode`, for the TUI, through the hardened writer
+/// (`state_file::write_private`): an owner-only directory, a fresh temporary file never followed,
+/// renamed over the old one, so a reader sees the old text or the new one. Err: the caller logs
+/// one line.
 pub fn write_mode(runtime: &Path, mode: Mode) -> io::Result<()> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let dir = runtime.join(MODE_DIR);
-    dir_is_ours(&dir)?;
-    DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
-    dir_is_ours(&dir)?;
-    let tmp = dir.join(format!(".mode.{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(0o600).open(&tmp)?;
-    let written = file.write_all(mode_text(mode).as_bytes());
-    drop(file);
-    written.and_then(|()| std::fs::rename(&tmp, mode_path(runtime))).inspect_err(|_| {
-        let _ = std::fs::remove_file(&tmp);
-    })
+    state_file::write_private(&runtime.join(MODE_DIR), MODE_FILE, mode_text(mode).as_bytes())
 }
 
 /// One publication: writes `now` when it differs from `written` and a runtime directory exists.

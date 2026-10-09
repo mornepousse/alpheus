@@ -16,7 +16,7 @@ use crate::launcher::socket::Pending;
 use crate::launcher::view::{self, BoxLayout, Click};
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::painter::{self, Frame};
+use crate::painter::{self, Frame, FrameInk};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, pick_buffer};
@@ -613,7 +613,7 @@ impl App {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
         };
-        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e);
+        fonts.paint_boxed(&rows, roles, px, w, h, row_height, e, FrameInk::Border);
         let surface = box_layer.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

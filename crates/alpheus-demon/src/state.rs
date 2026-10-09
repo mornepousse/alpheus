@@ -5,6 +5,7 @@ use crate::clock::LocalTime;
 use crate::compositor::CompositorState;
 use crate::config::BarConfig;
 use crate::media::MediaView;
+use crate::notify::NotifyView;
 use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
@@ -33,6 +34,9 @@ pub enum Msg {
     Tray(Vec<TrayIcon>),
     /// What the media module shows; None: no player, or every player stopped (media spec § 1).
     Media(Option<MediaView>),
+    /// What the bell shows (notifications spec § 4): the unread count, do-not-disturb, whether the
+    /// name is ours. Sent by the wiring from the first word of the server on.
+    Notifications(NotifyView),
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +53,8 @@ pub struct Bar {
     pub tray: Vec<TrayIcon>,
     /// The media module's mark and title; None until a player plays or pauses, and again when none does.
     pub media: Option<MediaView>,
+    /// The bell; None until the notification server says anything (no bell drawn).
+    pub notifications: Option<NotifyView>,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
     /// at start and on every theme reload. `None` until then, the look of delivery 1.
     pub module_colors: ModuleColors,
@@ -95,6 +101,7 @@ impl Bar {
             resources: Resources::default(),
             tray: Vec::new(),
             media: None,
+            notifications: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
         }
@@ -139,6 +146,14 @@ impl Bar {
                     false
                 } else {
                     self.media = view;
+                    true
+                }
+            }
+            Msg::Notifications(view) => {
+                if self.notifications == Some(view) {
+                    false
+                } else {
+                    self.notifications = Some(view);
                     true
                 }
             }
@@ -233,6 +248,19 @@ mod tests {
         assert_eq!(b.media, song(false));
         assert!(b.apply(Msg::Media(None)), "the last player left");
         assert_eq!(b.media, None);
+    }
+
+    #[test]
+    fn notifications_message_redraws_only_on_change() {
+        use crate::notify::NotifyView;
+        let v = |unread| NotifyView { unread, dnd: false, serving: true };
+        let mut b = Bar::new(BarConfig::default());
+        assert_eq!(b.notifications, None, "nothing heard at start: no bell");
+        assert!(b.apply(Msg::Notifications(v(0))), "the first word shows the bell");
+        assert!(!b.apply(Msg::Notifications(v(0))), "the same view: no redraw");
+        assert!(b.apply(Msg::Notifications(v(2))));
+        assert!(b.apply(Msg::Notifications(NotifyView { dnd: true, ..v(2) })));
+        assert_eq!(b.notifications, Some(NotifyView { unread: 2, dnd: true, serving: true }));
     }
 
     #[test]

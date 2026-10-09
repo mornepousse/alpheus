@@ -247,6 +247,8 @@ const ACTIVE: &str = include_str!("../fixtures/hypr-activewindow.json");
 /// stream fed by the test.
 pub struct FakeHyprland {
     stream: Arc<Mutex<Option<UnixStream>>>,
+    /// What `j/monitors` answers: `focus` rewrites it.
+    monitors: Arc<Mutex<String>>,
 }
 
 impl FakeHyprland {
@@ -265,6 +267,8 @@ impl FakeHyprland {
     fn start_with(runtime: &Path, signature: &str, renames: &[(&str, &str)]) -> FakeHyprland {
         let rename = |text: &str| renames.iter().fold(text.to_string(), |t, (from, to)| t.replace(from, to));
         let [monitors, workspaces, clients, active] = [MONITORS, WORKSPACES, CLIENTS, ACTIVE].map(rename);
+        let monitors = Arc::new(Mutex::new(monitors));
+        let served = monitors.clone();
         let directory = runtime.join("hypr").join(signature);
         fs::create_dir_all(&directory).unwrap();
         let l1 = UnixListener::bind(directory.join(".socket.sock")).unwrap();
@@ -273,8 +277,9 @@ impl FakeHyprland {
                 let Ok(mut c) = c else { return };
                 let mut buf = [0u8; 256];
                 let n = c.read(&mut buf).unwrap_or(0);
+                let current = served.lock().map(|m| m.clone()).unwrap_or_default();
                 let rep = match &buf[..n] {
-                    b"j/monitors" => monitors.as_str(),
+                    b"j/monitors" => current.as_str(),
                     b"j/workspaces" => workspaces.as_str(),
                     b"j/clients" => clients.as_str(),
                     b"j/activewindow" => active.as_str(),
@@ -291,7 +296,26 @@ impl FakeHyprland {
                 *f.lock().unwrap() = Some(c); // a reconnection replaces the old one
             }
         });
-        FakeHyprland { stream }
+        FakeHyprland { stream, monitors }
+    }
+
+    /// Makes `output` the focused monitor in `j/monitors` (the others unfocused). Each fixture monitor
+    /// sits on a line of its own. The test then writes a `focusedmon` event, so the daemon reads it
+    /// again (notifications Review Focus).
+    pub fn focus(&self, output: &str) {
+        let mut m = self.monitors.lock().unwrap();
+        let name = format!("\"name\": \"{output}\"");
+        *m = m
+            .lines()
+            .map(|l| {
+                if l.contains(&name) {
+                    l.replace("\"focused\": false", "\"focused\": true")
+                } else {
+                    l.replace("\"focused\": true", "\"focused\": false")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
     }
 
     /// Writes to the stream if connected; returns false otherwise.
@@ -554,13 +578,37 @@ pub fn wait_for_pid_file(path: &Path, timeout: Duration) -> i32 {
     }
 }
 
-/// Voluntary and involuntary context switches in a /proc status file.
-fn switches(status: &str) -> u64 {
+/// Voluntary context switches in a /proc status file: the thread blocked, then ran again (a
+/// wake-up). Involuntary ones are preemptions under CPU load, noise for a wake-up budget.
+pub fn switches(status: &str) -> u64 {
     status
         .lines()
-        .filter(|l| l.starts_with("voluntary_ctxt_switches:") || l.starts_with("nonvoluntary_ctxt_switches:"))
+        .filter(|l| l.starts_with("voluntary_ctxt_switches:"))
         .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
         .sum()
+}
+
+/// CPU clock ticks (utime + stime) in a /proc stat line: what a busy spin burns while it makes no
+/// voluntary switch (it never blocks), so no wake-up count ever sees it.
+pub fn cpu_ticks(stat: &str) -> u64 {
+    let Some((_, rest)) = stat.rsplit_once(')') else { return 0 };
+    // After the command: the state is field 3, utime and stime fields 14 and 15.
+    rest.split_whitespace().skip(11).take(2).filter_map(|v| v.parse::<u64>().ok()).sum()
+}
+
+/// CPU ticks a loop at rest may use over 5 s (the clock's tick is 10 ms on Linux): a spin uses
+/// hundreds.
+pub const REST_TICKS: u64 = 2;
+
+/// The CPU ticks allowed at rest over `window`: `REST_TICKS` per 5 s, never less than that.
+pub fn rest_ticks(window: Duration) -> u64 {
+    (REST_TICKS * window.as_secs().div_ceil(5)).max(REST_TICKS)
+}
+
+/// Asserts that `ticks` of CPU over an at-rest `window` are no spin.
+pub fn assert_no_spin(ticks: u64, window: Duration, what: &str) {
+    let allowed = rest_ticks(window);
+    assert!(ticks <= allowed, "{what}: {ticks} CPU ticks in {window:?} at rest (≤ {allowed}): the loop spins");
 }
 
 impl Daemon {
@@ -619,7 +667,7 @@ impl Daemon {
         fs::read_dir(format!("/proc/{}/task", self.pid())).map(|d| d.count()).unwrap_or(0)
     }
 
-    /// Cumulative context switches of all the daemon's threads.
+    /// Cumulative voluntary context switches (wake-ups) of all the daemon's threads.
     pub fn wakeups(&self) -> u64 {
         fs::read_dir(format!("/proc/{}/task", self.pid()))
             .unwrap()
@@ -628,12 +676,22 @@ impl Daemon {
             .sum()
     }
 
-    /// Context switches of the event loop's thread only (the main thread).
+    /// CPU ticks (utime + stime) of the whole daemon, every thread.
+    pub fn cpu_ticks(&self) -> u64 {
+        cpu_ticks(&fs::read_to_string(format!("/proc/{}/stat", self.pid())).unwrap_or_default())
+    }
+
+    /// CPU ticks (utime + stime) of the event loop's thread only (the main thread).
+    pub fn main_thread_cpu_ticks(&self) -> u64 {
+        cpu_ticks(&fs::read_to_string(format!("/proc/{0}/task/{0}/stat", self.pid())).unwrap_or_default())
+    }
+
+    /// Voluntary context switches (wake-ups) of the event loop's thread only (the main thread).
     pub fn main_thread_wakeups(&self) -> u64 {
         switches(&fs::read_to_string(format!("/proc/{0}/task/{0}/status", self.pid())).unwrap_or_default())
     }
 
-    /// Context switches of the daemon's thread named `name` (its comm:
+    /// Voluntary context switches of the daemon's thread named `name` (its comm:
     /// "sound", "D-Bus"…); None if no thread has that name.
     pub fn thread_wakeups(&self, name: &str) -> Option<u64> {
         let mut found = None;
@@ -851,6 +909,9 @@ pub mod portal;
 
 #[path = "../support/mpris.rs"]
 pub mod mpris;
+
+#[path = "../support/notify.rs"]
+pub mod notify;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 

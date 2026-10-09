@@ -8,11 +8,15 @@
 //! start a service.
 
 use super::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH, MPRIS_PLAYER_INTERFACE,
-    Orientation, PORTAL_NAME, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, SETTINGS_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH,
+    APPEARANCE_NAMESPACE, CAPABILITIES, COLOR_SCHEME_KEY, ITEM_INTERFACE, MENU_INTERFACE, MPRIS_INTERFACE, MPRIS_PATH,
+    MPRIS_PLAYER_INTERFACE, NOTIFICATIONS_INTERFACE, NOTIFICATIONS_NAME, NOTIFICATIONS_PATH, Orientation, PORTAL_NAME, PORTAL_PATH,
+    PROPERTIES_INTERFACE, Prop, SERVER_NAME, SERVER_VENDOR, SETTINGS_INTERFACE, SPEC_VERSION, WATCHER_INTERFACE, WATCHER_NAME,
+    WATCHER_PATH,
 };
 use crate::media::Control;
-use dbus::Message;
+/// Re-exported so the notifications consumer (tray/notifications.rs) passes messages through
+/// without naming the dbus crate (guardrails: DBUS_FILES).
+pub use dbus::Message;
 use dbus::arg::Variant;
 use dbus::channel::Channel;
 use dbus::message::MessageType;
@@ -26,6 +30,9 @@ use std::time::{Duration, Instant};
 
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const DBUS_NAME_FLAG_DO_NOT_QUEUE: u32 = 4;
+/// RequestName's flags for the notification server: none. It queues behind an owner (mako) instead
+/// of failing, never takes the name from it, and never lets a later client take it from us.
+pub const NOTIFICATIONS_NAME_FLAGS: u32 = 0;
 const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const PROPERTIES: &str = PROPERTIES_INTERFACE;
@@ -182,8 +189,10 @@ pub enum Call {
         id: i32,
         timestamp: u32,
     },
-    /// Always `org.kde.StatusNotifierWatcher` with DO_NOT_QUEUE: nothing else can be asked.
+    /// org.kde.StatusNotifierWatcher with DO_NOT_QUEUE.
     RequestName,
+    /// `RequestName(NOTIFICATIONS_NAME, 0)`: queued behind any owner (notifications spec § 1).
+    RequestNotifications,
     GetNameOwner {
         name: String,
     },
@@ -238,7 +247,7 @@ impl Call {
             Call::AboutToShow { .. } => Method::AboutToShow,
             Call::GetLayout { .. } => Method::GetLayout,
             Call::Event { .. } => Method::Event,
-            Call::RequestName => Method::RequestName,
+            Call::RequestName | Call::RequestNotifications => Method::RequestName,
             Call::GetNameOwner { .. } => Method::GetNameOwner,
             Call::GetConnectionUnixProcessID { .. } => Method::GetConnectionUnixProcessID,
             Call::ListNames => Method::ListNames,
@@ -273,6 +282,7 @@ impl Call {
             | Call::PlayerPosition { dest }
             | Call::PlayerControl { dest, .. } => (dest, MPRIS_PATH),
             Call::RequestName
+            | Call::RequestNotifications
             | Call::GetNameOwner { .. }
             | Call::GetConnectionUnixProcessID { .. }
             | Call::ListNames
@@ -353,6 +363,7 @@ pub fn message(call: &Call) -> Message {
         Call::GetLayout { parent, .. } => m.append3(*parent, 1i32, &MENU_PROPERTIES[..]),
         Call::Event { id, timestamp, .. } => m.append3(*id, "clicked", Variant(0i32)).append1(*timestamp),
         Call::RequestName => m.append2(WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE),
+        Call::RequestNotifications => m.append2(NOTIFICATIONS_NAME, NOTIFICATIONS_NAME_FLAGS),
         Call::GetNameOwner { name } | Call::GetConnectionUnixProcessID { name } => m.append1(name.as_str()),
         Call::ListNames => m,
         Call::AddMatch { rule } | Call::RemoveMatch { rule } => m.append1(rule.as_str()),
@@ -374,6 +385,44 @@ pub fn message(call: &Call) -> Message {
 /// UnknownMethod answer to a call the daemon does not serve (never left unanswered).
 pub fn refusal(call: &Message) -> Message {
     call.error(&ErrorName::from("org.freedesktop.DBus.Error.UnknownMethod"), c"alpheus serves no such call")
+}
+
+/// Notify's answer: the id (notifications spec § 1), sent even when no bubble shows.
+pub fn notify_reply(call: &Message, id: u32) -> Message {
+    call.method_return().append1(id)
+}
+
+/// GetCapabilities's answer: CAPABILITIES, an `as`.
+pub fn capabilities_reply(call: &Message) -> Message {
+    call.method_return().append1(&CAPABILITIES[..])
+}
+
+/// GetServerInformation's answer: `(SERVER_NAME, SERVER_VENDOR, the crate's version, SPEC_VERSION)`.
+pub fn server_info_reply(call: &Message) -> Message {
+    call.method_return().append2(SERVER_NAME, SERVER_VENDOR).append2(env!("CARGO_PKG_VERSION"), SPEC_VERSION)
+}
+
+/// An answer with no body: CloseNotification's, whatever the id.
+pub fn empty_reply(call: &Message) -> Message {
+    call.method_return()
+}
+
+/// `NotificationClosed(id, reason)`, broadcast as mako does (1 expired, 2 dismissed, 3 closed by call).
+pub fn closed_signal(id: u32, reason: u32) -> Option<Message> {
+    Some(notifications_signal("NotificationClosed")?.append2(id, reason))
+}
+
+/// `ActionInvoked(id, key)`, broadcast: the key as the client sent it.
+pub fn invoked_signal(id: u32, key: &str) -> Option<Message> {
+    Some(notifications_signal("ActionInvoked")?.append2(id, key))
+}
+
+/// A signal on the Notifications object. Its path, interface and member are constants libdbus
+/// accepts; were one ever refused, the signal is dropped (and logged), never a panic.
+fn notifications_signal(member: &str) -> Option<Message> {
+    Message::new_signal(NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, member)
+        .inspect_err(|e| crate::log::write(&format!("notifications: {member} not built: {e}")))
+        .ok()
 }
 
 /// The session bus address, pure (decision 1): `var("DBUS_SESSION_BUS_ADDRESS")` if set, non-empty
@@ -632,6 +681,31 @@ pub mod testing {
             std::mem::take(&mut self.calls)
         }
     }
+    /// A plain `Notify("Fictional", 0, "", summary, "", [], {}, -1)` as the bus delivers it, for the
+    /// consumer's tests (notifications.rs names no dbus type).
+    pub fn notify_call(summary: &str) -> Message {
+        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+            .unwrap()
+            .append3("Fictional", 0u32, "")
+            .append3(summary, "", Vec::<String>::new())
+            .append2(BTreeMap::<String, Variant<u8>>::new(), -1i32);
+        m.set_serial(9);
+        m.set_sender(Some(":1.42".into()));
+        m
+    }
+
+    /// The same Notify, critical (`urgency` 2).
+    pub fn critical_notify_call(summary: &str) -> Message {
+        let hints: BTreeMap<String, Variant<u8>> = [("urgency".to_string(), Variant(2u8))].into();
+        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+            .unwrap()
+            .append3("Fictional", 0u32, "")
+            .append3(summary, "", Vec::<String>::new())
+            .append2(hints, -1i32);
+        m.set_serial(9);
+        m.set_sender(Some(":1.42".into()));
+        m
+    }
 }
 
 #[cfg(test)]
@@ -804,6 +878,74 @@ mod tests {
         assert_eq!(flags, DBUS_NAME_FLAG_DO_NOT_QUEUE);
         assert_eq!(flags & 2, 0, "never REPLACE_EXISTING");
         assert_eq!(flags & 1, 0, "never ALLOW_REPLACEMENT: an owner may not take it from us either");
+    }
+
+    /// Queued behind mako, never taking the name, never letting it be taken (spec § 1).
+    #[test]
+    fn the_notifications_name_is_requested_queued_never_replacing() {
+        let m = message(&Call::RequestNotifications);
+        assert_eq!(
+            (m.destination().as_deref(), m.path().as_deref(), m.interface().as_deref(), m.member().as_deref()),
+            (Some(DBUS), Some(DBUS_PATH), Some(DBUS), Some("RequestName"))
+        );
+        assert_eq!(signatures(&m), ["s", "u"]);
+        let (name, flags) = m.read2::<String, u32>().unwrap();
+        assert_eq!((name.as_str(), flags), (NOTIFICATIONS_NAME, NOTIFICATIONS_NAME_FLAGS));
+        assert_eq!(flags, 0);
+        assert_eq!(flags & DBUS_NAME_FLAG_DO_NOT_QUEUE, 0, "queued behind the owner, never refused");
+        assert_eq!(flags & 2, 0, "never REPLACE_EXISTING");
+        assert_eq!(flags & 1, 0, "never ALLOW_REPLACEMENT");
+        assert!(!m.get_auto_start() && !m.get_no_reply(), "its answer is read");
+        assert_eq!(Call::RequestNotifications.method(), Method::RequestName, "the same member: a second allowed name");
+        let (watcher, _) = message(&Call::RequestName).read2::<String, u32>().unwrap();
+        assert_eq!(watcher, WATCHER_NAME, "the watcher's request is unchanged");
+    }
+
+    fn notify_call() -> Message {
+        let mut call = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "Notify").unwrap();
+        call.set_serial(21); // as received: libdbus aborts on a reply to serial 0
+        call
+    }
+
+    #[test]
+    fn the_server_replies_with_exact_signatures() {
+        let call = notify_call();
+        let check = |m: &Message, want: &[&str]| {
+            assert_eq!(m.msg_type(), MessageType::MethodReturn);
+            assert_eq!(m.get_reply_serial(), Some(21));
+            assert_eq!(signatures(m), want);
+        };
+        let r = notify_reply(&call, 7);
+        check(&r, &["u"]);
+        assert_eq!(r.read1::<u32>().unwrap(), 7);
+        let r = capabilities_reply(&call);
+        check(&r, &["as"]);
+        assert_eq!(r.read1::<Vec<String>>().unwrap(), CAPABILITIES);
+        let r = server_info_reply(&call);
+        check(&r, &["s", "s", "s", "s"]);
+        assert_eq!(r.read4::<&str, &str, &str, &str>().unwrap(), ("alpheus", "alpheus", env!("CARGO_PKG_VERSION"), "1.3"));
+        check(&empty_reply(&call), &[]);
+    }
+
+    #[test]
+    fn closed_and_invoked_are_broadcast_signals() {
+        let head = |m: &Message| {
+            (m.msg_type(), m.path().map(|p| p.to_string()), m.interface().map(|i| i.to_string()), m.member().map(|x| x.to_string()))
+        };
+        let some = |s: &str| Some(s.to_string());
+        let closed = closed_signal(7, 2).unwrap();
+        assert_eq!(
+            head(&closed),
+            (MessageType::Signal, some(NOTIFICATIONS_PATH), some(NOTIFICATIONS_INTERFACE), some("NotificationClosed"))
+        );
+        assert!(closed.destination().is_none(), "broadcast, as mako does");
+        assert_eq!(signatures(&closed), ["u", "u"]);
+        assert_eq!(closed.read2::<u32, u32>().unwrap(), (7, 2));
+        let invoked = invoked_signal(7, "default").unwrap();
+        assert_eq!(head(&invoked), (MessageType::Signal, some(NOTIFICATIONS_PATH), some(NOTIFICATIONS_INTERFACE), some("ActionInvoked")));
+        assert!(invoked.destination().is_none());
+        assert_eq!(signatures(&invoked), ["u", "s"]);
+        assert_eq!(invoked.read2::<u32, &str>().unwrap(), (7, "default"));
     }
 
     #[test]

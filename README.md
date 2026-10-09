@@ -46,6 +46,10 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Media module, no player (on the bar's own session connection, tray off) | 0–4 KB in mode `auto`; 286–395 KB in a fixed mode | `media_module_pss_without_and_with_players`, 3 runs (7.2–7.3 MB with it, 1 output): in mode `auto` that connection is the light/dark portal's, already open; in a fixed mode (`dark`) the module opens it, and the figure includes the connection itself; with the tray on it shares the tray's connection |
 | Media, 3 fake players | 85–112 KB | same test, 3 runs; at most 16 players, strings capped at 256 characters, 8 artists |
 | Media, 100 track changes | +0 KB | `track_changes_no_growth`, +0 KB in each of 3 runs (the titles reuse glyphs already drawn: the glyph cache's own bound is measured by the 8,300-events row); 0 loop wake-ups at rest with a player playing and the popup closed, tray on and off (`at_rest_no_wakeups_with_a_playing_player`); the popup's 1 s tick runs only while it is open and the track plays |
+| Notifications, linked in but unused (no `notifications` in `modules`) | +122–248 KB vs. the delivery before this one | binary 5.34 → 5.47 MiB (+140 KiB stripped); measured `900a519` vs this delivery, release, back to back, 3 runs each, separate target directories |
+| Notifications server and bell, serving with nothing (own session connection, tray off) | 0–4 KB | `notifications_pss_idle_history_and_bubbles`, 3 runs (10.9 MB with it, 1 output): in mode `auto` that connection is the light/dark portal's, already open, as for the media row; with the tray on, it shares the tray's connection |
+| Notifications, 50-entry history | 192–198 KB | same test; capped: app 64 B, summary 256 B, body 1 KiB, 6 actions; history in memory only |
+| Notifications, 4 bubbles shown | 326–774 KB, −84…+76 KB once closed | same test; their surface and pool exist only while a bubble shows; 0 loop wake-ups at rest with a sticky bubble shown and once every bubble went (`at_rest_no_wakeups_with_notifications`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -56,7 +60,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, 50 open/close cycles | ≈ +0.1–0.2 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
 | Launcher, 100,000-line dmenu | ≈ +6.6–6.8 MB open, back to +0.5 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
-| Borrowed for now: mako / swaybg / swayosd | 6.6 / 1.4 / 49.5 MB | to be replaced by alpheus toasts and OSD |
+| mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
+| Borrowed for now: swaybg / swayosd | 1.4 / 49.5 MB | swayosd to be replaced by the alpheus OSD |
 
 > **Memory note:** absolute PSS shifts with machine state, by about ±0.5 MB
 > between boots, because shared libraries are counted proportionally; the
@@ -64,7 +69,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
 > from the tray-delivery measurement (three runs); the themes rows from two
 > alternated runs against the delivery before; the bar shapes rows likewise
-> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise.
+> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise.
 >
 > **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
 > into (≈ 14 MB) and the hybrid-mode comparison in the shells table
@@ -104,7 +109,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | CPU, memory, temperature | ✅ | ✅ | ➖ | ✅ | ✅ |
 | System tray (icons and menus) | ✅ Nerd Font glyphs, no images | ✅ | ✅ | ✅ | ✅ |
 | Media (MPRIS) | ✅ `▶ Title` in the bar, middle click play/pause, wheel next/previous; a popup with time, progress, ⏮ ⏯ ⏭ and the player choice | ✅ | ✅ | ✅ | ✅ |
-| Notification counter, do-not-disturb | 🚧 bar 5 | ✅ | ✅ | ➖ | ➖ |
+| Notification counter, do-not-disturb | ✅ a neutral bell with the unread count, crossed under do-not-disturb (middle click, or `alpheus-launch --dnd on\|off\|toggle`) | ✅ | ✅ | ➖ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
@@ -113,7 +118,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Power menu | ✅ TUI | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ➖ TUI + nmtui, bluetui, wiremix | ✅ | ➖ | ✅ | ❌ |
-| Notification center, history | 🚧 with the toasts | ✅ | ✅ | ➖ | ➖ |
+| Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
 | **Launcher** | | | | | |
 | Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
@@ -122,7 +127,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
-| Notification toasts | 🚧 (mako ≈ 6.6 MB until then) | ✅ | ✅ | ✅ | ✅ |
+| Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness) | 🚧 (swayosd ≈ 49.5 MB until then) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
@@ -184,6 +189,10 @@ In the default `flat` style, a line of monospace characters on the theme's bar c
 
 ![The media module and its popup, fictional players and track (sample data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/bar-media.png)
 
+![Notification bubbles, top centre, one critical (fictional notifications, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/notifications-bubbles.png)
+
+![The notifications panel under the bell: the player, the history, do-not-disturb (fictional data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/notifications-panel.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
@@ -193,13 +202,18 @@ mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU graph,
 memory, temperature), **tray** (status icons of running apps as Nerd
 Font glyphs — or a letter —, left click activates, right click opens the
-app's menu in a popup, keyboard and mouse), **clock** (a click opens the
+app's menu in a popup, keyboard and mouse),
+**notifications** (a bell with the unread count, crossed under do-not-disturb, dim while another
+server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
+disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
+a left click runs the app's default action, a right click dismisses, critical ones stay until
+clicked), **clock** (a click opens the
 month's calendar). Clicking a module opens the matching tab
 of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: notifications, the OSD, notification toasts.
+Coming next: the OSD.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
@@ -212,7 +226,15 @@ resources from `/proc`. The tray talks to the session bus
 (StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
 thread. The media module speaks MPRIS on that same connection (or on one of its own when the tray is off,
 shared with the light/dark portal): players found at start and on arrival, their changes read from
-signals, never polled; while its popup is open the time ticks once a second, and only then. A known
+signals, never polled; while its popup is open the time ticks once a second, and only then.
+The notifications module is the `org.freedesktop.Notifications` server on that same connection. It
+waits in the D-Bus queue while another server (mako) holds the name, and takes over as soon as it is
+released; a mako started after it is refused and exits. Text is capped and cleaned: markup is
+stripped, never rendered, and images are skipped unread. A noisy app is rate-limited, and the bubbles
+exist only while one shows. One timer is armed for the earliest expiry, and none at rest. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
+do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
+empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
+is not running. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -337,8 +359,8 @@ The mapping is fixed:
 
 With `graph = 0`, only `full` colours the CPU (its icon is the graph).
 
-Workspaces, the clock, the tray icons, the launcher button and the
-separators keep their colours. **States win over the hue**: a low (`warn`) or
+Workspaces, the clock, the tray icons, the notification bell
+(its count in the accent), the launcher button and the separators keep their colours. **States win over the hue**: a low (`warn`) or
 critical (`error`) battery, a hot temperature, a network with limited
 connectivity, a muted volume, an offline or
 down module, an urgent workspace and a tray item that needs attention keep
@@ -545,6 +567,14 @@ tooltips = true     # the item's name after ½ s of hovering
 title_max = 30            # cells of the title in the bar (8 to 80)
 ignore = ["kdeconnect"]   # bus-name substrings never queried; playerctld is always ignored
 
+[notifications]
+timeout = 5          # seconds, when the app leaves it to the server
+timeout_min = 2      # an app's own timeout is kept within these
+timeout_max = 20
+max_visible = 4      # bubbles shown at once; more wait
+width = 40           # cells (24 to 80)
+history = 50         # entries kept in memory (0 to 200)
+
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
 
@@ -571,7 +601,7 @@ today will stay valid.
 
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
 - [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
-  bar, launcher, tray, themes, media).
+  bar, launcher, tray, themes, media, notifications).
 - [`docs/plans/`](docs/plans/): the implementation plans.
 
 ## License

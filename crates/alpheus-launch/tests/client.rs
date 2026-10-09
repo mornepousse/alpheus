@@ -2,7 +2,7 @@
 //! socket that decodes and records the request, then answers a scripted
 //! reply. Never the session's real socket.
 
-use alpheus_commun::launcher_ipc::{MAX_DMENU_BYTES, MAX_LINES, Reply, Request, RequestDecoder, encode_reply, socket_path};
+use alpheus_commun::launcher_ipc::{DndVerb, MAX_DMENU_BYTES, MAX_LINES, Reply, Request, RequestDecoder, encode_reply, socket_path};
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
@@ -392,4 +392,43 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
+}
+
+#[test]
+fn dnd_and_clear_send_their_request_and_exit_0() {
+    let cases = [
+        (&["--dnd", "on"][..], Request::Dnd(DndVerb::On)),
+        (&["--dnd", "off"], Request::Dnd(DndVerb::Off)),
+        (&["--dnd", "toggle"], Request::Dnd(DndVerb::Toggle)),
+        (&["--clear-notifications"], Request::ClearNotifications),
+    ];
+    for (i, (args, expected)) in cases.into_iter().enumerate() {
+        let (socket, daemon) = answering(&format!("notify-{i}"), Reply::Done);
+        assert_eq!(launch(args, &socket, b""), (EXIT_OK, String::new(), String::new()), "{args:?}");
+        assert_eq!(daemon.join().unwrap(), expected);
+    }
+}
+
+/// Review Focus: `--dnd toggle` with no daemon exits 3, like every verb (tools-menu falls back on 3).
+#[test]
+fn dnd_toggle_with_no_daemon_exits_3() {
+    let socket = temp_socket("dnd-absent");
+    let (code, out, err) = launch(&["--dnd", "toggle"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""));
+    assert!(err.contains("not running"), "{err}");
+    assert_eq!(launch(&["--clear-notifications"], &socket, b"").0, EXIT_UNREACHABLE);
+}
+
+#[test]
+fn a_refused_verb_exits_2_with_the_daemons_word() {
+    let (socket, daemon) = answering("dnd-refused", Reply::Error("the notifications module is not in modules".into()));
+    let (code, _, err) = launch(&["--dnd", "on"], &socket, b"");
+    assert_eq!(code, EXIT_ERROR);
+    assert!(err.contains("notifications module"), "{err}");
+    daemon.join().unwrap();
+    let (socket, daemon) = answering("dnd-odd", Reply::Chosen("x".into()));
+    let (code, _, err) = launch(&["--clear-notifications"], &socket, b"");
+    assert_eq!(code, EXIT_ERROR);
+    assert!(err.contains("unexpected answer"), "{err}");
+    daemon.join().unwrap();
 }

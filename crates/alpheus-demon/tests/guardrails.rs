@@ -18,12 +18,15 @@ use alpheus_demon::launcher::matching::Mode;
 use alpheus_demon::launcher::model::{Launcher, Outcome};
 use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
+use alpheus_demon::notify::NotifyView;
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
-use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, message};
-use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME};
+use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
+use alpheus_demon::tray::{
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+};
 use std::path::{Path, PathBuf};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
@@ -70,6 +73,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
     b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+    b.apply(Msg::Notifications(NotifyView { unread: 2, dnd: false, serving: true }));
     b
 }
 
@@ -400,6 +404,23 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
 }
 
+/// Panel fix round 1: opening the panel marks everything read (spec § 4), but only once it shows:
+/// a `popup_open` that refuses (no shared buffer, no positioner) must leave the count on the bell.
+/// Those refusals need a failing compositor or allocator, so the order is checked in the source.
+#[test]
+fn the_panel_marks_read_only_after_it_opened() {
+    let files = source_files();
+    let wayland = production_code(&files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1);
+    let body = function_body(&wayland, "pub(crate) fn panel_toggle(");
+    let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
+    let read = body.find("mark_read()").expect("panel_toggle marks read");
+    let shown = body.find("\"panel shown (entries").expect("panel_toggle logs the shown panel");
+    assert_eq!(body.matches("mark_read()").count(), 1, "one mark, on the shown path: {body}");
+    assert!(open < read, "marked read only once `popup_open` answered true: {body}");
+    // Inside the shown branch: after the open, before its log line (never after the `if`).
+    assert!(read < shown, "marked read inside the shown branch, before `panel shown`: {body}");
+}
+
 /// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
@@ -503,24 +524,34 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
 }
 
 /// Not a behavioural test of the socket itself: this match has no wildcard,
-/// so it is an exhaustive-match tripwire — a fourth `Request` variant stops
+/// so it is an exhaustive-match tripwire — a new `Request` variant stops
 /// THIS FILE compiling until the match below (and the review that goes with
 /// it) is updated, before it could ever reach the socket unexamined (review
 /// item M6, final review slice 1: renamed from
 /// `the_socket_accepts_exactly_three_requests`, which claimed to test the
 /// socket's own behaviour when it only guards this match's exhaustiveness).
+/// The notifications verbs (task 5) are answered in `watch_connection` before
+/// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::Request;
+    use alpheus_commun::launcher_ipc::{DndVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
             Request::Close => "close",
             Request::Dmenu { .. } => "dmenu",
+            Request::Dnd(_) => "dnd",
+            Request::ClearNotifications => "clear-notifications",
         }
     }
-    let all = [Request::Toggle, Request::Close, Request::Dmenu { prompt: None, lines: vec![] }];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu"]);
+    let all = [
+        Request::Toggle,
+        Request::Close,
+        Request::Dmenu { prompt: None, lines: vec![] },
+        Request::Dnd(DndVerb::Toggle),
+        Request::ClearNotifications,
+    ];
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -694,8 +725,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // (task 16), armed only while the pointer rests on a tray icon; the bar's session link's
         // (media task 5, `link_timer`), armed only while one of its calls is pending — the portal's
         // ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
-        // (bar step 5, task 7), armed only while that popup is open and its player plays.
-        ("wayland.rs", "Timer::", 4),
+        // (bar step 5, task 7), armed only while that popup is open and its player plays; the
+        // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
+        // or hidden by do-not-disturb) has a finite timeout.
+        ("wayland.rs", "Timer::", 5),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -802,8 +835,9 @@ const DBUS_FILES: [&str; 5] = ["sources/dbus/dbusrs_bus.rs", "tray/bus.rs", "tra
 /// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
 /// no libdbus session lookup (it could autolaunch `dbus-launch`); no
-/// blocking call nor `RefArg` decoding; the only name ever requested is the
-/// watcher's, with DO_NOT_QUEUE, never replacing its owner.
+/// blocking call nor `RefArg` decoding; the only names ever requested are the
+/// watcher's (DO_NOT_QUEUE) and the notification server's (flags 0: queued), never replacing an
+/// owner nor letting one replace us.
 #[test]
 fn tray_d_bus_is_confined_and_allowlisted() {
     let mut built = Vec::new();
@@ -821,9 +855,17 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             assert!(!t.contains(never), "{never} in {name}: libdbus's own session lookup may autolaunch a bus");
         }
         let prod = production_code(&t);
-        for never in
-            ["send_with_reply_and_block", "new_session(", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"]
-        {
+        for never in [
+            "send_with_reply_and_block",
+            "new_session(",
+            "blocking::",
+            ".process(",
+            "get_refarg",
+            "PropMap",
+            "RefArg",
+            "REPLACE_EXISTING",
+            "ALLOW_REPLACEMENT",
+        ] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
@@ -868,6 +910,12 @@ fn tray_d_bus_is_confined_and_allowlisted() {
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
     assert_eq!((name.as_str(), flags), (WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE), "the one name, never replacing");
+    let (name, flags) = message(&Call::RequestNotifications).read2::<String, u32>().unwrap();
+    assert_eq!(
+        (name.as_str(), flags, NOTIFICATIONS_NAME_FLAGS),
+        (NOTIFICATIONS_NAME, 0, 0),
+        "the second name: queued behind its owner, never replacing it, never replaceable"
+    );
 }
 
 /// The portal (themes task 6): exactly two members, `ReadOne` (a call, one setting) and
@@ -905,9 +953,13 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 14] = [
+const NO_THREAD_NOR_COMMAND: [&str; 20] = [
     "tray/",
     "media.rs",
+    "notify.rs",
+    "bubbles.rs",
+    "bubbles_surface.rs",
+    "panel.rs",
     "media_popup.rs",
     "popup.rs",
     "calendar.rs",
@@ -916,6 +968,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 14] = [
     "keys.rs",
     "watch.rs",
     "appearance.rs",
+    "state_file.rs",
+    "notify_app.rs",
     "link.rs",
     "background.rs",
     "painter/",
@@ -1200,4 +1254,33 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     for before in ["crate::watch::start(", "start_tray(&mut state", "state.follow_portal_if_auto();", "state.publish_mode();"] {
         assert!(at(before) < last, "{before} must come before the startup re-resolve");
     }
+}
+
+/// No panic in the notification server's production code (notifications fix wave A): its model,
+/// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
+/// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
+#[test]
+fn the_notification_server_has_no_panicking_path() {
+    let panics = |text: &str| [".expect(", ".unwrap()", "panic!("].iter().any(|p| text.contains(p));
+    let files = source_files();
+    let text =
+        |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("{name}"));
+    for name in [
+        "notify.rs",
+        "tray/notifications.rs",
+        "notify_app.rs",
+        "bubbles.rs",
+        "bubbles_surface.rs",
+        "panel.rs",
+        "state_file.rs",
+        "tray/codec.rs",
+    ] {
+        let t = text(name);
+        let production = t.split("#[cfg(").next().unwrap_or_default();
+        assert!(!panics(production), "a panicking call in {name}'s production code");
+    }
+    let bus = text("tray/bus.rs");
+    let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
+    let end = bus.find("pub fn session_address").expect("the builders end before session_address");
+    assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");
 }

@@ -96,6 +96,9 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
         (Request::Dmenu { .. }, Some(true)) => (Action::Nothing, Some(Reply::Busy)),
         (Request::Dmenu { prompt, lines }, _) => (Action::OpenScript { prompt, lines }, None),
+        // Not the launcher's (notifications task 5): `watch_connection` answers them before they
+        // could reach here. Answered all the same, never a panic.
+        (Request::Dnd(_) | Request::ClearNotifications, _) => (Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
     }
 }
 
@@ -418,6 +421,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alpheus_commun::launcher_ipc::DndVerb;
 
     fn dmenu() -> Request {
         Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()] }
@@ -441,6 +445,8 @@ mod tests {
             (dmenu(), None, script.clone(), None),
             (dmenu(), Some(false), script.clone(), None),
             (dmenu(), Some(true), Action::Nothing, Some(Reply::Busy)),
+            (Request::Dnd(DndVerb::Toggle), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::ClearNotifications, Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
         ];
         for (request, open, action, reply) in rows {
             let label = format!("{request:?} while {open:?}");

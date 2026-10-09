@@ -28,7 +28,7 @@ const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday",
 pub(crate) const SHORT_DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 pub(crate) const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-const SHORT_MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+pub(crate) const SHORT_MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const DIRECTIVES: &str = "aAedbBmYHMS%";
 
 impl LocalTime {
@@ -65,6 +65,42 @@ impl LocalTime {
             second: tm.tm_sec.clamp(0, 59) as u8, // leap second (60) brought back to 59
         }
     }
+}
+
+/// Minutes in a day: a local stamp (`local_minutes`) over it is its day.
+pub const DAY_MINUTES: u32 = 24 * 60;
+
+/// Days from 1970-01-01 to `year`-`month`-`day` in the proleptic Gregorian calendar (H. Hinnant's
+/// `days_from_civil`); negative before 1970.
+pub fn days_from_civil(year: i32, month: u8, day: u8) -> i64 {
+    let (m, d) = (i64::from(month.clamp(1, 12)), i64::from(day.clamp(1, 31)));
+    let y = i64::from(year) - i64::from(m <= 2);
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The date `days` after 1970-01-01: (year, month 1–12, day 1–31); `days_from_civil`'s inverse.
+pub fn civil_from_days(days: i64) -> (i32, u8, u8) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (i32::try_from(year).unwrap_or(i32::MAX), month.clamp(1, 12) as u8, day.clamp(1, 31) as u8)
+}
+
+/// A local time as minutes since local 1970-01-01 00:00 (0 before it): its day is the stamp over
+/// `DAY_MINUTES`, its time of day the rest. Fits a u32 for 8,000 years.
+pub fn local_minutes(t: &LocalTime) -> u32 {
+    let days = u32::try_from(days_from_civil(t.year, t.month, t.day).max(0)).unwrap_or(u32::MAX / DAY_MINUTES);
+    days.min(u32::MAX / DAY_MINUTES - 1) * DAY_MINUTES + u32::from(t.hour.min(23)) * 60 + u32::from(t.minute.min(59))
 }
 
 /// Does the format use only known directives?
@@ -139,6 +175,32 @@ mod tests {
 
     /// Sunday, October 4, 2026, 14:05:09.
     const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
+
+    #[test]
+    fn civil_days_round_trip_and_known_dates() {
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 3, 1), 11_017);
+        assert_eq!(days_from_civil(2026, 10, 4), 20_730);
+        assert_eq!(days_from_civil(1969, 12, 31), -1);
+        assert_eq!(civil_from_days(20_730), (2026, 10, 4));
+        assert_eq!(civil_from_days(days_from_civil(2024, 2, 29)), (2024, 2, 29), "a leap day");
+        for d in (-800_000..800_000).step_by(997) {
+            let (y, m, day) = civil_from_days(d);
+            assert_eq!(days_from_civil(y, m, day), d, "{d}");
+        }
+    }
+
+    /// Two minutes apart across midnight: two days.
+    #[test]
+    fn local_minutes_count_days_then_the_time_of_day() {
+        let before = LocalTime { year: 2026, month: 10, day: 8, weekday: 4, hour: 23, minute: 59, second: 30 };
+        let after = LocalTime { year: 2026, month: 10, day: 9, weekday: 5, hour: 0, minute: 1, second: 0 };
+        let (b, a) = (local_minutes(&before), local_minutes(&after));
+        assert_eq!(a - b, 2);
+        assert_eq!((b / DAY_MINUTES, b % DAY_MINUTES), (20_734, 23 * 60 + 59));
+        assert_eq!(a / DAY_MINUTES, 20_735);
+        assert_eq!(local_minutes(&LocalTime { year: 1960, ..before }), 23 * 60 + 59, "before 1970: day 0");
+    }
 
     #[test]
     fn english_format() {

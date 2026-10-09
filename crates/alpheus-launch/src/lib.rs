@@ -11,7 +11,7 @@
 //! to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, Reply, Request, decode_reply, encode_request, split_lines,
+    DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, Reply, Request, decode_reply, encode_request, split_lines,
 };
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
@@ -32,17 +32,20 @@ pub const EXIT_UNREACHABLE: i32 = 3;
 pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
-Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --help]
+Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] | --dnd on|off|toggle
+                      | --clear-notifications | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
   --dmenu                 show the lines read on standard input, print the chosen one
   -p, --prompt TEXT       with --dmenu: text shown before the input
+  --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
+  --clear-notifications   empty the bar's notification history
   -h, --help              show this help
 
 Exit codes: 0 done or chosen, 1 menu cancelled, 2 error (another menu open,
-bad usage, no answer, the bar restarting mid-request), 3 alpheus-demon not
-running (launcher unreachable).
+bad usage, no answer, the bar restarting mid-request, the notifications
+module not in bar.toml), 3 alpheus-demon not running (launcher unreachable).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -53,6 +56,8 @@ pub enum Invocation {
     Toggle,
     Close,
     Dmenu { prompt: Option<String> },
+    Dnd(DndVerb),
+    ClearNotifications,
     Help,
 }
 
@@ -69,6 +74,13 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--toggle" => choose(&mut mode, Invocation::Toggle)?,
             "--close" => choose(&mut mode, Invocation::Close)?,
             "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None })?,
+            "--dnd" => {
+                let value = it.next().ok_or_else(|| "--dnd needs on, off or toggle".to_string())?;
+                let value = utf8(value)?;
+                let verb = DndVerb::parse(value).ok_or_else(|| format!("--dnd takes on, off or toggle, not {value:?}"))?;
+                choose(&mut mode, Invocation::Dnd(verb))?
+            }
+            "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -93,7 +105,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
-        return Err("only one of --toggle, --close, --dmenu, --help".into());
+        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --help".into());
     }
     *slot = Some(i);
     Ok(())
@@ -133,7 +145,7 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
     // that a daemon trickling one byte at a time could restart forever).
     let timeout = match request {
         Request::Dmenu { .. } => None,
-        Request::Toggle | Request::Close => Some(CLIENT_REPLY_TIMEOUT),
+        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications => Some(CLIENT_REPLY_TIMEOUT),
     };
     stream.set_write_timeout(timeout).map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
     let deadline = timeout.map(|t| Instant::now() + t);
@@ -224,6 +236,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         }
         Ok(Invocation::Toggle) => Request::Toggle,
         Ok(Invocation::Close) => Request::Close,
+        Ok(Invocation::Dnd(v)) => Request::Dnd(v),
+        Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
         Ok(Invocation::Dmenu { prompt }) => match read_lines(stdin) {
             Ok(lines) => Request::Dmenu { prompt, lines },
             Err(m) => return fail(&m),
@@ -246,7 +260,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             }
         }
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
-        (Request::Toggle | Request::Close, Reply::Done) => EXIT_OK,
+        (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications, Reply::Done) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
         (_, other) => fail(&format!("unexpected answer from alpheus-demon: {other:?}")),
@@ -280,6 +294,10 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dmenu", "-p", "-x"])), Ok(Invocation::Dmenu { prompt: Some("-x".into()) }));
         assert_eq!(parse_args(&args(&["-h"])), Ok(Invocation::Help));
         assert_eq!(parse_args(&args(&["--help"])), Ok(Invocation::Help));
+        assert_eq!(parse_args(&args(&["--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On)));
+        assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off)));
+        assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
+        assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
     }
 
     #[test]
@@ -296,6 +314,12 @@ mod tests {
             (&["--help", "--dmenu"], "only one of"),
             (&["--dmenu", "--prompt"], "needs a value"),
             (&["--dmenu", "-p", "a", "-p", "b"], "given twice"),
+            (&["--dnd"], "needs on, off or toggle"),
+            (&["--dnd", "maybe"], "on, off or toggle"),
+            (&["--dnd", "on", "--close"], "only one of"),
+            (&["--clear-notifications", "--dnd", "on"], "only one of"),
+            (&["--dnd", "on", "-p", "x"], "--prompt only goes with --dmenu"),
+            (&["--clear-notifications", "now"], "unknown option"),
         ] {
             let e = parse_args(&args(a)).unwrap_err();
             assert!(e.contains(needle), "{a:?}: {e}");

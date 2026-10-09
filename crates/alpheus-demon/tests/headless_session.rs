@@ -10,13 +10,15 @@ use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
+use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, fake_program, launcher, process_alive,
-    start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, assert_no_spin, fake_program, launcher,
+    process_alive, start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -466,10 +468,11 @@ fn a_closed_session_bus_empties_the_tray_once() {
     assert!(d.wait_for("tray: icons shown: 0", DELAY), "the tray emptied: {:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
     std::thread::sleep(Duration::from_millis(500));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
     let log = d.log();
     assert_eq!(log.iter().filter(|l| l.contains("session bus closed")).count(), 1, "{log:?}");
     assert_eq!(
@@ -526,10 +529,11 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     sway.hover(1260, 10); // the clock, at the right end
     // The motion handled; a timer armed by it would fire at 0.5 s, inside the window.
     std::thread::sleep(Duration::from_millis(200));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times with the pointer on the clock: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "the pointer on the clock");
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
@@ -640,8 +644,9 @@ fn tooltips_false_gives_no_timer_and_no_tooltip() {
     std::thread::sleep(Duration::from_millis(200));
     sway.hover(12, 10); // the tray's one icon: armed with tooltips on, never with them off
     std::thread::sleep(Duration::from_millis(200));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(2));
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(2), "tooltips = false");
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "tooltips = false: the loop woke {delta} times with the pointer on the icon: {:?}", d.log());
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
@@ -970,9 +975,10 @@ fn a_silent_menu_never_opens_and_leaves_nothing_pending() {
     while alpheus_demon::clock::LocalTime::now().0.second > 50 {
         std::thread::sleep(Duration::from_millis(200));
     }
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "{:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(3), "nothing pending");
 }
 
 #[test]
@@ -1213,10 +1219,11 @@ fn a_click_elsewhere_closes_it_and_leaves_no_timer() {
         std::thread::sleep(Duration::from_millis(200));
     }
     std::thread::sleep(Duration::from_millis(300));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(delta, 0, "the loop woke {delta} times at rest after the calendar: {:?}", d.log());
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_secs(5), "after the calendar");
 }
 
 /// The bar still runs a second later, and never panicked: a debug build's panic takes a while to
@@ -1385,6 +1392,28 @@ fn theme_bar(name: &str) -> (Sway, FakeHyprland, Daemon, PathBuf) {
     let mocha = bar_bg("catppuccin");
     assert!(sway.wait_for_screen("HEADLESS-1", |s| s.at(x, y) == Some(mocha)), "never on Mantle: {:?}", d.log());
     (sway, hypr, d, config)
+}
+
+/// A wake-up is the loop blocking then running again: a voluntary switch. Involuntary ones are
+/// preemptions under CPU load, not wake-ups: counting them made the budgets flaky.
+#[test]
+fn wakeups_count_voluntary_switches_only() {
+    let status = "Name:\talpheus-demon\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t7\n";
+    assert_eq!(common::switches(status), 12);
+    assert_eq!(common::switches(""), 0);
+}
+
+/// A busy spin never blocks, so it makes no voluntary switch: the at-rest checks also read the CPU
+/// time (utime + stime, fields 14 and 15 of a /proc stat line, after the command in parentheses,
+/// which may hold spaces and parentheses itself).
+#[test]
+fn cpu_ticks_are_utime_plus_stime() {
+    let stat = "4242 (alpheus (demon) x) S 1 4242 4242 0 -1 4194560 900 0 0 0 31 12 0 0 20 0 6 0 100 0";
+    assert_eq!(common::cpu_ticks(stat), 43);
+    assert_eq!(common::cpu_ticks(""), 0);
+    assert_eq!(common::rest_ticks(Duration::from_secs(5)), common::REST_TICKS);
+    assert_eq!(common::rest_ticks(Duration::from_secs(10)), 2 * common::REST_TICKS);
+    assert_eq!(common::rest_ticks(Duration::from_secs(2)), common::REST_TICKS, "never below the 5 s allowance");
 }
 
 #[test]
@@ -2022,10 +2051,11 @@ fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
     assert!(d.wait_for("media: hidden", DELAY), "{:?}", d.log());
     // The dead socket stays readable: its source must be gone, or the loop spins.
     std::thread::sleep(Duration::from_millis(500));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_millis(4500));
     let wakeups = d.main_thread_wakeups() - before;
     assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
     assert_eq!(d.count("media: the session bus closed"), 1, "{:?}", d.log());
     assert_eq!((d.count("media: shown"), d.count("media: hidden")), (1, 1), "one line each way: {:?}", d.log());
     assert_eq!(d.count("media: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
@@ -2088,13 +2118,20 @@ fn media_bar(name: &str, outputs: u32, extra: &[&str]) -> (PrivateBus, Sway, Fak
     );
     assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
     let mut players = vec![FakePlayer::start(&bus, PlayerSpec::playing("lumen", "Paper Lanterns"))];
-    players.extend(extra.iter().map(|n| FakePlayer::start(&bus, PlayerSpec::playing(n, "Second Song"))));
-    for p in &players {
-        assert!(p.wait_call("GetAll", DELAY).is_some(), "the daemon read every fake player: {:?}", d.log());
-    }
+    assert!(players[0].wait_call("GetAll", DELAY).is_some(), "the daemon read the fake player: {:?}", d.log());
     // Read and drawn: a player plays, so the module shows in the purple (catppuccin dark).
     let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
+    // Each extra player, the latest to play, takes the bar: on screen before the next one (or the
+    // test) starts. Its GetAll asked is not its reply read: a test taking the bar as its reference
+    // before that could see the previous player, and miss the change it waits for.
+    for n in extra {
+        let before = sway.screenshot("HEADLESS-1").map(|s| media_cells(&s)).unwrap();
+        let player = FakePlayer::start(&bus, PlayerSpec::playing(n, "Second Song"));
+        assert!(player.wait_call("GetAll", DELAY).is_some(), "the daemon read {n}: {:?}", d.log());
+        assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != before), "{n} never took the bar: {:?}", d.log());
+        players.push(player);
+    }
     (bus, sway, hypr, d, players)
 }
 
@@ -2102,6 +2139,15 @@ fn media_bar(name: &str, outputs: u32, extra: &[&str]) -> (PrivateBus, Sway, Fak
 fn popup_title(s: &Ppm) -> Vec<[u8; 3]> {
     let ((x0, y), (x1, _)) = (popup_cell(0, 1, 0), popup_cell(0, 30, 0));
     (y - 8..y + 8).flat_map(|y| (x0 - 4..x1 + 4).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// Waits until the media popup is on screen: its title row drawn in the accent (catppuccin dark).
+/// "media popup shown" is logged when the popup is asked for, before the compositor's configure
+/// and the first buffer that maps it; a click in that gap lands on no surface, and sway ends the
+/// grab ("popup closed (dismissed)"). A click meant for the popup waits for this.
+fn wait_for_the_popup_drawn(sway: &Sway, d: &Daemon) {
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&accent)), "the popup drawn: {:?}", d.log());
 }
 
 /// Layout coordinates of the popup's cell (column, row) on a bar whose media zone starts at cell 1 at
@@ -2120,25 +2166,38 @@ fn away_from_the_minute() {
     }
 }
 
-/// The loop thread's wake-ups over 5 s, away from the minute's turn (the clock is the bar's only
-/// other timer).
-fn wakeups_over_5_s(d: &Daemon) -> u64 {
+/// The loop thread's wake-ups and CPU ticks over 5 s, away from the minute's turn (the clock is the
+/// bar's only other timer).
+fn activity_over_5_s(d: &Daemon) -> (u64, u64) {
     away_from_the_minute();
     std::thread::sleep(Duration::from_millis(300));
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
-    d.main_thread_wakeups().saturating_sub(before)
+    (d.main_thread_wakeups().saturating_sub(before), d.main_thread_cpu_ticks().saturating_sub(ticks))
+}
+
+/// The loop thread's wake-ups over 5 s while something ticks.
+fn wakeups_over_5_s(d: &Daemon) -> u64 {
+    activity_over_5_s(d).0
+}
+
+/// The loop thread's wake-ups over 5 s at rest, its CPU checked too: a busy spin makes no wake-up.
+fn rest_over_5_s(d: &Daemon) -> u64 {
+    let (wakeups, ticks) = activity_over_5_s(d);
+    assert_no_spin(ticks, Duration::from_secs(5), "the loop thread");
+    wakeups
 }
 
 /// The loop's wake-ups while `player` broadcasts five Seeked over 1.5 s: none once the popup closed,
 /// since the bar's Seeked match rule goes with it (the bus then delivers it nothing).
 fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
     away_from_the_minute();
-    let before = d.main_thread_wakeups();
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
     for us in 1..=5 {
         player.seeked(us * 1_000_000);
         std::thread::sleep(Duration::from_millis(300));
     }
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_millis(1500), "the loop thread");
     d.main_thread_wakeups().saturating_sub(before)
 }
 
@@ -2167,6 +2226,7 @@ fn the_popup_buttons_reach_the_player() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-buttons", 1, &[]);
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     // Rows: title, artist, time, buttons (row 3); ⏭ at content column 20, boxed column 21.
     let (x, y) = popup_cell(0, 21, 3);
     sway.click(x, y, "button1");
@@ -2213,7 +2273,7 @@ fn a_bar_removed_while_escape_is_down_releases_the_keyboard() {
 fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-tick", 1, &[]);
     sway.hover(640, 400);
-    let closed = wakeups_over_5_s(&d);
+    let closed = rest_over_5_s(&d);
     assert_eq!(closed, 0, "the loop woke {closed} times at rest, popup closed, player playing: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
@@ -2221,7 +2281,7 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     assert!((4..=12).contains(&open), "about one tick a second while open and playing: {open}");
     players[0].set_status("Paused");
     std::thread::sleep(Duration::from_secs(1));
-    let paused = wakeups_over_5_s(&d);
+    let paused = rest_over_5_s(&d);
     assert_eq!(paused, 0, "paused while open: the tick is disarmed ({paused} wake-ups)");
     players[0].set_status("Playing");
     std::thread::sleep(Duration::from_secs(1));
@@ -2232,7 +2292,7 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
     // SCTK arms its key repeat timer at the press of Escape and, at the release, only forgets the
     // key: the timer fires once at the repeat delay (600 ms on sway), finds no key and drops itself.
     std::thread::sleep(Duration::from_secs(1));
-    let after = wakeups_over_5_s(&d);
+    let after = rest_over_5_s(&d);
     assert_eq!(after, 0, "closed: nothing armed is left ({after} wake-ups)");
     let seeked = wakeups_over_seeked(&d, &players[0]);
     assert_eq!(seeked, 0, "closed: the Seeked rule went with the popup ({seeked} wake-ups)");
@@ -2249,8 +2309,8 @@ fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != shown), "the bar never moved to lumen: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     let accent = rgb(preset("catppuccin").unwrap().dark.accent);
-    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&accent)), "the popup drawn: {:?}", d.log());
     let before = sway.screenshot("HEADLESS-1").map(|s| popup_title(&s)).unwrap();
     players.remove(0).kill(); // lumen
     // The title row repainted with beta's track ("Second Song"), still in the accent: still open.
@@ -2280,6 +2340,7 @@ fn a_player_chosen_in_the_popup_takes_the_bar() {
     // media_bar's theme: catppuccin dark. Playing, the module takes the purple; paused, muted.
     let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "lumen playing: {:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     // Rows: title, artist, time, buttons, separator, lumen, beta (row 6).
     let (x, y) = popup_cell(0, 3, 6);
     sway.click(x, y, "button1");
@@ -2306,7 +2367,7 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("popup closed"), 1, "closed once, though both bars moved: {:?}", d.log());
     sway.hover(640, 400);
-    assert_eq!(wakeups_over_5_s(&d), 0, "the timer went with the popup");
+    assert_eq!(rest_over_5_s(&d), 0, "the timer went with the popup");
     assert_eq!(wakeups_over_seeked(&d, &players[0]), 0, "and the Seeked rule");
     // Floating: the bar 6 px down and in.
     sway.click(3000 + MEDIA_AT.0 + 6, MEDIA_AT.1 + 6, "button1");
@@ -2316,4 +2377,769 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("popup closed"), 1, "the same placement: the popup stays: {:?}", d.log());
     assert!(wakeups_over_5_s(&d) >= 4, "and keeps ticking");
+}
+
+// ---- The bell (notifications task 5) ----
+
+const BELL_BAR: &str = "modules = [\"notifications\", \"clock\"]\n";
+/// Inside the bell on a bar whose first module is `notifications` (cell 1, ≈ 8.4 px a cell): the
+/// status block starts at the left edge when there is no workspace or window module, as the tray's
+/// icon at (12, 10) does in the tray tests. Task 7 reuses it.
+const BELL_AT: (u32, u32) = (12, 10);
+
+/// The bell alone on the bar (or `modules`), on a private session bus; `before` runs on the bus
+/// before the daemon starts (a mako already holding the name).
+fn bell_daemon<T>(name: &str, modules: &str, before: impl FnOnce(&PrivateBus) -> T) -> (PrivateBus, Sway, FakeHyprland, Daemon, T) {
+    let bus = PrivateBus::start(name);
+    let extra = before(&bus);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(modules), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, sway, hypr, d, extra)
+}
+
+/// The pid behind a unique name on `bus`.
+fn pid_of(bus: &PrivateBus, unique: &str) -> Option<u32> {
+    let peer = Peer::connect(bus);
+    let m = dbus::Message::new_method_call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID",
+    )
+    .unwrap()
+    .append1(unique);
+    peer.call(m).ok().and_then(|r| r.read1::<u32>().ok())
+}
+
+/// Spec § 1: tray off, the media module, the portal and the notifications server share ONE
+/// connection, and it is the daemon's own that holds the name.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_bell_serves_on_the_bars_link_with_media_and_the_portal_on_one_connection() {
+    let modules = "modules = [\"media\", \"notifications\", \"clock\"]\n";
+    let (bus, _sway, _hypr, d, _player, portal) = media_daemon_with("bell-link", modules, None, |bus| FakePortal::start(bus, 2));
+    assert!(d.wait_for("notifications: on the bar's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("appearance: the portal says light", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "never two: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "Download finished")).is_ok());
+    let owner = client.owner(NOTIFICATIONS).expect("the name is held");
+    assert_eq!(pid_of(&bus, &owner), Some(d.pid()), "held by the daemon's one connection");
+    assert_eq!(portal.calls().len(), 1);
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn with_the_tray_the_bell_rides_its_connection() {
+    let (bus, _sway, _hypr, d, ()) = bell_daemon("bell-tray", "modules = [\"tray\", \"notifications\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("notifications: on the tray's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "{:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "on the tray's connection")).is_ok());
+    assert_eq!(client.owner(NOTIFICATIONS), client.owner("org.kde.StatusNotifierWatcher"), "one connection holds both names");
+}
+
+/// Spec § 6: without `notifications` in `modules`, the name is never requested, and the verbs say so.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn without_the_module_the_name_is_never_requested() {
+    let (bus, sway, _hypr, d, ()) = bell_daemon("bell-none", "modules = [\"tray\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("tray: on the session bus", DELAY), "{:?}", d.log());
+    ready(&d);
+    std::thread::sleep(Duration::from_millis(500));
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.owner(NOTIFICATIONS), None, "never requested");
+    assert_eq!(client.notify(&Note::new("Fictional", "anyone?")).unwrap_err(), "org.freedesktop.DBus.Error.ServiceUnknown");
+    let (code, _, err) = script(&sway, &["--dnd", "toggle"], "").join().unwrap();
+    assert_eq!(code, EXIT_ERROR);
+    assert!(err.contains("notifications module"), "{err}");
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists(), "nothing written");
+    assert_eq!((d.count("notifications:"), d.count("bell:")), (0, 0), "{:?}", d.log());
+}
+
+/// Spec § 5: `alpheus-launch --dnd …` reaches the bell (its line), writes the owner-only empty file,
+/// removes it, is idempotent, and the state comes back at the next start; DND still answers Notify.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn dnd_from_alpheus_launch_is_saved_shown_and_restored() {
+    let (bus, sway, _hypr, mut d, ()) = bell_daemon("bell-dnd", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(!file.exists());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    let meta = std::fs::metadata(&file).unwrap();
+    assert_eq!((meta.len(), meta.permissions().mode() & 0o777), (0, 0o600), "an empty, owner-only file");
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "quiet please")).is_ok(), "do not disturb still answers");
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    // The first view logged "bell: dnd off" at startup: this is the second.
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
+    for _ in 0..2 {
+        assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    }
+    assert!(d.wait_for_count("bell: dnd on", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bell: dnd on"), 2, "on twice is on once: {:?}", d.log());
+    assert_eq!(script(&sway, &["--clear-notifications"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("notifications: cleared", DELAY), "{:?}", d.log());
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let options = DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
+}
+
+/// Spec, Success criteria: with mako running nothing changes and the bell is dim; once mako stops,
+/// alpheus takes the name at once.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn mako_holding_the_name_dims_the_bell_until_it_stops() {
+    let (bus, _sway, _hypr, d, mako) = bell_daemon("bell-mako", BELL_BAR, FakeMako::start);
+    assert!(d.wait_for("bell: not serving", DELAY), "{:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(1000), "nothing changes while mako runs");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bell: serving"), 0, "{:?}", d.log());
+    mako.kill(); // mako exits (pkill mako): its connection closes
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(client.notify(&Note::new("Fictional", "to alpheus")).is_ok_and(|id| id < 1000));
+}
+
+/// Spec § 7: a dead session bus dims the bell once; its source goes, nothing spins.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
+    let (mut bus, _sway, _hypr, mut d, ()) = bell_daemon("bell-bus-dies", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    let before = d.count("bell: not serving");
+    bus.kill();
+    assert!(d.wait_for("notifications: the session bus closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("bell: not serving", before + 1, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    let (wakeups, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    std::thread::sleep(Duration::from_millis(4500));
+    let wakeups = d.main_thread_wakeups() - wakeups;
+    assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_no_spin(d.main_thread_cpu_ticks() - ticks, Duration::from_millis(4500), "after the bus closed");
+    assert_eq!(d.count("notifications: the session bus closed"), 1, "{:?}", d.log());
+    assert_eq!(d.count("notifications: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// Spec § 4 and § 8: the bell's middle click toggles do-not-disturb inside the daemon, through the
+/// same path as the verb (the file follows), and runs no command.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_bells_middle_click_toggles_do_not_disturb() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-middle", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(file.exists(), "persisted through App::set_dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
+    // The first view logged "bell: dnd off" at startup: this is the second.
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
+}
+
+// ---- The bubbles (notifications task 6) ----
+
+/// Waits (10 s at most) until `org.freedesktop.Notifications` has an owner on `bus`: the daemon serves.
+fn wait_for_the_server(bus: &PrivateBus) {
+    let peer = Peer::connect(bus);
+    let t = Instant::now();
+    loop {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
+            .unwrap()
+            .append1("org.freedesktop.Notifications");
+        if peer.call(m).unwrap().read1::<bool>().unwrap() {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the daemon never took org.freedesktop.Notifications");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Do-not-disturb on before the daemon starts: the empty file `$XDG_STATE_HOME/alpheus/dnd` (the
+/// harness points `XDG_STATE_HOME` at `<runtime>/state`).
+fn dnd_on_before_start(sway: &Sway) {
+    let dir = sway.runtime.join("state/alpheus");
+    std::fs::create_dir_all(&dir).unwrap();
+    for d in [sway.runtime.join("state"), dir.clone()] {
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(dir.join("dnd"), "").unwrap();
+}
+
+/// The bell bar on catppuccin dark, serving notifications, a client connected. `on_headless`: the
+/// fake Hyprland's outputs renamed after sway's, its focused one HEADLESS-2; otherwise its focused
+/// output does not exist here, and the compositor chooses. `before` runs once sway is up.
+fn notify_daemon(
+    name: &str,
+    outputs: u32,
+    on_headless: bool,
+    before: impl FnOnce(&Sway),
+) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeClient) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, outputs);
+    let hypr =
+        if on_headless { FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE) } else { FakeHyprland::start(&sway.runtime, SIGNATURE) };
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    before(&sway);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    wait_for_the_server(&bus);
+    let client = FakeClient::connect(&bus);
+    thread::sleep(Duration::from_millis(300)); // drawn
+    (bus, sway, hypr, d, client)
+}
+
+/// The first bubble on `s`: its first background row (down the output's centre column), and `inset`
+/// px lower (inside its top inset, where no glyph is) its leftmost and rightmost background pixels.
+/// None: no bubble background on that column.
+fn bubble_box(s: &Ppm, inset: u32) -> Option<(u32, u32, u32)> {
+    let bg = popup_bg("catppuccin");
+    let cx = s.width / 2;
+    let top = (0..s.height).find(|&y| s.at(cx, y) == Some(bg))?;
+    let y = top + inset;
+    let (mut left, mut right) = (cx, cx);
+    while left > 0 && s.at(left - 1, y) == Some(bg) {
+        left -= 1;
+    }
+    while s.at(right + 1, y) == Some(bg) {
+        right += 1;
+    }
+    Some((top, left, right))
+}
+
+/// Bubbles crossed by column `x` (inside their left inset, where no glyph is): runs of background
+/// at least 10 px tall.
+fn bubbles_on(s: &Ppm, x: u32) -> usize {
+    let bg = popup_bg("catppuccin");
+    let (mut runs, mut run) = (0, 0);
+    for y in 0..s.height {
+        if s.at(x, y) == Some(bg) {
+            run += 1;
+        } else {
+            runs += usize::from(run >= 10);
+            run = 0;
+        }
+    }
+    runs + usize::from(run >= 10)
+}
+
+/// The first bubble's frame on `s`: the pixel just left of its background, halfway down its header
+/// (clear of the rounded corners and of the text).
+fn bubble_frame(s: &Ppm) -> Option<[u8; 3]> {
+    // From the top inset's leftmost background (no text there), on along the header row through the
+    // pad cell (no text either) to the stroke.
+    let (top, mut x, _) = bubble_box(s, 3)?;
+    let (y, bg) = (top + 12, popup_bg("catppuccin"));
+    while x > 0 && s.at(x - 1, y) == Some(bg) {
+        x -= 1;
+    }
+    s.at(x.checked_sub(1)?, y)
+}
+
+/// A layout point in the first bubble on a single output placed at (0, 0): the middle of its header.
+fn bubble_at(sway: &Sway, output: &str) -> (u32, u32) {
+    let found = Cell::new(None);
+    assert!(
+        sway.wait_for_screen(output, |s| {
+            found.set(bubble_box(s, 3));
+            found.get().is_some()
+        }),
+        "no bubble on {output}"
+    );
+    let (top, left, right) = found.get().unwrap();
+    ((left + right) / 2, top + 12)
+}
+
+/// Spec § 3: a bubble appears top centre, under the bar, on the focused output only.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_bubble_appears_top_centre_on_the_focused_output() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-place", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    for o in ["HEADLESS-1", "HEADLESS-2"] {
+        let s = sway.screenshot(o).expect("grim");
+        assert_eq!(bubble_box(&s, 3), None, "{o}: the checks bite only if nothing there is popup_bg yet");
+    }
+    client.notify(&Note::new("Mailer", "Weekly report ready")).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "the fixture's focused output: {:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_some_and(|(top, l, r)| top >= 22 && (l + r).abs_diff(s.width) <= 4)),
+        "under the 22 px bar, centred: {:?}",
+        d.log()
+    );
+    let s = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(bubble_box(&s, 3), None, "nothing on the other output");
+}
+
+/// Spec § 3, clicks: a left click runs the `default` action, then the bubble closes (dismissed)
+/// unless the notification is resident.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_left_click_runs_the_default_action_then_closes_unless_resident() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-left", 1, false, |_| ());
+    let open = |n: Note| n.action("default", "Open").action("later", "Later").timeout(0);
+    let id = client.notify(&open(Note::new("Mailer", "Weekly report ready"))).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    let frame = bubble_frame(&sway.screenshot("HEADLESS-1").expect("grim"));
+    let urgent = rgb(preset("catppuccin").unwrap().dark.urgent);
+    assert!(frame.is_some_and(|f| f != urgent && f != popup_bg("catppuccin")), "a normal bubble keeps the border: {frame:?}");
+    sway.click(x, y, "button1");
+    assert!(client.wait_heard(&Heard::Invoked(id, "default".into())), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "then dismissed");
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    let resident = client.notify(&open(Note::new("Chat", "Message from Lina")).hint("resident", Hint::Bool(true))).unwrap();
+    assert!(d.wait_for_count("bubbles shown: 1", 2, DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button1");
+    assert!(client.wait_heard(&Heard::Invoked(resident, "default".into())), "{:?}", d.log());
+    assert!(!client.heard_within(Duration::from_secs(1)).iter().any(|h| matches!(h, Heard::Closed(..))), "resident: the bubble stays");
+    assert_eq!(d.count("bubbles surface dropped"), 1, "{:?}", d.log());
+}
+
+/// Spec § 3: a right click dismisses (reason 2) and runs nothing.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_right_click_dismisses_with_reason_2_and_runs_nothing() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-right", 1, false, |_| ());
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").action("default", "Open").timeout(0)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "{:?}", d.log());
+    assert!(
+        !client.heard_within(Duration::from_millis(500)).iter().any(|h| matches!(h, Heard::Invoked(..))),
+        "a right click never runs an action"
+    );
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 3, expiry: `NotificationClosed(1)` at its time, never before, and the surface goes with
+/// the last bubble.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn an_expired_bubble_sends_closed_1_and_its_surface_goes() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-expiry", 1, false, |_| ());
+    let t = Instant::now();
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "expired: {:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(1_900), "not before its 2 s: {:?}", t.elapsed());
+    assert!(d.wait_for("bubbles: 1 expired", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_none()), "gone from the screen");
+}
+
+/// Spec § 3: under do-not-disturb, only critical notifications get a bubble.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn do_not_disturb_shows_only_critical_bubbles() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-dnd", 1, false, dnd_on_before_start);
+    client.notify(&Note::new("Mailer", "Weekly report ready")).unwrap();
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles surface on"), 0, "a normal one goes to the history only: {:?}", d.log());
+    let critical = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "a critical one still shows: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    let urgent = rgb(preset("catppuccin").unwrap().dark.urgent);
+    let frame = bubble_frame(&sway.screenshot("HEADLESS-1").expect("grim"));
+    assert_eq!(frame, Some(urgent), "spec § 3: a critical bubble is framed in urgent");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(critical, 2)), "{:?}", d.log());
+}
+
+/// Spec § 3 and § 7: 0 loop wake-ups at rest once the bubbles expired, and while a sticky critical
+/// bubble shows (no finite expiry: no timer).
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn no_wakeup_at_rest_after_the_bubbles_expire_or_under_a_sticky_one() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-rest", 1, false, |_| ());
+    sway.hover(20, 400);
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "{:?}", d.log());
+    let after = rest_over_5_s(&d);
+    assert_eq!(after, 0, "expired: nothing armed ({after} wake-ups): {:?}", d.log());
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for_count("bubbles shown: 1", 2, DELAY), "{:?}", d.log());
+    let sticky = rest_over_5_s(&d);
+    assert_eq!(sticky, 0, "a sticky bubble arms no timer ({sticky} wake-ups)");
+}
+
+/// Review Focus: the focused output changes while a bubble shows. The bubble stays where it is until
+/// the stack changes; then the stack moves to the focused output.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn the_bubbles_stay_put_when_the_focus_moves_until_the_stack_changes() {
+    let (_bus, sway, hypr, d, client) = notify_daemon("bubble-focus", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "{:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles surface on"), 1, "the focus alone moves nothing: {:?}", d.log());
+    // A sync that leaves the stack as it is (do-not-disturb keeps critical bubbles) moves nothing
+    // either.
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bubbles surface on"), 1, "the same stack stays put: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_some()), "still there");
+    client.notify(&Note::new("Monitor", "Backup finished").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-1", DELAY), "the stack changed: to the focused output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some()));
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_none()), "and only there");
+}
+
+/// Review Focus: the output holding the bubbles is unplugged. They come back on another output (the
+/// compositor's choice: the fixture's focused output is the one gone) and still answer.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn an_unplugged_output_holding_the_bubbles_brings_them_back_elsewhere() {
+    let (_bus, sway, _hypr, mut d, client) = notify_daemon("bubble-unplug", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    let id = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-2 disable");
+    assert!(d.wait_for("bubbles surface on the compositor's choice of output", DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "the bubble still answers: {:?}", d.log());
+}
+
+/// Review Focus: 4 bubbles shown and more waiting (4 here: 8 critical ones, the most that stay live,
+/// fix wave A). Dismissing the top one shows the next waiting one, and the hit map follows the new
+/// stack.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn four_shown_four_waiting_a_dismissal_shows_the_next() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-queue", 1, false, |_| ());
+    let ids: Vec<u32> = (0..8)
+        .map(|n| {
+            let summary = format!("Alert {n}");
+            client.notify(&Note::new("Monitor", &summary).critical()).unwrap()
+        })
+        .collect();
+    let four = |s: &Ppm| bubble_box(s, 3).is_some_and(|(_, left, _)| bubbles_on(s, left + 3) == 4);
+    assert!(sway.wait_for_screen("HEADLESS-1", four), "4 shown: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(ids[7], 2)), "the newest is on top: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(sway.wait_for_screen("HEADLESS-1", four), "still 4: the next waiting one shows");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(ids[6], 2)), "the stack and its hit map moved up: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", four));
+    assert!(
+        !client.heard_within(Duration::from_millis(500)).iter().any(|h| matches!(h, Heard::Closed(..))),
+        "the waiting ones were never closed"
+    );
+}
+
+/// Review Focus: the scale changes between 1 and 2 under a bubble. It is drawn again at the new
+/// scale, twice as wide in pixels, and back.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_bubble_follows_the_scale_from_1_to_2_and_back() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-scale", 1, false, |_| ());
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    let one = Cell::new(0u32);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).map(|(_, l, r)| one.set(r - l)).is_some()), "{:?}", d.log());
+    let w1 = one.get();
+    sway.command("output HEADLESS-1 scale 2");
+    assert!(d.wait_for("bubbles scale 2", DELAY), "{:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 6).is_some_and(|(_, l, r)| (r - l).abs_diff(2 * w1) <= 8)),
+        "twice as wide at scale 2 (scale 1: {w1} px): {:?}",
+        d.log()
+    );
+    sway.command("output HEADLESS-1 scale 1");
+    assert!(d.wait_for("bubbles scale 1", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some_and(|(_, l, r)| (r - l).abs_diff(w1) <= 4)), "and back");
+}
+
+/// Constraints, Lightness (after task 2's review): the timer follows every live bubble with a finite
+/// timeout, hidden by do-not-disturb or not. A bubble hidden by DND, then replaced with a 2 s
+/// timeout, closes on time with reason 1, and never shows up later past its time.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn under_dnd_a_hidden_replaced_bubble_still_expires_on_time() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-dnd-expiry", 1, false, |_| ());
+    ready(&d);
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(20_000)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "hidden by do-not-disturb: {:?}", d.log());
+    let t = Instant::now();
+    let replaced = client.notify(&Note::new("Mailer", "Weekly report sent").replaces(id).timeout(2_000)).unwrap();
+    assert_eq!(replaced, id, "replaced in place, still live");
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "the hidden one expires: {:?}", d.log());
+    let at = t.elapsed();
+    assert!(at >= Duration::from_millis(1_900) && at < Duration::from_secs(5), "on its new time, not its old 20 s: {at:?}");
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd off", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("bubbles surface on"), 1, "never shown again once past its time: {:?}", d.log());
+}
+
+/// Task 5's review: do-not-disturb reaches the bell through the tray's connection too.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn with_the_tray_dnd_from_alpheus_launch_updates_the_bell() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-dnd-tray", "modules = [\"tray\", \"notifications\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("notifications: on the tray's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(sway.runtime.join("state/alpheus/dnd").exists());
+}
+
+/// Task 5's review, then fix wave A: with no session bus there is no server, but the bell is drawn
+/// muted ("not serving"), so its middle click still toggles do-not-disturb; every change is saved,
+/// logged and shown (the crossed bell).
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn without_a_session_bus_the_bell_is_muted_and_still_toggles_dnd() {
+    let sway = Sway::start("bell-no-bus", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), ..DaemonOptions::default() });
+    assert!(d.wait_for("notifications: no session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: not serving", DELAY), "the bell drawn muted: {:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
+    assert!(d.wait_for("notifications: do not disturb on", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: dnd on", DELAY), "the crossed bell: {:?}", d.log());
+    assert!(file.exists());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("notifications: do not disturb off", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists());
+    assert_eq!(d.count("bell: serving"), 0, "never serving: {:?}", d.log());
+}
+
+// ---- The panel (notifications task 7) ----
+
+/// The bell at the bar's left edge, the media module after it, the clock.
+const PANEL_BAR: &str = "modules = [\"notifications\", \"media\", \"clock\"]\n";
+
+/// The panel's bar on a private session bus with one fake player playing "Paper Lanterns"
+/// (fictional), serving notifications, a client connected; the bell and the playing module drawn.
+fn panel_daemon(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeClient, FakePlayer) {
+    let bus = PrivateBus::start(name);
+    let player = FakePlayer::start(&bus, PlayerSpec::playing("lumen", "Paper Lanterns"));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(PANEL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_for_the_server(&bus);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(player.wait_call("GetAll", DELAY).is_some(), "the daemon read the fake player: {:?}", d.log());
+    // Read and drawn: the playing module's glyph in the purple (catppuccin dark), after the bell.
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    thread::sleep(Duration::from_millis(300));
+    (bus, sway, hypr, d, client, player)
+}
+
+/// The bar's cells right of the bell (where its count shows), above any popup.
+fn after_the_bell(s: &Ppm) -> Vec<[u8; 3]> {
+    (2..20).flat_map(|y| (17..60).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// Spec § 4: a bell click opens the panel with the media card and the history. Delete removes an
+/// entry; Clear all empties the history and closes the live bubbles; the DND row toggles the file.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_bell_opens_the_panel_with_the_card_and_the_history() {
+    let (_bus, sway, _hypr, d, client, _player) = panel_daemon("panel-open");
+    let old = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    let live = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(client.wait_heard(&Heard::Closed(old, 1)), "the first one expired: history only: {:?}", d.log());
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 2, card: yes)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    // The newest (the live one) is selected at open: Down to the older one, then Delete.
+    keys(&sway, &["Down", "Delete"]);
+    assert!(d.wait_for("panel: entry removed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("panel: entries 1", DELAY), "{:?}", d.log());
+    keys(&sway, &["End", "Return"]);
+    assert!(d.wait_for("panel: cleared", DELAY), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(live, 2)), "Clear all closes the live bubble, dismissed: {:?}", d.log());
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("panel: entries 0", DELAY), "{:?}", d.log());
+    let dnd = sway.runtime.join("state/alpheus/dnd");
+    assert!(!dnd.exists());
+    keys(&sway, &["Up", "Return"]); // from Clear all to Do not disturb
+    assert!(wait_until(|| dnd.exists()), "DND on, persisted: {:?}", d.log());
+    assert!(d.wait_for("panel: do not disturb on", DELAY), "{:?}", d.log());
+    keys(&sway, &["Return"]);
+    assert!(wait_until(|| !dnd.exists()), "DND off: the file goes: {:?}", d.log());
+    assert!(d.wait_for("panel: do not disturb off", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Review Focus: the panel is open when a notification arrives. Its rows show it at once, and it
+/// counts as read: the bell shows no count while the panel shows it.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_notification_arriving_while_the_panel_is_open_shows_in_it_read() {
+    let (_bus, sway, _hypr, d, client, _player) = panel_daemon("panel-arrival");
+    // `before`: the bar with no notification yet; `unread`: showing the count; `read`: once the
+    // panel marked it read.
+    let before = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != before), "the count shows: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let unread = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 1, card: yes)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != unread), "opening marks it read: the count goes");
+    wait_for_the_popup_drawn(&sway, &d);
+    let read = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Calendar", "Standup in 5 minutes").timeout(2_000)).unwrap();
+    assert!(d.wait_for("panel: entries 2", DELAY), "the rows follow at once: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Mae's keyboard crash (see `a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive`),
+/// through the panel, whose Down then a click outside is its likeliest trigger: (a) the panel
+/// closed by an outside click past Down's repeat delay, wtype still alive; (b) reopened, Down,
+/// wtype gone (`keyboard_lost`), then the outside click.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_panel_closed_after_a_repeat_delay_keeps_the_bar_alive() {
+    let (_bus, sway, _hypr, mut d, _client, _player) = panel_daemon("panel-keyboard");
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Down", "-s", "2500"]);
+    thread::sleep(Duration::from_secs(1));
+    sway.click(640, 400, "button1");
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("keyboard released", DELAY), "{:?}", d.log());
+    survives(&mut d, "the panel closed with wtype alive");
+    let _ = held.wait();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for_count("panel shown", 2, DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Down"]).success());
+    thread::sleep(Duration::from_millis(1500));
+    sway.click(640, 400, "button1");
+    assert!(d.wait_for_count("popup closed", 2, DELAY), "{:?}", d.log());
+    survives(&mut d, "the panel closed after wtype left");
+}
+
+/// Spec § 4: the media card's 1 s tick runs while the panel shows it and the player plays, and
+/// stops with the panel, its Seeked rule too.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_panel_ticks_only_while_its_card_plays() {
+    let (_bus, sway, _hypr, d, _client, player) = panel_daemon("panel-tick");
+    sway.hover(640, 400);
+    assert_eq!(rest_over_5_s(&d), 0, "closed: nothing ticks: {:?}", d.log());
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 0, card: yes)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    sway.hover(640, 400);
+    let open = wakeups_over_5_s(&d);
+    assert!((4..=12).contains(&open), "about one tick a second with the card playing: {open}");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    // SCTK's key repeat timer, armed at Escape's press, fires once at the repeat delay (600 ms on
+    // sway) and drops itself, as in the media popup's tick test.
+    thread::sleep(Duration::from_secs(1));
+    let after = rest_over_5_s(&d);
+    assert_eq!(after, 0, "closed: the tick went with it ({after} wake-ups)");
+    let seeked = wakeups_over_seeked(&d, &player);
+    assert_eq!(seeked, 0, "closed: the Seeked rule went with the panel ({seeked} wake-ups)");
+}
+
+/// No player, so no card and no tick to refresh the panel: opening it marks read at once, and an
+/// arrival while it is open shows in it (the host's output refreshes it) and stays read.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn without_a_card_opening_and_arrivals_mark_read_at_once() {
+    no_card_marks_read("panel-no-card", BELL_BAR);
+}
+
+/// The same with the tray, as Mae runs it: the server then lives on the tray's connection, and the
+/// tray's output (not the link's) is what refreshes the open panel.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn with_the_tray_arrivals_refresh_the_open_panel() {
+    no_card_marks_read("panel-no-card-tray", "modules = [\"notifications\", \"tray\", \"clock\"]\n");
+}
+
+/// Waits until the panel is on screen with its newest entry selected: the selection band in its
+/// first row (catppuccin dark, the default with no theme file).
+fn wait_for_the_panel_drawn(sway: &Sway, d: &Daemon) {
+    let band = rgb(preset("catppuccin").unwrap().dark.selection);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&band)), "the panel drawn: {:?}", d.log());
+}
+
+fn no_card_marks_read(name: &str, modules: &str) {
+    let (bus, sway, _hypr, d, ()) = bell_daemon(name, modules, |_| ());
+    wait_for_the_server(&bus);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    // The bell drawn: something other than the bar's background left of its count.
+    let drawn = |s: &Ppm| {
+        let bg = s.at(BAR_BACKGROUND.0, BAR_BACKGROUND.1);
+        (2..20).flat_map(|y| (4..17).map(move |x| (x, y))).any(|(x, y)| s.at(x, y) != bg)
+    };
+    assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the bell never drawn: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    let before = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    // Critical: sticky, so no expiry refreshes anything behind the test's back.
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != before), "the count shows: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let unread = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 1, card: no)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != unread), "opening marks it read: the count goes");
+    wait_for_the_panel_drawn(&sway, &d);
+    thread::sleep(Duration::from_millis(300));
+    let read = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Calendar", "Standup in 5 minutes").critical()).unwrap();
+    assert!(d.wait_for("panel: entries 2", DELAY), "the host's output refreshes the open panel: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }

@@ -27,6 +27,8 @@ pub enum Key {
     /// The launcher ignores them (model.rs); a tray menu enters a submenu (→) or goes back a level (←).
     Left,
     Right,
+    /// Removes the selected entry in the notifications panel; the launcher ignores it.
+    Delete,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -77,6 +79,7 @@ pub fn translate(sym: Keysym, utf8: Option<&str>, mods: Mods) -> Option<Key> {
         key::End | key::KP_End => Some(Key::End),
         key::Left | key::KP_Left => Some(Key::Left),
         key::Right | key::KP_Right => Some(Key::Right),
+        key::Delete | key::KP_Delete => Some(Key::Delete),
         _ => None,
     };
     if k.is_some() {
@@ -121,6 +124,8 @@ mod tests {
             (key::End, Key::End),
             (key::Left, Key::Left),
             (key::Right, Key::Right),
+            (key::Delete, Key::Delete),
+            (key::KP_Delete, Key::Delete),
         ];
         for (raw, k) in cases {
             assert_eq!(translate(sym(raw), None, NONE), Some(k), "{:?}", sym(raw));
@@ -155,7 +160,8 @@ mod tests {
         assert_eq!(translate(sym(key::space), Some(" "), NONE), Some(Key::Char(' ')));
         assert_eq!(translate(sym(0x31), Some("1"), NONE), Some(Key::Char('1')));
         assert_eq!(translate(sym(0xffb1), Some("1"), NONE), Some(Key::Char('1')), "KP_1 with NumLock: its text");
-        assert_eq!(translate(sym(0xffff), Some("\u{7f}"), NONE), None, "Delete: a control character");
+        assert_eq!(translate(sym(0xffff), Some("\u{7f}"), NONE), Some(Key::Delete), "Delete: its text \\x7f is not a character");
+        assert_eq!(translate(Keysym::from_char('a'), Some("\u{7f}"), NONE), None, "\\x7f: a control character");
         assert_eq!(translate(Keysym::from_char('a'), Some("\u{1b}"), NONE), None);
         assert_eq!(translate(Keysym::from_char('a'), None, NONE), None, "no text: nothing");
         assert_eq!(translate(Keysym::from_char('a'), Some("ab"), NONE), None, "several characters at once: ignored");

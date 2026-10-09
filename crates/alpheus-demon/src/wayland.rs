@@ -5,6 +5,7 @@
 //! (`tray_output`): its icons, its gestures, its frame-coalesced re-reads.
 
 use crate::actions::{self, Button, Wheel};
+use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::calendar::{Calendar, locale_first_day};
 use crate::clock::LocalTime;
 use crate::deadline::DeadlineTimer;
@@ -15,7 +16,9 @@ use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::link::SessionLink;
 use crate::media::{MediaView, Players};
 use crate::media_popup::{self, MediaAction, MediaPopup};
+use crate::notify::Center;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
+use crate::panel::{self, Panel, PanelAction};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::state::{Bar, Msg};
@@ -24,6 +27,7 @@ use crate::tray::hover::{self, Hover, HoverChange};
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
 use crate::tray::mpris::Mpris;
+use crate::tray::notifications::Notifications;
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
@@ -395,7 +399,7 @@ pub struct App {
     /// Raised by a message that changed the display (channel, clock):
     /// redrawn exactly once after `loop.dispatch()` returns, not on every
     /// message — see `launch::on_message`.
-    dirty: bool,
+    pub(crate) dirty: bool,
     /// Outputs restored since their last surface was closed (`closed`),
     /// with no successful `configure` since (see `should_restore_once`): at
     /// most one restore per output as long as the previous one hasn't
@@ -414,8 +418,8 @@ pub struct App {
     /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
     /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
-    /// For the tray's frame requests, made outside any Wayland callback.
-    qh: QueueHandle<App>,
+    /// For the tray's frame requests, made outside any Wayland callback, and the bubbles' surface.
+    pub(crate) qh: QueueHandle<App>,
     /// The tray while its session bus lives; None without the module, without
     /// a session bus, or once the bus closed (never reconnected).
     pub(crate) tray: Option<Tray>,
@@ -440,6 +444,8 @@ pub struct App {
     pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
     /// The last write failure logged: the same one is not logged again.
     pub(crate) mode_error: Option<String>,
+    /// Do-not-disturb (notifications task 5): loaded at startup, changed only by `set_dnd`.
+    pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -486,6 +492,13 @@ pub struct App {
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
+    /// The notification bubbles while at least one shows (bubbles_surface.rs); None at rest.
+    pub(crate) bubbles: Option<OpenBubbles>,
+    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
+    /// armed only while there is one.
+    pub(crate) bubble_timer: DeadlineTimer,
+    /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
+    pub(crate) bubble_closes: Closes,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
     /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
@@ -635,6 +648,7 @@ impl App {
             mode_runtime: None,
             mode_written: None,
             mode_error: None,
+            dnd: false,
             tray_deferred_queued: false,
             tray_ready_queued: false,
             link_ready_queued: false,
@@ -655,6 +669,9 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
+            bubbles: None,
+            bubble_timer: DeadlineTimer::new(),
+            bubble_closes: Closes::default(),
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
@@ -913,10 +930,19 @@ impl App {
             if self.tray.as_ref().is_some_and(|t| t.media().is_some()) {
                 log("media: the session bus closed");
             }
+            if self.tray.as_ref().is_some_and(|t| t.notifications().is_some()) {
+                log("notifications: the session bus closed");
+            }
             self.tray = None;
         }
         if let Some(view) = out.media {
             self.media_view(view);
+        }
+        if let Some(view) = out.notifications {
+            self.notify_view(view);
+        }
+        if out.bubbles {
+            self.bubbles_sync();
         }
         if out.redraw || out.bus_closed {
             // The hovered item leaving the tray closes its tooltip outright (ItemGone), whatever
@@ -986,6 +1012,7 @@ impl App {
             self.menu_layout_changed();
         }
         self.media_popup_refresh();
+        self.panel_refresh();
         self.tray_sync();
     }
 
@@ -1003,6 +1030,24 @@ impl App {
         let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
         link.media_do(f);
         // What the flush drained is routed from an idle (`link_sync`).
+        self.link_sync();
+    }
+
+    /// Runs `f` on the notifications server wherever it lives, the one path for every change the bar
+    /// makes (the bubbles' timer and clicks, the panel, the verbs, do-not-disturb). Its signals leave
+    /// at once; its view and bubbles come back through an idle callback (the tray's deferred output,
+    /// the link's `has_ready`, both queued by their `*_sync`), never re-entrantly. With no server,
+    /// nothing.
+    pub(crate) fn notify_do(&mut self, f: impl FnOnce(&mut Notifications)) {
+        if let Some(tray) = self.tray.as_mut().filter(|t| t.notifications().is_some()) {
+            tray.notifications_do(f);
+            // The one prompt delivery of the tray's deferred view and bubbles (the idle `tray_sync`
+            // queues): without it they would wait for the next event on the tray's connection.
+            self.tray_sync();
+            return;
+        }
+        let Some(link) = self.link.as_mut().filter(|l| l.notifications().is_some()) else { return };
+        link.notifications_do(f);
         self.link_sync();
     }
 
@@ -1175,20 +1220,25 @@ impl App {
                 self.mpris_do(|m, out| m.control(out, c));
                 self.media_popup_refresh();
             }
-            // A pin changes the active player with no D-Bus traffic to carry the bar's view: it is
-            // taken here, at once (the one place it changes outside an output).
             MediaAction::Pin(name) => {
-                let mut change = None;
-                self.mpris_do(|m, out| {
-                    m.pin(&name);
-                    m.resync_active(out);
-                    change = m.take_view_change();
-                });
-                if let Some(view) = change {
-                    self.media_view(view);
-                }
+                self.media_pin(&name);
                 self.media_popup_refresh();
             }
+        }
+    }
+
+    /// Pins `name` (the media popup's or the panel's card). A pin changes the active player with no
+    /// D-Bus traffic to carry the bar's view: it is taken here, at once (the one place it changes
+    /// outside an output).
+    fn media_pin(&mut self, name: &str) {
+        let mut change = None;
+        self.mpris_do(|m, out| {
+            m.pin(name);
+            m.resync_active(out);
+            change = m.take_view_change();
+        });
+        if let Some(view) = change {
+            self.media_view(view);
         }
     }
 
@@ -1222,12 +1272,12 @@ impl App {
         self.media_timer_sync();
     }
 
-    /// The tick follows `media_popup::player_tick`: armed only while the popup is open and the active
-    /// player plays, its position known, before the end of its track; removed otherwise. An armed
+    /// The tick follows `media_popup::player_tick`: armed only while the popup is open (or the panel
+    /// showing its card) and the active player plays, its position known, before the end of its track; removed otherwise. An armed
     /// tick still ahead is kept (`next_deadline`).
     pub(crate) fn media_timer_sync(&mut self) {
         let now = Instant::now();
-        let open = self.media_shown();
+        let open = self.media_shown() || self.panel_shown();
         let due = mpris_of(self.tray.as_ref(), self.link.as_ref())
             .and_then(|m| m.players().active())
             .and_then(|p| media_popup::player_tick(open, p, now));
@@ -1241,6 +1291,133 @@ impl App {
     pub(crate) fn media_tick(app: &mut App, _: Instant) {
         app.media_timer.fired();
         app.media_popup_refresh();
+        app.panel_refresh();
+    }
+
+    /// Left press on the bell: toggles the panel under it (a second click closes it). Opening marks
+    /// everything read (spec § 4); the card's Seeked rule and tick start as the media popup's do.
+    pub(crate) fn panel_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
+        if self.panel_shown() {
+            self.popup_close(PopupClose::OutsideClick);
+            return;
+        }
+        let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else { return };
+        let room = self.popup_room(i).1.saturating_sub(1);
+        let now = Instant::now();
+        let built = {
+            let App { tray, link, .. } = &*self;
+            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
+            notifications_of(tray.as_ref(), link.as_ref()).map(|n| {
+                let mut p = Panel::new(n.center(), players, room);
+                panel::scroll_into_view(&mut p, n.center(), players);
+                let rows = panel::rows(n.center(), players, &p, now, crate::tray::notifications::minute_now());
+                let card = panel::items(n.center(), players).first() == Some(&panel::Item::Card);
+                (p, rows, card)
+            })
+        };
+        // No consumer (no session bus): nothing to show.
+        let Some((p, rows, card)) = built else { return };
+        let entries = p.entries;
+        let (columns, height) = rows.cells();
+        if self.popup_open(qh, anchor, PopupBody::Panel(p), columns, height, true) {
+            self.popup_paint(rows);
+            // Only once it shows: a refused open leaves the count on the bell.
+            self.notify_do(|n| n.center_mut().mark_read());
+            self.mpris_do(|m, out| m.popup_opened(out));
+            self.media_timer_sync();
+            log(&format!("panel shown (entries: {entries}, card: {})", if card { "yes" } else { "no" }));
+        }
+    }
+
+    pub(crate) fn panel_shown(&self) -> bool {
+        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Panel(_)))
+    }
+
+    /// `f` on the open panel, the notifications center and the players; Nothing when the panel or the
+    /// consumer is missing.
+    pub(crate) fn panel_with(&mut self, f: impl FnOnce(&mut Panel, &Center, Option<&Players>) -> PanelAction) -> PanelAction {
+        let App { tray, link, popup, .. } = self;
+        let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
+        match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
+            (Some(n), Some(PopupBody::Panel(p))) => f(p, n.center(), players),
+            _ => PanelAction::Nothing,
+        }
+    }
+
+    /// A panel action: the card's go as the media popup's; the notifications' through `notify_act`
+    /// (signals sent, the bell and the bubbles follow, the panel repainted).
+    pub(crate) fn panel_action(&mut self, action: PanelAction) {
+        match action {
+            PanelAction::Nothing => {}
+            PanelAction::Redraw => self.panel_refresh(),
+            PanelAction::Close => self.popup_close(PopupClose::Escape),
+            PanelAction::Media(m) => match m {
+                MediaAction::Nothing => {}
+                MediaAction::Redraw => self.panel_refresh(),
+                MediaAction::Close => self.popup_close(PopupClose::Escape),
+                MediaAction::Control(c) => {
+                    self.mpris_do(|m, out| m.control(out, c));
+                    self.panel_refresh();
+                }
+                MediaAction::Pin(name) => {
+                    self.media_pin(&name);
+                    self.panel_refresh();
+                }
+            },
+            PanelAction::Invoke(id, revision, _) => self.notify_activate(id, revision),
+            PanelAction::Remove(id) => {
+                self.notify_act(|n| n.center_mut().remove(id));
+                log("panel: entry removed");
+            }
+            // Task 5's one path: persisted, given to the server, then (notify_act) the bubbles and
+            // this panel follow.
+            PanelAction::ToggleDnd => {
+                let on = !self.dnd;
+                self.set_dnd(on);
+                log(&format!("panel: do not disturb {}", if on { "on" } else { "off" }));
+            }
+            PanelAction::Clear => {
+                self.clear_notifications();
+                log("panel: cleared");
+            }
+        }
+    }
+
+    /// After anything that may change what the panel shows (a host's output, a tick, a key, a
+    /// notification action): whatever arrived is marked read while it shows (spec § 4), the window
+    /// follows the selection, the rows are rebuilt and painted (`popup_draw` commits nothing when they
+    /// did not change), and the card's tick re-synced. The consumer gone (its bus closed): the panel
+    /// closes.
+    pub(crate) fn panel_refresh(&mut self) {
+        if !self.panel_shown() {
+            return;
+        }
+        if notifications_of(self.tray.as_ref(), self.link.as_ref()).is_some_and(|n| n.center().view(n.held()).unread > 0) {
+            self.notify_do(|n| n.center_mut().mark_read());
+        }
+        let now = Instant::now();
+        let built = {
+            let App { tray, link, popup, .. } = &mut *self;
+            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
+            match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|o| &mut o.body)) {
+                (Some(n), Some(PopupBody::Panel(p))) => {
+                    panel::scroll_into_view(p, n.center(), players);
+                    let before = p.entries;
+                    p.entries = n.center().history().count();
+                    Some((panel::rows(n.center(), players, p, now, crate::tray::notifications::minute_now()), before, p.entries))
+                }
+                _ => None,
+            }
+        };
+        let Some((rows, before, after)) = built else {
+            self.popup_close(PopupClose::ItemGone);
+            return;
+        };
+        if before != after {
+            log(&format!("panel: entries {after}"));
+        }
+        self.popup_paint(rows);
+        self.media_timer_sync();
     }
 
     /// `launcher_was_open`: whether the launcher was open right before this
@@ -1251,16 +1428,27 @@ impl App {
             match popup {
                 ModulePopup::Calendar => self.calendar_toggle(qh, anchor),
                 ModulePopup::Media => self.media_toggle(qh, anchor),
+                ModulePopup::Panel => self.panel_toggle(qh, anchor),
             }
             return;
         }
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
-        let (toggles, media) = {
+        let (toggles, media, dnd) = {
             let Some(grid) = &self.surfaces[i].last else { return };
             let target = grid.target_at(painter::column_under(x, e, advance));
-            (target.is_some_and(|t| actions::toggles_launcher(t, b)), target.and_then(|t| actions::media_control(t, b)))
+            (
+                target.is_some_and(|t| actions::toggles_launcher(t, b)),
+                target.and_then(|t| actions::media_control(t, b)),
+                target.is_some_and(|t| actions::toggles_dnd(t, b)),
+            )
         };
+        // The bell's middle button: do-not-disturb flips inside the daemon (notifications spec § 4),
+        // through the one path that persists it.
+        if dnd {
+            self.set_dnd(!self.dnd);
+            return;
+        }
         // The media module's middle button and wheel: D-Bus, never a command (spec § 1).
         if let Some(c) = media {
             self.mpris_do(move |m, out| m.control(out, c));
@@ -1342,6 +1530,12 @@ pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>
     tray.and_then(Tray::media).or_else(|| link.and_then(SessionLink::media))
 }
 
+/// The notifications consumer wherever it lives (Task 5): on the tray's connection, else on the
+/// bar's link.
+pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Notifications> {
+    tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))
+}
+
 /// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
 /// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
 fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
@@ -1371,6 +1565,9 @@ impl CompositorHandler for App {
         // BAR surface's own scale change look handled.
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
+            return;
+        }
+        if self.bubbles_scale(surface, f) {
             return;
         }
         if self.popup_scale(surface, f) {
@@ -1425,6 +1622,7 @@ impl OutputHandler for App {
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
+        self.bubbles_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -1450,6 +1648,10 @@ impl LayerShellHandler for App {
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
             return; // a launcher surface: the bar's restore logic is not involved
+        }
+        if self.bubbles_owns(layer.wl_surface()) {
+            self.bubbles_layer_closed();
+            return; // the bubbles' surface: the bar's restore logic is not involved
         }
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
@@ -1491,6 +1693,10 @@ impl LayerShellHandler for App {
         // review item 2): same reasoning as `scale_factor_changed`.
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
+            return;
+        }
+        if self.bubbles_owns(layer.wl_surface()) {
+            self.bubbles_configured(c.new_size);
             return;
         }
         let Some(i) = self.index(layer.wl_surface()) else { return };
@@ -1581,6 +1787,9 @@ impl PointerHandler for App {
     fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
             if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.bubbles_pointer(conn, ev) {
                 continue;
             }
             if self.popup.as_ref().is_some_and(|p| p.wl_surface() == &ev.surface) {
@@ -2221,6 +2430,10 @@ mod tests {
         assert!(
             !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Media), t0),
             "a calendar record does not swallow a media press"
+        );
+        assert!(
+            !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Panel), t0),
+            "a calendar record does not swallow a bell press"
         );
     }
 

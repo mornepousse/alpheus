@@ -8,10 +8,11 @@
 use super::bus::{Call, CallError, Property};
 use super::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, ITEM_INTERFACE, MAX_ITEMS, MAX_MENU_DEPTH, MAX_MENU_ENTRIES, MAX_TEXT, MENU_INTERFACE,
-    MPRIS_PATH, MPRIS_PLAYER_INTERFACE, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, PropSet, PropValue, SETTINGS_INTERFACE, Status,
-    WATCHER_INTERFACE,
+    MPRIS_PATH, MPRIS_PLAYER_INTERFACE, NOTIFICATIONS_INTERFACE, NOTIFICATIONS_PATH, PORTAL_PATH, PROPERTIES_INTERFACE, Prop, PropSet,
+    PropValue, SETTINGS_INTERFACE, Status, WATCHER_INTERFACE,
 };
 use crate::media::Value;
+use crate::notify::{self, Action, Incoming, Urgency};
 use crate::sources::dbus::dbusrs_bus::sig;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -31,6 +32,8 @@ pub const MAX_SERVICE: usize = 1024;
 pub const MAX_ENTRIES: usize = 64;
 /// Most strings read from one `as` (artists, invalidated names).
 pub const MAX_LIST: usize = 32;
+/// Most (key, label) pairs read from Notify's `actions`: 200 actions cost 32 reads.
+pub const MAX_ACTION_PAIRS: usize = 32;
 
 /// A decoded answer, by the call it answers.
 #[derive(Debug, Clone, PartialEq)]
@@ -91,7 +94,7 @@ pub fn reply(call: &Call, m: &Message) -> Result<Reply, CallError> {
         Call::ListNames => names(&mut it).map(Reply::Names),
         Call::GetNameOwner { .. } => read::<&str>(&mut it, "GetNameOwner").map(|s| Reply::Owner(s.to_string())),
         Call::GetConnectionUnixProcessID { .. } => read::<u32>(&mut it, "GetConnectionUnixProcessID").map(Reply::Pid),
-        Call::RequestName => read::<u32>(&mut it, "RequestName").map(Reply::RequestName),
+        Call::RequestName | Call::RequestNotifications => read::<u32>(&mut it, "RequestName").map(Reply::RequestName),
         Call::AboutToShow { .. } => read::<bool>(&mut it, "AboutToShow").map(Reply::NeedUpdate),
         Call::GetLayout { .. } => layout(&mut it).map(Reply::Layout),
         Call::ReadOne => color_scheme(&mut it).map(Reply::ColorScheme).ok_or_else(|| bad(format!("color-scheme is {:?}", sig(&mut it)))),
@@ -291,6 +294,11 @@ pub enum Signal {
         sender: String,
         us: i64,
     },
+    /// The bus driver's NameAcquired, sent to us alone: that name is ours now (the consumer keeps
+    /// the one it asked for: the watcher's comes on this connection too).
+    NameAcquired(String),
+    /// The bus driver's NameLost, sent to us alone: that name is no longer ours.
+    NameLost(String),
     /// Anything else, or a body that does not parse.
     Other,
 }
@@ -314,6 +322,12 @@ pub fn signal(m: &Message) -> Signal {
             Ok((name, old, new)) => Signal::NameOwnerChanged { name: name.into(), old: old.into(), new: new.into() },
             Err(_) => Signal::Other,
         },
+        // Unicast from the bus driver only: a peer's signal by these names, or a broadcast, is not it.
+        ("org.freedesktop.DBus", "NameAcquired" | "NameLost") if sender != "org.freedesktop.DBus" || m.destination().is_none() => {
+            Signal::Other
+        }
+        ("org.freedesktop.DBus", "NameAcquired") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameAcquired(n.into())),
+        ("org.freedesktop.DBus", "NameLost") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameLost(n.into())),
         (ITEM_INTERFACE, "NewTitle") => changed(Prop::Title),
         (ITEM_INTERFACE, "NewIcon") => changed(Prop::IconName),
         (ITEM_INTERFACE, "NewAttentionIcon") => changed(Prop::AttentionIconName),
@@ -421,6 +435,166 @@ fn properties_updated(it: &mut Iter<'_>) -> Option<(Vec<(i32, MenuProps)>, Vec<(
     Some((updated, removed))
 }
 
+/// A method call to the notification server, decoded raw (notifications spec § 1, amended): never
+/// through crossroads' typed handlers, which would decode `image-data` into dynamic values.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inbound {
+    Notify(Incoming),
+    Close(u32),
+    Capabilities,
+    ServerInfo,
+    /// Not a call to the server, another member, or arguments of other types: refused.
+    Unknown,
+}
+
+/// `m` decoded, when it is a method call on NOTIFICATIONS_PATH for NOTIFICATIONS_INTERFACE:
+/// `Notify` exactly `susssasa{sv}` and an optional `i`, `CloseNotification(u)`, `GetCapabilities()`,
+/// `GetServerInformation()`; anything else `Unknown`. A call with no interface header (D-Bus allows
+/// one) is refused too, on purpose: libnotify, GDBus and Chromium always send the interface, and a
+/// bare member could otherwise reach the server from any interface's namesake.
+pub fn inbound(m: &Message) -> Inbound {
+    let ours = m.msg_type() == MessageType::MethodCall
+        && m.path().is_some_and(|p| &*p == NOTIFICATIONS_PATH)
+        && m.interface().is_some_and(|i| &*i == NOTIFICATIONS_INTERFACE);
+    if !ours {
+        return Inbound::Unknown;
+    }
+    let mut it = m.iter_init();
+    let empty = it.arg_type() == ArgType::Invalid;
+    match m.member().as_deref() {
+        Some("Notify") => notify_call(&mut it).map_or(Inbound::Unknown, Inbound::Notify),
+        Some("CloseNotification") => match it.read::<u32>() {
+            Ok(id) if it.arg_type() == ArgType::Invalid => Inbound::Close(id),
+            _ => Inbound::Unknown,
+        },
+        Some("GetCapabilities") if empty => Inbound::Capabilities,
+        Some("GetServerInformation") if empty => Inbound::ServerInfo,
+        _ => Inbound::Unknown,
+    }
+}
+
+/// Notify's arguments at `it`, one by one, each cleaned and capped by `notify`; the icon is checked
+/// for its type and dropped; a missing `expire_timeout` is -1. None for a missing argument, one of
+/// another type, or one too many.
+fn notify_call(it: &mut Iter<'_>) -> Option<Incoming> {
+    let app = it.read::<&str>().ok()?;
+    let replaces_id = it.read::<u32>().ok()?;
+    it.read::<&str>().ok()?;
+    let summary = it.read::<&str>().ok()?;
+    let body = it.read::<&str>().ok()?;
+    if sig(it).as_deref() != Some("as") {
+        return None;
+    }
+    let actions = actions(it)?;
+    it.next();
+    if sig(it).as_deref() != Some("a{sv}") {
+        return None;
+    }
+    let h = hints(it)?;
+    it.next();
+    let expire_ms = match sig(it).as_deref() {
+        None => -1,
+        Some("i") => it.read::<i32>().ok()?,
+        Some(_) => return None,
+    };
+    if sig(it).is_some() {
+        return None;
+    }
+    Some(Incoming {
+        app_name: notify::app_text(app),
+        replaces_id,
+        summary: notify::summary_text(summary),
+        body: notify::body_text(body),
+        actions,
+        urgency: h.urgency,
+        expire_ms,
+        desktop_entry: h.desktop_entry,
+        category: h.category,
+        transient: h.transient,
+        resident: h.resident,
+        tag: h.tag,
+    })
+}
+
+/// Notify's `as` at `it`, read as (key, label) pairs: at most MAX_ACTION_PAIRS pairs read, each
+/// through `notify::action` (a refused key or one already kept: skipped), at most MAX_ACTIONS kept;
+/// a last key without its label dropped.
+fn actions(it: &mut Iter<'_>) -> Option<Vec<Action>> {
+    let mut a = it.recurse(ArgType::Array)?;
+    let mut out: Vec<Action> = Vec::new();
+    for _ in 0..MAX_ACTION_PAIRS {
+        let Some(key) = a.get::<&str>() else { break };
+        if !a.next() {
+            break;
+        }
+        let Some(label) = a.get::<&str>() else { break };
+        if let Some(action) = notify::action(key, label)
+            && !out.iter().any(|x| x.key == action.key)
+        {
+            out.push(action);
+        }
+        if out.len() == notify::MAX_ACTIONS || !a.next() {
+            break;
+        }
+    }
+    Some(out)
+}
+
+/// The hints alpheus reads (spec § 2).
+struct Hints {
+    urgency: Urgency,
+    category: Option<String>,
+    desktop_entry: Option<String>,
+    transient: bool,
+    resident: bool,
+    tag: Option<String>,
+}
+
+/// Notify's `a{sv}` at `it`: at most MAX_ENTRIES entries; only the six hints read here are entered.
+/// Every other one (`image-data`, `image_data`, `icon_data`, `image-path`, sound, `sender-pid`,
+/// `x`, `y`…) is stepped over, its variant never recursed into: an image is never read.
+fn hints(it: &mut Iter<'_>) -> Option<Hints> {
+    let mut h = Hints { urgency: Urgency::Normal, category: None, desktop_entry: None, transient: false, resident: false, tag: None };
+    let mut entries = it.recurse(ArgType::Array)?;
+    for _ in 0..MAX_ENTRIES {
+        let Some(mut entry) = entries.recurse(ArgType::DictEntry) else { break };
+        let key = entry.read::<&str>().ok()?;
+        let read = matches!(key, "urgency" | "transient" | "resident" | "category" | "desktop-entry" | "x-canonical-private-synchronous");
+        if read && let Some(mut v) = entry.recurse(ArgType::Variant) {
+            match key {
+                "urgency" => h.urgency = integer(&mut v).map_or(h.urgency, Urgency::from_level),
+                "transient" => h.transient = flag(&mut v).unwrap_or(h.transient),
+                "resident" => h.resident = flag(&mut v).unwrap_or(h.resident),
+                "category" => h.category = v.get::<&str>().and_then(notify::hint_text),
+                "desktop-entry" => h.desktop_entry = v.get::<&str>().and_then(notify::hint_text),
+                "x-canonical-private-synchronous" => h.tag = v.get::<&str>().and_then(notify::hint_text),
+                _ => {}
+            }
+        }
+        entries.next();
+    }
+    Some(h)
+}
+
+/// An integer hint of the types clients use: `y`, `u`, `i`, `x`.
+fn integer(v: &mut Iter<'_>) -> Option<i64> {
+    match sig(v).as_deref() {
+        Some("y") => v.get::<u8>().map(i64::from),
+        Some("u") => v.get::<u32>().map(i64::from),
+        Some("i") => v.get::<i32>().map(i64::from),
+        Some("x") => v.get::<i64>(),
+        _ => None,
+    }
+}
+
+/// A flag hint: `b`, or an integer (≠ 0 is true).
+fn flag(v: &mut Iter<'_>) -> Option<bool> {
+    match sig(v).as_deref() {
+        Some("b") => v.get::<bool>(),
+        _ => integer(v).map(|n| n != 0),
+    }
+}
+
 /// Text from an application, drawable on one line: `\n`, `\r`, `\t` → a space, every other control
 /// character and the invisible formatting characters (U+200B–U+200F, U+202A–U+202E, U+2066–U+2069)
 /// removed, at most MAX_TEXT characters.
@@ -440,7 +614,7 @@ pub fn clean(s: &str) -> String {
 /// another). U+200C (ZWNJ) and U+200D (ZWJ) are excluded: they are ordinary
 /// text shaping (Arabic/Indic ligature control, emoji ZWJ sequences), not
 /// spoofing tools, so removing them would corrupt otherwise legible text.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
@@ -731,7 +905,9 @@ fn node(it: &mut Iter<'_>, depth: usize, budget: &mut usize) -> Option<MenuNode>
 mod tests {
     use super::*;
     use crate::media::Control;
+    use crate::notify::{Action, Incoming, MAX_ACTIONS, MAX_APP, MAX_BODY, MAX_LABEL, MAX_SUMMARY, Urgency};
     use crate::tray::DEFAULT_ITEM_PATH;
+    use crate::tray::{NOTIFICATIONS_NAME, WATCHER_NAME};
     use dbus::arg::{IterAppend, Variant};
     use dbus::strings::Signature;
 
@@ -936,6 +1112,7 @@ mod tests {
         assert_eq!(reply(&Call::GetNameOwner { name: "x.y".into() }, &body(|i| i.append(":1.7"))), Ok(Reply::Owner(":1.7".into())));
         assert_eq!(reply(&Call::GetConnectionUnixProcessID { name: ":1.7".into() }, &body(|i| i.append(4242u32))), Ok(Reply::Pid(4242)));
         assert_eq!(reply(&Call::RequestName, &body(|i| i.append(3u32))), Ok(Reply::RequestName(3)));
+        assert_eq!(reply(&Call::RequestNotifications, &body(|i| i.append(2u32))), Ok(Reply::RequestName(2)), "2: queued behind mako");
         let about = Call::AboutToShow { destination: ":1.7".into(), path: "/MenuBar".into(), id: 0 };
         assert_eq!(reply(&about, &body(|i| i.append(true))), Ok(Reply::NeedUpdate(true)));
         let activate = Call::Activate { destination: ":1.7".into(), path: DEFAULT_ITEM_PATH.into(), x: 1, y: 2 };
@@ -1006,6 +1183,7 @@ mod tests {
             Call::GetNameOwner { name: "a.b".into() },
             Call::GetConnectionUnixProcessID { name: ":1.7".into() },
             Call::RequestName,
+            Call::RequestNotifications,
             Call::AboutToShow { destination: ":1.7".into(), path: "/m".into(), id: 0 },
             layout_call(),
             Call::ReadOne,
@@ -1020,6 +1198,8 @@ mod tests {
         assert!(matches!(reply(&layout_call(), &revision_only), Err(CallError::BadReply(_))), "GetLayout cut after its revision");
         for (sender, interface, member) in [
             ("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged"),
+            ("org.freedesktop.DBus", "org.freedesktop.DBus", "NameAcquired"),
+            ("org.freedesktop.DBus", "org.freedesktop.DBus", "NameLost"),
             (":1.9", WATCHER_INTERFACE, "StatusNotifierItemRegistered"),
             (":1.9", WATCHER_INTERFACE, "StatusNotifierItemUnregistered"),
             (":1.7", MENU_INTERFACE, "LayoutUpdated"),
@@ -1546,6 +1726,366 @@ mod tests {
         assert_eq!(seeked(MPRIS_PATH, &|i| i.append(3u32)), Signal::Other, "not an x");
         assert_eq!(seeked(MPRIS_PATH, &|_| {}), Signal::Other, "empty");
         assert_eq!(seeked("/elsewhere", &|i| i.append(3i64)), Signal::Other, "not the MPRIS object");
+    }
+
+    // ---- the notification server (notifications spec § 1, § 2) ----
+
+    /// A hint value, written in its variant.
+    enum H {
+        S(&'static str),
+        Y(u8),
+        U(u32),
+        I(i32),
+        B(bool),
+        /// `image-data`'s `(iiibiiay)`, its array holding this many bytes.
+        Image(usize),
+    }
+
+    fn hint(e: &mut IterAppend<'_>, h: &H) {
+        match h {
+            H::S(s) => e.append(Variant(*s)),
+            H::Y(n) => e.append(Variant(*n)),
+            H::U(n) => e.append(Variant(*n)),
+            H::I(n) => e.append(Variant(*n)),
+            H::B(b) => e.append(Variant(*b)),
+            H::Image(bytes) => e.append_variant(&signature("(iiibiiay)"), |v| {
+                v.append_struct(|s| {
+                    s.append(64i32);
+                    s.append(64i32);
+                    s.append(256i32);
+                    s.append(true);
+                    s.append(8i32);
+                    s.append(4i32);
+                    s.append(vec![7u8; *bytes]);
+                })
+            }),
+        }
+    }
+
+    /// An `a{sv}` of hints.
+    fn hints_dict(i: &mut IterAppend<'_>, hints: &[(&str, H)]) {
+        i.append_dict(&signature("s"), &signature("v"), |d| {
+            for (k, h) in hints {
+                d.append_dict_entry(|e| {
+                    e.append(*k);
+                    hint(e, h);
+                });
+            }
+        });
+    }
+
+    /// A call to the server as a client sends it (serial set, as received), its body written by `f`.
+    fn server_call(member: &str, f: impl FnOnce(&mut IterAppend<'_>)) -> Message {
+        let mut m = Message::new_method_call(":1.1", NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, member).unwrap();
+        m.set_serial(11);
+        m.set_sender(Some(":1.42".into()));
+        f(&mut IterAppend::new(&mut m));
+        m
+    }
+
+    /// `Notify(app, replaces, "dialog-information", summary, body, actions, hints[, expire])`.
+    fn notify_msg(
+        app: &str,
+        replaces: u32,
+        summary: &str,
+        body: &str,
+        actions: &[&str],
+        hints: &[(&str, H)],
+        expire: Option<i32>,
+    ) -> Message {
+        server_call("Notify", |i| {
+            i.append(app);
+            i.append(replaces);
+            i.append("dialog-information");
+            i.append(summary);
+            i.append(body);
+            i.append(actions.to_vec());
+            hints_dict(i, hints);
+            if let Some(t) = expire {
+                i.append(t);
+            }
+        })
+    }
+
+    fn notified(m: &Message) -> Incoming {
+        match inbound(m) {
+            Inbound::Notify(n) => n,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn notify_decodes_what_notify_send_sends() {
+        let m = notify_msg(
+            "notify-send",
+            0,
+            "Hello",
+            "<b>World</b> &amp; all",
+            &["default", "Open", "later", "Later"],
+            &[
+                ("urgency", H::Y(2)),
+                ("category", H::S("im.received")),
+                ("desktop-entry", H::S("org.example.Chat")),
+                ("x-canonical-private-synchronous", H::S("volume")),
+                ("sender-pid", H::I(4242)),
+            ],
+            Some(3_000),
+        );
+        assert_eq!(
+            notified(&m),
+            Incoming {
+                app_name: "notify-send".into(),
+                replaces_id: 0,
+                summary: "Hello".into(),
+                body: "World & all".into(),
+                actions: vec![
+                    Action { key: "default".into(), label: "Open".into() },
+                    Action { key: "later".into(), label: "Later".into() }
+                ],
+                urgency: Urgency::Critical,
+                expire_ms: 3_000,
+                desktop_entry: Some("org.example.Chat".into()),
+                category: Some("im.received".into()),
+                transient: false,
+                resident: false,
+                tag: Some("volume".into()),
+            }
+        );
+        assert_eq!(notified(&notify_msg("", 7, "s", "", &[], &[], Some(-1))).replaces_id, 7, "the portal's empty app name, a replaces_id");
+    }
+
+    #[test]
+    fn a_missing_expire_timeout_is_minus_one() {
+        assert_eq!(notified(&notify_msg("a", 0, "s", "", &[], &[], None)).expire_ms, -1);
+        assert_eq!(notified(&notify_msg("a", 0, "s", "", &[], &[], Some(0))).expire_ms, 0);
+    }
+
+    #[test]
+    fn urgency_is_read_as_y_u_or_i_and_clamped() {
+        let urgency = |h: H| notified(&notify_msg("a", 0, "s", "", &[], &[("urgency", h)], None)).urgency;
+        assert_eq!(urgency(H::Y(0)), Urgency::Low);
+        assert_eq!(urgency(H::Y(1)), Urgency::Normal);
+        assert_eq!(urgency(H::Y(2)), Urgency::Critical);
+        assert_eq!(urgency(H::U(2)), Urgency::Critical, "u, as some clients send it");
+        assert_eq!(urgency(H::I(1)), Urgency::Normal, "i, as others do");
+        assert_eq!(urgency(H::Y(200)), Urgency::Critical, "clamped to 2");
+        assert_eq!(urgency(H::I(-4)), Urgency::Low, "clamped to 0");
+        assert_eq!(urgency(H::S("critical")), Urgency::Normal, "a string: ignored");
+        assert_eq!(notified(&notify_msg("a", 0, "s", "", &[], &[], None)).urgency, Urgency::Normal, "absent: normal");
+    }
+
+    #[test]
+    fn transient_and_resident_are_a_bool_or_an_integer() {
+        let flags = |hs: &[(&str, H)]| {
+            let n = notified(&notify_msg("a", 0, "s", "", &[], hs, None));
+            (n.transient, n.resident)
+        };
+        assert_eq!(flags(&[("transient", H::B(true))]), (true, false));
+        assert_eq!(flags(&[("transient", H::I(1))]), (true, false), "an integer");
+        assert_eq!(flags(&[("transient", H::I(0))]), (false, false));
+        assert_eq!(flags(&[("transient", H::U(7)), ("resident", H::B(true))]), (true, true));
+        assert_eq!(flags(&[("resident", H::Y(1))]), (false, true));
+        assert_eq!(flags(&[("transient", H::S("yes"))]), (false, false), "a string: ignored");
+    }
+
+    #[test]
+    fn image_data_is_stepped_over_and_the_hints_after_it_still_read() {
+        for key in ["image-data", "image_data", "icon_data"] {
+            let m = notify_msg(
+                "a",
+                0,
+                "s",
+                "",
+                &[],
+                &[(key, H::Image(64 * 1024)), ("image-path", H::S("/tmp/x.png")), ("urgency", H::Y(2)), ("desktop-entry", H::S("firefox"))],
+                None,
+            );
+            let n = notified(&m);
+            assert_eq!((n.urgency, n.desktop_entry.as_deref()), (Urgency::Critical, Some("firefox")), "{key}");
+        }
+    }
+
+    #[test]
+    fn actions_come_in_pairs_at_most_6() {
+        let keys = |a: &[&str]| notified(&notify_msg("a", 0, "s", "", a, &[], None)).actions.into_iter().map(|x| x.key).collect::<Vec<_>>();
+        assert_eq!(keys(&["default", "Open", "dangling"]), ["default"], "an odd count: the last key has no label");
+        assert_eq!(keys(&["default"]), Vec::<String>::new());
+        assert_eq!(keys(&["", "Empty", "ok", "OK"]), ["ok"], "an empty key is skipped");
+        assert_eq!(keys(&["a", "1", "a", "2"]), ["a"], "a key once");
+        let mut late: Vec<&str> = std::iter::repeat_n(["", "x"], 40).flatten().collect();
+        late.extend(["late", "Late"]);
+        assert_eq!(keys(&late), Vec::<String>::new(), "only the first 32 pairs are ever read");
+    }
+
+    /// Review focus: a Notify carrying 200 actions keeps the first 6.
+    #[test]
+    fn a_notify_with_200_actions_keeps_6() {
+        let pairs: Vec<String> = (0..200).flat_map(|i| [format!("k{i}"), format!("Label {i}")]).collect();
+        let refs: Vec<&str> = pairs.iter().map(String::as_str).collect();
+        let n = notified(&notify_msg("a", 0, "s", "", &refs, &[], None));
+        assert_eq!(n.actions.len(), MAX_ACTIONS);
+        assert_eq!(n.actions[5], Action { key: "k5".into(), label: "Label 5".into() }, "the first 6, in order");
+    }
+
+    #[test]
+    fn notify_fields_are_cleaned_and_capped_while_decoding() {
+        let huge = "é".repeat(60_000);
+        let summary = format!("<b>{huge}</b>");
+        let body = format!("line 1\n<i>{huge}</i>");
+        let m = notify_msg(&huge, 0, &summary, &body, &["default", huge.as_str()], &[("desktop-entry", H::S(" firefox\n"))], None);
+        let n = notified(&m);
+        assert_eq!(n.app_name.len(), MAX_APP);
+        assert_eq!(n.summary.len(), MAX_SUMMARY);
+        assert!(n.body.starts_with("line 1\né") && n.body.len() <= MAX_BODY, "{}", n.body.len());
+        assert_eq!(n.actions[0].label.len(), MAX_LABEL);
+        assert_eq!(n.desktop_entry.as_deref(), Some("firefox"));
+    }
+
+    fn head(i: &mut IterAppend<'_>) {
+        i.append("app");
+        i.append(0u32);
+        i.append("icon");
+        i.append("summary");
+        i.append("body");
+    }
+
+    fn no_hints(i: &mut IterAppend<'_>) {
+        i.append_dict(&signature("s"), &signature("v"), |_| {});
+    }
+
+    #[test]
+    fn a_call_of_the_wrong_shape_is_refused() {
+        let none: Vec<&str> = Vec::new();
+        let ok = server_call("Notify", |i| {
+            head(i);
+            i.append(none.clone());
+            no_hints(i);
+            i.append(-1i32);
+        });
+        assert!(matches!(inbound(&ok), Inbound::Notify(_)), "the control case");
+        let refused = [
+            (
+                "replaces_id as i",
+                server_call("Notify", |i| {
+                    i.append("app");
+                    i.append(-1i32);
+                    i.append("icon");
+                    i.append("s");
+                    i.append("b");
+                    i.append(none.clone());
+                    no_hints(i);
+                    i.append(-1i32);
+                }),
+            ),
+            (
+                "actions as a string",
+                server_call("Notify", |i| {
+                    head(i);
+                    i.append("default");
+                    no_hints(i);
+                    i.append(-1i32);
+                }),
+            ),
+            (
+                "hints as a{ss}",
+                server_call("Notify", |i| {
+                    head(i);
+                    i.append(none.clone());
+                    i.append_dict(&signature("s"), &signature("s"), |d| {
+                        d.append_dict_entry(|e| {
+                            e.append("urgency");
+                            e.append("2");
+                        })
+                    });
+                    i.append(-1i32);
+                }),
+            ),
+            (
+                "no hints",
+                server_call("Notify", |i| {
+                    head(i);
+                    i.append(none.clone());
+                }),
+            ),
+            (
+                "expire as u",
+                server_call("Notify", |i| {
+                    head(i);
+                    i.append(none.clone());
+                    no_hints(i);
+                    i.append(5u32);
+                }),
+            ),
+            (
+                "a trailing argument",
+                server_call("Notify", |i| {
+                    head(i);
+                    i.append(none.clone());
+                    no_hints(i);
+                    i.append(-1i32);
+                    i.append("extra");
+                }),
+            ),
+            ("too few", server_call("Notify", head)),
+            ("Close with a string", server_call("CloseNotification", |i| i.append("7"))),
+            ("Close without its id", server_call("CloseNotification", |_| {})),
+            (
+                "Close with a trailing argument",
+                server_call("CloseNotification", |i| {
+                    i.append(7u32);
+                    i.append("extra");
+                }),
+            ),
+            ("GetCapabilities with an argument", server_call("GetCapabilities", |i| i.append("x"))),
+            ("GetServerInformation with an argument", server_call("GetServerInformation", |i| i.append(1u32))),
+            ("an unknown member", server_call("Bogus", |_| {})),
+        ];
+        for (what, m) in &refused {
+            assert_eq!(inbound(m), Inbound::Unknown, "{what}");
+        }
+        assert_eq!(inbound(&server_call("CloseNotification", |i| i.append(7u32))), Inbound::Close(7));
+        assert_eq!(inbound(&server_call("GetCapabilities", |_| {})), Inbound::Capabilities);
+        assert_eq!(inbound(&server_call("GetServerInformation", |_| {})), Inbound::ServerInfo);
+        let mut elsewhere =
+            Message::new_method_call(":1.1", "/org/freedesktop/Notifications/x", NOTIFICATIONS_INTERFACE, "GetCapabilities").unwrap();
+        elsewhere.set_serial(2);
+        assert_eq!(inbound(&elsewhere), Inbound::Unknown, "another object");
+        let mut introspect =
+            Message::new_method_call(":1.1", NOTIFICATIONS_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").unwrap();
+        introspect.set_serial(3);
+        assert_eq!(inbound(&introspect), Inbound::Unknown, "another interface");
+        let signal = Message::new_signal(NOTIFICATIONS_PATH, NOTIFICATIONS_INTERFACE, "GetCapabilities").unwrap();
+        assert_eq!(inbound(&signal), Inbound::Unknown, "a signal is no call");
+    }
+
+    #[test]
+    fn name_acquired_and_lost_come_from_the_bus_driver_to_us_alone() {
+        let named = |member: &str, sender: &str, dest: Option<&str>, f: &dyn Fn(&mut IterAppend<'_>)| {
+            let mut m = Message::new_signal("/org/freedesktop/DBus", "org.freedesktop.DBus", member).unwrap();
+            m.set_sender(Some(sender.into()));
+            m.set_destination(dest.map(|d| d.into()));
+            f(&mut IterAppend::new(&mut m));
+            signal(&m)
+        };
+        let driver = "org.freedesktop.DBus";
+        assert_eq!(
+            named("NameAcquired", driver, Some(":1.5"), &|i| i.append(NOTIFICATIONS_NAME)),
+            Signal::NameAcquired(NOTIFICATIONS_NAME.into())
+        );
+        assert_eq!(named("NameLost", driver, Some(":1.5"), &|i| i.append(NOTIFICATIONS_NAME)), Signal::NameLost(NOTIFICATIONS_NAME.into()));
+        assert_eq!(
+            named("NameAcquired", ":1.9", Some(":1.5"), &|i| i.append(NOTIFICATIONS_NAME)),
+            Signal::Other,
+            "a peer posing as the bus driver"
+        );
+        assert_eq!(named("NameLost", driver, None, &|i| i.append(NOTIFICATIONS_NAME)), Signal::Other, "a broadcast is not addressed to us");
+        assert_eq!(named("NameAcquired", driver, Some(":1.5"), &|i| i.append(5u32)), Signal::Other, "not a name");
+        assert_eq!(named("NameLost", driver, Some(":1.5"), &|_| {}), Signal::Other, "an empty body, sent to us");
+        assert_eq!(
+            named("NameAcquired", driver, Some(":1.5"), &|i| i.append(WATCHER_NAME)),
+            Signal::NameAcquired(WATCHER_NAME.into()),
+            "the watcher's comes too: the consumer reads arg0"
+        );
     }
 
     #[test]

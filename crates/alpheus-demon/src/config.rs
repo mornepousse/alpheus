@@ -34,6 +34,13 @@
 //! [media]
 //! title_max = 30                                            # cells of the title in the bar, 8 to 80
 //! ignore = ["kdeconnect"]                                   # players never shown: substrings of their bus name (playerctld always is)
+//! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
+//! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
+//! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
+//! timeout_max = 20                                          # 1 ≤ timeout_min ≤ timeout ≤ timeout_max ≤ 600
+//! max_visible = 4                                           # bubbles at once, 1 to 8 (newest on top)
+//! width = 40                                                # bubble width in cells, 24 to 80
+//! history = 50                                              # entries kept for the panel, 0 to 200 (0: none)
 //! ```
 
 use crate::clock;
@@ -319,6 +326,37 @@ impl Default for MediaConfig {
     }
 }
 
+/// The bounds of `[notifications]`.
+pub const NOTIFY_TIMEOUT_LIMIT: u32 = 600;
+pub const NOTIFY_VISIBLE_MAX: u8 = 8;
+pub const NOTIFY_WIDTH_MIN: u16 = 24;
+pub const NOTIFY_WIDTH_MAX: u16 = 80;
+pub const NOTIFY_HISTORY_MAX: u16 = 200;
+
+/// `[notifications]` (notifications spec § 6): the bubbles' timeouts, count and width, and the
+/// history's length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NotificationsConfig {
+    /// Seconds a bubble stays when the app sends -1.
+    pub timeout: u32,
+    /// An app's own timeout is clamped to `timeout_min..=timeout_max` seconds; 0 means `timeout_max`.
+    pub timeout_min: u32,
+    pub timeout_max: u32,
+    /// Bubbles shown at once (1 to 8); the others wait.
+    pub max_visible: u8,
+    /// A bubble's width in cells (24 to 80).
+    pub width: u16,
+    /// Entries the panel keeps (0 to 200; 0: none).
+    pub history: u16,
+}
+
+impl Default for NotificationsConfig {
+    fn default() -> Self {
+        NotificationsConfig { timeout: 5, timeout_min: 2, timeout_max: 20, max_visible: 4, width: 40, history: 50 }
+    }
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -334,6 +372,7 @@ pub struct BarConfig {
     pub battery: BatteryConfig,
     pub tray: TrayConfig,
     pub media: MediaConfig,
+    pub notifications: NotificationsConfig,
 }
 
 impl Default for BarConfig {
@@ -349,6 +388,7 @@ impl Default for BarConfig {
             battery: BatteryConfig::default(),
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
+            notifications: NotificationsConfig::default(),
         }
     }
 }
@@ -380,6 +420,8 @@ struct Raw {
     tray: TrayConfig,
     #[serde(default)]
     media: MediaConfig,
+    #[serde(default)]
+    notifications: NotificationsConfig,
 }
 
 impl BarConfig {
@@ -434,6 +476,22 @@ impl BarConfig {
         if !(TITLE_MAX_MIN..=TITLE_MAX_MAX).contains(&b.media.title_max) {
             return Err(format!("media.title_max {} out of range {TITLE_MAX_MIN} to {TITLE_MAX_MAX} cells", b.media.title_max));
         }
+        let n = b.notifications;
+        if !((1..=n.timeout).contains(&n.timeout_min) && (n.timeout..=NOTIFY_TIMEOUT_LIMIT).contains(&n.timeout_max)) {
+            return Err(format!(
+                "notifications: need 1 ≤ timeout_min ≤ timeout ≤ timeout_max ≤ {NOTIFY_TIMEOUT_LIMIT} s (got {}, {}, {})",
+                n.timeout_min, n.timeout, n.timeout_max
+            ));
+        }
+        if !(1..=NOTIFY_VISIBLE_MAX).contains(&n.max_visible) {
+            return Err(format!("notifications.max_visible {} out of range 1 to {NOTIFY_VISIBLE_MAX}", n.max_visible));
+        }
+        if !(NOTIFY_WIDTH_MIN..=NOTIFY_WIDTH_MAX).contains(&n.width) {
+            return Err(format!("notifications.width {} out of range {NOTIFY_WIDTH_MIN} to {NOTIFY_WIDTH_MAX} cells", n.width));
+        }
+        if n.history > NOTIFY_HISTORY_MAX {
+            return Err(format!("notifications.history {} out of range 0 to {NOTIFY_HISTORY_MAX}", n.history));
+        }
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -446,6 +504,7 @@ impl BarConfig {
             battery: b.battery,
             tray,
             media: b.media,
+            notifications: b.notifications,
         })
     }
 }
@@ -683,6 +742,64 @@ mod tests {
         let (c, w) = BarConfig::load(&file("media", "[media]\ntitle_max = 5\n"));
         assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
         assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("media.title_max")));
+    }
+
+    #[test]
+    fn notifications_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert_eq!(
+            d.notifications,
+            NotificationsConfig { timeout: 5, timeout_min: 2, timeout_max: 20, max_visible: 4, width: 40, history: 50 }
+        );
+        assert!(d.modules.contains(&ModuleId::Notifications), "on by default");
+        assert_eq!(BarConfig::from_text("height = 22").unwrap().notifications, NotificationsConfig::default(), "absent: defaults");
+        let c = BarConfig::from_text("[notifications]\ntimeout = 8\ntimeout_max = 30\nmax_visible = 2\nwidth = 60\nhistory = 0\n").unwrap();
+        assert_eq!(
+            c.notifications,
+            NotificationsConfig { timeout: 8, timeout_min: 2, timeout_max: 30, max_visible: 2, width: 60, history: 0 }
+        );
+        for t in [
+            "[notifications]\ntimeout_min = 1\ntimeout = 1\ntimeout_max = 1",
+            "[notifications]\ntimeout_max = 600",
+            "[notifications]\nmax_visible = 1",
+            "[notifications]\nmax_visible = 8",
+            "[notifications]\nwidth = 24",
+            "[notifications]\nwidth = 80",
+            "[notifications]\nhistory = 200",
+        ] {
+            assert!(BarConfig::from_text(t).is_ok(), "{t}: bounds included");
+        }
+    }
+
+    #[test]
+    fn notifications_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        let order = "notifications: need 1 ≤ timeout_min ≤ timeout ≤ timeout_max ≤ 600 s";
+        for (t, got) in [
+            ("[notifications]\ntimeout_min = 0", "(got 0, 5, 20)"),
+            ("[notifications]\ntimeout = 1", "(got 2, 1, 20)"),
+            ("[notifications]\ntimeout = 30", "(got 2, 30, 20)"),
+            ("[notifications]\ntimeout_max = 601", "(got 2, 5, 601)"),
+        ] {
+            let e = err(t);
+            assert!(e.contains(order) && e.contains(got), "{t}: {e}");
+        }
+        for (t, want) in [
+            ("[notifications]\nmax_visible = 0", "notifications.max_visible 0 out of range 1 to 8"),
+            ("[notifications]\nmax_visible = 9", "notifications.max_visible 9"),
+            ("[notifications]\nwidth = 23", "notifications.width 23 out of range 24 to 80 cells"),
+            ("[notifications]\nwidth = 81", "notifications.width 81"),
+            ("[notifications]\nhistory = 201", "notifications.history 201 out of range 0 to 200"),
+        ] {
+            let e = err(t);
+            assert!(e.contains(want), "{t}: {e}");
+        }
+        assert!(BarConfig::from_text("[notifications]\nhistory = -1").is_err(), "not a u16");
+        assert!(BarConfig::from_text("[notifications]\nmax_visible = 256").is_err(), "not a u8");
+        assert!(err("[notifications]\nsound = true").contains("sound"), "unknown key refused");
+        let (c, w) = BarConfig::load(&file("notifications", "[notifications]\nwidth = 5\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("notifications.width")));
     }
 
     #[test]

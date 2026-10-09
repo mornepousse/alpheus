@@ -21,8 +21,8 @@ use alpheus_commun::launcher_ipc::{Reply, Request, encode_request, socket_path};
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, launcher, start_daemon_with,
-    write_atomically, wtype, wtype_spawn,
+    Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, launcher,
+    start_daemon_with, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -291,9 +291,10 @@ fn at_rest_no_wakeups_after_a_launcher_cycle() {
     // Past REQUEST_DEADLINE: a timer that keeps re-arming, a keyboard repeat
     // or a watch left behind shows up below as wake-ups.
     std::thread::sleep(Duration::from_secs(3));
-    let before = d.wakeups();
+    let (before, ticks) = (d.wakeups(), d.cpu_ticks());
     std::thread::sleep(Duration::from_secs(5));
     let delta = d.wakeups().saturating_sub(before);
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after a launcher cycle");
     eprintln!("wake-ups at rest after a launcher cycle (5 s): {delta}; threads {} (before the cycle: {threads})", d.threads());
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest after the launcher was used");
     assert_eq!(d.threads(), threads, "no thread left by the launcher");
@@ -459,7 +460,9 @@ fn at_rest_no_wakeups() {
     let sound_before = d.thread_wakeups("sound").expect("the sound thread runs");
     let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread runs");
     let threads = d.threads();
+    let ticks = d.cpu_ticks();
     std::thread::sleep(Duration::from_secs(5));
+    assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon at rest");
     let delta = d.wakeups().saturating_sub(before);
     let sound = d.thread_wakeups("sound").unwrap().saturating_sub(sound_before);
     let dbus = d.thread_wakeups("D-Bus").unwrap().saturating_sub(dbus_before);
@@ -646,7 +649,9 @@ fn at_rest_no_wakeups_with_a_populated_tray() {
     away_from_the_minute(REST);
     let before = d.wakeups();
     let main_before = d.main_thread_wakeups();
+    let ticks = d.cpu_ticks();
     std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon with a populated tray");
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest with a populated tray (10 s): {delta} whole daemon, {main_delta} loop thread");
@@ -761,8 +766,9 @@ fn at_rest_no_wakeups_after_a_theme_reload() {
     std::thread::sleep(Duration::from_secs(1));
     const REST: Duration = Duration::from_secs(10);
     away_from_the_minute(REST);
-    let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
     std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon after a theme reload");
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after a theme reload (10 s): {delta} whole daemon, {main_delta} loop thread");
@@ -822,8 +828,9 @@ fn at_rest_no_wakeups_under_each_style() {
         assert!(d.wait_for(&format!(", style {style}"), DELAY), "{style}: {:?}", d.log());
         std::thread::sleep(Duration::from_secs(1)); // the repaint and, for floating, the configures settled
         away_from_the_minute(REST);
-        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
         std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, style);
         let delta = d.wakeups().saturating_sub(before);
         let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
         report.push((style, delta, main_delta));
@@ -1024,12 +1031,158 @@ fn at_rest_no_wakeups_with_a_playing_player() {
         std::thread::sleep(TRAY_SETTLE);
         const REST: Duration = Duration::from_secs(10);
         away_from_the_minute(REST);
-        let (before, main_before) = (d.wakeups(), d.main_thread_wakeups());
+        let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
         std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, "the daemon with a playing player");
         let delta = d.wakeups().saturating_sub(before);
         let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
         eprintln!("wake-ups at rest with a playing player (10 s, tray {tray}): {delta} whole daemon, {main_delta} loop thread");
         assert_eq!(main_delta, 0, "tray {tray}: {main_delta} loop-thread wake-ups in 10 s with a player playing, popup closed");
         assert!(delta <= 8, "tray {tray}: {delta} wake-ups in 10 s");
+    }
+}
+
+/// The bell and the server on the bar's own session link (tray off).
+const NOTIFY_BAR: &str = "modules = [\"workspaces\", \"window\", \"notifications\", \"clock\"]\n";
+const NO_NOTIFY_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+
+/// Waits (10 s at most) until the daemon owns `org.freedesktop.Notifications` on `session`.
+fn wait_for_the_notification_server(session: &PrivateBus) {
+    let peer = Peer::connect(session);
+    let t = Instant::now();
+    loop {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
+            .unwrap()
+            .append1("org.freedesktop.Notifications");
+        if peer.call(m).unwrap().read1::<bool>().unwrap() {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the daemon never took org.freedesktop.Notifications");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `Notify` from `peer` (fictional texts, a two-line body): the id.
+fn notify(peer: &Peer, app: &str, summary: &str, urgency: u8, expire_ms: i32) -> u32 {
+    let mut hints = dbus::arg::PropMap::new();
+    hints.insert("urgency".to_string(), dbus::arg::Variant(Box::new(urgency) as Box<dyn dbus::arg::RefArg>));
+    let m = dbus::Message::new_method_call(
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "Notify",
+    )
+    .unwrap()
+    .append3(app, 0u32, "")
+    .append3(summary, "A fictional first line of the body.\nAnd a second one.", Vec::<&str>::new())
+    .append2(hints, expire_ms);
+    peer.call(m).unwrap().read1::<u32>().unwrap()
+}
+
+fn close_notification(peer: &Peer, id: u32) {
+    let m = dbus::Message::new_method_call(
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+        "CloseNotification",
+    )
+    .unwrap()
+    .append1(id);
+    peer.call(m).unwrap();
+}
+
+/// Waits for one more "bubbles shown: {n}" line than there were before `act`: the fifty already
+/// logged every count from 1 to 4, so a bare `wait_for` would match an old line.
+fn shown_after(d: &Daemon, n: usize, act: impl FnOnce()) {
+    let line = format!("bubbles shown: {n}");
+    let before = d.count(&line);
+    act();
+    assert!(d.wait_for_count(&line, before + 1, DELAY), "{:?}", d.log());
+}
+
+/// 50 notifications from 10 apps, each expiring after 2 s: the history full at 50 once every
+/// bubble went (the surface dropped).
+fn fifty_into_the_history(d: &Daemon, client: &Peer) {
+    for n in 0..50u32 {
+        notify(client, &format!("App {}", n % 10), &format!("Event {n}: a fictional line of text"), 1, 2_000);
+    }
+    assert!(d.wait_for_count("bubbles surface dropped (empty)", 1, Duration::from_secs(60)), "{:?}", d.log());
+}
+
+/// Notifications delivery: the module serving with nothing, a 50-entry history, 4 bubbles shown,
+/// then closed. The module off is measured on a daemon of its own; the rest in sequence on one.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn notifications_pss_idle_history_and_bubbles() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("notify-cost");
+    let base = {
+        let session = PrivateBus::start("notify-cost-a-session");
+        let (_sway, _hypr, d) = start("notify-cost-a", 1, &bus, Some(&session), Some(NO_NOTIFY_BAR), PwDump::Silent);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let session = PrivateBus::start("notify-cost-b-session");
+    let (_sway, _hypr, d) = start("notify-cost-b", 1, &bus, Some(&session), Some(NOTIFY_BAR), PwDump::Silent);
+    wait_for_the_notification_server(&session);
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    let client = Peer::connect(&session);
+    fifty_into_the_history(&d, &client);
+    std::thread::sleep(TRAY_SETTLE);
+    let history = d.pss_kb();
+    let mut critical = Vec::new();
+    shown_after(&d, 4, || critical.extend((0..4).map(|n| notify(&client, "Monitor", &format!("Alert {n}"), 2, -1))));
+    std::thread::sleep(TRAY_SETTLE);
+    let shown = d.pss_kb();
+    for id in critical {
+        close_notification(&client, id);
+    }
+    assert!(d.wait_for_count("bubbles surface dropped (empty)", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let closed = d.pss_kb();
+    let (module_cost, history_cost, bubbles_cost) =
+        (idle.saturating_sub(base), history.saturating_sub(idle), shown.saturating_sub(history));
+    eprintln!(
+        "notifications PSS (KB): {base} without the module, {idle} serving with nothing (module cost {module_cost}), \
+         {history} with 50 entries (history cost {history_cost}), {shown} with 4 bubbles (bubbles cost {bubbles_cost}), {closed} once closed"
+    );
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(module_cost <= 1024, "the server and the bell cost {module_cost} KB (≤ 1 MB)");
+    assert!(history_cost <= 512, "50 entries cost {history_cost} KB (capped strings: ≤ 512 KB; spec § 7 computes ≈ 125 KB at worst)");
+    assert!(bubbles_cost <= 2048, "4 bubbles cost {bubbles_cost} KB (their own pool, two buffers: ≤ 2 MB)");
+    assert!(closed <= history + 256, "closed: {closed} KB vs {history} KB before them — the surface and its pool must go");
+}
+
+/// Notifications delivery: at rest with a sticky critical bubble shown over a 50-entry history, then
+/// with every bubble gone — no timer, no wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_notifications() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("notify-rest");
+    let session = PrivateBus::start("notify-rest-session");
+    let (_sway, _hypr, d) = start("notify-rest", 1, &bus, Some(&session), Some(NOTIFY_BAR), PwDump::Silent);
+    wait_for_the_notification_server(&session);
+    let client = Peer::connect(&session);
+    fifty_into_the_history(&d, &client);
+    let mut sticky = 0;
+    shown_after(&d, 1, || sticky = notify(&client, "Monitor", "Disk almost full", 2, -1));
+    for what in ["a sticky bubble shown", "every bubble gone"] {
+        if what == "every bubble gone" {
+            close_notification(&client, sticky);
+            assert!(d.wait_for_count("bubbles surface dropped (empty)", 2, DELAY), "{:?}", d.log());
+        }
+        std::thread::sleep(TRAY_SETTLE);
+        const REST: Duration = Duration::from_secs(10);
+        away_from_the_minute(REST);
+        let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+        std::thread::sleep(REST);
+        assert_no_spin(d.cpu_ticks() - ticks, REST, what);
+        let delta = d.wakeups().saturating_sub(before);
+        let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+        eprintln!("wake-ups at rest with notifications (10 s, {what}): {delta} whole daemon, {main_delta} loop thread");
+        assert_eq!(main_delta, 0, "{what}: {main_delta} loop-thread wake-ups in 10 s");
+        assert!(delta <= 8, "{what}: {delta} wake-ups in 10 s");
     }
 }
