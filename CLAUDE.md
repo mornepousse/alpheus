@@ -109,11 +109,11 @@ breakdown), then the spec of the sub-project currently in progress in
 - **Bar step 5, delivery 1 (media)** (spec
   [`docs/specs/2026-10-08-alpheus-media-design.md`](docs/specs/2026-10-08-alpheus-media-design.md),
   plan [`docs/plans/2026-10-08-alpheus-media-plan-1.md`](docs/plans/2026-10-08-alpheus-media-plan-1.md))
-  **implemented on `feat/media`** (per-task reviews); not merged, final review and Mae's trial pending:
+  **implemented and merged into `main` on 2026-10-09** (per-task reviews, a three-slice final review and its fix wave):
   - **Bar.** `▶/⏸ Title` (Purple, its own block), hidden when nothing plays; middle click PlayPause, wheel Next/Previous, a capability the player lacks a no-op.
   - **Popup.** Title, artist, `m:ss` with a progress bar (hidden for an unknown length), ⏮ ⏯ ⏭ (dim when incapable), the players with ● from two up (Enter or a click pins one); keys and mouse as the menus; closes on Esc, an outside click, a restyle that moves its bar, or `player gone`.
   - **How.** `media.rs` (pure model) fed by `tray/mpris.rs` through the closed Call/Reply/Signal enums; on the tray's connection, else on one own link shared with the portal; Seeked followed and the position read only while the popup is open; a 1 s `DeadlineTimer` only while it is open and the track plays.
-  - **Measured in release** (vs `55ba754`, back to back, 3 runs each, separate target directories): one-time cost within noise (−52…+32 KB) (binary 5.24 → 5.33 MiB, +92 KiB stripped), module with no player 0–4 KB (its link is the portal's, already open), 3 players 112 KB, +0 KB over 100 track changes, 0 loop wake-ups at rest with a player playing (tray on and off). With media now in the default `modules`, `pss_under_30mb_and_stable` (no session bus) starts +33…+123 KB over the base.
+  - **Measured in release** (vs `55ba754`, back to back, 3 runs each, separate target directories): one-time cost within noise (−52…+32 KB) (binary 5.24 → 5.33 MiB, +92 KiB stripped), module with no player 0–4 KB in mode `auto` (its link is the portal's, already open), 286–395 KB in a fixed mode with the tray off (its own connection), 3 players 85–112 KB, +0 KB over 100 track changes, 0 loop wake-ups at rest with a player playing (tray on and off). With media now in the default `modules`, `pss_under_30mb_and_stable` (no session bus) starts +33…+123 KB over the base.
 - **Launcher delivery 1** (the core; spec
   [`docs/specs/2026-10-05-alpheus-launcher-design.md`](docs/specs/2026-10-05-alpheus-launcher-design.md),
   plan [`docs/plans/2026-10-05-alpheus-launcher-plan-1.md`](docs/plans/2026-10-05-alpheus-launcher-plan-1.md))
@@ -149,8 +149,13 @@ breakdown), then the spec of the sub-project currently in progress in
   folded in: held terminal on Enter, detached on Ctrl+Enter, apps before
   windows on an empty query); `feat/launcher-1` merged into alpheus
   `main` on 2026-10-05.
-- Next, in order: bar step 5, delivery 2 (notifications), the **OSD** (replaces swayosd, ≈ 44 MB measured), then
-  notification bubbles (replaces mako); the wallpaper (swaybg) is optional.
+  - **Keyboard fix (all popups and the launcher, sway/niri).** A popup closed by a key used to release the keyboard while the key was down, and SCTK's repeat then fired forever; the keyboard now goes once its keys are up or its focus is dead (`popup::KeysDown`, the entered surface tracked).
+  - Deferred minors (progress notes in the worktree): a media popup tick may lag ≤ 1 s after a Seeked; `fit` builds its lines on each refresh while open; RTL titles in logical order (README).
+- **Bar step 5, delivery 2 (notifications and the panel)**: spec
+  [`docs/specs/2026-10-09-alpheus-notifications-design.md`](docs/specs/2026-10-09-alpheus-notifications-design.md)
+  and plan [`docs/plans/2026-10-09-alpheus-notifications-plan-1.md`](docs/plans/2026-10-09-alpheus-notifications-plan-1.md)
+  written (8 tasks); replaces mako (6.7 MB PSS measured on Mae's session) — server queued behind mako, bubbles top centre, bell + panel (media card, history, DND). Mae's review of the plan pending, plus two choices: a bubble shows the time; a non-resident notification leaves the history once its action runs.
+- Next, in order: notifications (above), the **OSD** (replaces swayosd, 7.6 MB PSS on Mae's session); the wallpaper (swaybg) is optional.
 - **Later, goal "replace as many costly pieces as possible" (Mae,
   2026-10-05)**: a **lock screen** replacing hyprlock (measure hyprlock's
   memory first; `ext-session-lock-v1`; its own process, so a crash never
