@@ -151,11 +151,17 @@ breakdown), then the spec of the sub-project currently in progress in
   `main` on 2026-10-05.
   - **Keyboard fix (all popups and the launcher, sway/niri).** A popup closed by a key used to release the keyboard while the key was down, and SCTK's repeat then fired forever; the keyboard now goes once its keys are up or its focus is dead (`popup::KeysDown`, the entered surface tracked).
   - Deferred minors (progress notes in the worktree): a media popup tick may lag ≤ 1 s after a Seeked; `fit` builds its lines on each refresh while open; RTL titles in logical order (README).
-- **Bar step 5, delivery 2 (notifications and the panel)**: spec
-  [`docs/specs/2026-10-09-alpheus-notifications-design.md`](docs/specs/2026-10-09-alpheus-notifications-design.md)
-  and plan [`docs/plans/2026-10-09-alpheus-notifications-plan-1.md`](docs/plans/2026-10-09-alpheus-notifications-plan-1.md)
-  written (8 tasks); replaces mako (6.7 MB PSS measured on Mae's session) — server queued behind mako, bubbles top centre, bell + panel (media card, history, DND). Mae's review of the plan pending, plus two choices: a bubble shows the time; a non-resident notification leaves the history once its action runs.
-- Next, in order: notifications (above), the **OSD** (replaces swayosd, 7.6 MB PSS on Mae's session); the wallpaper (swaybg) is optional.
+- **Bar step 5, delivery 2 (notifications)** (spec
+  [`docs/specs/2026-10-09-alpheus-notifications-design.md`](docs/specs/2026-10-09-alpheus-notifications-design.md),
+  plan [`docs/plans/2026-10-09-alpheus-notifications-plan-1.md`](docs/plans/2026-10-09-alpheus-notifications-plan-1.md))
+  **implemented on `feat/notifications`** (per-task reviews; the keyboard fix `fix/keyboard-drop` merged into it), **not merged into `main`**; final review and Mae's trial pending. Replaces mako:
+  - **Server.** `org.freedesktop.Notifications` requested with flags 0 (queued behind mako, takes over on release; NameAcquired/NameLost from the bus driver only), calls decoded raw (`image-data` never read), broadcast `NotificationClosed`/`ActionInvoked`; caps, markup stripped, 1 s merge window, a 10-token bucket per app, a 50-entry history in memory.
+  - **Bell.** Neutral, in the status block, never dropped: `󰂚 N` unread, crossed under DND, dim when not serving; left click the panel, middle click DND; `alpheus-launch --dnd on|off|toggle`, `--clear-notifications`; DND persisted in `$XDG_STATE_HOME/alpheus/dnd`.
+  - **Bubbles.** One Overlay layer surface on the focused output, top centre under the bar, created with the first bubble and dropped with the last (its own pool, no keyboard, an input rect per bubble); moved to the focused output only when the stack changes; left click default action (then dismissed unless resident), right click dismiss; one DeadlineTimer on the earliest finite expiry.
+  - **Panel.** The media card (the media popup's rows and keys, its 1 s tick reused), the history newest first, Do not disturb, Clear all; opening marks everything read.
+  - **Measured in release** (vs `900a519`, back to back, 3 runs each, separate target directories): one-time cost +122–248 KB (binary 5.34 → 5.47 MiB (+140 KiB stripped)), the module serving 0–4 KB (mode `auto`: the portal's link already open), a 50-entry history 192–198 KB, 4 bubbles 326–774 KB (−84…+76 KB once closed), 0 loop wake-ups at rest with a sticky bubble and after expiry; mako measured 6.7 MB on Mae's session.
+  - **Pending, Mae's decision:** the nixos-config `tools-menu` switch (`makoctl mode -t do-not-disturb` → `alpheus-launch --dnd toggle`), stopping and disabling mako, and the TUI's DND (still `shell-ctl dnd-on/dnd-off`, i.e. makoctl).
+- Next, in order: the **OSD** (replaces swayosd, 7.6 MB PSS on Mae's session); the wallpaper (swaybg) is optional.
 - **Later, goal "replace as many costly pieces as possible" (Mae,
   2026-10-05)**: a **lock screen** replacing hyprlock (measure hyprlock's
   memory first; `ext-session-lock-v1`; its own process, so a crash never
