@@ -18,6 +18,7 @@ use alpheus_demon::launcher::matching::Mode;
 use alpheus_demon::launcher::model::{Launcher, Outcome};
 use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
+use alpheus_demon::notify::NotifyView;
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
@@ -70,6 +71,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
     b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+    b.apply(Msg::Notifications(NotifyView { unread: 2, dnd: false, serving: true }));
     b
 }
 
@@ -883,7 +885,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 15] = [
+const NO_THREAD_NOR_COMMAND: [&str; 16] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -895,6 +897,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 15] = [
     "keys.rs",
     "watch.rs",
     "appearance.rs",
+    "state_file.rs",
     "link.rs",
     "background.rs",
     "painter/",

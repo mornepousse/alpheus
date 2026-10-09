@@ -136,6 +136,12 @@ pub fn toggles_launcher(target: &Target, b: Button) -> bool {
     b == Button::Left && *target == Target::Module(ModuleId::Launcher)
 }
 
+/// The bell's middle button (notifications spec § 4): do-not-disturb flips inside the daemon,
+/// nothing is run. The left button is the panel's (`ModulePopup`).
+pub fn toggles_dnd(target: &Target, b: Button) -> bool {
+    b == Button::Middle && *target == Target::Module(ModuleId::Notifications)
+}
+
 /// The media module's middle button and wheel (spec § 1): a D-Bus call to the active player
 /// (`Mpris::control`), never a command; the left button is its popup's (`ModulePopup`).
 pub fn media_control(target: &Target, b: Button) -> Option<Control> {
@@ -283,6 +289,20 @@ mod tests {
         assert_eq!(media_control(&media, Button::Left), None, "the popup's (task 7), not a control");
         assert_eq!(media_control(&media, Button::Right), None);
         assert_eq!(media_control(&Target::Module(ModuleId::Volume), Button::Middle), None, "another module: its own action");
+    }
+
+    #[test]
+    fn only_a_middle_click_on_the_bell_toggles_do_not_disturb() {
+        let bell = Target::Module(ModuleId::Notifications);
+        assert!(toggles_dnd(&bell, Button::Middle));
+        for b in [Button::Left, Button::Right, Button::WheelUp, Button::WheelDown] {
+            assert!(!toggles_dnd(&bell, b), "{b:?}");
+        }
+        assert!(!toggles_dnd(&Target::Module(ModuleId::Media), Button::Middle), "the media's middle button is its own");
+        let bar = bar();
+        for b in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+            assert_eq!(command(&bar, "DP-1", &bell, b), None, "{b:?}: the daemon acts itself, never a process");
+        }
     }
 
     #[test]

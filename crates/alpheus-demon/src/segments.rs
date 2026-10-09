@@ -8,6 +8,7 @@ use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, Resourc
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
+use crate::notify::NotifyView;
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
 use crate::tray::Status;
@@ -38,6 +39,11 @@ pub const PLAY: char = '\u{f040a}'; // md-play
 pub const PAUSE: char = '\u{f03e4}'; // md-pause
 pub const SKIP_PREVIOUS: char = '\u{f04ae}'; // md-skip_previous
 pub const SKIP_NEXT: char = '\u{f04ad}'; // md-skip_next
+/// The notifications bell (notifications spec § 4), checked in the 3.4.0 post table.
+pub const BELL: char = '\u{f009a}'; // md-bell
+pub const BELL_OFF: char = '\u{f009b}'; // md-bell_off (crossed)
+/// The most unread notifications the bell counts; beyond, "99+".
+pub const UNREAD_MAX: u16 = 99;
 
 /// The volume's mini-gauge (spec § 2): one cell per sixth.
 pub const GAUGE: [char; 6] = ['▁', '▃', '▅', '▆', '▇', '▇'];
@@ -369,6 +375,28 @@ pub(crate) fn media(view: Option<&MediaView>, mc: ModuleColors) -> Option<Segmen
     Some(segment)
 }
 
+/// The bell (notifications spec § 4, amended): `󰂚`, then ` N` in the accent with N unread; the
+/// crossed `󰂛` under do-not-disturb; all dimmed under do-not-disturb or while another server holds
+/// the name. Never a hue, whatever `module_colors` says. None before the server has said anything.
+/// The whole segment is one click zone.
+pub(crate) fn notifications(view: Option<&NotifyView>) -> Option<Segment> {
+    let v = view?;
+    let glyph = if v.dnd { BELL_OFF } else { BELL };
+    let count = match v.unread {
+        0 => String::new(),
+        n if n > UNREAD_MAX => format!(" {UNREAD_MAX}+"),
+        n => format!(" {n}"),
+    };
+    let pieces = if v.dnd || !v.serving {
+        vec![piece(format!("{glyph}{count}"), Style::MUTED)]
+    } else if count.is_empty() {
+        vec![piece(glyph.to_string(), Style::NORMAL)]
+    } else {
+        vec![piece(glyph.to_string(), Style::NORMAL), piece(count, Style::ACCENT)]
+    };
+    Some(module_segment(ModuleId::Notifications, pieces))
+}
+
 /// One tray icon (spec § 1 Icons): a glyph NORMAL, a letter BOLD_ACCENT (the
 /// clock's style: "bold accent colour, no background"); NeedsAttention ERROR
 /// whatever it is; Passive MUTED (`dim`), as Active (`show`) or not drawn
@@ -412,6 +440,7 @@ mod tests {
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ResourcesConfig};
     use crate::grid::Grid;
     use crate::layout::lay_out;
+    use crate::notify::NotifyView;
     use crate::state::{Bar, Msg};
     use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
     use crate::tray::ItemKey;
@@ -633,6 +662,40 @@ mod tests {
     fn media_glyphs_are_one_cell_each() {
         assert_eq!([PLAY, PAUSE, SKIP_PREVIOUS, SKIP_NEXT], ['\u{f040a}', '\u{f03e4}', '\u{f04ae}', '\u{f04ad}']);
         for g in [PLAY, PAUSE, SKIP_PREVIOUS, SKIP_NEXT] {
+            assert_eq!(crate::grid::text_width(&g.to_string()), 1, "{g:?}");
+        }
+    }
+
+    fn bell(unread: u16, dnd: bool, serving: bool) -> NotifyView {
+        NotifyView { unread, dnd, serving }
+    }
+
+    #[test]
+    fn the_bell_counts_the_unread_in_the_accent() {
+        let s = super::notifications(Some(&bell(0, false, true))).unwrap();
+        assert_eq!(draw(&s), ("\u{f009a}".into(), ".".into()));
+        assert_eq!((s.module, &s.target), (ModuleId::Notifications, &Some(Target::Module(ModuleId::Notifications))), "one click zone");
+        assert_eq!(draw(&super::notifications(Some(&bell(3, false, true))).unwrap()), ("\u{f009a} 3".into(), ".aa".into()));
+        assert_eq!(draw(&super::notifications(Some(&bell(42, false, true))).unwrap()).0, "\u{f009a} 42");
+        assert_eq!(draw(&super::notifications(Some(&bell(99, false, true))).unwrap()).0, "\u{f009a} 99");
+        assert_eq!(draw(&super::notifications(Some(&bell(150, false, true))).unwrap()).0, "\u{f009a} 99+", "never wider than 99+");
+    }
+
+    #[test]
+    fn do_not_disturb_crosses_the_bell_and_not_serving_dims_it() {
+        let d = |v: NotifyView| draw(&super::notifications(Some(&v)).unwrap());
+        assert_eq!(d(bell(0, true, true)), ("\u{f009b}".into(), "m".into()));
+        assert_eq!(d(bell(2, true, true)), ("\u{f009b} 2".into(), "mmm".into()), "the count stays, dimmed");
+        assert_eq!(d(bell(0, false, false)), ("\u{f009a}".into(), "m".into()), "another server holds the name: a dim bell");
+        assert_eq!(d(bell(5, false, false)), ("\u{f009a} 5".into(), "mmm".into()), "with the history it already has");
+        assert_eq!(d(bell(1, true, false)), ("\u{f009b} 1".into(), "mmm".into()));
+        assert!(super::notifications(None).is_none(), "nothing heard yet: no segment");
+    }
+
+    #[test]
+    fn bell_glyphs_are_one_cell_each() {
+        assert_eq!([BELL, BELL_OFF], ['\u{f009a}', '\u{f009b}']);
+        for g in [BELL, BELL_OFF] {
             assert_eq!(crate::grid::text_width(&g.to_string()), 1, "{g:?}");
         }
     }

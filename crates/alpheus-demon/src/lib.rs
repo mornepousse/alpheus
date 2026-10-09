@@ -33,6 +33,7 @@ pub mod popup;
 pub mod segments;
 pub mod sources;
 pub mod state;
+pub mod state_file;
 pub mod system;
 pub mod tray;
 pub mod watch;
