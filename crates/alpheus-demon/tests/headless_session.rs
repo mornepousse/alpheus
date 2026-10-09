@@ -2832,13 +2832,14 @@ fn an_unplugged_output_holding_the_bubbles_brings_them_back_elsewhere() {
     assert!(client.wait_heard(&Heard::Closed(id, 2)), "the bubble still answers: {:?}", d.log());
 }
 
-/// Review Focus: 4 bubbles shown and 6 waiting. Dismissing the top one shows the next waiting one,
-/// and the hit map follows the new stack.
+/// Review Focus: 4 bubbles shown and more waiting (4 here: 8 critical ones, the most that stay live,
+/// fix wave A). Dismissing the top one shows the next waiting one, and the hit map follows the new
+/// stack.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
-fn four_shown_six_waiting_a_dismissal_shows_the_next() {
+fn four_shown_four_waiting_a_dismissal_shows_the_next() {
     let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-queue", 1, false, |_| ());
-    let ids: Vec<u32> = (0..10)
+    let ids: Vec<u32> = (0..8)
         .map(|n| {
             let summary = format!("Alert {n}");
             client.notify(&Note::new("Monitor", &summary).critical()).unwrap()
@@ -2848,11 +2849,11 @@ fn four_shown_six_waiting_a_dismissal_shows_the_next() {
     assert!(sway.wait_for_screen("HEADLESS-1", four), "4 shown: {:?}", d.log());
     let (x, y) = bubble_at(&sway, "HEADLESS-1");
     sway.click(x, y, "button3");
-    assert!(client.wait_heard(&Heard::Closed(ids[9], 2)), "the newest is on top: {:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(ids[7], 2)), "the newest is on top: {:?}", d.log());
     thread::sleep(Duration::from_millis(500));
     assert!(sway.wait_for_screen("HEADLESS-1", four), "still 4: the next waiting one shows");
     sway.click(x, y, "button3");
-    assert!(client.wait_heard(&Heard::Closed(ids[8], 2)), "the stack and its hit map moved up: {:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(ids[6], 2)), "the stack and its hit map moved up: {:?}", d.log());
     assert!(sway.wait_for_screen("HEADLESS-1", four));
     assert!(
         !client.heard_within(Duration::from_millis(500)).iter().any(|h| matches!(h, Heard::Closed(..))),
