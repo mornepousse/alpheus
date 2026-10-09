@@ -647,7 +647,7 @@ mod tests {
             ModuleId::Battery,
             ModuleId::Clock,
         ];
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 55, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 55, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
         b.apply(Msg::Battery(Some(PowerState {
             laptop: Some(Battery { percent: 80, charge: Charge::Discharging }),
@@ -920,7 +920,7 @@ mod tests {
     fn bar_with_media(playing: bool) -> Bar {
         let mut b = bar();
         b.config.modules = vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Media, ModuleId::Volume, ModuleId::Clock];
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Media(Some(MediaView { playing, title: "Bohemian Rhapsody".into() })));
         b
     }
@@ -1004,7 +1004,7 @@ mod tests {
     fn bar_with_bell(view: NotifyView) -> Bar {
         let mut b = bar();
         b.config.modules = vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Volume, ModuleId::Notifications, ModuleId::Clock];
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Notifications(view));
         b
     }

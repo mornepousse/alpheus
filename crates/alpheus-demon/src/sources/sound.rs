@@ -65,7 +65,7 @@ mod tests {
             true
         });
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "pw-dump ending is an outage");
-        assert_eq!(seen, [SoundState { sink: Some(Volume { percent: 84, muted: false }) }]);
+        assert_eq!(seen.iter().map(|s| s.sink).collect::<Vec<_>>(), [Some(Volume { percent: 84, muted: false })]);
         assert_eq!(fake.calls(), ["pw-dump -m -N -R"]);
     }
 

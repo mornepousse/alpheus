@@ -68,7 +68,7 @@ fn full_bar() -> Bar {
         window: Some(Window { class: "firefox".into(), title: "t".into() }),
         toplevels: vec![],
     })));
-    b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }) })));
+    b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 50, muted: false }), ..SoundState::default() })));
     b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));

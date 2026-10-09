@@ -14,16 +14,18 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, SIGNATURE, Sway, Workstation, assert_no_spin, fake_program, launcher,
-    process_alive, start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, Workstation,
+    assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send, start_daemon,
+    start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -3142,4 +3144,51 @@ fn no_card_marks_read(name: &str, modules: &str) {
     assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// OSD task 1: the `Fifo` fake prints the initial dump, then each array a test sends, in order, and
+/// once killed nothing is left reading the pipe (it `exec`s its `cat`: the daemon's PDEATHSIG
+/// reaches it).
+#[test]
+fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
+    let dir = std::env::temp_dir().join(format!("alpheus-it-pw-fifo-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let bin = fake_pw_dump_in(&dir, PwDump::Fifo);
+    let mut child = Command::new(bin.join("pw-dump")).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    thread::spawn(move || {
+        let mut buf = vec![0u8; 1 << 16];
+        while let Ok(n) = out.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let mut seen = Vec::new();
+    let mut read_until = |needle: &str| -> usize {
+        let t = Instant::now();
+        loop {
+            if let Some(at) = String::from_utf8_lossy(&seen).find(needle) {
+                return at;
+            }
+            assert!(t.elapsed() < DELAY, "the fake never printed {needle}");
+            if let Ok(b) = rx.recv_timeout(Duration::from_millis(100)) {
+                seen.extend(b);
+            }
+        }
+    };
+    read_until(r#""id":123,"#);
+    let (first, second) = (volume_delta(AG06_SINK, 90, false), default_sink_delta(SPEAKER_SINK));
+    pw_dump_send(&dir, &first);
+    pw_dump_send(&dir, &second);
+    let (a, b) = (read_until(&first), read_until(&second));
+    assert!(a < b, "in the order sent");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    use std::os::unix::fs::OpenOptionsExt;
+    let left = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(dir.join("pw-dump.fifo"));
+    assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
+    let _ = std::fs::remove_dir_all(&dir);
 }

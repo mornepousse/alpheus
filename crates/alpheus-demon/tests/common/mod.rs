@@ -342,6 +342,9 @@ pub const SIGNATURE: &str = "fake";
 pub enum PwDump {
     Silent,
     Busy,
+    /// After the initial dump, exactly what a test writes to `<runtime>/pw-dump.fifo`
+    /// (`pw_dump_send`), and nothing else: no wake-up of its own (the OSD's tests).
+    Fifo,
 }
 
 pub struct DaemonOptions<'a> {
@@ -389,25 +392,91 @@ fn full_size_initial_dump(fixtures: &Path, to: &Path) {
     fs::write(to, dump).unwrap();
 }
 
-fn fake_pw_dump(sway: &Sway, mode: PwDump) -> PathBuf {
+/// The `Fifo` fake's pipe, in the runtime directory.
+pub const PW_DUMP_FIFO: &str = "pw-dump.fifo";
+
+/// The fixture's AG06 sink and source (`pw-dump-initial.json`): (id, media.class, node.name).
+pub const AG06_SINK: (u32, &str, &str) = (122, "Audio/Sink", "alsa_output.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo");
+pub const AG06_SOURCE: (u32, &str, &str) = (123, "Audio/Source", "alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo");
+/// The fixture's laptop speaker (id 99, 94 %).
+pub const SPEAKER_SINK: &str = "alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink";
+
+/// A pw-dump delta re-dumping `node` (its fixture description kept) with both channels at
+/// `percent`, as wpctl shows it (the linear volume is its cube).
+pub fn volume_delta(node: (u32, &str, &str), percent: u32, mute: bool) -> String {
+    let (id, class, name) = node;
+    let linear = (f64::from(percent) / 100.0).powi(3);
+    format!(
+        r#"[{{"id":{id},"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"{class}","node.name":"{name}","node.description":"AG06/AG03 Analog Stereo"}},"params":{{"Props":[{{"channelVolumes":[{linear},{linear}],"mute":{mute}}}]}}}}}}]"#
+    )
+}
+
+/// A delta of the `default` metadata (id 40) naming `node` the default sink.
+pub fn default_sink_delta(node: &str) -> String {
+    format!(
+        r#"[{{"id":40,"type":"PipeWire:Interface:Metadata","props":{{"metadata.name":"default"}},"metadata":[{{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{{"name":"{node}"}}}}]}}]"#
+    )
+}
+
+fn make_fifo(path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
+    let r = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+    let e = std::io::Error::last_os_error();
+    assert!(r == 0 || e.kind() == std::io::ErrorKind::AlreadyExists, "mkfifo {}: {e}", path.display());
+}
+
+/// The fake `pw-dump` in `runtime/bin` (returns that directory). `Fifo`: after the initial dump the
+/// script opens the pipe read-write (never an EOF, never a block) and `exec`s `cat` on it. It is ONE
+/// process, so the daemon's PDEATHSIG takes it, and nothing is left reading the pipe.
+pub fn fake_pw_dump_in(runtime: &Path, mode: PwDump) -> PathBuf {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let bin = sway.runtime.join("bin");
+    let bin = runtime.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    let initial = sway.runtime.join("pw-dump-initial-full.json");
+    let initial = runtime.join("pw-dump-initial-full.json");
     full_size_initial_dump(&fixtures, &initial);
     let then = match mode {
         PwDump::Silent => "exec sleep 100000".to_string(),
         PwDump::Busy => format!("while :; do cat '{}'; sleep 0.01; done", fixtures.join("pw-dump-deltas.json").display()),
+        PwDump::Fifo => {
+            let fifo = runtime.join(PW_DUMP_FIFO);
+            make_fifo(&fifo);
+            format!("exec 3<> '{}'\nexec cat <&3", fifo.display())
+        }
     };
     let script = format!(
         "#!/bin/sh\n# Fake pw-dump of the daemon's tests: recorded fixtures, never PipeWire.\necho $$ > '{}'\ncat '{}'\n{then}\n",
-        sway.runtime.join("pw-dump.pid").display(),
+        runtime.join("pw-dump.pid").display(),
         initial.display()
     );
     let path = bin.join("pw-dump");
     fs::write(&path, script).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     bin
+}
+
+fn fake_pw_dump(sway: &Sway, mode: PwDump) -> PathBuf {
+    fake_pw_dump_in(&sway.runtime, mode)
+}
+
+/// One delta (one JSON array, or several back to back) to the `Fifo` fake. The pipe is opened
+/// without blocking, retried for 10 s while the fake has not opened it yet (ENXIO), then written
+/// whole: one small write, atomic.
+pub fn pw_dump_send(runtime: &Path, json: &str) {
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = runtime.join(PW_DUMP_FIFO);
+    let t = Instant::now();
+    let mut f = loop {
+        match fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(&path) {
+            Ok(f) => break f,
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) && t.elapsed() < Duration::from_secs(10) => {
+                thread::sleep(Duration::from_millis(10))
+            }
+            Err(e) => panic!("{}: {e}", path.display()),
+        }
+    };
+    f.write_all(format!("{json}\n").as_bytes()).unwrap();
 }
 
 pub fn start_daemon(sway: &Sway) -> Daemon {

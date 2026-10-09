@@ -457,7 +457,7 @@ mod tests {
 
     fn full() -> Bar {
         let mut b = bar();
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Network(Some(NetState::Offline)));
         b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![] })));
         b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] })));

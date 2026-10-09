@@ -119,9 +119,9 @@ pub(crate) fn launcher() -> Segment {
 
 pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
     let v = match feed {
-        Feed::Waiting | Feed::Ready(SoundState { sink: None }) => return None,
+        Feed::Waiting | Feed::Ready(SoundState { sink: None, .. }) => return None,
         Feed::Down => return Some(down(ModuleId::Volume, VOLUME_HIGH)),
-        Feed::Ready(SoundState { sink: Some(v) }) => *v,
+        Feed::Ready(SoundState { sink: Some(v), .. }) => *v,
     };
     let gauge: String = GAUGE.iter().collect();
     let pieces = if v.muted {
@@ -479,7 +479,7 @@ mod tests {
     }
 
     fn sound(percent: u8, muted: bool) -> Feed<SoundState> {
-        Feed::Ready(SoundState { sink: Some(Volume { percent, muted }) })
+        Feed::Ready(SoundState { sink: Some(Volume { percent, muted }), ..SoundState::default() })
     }
 
     fn online(link: Link, vpns: usize, limited: bool) -> Feed<NetState> {
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn volume_hidden_while_waiting_or_without_sink_dash_when_down() {
         assert!(volume(&Feed::Waiting).is_none());
-        assert!(volume(&Feed::Ready(SoundState { sink: None })).is_none());
+        assert!(volume(&Feed::Ready(SoundState::default())).is_none());
         assert_eq!(draw(&volume(&Feed::Down).unwrap()), ("\u{f057e} –".into(), "mmm".into()));
     }
 
@@ -706,7 +706,7 @@ mod tests {
             vec![ModuleId::Workspaces, ModuleId::Window, ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth, ModuleId::Clock];
         b.apply(Msg::Compositor(Some(example())));
         b.apply(Msg::Clock(SUN));
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Network(Some(NetState::Online { link: Link::Ethernet, vpns: 2, limited: false })));
         b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
         b
@@ -940,7 +940,7 @@ mod tests {
         let mut b = Bar::new(BarConfig::default());
         b.apply(Msg::Compositor(Some(example())));
         b.apply(Msg::Clock(SUN));
-        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }) })));
+        b.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
         b.apply(Msg::Network(Some(NetState::Online { link: Link::Ethernet, vpns: 2, limited: false })));
         b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
         b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] })));

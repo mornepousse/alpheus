@@ -5,10 +5,25 @@
 pub use alpheus_commun::backends::Volume;
 use std::collections::VecDeque;
 
-/// The default output (PipeWire). `sink: None`: no output at all (hidden).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The default output and input (PipeWire), as the bar and the OSD read them (OSD spec § 2).
+/// `sink: None`: no output at all (the volume module hidden).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SoundState {
     pub sink: Option<Volume>,
+    /// The default source (the microphone); None: none, or its volume not known yet.
+    pub source: Option<Volume>,
+    /// The default sink's and source's node, when the default resolves to one: what tells a default
+    /// switched from a level moved (`osd::Watch`).
+    pub sink_name: Option<DeviceName>,
+    pub source_name: Option<DeviceName>,
+}
+
+/// A default device: its `node.name` (its identity) and what a person reads (`node.description`,
+/// else `node.nick`, else the node name; at most `pipewire::LABEL_MAX` bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceName {
+    pub node: String,
+    pub label: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

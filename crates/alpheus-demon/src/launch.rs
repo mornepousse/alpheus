@@ -873,7 +873,7 @@ mod tests {
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
         }
-        on_message(&mut c, Msg::Sound(Some(SoundState { sink: None })), || AFTER);
+        on_message(&mut c, Msg::Sound(Some(SoundState::default())), || AFTER);
         assert_eq!(c.bar.clock, None, "network, bluetooth, battery, sound: not a clock-refreshing event");
         on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None }), || AFTER);
         after_dispatch(&mut c);

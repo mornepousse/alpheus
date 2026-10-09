@@ -2,9 +2,10 @@
 //! one the whole graph (≈ 600 KB on the workstation), then only the objects
 //! that changed (re-dumped whole) or were removed (`{"id": N, "info":
 //! null}`, with no "type"). Read array by array: nothing is kept but each
-//! sink's volume and the default sink's name.
+//! sink's and source's volume and label, and the default sink's and source's
+//! names.
 
-use crate::system::{SoundState, Volume};
+use crate::system::{DeviceName, SoundState, Volume};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -39,6 +40,10 @@ pub struct NodeProps {
     pub media_class: Option<String>,
     #[serde(rename = "node.name", default, deserialize_with = "lenient_text")]
     pub node_name: Option<String>,
+    #[serde(rename = "node.description", default, deserialize_with = "lenient_text")]
+    pub description: Option<String>,
+    #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
+    pub nick: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -124,72 +129,126 @@ pub fn to_volume(p: &PropsParam) -> Option<Volume> {
     Some(Volume { percent: (mean.cbrt() * 100.0).round().min(255.0) as u8, muted: p.mute.unwrap_or(false) })
 }
 
+/// A label's longest form, in bytes (cut on a character boundary).
+pub const LABEL_MAX: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Sink,
+    Source,
+}
+
+/// Audio/Sink, Audio/Source and Audio/Source/… (a virtual source: echo cancelling); streams and
+/// everything else: None.
+fn kind_of(class: Option<&str>) -> Option<Kind> {
+    match class? {
+        "Audio/Sink" => Some(Kind::Sink),
+        c if c == "Audio/Source" || c.starts_with("Audio/Source/") => Some(Kind::Source),
+        _ => None,
+    }
+}
+
+fn capped(s: &str) -> String {
+    let mut end = s.len().min(LABEL_MAX);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
+/// What a person reads: the description, else the nick (blank text is absent); None: neither.
+fn label_of(p: &NodeProps) -> Option<String> {
+    [p.description.as_deref(), p.nick.as_deref()].into_iter().flatten().map(str::trim).find(|s| !s.is_empty()).map(capped)
+}
+
+/// The last entry of subject 0 that sets `key`, or clears every key (a null key): Some(the new
+/// default); None when the array does not mention it.
+fn default_of(entries: &[MetaEntry], key: &str) -> Option<Option<String>> {
+    let e = entries.iter().rev().find(|e| e.subject == Some(0) && e.key.as_deref().is_none_or(|k| k == key))?;
+    Some(match e.key {
+        None => None,
+        Some(_) => e.value.get("name").and_then(|n| n.as_str()).map(String::from),
+    })
+}
+
+#[derive(Debug)]
+struct Node {
+    kind: Kind,
+    name: String,
+    label: String,
+    volume: Option<Volume>,
+}
+
 #[derive(Debug, Default)]
 pub struct Model {
-    /// Sinks (media.class Audio/Sink): id → (node.name, volume once known).
-    sinks: HashMap<u32, (String, Option<Volume>)>,
-    /// Id of the `default` metadata object, and the default sink's node.name.
+    /// Sinks and sources: id → kind, node.name, label, volume once known.
+    nodes: HashMap<u32, Node>,
+    /// Id of the `default` metadata object, and the default sink's and source's node.name.
     default_meta: Option<u32>,
     default_sink: Option<String>,
+    default_source: Option<String>,
 }
 
 impl Model {
     pub fn apply(&mut self, batch: Vec<Object>) {
         for o in batch {
             if o.kind.is_none() {
-                self.sinks.remove(&o.id);
+                self.nodes.remove(&o.id);
                 if self.default_meta == Some(o.id) {
                     self.default_meta = None;
                     self.default_sink = None;
+                    self.default_source = None;
                 }
                 continue;
             }
             let is_default_meta = o.props.as_ref().and_then(|p| p.name.as_deref()) == Some("default") || self.default_meta == Some(o.id);
             if is_default_meta {
                 self.default_meta = Some(o.id);
-                // The last entry of subject 0 that sets the default sink, or
-                // clears every key (null key).
-                let entry = o
-                    .metadata
-                    .iter()
-                    .flatten()
-                    .rev()
-                    .find(|e| e.subject == Some(0) && e.key.as_deref().is_none_or(|k| k == "default.audio.sink"));
-                if let Some(e) = entry {
-                    self.default_sink = match e.key {
-                        None => None,
-                        Some(_) => e.value.get("name").and_then(|n| n.as_str()).map(String::from),
-                    };
+                let entries = o.metadata.as_deref().unwrap_or_default();
+                if let Some(v) = default_of(entries, "default.audio.sink") {
+                    self.default_sink = v;
+                }
+                if let Some(v) = default_of(entries, "default.audio.source") {
+                    self.default_source = v;
                 }
                 continue;
             }
             let Some(info) = o.info else { continue };
-            if info.props.media_class.as_deref() != Some("Audio/Sink") {
-                self.sinks.remove(&o.id);
+            let Some(kind) = kind_of(info.props.media_class.as_deref()) else {
+                self.nodes.remove(&o.id);
                 continue;
-            }
-            // A re-dump without params keeps the last known volume.
-            let known = self.sinks.get(&o.id).and_then(|(_, v)| *v);
-            let volume = info.params.props.iter().find_map(to_volume).or(known);
-            self.sinks.insert(o.id, (info.props.node_name.unwrap_or_default(), volume));
+            };
+            let known = self.nodes.get(&o.id);
+            // A re-dump without params keeps the last known volume; one without a label, the label.
+            let volume = info.params.props.iter().find_map(to_volume).or(known.and_then(|n| n.volume));
+            let name = info.props.node_name.clone().unwrap_or_default();
+            let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone())).unwrap_or_else(|| capped(&name));
+            self.nodes.insert(o.id, Node { kind, name, label, volume });
         }
     }
 
-    pub fn state(&self) -> SoundState {
-        // Two sinks can share a `node.name` (two instances of the same
-        // device profile); pick deterministically rather than depending on
-        // the HashMap's iteration order.
-        let sink = self
-            .default_sink
-            .as_ref()
-            .and_then(|n| self.sinks.iter().filter(|(_, (name, _))| name == n).min_by_key(|(id, _)| **id))
-            .and_then(|(_, (_, v))| *v);
-        SoundState { sink }
+    /// The default node of `kind` named `name`. Two nodes can share a `node.name` (two instances of
+    /// the same device profile): the lowest id, never the HashMap's order.
+    fn resolve(&self, kind: Kind, name: Option<&String>) -> Option<&Node> {
+        let name = name?;
+        self.nodes.iter().filter(|(_, n)| n.kind == kind && &n.name == name).min_by_key(|(id, _)| **id).map(|(_, n)| n)
     }
 
-    /// Sinks kept in memory (tests: nothing else of the dump is).
-    pub fn sinks(&self) -> usize {
-        self.sinks.len()
+    pub fn state(&self) -> SoundState {
+        let sink = self.resolve(Kind::Sink, self.default_sink.as_ref());
+        let source = self.resolve(Kind::Source, self.default_source.as_ref());
+        let named = |n: &Node| DeviceName { node: n.name.clone(), label: n.label.clone() };
+        SoundState {
+            sink: sink.and_then(|n| n.volume),
+            source: source.and_then(|n| n.volume),
+            sink_name: sink.map(named),
+            source_name: source.map(named),
+        }
+    }
+
+    /// Sinks and sources kept in memory (tests: nothing else of the dump is).
+    pub fn nodes(&self) -> usize {
+        self.nodes.len()
     }
 }
 
@@ -230,26 +289,56 @@ mod tests {
         (seen, e.kind())
     }
 
-    fn vol(percent: u8, muted: bool) -> SoundState {
-        SoundState { sink: Some(Volume { percent, muted }) }
+    const AG06_OUT: &str = "alsa_output.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo";
+    const AG06_IN: &str = "alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo";
+
+    fn vol(percent: u8, muted: bool) -> Option<Volume> {
+        Some(Volume { percent, muted })
+    }
+
+    fn name(node: &str, label: &str) -> Option<DeviceName> {
+        Some(DeviceName { node: node.into(), label: label.into() })
+    }
+
+    /// The sink part of each publication: what every test written before the OSD compared.
+    fn sinks(seen: &[SoundState]) -> Vec<Option<Volume>> {
+        seen.iter().map(|s| s.sink).collect()
     }
 
     #[test]
-    fn initial_dump_gives_the_default_sink_volume() {
-        assert_eq!(published(INITIAL), (vec![vol(84, false)], io::ErrorKind::UnexpectedEof));
+    fn initial_dump_gives_both_defaults() {
+        let (seen, end) = published(INITIAL);
+        assert_eq!(end, io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            seen,
+            [SoundState {
+                sink: vol(84, false),
+                source: vol(100, false),
+                sink_name: name(AG06_OUT, "AG06/AG03 Analog Stereo"),
+                source_name: name(AG06_IN, "AG06/AG03 Analog Stereo"),
+            }]
+        );
     }
 
     #[test]
-    fn only_sinks_are_kept() {
+    fn only_sinks_and_sources_are_kept() {
         let mut m = Model::default();
         m.apply(serde_json::from_str::<Vec<Object>>(INITIAL).unwrap());
-        assert_eq!(m.sinks(), 3, "the three sinks of the fixture, nothing else of the dump");
+        assert_eq!(m.nodes(), 4, "the fixture's three sinks and its source; not Firefox's stream, nothing else of the dump");
     }
 
     #[test]
     fn deltas_follow_volume_mute_default_switch_and_removal() {
         let (seen, end) = published(&format!("{INITIAL}{DELTAS}"));
-        assert_eq!(seen, [vol(84, false), vol(90, false), vol(90, true), vol(94, false), SoundState { sink: None }, vol(90, true)]);
+        assert_eq!(sinks(&seen), [vol(84, false), vol(90, false), vol(90, true), vol(94, false), None, vol(90, true)]);
+        assert_eq!(
+            seen[3].sink_name,
+            name(
+                "alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink",
+                "600 Series Chipset Family HD Audio Speaker"
+            )
+        );
+        assert!(seen.iter().all(|s| s.source == vol(100, false)), "the deltas never touch the source");
         assert_eq!(end, io::ErrorKind::UnexpectedEof);
     }
 
@@ -261,7 +350,7 @@ mod tests {
         // A re-dump listing the key twice: the last occurrence wins.
         let twice = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"sink-b"}},{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"sink-a"}}]}]"#;
         let (seen, _) = published(&format!("{meta}\n{node}\n{cleared}\n{twice}\n"));
-        assert_eq!(seen, [SoundState { sink: None }, vol(50, false), SoundState { sink: None }, vol(50, false)]);
+        assert_eq!(sinks(&seen), [None, vol(50, false), None, vol(50, false)]);
     }
 
     #[test]
@@ -273,15 +362,16 @@ mod tests {
         // An entry with neither subject nor key: skipped, never an error.
         let odd = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"value":1},{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"sink-a"}}]}]"#;
         let (seen, end) = published(&format!("{meta}\n{node}\n{cleared}\n{odd}\n"));
-        assert_eq!(seen, [SoundState { sink: None }, vol(50, false), SoundState { sink: None }, vol(50, false)]);
+        assert_eq!(sinks(&seen), [None, vol(50, false), None, vol(50, false)]);
         assert_eq!(end, io::ErrorKind::UnexpectedEof, "the stream went on to its end: never InvalidData");
     }
 
     #[test]
-    fn a_redump_without_params_keeps_the_known_volume() {
+    fn a_redump_without_params_or_description_keeps_what_is_known() {
         let without = r#"[{"id":122,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"alsa_output.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo"},"params":{}}}]"#;
         let (seen, _) = published(&format!("{INITIAL}{without}\n"));
-        assert_eq!(seen, [vol(84, false)], "nothing new to publish");
+        assert_eq!(seen.len(), 1, "nothing new to publish: the volume and the label are kept");
+        assert_eq!(seen[0].sink_name, name(AG06_OUT, "AG06/AG03 Analog Stereo"));
     }
 
     #[test]
@@ -300,11 +390,12 @@ mod tests {
         let dump = r#"[
             {"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.sink","value":{"name":"dup"}}]},
             {"id":9,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"dup"},"params":{"Props":[{"channelVolumes":[0.729,0.729],"mute":false}]}}},
-            {"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"dup"},"params":{"Props":[{"channelVolumes":[0.125,0.125],"mute":false}]}}}
+            {"id":3,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Sink","node.name":"dup"},"params":{"Props":[{"channelVolumes":[0.125,0.125],"mute":false}]}}},
+            {"id":1,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"dup"},"params":{"Props":[{"channelVolumes":[0.0,0.0],"mute":false}]}}}
         ]"#;
         let mut m = Model::default();
         m.apply(serde_json::from_str::<Vec<Object>>(dump).unwrap());
-        assert_eq!(m.state(), vol(50, false), "the lower id (3) wins, not insertion or hash order");
+        assert_eq!(m.state().sink, vol(50, false), "the lower sink id (3) wins; never the source (1), whatever its id");
     }
 
     #[test]
@@ -316,7 +407,7 @@ mod tests {
         // only the changed `metadata` entries, no `props` at all.
         let switched = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","metadata":[{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"sink-b"}}]}]"#;
         let (seen, end) = published(&format!("{meta}\n{sink_a}\n{sink_b}\n{switched}\n"));
-        assert_eq!(seen, [SoundState { sink: None }, vol(50, false), vol(60, false)]);
+        assert_eq!(sinks(&seen), [None, vol(50, false), vol(60, false)]);
         assert_eq!(end, io::ErrorKind::UnexpectedEof);
     }
 
@@ -332,8 +423,72 @@ mod tests {
         let numeric_meta_name = r#"[{"id":6,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":777},"metadata":[{"subject":-1,"key":"k","value":1},{"subject":"nope","key":"k2","value":2}]}]"#;
         let null_props = r#"[{"id":7,"type":"PipeWire:Interface:Node","info":{"props":null,"params":{"Props":null}}}]"#;
         let (seen, end) = published(&format!("{INITIAL}{numeric_name}\n{numeric_meta_name}\n{null_props}\n"));
-        assert_eq!(seen, [vol(84, false)], "none of this touches the default sink");
+        assert_eq!(sinks(&seen), [vol(84, false)]);
+        assert_eq!(seen.len(), 1, "none of this touches a default");
         assert_eq!(end, io::ErrorKind::UnexpectedEof, "odd property types never end the stream");
+    }
+
+    /// The default source (OSD spec § 2): its mute, a switch to a virtual source (echo cancelling,
+    /// named by its nick), its node going. A stream recording the microphone, with the same node
+    /// name, is never a source; a source node arriving that is not the default publishes nothing.
+    #[test]
+    fn the_default_source_is_followed_like_the_sink() {
+        let muted = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo","node.description":"AG06/AG03 Analog Stereo"},"params":{"Props":[{"channelVolumes":[1.0,1.0],"mute":true}]}}}]"#;
+        let stream = r#"[{"id":170,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Input/Audio","node.name":"alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo"},"params":{"Props":[{"channelVolumes":[0.0,0.0],"mute":false}]}}}]"#;
+        let echo = r#"[{"id":180,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source/Virtual","node.name":"echo-cancel-source","node.nick":"Echo cancel"},"params":{"Props":[{"channelVolumes":[0.125,0.125],"mute":false}]}}}]"#;
+        let switched = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","metadata":[{"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"echo-cancel-source"}}]}]"#;
+        let gone = r#"[{"id":180,"info":null}]"#;
+        let (seen, end) = published(&format!("{INITIAL}{muted}\n{stream}\n{echo}\n{switched}\n{gone}\n"));
+        assert_eq!(end, io::ErrorKind::UnexpectedEof);
+        let sources: Vec<_> = seen.iter().map(|s| (s.source, s.source_name.as_ref().map(|n| n.label.clone()))).collect();
+        let ag06 = Some("AG06/AG03 Analog Stereo".to_string());
+        assert_eq!(
+            sources,
+            [(vol(100, false), ag06.clone()), (vol(100, true), ag06), (vol(50, false), Some("Echo cancel".into())), (None, None)],
+            "the stream and the echo node arriving publish nothing"
+        );
+        assert!(seen.iter().all(|s| s.sink == vol(84, false)), "the sink never moved");
+    }
+
+    /// The label (OSD spec § 1, the name card): the description, else the nick, else the node name;
+    /// blank text is absent; capped at LABEL_MAX bytes on a character boundary.
+    #[test]
+    fn the_label_is_the_description_then_the_nick_then_the_node_name_and_is_capped() {
+        let meta = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.sink","value":{"name":"s"}}]}]"#;
+        let label = |props: &str| {
+            let node = format!(
+                r#"[{{"id":7,"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"Audio/Sink",{props}}},"params":{{"Props":[{{"channelVolumes":[0.125,0.125],"mute":false}}]}}}}}}]"#
+            );
+            let (seen, _) = published(&format!("{meta}\n{node}\n"));
+            seen.last().and_then(|s| s.sink_name.clone()).map(|n| n.label)
+        };
+        assert_eq!(label(r#""node.name":"s","node.description":"Desk","node.nick":"D""#).as_deref(), Some("Desk"));
+        assert_eq!(
+            label(r#""node.name":"s","node.description":"  ","node.nick":"D""#).as_deref(),
+            Some("D"),
+            "a blank description is absent"
+        );
+        assert_eq!(label(r#""node.name":"s""#).as_deref(), Some("s"), "neither: the node name");
+        let long = "é".repeat(100); // 200 bytes
+        let got = label(&format!(r#""node.name":"s","node.description":"{long}""#)).unwrap();
+        assert_eq!(got.len(), LABEL_MAX, "capped, on a character boundary");
+        assert!(got.chars().all(|c| c == 'é'));
+    }
+
+    /// `pw-metadata -d 0`: every key of subject 0 cleared, the sink's and the source's alike.
+    #[test]
+    fn a_cleared_subject_clears_both_defaults() {
+        let cleared = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":null,"type":null,"value":null}]}]"#;
+        let (seen, _) = published(&format!("{INITIAL}{cleared}\n"));
+        assert_eq!(seen.last(), Some(&SoundState::default()));
+    }
+
+    /// An array that names only the sink leaves the source where it was (and the other way round).
+    #[test]
+    fn an_array_naming_one_default_leaves_the_other() {
+        let sink_only = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","metadata":[{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink"}}]}]"#;
+        let (seen, _) = published(&format!("{INITIAL}{sink_only}\n"));
+        assert_eq!(seen.last().map(|s| (s.sink, s.source)), Some((vol(94, false), vol(100, false))));
     }
 
     #[test]

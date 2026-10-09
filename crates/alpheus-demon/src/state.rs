@@ -77,6 +77,15 @@ fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
     }
 }
 
+/// What the bar draws of the sound: the sink's volume, or the source's state ("…", "–").
+fn sound_drawing(f: &Feed<SoundState>) -> Feed<Option<crate::system::Volume>> {
+    match f {
+        Feed::Waiting => Feed::Waiting,
+        Feed::Down => Feed::Down,
+        Feed::Ready(s) => Feed::Ready(s.sink),
+    }
+}
+
 /// Same bar drawing from the compositor: its workspaces and focused window.
 /// The launcher's `toplevels` are not drawn: a background title change
 /// (niri publishes every one) is stored without a redraw.
@@ -128,7 +137,13 @@ impl Bar {
                     true
                 }
             }
-            Msg::Sound(s) => update(&mut self.sound, s),
+            Msg::Sound(s) => {
+                // The bar draws the sink only: a microphone or label change is kept for the OSD
+                // (which reads it from this same message, before) without a redraw.
+                let before = sound_drawing(&self.sound);
+                update(&mut self.sound, s);
+                before != sound_drawing(&self.sound)
+            }
             Msg::Network(s) => update(&mut self.network, s),
             Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
             Msg::Battery(s) => update(&mut self.battery, s),
@@ -204,7 +219,7 @@ mod tests {
     fn system_messages_and_changes() {
         let mut b = Bar::new(BarConfig::default());
         assert_eq!((&b.sound, &b.network, &b.bluetooth, &b.battery), (&Feed::Waiting, &Feed::Waiting, &Feed::Waiting, &Feed::Waiting));
-        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }) };
+        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() };
         assert!(b.apply(Msg::Sound(Some(s.clone()))));
         assert!(!b.apply(Msg::Sound(Some(s))), "same volume: nothing to redraw");
         assert!(b.apply(Msg::Sound(None)));
@@ -217,6 +232,21 @@ mod tests {
         assert!(!b.apply(Msg::Battery(Some(PowerState::default()))));
         assert!(b.apply(Msg::Battery(None)));
         assert_eq!(b.battery, Feed::Down);
+    }
+
+    /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads
+    /// it from the same message) but redraws nothing.
+    #[test]
+    fn a_microphone_or_label_change_alone_does_not_redraw_the_bar() {
+        let mut b = Bar::new(BarConfig::default());
+        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() };
+        assert!(b.apply(Msg::Sound(Some(s.clone()))));
+        let mic = SoundState { source: Some(Volume { percent: 100, muted: true }), ..s.clone() };
+        assert!(!b.apply(Msg::Sound(Some(mic.clone()))), "the bar draws the sink only");
+        assert_eq!(b.sound, Feed::Ready(mic), "kept all the same");
+        let louder = SoundState { sink: Some(Volume { percent: 85, muted: false }), ..s };
+        assert!(b.apply(Msg::Sound(Some(louder))), "the sink moved: redraw");
+        assert!(b.apply(Msg::Sound(None)), "down: redraw");
     }
 
     #[test]
