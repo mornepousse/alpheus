@@ -7,17 +7,19 @@
 //! anyone; if another watcher has it, be a host only and follow its list;
 //! when it leaves, take the name.
 
-use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus};
+use super::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus, refusal};
 use super::codec::{self, Reply, Signal};
 use super::host::{GestureOutcome, Host, Item, owner_rule};
 use super::menu_session::{MenuSession, MenuUpdate};
 use super::mpris::Mpris;
+use super::notifications::{self, Notifications};
 use super::watcher::Watcher;
 use super::{Gesture, ItemKey, MAX_ITEMS, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use crate::appearance::Appearance;
-use crate::config::MediaConfig;
+use crate::config::{MediaConfig, NotificationsConfig};
 use crate::log::write as log;
 use crate::media::MediaView;
+use crate::notify::NotifyView;
 use alpheus_commun::theme::Mode;
 use dbus::Message;
 use std::collections::HashMap;
@@ -56,6 +58,10 @@ pub struct TrayOutput {
     pub appearance: Option<Mode>,
     /// The media module's view changed (media task 4): Some(None) hides it, Some(Some(v)) shows v.
     pub media: Option<Option<MediaView>>,
+    /// The notifications server's view changed (notifications task 4): the bell repaints.
+    pub notifications: Option<NotifyView>,
+    /// The bubbles to show changed (shown, replaced, expired, all gone): the wiring re-syncs them.
+    pub bubbles: bool,
 }
 
 impl TrayOutput {
@@ -74,6 +80,10 @@ impl TrayOutput {
         if other.media.is_some() {
             self.media = other.media;
         }
+        if other.notifications.is_some() {
+            self.notifications = other.notifications;
+        }
+        self.bubbles |= other.bubbles;
     }
 }
 
@@ -118,6 +128,8 @@ pub struct Tray {
     appearance: Option<Appearance>,
     /// The MPRIS consumer on this same connection (media task 4); None unless asked.
     media: Option<Mpris>,
+    /// The notifications server on this same connection (notifications task 4); None unless asked.
+    notifications: Option<Notifications>,
 }
 
 /// How many times a flush's drained answers are routed (and what that sends flushed again) before
@@ -140,6 +152,7 @@ impl Tray {
             deferred: TrayOutput::default(),
             appearance: None,
             media: None,
+            notifications: None,
         };
         t.call(Call::AddMatch { rule: owner_rule(WATCHER_NAME) }, Own::Ignore);
         t.request_name();
@@ -182,6 +195,47 @@ impl Tray {
             let out = self.settled();
             self.deferred.merge(out);
         }
+    }
+
+    /// Serves notifications on this connection: RequestName with flags 0 (queued behind another
+    /// server, never replacing it). Once: a second call is a no-op. The bell's first view waits in
+    /// `deferred`.
+    pub fn start_notifications(&mut self, cfg: &NotificationsConfig, dnd: bool) {
+        if self.notifications.is_none() {
+            self.notifications = Some(Notifications::start(&mut self.bus, cfg, dnd));
+            let mut out = self.settled();
+            out.merge(self.notifications_output(false));
+            self.deferred.merge(out);
+        }
+    }
+
+    pub fn notifications(&self) -> Option<&Notifications> {
+        self.notifications.as_ref()
+    }
+
+    /// Runs `f` on the notifications server (an expiry, a click, the panel, a verb): its signals sent
+    /// and flushed, its view and bubbles kept for `take_deferred`, never routed re-entrantly
+    /// (`App::notify_do`, task 5, is its one caller).
+    pub fn notifications_do(&mut self, f: impl FnOnce(&mut Notifications)) {
+        if let Some(n) = self.notifications.as_mut() {
+            f(n);
+            for m in n.take_effects() {
+                self.bus.send_message(m);
+            }
+            let mut out = self.settled();
+            out.merge(self.notifications_output(false));
+            self.deferred.merge(out);
+        }
+    }
+
+    /// What the bar must hear from the notifications server after a batch: its view when it changed,
+    /// whether the bubbles moved. `closed`: the bus went, and the name with it.
+    fn notifications_output(&mut self, closed: bool) -> TrayOutput {
+        let Some(n) = self.notifications.as_mut() else { return TrayOutput::default() };
+        if closed {
+            n.lost();
+        }
+        TrayOutput { notifications: n.take_change(), bubbles: n.take_bubbles_change(), ..TrayOutput::default() }
     }
 
     fn call(&mut self, call: Call, own: Own) {
@@ -363,10 +417,18 @@ impl Tray {
                 out.media = Some(view);
             }
         }
+        // The notifications server: once per batch, its view and bubbles when they changed; the bus
+        // gone, the name goes with it (no bubble, no timer).
+        let closed = out.bus_closed;
+        out.merge(self.notifications_output(closed));
         out
     }
 
     fn answer(&mut self, id: CallId, result: Result<Reply, CallError>) -> TrayOutput {
+        if let Some(n) = self.notifications.as_mut().filter(|n| n.owns(id)) {
+            n.answer(id, result);
+            return TrayOutput::default();
+        }
         if let Some(a) = self.appearance.as_mut().filter(|a| a.owns(id)) {
             return TrayOutput { appearance: a.answer(id, result), ..TrayOutput::default() };
         }
@@ -450,6 +512,13 @@ impl Tray {
         let sender = m.sender().map(|s| s.to_string()).unwrap_or_default();
         // MPRIS names, Player properties and Seeked (media task 4) are the consumer's, never the host's.
         // Every other NameOwnerChanged (the watcher's name, items' owners) goes on as before.
+        // NameAcquired / NameLost for org.freedesktop.Notifications (notifications task 4); the
+        // watcher's own NameAcquired goes on as before.
+        if let Some(n) = self.notifications.as_mut()
+            && n.signal(&s)
+        {
+            return TrayOutput::default();
+        }
         if let Some(media) = self.media.as_mut()
             && media.signal(&mut self.bus, &s)
         {
@@ -553,6 +622,24 @@ impl Tray {
     }
 
     fn inbound_call(&mut self, m: Message) {
+        // The Notifications path first (notifications task 4): served while the name is held,
+        // refused otherwise; refused too when the module is off, as any path we do not serve. Its
+        // signals (NotificationClosed for a CloseNotification) leave right after the reply.
+        if notifications::serves(&m) {
+            let reply = match self.notifications.as_mut() {
+                Some(n) => n.handle(&m, Instant::now(), notifications::minute_now()),
+                None => (!m.get_no_reply()).then(|| refusal(&m)),
+            };
+            if let Some(r) = reply {
+                self.bus.send_message(r);
+            }
+            if let Some(n) = self.notifications.as_mut() {
+                for s in n.take_effects() {
+                    self.bus.send_message(s);
+                }
+            }
+            return;
+        }
         // Served while we own the name; refused (never left unanswered) otherwise.
         for r in self.watcher.handle(m) {
             self.bus.send_message(r);

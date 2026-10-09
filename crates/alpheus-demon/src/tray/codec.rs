@@ -461,7 +461,10 @@ pub fn inbound(m: &Message) -> Inbound {
     let empty = it.arg_type() == ArgType::Invalid;
     match m.member().as_deref() {
         Some("Notify") => notify_call(&mut it).map_or(Inbound::Unknown, Inbound::Notify),
-        Some("CloseNotification") => it.get::<u32>().map_or(Inbound::Unknown, Inbound::Close),
+        Some("CloseNotification") => match it.read::<u32>() {
+            Ok(id) if it.arg_type() == ArgType::Invalid => Inbound::Close(id),
+            _ => Inbound::Unknown,
+        },
         Some("GetCapabilities") if empty => Inbound::Capabilities,
         Some("GetServerInformation") if empty => Inbound::ServerInfo,
         _ => Inbound::Unknown,
@@ -2024,6 +2027,13 @@ mod tests {
             ("too few", server_call("Notify", head)),
             ("Close with a string", server_call("CloseNotification", |i| i.append("7"))),
             ("Close without its id", server_call("CloseNotification", |_| {})),
+            (
+                "Close with a trailing argument",
+                server_call("CloseNotification", |i| {
+                    i.append(7u32);
+                    i.append("extra");
+                }),
+            ),
             ("GetCapabilities with an argument", server_call("GetCapabilities", |i| i.append("x"))),
             ("GetServerInformation with an argument", server_call("GetServerInformation", |i| i.append(1u32))),
             ("an unknown member", server_call("Bogus", |_| {})),

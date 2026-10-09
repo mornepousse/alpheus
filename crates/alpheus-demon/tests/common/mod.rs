@@ -852,6 +852,9 @@ pub mod portal;
 #[path = "../support/mpris.rs"]
 pub mod mpris;
 
+#[path = "../support/notify.rs"]
+pub mod notify;
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// The workstation recorded on 2026-10-04 (tests/fixtures/dbus-*.json,

@@ -12,6 +12,7 @@ pub mod icons;
 pub mod menu;
 pub mod menu_session;
 pub mod mpris;
+pub mod notifications;
 pub mod router;
 pub mod watcher;
 

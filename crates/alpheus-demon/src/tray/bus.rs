@@ -14,7 +14,9 @@ use super::{
     WATCHER_PATH,
 };
 use crate::media::Control;
-use dbus::Message;
+/// Re-exported so the notifications consumer (tray/notifications.rs) passes messages through
+/// without naming the dbus crate (guardrails: DBUS_FILES).
+pub use dbus::Message;
 use dbus::arg::Variant;
 use dbus::channel::Channel;
 use dbus::message::MessageType;

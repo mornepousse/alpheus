@@ -505,9 +505,11 @@ impl Center {
         {
             self.slots[i].arrived = now;
             let id = self.slots[i].entry.id;
-            // A live bubble still waiting beyond `max_visible` comes to the top, as a fresh one would.
+            // A live bubble still waiting beyond `max_visible` comes to the top, as a fresh one would,
+            // with the copy's time: the history stays newest first, its times in order.
             let waiting = self.shows(&self.slots[i]) && self.slots.range(..i).filter(|s| self.shows(s)).count() >= self.max_visible;
-            if waiting && let Some(slot) = self.slots.remove(i) {
+            if waiting && let Some(mut slot) = self.slots.remove(i) {
+                slot.entry.at_minute = minute;
                 self.slots.push_front(slot);
             }
             return id;
@@ -636,6 +638,17 @@ impl Center {
         }
     }
 
+    /// The server stopped serving (NameLost, or the session bus gone; notifications task 4): every
+    /// bubble goes at once, with no NotificationClosed (nobody listens to us any more), and the
+    /// history stays for the panel. Nothing is left to expire: `next_expiry` is None.
+    pub fn hide_all(&mut self) {
+        for s in &mut self.slots {
+            s.entry.live = false;
+            s.expiry = None;
+        }
+        self.slots.retain(|s| s.kept);
+    }
+
     /// Everything gone ("Clear all"): each live bubble closed as dismissed.
     pub fn clear(&mut self) -> Vec<Effect> {
         let out = self.slots.iter().filter(|s| s.entry.live).map(|s| Effect::Closed(s.entry.id, CloseReason::Dismissed)).collect();
@@ -696,6 +709,41 @@ mod tests {
 
     fn critical(app: &str, summary: &str) -> Incoming {
         Incoming { urgency: Urgency::Critical, ..note(app, summary) }
+    }
+
+    fn hidden(summary: &str) -> Incoming {
+        Incoming {
+            app_name: "Fictional".into(),
+            replaces_id: 0,
+            summary: summary.into(),
+            body: String::new(),
+            actions: Vec::new(),
+            urgency: Urgency::Normal,
+            expire_ms: -1,
+            desktop_entry: None,
+            category: None,
+            transient: false,
+            resident: false,
+            tag: None,
+        }
+    }
+
+    /// NameLost and a dead bus (notifications task 4): every bubble goes, silently, the history stays.
+    #[test]
+    fn hide_all_drops_every_bubble_and_keeps_the_history() {
+        let mut c = Center::new(&NotificationsConfig::default(), false);
+        let now = Instant::now();
+        for s in ["a", "b", "c", "d", "e"] {
+            c.notify(hidden(s), now, 600); // five: one more than max_visible waits its turn
+        }
+        c.notify(Incoming { urgency: Urgency::Critical, ..hidden("sticky") }, now, 600);
+        assert!(!c.bubbles().is_empty());
+        c.hide_all();
+        assert!(c.bubbles().is_empty(), "no bubble, not even a waiting one");
+        assert_eq!(c.next_expiry(), None, "nothing left to time");
+        assert_eq!(c.history().count(), 6, "the history stays for the panel");
+        assert!(c.history().all(|e| !e.live));
+        assert!(c.expire(now + Duration::from_secs(3600)).is_empty(), "nothing to expire, nothing to emit");
     }
 
     fn with_actions(n: Incoming, keys: &[&str]) -> Incoming {
@@ -1123,18 +1171,21 @@ mod tests {
     }
 
     /// A copy merged into a live bubble still waiting beyond `max_visible` brings it to the top,
-    /// as a fresh one would; one already shown keeps its place.
+    /// as a fresh one would, with the copy's time (the history stays newest first, times in order);
+    /// one already shown keeps its place and its time.
     #[test]
     fn a_merge_into_a_waiting_bubble_brings_it_to_the_top() {
         let (mut c, t0) = (center(), Instant::now());
         let ms = Duration::from_millis;
-        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 600)).collect();
         assert_eq!(shown(&c), [ids[4], ids[3], ids[2], ids[1]], "a waits");
-        assert_eq!(c.notify(note("a", "a"), t0 + ms(500), 0), ids[0], "merged");
+        assert_eq!(c.notify(note("a", "a"), t0 + ms(500), 601), ids[0], "merged");
         assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "and on top");
         assert_eq!(history(&c), ["a", "e", "d", "c", "b"], "the newest in the history too");
-        assert_eq!(c.notify(note("d", "d"), t0 + ms(600), 0), ids[3]);
+        assert_eq!(c.entry(ids[0]).map(|e| e.at_minute), Some(601), "with the copy's time");
+        assert_eq!(c.notify(note("d", "d"), t0 + ms(600), 601), ids[3]);
         assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "shown already: it stays where it is");
+        assert_eq!(c.entry(ids[3]).map(|e| e.at_minute), Some(600), "and keeps its time");
     }
 
     #[test]
