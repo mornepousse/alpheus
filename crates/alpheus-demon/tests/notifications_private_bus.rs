@@ -825,7 +825,7 @@ fn one_link_serves_the_players_the_portal_and_the_notifications() {
         assert!(l.link.has_ready(), "the change waits for an idle read");
         let out = l.link.on_readable();
         assert_eq!(out.notifications.map(|v| v.dnd), Some(true));
-        assert!(!l.link.has_ready() || l.link.pending() > 0, "delivered once: the deferred output was taken");
+        assert_eq!(l.link.on_readable().notifications, None, "delivered once: the deferred output was taken");
     });
 }
 

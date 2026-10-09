@@ -247,6 +247,8 @@ const ACTIVE: &str = include_str!("../fixtures/hypr-activewindow.json");
 /// stream fed by the test.
 pub struct FakeHyprland {
     stream: Arc<Mutex<Option<UnixStream>>>,
+    /// What `j/monitors` answers: `focus` rewrites it.
+    monitors: Arc<Mutex<String>>,
 }
 
 impl FakeHyprland {
@@ -265,6 +267,8 @@ impl FakeHyprland {
     fn start_with(runtime: &Path, signature: &str, renames: &[(&str, &str)]) -> FakeHyprland {
         let rename = |text: &str| renames.iter().fold(text.to_string(), |t, (from, to)| t.replace(from, to));
         let [monitors, workspaces, clients, active] = [MONITORS, WORKSPACES, CLIENTS, ACTIVE].map(rename);
+        let monitors = Arc::new(Mutex::new(monitors));
+        let served = monitors.clone();
         let directory = runtime.join("hypr").join(signature);
         fs::create_dir_all(&directory).unwrap();
         let l1 = UnixListener::bind(directory.join(".socket.sock")).unwrap();
@@ -273,8 +277,9 @@ impl FakeHyprland {
                 let Ok(mut c) = c else { return };
                 let mut buf = [0u8; 256];
                 let n = c.read(&mut buf).unwrap_or(0);
+                let current = served.lock().map(|m| m.clone()).unwrap_or_default();
                 let rep = match &buf[..n] {
-                    b"j/monitors" => monitors.as_str(),
+                    b"j/monitors" => current.as_str(),
                     b"j/workspaces" => workspaces.as_str(),
                     b"j/clients" => clients.as_str(),
                     b"j/activewindow" => active.as_str(),
@@ -291,7 +296,26 @@ impl FakeHyprland {
                 *f.lock().unwrap() = Some(c); // a reconnection replaces the old one
             }
         });
-        FakeHyprland { stream }
+        FakeHyprland { stream, monitors }
+    }
+
+    /// Makes `output` the focused monitor in `j/monitors` (the others unfocused). Each fixture monitor
+    /// sits on a line of its own. The test then writes a `focusedmon` event, so the daemon reads it
+    /// again (notifications Review Focus).
+    pub fn focus(&self, output: &str) {
+        let mut m = self.monitors.lock().unwrap();
+        let name = format!("\"name\": \"{output}\"");
+        *m = m
+            .lines()
+            .map(|l| {
+                if l.contains(&name) {
+                    l.replace("\"focused\": false", "\"focused\": true")
+                } else {
+                    l.replace("\"focused\": true", "\"focused\": false")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
     }
 
     /// Writes to the stream if connected; returns false otherwise.
@@ -554,11 +578,12 @@ pub fn wait_for_pid_file(path: &Path, timeout: Duration) -> i32 {
     }
 }
 
-/// Voluntary and involuntary context switches in a /proc status file.
-fn switches(status: &str) -> u64 {
+/// Voluntary context switches in a /proc status file: the thread blocked, then ran again (a
+/// wake-up). Involuntary ones are preemptions under CPU load, noise for a wake-up budget.
+pub fn switches(status: &str) -> u64 {
     status
         .lines()
-        .filter(|l| l.starts_with("voluntary_ctxt_switches:") || l.starts_with("nonvoluntary_ctxt_switches:"))
+        .filter(|l| l.starts_with("voluntary_ctxt_switches:"))
         .filter_map(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
         .sum()
 }
@@ -619,7 +644,7 @@ impl Daemon {
         fs::read_dir(format!("/proc/{}/task", self.pid())).map(|d| d.count()).unwrap_or(0)
     }
 
-    /// Cumulative context switches of all the daemon's threads.
+    /// Cumulative voluntary context switches (wake-ups) of all the daemon's threads.
     pub fn wakeups(&self) -> u64 {
         fs::read_dir(format!("/proc/{}/task", self.pid()))
             .unwrap()
@@ -628,12 +653,12 @@ impl Daemon {
             .sum()
     }
 
-    /// Context switches of the event loop's thread only (the main thread).
+    /// Voluntary context switches (wake-ups) of the event loop's thread only (the main thread).
     pub fn main_thread_wakeups(&self) -> u64 {
         switches(&fs::read_to_string(format!("/proc/{0}/task/{0}/status", self.pid())).unwrap_or_default())
     }
 
-    /// Context switches of the daemon's thread named `name` (its comm:
+    /// Voluntary context switches of the daemon's thread named `name` (its comm:
     /// "sound", "D-Bus"…); None if no thread has that name.
     pub fn thread_wakeups(&self, name: &str) -> Option<u64> {
         let mut found = None;

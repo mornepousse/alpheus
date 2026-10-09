@@ -52,6 +52,15 @@ pub struct Ink {
     pub bottom: u32,
 }
 
+/// The colour of a boxed surface's frame: the border (popups, the launcher, a bubble), or `urgent`
+/// for a critical notification's bubble (notifications spec § 3). Separators and the divider always
+/// keep the border.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameInk {
+    Border,
+    Urgent,
+}
+
 /// The pixel frame of a boxed surface (popups, the launcher), physical px: a `stroke` thick line
 /// along the surface's edge with `radius` rounded corners, and the room between it and the
 /// rows' cells. The room is not the same on every side: the visible gap between the stroke
@@ -735,9 +744,20 @@ impl Fonts {
     /// `frame.side` px from the left and `frame.top` from the top, each `row_height` px tall, the
     /// separator and divider lines, and last the frame, drawn at the surface's own edge (outside
     /// its rounded corners stays transparent). Rows that do not fit are not painted. The surface is
-    /// `roles.popup_bg`, the frame and the lines `roles.border_over(popup_bg)`.
+    /// `roles.popup_bg`, the lines `roles.border_over(popup_bg)`, the frame the same or `roles.urgent`
+    /// (`frame_ink`).
     #[allow(clippy::too_many_arguments)]
-    pub fn paint_boxed(&mut self, b: &Boxed, roles: &Roles, px: &mut [u8], width: u32, height: u32, row_height: u32, scale: i32) {
+    pub fn paint_boxed(
+        &mut self,
+        b: &Boxed,
+        roles: &Roles,
+        px: &mut [u8],
+        width: u32,
+        height: u32,
+        row_height: u32,
+        scale: i32,
+        frame_ink: FrameInk,
+    ) {
         if px.len() < (width as usize) * (height as usize) * 4 {
             return; // inconsistent buffer: do nothing rather than panic
         }
@@ -774,7 +794,11 @@ impl Fonts {
             let x = frame.side + left + (right - left).saturating_sub(s) / 2;
             rect(px, w, h, (x, x + s), (s, h.saturating_sub(s)), ink);
         }
-        draw_frame(px, w, h, &frame, ink);
+        let edge = match frame_ink {
+            FrameInk::Border => ink,
+            FrameInk::Urgent => roles.urgent,
+        };
+        draw_frame(px, w, h, &frame, edge);
     }
 
     /// Left edge of cell `col`, px from the cells' origin, at the current scale.
@@ -915,12 +939,35 @@ mod tests {
         let frame = p.frame(1);
         let (bw, bh) = ((6.0 * av).ceil() as u32 + frame.extra().0, 2 * DEFAULT_HEIGHT + frame.extra().1);
         let mut bpx = vec![0u8; (bw * bh * 4) as usize];
-        p.paint_boxed(&b, &r, &mut bpx, bw, bh, DEFAULT_HEIGHT, 1);
+        p.paint_boxed(&b, &r, &mut bpx, bw, bh, DEFAULT_HEIGHT, 1, FrameInk::Border);
         let middle = ((bh / 2 * bw + bw / 2) * 4) as usize;
         assert_eq!(&bpx[middle..middle + 4], &[r.popup_bg.2, r.popup_bg.1, r.popup_bg.0, 0xff], "a popup, the launcher: popup_bg");
         let stroke = ((bh / 2 * bw) * 4) as usize; // the left stroke, mid-height
         let ink = r.border_over(r.popup_bg);
         assert_eq!(&bpx[stroke..stroke + 4], &[ink.2, ink.1, ink.0, 0xff], "the frame: fg_dim at 40 % over popup_bg");
+    }
+
+    /// Notifications spec § 3: a critical bubble's frame takes `urgent`; its separator lines keep the
+    /// border, and a plain box keeps it all round.
+    #[test]
+    fn a_critical_box_takes_the_urgent_frame() {
+        let r = distinct();
+        let mut p = fonts();
+        let av = p.advance(1);
+        let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![1], divider: None };
+        let frame = p.frame(1);
+        let (bw, bh) = ((6.0 * av).ceil() as u32 + frame.extra().0, 3 * DEFAULT_HEIGHT + frame.extra().1);
+        let stroke = ((bh / 2 * bw) * 4) as usize; // the left stroke, mid-height
+        let separator_y = frame.top + DEFAULT_HEIGHT + DEFAULT_HEIGHT.saturating_sub(frame.stroke) / 2;
+        let line = ((separator_y * bw + bw / 2) * 4) as usize;
+        let border = r.border_over(r.popup_bg);
+        assert_ne!(border, r.urgent, "the test bites only if `distinct()` gives urgent its own colour");
+        for (ink, edge) in [(FrameInk::Border, border), (FrameInk::Urgent, r.urgent)] {
+            let mut px = vec![0u8; (bw * bh * 4) as usize];
+            p.paint_boxed(&b, &r, &mut px, bw, bh, DEFAULT_HEIGHT, 1, ink);
+            assert_eq!(&px[stroke..stroke + 4], &[edge.2, edge.1, edge.0, 0xff], "{ink:?}: the frame");
+            assert_eq!(&px[line..line + 4], &[border.2, border.1, border.0, 0xff], "{ink:?}: the separator keeps the border");
+        }
     }
 
     /// Frozen copy of `Fonts::glyph` exactly as it shaped text before the
@@ -1124,7 +1171,7 @@ mod tests {
             let (w, h) =
                 ((6.0 * advance).ceil() as u32 + frame.extra().0 + 14 * scale as u32, 3 * rh + frame.extra().1 + 31 * scale as u32);
             let mut px = vec![0x11u8; (w * h * 4) as usize];
-            p.paint_boxed(&b, &Roles::default(), &mut px, w, h, rh, scale);
+            p.paint_boxed(&b, &Roles::default(), &mut px, w, h, rh, scale, FrameInk::Border);
             let at = |x: u32, y: u32| {
                 let o = ((y * w + x) * 4) as usize;
                 [px[o + 2], px[o + 1], px[o], px[o + 3]]
@@ -1170,7 +1217,7 @@ mod tests {
             let rh = DEFAULT_HEIGHT * scale as u32;
             let (w, h) = ((cols as f32 * advance).ceil() as u32 + frame.extra().0, rows as u32 * rh + frame.extra().1);
             let mut px = vec![0x11u8; (w * h * 4) as usize];
-            p.paint_boxed(b, &pal, &mut px, w, h, rh, scale);
+            p.paint_boxed(b, &pal, &mut px, w, h, rh, scale, FrameInk::Border);
             Surface { px, w, h, rh, frame, advance }
         }
 
@@ -1290,14 +1337,14 @@ mod tests {
         let mut p = fonts();
         let b = Boxed { rows: vec![Grid::empty(4), Grid::empty(4)], separators: vec![0], divider: Some(1) };
         let mut px = vec![0x11u8; 100];
-        p.paint_boxed(&b, &Roles::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1);
+        p.paint_boxed(&b, &Roles::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1, FrameInk::Border);
         assert!(px.iter().all(|b| *b == 0x11), "an inconsistent buffer is left alone");
         // Rows past the buffer's end (the compositor shortened the popup): the rows that fit are painted, no panic.
         let frame = p.frame(1);
         let w = (p.advance(1) * 4.0).ceil() as u32 + frame.extra().0;
         let h = frame.top + DEFAULT_HEIGHT; // the first row only
         let mut px = vec![0x11u8; (w * h * 4) as usize];
-        p.paint_boxed(&b, &Roles::default(), &mut px, w, h, DEFAULT_HEIGHT, 1);
+        p.paint_boxed(&b, &Roles::default(), &mut px, w, h, DEFAULT_HEIGHT, 1, FrameInk::Border);
         assert_ne!(&px[..3], &[0x11, 0x11, 0x11], "painted");
     }
 

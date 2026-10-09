@@ -6,6 +6,8 @@
 pub mod actions;
 pub mod appearance;
 pub mod background;
+pub mod bubbles;
+pub mod bubbles_surface;
 pub mod calendar;
 pub mod clock;
 pub mod compositor;

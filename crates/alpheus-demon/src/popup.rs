@@ -23,7 +23,7 @@ use crate::keys::{self, Key, Mods};
 use crate::list::{self, Boxed};
 use crate::log::write as log;
 use crate::media_popup::{self, MediaPopup};
-use crate::painter::Frame;
+use crate::painter::{Frame, FrameInk};
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
@@ -566,7 +566,7 @@ impl App {
         let Some(used) = pick_buffer(buffers, pool, w, h) else { return };
         let Some(px) = buffers[used].0.canvas(pool) else { return };
         px.fill(0);
-        fonts.paint_boxed(rows, roles, px, w, h, height * e as u32, e);
+        fonts.paint_boxed(rows, roles, px, w, h, height * e as u32, e, FrameInk::Border);
         let surface = popup.wl_surface();
         surface.set_buffer_scale(e);
         surface.damage_buffer(0, 0, w as i32, h as i32);

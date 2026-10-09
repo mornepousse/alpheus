@@ -47,6 +47,8 @@ pub struct Notifications {
     stale: bool,
     /// (id, revision, critical) of the bubbles last reported.
     bubbles: Vec<(u32, u32, bool)>,
+    /// The earliest expiry last reported (hidden bubbles included: the timer follows them too).
+    expiry: Option<Instant>,
     /// Something the bubbles depend on may have moved.
     bubbles_stale: bool,
 }
@@ -64,6 +66,7 @@ impl Notifications {
             shown: None,
             stale: true,
             bubbles: Vec::new(),
+            expiry: None,
             bubbles_stale: false,
         }
     }
@@ -192,16 +195,19 @@ impl Notifications {
         Some(view)
     }
 
-    /// Whether the bubbles to show changed (a new one, a replaced one, one gone) since the last call.
+    /// Whether the bubbles to show (a new one, a replaced one, one gone), or the earliest expiry (a
+    /// bubble hidden by do-not-disturb replaced: the timer follows it), changed since the last call.
     pub fn take_bubbles_change(&mut self) -> bool {
         if !std::mem::take(&mut self.bubbles_stale) {
             return false;
         }
         let now: Vec<(u32, u32, bool)> = self.center.bubbles().iter().map(|s| (s.entry.id, s.entry.revision, s.critical)).collect();
-        if now == self.bubbles {
+        let expiry = self.center.next_expiry();
+        if now == self.bubbles && expiry == self.expiry {
             return false;
         }
         self.bubbles = now;
+        self.expiry = expiry;
         true
     }
 
@@ -428,6 +434,27 @@ mod tests {
         assert!(n.take_bubbles_change(), "do not disturb takes a normal bubble down");
         n.center_mut().notify(note("two"), now, 600);
         assert!(!n.take_bubbles_change(), "a normal one under do not disturb: no bubble, nothing to repaint");
+    }
+
+    /// Constraints, Lightness (after task 2's review): the bubble timer follows every live bubble with
+    /// a finite timeout, hidden by do-not-disturb or not. A hidden one replaced moves the earliest
+    /// expiry without changing what shows: still a change for the host, which re-arms the timer.
+    #[test]
+    fn a_hidden_bubbles_new_expiry_is_a_change_too() {
+        let mut n = held();
+        let now = Instant::now();
+        let id = n.center_mut().notify(note("one"), now, 600);
+        assert!(n.take_bubbles_change(), "shown");
+        n.act(|c| {
+            c.set_dnd(true);
+            Vec::new()
+        });
+        assert!(n.take_bubbles_change(), "hidden");
+        let later = now + std::time::Duration::from_secs(1);
+        n.center_mut().notify(Incoming { replaces_id: id, ..note("one, again") }, later, 600);
+        assert!(n.center().bubbles().is_empty(), "still hidden");
+        assert!(n.take_bubbles_change(), "its expiry moved: the timer must follow");
+        assert!(!n.take_bubbles_change(), "taken");
     }
 
     #[test]

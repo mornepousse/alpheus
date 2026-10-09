@@ -67,6 +67,8 @@ impl Style {
     pub const ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: false };
     /// The second accent: checks and radios in menus.
     pub const ACCENT2: Style = Style { fg: Tint::Accent2, bg: Tint::Bg, bold: false };
+    /// Bold text in the foreground colour: a notification's summary (notifications spec § 3).
+    pub const BOLD: Style = Style { fg: Tint::Fg, bg: Tint::Bg, bold: true };
 
     /// A module's icon or text in one of the theme's hues, on the surface's background.
     pub const fn hue(h: Hue) -> Style {
@@ -87,6 +89,7 @@ impl Style {
             Style::BOLD_ACCENT => 'G',
             Style::ACCENT => 'a',
             Style::ACCENT2 => 'b',
+            Style::BOLD => 'N',
             Style { fg: Tint::Hue(h), bg: Tint::Bg, bold: false } => match h {
                 Hue::Red => 'r',
                 Hue::Orange => 'o',
@@ -397,6 +400,14 @@ mod tests {
         assert_eq!(g.without_edges().groups(), &[], "a boxed row carries no block");
     }
 
+    #[test]
+    fn bold_text_has_its_own_code() {
+        let mut g = Grid::empty(3);
+        g.write(0, 3, "ab", Style::BOLD);
+        assert_eq!(g.styles(), "NN.");
+        assert!(Style::BOLD.bold && Style::BOLD.fg == Tint::Fg && Style::BOLD.bg == Tint::Bg);
+    }
+
     /// Every style has its own snapshot letter: a snapshot never confuses two roles.
     #[test]
     fn every_style_has_its_own_code() {
@@ -412,6 +423,7 @@ mod tests {
             (Style::BOLD_ACCENT, 'G'),
             (Style::ACCENT, 'a'),
             (Style::ACCENT2, 'b'),
+            (Style::BOLD, 'N'),
             (Style::hue(Hue::Red), 'r'),
             (Style::hue(Hue::Orange), 'o'),
             (Style::hue(Hue::Yellow), 'y'),

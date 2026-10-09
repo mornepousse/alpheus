@@ -5,6 +5,7 @@
 //! (`tray_output`): its icons, its gestures, its frame-coalesced re-reads.
 
 use crate::actions::{self, Button, Wheel};
+use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::calendar::{Calendar, locale_first_day};
 use crate::clock::LocalTime;
 use crate::deadline::DeadlineTimer;
@@ -415,8 +416,8 @@ pub struct App {
     /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
     /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
-    /// For the tray's frame requests, made outside any Wayland callback.
-    qh: QueueHandle<App>,
+    /// For the tray's frame requests, made outside any Wayland callback, and the bubbles' surface.
+    pub(crate) qh: QueueHandle<App>,
     /// The tray while its session bus lives; None without the module, without
     /// a session bus, or once the bus closed (never reconnected).
     pub(crate) tray: Option<Tray>,
@@ -487,6 +488,13 @@ pub struct App {
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
+    /// The notification bubbles while at least one shows (bubbles_surface.rs); None at rest.
+    pub(crate) bubbles: Option<OpenBubbles>,
+    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
+    /// armed only while there is one.
+    pub(crate) bubble_timer: DeadlineTimer,
+    /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
+    pub(crate) bubble_closes: Closes,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
     /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
@@ -656,6 +664,9 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
+            bubbles: None,
+            bubble_timer: DeadlineTimer::new(),
+            bubble_closes: Closes::default(),
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
@@ -1378,6 +1389,12 @@ pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>
     tray.and_then(Tray::media).or_else(|| link.and_then(SessionLink::media))
 }
 
+/// The notifications consumer wherever it lives (Task 5): on the tray's connection, else on the
+/// bar's link.
+pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Notifications> {
+    tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))
+}
+
 /// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
 /// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
 fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
@@ -1407,6 +1424,9 @@ impl CompositorHandler for App {
         // BAR surface's own scale change look handled.
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
+            return;
+        }
+        if self.bubbles_scale(surface, f) {
             return;
         }
         if self.popup_scale(surface, f) {
@@ -1461,6 +1481,7 @@ impl OutputHandler for App {
 
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.launcher_guarded("output", |app| app.launcher_output_gone(&output));
+        self.bubbles_output_gone(&output);
         if let Some(i) = self.surfaces.iter().position(|s| s.output == output) {
             self.remove(i);
         }
@@ -1486,6 +1507,10 @@ impl LayerShellHandler for App {
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("closed", |app| app.launcher_layer_closed(layer.wl_surface()));
             return; // a launcher surface: the bar's restore logic is not involved
+        }
+        if self.bubbles_owns(layer.wl_surface()) {
+            self.bubbles_layer_closed();
+            return; // the bubbles' surface: the bar's restore logic is not involved
         }
         // The compositor closed the surface. Usually (screen unplugged),
         // `output_destroyed` follows: we forget this bar, the others carry
@@ -1527,6 +1552,10 @@ impl LayerShellHandler for App {
         // review item 2): same reasoning as `scale_factor_changed`.
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
+            return;
+        }
+        if self.bubbles_owns(layer.wl_surface()) {
+            self.bubbles_configured(c.new_size);
             return;
         }
         let Some(i) = self.index(layer.wl_surface()) else { return };
@@ -1617,6 +1646,9 @@ impl PointerHandler for App {
     fn pointer_frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _: &wl_pointer::WlPointer, events: &[PointerEvent]) {
         for ev in events {
             if self.launcher_guarded("pointer", |app| app.launcher_pointer(conn, ev)).unwrap_or(true) {
+                continue;
+            }
+            if self.bubbles_pointer(conn, ev) {
                 continue;
             }
             if self.popup.as_ref().is_some_and(|p| p.wl_surface() == &ev.surface) {

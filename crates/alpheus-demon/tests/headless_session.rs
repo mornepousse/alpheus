@@ -10,7 +10,7 @@ use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
-use common::notify::{FakeClient, FakeMako, NAME as NOTIFICATIONS, Note};
+use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
@@ -18,6 +18,7 @@ use common::{
     start_daemon, start_daemon_with, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
@@ -1301,6 +1302,15 @@ fn theme_bar(name: &str) -> (Sway, FakeHyprland, Daemon, PathBuf) {
     (sway, hypr, d, config)
 }
 
+/// A wake-up is the loop blocking then running again: a voluntary switch. Involuntary ones are
+/// preemptions under CPU load, not wake-ups: counting them made the budgets flaky.
+#[test]
+fn wakeups_count_voluntary_switches_only() {
+    let status = "Name:\talpheus-demon\nvoluntary_ctxt_switches:\t12\nnonvoluntary_ctxt_switches:\t7\n";
+    assert_eq!(common::switches(status), 12);
+    assert_eq!(common::switches(""), 0);
+}
+
 #[test]
 fn a_ppm_is_read_pixel_by_pixel() {
     let ppm = Ppm::parse(b"P6\n2 1\n255\n\x01\x02\x03\x04\x05\x06").unwrap();
@@ -2403,4 +2413,369 @@ fn the_bells_middle_click_toggles_do_not_disturb() {
     // The first view logged "bell: dnd off" at startup: this is the second.
     assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
     assert!(!file.exists(), "off: no file");
+}
+
+// ---- The bubbles (notifications task 6) ----
+
+/// Waits (10 s at most) until `org.freedesktop.Notifications` has an owner on `bus`: the daemon serves.
+fn wait_for_the_server(bus: &PrivateBus) {
+    let peer = Peer::connect(bus);
+    let t = Instant::now();
+    loop {
+        let m = dbus::Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner")
+            .unwrap()
+            .append1("org.freedesktop.Notifications");
+        if peer.call(m).unwrap().read1::<bool>().unwrap() {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "the daemon never took org.freedesktop.Notifications");
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Do-not-disturb on before the daemon starts: the empty file `$XDG_STATE_HOME/alpheus/dnd` (the
+/// harness points `XDG_STATE_HOME` at `<runtime>/state`).
+fn dnd_on_before_start(sway: &Sway) {
+    let dir = sway.runtime.join("state/alpheus");
+    std::fs::create_dir_all(&dir).unwrap();
+    for d in [sway.runtime.join("state"), dir.clone()] {
+        std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    std::fs::write(dir.join("dnd"), "").unwrap();
+}
+
+/// The bell bar on catppuccin dark, serving notifications, a client connected. `on_headless`: the
+/// fake Hyprland's outputs renamed after sway's, its focused one HEADLESS-2; otherwise its focused
+/// output does not exist here, and the compositor chooses. `before` runs once sway is up.
+fn notify_daemon(
+    name: &str,
+    outputs: u32,
+    on_headless: bool,
+    before: impl FnOnce(&Sway),
+) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeClient) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, outputs);
+    let hypr =
+        if on_headless { FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE) } else { FakeHyprland::start(&sway.runtime, SIGNATURE) };
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    before(&sway);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    wait_for_the_server(&bus);
+    let client = FakeClient::connect(&bus);
+    thread::sleep(Duration::from_millis(300)); // drawn
+    (bus, sway, hypr, d, client)
+}
+
+/// The first bubble on `s`: its first background row (down the output's centre column), and `inset`
+/// px lower (inside its top inset, where no glyph is) its leftmost and rightmost background pixels.
+/// None: no bubble background on that column.
+fn bubble_box(s: &Ppm, inset: u32) -> Option<(u32, u32, u32)> {
+    let bg = popup_bg("catppuccin");
+    let cx = s.width / 2;
+    let top = (0..s.height).find(|&y| s.at(cx, y) == Some(bg))?;
+    let y = top + inset;
+    let (mut left, mut right) = (cx, cx);
+    while left > 0 && s.at(left - 1, y) == Some(bg) {
+        left -= 1;
+    }
+    while s.at(right + 1, y) == Some(bg) {
+        right += 1;
+    }
+    Some((top, left, right))
+}
+
+/// Bubbles crossed by column `x` (inside their left inset, where no glyph is): runs of background
+/// at least 10 px tall.
+fn bubbles_on(s: &Ppm, x: u32) -> usize {
+    let bg = popup_bg("catppuccin");
+    let (mut runs, mut run) = (0, 0);
+    for y in 0..s.height {
+        if s.at(x, y) == Some(bg) {
+            run += 1;
+        } else {
+            runs += usize::from(run >= 10);
+            run = 0;
+        }
+    }
+    runs + usize::from(run >= 10)
+}
+
+/// A layout point in the first bubble on a single output placed at (0, 0): the middle of its header.
+fn bubble_at(sway: &Sway, output: &str) -> (u32, u32) {
+    let found = Cell::new(None);
+    assert!(
+        sway.wait_for_screen(output, |s| {
+            found.set(bubble_box(s, 3));
+            found.get().is_some()
+        }),
+        "no bubble on {output}"
+    );
+    let (top, left, right) = found.get().unwrap();
+    ((left + right) / 2, top + 12)
+}
+
+/// Spec § 3: a bubble appears top centre, under the bar, on the focused output only.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_bubble_appears_top_centre_on_the_focused_output() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-place", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    for o in ["HEADLESS-1", "HEADLESS-2"] {
+        let s = sway.screenshot(o).expect("grim");
+        assert_eq!(bubble_box(&s, 3), None, "{o}: the checks bite only if nothing there is popup_bg yet");
+    }
+    client.notify(&Note::new("Mailer", "Weekly report ready")).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "the fixture's focused output: {:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_some_and(|(top, l, r)| top >= 22 && (l + r).abs_diff(s.width) <= 4)),
+        "under the 22 px bar, centred: {:?}",
+        d.log()
+    );
+    let s = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(bubble_box(&s, 3), None, "nothing on the other output");
+}
+
+/// Spec § 3, clicks: a left click runs the `default` action, then the bubble closes (dismissed)
+/// unless the notification is resident.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_left_click_runs_the_default_action_then_closes_unless_resident() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-left", 1, false, |_| ());
+    let open = |n: Note| n.action("default", "Open").action("later", "Later").timeout(0);
+    let id = client.notify(&open(Note::new("Mailer", "Weekly report ready"))).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button1");
+    assert!(client.wait_heard(&Heard::Invoked(id, "default".into())), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "then dismissed");
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    let resident = client.notify(&open(Note::new("Chat", "Message from Lina")).hint("resident", Hint::Bool(true))).unwrap();
+    assert!(d.wait_for_count("bubbles shown: 1", 2, DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button1");
+    assert!(client.wait_heard(&Heard::Invoked(resident, "default".into())), "{:?}", d.log());
+    assert!(!client.heard_within(Duration::from_secs(1)).iter().any(|h| matches!(h, Heard::Closed(..))), "resident: the bubble stays");
+    assert_eq!(d.count("bubbles surface dropped"), 1, "{:?}", d.log());
+}
+
+/// Spec § 3: a right click dismisses (reason 2) and runs nothing.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_right_click_dismisses_with_reason_2_and_runs_nothing() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-right", 1, false, |_| ());
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").action("default", "Open").timeout(0)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "{:?}", d.log());
+    assert!(
+        !client.heard_within(Duration::from_millis(500)).iter().any(|h| matches!(h, Heard::Invoked(..))),
+        "a right click never runs an action"
+    );
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 3, expiry: `NotificationClosed(1)` at its time, never before, and the surface goes with
+/// the last bubble.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn an_expired_bubble_sends_closed_1_and_its_surface_goes() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-expiry", 1, false, |_| ());
+    let t = Instant::now();
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "expired: {:?}", d.log());
+    assert!(t.elapsed() >= Duration::from_millis(1_900), "not before its 2 s: {:?}", t.elapsed());
+    assert!(d.wait_for("bubbles: 1 expired", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_none()), "gone from the screen");
+}
+
+/// Spec § 3: under do-not-disturb, only critical notifications get a bubble.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn do_not_disturb_shows_only_critical_bubbles() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-dnd", 1, false, dnd_on_before_start);
+    client.notify(&Note::new("Mailer", "Weekly report ready")).unwrap();
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles surface on"), 0, "a normal one goes to the history only: {:?}", d.log());
+    let critical = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "a critical one still shows: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(critical, 2)), "{:?}", d.log());
+}
+
+/// Spec § 3 and § 7: 0 loop wake-ups at rest once the bubbles expired, and while a sticky critical
+/// bubble shows (no finite expiry: no timer).
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn no_wakeup_at_rest_after_the_bubbles_expire_or_under_a_sticky_one() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-rest", 1, false, |_| ());
+    sway.hover(20, 400);
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "{:?}", d.log());
+    let after = wakeups_over_5_s(&d);
+    assert_eq!(after, 0, "expired: nothing armed ({after} wake-ups): {:?}", d.log());
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for_count("bubbles shown: 1", 2, DELAY), "{:?}", d.log());
+    let sticky = wakeups_over_5_s(&d);
+    assert_eq!(sticky, 0, "a sticky bubble arms no timer ({sticky} wake-ups)");
+}
+
+/// Review Focus: the focused output changes while a bubble shows. The bubble stays where it is until
+/// the stack changes; then the stack moves to the focused output.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn the_bubbles_stay_put_when_the_focus_moves_until_the_stack_changes() {
+    let (_bus, sway, hypr, d, client) = notify_daemon("bubble-focus", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "{:?}", d.log());
+    hypr.focus("HEADLESS-1");
+    assert!(hypr.write("focusedmon>>HEADLESS-1,1\n"));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("bubbles surface on"), 1, "the focus alone moves nothing: {:?}", d.log());
+    // A sync that leaves the stack as it is (do-not-disturb keeps critical bubbles) moves nothing
+    // either.
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bubbles surface on"), 1, "the same stack stays put: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_some()), "still there");
+    client.notify(&Note::new("Monitor", "Backup finished").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-1", DELAY), "the stack changed: to the focused output: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some()));
+    assert!(sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_none()), "and only there");
+}
+
+/// Review Focus: the output holding the bubbles is unplugged. They come back on another output (the
+/// compositor's choice: the fixture's focused output is the one gone) and still answer.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn an_unplugged_output_holding_the_bubbles_brings_them_back_elsewhere() {
+    let (_bus, sway, _hypr, mut d, client) = notify_daemon("bubble-unplug", 2, true, |_| ());
+    sway.command("output HEADLESS-1 pos 0 0");
+    sway.command("output HEADLESS-2 pos 3000 0");
+    let id = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(d.wait_for("bubbles surface on HEADLESS-2", DELAY), "{:?}", d.log());
+    sway.command("output HEADLESS-2 disable");
+    assert!(d.wait_for("bubbles surface on the compositor's choice of output", DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(300)), None, "the daemon survives: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(id, 2)), "the bubble still answers: {:?}", d.log());
+}
+
+/// Review Focus: 4 bubbles shown and 6 waiting. Dismissing the top one shows the next waiting one,
+/// and the hit map follows the new stack.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn four_shown_six_waiting_a_dismissal_shows_the_next() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-queue", 1, false, |_| ());
+    let ids: Vec<u32> = (0..10)
+        .map(|n| {
+            let summary = format!("Alert {n}");
+            client.notify(&Note::new("Monitor", &summary).critical()).unwrap()
+        })
+        .collect();
+    let four = |s: &Ppm| bubble_box(s, 3).is_some_and(|(_, left, _)| bubbles_on(s, left + 3) == 4);
+    assert!(sway.wait_for_screen("HEADLESS-1", four), "4 shown: {:?}", d.log());
+    let (x, y) = bubble_at(&sway, "HEADLESS-1");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(ids[9], 2)), "the newest is on top: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert!(sway.wait_for_screen("HEADLESS-1", four), "still 4: the next waiting one shows");
+    sway.click(x, y, "button3");
+    assert!(client.wait_heard(&Heard::Closed(ids[8], 2)), "the stack and its hit map moved up: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", four));
+    assert!(
+        !client.heard_within(Duration::from_millis(500)).iter().any(|h| matches!(h, Heard::Closed(..))),
+        "the waiting ones were never closed"
+    );
+}
+
+/// Review Focus: the scale changes between 1 and 2 under a bubble. It is drawn again at the new
+/// scale, twice as wide in pixels, and back.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn a_bubble_follows_the_scale_from_1_to_2_and_back() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-scale", 1, false, |_| ());
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    let one = Cell::new(0u32);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).map(|(_, l, r)| one.set(r - l)).is_some()), "{:?}", d.log());
+    let w1 = one.get();
+    sway.command("output HEADLESS-1 scale 2");
+    assert!(d.wait_for("bubbles scale 2", DELAY), "{:?}", d.log());
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 6).is_some_and(|(_, l, r)| (r - l).abs_diff(2 * w1) <= 8)),
+        "twice as wide at scale 2 (scale 1: {w1} px): {:?}",
+        d.log()
+    );
+    sway.command("output HEADLESS-1 scale 1");
+    assert!(d.wait_for("bubbles scale 1", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some_and(|(_, l, r)| (r - l).abs_diff(w1) <= 4)), "and back");
+}
+
+/// Constraints, Lightness (after task 2's review): the timer follows every live bubble with a finite
+/// timeout, hidden by do-not-disturb or not. A bubble hidden by DND, then replaced with a 2 s
+/// timeout, closes on time with reason 1, and never shows up later past its time.
+#[test]
+#[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
+fn under_dnd_a_hidden_replaced_bubble_still_expires_on_time() {
+    let (_bus, sway, _hypr, d, client) = notify_daemon("bubble-dnd-expiry", 1, false, |_| ());
+    ready(&d);
+    let id = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(20_000)).unwrap();
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "hidden by do-not-disturb: {:?}", d.log());
+    let t = Instant::now();
+    let replaced = client.notify(&Note::new("Mailer", "Weekly report sent").replaces(id).timeout(2_000)).unwrap();
+    assert_eq!(replaced, id, "replaced in place, still live");
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "the hidden one expires: {:?}", d.log());
+    let at = t.elapsed();
+    assert!(at >= Duration::from_millis(1_900) && at < Duration::from_secs(5), "on its new time, not its old 20 s: {at:?}");
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd off", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("bubbles surface on"), 1, "never shown again once past its time: {:?}", d.log());
+}
+
+/// Task 5's review: do-not-disturb reaches the bell through the tray's connection too.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn with_the_tray_dnd_from_alpheus_launch_updates_the_bell() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-dnd-tray", "modules = [\"tray\", \"notifications\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("notifications: on the tray's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(sway.runtime.join("state/alpheus/dnd").exists());
+}
+
+/// Task 5's review: with no session bus there is no server and no bell line, but the change is still
+/// saved and logged.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn dnd_without_a_session_bus_is_saved_and_logged() {
+    let sway = Sway::start("bell-no-bus", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), ..DaemonOptions::default() });
+    assert!(d.wait_for("notifications: no session bus", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("notifications: do not disturb on", DELAY), "{:?}", d.log());
+    assert!(sway.runtime.join("state/alpheus/dnd").exists());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("notifications: do not disturb off", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("bell:"), 0, "no server, no bell line: {:?}", d.log());
 }

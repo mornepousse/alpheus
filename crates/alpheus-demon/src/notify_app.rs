@@ -5,14 +5,14 @@
 //! through `App::notify_do` (wayland.rs).
 
 use crate::config::ModuleId;
-use crate::link::{Host, LinkOutput, LinkUser, SessionLink, host};
+use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
 use crate::notify::{Center, NotifyView};
 use crate::state::Msg;
 use crate::state_file;
 use crate::tray::notifications::Notifications;
-use crate::tray::router::{Tray, TrayOutput};
-use crate::wayland::App;
+use crate::tray::router::TrayOutput;
+use crate::wayland::{App, notifications_of};
 use alpheus_commun::launcher_ipc::{DndVerb, Reply, Request};
 use alpheus_commun::paths;
 
@@ -68,10 +68,10 @@ impl App {
         }
     }
 
-    /// The server, wherever it lives (tasks 6 and 7 read its centre).
-    #[allow(dead_code)] // its first readers are the bubbles (task 6) and the panel (task 7)
+    /// The server, wherever it lives (`notifications_of`, kept free for split borrows).
+    #[allow(dead_code)] // the bubbles borrow split (`notifications_of`); the panel (task 7) reads it
     pub(crate) fn notifications(&self) -> Option<&Notifications> {
-        self.tray.as_ref().and_then(Tray::notifications).or_else(|| self.link.as_ref().and_then(SessionLink::notifications))
+        notifications_of(self.tray.as_ref(), self.link.as_ref())
     }
 
     /// The bell's new view: repainted when the bar shows a change, one line per changed state.
@@ -93,10 +93,13 @@ impl App {
             return;
         }
         self.dnd = on;
+        // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
+        // line needs a server.
+        log(if on { "notifications: do not disturb on" } else { "notifications: do not disturb off" });
         if let Err(e) = state_file::save_dnd(&paths::state_dir(), on) {
             log(&format!("notifications: do not disturb could not be saved ({e})"));
         }
-        self.notify_do(move |n| {
+        self.notify_act(move |n| {
             n.act(|c| {
                 c.set_dnd(on);
                 Vec::new()
@@ -106,7 +109,7 @@ impl App {
 
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).
     pub(crate) fn clear_notifications(&mut self) {
-        self.notify_do(|n| n.act(Center::clear));
+        self.notify_act(|n| n.act(Center::clear));
         log("notifications: cleared");
     }
 
@@ -124,11 +127,6 @@ impl App {
         }
         Reply::Done
     }
-
-    /// The bubbles to show changed. A stub: task 6 deletes it and defines the real one in
-    /// bubbles_surface.rs (create, redraw, drop the Overlay surface; arm `bubble_timer` for the
-    /// earliest expiry). Called after the tray's or the link's output.
-    pub(crate) fn bubbles_sync(&mut self) {}
 }
 
 #[cfg(test)]
