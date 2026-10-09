@@ -1158,20 +1158,27 @@ impl App {
                 self.mpris_do(|m, out| m.control(out, c));
                 self.media_popup_refresh();
             }
+            // A pin changes the active player with no D-Bus traffic to carry the bar's view: it is
+            // taken here, at once (the one place it changes outside an output).
             MediaAction::Pin(name) => {
+                let mut change = None;
                 self.mpris_do(|m, out| {
                     m.pin(&name);
                     m.resync_active(out);
+                    change = m.take_view_change();
                 });
+                if let Some(view) = change {
+                    self.media_view(view);
+                }
                 self.media_popup_refresh();
             }
         }
     }
 
     /// After anything that may change what the popup shows (a host's output, a tick, a key): the
-    /// rows rebuilt and painted (`popup_draw` commits nothing when they did not change), the bar's
-    /// view re-applied through `media_view` (a pin changes the active player with no D-Bus traffic),
-    /// the tick re-synced.
+    /// rows rebuilt and painted (`popup_draw` commits nothing when they did not change), the tick
+    /// re-synced. The bar's view is not rebuilt here (once a tick, per output): the outputs carry
+    /// it (`take_view_change`), and the pin takes it itself.
     /// No player shown any more, or no host: the popup closes (player gone). Popup closed: only
     /// the timer is synced (to none).
     pub(crate) fn media_popup_refresh(&mut self) {
@@ -1194,8 +1201,6 @@ impl App {
             self.popup_close(PopupClose::PlayerGone);
             return;
         };
-        let view = mpris_of(self.tray.as_ref(), self.link.as_ref()).and_then(Mpris::view);
-        self.media_view(view);
         self.popup_paint(rows);
         self.media_timer_sync();
     }

@@ -2159,6 +2159,26 @@ fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
     assert!(d.wait_for("popup closed (player gone)", DELAY), "{:?}", d.log());
 }
 
+/// A player chosen in the popup takes the bar too: the pin changes the active player with no
+/// D-Bus signal, and the bar's media cells repaint (fix wave A: the view is no longer rebuilt at
+/// every popup refresh, the pin hands it over itself).
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_player_chosen_in_the_popup_takes_the_bar() {
+    let (_bus, sway, _hypr, d, players) = media_bar("media-pin", 1, &["beta"]);
+    players[1].set_status("Paused"); // lumen plays: it is the active one
+    sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
+    assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    // media_bar's theme: catppuccin dark. Playing, the module takes the purple; paused, muted.
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "lumen playing: {:?}", d.log());
+    // Rows: title, artist, time, buttons, separator, lumen, beta (row 6).
+    let (x, y) = popup_cell(0, 3, 6);
+    sway.click(x, y, "button1");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !media_cells(s).contains(&purple)), "the bar never showed beta paused: {:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "the pin keeps the popup open: {:?}", d.log());
+}
+
 /// Review Focus: the popup open on one output while the bars restyle. Every bar shares one
 /// placement, so a switch to floating moves the popup's own bar too: it closes once, by its own
 /// parent's identity, with its timer and Seeked rule gone. A style change that keeps the placement

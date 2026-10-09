@@ -722,7 +722,7 @@ impl App {
             // A left press on a button or a player does what Enter does; nothing else reacts.
             PopupBody::Media(_) => {
                 if let (PopupPointer::Press(Button::Left), Some(c)) = (kind, cell) {
-                    let action = self.media_with(|p, players| media_popup::press(p, players, c));
+                    let action = self.media_with(|p, players| media_popup::press(p, players, c, media_popup::WIDTH));
                     self.media_action(action);
                 }
             }
@@ -978,7 +978,7 @@ mod tests {
         for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
             assert_eq!(ModulePopup::of(&media, b), None, "{b:?}");
         }
-        let body = PopupBody::Media(MediaPopup { selected: 0, button: 1 });
+        let body = PopupBody::Media(MediaPopup { selected: 0, button: 1, chosen: None });
         assert_eq!(body.module_popup(), Some(ModulePopup::Media), "a second press on the module only closes it");
     }
 

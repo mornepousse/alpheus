@@ -343,13 +343,15 @@ impl Mpris {
         self.ask(out, Call::PlayerPosition { dest: unique.clone() }, Ask::Position(unique));
     }
 
-    /// What, of `unique`'s state, moves its position elsewhere: its status and its track — exactly
-    /// what makes `Players::apply` forget the position (Task 1), any field of the track included.
-    /// The track as a hash: compared once before and once after a change, never cloned.
+    /// What, of `unique`'s state, moves its position elsewhere: its status, its track and its rate —
+    /// exactly what makes `Players::apply` forget the position (Task 1, fix wave A), any field of
+    /// the track included. The track and rate as a hash: compared once before and once after a
+    /// change, never cloned.
     fn moment(&self, unique: &str) -> Option<(Status, u64)> {
         self.players.get(unique).map(|p| {
             let mut h = DefaultHasher::new();
             p.track.hash(&mut h);
+            p.rate.to_bits().hash(&mut h);
             (p.status, h.finish())
         })
     }
@@ -1059,6 +1061,29 @@ mod tests {
         m.signal(&mut out, &artist);
         assert_eq!(position(&m), None, "apply forgot it");
         assert_eq!(positions_asked(&out).len(), 1, "so it is read again");
+    }
+
+    /// Fix wave A: a new Rate while open moves where the track will be: `Players::apply` forgets the
+    /// position, so it is read again (else the elapsed time jumps by the time since × the new rate).
+    #[test]
+    fn a_rate_change_while_open_rereads_the_position() {
+        let (mut m, mut out) = discovered("Playing");
+        m.popup_opened(&mut out);
+        serve(&mut m, &mut out, "Playing", 50_000_000);
+        let rate = |r: f64| Signal::PlayerProps {
+            sender: UNIQUE.to_string(),
+            changed: vec![("Rate".to_string(), Value::Float(r))],
+            invalidated: vec![],
+        };
+        m.signal(&mut out, &rate(1.0));
+        assert!(positions_asked(&out).is_empty(), "the same rate: no read");
+        m.signal(&mut out, &rate(2.0));
+        assert_eq!(position(&m), None, "apply forgot it");
+        assert_eq!(positions_asked(&out).len(), 1, "so it is read again");
+        out.take();
+        m.popup_closed(&mut out);
+        m.signal(&mut out, &rate(1.0));
+        assert!(positions_asked(&out).is_empty(), "closed: no read");
     }
 
     #[test]

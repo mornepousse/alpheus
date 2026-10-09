@@ -40,6 +40,17 @@ pub struct MediaPopup {
     pub selected: usize,
     /// 0 ⏮, 1 ⏯, 2 ⏭.
     pub button: usize,
+    /// What `selected` points at, kept across changes: `fit` finds its row again when rows or
+    /// players come or go above it.
+    pub chosen: Option<Chosen>,
+}
+
+/// The selected row by what it shows, not by its number.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Chosen {
+    Buttons,
+    /// A player, by bus name.
+    Player(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,25 +128,46 @@ pub fn label(p: &Player) -> String {
 impl MediaPopup {
     /// At open: the buttons row on play/pause (or the nearest capable button), else the first player.
     pub fn new(players: &Players) -> MediaPopup {
-        let mut popup = MediaPopup { selected: usize::MAX, button: 1 };
+        let mut popup = MediaPopup { selected: usize::MAX, button: 1, chosen: None };
         popup.fit(players);
         popup
     }
 
-    /// After the players changed under the popup (a row gone, a capability lost): an unselectable
-    /// row goes back to the buttons (or the first selectable row), an incapable button to play/pause,
-    /// then next, then previous.
+    /// After the players changed under the popup (a row added or gone, a capability lost): the
+    /// chosen row is found again where it now is; gone or unselectable, the selection goes back
+    /// to the buttons (or the first selectable row), an incapable button to play/pause, then
+    /// next, then previous.
     pub fn fit(&mut self, players: &Players) {
         let Some(p) = shown_active(players) else { return };
         let lines = lines(players);
+        if let Some(chosen) = &self.chosen {
+            let line = match chosen {
+                Chosen::Buttons => Some(Line::Buttons),
+                Chosen::Player(name) => players.shown().position(|q| q.bus_name == *name).map(Line::Player),
+            };
+            self.selected = line.and_then(|l| lines.iter().position(|x| *x == l)).unwrap_or(usize::MAX);
+        }
         let ok = |i: usize| selectable(&lines, p, i);
         if !ok(self.selected) {
             let buttons = lines.iter().position(|l| *l == Line::Buttons).filter(|&i| ok(i));
             self.selected = buttons.or_else(|| list::first_selectable(lines.len(), ok)).unwrap_or(0);
+            // Moved: remembered anew (a fit that found its row again allocates nothing).
+            self.remember(players, &lines);
+        } else if self.chosen.is_none() {
+            self.remember(players, &lines);
         }
         if !capable(p, self.button) {
             self.button = [1, 2, 0].into_iter().find(|&b| capable(p, b)).unwrap_or(1);
         }
+    }
+
+    /// `chosen` from `selected` (after a fit, a key, a press).
+    fn remember(&mut self, players: &Players, lines: &[Line]) {
+        self.chosen = match lines.get(self.selected) {
+            Some(Line::Buttons) => Some(Chosen::Buttons),
+            Some(Line::Player(i)) => players.shown().nth(*i).map(|q| Chosen::Player(q.bus_name.clone())),
+            _ => None,
+        };
     }
 }
 
@@ -155,7 +187,7 @@ pub fn rows(players: &Players, popup: &MediaPopup, now: Instant, width: u16) -> 
                     g.write(0, width, &media::truncate_title(&title, width), Style::BOLD_ACCENT);
                 }
                 Line::Artist => {
-                    g.write(0, width, &media::truncate_title(&p.track.artists.join(", "), width), Style::NORMAL);
+                    g.write(0, width, &media::truncate_title(&p.track.artist_line(), width), Style::NORMAL);
                 }
                 Line::Time => time_row(&mut g, p, now, width),
                 Line::Buttons => buttons_row(&mut g, p, (selected == Some(Line::Buttons)).then_some(popup.button), width),
@@ -259,27 +291,34 @@ pub fn key(popup: &mut MediaPopup, players: &Players, k: Key) -> MediaAction {
         Key::Enter if ok(popup.selected) => return activate(popup, players, &lines, p),
         _ => {}
     }
-    if *popup == before { MediaAction::Nothing } else { MediaAction::Redraw }
+    if *popup == before {
+        return MediaAction::Nothing;
+    }
+    popup.remember(players, &lines);
+    MediaAction::Redraw
 }
 
 /// A left press at `cell` (Boxed coordinates: column 0 is the pad): a capable button runs, a player
 /// is pinned; anything else does nothing. The press selects what it ran.
-pub fn press(popup: &mut MediaPopup, players: &Players, cell: (u16, u16)) -> MediaAction {
+/// `width`: the one `rows` drew them at.
+pub fn press(popup: &mut MediaPopup, players: &Players, cell: (u16, u16), width: u16) -> MediaAction {
     let Some(p) = shown_active(players) else { return MediaAction::Nothing };
     let lines = lines(players);
     let row = usize::from(cell.1);
     match lines.get(row) {
         Some(Line::Buttons) => {
-            let Some(b) = cell.0.checked_sub(1).and_then(|x| button_at(x, WIDTH)) else { return MediaAction::Nothing };
+            let Some(b) = cell.0.checked_sub(1).and_then(|x| button_at(x, width)) else { return MediaAction::Nothing };
             if !capable(p, b) {
                 return MediaAction::Nothing;
             }
             popup.selected = row;
             popup.button = b;
+            popup.remember(players, &lines);
             activate(popup, players, &lines, p)
         }
         Some(Line::Player(_)) => {
             popup.selected = row;
+            popup.remember(players, &lines);
             activate(popup, players, &lines, p)
         }
         _ => MediaAction::Nothing,
@@ -287,15 +326,20 @@ pub fn press(popup: &mut MediaPopup, players: &Players, cell: (u16, u16)) -> Med
 }
 
 /// When the open popup must redraw next: at the track's next whole second (real time, at `rate`),
-/// or at its end if that comes first. None when closed, not playing, at a standstill, with no
-/// known length, or at the end: then no timer exists at all.
+/// or at its end if that comes first. Faster than 1×, at the first whole second at least
+/// 1 − 1/`rate` real seconds away: about one redraw a real second, never `rate` of them. None when
+/// closed, not playing, at a standstill, with no known length, or at the end: then no timer exists
+/// at all.
 pub fn tick_due(open: bool, playing: bool, rate: f64, position_us: u64, length_us: Option<u64>) -> Option<Duration> {
     let length = length_us.filter(|&l| l > 0)?;
     if !open || !playing || !rate.is_finite() || rate <= 0.0 || position_us >= length {
         return None;
     }
     let to_second = 1_000_000 - position_us % 1_000_000;
-    let media_us = to_second.min(length - position_us);
+    // In track µs: the 1 − 1/rate real seconds of the floor (0 up to 1×). Saturating casts.
+    let floor = ((rate - 1.0).max(0.0) * 1e6) as u64;
+    let skipped = floor.saturating_sub(to_second).div_ceil(1_000_000);
+    let media_us = to_second.saturating_add(skipped.saturating_mul(1_000_000)).min(length - position_us);
     let real_us = (media_us as f64 / rate).ceil() as u64;
     Some(Duration::from_micros(real_us) + SLACK)
 }
@@ -397,6 +441,47 @@ mod tests {
         assert_eq!(&b.rows[0].styles()[1..2], "G", "the title in bold accent");
     }
 
+    /// Fix wave A: the selection is a player (by bus name) or the buttons, not a row number, so the
+    /// highlight never jumps to a neighbour when rows come or go above it.
+    #[test]
+    fn the_selection_follows_its_player_when_rows_or_players_change() {
+        let t0 = Instant::now();
+        let mut players = Players::default();
+        let lumen = with(&mut players, "lumen", 7, props("Playing", "Paper Lanterns", &[], Some(LEN)));
+        let beta = with(&mut players, "beta", 8, props("Paused", "Quiet Song", &["Nobody"], Some(LEN)));
+        with(&mut players, "gamma", 9, props("Paused", "Other Song", &[], None));
+        let mut popup = MediaPopup::new(&players);
+        // Title, time, buttons, separator, lumen, beta, gamma: down to gamma.
+        for _ in 0..4 {
+            key(&mut popup, &players, Key::Down);
+        }
+        let selected_row = |popup: &mut MediaPopup, players: &Players| {
+            popup.fit(players);
+            let b = rows(players, popup, t0, WIDTH);
+            b.rows.iter().position(|g| g.styles().contains('S')).map(|i| b.rows[i].text().trim().to_string())
+        };
+        assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"));
+        // An artist row appears above: still gamma.
+        let _ = players.apply(&lumen, &props("Playing", "Paper Lanterns", &["The Quiet Hours"], Some(LEN)), &[]);
+        assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"), "a row added above");
+        // beta, listed before gamma, leaves: still gamma.
+        assert!(players.remove_unique(&beta));
+        assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"), "a player gone above");
+        // The buttons follow their row too.
+        key(&mut popup, &players, Key::Up);
+        key(&mut popup, &players, Key::Up);
+        let _ = players.apply(&lumen, &props("Playing", "Paper Lanterns", &[], Some(LEN)), &[]);
+        popup.fit(&players);
+        assert_eq!(lines(&players).get(popup.selected), Some(&Line::Buttons), "the artist row gone: still the buttons");
+        // gamma itself gone: back to the buttons, never its neighbour.
+        key(&mut popup, &players, Key::Down);
+        key(&mut popup, &players, Key::Down);
+        assert_eq!(selected_row(&mut popup, &players).as_deref(), Some("gamma"));
+        assert!(players.remove_unique(":1.9"));
+        popup.fit(&players);
+        assert_eq!(lines(&players).get(popup.selected), Some(&Line::Buttons), "its player gone: the buttons");
+    }
+
     #[test]
     fn three_players_add_a_separator_and_the_list_with_the_active_marked() {
         let t0 = Instant::now();
@@ -443,7 +528,7 @@ mod tests {
         assert_eq!(&b.rows[3].styles()[21..22], "m", "⏭ drawn dim");
         assert_eq!(key(&mut popup, &players, Key::Right), MediaAction::Nothing, "→ has no capable button to go to");
         assert_eq!(popup.button, 1);
-        assert_eq!(press(&mut popup, &players, (21, 3)), MediaAction::Nothing, "a click on ⏭ is ignored");
+        assert_eq!(press(&mut popup, &players, (21, 3), WIDTH), MediaAction::Nothing, "a click on ⏭ is ignored");
         assert_eq!(popup.button, 1, "and moves nothing");
         assert_eq!(key(&mut popup, &players, Key::Enter), MediaAction::Control(Control::PlayPause));
         // Nothing capable at all: the button row cannot be selected, and with one player nothing can.
@@ -515,21 +600,26 @@ mod tests {
         let mut p = MediaPopup::new(&players);
         // Boxed columns: the pad is column 0, so content column c is cell c + 1. Buttons at content
         // 10, 15, 20, each taking the 2 cells either side of it.
-        assert_eq!(press(&mut p, &players, (21, 3)), MediaAction::Control(Control::Next));
+        assert_eq!(press(&mut p, &players, (21, 3), WIDTH), MediaAction::Control(Control::Next));
         assert_eq!((p.selected, p.button), (3, 2), "the press selects what it ran");
-        assert_eq!(press(&mut p, &players, (9, 3)), MediaAction::Control(Control::Previous), "content 8: ⏮'s left edge");
-        assert_eq!(press(&mut p, &players, (13, 3)), MediaAction::Control(Control::Previous), "content 12: ⏮'s right edge");
-        assert_eq!(press(&mut p, &players, (14, 3)), MediaAction::Control(Control::PlayPause), "content 13: ⏯'s left edge");
-        assert_eq!(press(&mut p, &players, (23, 3)), MediaAction::Control(Control::Next), "content 22: ⏭'s right edge");
-        assert_eq!(press(&mut p, &players, (24, 3)), MediaAction::Nothing, "past ⏭");
-        assert_eq!(press(&mut p, &players, (7, 3)), MediaAction::Nothing, "before ⏮");
-        assert_eq!(press(&mut p, &players, (0, 3)), MediaAction::Nothing, "the pad cell");
-        assert_eq!(press(&mut p, &players, (5, 0)), MediaAction::Nothing, "the title");
-        assert_eq!(press(&mut p, &players, (5, 4)), MediaAction::Nothing, "the separator");
+        assert_eq!(press(&mut p, &players, (9, 3), WIDTH), MediaAction::Control(Control::Previous), "content 8: ⏮'s left edge");
+        assert_eq!(press(&mut p, &players, (13, 3), WIDTH), MediaAction::Control(Control::Previous), "content 12: ⏮'s right edge");
+        assert_eq!(press(&mut p, &players, (14, 3), WIDTH), MediaAction::Control(Control::PlayPause), "content 13: ⏯'s left edge");
+        assert_eq!(press(&mut p, &players, (23, 3), WIDTH), MediaAction::Control(Control::Next), "content 22: ⏭'s right edge");
+        assert_eq!(press(&mut p, &players, (24, 3), WIDTH), MediaAction::Nothing, "past ⏭");
+        assert_eq!(press(&mut p, &players, (7, 3), WIDTH), MediaAction::Nothing, "before ⏮");
+        assert_eq!(press(&mut p, &players, (0, 3), WIDTH), MediaAction::Nothing, "the pad cell");
+        assert_eq!(press(&mut p, &players, (5, 0), WIDTH), MediaAction::Nothing, "the title");
+        assert_eq!(press(&mut p, &players, (5, 4), WIDTH), MediaAction::Nothing, "the separator");
         let second = players.shown().nth(1).map(|q| q.bus_name.clone()).unwrap();
-        assert_eq!(press(&mut p, &players, (3, 6)), MediaAction::Pin(second));
+        assert_eq!(press(&mut p, &players, (3, 6), WIDTH), MediaAction::Pin(second));
         assert_eq!(p.selected, 6);
-        assert_eq!(press(&mut p, &players, (3, 40)), MediaAction::Nothing, "below the rows");
+        assert_eq!(press(&mut p, &players, (3, 40), WIDTH), MediaAction::Nothing, "below the rows");
+        // Fix wave A: the hit map is the drawn one, at the width the rows were drawn at.
+        let wide = rows(&players, &p, t0, 40);
+        assert_eq!(wide.rows[3].cells()[26].ch, SKIP_NEXT, "40 wide: ⏭ at content 25");
+        assert_eq!(press(&mut p, &players, (26, 3), 40), MediaAction::Control(Control::Next));
+        assert_eq!(press(&mut p, &players, (21, 3), 40), MediaAction::Control(Control::PlayPause), "⏯ at content 20");
     }
 
     #[test]
@@ -543,8 +633,27 @@ mod tests {
         assert_eq!(tick_due(true, true, 1.0, LEN as u64, len), None, "at the end: the timer stops");
         assert_eq!(tick_due(true, true, 1.0, 102_250_000, len), Some(Duration::from_millis(750) + SLACK), "the next whole second");
         assert_eq!(tick_due(true, true, 1.0, 102_000_000, len), Some(Duration::from_secs(1) + SLACK));
-        assert_eq!(tick_due(true, true, 2.0, 102_250_000, len), Some(Duration::from_micros(375_000) + SLACK), "twice as fast");
+        // Fix wave A: faster than 1×, the whole second waited for is the first one at least
+        // 1 − 1/rate real seconds away: about one redraw a real second whatever the rate, never 2
+        // or 16, and 1× unchanged.
+        assert_eq!(tick_due(true, true, 2.0, 102_250_000, len), Some(Duration::from_micros(875_000) + SLACK), "twice as fast: 104 s");
+        assert_eq!(tick_due(true, true, 16.0, 102_000_000, len), Some(Duration::from_micros(937_500) + SLACK), "16×: 117 s");
+        assert_eq!(tick_due(true, true, 0.5, 102_250_000, len), Some(Duration::from_millis(1500) + SLACK), "slower: the next second");
         assert_eq!(tick_due(true, true, 1.0, 244_900_000, len), Some(Duration::from_millis(100) + SLACK), "the last tick lands on the end");
+        assert_eq!(tick_due(true, true, 2.0, 244_900_000, len), Some(Duration::from_millis(50) + SLACK), "even sooner");
+        // 20 real seconds of playing, tick after tick: about 20 redraws at any rate from 1 up.
+        for rate in [1.0, 2.0, 4.0, 16.0] {
+            let (mut pos, mut real, mut ticks) = (0u64, Duration::ZERO, 0);
+            while let Some(due) = tick_due(true, true, rate, pos, Some(10_000_000_000)) {
+                real += due;
+                if real > Duration::from_secs(20) {
+                    break;
+                }
+                pos += (due.as_secs_f64() * 1e6 * rate) as u64;
+                ticks += 1;
+            }
+            assert!((19..=21).contains(&ticks), "rate {rate}: {ticks} ticks in 20 s");
+        }
     }
 
     /// Review Focus: the position beyond the length (a player reporting 6:40 of a 4:05 track).

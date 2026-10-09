@@ -232,7 +232,8 @@ impl Players {
     /// The Player interface's properties (`GetAll`, `PropertiesChanged`): `PlaybackStatus`,
     /// `Metadata`, `Rate`, `CanPlay`, `CanPause`, `CanGoNext`, `CanGoPrevious`; anything else, or a
     /// value of another type, is ignored (`Position` included: it comes from `set_position`). A
-    /// status or track change forgets the position. Need::Metadata when `Metadata` is invalidated.
+    /// status, track or rate change forgets the position. Need::Metadata when `Metadata` is
+    /// invalidated.
     pub fn apply(&mut self, unique: &str, changed: &[(String, Value)], invalidated: &[String]) -> Applied {
         let Players { list, seq, .. } = self;
         let Some(p) = list.iter_mut().find(|p| p.unique == unique) else { return Applied { need: Need::None, visible: false } };
@@ -258,8 +259,9 @@ impl Players {
                     }
                 }
                 ("Rate", v) => {
-                    if let Some(r) = rate(v) {
+                    if let Some(r) = rate(v).filter(|r| *r != p.rate) {
                         p.rate = r;
+                        p.position = None;
                     }
                 }
                 ("CanPlay", Value::Bool(b)) => p.caps.play = *b,
@@ -427,11 +429,12 @@ pub fn clock(us: u64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
-/// A string from a player, cleaned and capped, its blanks trimmed; None when nothing is left.
+/// A string from a player, cleaned and capped, its blanks trimmed; None when nothing is left that
+/// takes a cell (combining marks or zero-width characters alone draw nothing).
 fn clean_text(s: &str) -> Option<String> {
     let c = clean(s);
     let t = c.trim();
-    (!t.is_empty()).then(|| t.to_string())
+    t.chars().any(|c| char_width(c) > 0).then(|| t.to_string())
 }
 
 fn text(v: &Value) -> Option<String> {
@@ -471,9 +474,14 @@ fn rate(v: &Value) -> Option<f64> {
 }
 
 /// The last path segment of a url, its query and fragment dropped, percent-decoded and cleaned;
-/// None when nothing is left.
+/// None when nothing is left. Only the path counts, never the scheme nor the host ("file:///",
+/// "https://host/" have none).
 fn url_tail(url: &str) -> Option<String> {
-    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let url = url.split(['?', '#']).next().unwrap_or(url);
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.find('/').map_or("", |i| &rest[i..]),
+        None => url,
+    };
     let tail = path.trim_end_matches('/').rsplit('/').next()?;
     clean_text(&percent_decode(tail))
 }
@@ -736,7 +744,7 @@ mod tests {
     }
 
     #[test]
-    fn a_status_or_track_change_forgets_the_position() {
+    fn a_status_track_or_rate_change_forgets_the_position() {
         let mut p = players(&[("spotify", ":1.4", "Playing")]);
         let sync = PositionSync { at: Instant::now(), us: 5 };
         let song = |title: &str| props(&[("Metadata", Value::Map(props(&[("xesam:title", s(title))])))]);
@@ -751,6 +759,15 @@ mod tests {
         assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same status: kept");
         p.apply(":1.4", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
         assert_eq!(p.get(":1.4").unwrap().position, None, "a status change");
+        // Fix wave A: a new Rate too, or the time since the last read would be counted at it.
+        p.set_position(":1.4", sync);
+        p.apply(":1.4", &props(&[("Rate", Value::Float(1.0))]), &[]);
+        assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same rate: kept");
+        p.apply(":1.4", &props(&[("Rate", Value::Float(2.0))]), &[]);
+        assert_eq!(p.get(":1.4").unwrap().position, None, "a rate change");
+        p.set_position(":1.4", sync);
+        p.apply(":1.4", &props(&[("Rate", Value::Float(f64::NAN))]), &[]);
+        assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "a rate refused: kept");
     }
 
     #[test]
@@ -838,6 +855,32 @@ mod tests {
         assert_eq!(display_title(&track(None, None), None, bus), "vlc", "no identity: the bus name's first label");
         assert_eq!(player_name(None, "org.mpris.MediaPlayer2.spotify"), "spotify");
         assert_eq!(player_name(Some(""), "org.mpris.MediaPlayer2.spotify"), "spotify");
+        // Fix wave A: never the scheme nor the host — a url with no path segment is no title.
+        assert_eq!(display_title(&track(None, Some("file:///")), Some("VLC"), bus), "VLC", "file:/// alone");
+        assert_eq!(display_title(&track(None, Some("https://radio.example/")), None, bus), "vlc", "a host alone");
+        assert_eq!(display_title(&track(None, Some("https://radio.example")), None, bus), "vlc", "a host, no slash");
+        assert_eq!(display_title(&track(None, Some("https://radio.example/?id=3")), None, bus), "vlc", "a host and a query");
+        assert_eq!(display_title(&track(None, Some("/music/Song.ogg")), None, bus), "Song.ogg", "a bare path");
+    }
+
+    /// Fix wave A: a title of combining marks or zero-width characters alone draws nothing: it is
+    /// blank, so the url or the player's name stands in.
+    #[test]
+    fn a_title_that_takes_no_cell_is_blank() {
+        let meta = |title: &str| {
+            Track::from_metadata(&props(&[
+                ("xesam:title", s(title)),
+                ("xesam:artist", Value::StrList(vec!["\u{200b}".into(), "Ann".into()])),
+            ]))
+        };
+        let t = meta("\u{301}\u{302}\u{200d}");
+        assert_eq!(t.title, None);
+        assert_eq!(t.artists, ["Ann"], "a zero-width artist is none either");
+        assert_eq!(display_title(&t, Some("VLC"), "org.mpris.MediaPlayer2.vlc"), "VLC");
+        assert_eq!(meta("e\u{301}").title.as_deref(), Some("e\u{301}"), "a mark on a base stays");
+        let mut p = players(&[("spotify", ":1.4", "Playing")]);
+        p.set_identity(":1.4", "\u{fe0f}");
+        assert_eq!(p.get(":1.4").unwrap().identity, None);
     }
 
     #[test]
