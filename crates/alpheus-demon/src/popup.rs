@@ -385,12 +385,6 @@ fn release_decision(wanted: bool, keys: &KeysDown, focus_alive: bool) -> Release
     }
 }
 
-fn release(k: wl_keyboard::WlKeyboard) {
-    if k.version() >= 3 {
-        k.release();
-    }
-}
-
 /// "2026-10": the shown month, for the log.
 pub(crate) fn calendar_month(c: &Calendar) -> String {
     format!("{}-{:02}", c.shown.year, c.shown.month)
@@ -860,8 +854,10 @@ impl App {
         }
         self.release_deferred = false;
         if let Some(k) = self.keyboard.take() {
-            release(k);
-            log("keyboard released");
+            // The keyboards released before and still held: 0 unless one is still in use elsewhere.
+            let earlier = self.retired_keyboards.len();
+            self.keyboard_retire(k);
+            log(&format!("keyboard released ({earlier} retired)"));
         }
         // What the released keyboard reported is gone with it.
         self.keys_down.clear();
@@ -878,12 +874,25 @@ impl App {
 
     /// The seat lost its keyboard: the object goes now, whoever wanted it, and with it the
     /// modifiers it reported (a Ctrl held then must not stick to the next keyboard).
+    /// A key repeating then, with no `leave` first, keeps repeating until its surface dies: SCTK
+    /// gives no way to stop it (`retired`'s module doc).
     pub(crate) fn keyboard_lost(&mut self) {
         if let Some(k) = self.keyboard.take() {
-            release(k);
+            self.keyboard_retire(k);
         }
         (self.keys_down, self.keyboard_focus, self.release_deferred) = (KeysDown::default(), None, false);
         self.mods = Mods::default();
+    }
+
+    /// Releases `k` and keeps it until no one else holds it (`retired`): wayland-backend drops its own
+    /// reference when it reads the compositor's `delete_id`, inside calloop's dispatch, and the last
+    /// one dropped there would remove SCTK's repeat token from the loop while calloop borrows it.
+    /// Before version 3 there is no release: the backend keeps the object to the end, never ours.
+    fn keyboard_retire(&mut self, k: wl_keyboard::WlKeyboard) {
+        if k.version() >= 3 {
+            k.release();
+            self.retired_keyboards.hold(k);
+        }
     }
 
     /// A key (press or repeat): to the launcher when it is open, else to a grabbing popup.
