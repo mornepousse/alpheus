@@ -235,7 +235,7 @@ impl Launcher {
             // No binding: the preview panel they used to toggle always shows now (view.rs,
             // 2026-10-05) — ignored rather than removed from `Key`, so a future rebind needs
             // no change to `keys.rs`.
-            Key::Left | Key::Right => Outcome::Nothing,
+            Key::Left | Key::Right | Key::Delete => Outcome::Nothing,
             Key::Escape => Outcome::Close,
             Key::Enter => self.primary(),
             Key::CtrlEnter => self.secondary(),

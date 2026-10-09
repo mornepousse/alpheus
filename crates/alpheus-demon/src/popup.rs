@@ -24,6 +24,7 @@ use crate::list::{self, Boxed};
 use crate::log::write as log;
 use crate::media_popup::{self, MediaPopup};
 use crate::painter::{Frame, FrameInk};
+use crate::panel::{self, Panel};
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
@@ -200,6 +201,8 @@ pub enum PopupBody {
     Tooltip(String),
     /// The media module's popup (title, time, buttons, players).
     Media(MediaPopup),
+    /// The notifications panel under the bell (the media card, the history, DND, Clear all).
+    Panel(Panel),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -210,6 +213,8 @@ pub enum ModulePopup {
     Calendar,
     /// The media module's popup (media task 7).
     Media,
+    /// The bell's panel (notifications task 7).
+    Panel,
 }
 
 impl ModulePopup {
@@ -218,6 +223,7 @@ impl ModulePopup {
         match (target, b) {
             (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
             (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
+            (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
             _ => None,
         }
     }
@@ -229,6 +235,7 @@ impl PopupBody {
         match self {
             PopupBody::Calendar(_) => Some(ModulePopup::Calendar),
             PopupBody::Media(_) => Some(ModulePopup::Media),
+            PopupBody::Panel(_) => Some(ModulePopup::Panel),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -582,7 +589,8 @@ impl App {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
         let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
-        let media = self.media_shown();
+        // The panel's card follows the same Seeked rule and tick: they go when it closes.
+        let media = self.media_shown() || self.panel_shown();
         // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
         // done` (routed here as Dismissed) before the press that follows it reaches the bar — a
         // record of what just closed, by whom it was opened, and when, lets that next press still
@@ -665,6 +673,11 @@ impl App {
                 let action = self.media_with(|p, players| media_popup::key(p, players, k));
                 self.media_action(action);
             }
+            // ↑ ↓ Home End, Enter, Delete, Escape; the card's keys on the card (spec § 4).
+            PopupBody::Panel(_) => {
+                let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
+                self.panel_action(action);
+            }
             PopupBody::Tooltip(_) => {}
         }
     }
@@ -726,6 +739,21 @@ impl App {
                     self.media_action(action);
                 }
             }
+            // A press acts on its row; the wheel moves the selection, a notch a row.
+            PopupBody::Panel(_) => match (kind, cell) {
+                (PopupPointer::Press(b), Some(c)) => {
+                    let action = self.panel_with(|p, center, players| panel::press(p, center, players, c, b));
+                    self.panel_action(action);
+                }
+                (PopupPointer::Scroll(steps), _) => {
+                    let k = if steps < 0 { Key::Up } else { Key::Down };
+                    for _ in 0..steps.unsigned_abs().min(10) {
+                        let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
+                        self.panel_action(action);
+                    }
+                }
+                _ => {}
+            },
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
                 if let PopupPointer::Press(_) = kind {

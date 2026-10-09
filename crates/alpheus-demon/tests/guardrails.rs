@@ -914,12 +914,13 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 19] = [
+const NO_THREAD_NOR_COMMAND: [&str; 20] = [
     "tray/",
     "media.rs",
     "notify.rs",
     "bubbles.rs",
     "bubbles_surface.rs",
+    "panel.rs",
     "media_popup.rs",
     "popup.rs",
     "calendar.rs",

@@ -2849,3 +2849,155 @@ fn dnd_without_a_session_bus_is_saved_and_logged() {
     assert!(d.wait_for("notifications: do not disturb off", DELAY), "{:?}", d.log());
     assert_eq!(d.count("bell:"), 0, "no server, no bell line: {:?}", d.log());
 }
+
+// ---- The panel (notifications task 7) ----
+
+/// The bell at the bar's left edge, the media module after it, the clock.
+const PANEL_BAR: &str = "modules = [\"notifications\", \"media\", \"clock\"]\n";
+
+/// The panel's bar on a private session bus with one fake player playing "Paper Lanterns"
+/// (fictional), serving notifications, a client connected; the bell and the playing module drawn.
+fn panel_daemon(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeClient, FakePlayer) {
+    let bus = PrivateBus::start(name);
+    let player = FakePlayer::start(&bus, PlayerSpec::playing("lumen", "Paper Lanterns"));
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(PANEL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    wait_for_the_server(&bus);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(player.wait_call("GetAll", DELAY).is_some(), "the daemon read the fake player: {:?}", d.log());
+    // Read and drawn: the playing module's glyph in the purple (catppuccin dark), after the bell.
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    thread::sleep(Duration::from_millis(300));
+    (bus, sway, hypr, d, client, player)
+}
+
+/// The bar's cells right of the bell (where its count shows), above any popup.
+fn after_the_bell(s: &Ppm) -> Vec<[u8; 3]> {
+    (2..20).flat_map(|y| (17..60).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// Spec § 4: a bell click opens the panel with the media card and the history. Delete removes an
+/// entry; Clear all empties the history and closes the live bubbles; the DND row toggles the file.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_bell_opens_the_panel_with_the_card_and_the_history() {
+    let (_bus, sway, _hypr, d, client, _player) = panel_daemon("panel-open");
+    let old = client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    let live = client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(client.wait_heard(&Heard::Closed(old, 1)), "the first one expired: history only: {:?}", d.log());
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 2, card: yes)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    // The newest (the live one) is selected at open: Down to the older one, then Delete.
+    keys(&sway, &["Down", "Delete"]);
+    assert!(d.wait_for("panel: entry removed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("panel: entries 1", DELAY), "{:?}", d.log());
+    keys(&sway, &["End", "Return"]);
+    assert!(d.wait_for("panel: cleared", DELAY), "{:?}", d.log());
+    assert!(client.wait_heard(&Heard::Closed(live, 2)), "Clear all closes the live bubble, dismissed: {:?}", d.log());
+    assert!(d.wait_for("bubbles surface dropped (empty)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("panel: entries 0", DELAY), "{:?}", d.log());
+    let dnd = sway.runtime.join("state/alpheus/dnd");
+    assert!(!dnd.exists());
+    keys(&sway, &["Up", "Return"]); // from Clear all to Do not disturb
+    assert!(wait_until(|| dnd.exists()), "DND on, persisted: {:?}", d.log());
+    assert!(d.wait_for("panel: do not disturb on", DELAY), "{:?}", d.log());
+    keys(&sway, &["Return"]);
+    assert!(wait_until(|| !dnd.exists()), "DND off: the file goes: {:?}", d.log());
+    assert!(d.wait_for("panel: do not disturb off", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Review Focus: the panel is open when a notification arrives. Its rows show it at once, and it
+/// counts as read: the bell shows no count while the panel shows it.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn a_notification_arriving_while_the_panel_is_open_shows_in_it_read() {
+    let (_bus, sway, _hypr, d, client, _player) = panel_daemon("panel-arrival");
+    // `before`: the bar with no notification yet; `unread`: showing the count; `read`: once the
+    // panel marked it read.
+    let before = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Mailer", "Weekly report ready").timeout(2_000)).unwrap();
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != before), "the count shows: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let unread = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 1, card: yes)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != unread), "opening marks it read: the count goes");
+    wait_for_the_popup_drawn(&sway, &d);
+    let read = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Calendar", "Standup in 5 minutes").timeout(2_000)).unwrap();
+    assert!(d.wait_for("panel: entries 2", DELAY), "the rows follow at once: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 4: the media card's 1 s tick runs while the panel shows it and the player plays, and
+/// stops with the panel, its Seeked rule too.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn the_panel_ticks_only_while_its_card_plays() {
+    let (_bus, sway, _hypr, d, _client, player) = panel_daemon("panel-tick");
+    sway.hover(640, 400);
+    assert_eq!(rest_over_5_s(&d), 0, "closed: nothing ticks: {:?}", d.log());
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 0, card: yes)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    sway.hover(640, 400);
+    let open = wakeups_over_5_s(&d);
+    assert!((4..=12).contains(&open), "about one tick a second with the card playing: {open}");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    // SCTK's key repeat timer, armed at Escape's press, fires once at the repeat delay (600 ms on
+    // sway) and drops itself, as in the media popup's tick test.
+    thread::sleep(Duration::from_secs(1));
+    let after = rest_over_5_s(&d);
+    assert_eq!(after, 0, "closed: the tick went with it ({after} wake-ups)");
+    let seeked = wakeups_over_seeked(&d, &player);
+    assert_eq!(seeked, 0, "closed: the Seeked rule went with the panel ({seeked} wake-ups)");
+}
+
+/// No player, so no card and no tick to refresh the panel: opening it marks read at once, and an
+/// arrival while it is open shows in it (the host's output refreshes it) and stays read.
+#[test]
+#[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
+fn without_a_card_opening_and_arrivals_mark_read_at_once() {
+    let (bus, sway, _hypr, d, ()) = bell_daemon("panel-no-card", BELL_BAR, |_| ());
+    wait_for_the_server(&bus);
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    // The bell drawn: something other than the bar's background left of its count.
+    let drawn = |s: &Ppm| {
+        let bg = s.at(BAR_BACKGROUND.0, BAR_BACKGROUND.1);
+        (2..20).flat_map(|y| (4..17).map(move |x| (x, y))).any(|(x, y)| s.at(x, y) != bg)
+    };
+    assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the bell never drawn: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    let before = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    // Critical: sticky, so no expiry refreshes anything behind the test's back.
+    client.notify(&Note::new("Monitor", "Disk almost full").critical()).unwrap();
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != before), "the count shows: {:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    let unread = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    sway.click(BELL_AT.0, BELL_AT.1, "button1");
+    assert!(d.wait_for("panel shown (entries: 1, card: no)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| after_the_bell(s) != unread), "opening marks it read: the count goes");
+    thread::sleep(Duration::from_millis(300));
+    let read = sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap();
+    client.notify(&Note::new("Calendar", "Standup in 5 minutes").critical()).unwrap();
+    assert!(d.wait_for("panel: entries 2", DELAY), "the host's output refreshes the open panel: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(sway.screenshot("HEADLESS-1").map(|s| after_the_bell(&s)).unwrap(), read, "shown in the open panel: read, no count");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}

@@ -424,6 +424,7 @@ impl App {
             self.bubbles_sync();
         }
         self.media_popup_refresh();
+        self.panel_refresh();
         self.link_sync();
     }
 

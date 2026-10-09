@@ -30,6 +30,7 @@ pub mod nonblocking;
 pub mod notify;
 pub mod notify_app;
 pub mod painter;
+pub mod panel;
 pub mod pipewire;
 pub mod placement;
 pub mod popup;
