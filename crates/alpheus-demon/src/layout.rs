@@ -81,7 +81,9 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
         ModuleId::Workspaces => GroupKind::Workspaces,
         ModuleId::Window => GroupKind::Title,
         ModuleId::Media => GroupKind::Media,
-        ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications => GroupKind::Status,
+        ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications | ModuleId::Osd => {
+            GroupKind::Status
+        }
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
@@ -97,7 +99,7 @@ pub const fn module_hue(m: ModuleId) -> Option<Hue> {
         ModuleId::Network => Some(Hue::Cyan),
         ModuleId::Battery => Some(Hue::Green),
         ModuleId::Resources => Some(Hue::Orange),
-        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Tray | ModuleId::Notifications | ModuleId::Clock => None,
+        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Tray | ModuleId::Notifications | ModuleId::Osd | ModuleId::Clock => None,
     }
 }
 
@@ -228,6 +230,8 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
         ModuleId::Media => segments::media(bar.media.as_ref(), bar.module_colors),
         ModuleId::Notifications => segments::notifications(bar.notifications.as_ref()),
+        // The OSD draws its own surface (osd_surface.rs), never in the bar.
+        ModuleId::Osd => None,
     }
 }
 
@@ -1085,6 +1089,19 @@ mod tests {
                     assert!(cells.iter().any(|c| c.ch != ' '), "{style:?} at {w}: {x:?} in {:?}", g.text());
                 }
             }
+        }
+    }
+
+    /// The OSD is a module without a segment (OSD spec § 4): the bar is exactly the same without it.
+    #[test]
+    fn the_osd_module_draws_nothing_in_the_bar() {
+        let mut with = bar();
+        assert!(with.config.modules.contains(&ModuleId::Osd), "on by default");
+        with.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
+        let mut without = with.clone();
+        without.config.modules.retain(|m| *m != ModuleId::Osd);
+        for width in [100, 60, 40] {
+            assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{width} cells: no segment, no separator, no gap");
         }
     }
 }

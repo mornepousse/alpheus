@@ -41,13 +41,19 @@
 //! max_visible = 4                                           # bubbles at once, 1 to 8 (newest on top)
 //! width = 40                                                # bubble width in cells, 24 to 80
 //! history = 50                                              # entries kept for the panel, 0 to 200 (0: none)
+//! [osd]                                                     # the volume, microphone and brightness pill (with "osd" in modules)
+//! timeout_ms = 1300                                         # how long it stays after the last change, 600 to 5000
+//! width = 32                                                # cells of the pill's row, 24 to 60
+//! margin = 48                                               # logical px above the bottom edge, 0 to 400
+//! backlight = ""                                            # a device in backlight_dir; "": the first one, in sorted order
+//! backlight_dir = "/sys/class/backlight"                    # where backlight devices are listed; read only on `alpheus-launch --osd brightness`
 //! ```
 
 use crate::clock;
 use crate::grid::text_width;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The bar's modules (spec, § 2), left to right by default. All are
 /// accepted from the start: a bar.toml written today stays valid once
@@ -67,11 +73,14 @@ pub enum ModuleId {
     Resources,
     Tray,
     Notifications,
+    /// The on-screen display (OSD spec): volume, microphone and brightness in a pill at the bottom
+    /// of the focused output. No segment in the bar.
+    Osd,
     Clock,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 12] = [
+    pub const ALL: [ModuleId; 13] = [
         ModuleId::Launcher,
         ModuleId::Workspaces,
         ModuleId::Window,
@@ -83,6 +92,7 @@ impl ModuleId {
         ModuleId::Resources,
         ModuleId::Tray,
         ModuleId::Notifications,
+        ModuleId::Osd,
         ModuleId::Clock,
     ];
 
@@ -100,6 +110,7 @@ impl ModuleId {
             ModuleId::Resources => "resources",
             ModuleId::Tray => "tray",
             ModuleId::Notifications => "notifications",
+            ModuleId::Osd => "osd",
             ModuleId::Clock => "clock",
         }
     }
@@ -357,6 +368,51 @@ impl Default for NotificationsConfig {
     }
 }
 
+/// The bounds of `[osd]`.
+pub const OSD_TIMEOUT_MIN: u32 = 600;
+pub const OSD_TIMEOUT_MAX: u32 = 5000;
+pub const OSD_WIDTH_MIN: u16 = 24;
+pub const OSD_WIDTH_MAX: u16 = 60;
+pub const OSD_MARGIN_MAX: u32 = 400;
+
+/// `[osd]` (OSD spec § 4).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct OsdConfig {
+    /// Milliseconds the pill stays after the last change.
+    pub timeout_ms: u32,
+    /// Cells of the pill's row.
+    pub width: u16,
+    /// Logical px between the pill and the output's bottom edge.
+    pub margin: u32,
+    /// A device name in `backlight_dir`; empty: the first one in sorted order.
+    pub backlight: String,
+    /// Where the backlight devices are listed. Read only, and only on `alpheus-launch --osd brightness`.
+    pub backlight_dir: PathBuf,
+}
+
+impl Default for OsdConfig {
+    fn default() -> Self {
+        OsdConfig {
+            timeout_ms: 1300,
+            width: 32,
+            margin: 48,
+            backlight: String::new(),
+            backlight_dir: PathBuf::from("/sys/class/backlight"),
+        }
+    }
+}
+
+/// A device name as sysfs lists it: no path, nothing hidden, short.
+fn plain_device(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name != "."
+        && name != ".."
+        && !name.contains(['/', '\0'])
+        && !name.chars().any(char::is_control)
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -373,6 +429,7 @@ pub struct BarConfig {
     pub tray: TrayConfig,
     pub media: MediaConfig,
     pub notifications: NotificationsConfig,
+    pub osd: OsdConfig,
 }
 
 impl Default for BarConfig {
@@ -389,6 +446,7 @@ impl Default for BarConfig {
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
             notifications: NotificationsConfig::default(),
+            osd: OsdConfig::default(),
         }
     }
 }
@@ -422,6 +480,8 @@ struct Raw {
     media: MediaConfig,
     #[serde(default)]
     notifications: NotificationsConfig,
+    #[serde(default)]
+    osd: OsdConfig,
 }
 
 impl BarConfig {
@@ -492,6 +552,22 @@ impl BarConfig {
         if n.history > NOTIFY_HISTORY_MAX {
             return Err(format!("notifications.history {} out of range 0 to {NOTIFY_HISTORY_MAX}", n.history));
         }
+        let o = &b.osd;
+        if !(OSD_TIMEOUT_MIN..=OSD_TIMEOUT_MAX).contains(&o.timeout_ms) {
+            return Err(format!("osd.timeout_ms {} out of range {OSD_TIMEOUT_MIN} to {OSD_TIMEOUT_MAX} ms", o.timeout_ms));
+        }
+        if !(OSD_WIDTH_MIN..=OSD_WIDTH_MAX).contains(&o.width) {
+            return Err(format!("osd.width {} out of range {OSD_WIDTH_MIN} to {OSD_WIDTH_MAX} cells", o.width));
+        }
+        if o.margin > OSD_MARGIN_MAX {
+            return Err(format!("osd.margin {} out of range 0 to {OSD_MARGIN_MAX} px", o.margin));
+        }
+        if !o.backlight.is_empty() && !plain_device(&o.backlight) {
+            return Err(format!("osd.backlight must be a device name (as listed in backlight_dir), not {:?}", o.backlight));
+        }
+        if !o.backlight_dir.is_absolute() {
+            return Err("osd.backlight_dir must be an absolute path".into());
+        }
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -505,6 +581,7 @@ impl BarConfig {
             tray,
             media: b.media,
             notifications: b.notifications,
+            osd: b.osd,
         })
     }
 }
@@ -807,5 +884,63 @@ mod tests {
         let e = BarConfig::from_text("[tray.icons]\n\"a\\u0007b\" = \"x\"\n").unwrap_err();
         assert!(e.contains("tray.icons.") && e.contains("control character"), "{e}");
         assert!(BarConfig::from_text("[tray.icons]\ndiscord = \"x\"\n").is_ok(), "an ordinary key still passes");
+    }
+
+    #[test]
+    fn osd_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert_eq!(
+            d.osd,
+            OsdConfig {
+                timeout_ms: 1300,
+                width: 32,
+                margin: 48,
+                backlight: String::new(),
+                backlight_dir: PathBuf::from("/sys/class/backlight")
+            }
+        );
+        assert!(d.modules.contains(&ModuleId::Osd), "on by default");
+        assert_eq!(d.modules.last(), Some(&ModuleId::Clock), "the clock stays last");
+        assert_eq!(ModuleId::Osd.name(), "osd");
+        let c = BarConfig::from_text(
+            "[osd]\ntimeout_ms = 2000\nwidth = 40\nmargin = 0\nbacklight = \"intel_backlight\"\nbacklight_dir = \"/tmp/fake\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            c.osd,
+            OsdConfig {
+                timeout_ms: 2000,
+                width: 40,
+                margin: 0,
+                backlight: "intel_backlight".into(),
+                backlight_dir: PathBuf::from("/tmp/fake")
+            }
+        );
+        for t in ["[osd]\ntimeout_ms = 600", "[osd]\ntimeout_ms = 5000", "[osd]\nwidth = 24", "[osd]\nwidth = 60", "[osd]\nmargin = 400"] {
+            assert!(BarConfig::from_text(t).is_ok(), "{t}: bounds included");
+        }
+    }
+
+    #[test]
+    fn osd_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        for (t, want) in [
+            ("[osd]\ntimeout_ms = 599", "osd.timeout_ms 599 out of range 600 to 5000 ms"),
+            ("[osd]\ntimeout_ms = 5001", "osd.timeout_ms 5001"),
+            ("[osd]\nwidth = 23", "osd.width 23 out of range 24 to 60 cells"),
+            ("[osd]\nwidth = 61", "osd.width 61"),
+            ("[osd]\nmargin = 401", "osd.margin 401 out of range 0 to 400 px"),
+            ("[osd]\nbacklight = \"../intel_backlight\"", "osd.backlight"),
+            ("[osd]\nbacklight = \"..\"", "osd.backlight"),
+            ("[osd]\nbacklight = \"a\\u0007b\"", "osd.backlight"),
+            ("[osd]\nbacklight_dir = \"sys/class/backlight\"", "osd.backlight_dir must be an absolute path"),
+        ] {
+            let e = err(t);
+            assert!(e.contains(want), "{t}: {e}");
+        }
+        assert!(err("[osd]\nfade = true").contains("fade"), "unknown key refused");
+        let (c, w) = BarConfig::load(&file("osd", "[osd]\nwidth = 5\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("osd.width")));
     }
 }

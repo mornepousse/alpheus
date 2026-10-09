@@ -29,6 +29,7 @@ pub mod memory;
 pub mod nonblocking;
 pub mod notify;
 pub mod notify_app;
+pub mod osd;
 pub mod painter;
 pub mod panel;
 pub mod pipewire;

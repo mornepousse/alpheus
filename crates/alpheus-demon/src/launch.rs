@@ -178,6 +178,7 @@ use crate::log::write as log;
 /// (no thread, no child process, no timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
+    /// The pw-dump child: for the volume module or the OSD (its passive trigger).
     pub sound: bool,
     /// The D-Bus domains to read and follow; empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
@@ -200,7 +201,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         .map(|(_, d)| d)
         .collect();
     Wanted {
-        sound: has(ModuleId::Volume),
+        sound: has(ModuleId::Volume) || has(ModuleId::Osd),
         dbus,
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
@@ -1133,5 +1134,12 @@ mod tests {
         note_compositor_message(&mut c, &Msg::Clock(BEFORE));
         after_dispatch_windows(&mut c);
         assert_eq!(c.feeds, 1, "nothing compositor-related this pass: no re-rank");
+    }
+
+    #[test]
+    fn the_osd_alone_starts_the_sound_source() {
+        assert!(wanted(&[ModuleId::Osd]).sound, "the OSD reads pw-dump even without the volume module");
+        assert!(wanted(&[ModuleId::Volume]).sound);
+        assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
     }
 }
