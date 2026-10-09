@@ -6,7 +6,7 @@
 //! names.
 
 use crate::system::{DeviceName, SoundState, Volume};
-use crate::tray::codec::clean;
+use crate::text::clean;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -157,7 +157,7 @@ fn capped(s: &str) -> String {
     s[..end].to_string()
 }
 
-/// Text the OSD draws: control and invisible formatting characters removed (`codec::clean`: a
+/// Text the OSD draws: control and invisible formatting characters removed (`text::clean`: a
 /// device name posing as another), trimmed, capped.
 fn drawable(s: &str) -> String {
     capped(clean(s).trim())
@@ -498,7 +498,7 @@ mod tests {
     }
 
     /// The OSD draws the label: control characters and invisible formatting characters (bidi
-    /// overrides, zero-width space) are removed like any drawn text (`codec::clean`), a newline is a
+    /// overrides, zero-width space) are removed like any drawn text (`text::clean`), a newline is a
     /// space; a description of nothing but those is blank. The node name, the identity, stays raw.
     #[test]
     fn device_labels_are_cleaned_like_any_drawn_text() {

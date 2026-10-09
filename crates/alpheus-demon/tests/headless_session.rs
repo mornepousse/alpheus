@@ -3187,10 +3187,15 @@ fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
     pw_dump_send(&dir, &second);
     let (a, b) = (read_until(&first), read_until(&second));
     assert!(a < b, "in the order sent");
-    drop(child);
+    // The leader only, as the daemon's PDEATHSIG does: what this test proves is that nothing else
+    // of the fake (no un-exec'd `cat`) is left reading the pipe. The guard's group kill comes after,
+    // as cleanup (an empty group by then when the fake is right).
+    child.kill().unwrap();
+    child.wait().unwrap();
     use std::os::unix::fs::OpenOptionsExt;
     let left = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(dir.join("pw-dump.fifo"));
     assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
+    drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

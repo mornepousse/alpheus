@@ -60,7 +60,7 @@ pub const ITEM_NAME_PREFIXES: [&str; 2] = ["org.kde.StatusNotifierItem-", "org.f
 pub const MAX_ITEMS: usize = 64;
 /// Items one connection may register (an application with more is misbehaving).
 pub const MAX_ITEMS_PER_OWNER: usize = 16;
-pub const MAX_TEXT: usize = 256;
+pub use crate::text::MAX_TEXT;
 pub const MAX_MENU_ENTRIES: usize = 500;
 pub const MAX_MENU_DEPTH: usize = 8;
 

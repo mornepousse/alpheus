@@ -5,7 +5,7 @@
 //! 8 artists.
 
 use crate::grid::char_width;
-use crate::tray::codec::clean;
+use crate::text::clean;
 use std::time::Instant;
 use unicode_normalization::UnicodeNormalization;
 
