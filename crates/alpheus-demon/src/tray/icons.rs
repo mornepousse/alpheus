@@ -86,15 +86,16 @@ pub fn icon(item: &Item, overrides: &BTreeMap<String, String>) -> Icon {
 }
 
 /// First letter (upper-cased) of Title, else process name, else Id, else
-/// UNKNOWN_LETTER: the first alphanumeric character that takes a cell (never a
-/// lone combining mark) of the first of them that has one. The process name
+/// UNKNOWN_LETTER: the first alphanumeric character that takes exactly one cell
+/// (never a lone combining mark, never a wide one) of the first of them that has
+/// one. The process name
 /// comes before the Id: an Electron item's Id (`chrome_status_icon_N`) says
 /// nothing about the application (controller decision).
 pub fn letter(item: &Item) -> char {
     [&item.title, &item.process, &item.id]
         .into_iter()
         .flatten()
-        .find_map(|s| s.chars().find(|c| c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) > 0))
+        .find_map(|s| s.chars().find(|c| c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) == 1))
         .and_then(|c| c.to_uppercase().next())
         .unwrap_or(UNKNOWN_LETTER)
 }
@@ -310,6 +311,7 @@ mod tests {
         assert_eq!(icon(&one(electron), &no_overrides()), Icon::Letter('N'), "Electron: the process name before the meaningless Id");
         // U+0941 (a Devanagari vowel sign) is alphanumeric but takes no cell.
         assert_eq!(letter(&one(Fake::new(&[(Prop::Title, "\u{941}lumen")]))), 'L', "a letter takes a cell");
+        assert_eq!(letter(&one(Fake::new(&[(Prop::Title, "微信"), (Prop::Id, "quill")]))), 'Q', "a letter takes one cell, never two");
         assert_eq!(letter(&one(Fake::new(&[(Prop::Status, "Active")]))), UNKNOWN_LETTER, "nothing known (question 6)");
     }
 

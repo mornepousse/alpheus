@@ -176,12 +176,12 @@ fn fit(s: &str, max: usize) -> String {
 }
 
 /// Controls and invisible/bidi formatting characters removed; `\r` dropped; `\t` a space; `\n`
-/// kept when `multiline`, a space otherwise.
+/// and the Unicode line and paragraph separators a line break when `multiline`, a space otherwise.
 fn clean(s: &str, multiline: bool) -> String {
     s.chars()
         .filter_map(|c| match c {
-            '\n' if multiline => Some('\n'),
-            '\n' | '\t' => Some(' '),
+            '\n' | '\u{2028}' | '\u{2029}' if multiline => Some('\n'),
+            '\n' | '\u{2028}' | '\u{2029}' | '\t' => Some(' '),
             '\r' => None,
             c if c.is_control() || invisible(c) => None,
             c => Some(c),
@@ -197,6 +197,12 @@ enum TagEnd {
     Broken,
     /// The input ended inside it.
     Unclosed,
+}
+
+/// Whether a whole tag (`<` to `>`) is a line break: `<br>`, `<br/>`, `<br />`, any case.
+fn is_br(tag: &str) -> bool {
+    let name = tag[1..].trim_end_matches('>').trim_end_matches('/').trim_end();
+    name.eq_ignore_ascii_case("br")
 }
 
 fn tag_end(at: &str) -> TagEnd {
@@ -215,9 +221,9 @@ fn tag_end(at: &str) -> TagEnd {
 }
 
 /// Markup to plain text (spec § 2), in one linear pass: a tag (`<` then an ASCII letter, `/`, `!`
-/// or `?`, up to its `>` outside quotes) is removed, its content kept; any other `<` is text, and
-/// so is a tag left unclosed, after which every `<` is text (no second scan). The five XML entities
-/// are decoded once; anything else after `&` stays as sent.
+/// or `?`, up to its `>` outside quotes) is removed, its content kept, a `<br>` becoming `\n`; any
+/// other `<` is text, and so is a tag left unclosed, after which every `<` is text (no second
+/// scan). The five XML entities are decoded once; anything else after `&` stays as sent.
 pub fn strip_markup(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -241,7 +247,12 @@ pub fn strip_markup(s: &str) -> String {
         let opens = at[1..].starts_with(|c: char| c.is_ascii_alphabetic() || matches!(c, '/' | '!' | '?'));
         let end = if opens && tags_close { tag_end(at) } else { TagEnd::Broken };
         match end {
-            TagEnd::At(n) => rest = &at[n..],
+            TagEnd::At(n) => {
+                if is_br(&at[..n]) {
+                    out.push('\n');
+                }
+                rest = &at[n..];
+            }
             other => {
                 if matches!(other, TagEnd::Unclosed) {
                     tags_close = false;
@@ -284,9 +295,10 @@ pub fn action(key: &str, label: &str) -> Option<Action> {
     sane.then(|| Action { key: key.to_string(), label: fit(&clean(cut(label, RAW_MAX), false), MAX_LABEL) })
 }
 
-/// The first alphanumeric character of `s` that takes a cell, upper-cased.
+/// The first alphanumeric character of `s` that takes exactly one cell (never a lone combining
+/// mark, never a wide one such as '微': the glyph has one cell), upper-cased.
 fn first_letter(s: &str) -> Option<char> {
-    s.chars().find(|c| c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) > 0).and_then(|c| c.to_uppercase().next())
+    s.chars().find(|c| c.is_alphanumeric() && text_width(c.encode_utf8(&mut [0; 4])) == 1).and_then(|c| c.to_uppercase().next())
 }
 
 /// A notification's glyph (spec § 2): the bar's table by identity, then the category's glyph, then
@@ -337,13 +349,19 @@ struct Bucket {
 }
 
 impl Bucket {
-    /// One token per whole second since `since`, up to BUCKET; a full bucket restarts its clock.
+    /// The tokens it holds at `now`: one more per whole second since `since`, up to BUCKET.
+    fn tokens_at(&self, now: Instant) -> u32 {
+        let secs = now.saturating_duration_since(self.since).as_secs();
+        self.tokens.saturating_add(u32::try_from(secs).unwrap_or(u32::MAX)).min(BUCKET)
+    }
+
+    /// Refilled to `now`; a full bucket restarts its clock.
     fn refill(&mut self, now: Instant) {
         let secs = now.saturating_duration_since(self.since).as_secs();
         if secs == 0 {
             return;
         }
-        self.tokens = self.tokens.saturating_add(u32::try_from(secs).unwrap_or(u32::MAX)).min(BUCKET);
+        self.tokens = self.tokens_at(now);
         self.since = if self.tokens == BUCKET { now } else { self.since + Duration::from_secs(secs) };
     }
 
@@ -435,6 +453,19 @@ impl Center {
         self.buckets[i].take(now)
     }
 
+    /// Whether `take_token` would grant one, without spending it nor forgetting any bucket.
+    fn has_token(&self, identity: &str, now: Instant) -> bool {
+        match self.buckets.iter().find(|b| b.identity == identity) {
+            Some(b) => b.tokens_at(now) > 0,
+            None => self.buckets.iter().filter(|b| b.tokens_at(now) < BUCKET).count() < MAX_BUCKETS,
+        }
+    }
+
+    /// Whether a new notification (replacing nothing) would get a bubble, without spending a token.
+    fn would_show(&self, identity: &str, critical: bool, now: Instant) -> bool {
+        (!self.dnd || critical) && self.live_count() < MAX_LIVE && (critical || self.has_token(identity, now))
+    }
+
     /// Entries beyond the history cap leave it (newest kept); entries neither kept nor live go.
     fn trim(&mut self) {
         let cap = self.history;
@@ -458,20 +489,26 @@ impl Center {
         } else {
             n.tag.as_deref().and_then(|tag| self.slots.iter().position(|s| s.tag.as_deref() == Some(tag) && s.entry.identity == identity))
         };
+        // A merge never swallows a higher urgency, nor a bubble the first one never got (do-not-
+        // disturb, the bucket) while this one would.
         if n.replaces_id == 0
             && target.is_none()
-            && let Some(s) = self.slots.iter_mut().find(|s| {
+            && let Some(i) = self.slots.iter().position(|s| {
                 s.entry.identity == identity
                     && s.entry.summary == n.summary
                     && s.entry.body == n.body
+                    && s.entry.urgency == n.urgency
                     && now.saturating_duration_since(s.arrived) < MERGE_WINDOW
             })
+            && (self.slots[i].entry.live || !self.would_show(&identity, critical, now))
         {
-            s.arrived = now;
-            return s.entry.id;
+            self.slots[i].arrived = now;
+            return self.slots[i].entry.id;
         }
+        // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
+        // recomputed); it only shows once do-not-disturb is off, unless critical.
         let had_bubble = target.is_some_and(|i| self.slots[i].entry.live);
-        let bubble = (!self.dnd || critical)
+        let bubble = (had_bubble || !self.dnd || critical)
             && (had_bubble || self.live_count() < MAX_LIVE)
             && (had_bubble || critical || self.take_token(&identity, now));
         let (id, revision) = match target.and_then(|i| self.slots.remove(i)) {
@@ -705,7 +742,7 @@ mod tests {
     /// Review focus: a body of only markup strips to empty; the notification still shows.
     #[test]
     fn a_body_of_only_markup_strips_to_empty_and_still_shows() {
-        assert_eq!(strip_markup("<b></b><i><u></u></i><br/>"), "");
+        assert_eq!(body_text("<b></b><i><u></u></i><br/>"), "", "a line break alone is trimmed away");
         assert_eq!(body_text("<b></b>\n<i> </i>"), "", "and the blank lines left behind are trimmed");
         let (mut c, t0) = (center(), Instant::now());
         let id = c.notify(Incoming { body: body_text("<b></b>"), ..note("Firefox", "Download finished") }, t0, 0);
@@ -752,6 +789,16 @@ mod tests {
         assert_eq!(body_text("\n\n  text  \n\n"), "text");
         assert_eq!(hint_text(" \t\n"), None, "blank: absent");
         assert_eq!(hint_text(" firefox\n"), Some("firefox".into()));
+    }
+
+    #[test]
+    fn line_breaks_in_markup_and_unicode_separators_are_line_breaks() {
+        assert_eq!(body_text("one<br>two<br/>three<br />four<BR>five"), "one\ntwo\nthree\nfour\nfive");
+        assert_eq!(summary_text("one<br>two<br/>three"), "one two three", "one line: a space");
+        assert_eq!(body_text("a\u{2028}b\u{2029}c"), "a\nb\nc");
+        assert_eq!(summary_text("a\u{2028}b\u{2029}c"), "a b c");
+        assert_eq!(body_text("<brick>wall</brick>"), "wall", "only br itself");
+        assert_eq!(strip_markup("x<br>y"), "x\ny");
     }
 
     #[test]
@@ -861,6 +908,44 @@ mod tests {
         assert_ne!(c.notify(note("Slack", "ping"), t0 + ms(2_500), 0), id, "1.1 s of quiet: a new one");
         let pong = c.notify(note("Slack", "pong"), t0 + ms(2_600), 0);
         assert_ne!(c.notify(Incoming { body: "more".into(), ..note("Slack", "pong") }, t0 + ms(2_700), 0), pong, "another body");
+    }
+
+    #[test]
+    fn a_merge_never_swallows_a_higher_urgency_nor_a_bubble_owed() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ms = Duration::from_millis;
+        let normal = c.notify(note("upower", "Battery low"), t0, 0);
+        let urgent = c.notify(critical("upower", "Battery low"), t0 + ms(100), 0);
+        assert_ne!(urgent, normal, "normal then critical: a new one");
+        assert_eq!(c.entry(urgent).map(|e| e.urgency), Some(Urgency::Critical));
+        assert_eq!(shown(&c), [urgent, normal]);
+
+        let mut c = Center::new(&NotificationsConfig::default(), true);
+        let quiet = c.notify(note("Slack", "ping"), t0, 0);
+        assert_eq!(c.notify(note("Slack", "ping"), t0 + ms(100), 0), quiet, "both history only: merged");
+        c.set_dnd(false);
+        let loud = c.notify(note("Slack", "ping"), t0 + ms(200), 0);
+        assert_ne!(loud, quiet, "the first had no bubble, this one gets one: never swallowed");
+        assert_eq!(shown(&c), [loud]);
+        assert_eq!(c.notify(note("Slack", "ping"), t0 + ms(300), 0), loud, "into a live one: merged");
+        assert_eq!(c.history().count(), 2);
+
+        let mut c = center();
+        for i in 0..BUCKET {
+            c.notify(note("spammer", &format!("n{i}")), t0, 0);
+        }
+        let refused = c.notify(note("spammer", "again"), t0, 0);
+        assert!(!c.entry(refused).unwrap().live, "the bucket is empty");
+        assert_eq!(c.notify(note("spammer", "again"), t0 + ms(100), 0), refused, "still no token: merged, no duplicate");
+
+        let mut c = center();
+        for i in 0..MAX_BUCKETS {
+            let id = c.notify(note(&format!("app{i}"), "x"), t0, 0);
+            c.close(id, CloseReason::Dismissed);
+        }
+        let newcomer = c.notify(note("newcomer", "hi"), t0, 0);
+        assert!(!c.entry(newcomer).unwrap().live, "no bucket left for a new identity");
+        assert_eq!(c.notify(note("newcomer", "hi"), t0 + ms(100), 0), newcomer, "still none: merged");
     }
 
     #[test]
@@ -1021,6 +1106,43 @@ mod tests {
         assert_eq!(shown(&c), [urgent], "back on: only the critical one shows");
     }
 
+    /// The critical ones are filtered before `max_visible` is taken: four live normal bubbles newer
+    /// than two criticals never hide them.
+    #[test]
+    fn do_not_disturb_filters_before_it_takes_the_visible_ones() {
+        let (mut c, t0) = (center(), Instant::now());
+        let a = c.notify(critical("upower", "Battery at 5%"), t0, 0);
+        let b = c.notify(critical("udiskie", "Disk failing"), t0, 0);
+        for s in ["1", "2", "3", "4"] {
+            c.notify(note(s, s), t0, 0);
+        }
+        assert_eq!(c.bubbles().len(), 4);
+        c.set_dnd(true);
+        assert_eq!(shown(&c), [b, a]);
+    }
+
+    #[test]
+    fn replacing_a_live_bubble_under_do_not_disturb_keeps_it_live_with_a_new_expiry() {
+        let (mut c, t0) = (center(), Instant::now());
+        let id = c.notify(note("spotify", "Song A"), t0, 0);
+        c.set_dnd(true);
+        let later = t0 + secs(3);
+        assert_eq!(c.notify(Incoming { replaces_id: id, ..note("spotify", "Song B") }, later, 0), id);
+        let e = c.entry(id).unwrap();
+        assert!(e.live && e.summary == "Song B", "updated in place, still live: {e:?}");
+        assert_eq!(c.next_expiry(), Some(later + secs(5)), "its expiry recomputed");
+        assert!(shown(&c).is_empty(), "not shown while do-not-disturb is on");
+        c.set_dnd(false);
+        assert_eq!(shown(&c), [id]);
+        assert_eq!(c.expire(later + secs(5)), [Effect::Closed(id, CloseReason::Expired)], "it still closes");
+        let fresh = c.notify(note("other", "x"), later, 0);
+        c.set_dnd(true);
+        let replaced = c.notify(Incoming { replaces_id: fresh, ..note("other", "y") }, later, 0);
+        assert!(c.entry(replaced).unwrap().live);
+        let gone = c.notify(Incoming { replaces_id: 999, ..note("other", "z") }, later, 0);
+        assert!(!c.entry(gone).unwrap().live, "no bubble to keep: history only");
+    }
+
     #[test]
     fn unread_counts_the_history_until_the_panel_opens() {
         let (mut c, t0) = (center(), Instant::now());
@@ -1060,5 +1182,10 @@ mod tests {
         assert_eq!(glyph_for("élan app", None), 'É');
         assert_eq!(glyph_for("", None), icons::GENERIC, "the portal's empty name");
         assert_eq!(glyph_for("…", None), icons::GENERIC);
+        assert_eq!(glyph_for("微信", None), icons::GENERIC, "a letter two cells wide never stands in for a glyph");
+        assert_eq!(glyph_for("微x", None), 'X', "the first one-cell letter");
+        for g in [EMAIL, CHAT, NETWORK, DEVICE, DOWNLOAD] {
+            assert_eq!(text_width(&g.to_string()), 1, "{g:?}");
+        }
     }
 }
