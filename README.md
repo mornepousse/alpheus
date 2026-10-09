@@ -17,9 +17,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 71 MB** | bar ≈ 14 MB + borrowed pieces ≈ 57 MB (live figure before the OSD; to be measured again after the switch — it counted swayosd at a figure since found wrong, 7.6 MB PSS measured); once switched, only swaybg (optional) is still borrowed |
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 23 MB** | bar ≈ 14 MB (live) + swayosd 7.6 MB + swaybg 1.4 MB still borrowed (rows below); ≈ 30 MB before the notifications replaced mako (6.7 MB) on 2026-10-09; ≈ 15 MB once the OSD replaces swayosd, only swaybg (optional) borrowed |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
-| waybar + mako + swayosd + swaybg | GTK / C | ≈ 120 MB | bar, notifications, OSD, wallpaper |
+| waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
 | Wayle | Rust, GTK4 | ≈ 168 MB | bar, panels |
 | ashell + swaync | Rust, iced | ≈ 194 MB | bar, notifications |
@@ -75,12 +75,24 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > alternated runs against the delivery before; the bar shapes rows likewise
 > (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise; the OSD rows likewise.
 >
-> **Note:** the "live" row above (≈ 11.3 MB), the resident total it feeds
-> into (≈ 14 MB) and the hybrid-mode comparison in the shells table
-> (≈ 71 MB) predate the move from zbus to dbus-rs, the launcher merge and
-> the tray: they were measured before any of them. The headless sway rows
-> above are measured with all of them; the live rows will be re-measured
-> at the real-world trial of the tray (tray plan 2, task 21).
+> **Note:** the "live" row above (≈ 11.3 MB) and the resident total it
+> feeds into (≈ 14 MB) predate the move from zbus to dbus-rs, the launcher
+> merge and the tray: they were measured before any of them. The headless
+> sway rows above are measured with all of them; the live rows will be
+> re-measured at the real-world trial of the tray (tray plan 2, task 21).
+> The hybrid-mode figures in the shells table add that live total to the
+> borrowed tools' rows above: swayosd 7.6 MB (2026-10-09), swaybg 1.4 MB
+> (2026-10-05), and mako 6.7 MB (2026-10-08) for the figure before the
+> notifications delivery. All are PSS on the author's session.
+>
+> **The waybar stack's row** (≈ 55 MB) adds PSS figures from different
+> days: waybar 39 MB (the nixos-config DMS trial spec, 2026-09-30), mako
+> 6.7 MB, swayosd 7.6 MB, swaybg 1.4 MB (the rows above). The ≈ 120 MB first
+> recorded for this stack on 2026-09-30 (waybar 39, swayosd 48, swaybg 31,
+> hypridle 2 MB, also given as PSS) is not borne out by the later swayosd
+> and swaybg measurements, and why they differ is not known; waybar's own
+> 39 MB has not been measured again. The stack is to be measured again side
+> by side.
 
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
@@ -104,7 +116,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 
 | Feature | **alpheus** | DMS | Noctalia | ashell | waybar stack¹ |
 |---|---|---|---|---|---|
-| **Resident memory** | **≈ 14 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 120 MB |
+| **Resident memory** | **≈ 14 MB** today, ≤ 120 MB target | ≈ 537 MB | — | ≈ 194 MB² | ≈ 55 MB³ |
 | **Bar** | | | | | |
 | Workspaces, active window | ✅ | ✅ | ✅ | ➖ | ✅ |
 | Clock | ✅ | ✅ | ✅ | ✅ | ✅ |
@@ -132,7 +144,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
-| OSD (volume, brightness) | ✅ volume, mute and microphone from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
+| OSD (volume, brightness) | ✅ volume and mute, and the microphone's mute (never its level: call apps move it), from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
@@ -147,9 +159,10 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Workspaces and windows read from | Hyprland, niri | 7 compositors | 6 compositors | Hyprland, niri, sway | many (one module each) |
 | Extensions | script mode, no plugin API | ✅ | ✅ ~100 | ❌ | ➖ |
 
-¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. Other shells'
-features from their documentation (October 2026); memory measured on the
-author's laptop.
+¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. ³ waybar + mako +
+swayosd + swaybg, from PSS figures of different days (see the memory note
+above). Other shells' features from their documentation (October 2026);
+memory measured on the author's laptop.
 
 ## What's in the repository
 
@@ -213,7 +226,7 @@ app's menu in a popup, keyboard and mouse),
 server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **OSD** (a pill bottom centre on the focused output for the volume, mute and the microphone, read from PipeWire's own state — any app, any key, a headset's buttons — and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **clock** (a click opens the
+clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **clock** (a click opens the
 month's calendar). Clicking a module opens the matching tab
 of the control center. One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
