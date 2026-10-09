@@ -378,6 +378,28 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
     assert_eq!(body.matches("self.keyboard_release()").count(), 1, "one release, on both paths: {body}");
 }
 
+/// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
+/// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
+/// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
+/// idle read. libdbus's flush reads only when its write has to wait, so no private bus builds that
+/// state on demand: the wiring is checked in the source.
+#[test]
+fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (link, wayland) = (src("link.rs"), src("wayland.rs"));
+    for (body, ready, read) in [
+        (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
+        (function_body(&wayland, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
+    ] {
+        let (at, idle) = (body.find(ready), body.find("insert_idle"));
+        assert!(at.is_some() && idle.is_some(), "{ready} must queue an idle: {body}");
+        assert!(body[idle.unwrap_or(0)..].contains(read), "the idle must read: {read}: {body}");
+    }
+    let mpris_do = function_body(&wayland, "pub(crate) fn mpris_do(");
+    assert!(mpris_do.contains("self.link_sync()") && mpris_do.contains("self.tray_sync()"), "mpris_do ends in the syncs: {mpris_do}");
+}
+
 /// Final review R2: three small orderings no fake Wayland surface can exercise. `menu_repaint`
 /// finds its bar by the popup's parent SURFACE (never an output name); `launcher_open` drops the
 /// remembered tray press (`last_icon`), so a late failed Activate cannot open a menu over the

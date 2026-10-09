@@ -174,7 +174,8 @@ impl SessionLink {
         self.bus.has_ready()
     }
 
-    /// Routes `incoming`, then flushes and routes what the flush drained (bounded).
+    /// Routes `incoming`, then flushes and routes what the flush drained (bounded: what the last
+    /// round's flush drained waits in `ready`, for `App::link_sync`'s idle).
     fn route(&mut self, incoming: Vec<Incoming>) -> LinkOutput {
         let mut out = self.dispatch(incoming);
         let mut rounds = 0;
@@ -340,9 +341,21 @@ impl App {
         self.link_sync();
     }
 
-    /// The timer follows the link's pending calls: none pending, no timer. `pub(crate)`: `App::mpris_do`
-    /// (wayland.rs) calls it after a `media_do`.
+    /// The timer follows the link's pending calls: none pending, no timer. Answers waiting in the
+    /// link's `ready` — drained by a `media_do`'s flush, or left by the settle rounds after a burst
+    /// (fix wave A) — are routed from one idle `link_readable`: no fd event will announce them.
+    /// `pub(crate)`: `App::mpris_do` (wayland.rs) calls it after a `media_do`.
     pub(crate) fn link_sync(&mut self) {
+        if !self.link_ready_queued
+            && self.link.as_ref().is_some_and(SessionLink::has_ready)
+            && let Some(handle) = &self.loop_handle
+        {
+            self.link_ready_queued = true;
+            handle.insert_idle(|app| {
+                app.link_ready_queued = false;
+                app.link_readable();
+            });
+        }
         let deadline = self.link.as_ref().and_then(SessionLink::next_deadline);
         if let Some(handle) = &self.loop_handle {
             self.link_timer.sync(handle, deadline, App::link_deadline);

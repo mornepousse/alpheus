@@ -236,6 +236,12 @@ impl Tray {
         self.host.wants_frame() || self.menu.as_ref().is_some_and(MenuSession::wants_frame)
     }
 
+    /// Answers a flush drained that no routing has taken yet: after a burst past `SETTLE_ROUNDS`
+    /// they wait with no fd event to announce them (`App::tray_sync` routes them from an idle).
+    pub fn has_ready(&self) -> bool {
+        self.bus.has_ready()
+    }
+
     /// What answers drained during `open_menu`, `menu_submenu`, `menu_click` or `close_menu` made
     /// happen, when no other callback has returned it yet. Rare (it takes an answer arriving while
     /// a call is flushed); every other callback's output includes it already.

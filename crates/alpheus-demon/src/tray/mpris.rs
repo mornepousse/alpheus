@@ -59,6 +59,10 @@ pub struct Mpris {
     stale: bool,
     /// The cap was reached and logged; cleared when a player leaves.
     full: bool,
+    /// Listed names not resolved yet (MAX_PLAYERS at most, in listing order): the followed players
+    /// plus the names in flight (`Ask::Owner`) stay within MAX_PLAYERS, so the rest wait here for
+    /// a resolution to end — a failed one frees its slot for the next.
+    waiting: Vec<String>,
     /// A ListNames was answered. Until then (lost twice to our timeout, at login on a slow bus), the
     /// next MPRIS arrival lists again: players already running are found without a timer.
     listed: bool,
@@ -88,6 +92,7 @@ impl Mpris {
             shown: None,
             stale: false,
             full: false,
+            waiting: Vec::new(),
             listed: false,
             seeked_rule: false,
             log,
@@ -121,11 +126,10 @@ impl Mpris {
         bus_name.starts_with(MPRIS_PREFIX) && !Players::is_ignored(bus_name, &self.ignore)
     }
 
-    /// Room for one more: the players plus the names being resolved stay within MAX_PLAYERS. The first
-    /// refusal of a full episode is logged; the rest are silent.
+    /// Room for one more followed player. The first refusal of a full episode is logged; the rest
+    /// are silent.
     fn room(&mut self, bus_name: &str) -> bool {
-        let resolving = self.asks.values().filter(|a| matches!(a, Ask::Owner(..))).count();
-        if self.players.len() + resolving < MAX_PLAYERS {
+        if self.players.len() < MAX_PLAYERS {
             return true;
         }
         if !self.full {
@@ -157,15 +161,49 @@ impl Mpris {
             // Not `relist`, which asks only while no listing ever succeeded: here one did, and it
             // skipped that connection's second name (its owner was followed already). That name
             // keeps its owner, so no NameOwnerChanged will ever announce it: only a new listing
-            // finds it.
+            // finds it. One in flight serves several departures (its answer comes after them).
+            self.list(out);
+        }
+    }
+
+    /// The GetNameOwner calls in flight.
+    fn resolving(&self) -> usize {
+        self.asks.values().filter(|a| matches!(a, Ask::Owner(..))).count()
+    }
+
+    /// Resolves the waiting names (GetNameOwner), as many as fit next to the followed players and
+    /// the names in flight; the others keep waiting for one of those to end. Full of followed
+    /// players with nothing in flight, the rest are ignored (`room` logs it).
+    fn resolve_waiting(&mut self, out: &mut impl Outbox) {
+        while !self.waiting.is_empty() {
+            let resolving = self.resolving();
+            if self.players.len() + resolving >= MAX_PLAYERS {
+                if resolving == 0 {
+                    let name = self.waiting.remove(0);
+                    self.room(&name);
+                    self.waiting.clear();
+                }
+                return;
+            }
+            let name = self.waiting.remove(0);
+            let asked = self.asks.values().any(|a| matches!(a, Ask::Owner(x, _) if *x == name));
+            if !self.players.has_name(&name) && !asked {
+                self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, false));
+            }
+        }
+    }
+
+    /// One ListNames, unless one is in flight already: its answer serves this asker too.
+    fn list(&mut self, out: &mut impl Outbox) {
+        if !self.asks.values().any(|a| matches!(a, Ask::List(_))) {
             self.ask(out, Call::ListNames, Ask::List(true));
         }
     }
 
     /// The listing again, after the lost ones (`listed`): once in flight at most.
     fn relist(&mut self, out: &mut impl Outbox) {
-        if !self.listed && !self.asks.values().any(|a| matches!(a, Ask::List(_))) {
-            self.ask(out, Call::ListNames, Ask::List(true));
+        if !self.listed {
+            self.list(out);
         }
     }
 
@@ -204,17 +242,16 @@ impl Mpris {
         match (why, reply) {
             (Ask::List(_), Ok(Reply::Names(names))) => {
                 self.listed = true;
-                // A listing after arrivals (`relist`) skips the names already followed or resolving.
+                // A listing after arrivals (`relist`) skips the names already followed, resolving or
+                // waiting.
                 let wanted: Vec<String> = names
                     .into_iter()
-                    .filter(|n| self.followed(n) && !self.players.has_name(n))
+                    .filter(|n| self.followed(n) && !self.players.has_name(n) && !self.waiting.contains(n))
                     .filter(|n| !self.asks.values().any(|a| matches!(a, Ask::Owner(x, _) if x == n)))
                     .collect();
-                for name in wanted {
-                    if self.room(&name) {
-                        self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, false));
-                    }
-                }
+                self.waiting.extend(wanted);
+                self.resolve_waiting(out);
+                self.waiting.truncate(MAX_PLAYERS);
             }
             (Ask::List(again), Err(e)) => {
                 if !again {
@@ -225,15 +262,17 @@ impl Mpris {
                     self.ask(out, Call::ListNames, Ask::List(true));
                 }
             }
-            (Ask::Owner(name, _), Ok(Reply::Owner(unique))) => self.arrive(out, &name, &unique),
-            // Lost to our own timeout: asked once more.
-            (Ask::Owner(name, false), Err(CallError::Timeout)) => {
-                if self.room(&name) {
-                    self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
-                }
+            (Ask::Owner(name, _), Ok(Reply::Owner(unique))) => {
+                self.arrive(out, &name, &unique);
+                self.resolve_waiting(out);
             }
-            // Gone between ListNames and GetNameOwner (NameHasNoOwner), or lost twice: nothing to follow.
-            (Ask::Owner(..), _) => {}
+            // Lost to our own timeout: asked once more, in the slot it frees.
+            (Ask::Owner(name, false), Err(CallError::Timeout)) => {
+                self.ask(out, Call::GetNameOwner { name: name.clone() }, Ask::Owner(name, true));
+            }
+            // Gone between ListNames and GetNameOwner (NameHasNoOwner), or lost twice: nothing to
+            // follow, and its slot goes to a waiting name.
+            (Ask::Owner(..), _) => self.resolve_waiting(out),
             (Ask::State(u) | Ask::Metadata(u), Ok(Reply::Props(props))) => self.apply(out, &u, &props, &[]),
             (Ask::Identity(u), Ok(Reply::Text(name))) => {
                 if self.players.get(&u).is_some() {
@@ -262,8 +301,10 @@ impl Mpris {
         match s {
             Signal::NameOwnerChanged { name, old, new } if name.starts_with(MPRIS_PREFIX) => {
                 if self.followed(name) {
-                    // Fresher than a GetNameOwner still in flight for this name: that answer is dropped.
+                    // Fresher than a GetNameOwner still in flight for this name, or its wait: that
+                    // answer is dropped, the wait ends.
                     self.asks.retain(|_, a| !matches!(a, Ask::Owner(n, _) if n == name));
+                    self.waiting.retain(|n| n != name);
                     // A restart is one signal with both owners: the old one goes, the new one comes.
                     if !old.is_empty() {
                         self.release(out, name, old);
@@ -522,6 +563,7 @@ mod tests {
     #[test]
     fn a_restart_in_one_signal_replaces_the_player() {
         let (mut out, mut m) = started();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(vec![])));
         loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
         assert_eq!(m.view(), view(true, "Harbor Lights"));
         out.take();
@@ -556,12 +598,14 @@ mod tests {
         let names: Vec<String> = (0..=MAX_PLAYERS).map(|i| format!("org.mpris.MediaPlayer2.fake{i}")).collect();
         m.answer(&mut out, CallId(1), Ok(Reply::Names(names.clone())));
         let owners = out.ids(Method::GetNameOwner);
-        assert_eq!(owners.len(), MAX_PLAYERS, "17 listed, 16 resolved");
-        assert_eq!(lines("players already followed"), 1);
+        assert_eq!(owners.len(), MAX_PLAYERS, "17 listed, 16 resolved at once, one waiting");
+        assert_eq!(lines("players already followed"), 0, "none followed yet: nothing to say");
         for (n, owner) in owners.iter().enumerate() {
             m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
         }
         assert_eq!(m.players().len(), MAX_PLAYERS);
+        assert_eq!(out.ids(Method::GetNameOwner).len(), MAX_PLAYERS, "the 17th never asked");
+        assert_eq!(lines(&format!("16 players already followed; {} and any more", names[MAX_PLAYERS])), 1, "16 followed: it is ignored");
         out.take();
         // Still full: another arrival is turned away, without a second line.
         assert!(m.signal(&mut out, &owner_changed("org.mpris.MediaPlayer2.late", "", ":1.200")));
@@ -812,6 +856,74 @@ mod tests {
     /// Task 5's review: when a followed player's name is released, the same connection may still own a
     /// second MPRIS name (never followed while the first one was): one ListNames, even once listed,
     /// picks it up. A release that removes nothing lists nothing.
+    /// Fix wave A: a resolution that fails frees its slot for a listed name waiting behind the 16 in
+    /// flight; only followed players fill the cap.
+    #[test]
+    fn a_failed_resolution_frees_its_slot_for_a_waiting_name() {
+        let (mut out, mut m) = started();
+        let names: Vec<String> = (0..=MAX_PLAYERS).map(|i| format!("org.mpris.MediaPlayer2.fake{i}")).collect();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(names.clone())));
+        let owners = out.ids(Method::GetNameOwner);
+        out.take();
+        m.answer(&mut out, owners[0], Err(CallError::Remote("org.freedesktop.DBus.Error.NameHasNoOwner".into())));
+        let asked = out.take();
+        assert_eq!(
+            asked.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(),
+            [Call::GetNameOwner { name: names[MAX_PLAYERS].clone() }],
+            "the 17th, in the freed slot"
+        );
+        for (n, owner) in owners.iter().enumerate().skip(1) {
+            m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
+        }
+        m.answer(&mut out, asked[0].0, Ok(Reply::Owner(":1.300".into())));
+        assert_eq!(m.players().len(), MAX_PLAYERS, "15 + the 17th");
+        assert_eq!(lines("players already followed"), 0, "nobody was turned away");
+    }
+
+    /// Fix wave A: only followed players fill the cap. A player arriving while 16 listed names are
+    /// still being resolved is followed; the one resolution that finds no room is the one turned
+    /// away, and the line says so truly.
+    #[test]
+    fn an_arrival_is_followed_while_listed_names_resolve() {
+        let (mut out, mut m) = started();
+        let names: Vec<String> = (0..MAX_PLAYERS).map(|i| format!("org.mpris.MediaPlayer2.fake{i}")).collect();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(names.clone())));
+        let owners = out.ids(Method::GetNameOwner);
+        assert_eq!(owners.len(), MAX_PLAYERS);
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, "", ":1.7")));
+        assert_eq!(out.take().len(), 2, "followed at once: GetAll + Identity");
+        assert_eq!(lines("players already followed"), 0, "nobody is followed yet but it");
+        for (n, owner) in owners.iter().enumerate() {
+            m.answer(&mut out, *owner, Ok(Reply::Owner(format!(":1.{}", 100 + n))));
+        }
+        assert_eq!(m.players().len(), MAX_PLAYERS);
+        assert_eq!(lines(&format!("16 players already followed; {} and any more", names[MAX_PLAYERS - 1])), 1);
+    }
+
+    /// Fix wave A: departures in one batch share one listing; a new one is asked once it answered.
+    #[test]
+    fn departures_share_one_listing_in_flight() {
+        let (mut out, mut m) = started();
+        m.answer(&mut out, CallId(1), Ok(Reply::Names(vec![])));
+        loaded(&mut m, &mut out, TIDEWAVE, ":1.7", state("Playing", "Harbor Lights"));
+        loaded(&mut m, &mut out, LANTERN, ":1.8", state("Paused", "Paper Lanterns"));
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.7", "")));
+        assert!(m.signal(&mut out, &owner_changed(LANTERN, ":1.8", "")));
+        let asked = out.take();
+        assert_eq!(asked.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(), [Call::ListNames], "one listing for both");
+        m.answer(&mut out, asked[0].0, Ok(Reply::Names(vec![])));
+        loaded(&mut m, &mut out, TIDEWAVE, ":1.9", state("Playing", "Harbor Lights"));
+        out.take();
+        assert!(m.signal(&mut out, &owner_changed(TIDEWAVE, ":1.9", "")));
+        assert_eq!(
+            out.take().into_iter().map(|(_, c)| c).collect::<Vec<_>>(),
+            [Call::ListNames],
+            "answered: the next departure lists again"
+        );
+    }
+
     #[test]
     fn a_released_player_lists_again_so_a_second_name_of_its_connection_is_followed() {
         let (mut out, mut m) = started();

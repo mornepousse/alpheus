@@ -120,7 +120,7 @@ fn variant(it: &mut Iter<'_>) -> Option<Value> {
 /// One property value at `it`, inside its variant (media spec § 3, Tolerance): `s` and `o` as
 /// cleaned strings, every integer type as `Int` (a `t` beyond i64::MAX is `Other`), `d` as `Float`,
 /// `b`, `as` (at most MAX_LIST, cleaned), and `a{sv}` as a `Map` only where `maps` allows it (the
-/// metadata, one level down); anything else `Other`, never an error.
+/// `Metadata` property, one level down, nothing else); anything else `Other`, never an error.
 fn value(it: &mut Iter<'_>, maps: bool) -> Value {
     let v = match sig(it).as_deref() {
         Some("s") => it.get::<&str>().map(|s| Value::Str(clean(s))),
@@ -155,7 +155,8 @@ fn strings(it: &mut Iter<'_>) -> Option<Vec<String>> {
 }
 
 /// `a{sv}` at `it`: at most MAX_ENTRIES entries read (a skipped one counts too), a key longer than
-/// MAX_TEXT bytes skipped, each value decoded by `value` (`maps`: whether a value may itself be an `a{sv}`).
+/// MAX_TEXT bytes skipped, each value decoded by `value` (`maps`: whether the `Metadata` value may
+/// itself be an `a{sv}`; any other key's never is).
 fn props(it: &mut Iter<'_>, maps: bool) -> Option<Vec<(String, Value)>> {
     if sig(it).as_deref() != Some("a{sv}") {
         return None;
@@ -167,7 +168,7 @@ fn props(it: &mut Iter<'_>, maps: bool) -> Option<Vec<(String, Value)>> {
         let key = entry.read::<&str>().ok()?;
         let mut v = entry.recurse(ArgType::Variant)?;
         if key.len() <= MAX_TEXT {
-            out.push((key.to_string(), value(&mut v, maps)));
+            out.push((key.to_string(), value(&mut v, maps && key == "Metadata")));
         }
         entries.next();
     }
@@ -1413,6 +1414,23 @@ mod tests {
             Ok(Reply::Props(vec![("CanPlay".into(), Value::Bool(true))])),
             "a key too long: skipped, never cut"
         );
+    }
+
+    /// Fix wave A: only `Metadata` may be a map; an `a{sv}` under any other key is not read into one.
+    #[test]
+    fn only_metadata_is_read_as_a_map() {
+        let m = returned(|i| {
+            dict(
+                i,
+                &[
+                    ("Metadata".to_string(), map(&[("xesam:title", W::S("Song".into()))])),
+                    ("X-Extra".to_string(), map(&[("k", W::B(true))])),
+                ],
+            )
+        });
+        let Ok(Reply::Props(p)) = reply(&get_all(), &m) else { panic!("not decoded") };
+        assert_eq!(p[0], ("Metadata".into(), Value::Map(vec![("xesam:title".into(), Value::Str("Song".into()))])));
+        assert_eq!(p[1], ("X-Extra".into(), Value::Other), "another key's map is not read");
     }
 
     /// Task 3's review: the cap counts entries read, not entries kept, so a reply full of keys

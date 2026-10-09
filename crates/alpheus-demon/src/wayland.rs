@@ -444,6 +444,11 @@ pub struct App {
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
     pub(crate) tray_deferred_queued: bool,
+    /// An idle callback is queued to route what waits in a bus's `ready` with no fd event to
+    /// announce it: answers a flush drained, or that the settle rounds left after a burst (fix wave
+    /// A). One per connection, the tray's and the link's.
+    pub(crate) tray_ready_queued: bool,
+    pub(crate) link_ready_queued: bool,
     /// The horizontal wheel, for tray icons only.
     pub(crate) hwheel: Wheel,
     /// The last button press (serial, time, surface-local position): Activate's
@@ -629,6 +634,8 @@ impl App {
             mode_written: None,
             mode_error: None,
             tray_deferred_queued: false,
+            tray_ready_queued: false,
+            link_ready_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
             popup_press_time: 0,
@@ -992,11 +999,7 @@ impl App {
         }
         let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
         link.media_do(f);
-        if link.has_ready()
-            && let Some(handle) = &self.loop_handle
-        {
-            handle.insert_idle(|app| app.link_readable());
-        }
+        // What the flush drained is routed from an idle (`link_sync`).
         self.link_sync();
     }
 
@@ -1015,6 +1018,17 @@ impl App {
                     app.tray_output(out);
                 });
             }
+        }
+        // Answers left in `ready` (a burst past the settle rounds): no fd event will come for them.
+        if !self.tray_ready_queued
+            && self.tray.as_ref().is_some_and(Tray::has_ready)
+            && let Some(handle) = &self.loop_handle
+        {
+            self.tray_ready_queued = true;
+            handle.insert_idle(|app| {
+                app.tray_ready_queued = false;
+                app.tray_readable();
+            });
         }
         let deadline = self.tray.as_ref().and_then(Tray::next_deadline);
         if let Some(handle) = &self.loop_handle {
