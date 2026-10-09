@@ -2047,6 +2047,15 @@ fn popup_title(s: &Ppm) -> Vec<[u8; 3]> {
     (y - 8..y + 8).flat_map(|y| (x0 - 4..x1 + 4).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
+/// Waits until the media popup is on screen: its title row drawn in the accent (catppuccin dark).
+/// "media popup shown" is logged when the popup is asked for, before the compositor's configure
+/// and the first buffer that maps it; a click in that gap lands on no surface, and sway ends the
+/// grab ("popup closed (dismissed)"). A click meant for the popup waits for this.
+fn wait_for_the_popup_drawn(sway: &Sway, d: &Daemon) {
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&accent)), "the popup drawn: {:?}", d.log());
+}
+
 /// Layout coordinates of the popup's cell (column, row) on a bar whose media zone starts at cell 1 at
 /// x = `bar_x`: the popup hangs from that cell (≈ 8 px), under the 22 px bar, its frame ≈ 4 px at the
 /// sides and ≈ 7 px at the top, ≈ 8.4 px cells, 22 px rows. The middle of the cell: a few px of
@@ -2123,6 +2132,7 @@ fn the_popup_buttons_reach_the_player() {
     let (_bus, sway, _hypr, d, players) = media_bar("media-buttons", 1, &[]);
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     // Rows: title, artist, time, buttons (row 3); ⏭ at content column 20, boxed column 21.
     let (x, y) = popup_cell(0, 21, 3);
     sway.click(x, y, "button1");
@@ -2205,8 +2215,8 @@ fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != shown), "the bar never moved to lumen: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     let accent = rgb(preset("catppuccin").unwrap().dark.accent);
-    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&accent)), "the popup drawn: {:?}", d.log());
     let before = sway.screenshot("HEADLESS-1").map(|s| popup_title(&s)).unwrap();
     players.remove(0).kill(); // lumen
     // The title row repainted with beta's track ("Second Song"), still in the accent: still open.
@@ -2236,6 +2246,7 @@ fn a_player_chosen_in_the_popup_takes_the_bar() {
     // media_bar's theme: catppuccin dark. Playing, the module takes the purple; paused, muted.
     let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "lumen playing: {:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
     // Rows: title, artist, time, buttons, separator, lumen, beta (row 6).
     let (x, y) = popup_cell(0, 3, 6);
     sway.click(x, y, "button1");
