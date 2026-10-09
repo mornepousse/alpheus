@@ -29,7 +29,8 @@ pub const RAW_MAX: usize = 16 * 1024;
 pub const MERGE_WINDOW: Duration = Duration::from_secs(1);
 /// Each identity's token bucket: this many bubbles at once, then one more per whole second.
 pub const BUCKET: u32 = 10;
-/// Live notifications at most (bubbles shown or waiting): beyond, history only.
+/// Live notifications at most (bubbles shown or waiting): beyond, history only; a critical one
+/// makes room (the oldest normal bubble goes).
 pub const MAX_LIVE: usize = 32;
 /// Identities with a bucket at most; a full bucket is forgotten.
 pub const MAX_BUCKETS: usize = 64;
@@ -350,6 +351,9 @@ struct Slot {
     /// When its bubble expires: armed (`Center::arm`) the first time it is among the bubbles that
     /// show, do-not-disturb aside; None while it waits beyond `max_visible`, and for a sticky one.
     expiry: Option<Instant>,
+    /// The host drew it with its timer running (`Center::seen`): pushed back behind newer bubbles,
+    /// it keeps its expiry.
+    shown: bool,
     /// In the history (not transient, and within the cap).
     kept: bool,
 }
@@ -479,7 +483,7 @@ impl Center {
 
     /// Whether a new notification (replacing nothing) would get a bubble, without spending a token.
     fn would_show(&self, identity: &str, critical: bool, now: Instant) -> bool {
-        (!self.dnd || critical) && self.live_count() < MAX_LIVE && (critical || self.has_token(identity, now))
+        critical || (!self.dnd && self.live_count() < MAX_LIVE && self.has_token(identity, now))
     }
 
     /// Entries beyond the history cap leave it (newest kept); entries neither kept nor live go.
@@ -533,9 +537,11 @@ impl Center {
         // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
         // recomputed); it only shows once do-not-disturb is off, unless critical.
         let had_bubble = target.is_some_and(|i| self.slots[i].entry.live);
-        let bubble = (had_bubble || !self.dnd || critical)
-            && (had_bubble || self.live_count() < MAX_LIVE)
-            && (had_bubble || critical || self.take_token(&identity, now));
+        // The live cap never blocks a critical one: the oldest live normal bubble makes room.
+        let bubble = had_bubble || critical || (!self.dnd && self.live_count() < MAX_LIVE && self.take_token(&identity, now));
+        if critical && !had_bubble && self.live_count() >= MAX_LIVE {
+            self.demote_oldest_normal();
+        }
         let (id, revision) = match target.and_then(|i| self.slots.remove(i)) {
             Some(old) => (old.entry.id, old.entry.revision.wrapping_add(1)),
             None if n.replaces_id != 0 => {
@@ -563,13 +569,23 @@ impl Center {
             read: false,
             resident: n.resident,
         };
-        self.slots.push_front(Slot { entry, tag: n.tag, arrived: now, life, expiry: None, kept });
+        self.slots.push_front(Slot { entry, tag: n.tag, arrived: now, life, expiry: None, shown: false, kept });
         if critical && bubble {
             self.demote_criticals();
         }
         self.trim();
         self.arm(now);
         id
+    }
+
+    /// The oldest live bubble that is not critical goes to the history, closed as expired (the live
+    /// cap reached by a critical one; criticals are at most `max_visible` × 2 ≤ 16 of the 32).
+    fn demote_oldest_normal(&mut self) {
+        if let Some(s) = self.slots.iter_mut().rev().find(|s| s.entry.live && s.entry.urgency != Urgency::Critical) {
+            s.entry.live = false;
+            s.expiry = None;
+            self.effects.push(Effect::Closed(s.entry.id, CloseReason::Expired));
+        }
     }
 
     /// Live criticals beyond `max_visible` × 2 (a flood never blocks a real one): the oldest go to
@@ -598,14 +614,17 @@ impl Center {
 
     /// The expiries after a change to the bubbles, from `now` (spec § 3, extras wait): each bubble
     /// that shows, do-not-disturb aside (a bubble it hides keeps its timer), is armed when it has no
-    /// expiry yet; each one pushed back beyond `max_visible` waits again, disarmed. A bubble gets its
-    /// whole timeout from the moment it shows, however long it waited, even after a first showing.
+    /// expiry yet. One pushed back beyond `max_visible` before the host drew it (`seen`: six at
+    /// once in one batch) waits again, disarmed, and gets its whole timeout when it shows; one the
+    /// host drew keeps its expiry, so a steady flow never stops the bubbles from expiring.
     fn arm(&mut self, now: Instant) {
         let mut room = self.max_visible;
         for critical in [true, false] {
             for s in self.slots.iter_mut().filter(|s| s.entry.live && (s.entry.urgency == Urgency::Critical) == critical) {
                 if room == 0 {
-                    s.expiry = None;
+                    if !s.shown {
+                        s.expiry = None;
+                    }
                 } else {
                     room -= 1;
                     if s.expiry.is_none() {
@@ -613,6 +632,14 @@ impl Center {
                     }
                 }
             }
+        }
+    }
+
+    /// The host drew the bubbles (`Notifications::take_bubbles_change`, after each batch of calls
+    /// and each act): every bubble whose timer runs has shown and keeps it from now on.
+    pub fn seen(&mut self) {
+        for s in &mut self.slots {
+            s.shown |= s.expiry.is_some();
         }
     }
 
@@ -1348,6 +1375,69 @@ mod tests {
         assert_eq!(c.next_expiry(), Some(t0 + ms(5_500)), "a, from the merge");
         assert_eq!(c.expire(t0 + ms(5_500)), [Effect::Closed(ids[0], CloseReason::Expired)]);
         assert_eq!(c.next_expiry(), Some(t0 + secs(10)), "b, shown again at +5 s, gets a whole timeout");
+    }
+
+    /// A bubble that has shown keeps its expiry when newer ones push it back: an app sending at
+    /// about max_visible / timeout keeps the bubbles expiring, live stays small, and a critical one
+    /// still shows at once afterwards (the review of fix wave A: nothing expired, live reached
+    /// MAX_LIVE in about 32 s and the critical got no bubble).
+    #[test]
+    fn a_steady_flow_keeps_expiring_and_a_critical_still_shows() {
+        let (mut c, t0) = (center(), Instant::now());
+        let mut expired = 0;
+        for i in 0..40 {
+            let at = t0 + secs(i);
+            expired += c.expire(at).len();
+            c.notify(note("chat", &format!("m{i}")), at, 0);
+            c.seen();
+            assert!(live(&c) <= 6, "at {i} s: {} live", live(&c));
+        }
+        assert!(expired >= 30, "the bubbles keep expiring during the flow: {expired}");
+        let at = t0 + secs(40);
+        let urgent = c.notify(critical("upower", "Battery at 3%"), at, 0);
+        assert_eq!(shown(&c).first(), Some(&urgent), "the critical one shows at once");
+    }
+
+    /// Shown, then pushed back behind a newer one: it still expires when its timeout ends.
+    #[test]
+    fn a_bubble_pushed_back_after_it_showed_still_expires_on_time() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ids: Vec<u32> = ["a", "b", "c", "d"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
+        c.seen();
+        let e = c.notify(note("e", "e"), t0 + secs(2), 0);
+        c.seen();
+        assert_eq!(shown(&c), [e, ids[3], ids[2], ids[1]], "a pushed back");
+        assert_eq!(c.next_expiry(), Some(t0 + secs(5)), "a's timer still runs");
+        let gone = c.expire(t0 + secs(5));
+        assert_eq!(gone.len(), 4, "a, b, c and d: {gone:?}");
+        assert!(gone.contains(&Effect::Closed(ids[0], CloseReason::Expired)));
+        assert_eq!(shown(&c), [e]);
+        assert_eq!(c.next_expiry(), Some(t0 + secs(7)));
+    }
+
+    /// The live cap never blocks a critical one: the oldest live normal bubble goes to the
+    /// history, closed as expired, to make room.
+    #[test]
+    fn a_critical_one_gets_a_bubble_at_the_live_cap() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ids: Vec<u32> = (0..MAX_LIVE).map(|i| c.notify(note(&format!("app{i}"), "x"), t0, 0)).collect();
+        assert_eq!(live(&c), MAX_LIVE);
+        assert!(c.take_effects().is_empty());
+        let urgent = c.notify(critical("upower", "Battery at 3%"), t0, 0);
+        assert_eq!(shown(&c).first(), Some(&urgent), "it shows");
+        assert_eq!(live(&c), MAX_LIVE, "still at the cap");
+        assert_eq!(c.take_effects(), [Effect::Closed(ids[0], CloseReason::Expired)], "the oldest made room");
+        assert_eq!(c.entry(ids[0]).map(|e| e.live), Some(false), "kept in the history");
+        let late = c.notify(note("late", "y"), t0, 0);
+        assert!(!c.entry(late).unwrap().live, "a normal one still waits for room: history only");
+        // Dismissed, then sent again within the merge window, at the cap: a bubble again, never
+        // merged into the closed one.
+        c.close(urgent, CloseReason::Dismissed, t0);
+        c.notify(note("filler", "z"), t0, 0);
+        assert_eq!(live(&c), MAX_LIVE);
+        let again = c.notify(critical("upower", "Battery at 3%"), t0, 0);
+        assert_ne!(again, urgent, "not merged");
+        assert_eq!(shown(&c).first(), Some(&again));
     }
 
     #[test]

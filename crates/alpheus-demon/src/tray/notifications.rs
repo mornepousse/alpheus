@@ -199,10 +199,13 @@ impl Notifications {
 
     /// Whether the bubbles to show (a new one, a replaced one, one gone), or the earliest expiry (a
     /// bubble hidden by do-not-disturb replaced: the timer follows it), changed since the last call.
+    /// Called once per batch of calls and per act, right before the host draws: the bubbles timed
+    /// now have shown (`Center::seen`) and keep their expiry when pushed back.
     pub fn take_bubbles_change(&mut self) -> bool {
         if !std::mem::take(&mut self.bubbles_stale) {
             return false;
         }
+        self.center.seen();
         let now: Vec<(u32, u32, bool)> = self.center.bubbles().iter().map(|s| (s.entry.id, s.entry.revision, s.critical)).collect();
         let expiry = self.center.next_expiry();
         if now == self.bubbles && expiry == self.expiry {
@@ -475,6 +478,29 @@ mod tests {
         assert!(n.center().bubbles().is_empty(), "still hidden");
         assert!(n.take_bubbles_change(), "its expiry moved: the timer must follow");
         assert!(!n.take_bubbles_change(), "taken");
+    }
+
+    /// The host draws after each batch (`take_bubbles_change`): six in one batch, only four drew,
+    /// and the two waiting get their whole timeout when they show; one at a time, each drew, and
+    /// the one pushed back still expires on time.
+    #[test]
+    fn a_bubble_drawn_keeps_its_timer_one_never_drawn_waits() {
+        let secs = std::time::Duration::from_secs;
+        let (mut n, t0) = (held(), Instant::now());
+        for s in ["a", "b", "c", "d", "e", "f"] {
+            n.center_mut().notify(note(s), t0, 600);
+        }
+        assert!(n.take_bubbles_change());
+        assert_eq!(n.center_mut().expire(t0 + secs(5)).len(), 4, "the four drawn");
+        assert!(n.take_bubbles_change());
+        assert_eq!(n.center().next_expiry(), Some(t0 + secs(10)), "the two waiting: a whole timeout from now");
+        let (mut n, t0) = (held(), Instant::now());
+        for (i, s) in ["a", "b", "c", "d", "e"].into_iter().enumerate() {
+            n.center_mut().notify(note(s), t0 + secs(i as u64 / 4), 600);
+            n.take_bubbles_change();
+        }
+        assert_eq!(n.center().bubbles().len(), 4, "a pushed back by e");
+        assert_eq!(n.center_mut().expire(t0 + secs(5)).len(), 4, "a drew: it expires with b, c and d");
     }
 
     #[test]
