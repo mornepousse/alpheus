@@ -5,7 +5,9 @@
 
 mod common;
 
-use alpheus_demon::config::NotificationsConfig;
+use alpheus_commun::theme::Mode;
+use alpheus_demon::config::{MediaConfig, NotificationsConfig};
+use alpheus_demon::link::{LinkOutput, SessionLink};
 use alpheus_demon::notify::{Center, CloseReason, Effect, NotifyView, Urgency};
 use alpheus_demon::tray::bus::{Incoming, SessionBus, refusal};
 use alpheus_demon::tray::codec;
@@ -13,7 +15,9 @@ use alpheus_demon::tray::notifications::{self, Notifications};
 use alpheus_demon::tray::router::{Role, Tray, TrayOutput};
 use alpheus_demon::tray::{WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use common::PrivateBus;
+use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, INTERFACE, MAKO_FIRST_ID, NAME, Note, PATH};
+use common::portal::FakePortal;
 use dbus::Message;
 use dbus::arg::Variant;
 use std::collections::HashSet;
@@ -124,7 +128,8 @@ impl Driver {
                 }
                 Incoming::MethodCall(m) => {
                     // 14:02, as the panel would show it.
-                    let reply = if notifications::serves(&m) { self.n.handle(&m, Instant::now(), 14 * 60 + 2) } else { Some(refusal(&m)) };
+                    let reply =
+                        if notifications::serves(&m) { self.n.handle(&m, Instant::now(), || 14 * 60 + 2) } else { Some(refusal(&m)) };
                     if let Some(r) = reply {
                         self.bus.send_message(r);
                     }
@@ -471,7 +476,9 @@ fn a_portal_style_call_and_odd_hint_types_are_served() {
 #[ignore = "private dbus-daemon (nix develop)"]
 fn spam_is_bounded_merged_and_critical_bypasses_the_bucket() {
     let bus = PrivateBus::start("notify-spam");
-    let server = serving(&bus, false);
+    // 20-second bubbles: none may expire before `live()` is read, however loaded the machine.
+    let server = serve(&bus, &NotificationsConfig { timeout: 20, ..NotificationsConfig::default() }, false);
+    server.until("the name is ours", |d| d.n.held());
     let client = FakeClient::connect(&bus);
     let flood: Vec<u32> = (0..15).map(|i| client.send(Note::new("Fictional Flood", &format!("ping {i}")).message(NAME))).collect();
     let ids: Vec<u32> = client.replies(&flood).into_iter().map(|r| r.unwrap().read1::<u32>().unwrap()).collect();
@@ -668,4 +675,215 @@ fn a_dead_bus_takes_the_notifications_away_with_the_tray() {
         assert_eq!(t.tray.next_deadline(), None);
         assert_eq!(t.tray.notifications().and_then(|n| n.center().next_expiry()), None);
     });
+}
+
+/// Task 4's review: a bubble expiring on the tray's connection (the pump is its timer) is broadcast
+/// as NotificationClosed(id, 1): `Tray::notifications_do` sends what `act` made.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_bubble_expiring_on_the_tray_is_heard_with_reason_1() {
+    let bus = PrivateBus::start("notify-tray-expire");
+    let pump = tray_with_notifications(&bus);
+    pump.until("serving", |t| t.tray.notifications().is_some_and(|n| n.held()));
+    let client = FakeClient::connect(&bus);
+    let id = client.notify(&Note::new("Fictional", "brief")).unwrap();
+    assert!(client.wait_heard(&Heard::Closed(id, 1)), "expired after 1 s: reason 1, sent by the tray");
+    pump.with(|t| assert_eq!(t.tray.notifications().and_then(|n| n.center().next_expiry()), None, "no timer left"));
+}
+
+/// Every RequestName on `bus` from now on, as (sender, the name asked for): a monitor connection
+/// (the private bus allows eavesdropping), read for `within`.
+struct NameRequests {
+    peer: common::Peer,
+}
+
+impl NameRequests {
+    fn watch(bus: &PrivateBus) -> NameRequests {
+        let peer = common::Peer::connect(bus);
+        let rule = "type='method_call',interface='org.freedesktop.DBus',member='RequestName'";
+        let m =
+            Message::new_method_call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.Monitoring", "BecomeMonitor")
+                .unwrap()
+                .append2(vec![rule], 0u32);
+        peer.call(m).unwrap();
+        NameRequests { peer }
+    }
+
+    fn seen(&self, within: Duration) -> Vec<(String, String)> {
+        let end = Instant::now() + within;
+        let mut seen = Vec::new();
+        while let Some(left) = end.checked_duration_since(Instant::now()) {
+            match self.peer.channel.blocking_pop_message(left) {
+                Ok(Some(m)) if m.member().as_deref() == Some("RequestName") => {
+                    seen.push((m.sender().map(|s| s.to_string()).unwrap_or_default(), m.read1::<&str>().unwrap_or("").to_string()));
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        seen
+    }
+}
+
+/// Task 4's review: `start_notifications` asks for the name exactly once, even called twice, on
+/// the tray's connection and on the bar's link alike.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn start_notifications_requests_the_name_once_even_called_twice() {
+    let bus = PrivateBus::start("notify-one-request");
+    let requests = NameRequests::watch(&bus);
+    let mut tray = Tray::start(SessionBus::at(&bus.address).unwrap(), PathBuf::from("/proc"));
+    tray.start_notifications(&quick(), false);
+    tray.start_notifications(&quick(), false);
+    let link_bus = SessionBus::at(&bus.address).unwrap();
+    let link_name = link_bus.unique_name().to_string();
+    let mut link = SessionLink::new(link_bus);
+    link.start_notifications(&quick(), false);
+    link.start_notifications(&quick(), false);
+    let seen = requests.seen(QUIET);
+    let asked = |name: &str| seen.iter().filter(|(_, n)| n == name).map(|(s, _)| s.clone()).collect::<Vec<_>>();
+    let notifications = asked(NAME);
+    assert_eq!(notifications.len(), 2, "one per connection: {seen:?}");
+    assert!(notifications.contains(&link_name), "the link's own: {seen:?}");
+    assert_eq!(asked(WATCHER_NAME).len(), 1, "the watcher's, for comparison: {seen:?}");
+    assert!(notifications.iter().all(|s| !s.is_empty()) && notifications[0] != notifications[1], "{seen:?}");
+}
+
+// ---- On the bar's own link (task 5) ----
+
+struct LinkDriver {
+    link: SessionLink,
+    outs: Vec<LinkOutput>,
+}
+
+impl Pumped for LinkDriver {
+    fn fd(&mut self) -> OwnedFd {
+        self.link.watch_fd().unwrap()
+    }
+
+    fn deadline(&self) -> Option<Instant> {
+        [self.link.next_deadline(), self.link.notifications().and_then(|n| n.center().next_expiry())].into_iter().flatten().min()
+    }
+
+    fn pass(&mut self) -> bool {
+        let now = Instant::now();
+        let mut out = self.link.on_readable();
+        if self.link.next_deadline().is_some_and(|d| d <= now) {
+            out.merge(self.link.on_deadline(now));
+        }
+        if self.link.notifications().and_then(|n| n.center().next_expiry()).is_some_and(|d| d <= now) {
+            self.link.notifications_do(|n| n.act(|c| c.expire(now)));
+        }
+        // The App's idle `link_readable`, here.
+        if self.link.has_ready() {
+            out.merge(self.link.on_readable());
+        }
+        let closed = out.closed;
+        if out != LinkOutput::default() {
+            self.outs.push(out);
+        }
+        !closed
+    }
+}
+
+/// Spec § 1: with the tray off, ONE link carries the media module, the portal's follower and the
+/// notifications server; a change the bar makes reaches it through `has_ready`, never re-entrantly.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn one_link_serves_the_players_the_portal_and_the_notifications() {
+    let bus = PrivateBus::start("notify-link-all");
+    let _portal = FakePortal::start(&bus, 2);
+    let _tidewave = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    // The bar's order at startup: media, notifications, then the portal joins.
+    link.start_media(&MediaConfig::default());
+    link.start_notifications(&quick(), false);
+    link.start_notifications(&quick(), false); // a second call is a no-op
+    link.start_appearance();
+    let pump = Pump::start(LinkDriver { link, outs: Vec::new() });
+    pump.until("all three ready", |l| {
+        l.link.pending() == 0
+            && l.link.portal().is_some()
+            && l.link.media().is_some_and(|m| m.view().is_some())
+            && l.link.notifications().is_some_and(|n| n.held())
+    });
+    let client = FakeClient::connect(&bus);
+    let id = client.notify(&Note::new("Fictional", "on the link")).unwrap();
+    assert_eq!(client.close(id), Ok(0));
+    assert!(client.wait_heard(&Heard::Closed(id, 3)), "the effect leaves on the link");
+    pump.until("the bell and the bubbles heard", |l| {
+        l.outs.iter().any(|o| o.notifications.is_some_and(|v| v.serving)) && l.outs.iter().any(|o| o.bubbles)
+    });
+    pump.with(|l| {
+        assert!(l.outs.iter().any(|o| o.mode == Some(Mode::Light)), "the portal followed on the same link");
+        l.link.notifications_do(|n| {
+            n.act(|c| {
+                c.set_dnd(true);
+                Vec::new()
+            })
+        });
+        assert!(l.link.has_ready(), "the change waits for an idle read");
+        let out = l.link.on_readable();
+        assert_eq!(out.notifications.map(|v| v.dnd), Some(true));
+        assert!(!l.link.has_ready() || l.link.pending() > 0, "delivered once: the deferred output was taken");
+    });
+}
+
+/// Without the module: no RequestName on the link, the name stays free, nothing is served.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_link_without_the_module_never_asks_for_the_name() {
+    let bus = PrivateBus::start("notify-link-none");
+    let _tidewave = FakePlayer::start(&bus, PlayerSpec::playing("tidewave", "Harbor Lights"));
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    link.start_media(&MediaConfig::default());
+    let pump = Pump::start(LinkDriver { link, outs: Vec::new() });
+    pump.until("the player read", |l| l.link.pending() == 0 && l.link.media().is_some_and(|m| m.view().is_some()));
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.owner(NAME), None, "never requested");
+    assert_eq!(client.notify(&Note::new("Fictional", "anyone?")).unwrap_err(), "org.freedesktop.DBus.Error.ServiceUnknown");
+    pump.with(|l| assert!(l.outs.iter().all(|o| o.notifications.is_none() && !o.bubbles)));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_dead_bus_closes_the_link_and_dims_the_bell() {
+    let mut bus = PrivateBus::start("notify-link-dies");
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    link.start_notifications(&quick(), false);
+    let pump = Pump::start(LinkDriver { link, outs: Vec::new() });
+    pump.until("serving", |l| l.link.notifications().is_some_and(|n| n.held()));
+    let client = FakeClient::connect(&bus);
+    client.notify(&Note::new("Fictional", "brief")).unwrap();
+    pump.until("a bubble", |l| l.link.notifications().is_some_and(|n| !n.center().bubbles().is_empty()));
+    drop(client);
+    bus.kill();
+    pump.until("closed", |l| l.outs.iter().any(|o| o.closed));
+    pump.with(|l| {
+        let closed = l.outs.iter().find(|o| o.closed).unwrap();
+        assert_eq!(closed.notifications.map(|v| v.serving), Some(false));
+        assert!(closed.bubbles);
+        assert_eq!((l.link.pending(), l.link.next_deadline()), (0, None));
+        assert_eq!(l.link.notifications().and_then(|n| n.center().next_expiry()), None);
+    });
+}
+
+/// Spec § 1 on the link: queued behind mako (reply 2), the link serves nothing; mako leaving, the
+/// bus driver's NameAcquired reaches the server through the link's signal routing.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_link_queued_behind_mako_serves_once_the_name_is_handed_over() {
+    let bus = PrivateBus::start("notify-link-mako");
+    let mako = FakeMako::start(&bus);
+    let mut link = SessionLink::new(SessionBus::at(&bus.address).unwrap());
+    link.start_notifications(&quick(), false);
+    let pump = Pump::start(LinkDriver { link, outs: Vec::new() });
+    pump.until("queued, the bell dim", |l| l.link.pending() == 0 && l.outs.iter().any(|o| o.notifications.is_some_and(|v| !v.serving)));
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(MAKO_FIRST_ID));
+    pump.with(|l| assert!(!l.link.notifications().is_some_and(|n| n.held())));
+    mako.release();
+    pump.until("serving", |l| l.link.notifications().is_some_and(|n| n.held()));
+    assert!(client.notify(&Note::new("Fictional", "to alpheus")).is_ok_and(|id| id < MAKO_FIRST_ID));
+    pump.until("the bell hears: serving", |l| l.outs.iter().any(|o| o.notifications.is_some_and(|v| v.serving)));
 }

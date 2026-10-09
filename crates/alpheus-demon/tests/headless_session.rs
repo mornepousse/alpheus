@@ -10,6 +10,7 @@ use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
+use common::notify::{FakeClient, FakeMako, NAME as NOTIFICATIONS, Note};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
@@ -2229,4 +2230,177 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     std::thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("popup closed"), 1, "the same placement: the popup stays: {:?}", d.log());
     assert!(wakeups_over_5_s(&d) >= 4, "and keeps ticking");
+}
+
+// ---- The bell (notifications task 5) ----
+
+const BELL_BAR: &str = "modules = [\"notifications\", \"clock\"]\n";
+/// Inside the bell on a bar whose first module is `notifications` (cell 1, ≈ 8.4 px a cell): the
+/// status block starts at the left edge when there is no workspace or window module, as the tray's
+/// icon at (12, 10) does in the tray tests. Task 7 reuses it.
+const BELL_AT: (u32, u32) = (12, 10);
+
+/// The bell alone on the bar (or `modules`), on a private session bus; `before` runs on the bus
+/// before the daemon starts (a mako already holding the name).
+fn bell_daemon<T>(name: &str, modules: &str, before: impl FnOnce(&PrivateBus) -> T) -> (PrivateBus, Sway, FakeHyprland, Daemon, T) {
+    let bus = PrivateBus::start(name);
+    let extra = before(&bus);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(modules), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, sway, hypr, d, extra)
+}
+
+/// The pid behind a unique name on `bus`.
+fn pid_of(bus: &PrivateBus, unique: &str) -> Option<u32> {
+    let peer = Peer::connect(bus);
+    let m = dbus::Message::new_method_call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID",
+    )
+    .unwrap()
+    .append1(unique);
+    peer.call(m).ok().and_then(|r| r.read1::<u32>().ok())
+}
+
+/// Spec § 1: tray off, the media module, the portal and the notifications server share ONE
+/// connection, and it is the daemon's own that holds the name.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_bell_serves_on_the_bars_link_with_media_and_the_portal_on_one_connection() {
+    let modules = "modules = [\"media\", \"notifications\", \"clock\"]\n";
+    let (bus, _sway, _hypr, d, _player, portal) = media_daemon_with("bell-link", modules, None, |bus| FakePortal::start(bus, 2));
+    assert!(d.wait_for("notifications: on the bar's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media: shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("appearance: the portal says light", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "never two: {:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "Download finished")).is_ok());
+    let owner = client.owner(NOTIFICATIONS).expect("the name is held");
+    assert_eq!(pid_of(&bus, &owner), Some(d.pid()), "held by the daemon's one connection");
+    assert_eq!(portal.calls().len(), 1);
+}
+
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn with_the_tray_the_bell_rides_its_connection() {
+    let (bus, _sway, _hypr, d, ()) = bell_daemon("bell-tray", "modules = [\"tray\", \"notifications\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("notifications: on the tray's session bus", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert_eq!(connections_of(&bus, d.pid()), 1, "{:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "on the tray's connection")).is_ok());
+    assert_eq!(client.owner(NOTIFICATIONS), client.owner("org.kde.StatusNotifierWatcher"), "one connection holds both names");
+}
+
+/// Spec § 6: without `notifications` in `modules`, the name is never requested, and the verbs say so.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn without_the_module_the_name_is_never_requested() {
+    let (bus, sway, _hypr, d, ()) = bell_daemon("bell-none", "modules = [\"tray\", \"clock\"]\n", |_| ());
+    assert!(d.wait_for("tray: on the session bus", DELAY), "{:?}", d.log());
+    ready(&d);
+    std::thread::sleep(Duration::from_millis(500));
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.owner(NOTIFICATIONS), None, "never requested");
+    assert_eq!(client.notify(&Note::new("Fictional", "anyone?")).unwrap_err(), "org.freedesktop.DBus.Error.ServiceUnknown");
+    let (code, _, err) = script(&sway, &["--dnd", "toggle"], "").join().unwrap();
+    assert_eq!(code, EXIT_ERROR);
+    assert!(err.contains("notifications module"), "{err}");
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists(), "nothing written");
+    assert_eq!((d.count("notifications:"), d.count("bell:")), (0, 0), "{:?}", d.log());
+}
+
+/// Spec § 5: `alpheus-launch --dnd …` reaches the bell (its line), writes the owner-only empty file,
+/// removes it, is idempotent, and the state comes back at the next start; DND still answers Notify.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn dnd_from_alpheus_launch_is_saved_shown_and_restored() {
+    let (bus, sway, _hypr, mut d, ()) = bell_daemon("bell-dnd", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(!file.exists());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    let meta = std::fs::metadata(&file).unwrap();
+    assert_eq!((meta.len(), meta.permissions().mode() & 0o777), (0, 0o600), "an empty, owner-only file");
+    let client = FakeClient::connect(&bus);
+    assert!(client.notify(&Note::new("Fictional", "quiet please")).is_ok(), "do not disturb still answers");
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    // The first view logged "bell: dnd off" at startup: this is the second.
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
+    for _ in 0..2 {
+        assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    }
+    assert!(d.wait_for_count("bell: dnd on", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bell: dnd on"), 2, "on twice is on once: {:?}", d.log());
+    assert_eq!(script(&sway, &["--clear-notifications"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("notifications: cleared", DELAY), "{:?}", d.log());
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let options = DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
+}
+
+/// Spec, Success criteria: with mako running nothing changes and the bell is dim; once mako stops,
+/// alpheus takes the name at once.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn mako_holding_the_name_dims_the_bell_until_it_stops() {
+    let (bus, _sway, _hypr, d, mako) = bell_daemon("bell-mako", BELL_BAR, FakeMako::start);
+    assert!(d.wait_for("bell: not serving", DELAY), "{:?}", d.log());
+    let client = FakeClient::connect(&bus);
+    assert_eq!(client.notify(&Note::new("Fictional", "to mako")), Ok(1000), "nothing changes while mako runs");
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("bell: serving"), 0, "{:?}", d.log());
+    mako.kill(); // systemctl --user stop mako
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(client.notify(&Note::new("Fictional", "to alpheus")).is_ok_and(|id| id < 1000));
+}
+
+/// Spec § 7: a dead session bus dims the bell once; its source goes, nothing spins.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_dead_session_bus_dims_the_bell_and_nothing_spins() {
+    let (mut bus, _sway, _hypr, mut d, ()) = bell_daemon("bell-bus-dies", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    let before = d.count("bell: not serving");
+    bus.kill();
+    assert!(d.wait_for("notifications: the session bus closed", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("bell: not serving", before + 1, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(500));
+    let wakeups = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_millis(4500));
+    let wakeups = d.main_thread_wakeups() - wakeups;
+    assert!(wakeups <= 4, "{wakeups} wake-ups of the loop in 4.5 s after the bus closed");
+    assert_eq!(d.count("notifications: the session bus closed"), 1, "{:?}", d.log());
+    assert_eq!(d.count("notifications: on the bar's session bus"), 1, "never reconnected: {:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
+}
+
+/// Spec § 4 and § 8: the bell's middle click toggles do-not-disturb inside the daemon, through the
+/// same path as the verb (the file follows), and runs no command.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn the_bells_middle_click_toggles_do_not_disturb() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-middle", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(file.exists(), "persisted through App::set_dnd");
+    sway.click(BELL_AT.0, BELL_AT.1, "button2");
+    // The first view logged "bell: dnd off" at startup: this is the second.
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
 }

@@ -485,24 +485,34 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
 }
 
 /// Not a behavioural test of the socket itself: this match has no wildcard,
-/// so it is an exhaustive-match tripwire — a fourth `Request` variant stops
+/// so it is an exhaustive-match tripwire — a new `Request` variant stops
 /// THIS FILE compiling until the match below (and the review that goes with
 /// it) is updated, before it could ever reach the socket unexamined (review
 /// item M6, final review slice 1: renamed from
 /// `the_socket_accepts_exactly_three_requests`, which claimed to test the
 /// socket's own behaviour when it only guards this match's exhaustiveness).
+/// The notifications verbs (task 5) are answered in `watch_connection` before
+/// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::Request;
+    use alpheus_commun::launcher_ipc::{DndVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
             Request::Close => "close",
             Request::Dmenu { .. } => "dmenu",
+            Request::Dnd(_) => "dnd",
+            Request::ClearNotifications => "clear-notifications",
         }
     }
-    let all = [Request::Toggle, Request::Close, Request::Dmenu { prompt: None, lines: vec![] }];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu"]);
+    let all = [
+        Request::Toggle,
+        Request::Close,
+        Request::Dmenu { prompt: None, lines: vec![] },
+        Request::Dnd(DndVerb::Toggle),
+        Request::ClearNotifications,
+    ];
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -902,7 +912,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 16] = [
+const NO_THREAD_NOR_COMMAND: [&str; 17] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -915,6 +925,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 16] = [
     "watch.rs",
     "appearance.rs",
     "state_file.rs",
+    "notify_app.rs",
     "link.rs",
     "background.rs",
     "painter/",

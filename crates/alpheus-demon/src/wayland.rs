@@ -24,6 +24,7 @@ use crate::tray::hover::{self, Hover, HoverChange};
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
 use crate::tray::mpris::Mpris;
+use crate::tray::notifications::Notifications;
 use crate::tray::router::{Tray, TrayOutput};
 use crate::tray::{Gesture, ItemKey, icons};
 use alpheus_commun::exec::Executor;
@@ -395,7 +396,7 @@ pub struct App {
     /// Raised by a message that changed the display (channel, clock):
     /// redrawn exactly once after `loop.dispatch()` returns, not on every
     /// message — see `launch::on_message`.
-    dirty: bool,
+    pub(crate) dirty: bool,
     /// Outputs restored since their last surface was closed (`closed`),
     /// with no successful `configure` since (see `should_restore_once`): at
     /// most one restore per output as long as the previous one hasn't
@@ -440,6 +441,8 @@ pub struct App {
     pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
     /// The last write failure logged: the same one is not logged again.
     pub(crate) mode_error: Option<String>,
+    /// Do-not-disturb (notifications task 5): loaded at startup, changed only by `set_dnd`.
+    pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -633,6 +636,7 @@ impl App {
             mode_runtime: None,
             mode_written: None,
             mode_error: None,
+            dnd: false,
             tray_deferred_queued: false,
             tray_ready_queued: false,
             link_ready_queued: false,
@@ -910,10 +914,19 @@ impl App {
             if self.tray.as_ref().is_some_and(|t| t.media().is_some()) {
                 log("media: the session bus closed");
             }
+            if self.tray.as_ref().is_some_and(|t| t.notifications().is_some()) {
+                log("notifications: the session bus closed");
+            }
             self.tray = None;
         }
         if let Some(view) = out.media {
             self.media_view(view);
+        }
+        if let Some(view) = out.notifications {
+            self.notify_view(view);
+        }
+        if out.bubbles {
+            self.bubbles_sync();
         }
         if out.redraw || out.bus_closed {
             // The hovered item leaving the tray closes its tooltip outright (ItemGone), whatever
@@ -1000,6 +1013,22 @@ impl App {
         let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
         link.media_do(f);
         // What the flush drained is routed from an idle (`link_sync`).
+        self.link_sync();
+    }
+
+    /// Runs `f` on the notifications server wherever it lives, the one path for every change the bar
+    /// makes (the bubbles' timer and clicks, the panel, the verbs, do-not-disturb). Its signals leave
+    /// at once; its view and bubbles come back through an idle callback (the tray's deferred output,
+    /// the link's `has_ready`, both queued by their `*_sync`), never re-entrantly. With no server,
+    /// nothing.
+    pub(crate) fn notify_do(&mut self, f: impl FnOnce(&mut Notifications)) {
+        if let Some(tray) = self.tray.as_mut().filter(|t| t.notifications().is_some()) {
+            tray.notifications_do(f);
+            self.tray_sync();
+            return;
+        }
+        let Some(link) = self.link.as_mut().filter(|l| l.notifications().is_some()) else { return };
+        link.notifications_do(f);
         self.link_sync();
     }
 
@@ -1253,11 +1282,21 @@ impl App {
         }
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
-        let (toggles, media) = {
+        let (toggles, media, dnd) = {
             let Some(grid) = &self.surfaces[i].last else { return };
             let target = grid.target_at(painter::column_under(x, e, advance));
-            (target.is_some_and(|t| actions::toggles_launcher(t, b)), target.and_then(|t| actions::media_control(t, b)))
+            (
+                target.is_some_and(|t| actions::toggles_launcher(t, b)),
+                target.and_then(|t| actions::media_control(t, b)),
+                target.is_some_and(|t| actions::toggles_dnd(t, b)),
+            )
         };
+        // The bell's middle button: do-not-disturb flips inside the daemon (notifications spec § 4),
+        // through the one path that persists it.
+        if dnd {
+            self.set_dnd(!self.dnd);
+            return;
+        }
         // The media module's middle button and wheel: D-Bus, never a command (spec § 1).
         if let Some(c) = media {
             self.mpris_do(move |m, out| m.control(out, c));

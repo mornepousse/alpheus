@@ -677,6 +677,18 @@ pub mod testing {
             std::mem::take(&mut self.calls)
         }
     }
+    /// A plain `Notify("Fictional", 0, "", summary, "", [], {}, -1)` as the bus delivers it, for the
+    /// consumer's tests (notifications.rs names no dbus type).
+    pub fn notify_call(summary: &str) -> Message {
+        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+            .unwrap()
+            .append3("Fictional", 0u32, "")
+            .append3(summary, "", Vec::<String>::new())
+            .append2(BTreeMap::<String, Variant<u8>>::new(), -1i32);
+        m.set_serial(9);
+        m.set_sender(Some(":1.42".into()));
+        m
+    }
 }
 
 #[cfg(test)]

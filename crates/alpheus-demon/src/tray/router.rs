@@ -627,7 +627,7 @@ impl Tray {
         // signals (NotificationClosed for a CloseNotification) leave right after the reply.
         if notifications::serves(&m) {
             let reply = match self.notifications.as_mut() {
-                Some(n) => n.handle(&m, Instant::now(), notifications::minute_now()),
+                Some(n) => n.handle(&m, Instant::now(), notifications::minute_now),
                 None => (!m.get_no_reply()).then(|| refusal(&m)),
             };
             if let Some(r) = reply {

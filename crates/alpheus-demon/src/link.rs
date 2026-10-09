@@ -1,8 +1,9 @@
 //! The bar's own session-bus connection, for when the tray module is off (media spec § 4, amended
 //! 2026-10-08).
 //!
-//! It is ONE connection. It hosts the portal's follower (`mode = "auto"`), the media module, or both.
-//! Whichever needs it first opens it, and the other joins: never two connections.
+//! It is ONE connection. It hosts the portal's follower (`mode = "auto"`), the media module and the
+//! notifications server, in any combination. Whichever needs it first opens it, and the others join:
+//! never two connections.
 //!
 //! It is driven by the bar's loop (no thread), like the tray's connection. Once opened it stays open:
 //! no retry and no teardown, since an idle connection costs nothing at rest.
@@ -12,12 +13,14 @@
 //! substring.
 
 use crate::appearance::Appearance;
-use crate::config::{MediaConfig, ModuleId};
+use crate::config::{MediaConfig, ModuleId, NotificationsConfig};
 use crate::log::write as log;
 use crate::media::MediaView;
+use crate::notify::NotifyView;
 use crate::tray::bus::{Incoming, SessionBus, refusal};
 use crate::tray::codec::{self, Signal};
 use crate::tray::mpris::Mpris;
+use crate::tray::notifications::{self, Notifications};
 use crate::tray::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
@@ -79,6 +82,10 @@ pub struct LinkOutput {
     pub mode: Option<Mode>,
     /// The media module's view changed: Some(None) hides it.
     pub media: Option<Option<MediaView>>,
+    /// The notifications server's view changed: the bell repaints.
+    pub notifications: Option<NotifyView>,
+    /// The bubbles to show changed: the wiring re-syncs them.
+    pub bubbles: bool,
     /// The session bus closed: the wiring drops the link (never reconnected).
     pub closed: bool,
 }
@@ -91,6 +98,10 @@ impl LinkOutput {
         if other.media.is_some() {
             self.media = other.media;
         }
+        if other.notifications.is_some() {
+            self.notifications = other.notifications;
+        }
+        self.bubbles |= other.bubbles;
         self.closed |= other.closed;
     }
 }
@@ -99,11 +110,14 @@ pub struct SessionLink {
     bus: SessionBus,
     appearance: Option<Appearance>,
     media: Option<Mpris>,
+    notifications: Option<Notifications>,
+    /// What `notifications_do` changed, delivered by the next `route` (an idle `link_readable`).
+    deferred: LinkOutput,
 }
 
 impl SessionLink {
     pub fn new(bus: SessionBus) -> SessionLink {
-        SessionLink { bus, appearance: None, media: None }
+        SessionLink { bus, appearance: None, media: None, notifications: None, deferred: LinkOutput::default() }
     }
 
     /// The portal's rule and its one ReadOne, sent at once. Once: a second call is a no-op.
@@ -170,14 +184,56 @@ impl SessionLink {
         }
     }
 
+    /// The notifications server: RequestName with flags 0, sent at once. Once: a second call is a
+    /// no-op. The bell's first view waits for the next read.
+    pub fn start_notifications(&mut self, cfg: &NotificationsConfig, dnd: bool) {
+        if self.notifications.is_none() {
+            self.notifications = Some(Notifications::start(&mut self.bus, cfg, dnd));
+            self.bus.flush();
+            let out = self.notifications_output(false);
+            self.deferred.merge(out);
+        }
+    }
+
+    pub fn notifications(&self) -> Option<&Notifications> {
+        self.notifications.as_ref()
+    }
+
+    /// Runs `f` on the notifications server: its signals sent and flushed, its view and bubbles kept
+    /// for the next read (`has_ready`), never routed re-entrantly (`App::notify_do`).
+    pub fn notifications_do(&mut self, f: impl FnOnce(&mut Notifications)) {
+        if let Some(n) = self.notifications.as_mut() {
+            f(n);
+            for m in n.take_effects() {
+                self.bus.send_message(m);
+            }
+            self.bus.flush();
+            let out = self.notifications_output(false);
+            self.deferred.merge(out);
+        }
+    }
+
+    /// What the bar must hear from the notifications server: its view when it changed, whether the
+    /// bubbles moved. `closed`: the bus went, and the name with it.
+    fn notifications_output(&mut self, closed: bool) -> LinkOutput {
+        let Some(n) = self.notifications.as_mut() else { return LinkOutput::default() };
+        if closed {
+            n.lost();
+        }
+        LinkOutput { notifications: n.take_change(), bubbles: n.take_bubbles_change(), ..LinkOutput::default() }
+    }
+
+    /// Something waits for an idle `link_readable`: answers a flush drained, or what a
+    /// `notifications_do` changed.
     pub fn has_ready(&self) -> bool {
-        self.bus.has_ready()
+        self.bus.has_ready() || self.deferred != LinkOutput::default()
     }
 
     /// Routes `incoming`, then flushes and routes what the flush drained (bounded: what the last
     /// round's flush drained waits in `ready`, for `App::link_sync`'s idle).
     fn route(&mut self, incoming: Vec<Incoming>) -> LinkOutput {
-        let mut out = self.dispatch(incoming);
+        let mut out = std::mem::take(&mut self.deferred);
+        out.merge(self.dispatch(incoming));
         let mut rounds = 0;
         loop {
             self.bus.flush();
@@ -197,6 +253,10 @@ impl SessionLink {
                 out.media = Some(view);
             }
         }
+        // The notifications server: its view and bubbles when they changed; the bus gone, the name
+        // goes with it (no bubble, no timer).
+        let closed = out.closed;
+        out.merge(self.notifications_output(closed));
         out
     }
 
@@ -212,6 +272,8 @@ impl SessionLink {
                         }
                     } else if let Some(m) = self.media.as_mut().filter(|m| m.owns(id)) {
                         m.answer(&mut self.bus, id, result);
+                    } else if let Some(n) = self.notifications.as_mut().filter(|n| n.owns(id)) {
+                        n.answer(id, result);
                     }
                 }
                 Incoming::Signal(m) => match codec::signal(&m) {
@@ -221,13 +283,28 @@ impl SessionLink {
                         }
                     }
                     s => {
-                        if let Some(media) = self.media.as_mut() {
+                        let ours = self.notifications.as_mut().is_some_and(|n| n.signal(&s));
+                        if !ours && let Some(media) = self.media.as_mut() {
                             media.signal(&mut self.bus, &s);
                         }
                     }
                 },
-                // Nothing is served here: refused, never left unanswered.
-                Incoming::MethodCall(m) => self.bus.send_message(refusal(&m)),
+                // The Notifications path is served while the name is held (and refused otherwise);
+                // anything else is refused, never left unanswered.
+                Incoming::MethodCall(m) => {
+                    let reply = match self.notifications.as_mut().filter(|_| notifications::serves(&m)) {
+                        Some(n) => n.handle(&m, Instant::now(), notifications::minute_now),
+                        None => (!m.get_no_reply()).then(|| refusal(&m)),
+                    };
+                    if let Some(r) = reply {
+                        self.bus.send_message(r);
+                    }
+                    if let Some(n) = self.notifications.as_mut() {
+                        for s in n.take_effects() {
+                            self.bus.send_message(s);
+                        }
+                    }
+                }
                 Incoming::Closed => out.closed = true,
             }
         }
@@ -330,12 +407,21 @@ impl App {
             if link.media().is_some() {
                 log("media: the session bus closed");
             }
+            if link.notifications().is_some() {
+                log("notifications: the session bus closed");
+            }
         }
         if let Some(mode) = out.mode {
             self.portal_said(mode);
         }
         if let Some(view) = out.media {
             self.media_view(view);
+        }
+        if let Some(view) = out.notifications {
+            self.notify_view(view);
+        }
+        if out.bubbles {
+            self.bubbles_sync();
         }
         self.media_popup_refresh();
         self.link_sync();
@@ -368,6 +454,7 @@ impl App {
 pub(crate) enum LinkUser {
     Appearance,
     Media,
+    Notifications,
 }
 
 /// A failure line of `open_link`: the appearance's says the mode falls back to dark; the media
@@ -376,6 +463,7 @@ fn link_failed(who: LinkUser, what: &str) -> String {
     match who {
         LinkUser::Appearance => format!("appearance: {what}; dark"),
         LinkUser::Media => format!("media: {what}"),
+        LinkUser::Notifications => format!("notifications: {what}"),
     }
 }
 
@@ -407,10 +495,20 @@ mod tests {
     #[test]
     fn link_outputs_merge_the_latest_word() {
         let view = Some(MediaView { playing: true, title: "Harbor Lights".into() });
-        let mut a = LinkOutput { mode: Some(Mode::Dark), media: Some(view.clone()), closed: false };
+        let mut a = LinkOutput { mode: Some(Mode::Dark), media: Some(view.clone()), closed: false, ..LinkOutput::default() };
         a.merge(LinkOutput { mode: Some(Mode::Light), ..LinkOutput::default() });
-        assert_eq!(a, LinkOutput { mode: Some(Mode::Light), media: Some(view), closed: false }, "media kept");
+        assert_eq!(a, LinkOutput { mode: Some(Mode::Light), media: Some(view), closed: false, ..LinkOutput::default() }, "media kept");
         a.merge(LinkOutput { media: Some(None), closed: true, ..LinkOutput::default() });
-        assert_eq!(a, LinkOutput { mode: Some(Mode::Light), media: Some(None), closed: true });
+        assert_eq!(a, LinkOutput { mode: Some(Mode::Light), media: Some(None), closed: true, ..LinkOutput::default() });
+    }
+
+    #[test]
+    fn link_outputs_merge_the_bell_and_the_bubbles() {
+        let view = |unread| Some(NotifyView { unread, dnd: false, serving: true });
+        let mut a = LinkOutput { notifications: view(1), bubbles: true, ..LinkOutput::default() };
+        a.merge(LinkOutput { notifications: view(2), ..LinkOutput::default() });
+        assert_eq!((a.notifications, a.bubbles), (view(2), true), "the latest view; a bubble change is never lost");
+        a.merge(LinkOutput::default());
+        assert_eq!((a.notifications, a.bubbles), (view(2), true));
     }
 }

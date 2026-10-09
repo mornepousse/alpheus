@@ -132,15 +132,16 @@ impl Notifications {
     }
 
     /// One call on the Notifications path (`serves`): the reply to send, None when the call asked
-    /// for none. Refused while the name is not held.
-    pub fn handle(&mut self, call: &Message, now: Instant, minute: u16) -> Option<Message> {
+    /// for none. Refused while the name is not held. `minute` (the local time, `minute_now`) is read
+    /// only for a Notify served.
+    pub fn handle(&mut self, call: &Message, now: Instant, minute: impl FnOnce() -> u16) -> Option<Message> {
         let wanted = !call.get_no_reply();
         if !self.held {
             return wanted.then(|| refusal(call));
         }
         let reply = match codec::inbound(call) {
             Inbound::Notify(n) => {
-                let id = self.center.notify(n, now, minute);
+                let id = self.center.notify(n, now, minute());
                 self.touched();
                 bus::notify_reply(call, id)
             }
@@ -323,31 +324,31 @@ mod tests {
         assert_eq!(n.take_change().map(|v| v.serving), Some(false), "the bell dims");
         assert!(n.take_bubbles_change());
         let mut m = call("GetCapabilities");
-        assert_eq!(error_name(n.handle(&m, now, 600).unwrap()), "org.freedesktop.DBus.Error.UnknownMethod", "refused again");
+        assert_eq!(error_name(n.handle(&m, now, || 600).unwrap()), "org.freedesktop.DBus.Error.UnknownMethod", "refused again");
         m.set_no_reply(true);
-        assert!(n.handle(&m, now, 600).is_none(), "nothing sent when no reply is wanted");
+        assert!(n.handle(&m, now, || 600).is_none(), "nothing sent when no reply is wanted");
     }
 
     #[test]
     fn served_calls_get_their_replies_and_close_by_call_emits_reason_3() {
         let mut n = held();
         let now = Instant::now();
-        let info = n.handle(&call("GetServerInformation"), now, 600).unwrap();
+        let info = n.handle(&call("GetServerInformation"), now, || 600).unwrap();
         assert_eq!(info.read4::<&str, &str, &str, &str>().unwrap(), ("alpheus", "alpheus", env!("CARGO_PKG_VERSION"), "1.3"));
-        let caps = n.handle(&call("GetCapabilities"), now, 600).unwrap();
+        let caps = n.handle(&call("GetCapabilities"), now, || 600).unwrap();
         assert!(caps.read1::<Vec<String>>().unwrap().contains(&"actions".to_string()));
         let id = n.center_mut().notify(note("retract me"), now, 600);
-        let closed = n.handle(&call("CloseNotification").append1(id), now, 600).unwrap();
+        let closed = n.handle(&call("CloseNotification").append1(id), now, || 600).unwrap();
         assert_eq!(closed.iter_init().count(), 0, "an empty reply");
         let effects = n.take_effects();
         assert_eq!(effects.len(), 1);
         assert_eq!(effects[0].member().as_deref(), Some("NotificationClosed"));
         assert_eq!(effects[0].read2::<u32, u32>().unwrap(), (id, 3), "closed by a call: reason 3");
         assert!(effects[0].destination().is_none(), "broadcast");
-        let unknown = n.handle(&call("CloseNotification").append1(4_000_000u32), now, 600).unwrap();
+        let unknown = n.handle(&call("CloseNotification").append1(4_000_000u32), now, || 600).unwrap();
         assert_eq!(unknown.iter_init().count(), 0, "an unknown id: empty too");
         assert!(n.take_effects().is_empty(), "and silent");
-        assert_eq!(error_name(n.handle(&call("Bogus"), now, 600).unwrap()), "org.freedesktop.DBus.Error.UnknownMethod");
+        assert_eq!(error_name(n.handle(&call("Bogus"), now, || 600).unwrap()), "org.freedesktop.DBus.Error.UnknownMethod");
     }
 
     /// While the name is held too, a call that wants no reply gets none (a no-reply Notify is still
@@ -356,9 +357,34 @@ mod tests {
     fn a_held_server_answers_nothing_when_no_reply_is_wanted() {
         let mut n = held();
         let mut caps = call("GetCapabilities");
-        assert!(n.handle(&caps, Instant::now(), 600).is_some(), "the control case");
+        assert!(n.handle(&caps, Instant::now(), || 600).is_some(), "the control case");
         caps.set_no_reply(true);
-        assert!(n.handle(&caps, Instant::now(), 600).is_none(), "no reply wanted: none sent");
+        assert!(n.handle(&caps, Instant::now(), || 600).is_none(), "no reply wanted: none sent");
+    }
+
+    /// Task 4's review: the local time is read only for a Notify served while the name is held,
+    /// never for a refused call nor for the other methods.
+    #[test]
+    fn the_minute_is_read_only_for_a_served_notify() {
+        let never = || -> u16 { panic!("the clock read for a call that needs no time") };
+        let notify = || crate::tray::bus::testing::notify_call("hello");
+        let (_, mut queued) = started(false);
+        assert!(queued.handle(&notify(), Instant::now(), never).is_some(), "refused while not held, no clock read");
+        let mut n = held();
+        for member in ["GetCapabilities", "GetServerInformation", "Bogus"] {
+            assert!(n.handle(&call(member), Instant::now(), never).is_some(), "{member}");
+        }
+        assert!(n.handle(&call("CloseNotification").append1(4_000_000u32), Instant::now(), never).is_some());
+        let read = std::cell::Cell::new(0);
+        assert!(
+            n.handle(&notify(), Instant::now(), || {
+                read.set(read.get() + 1);
+                14 * 60 + 2
+            })
+            .is_some()
+        );
+        assert_eq!(read.get(), 1, "read once for a served Notify");
+        assert_eq!(n.center().history().next().map(|e| e.at_minute), Some(14 * 60 + 2));
     }
 
     #[test]
