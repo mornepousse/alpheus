@@ -199,9 +199,10 @@ enum TagEnd {
     Unclosed,
 }
 
-/// Whether a whole tag (`<` to `>`) is a line break: `<br>`, `<br/>`, `<br />`, any case.
+/// Whether a whole tag (`<` to `>`) is a line break: its first token, cut at whitespace, `/` or
+/// the `>`, is `br` in any case (`<br>`, `<br/>`, `<br / >`, `<br clear="all">`).
 fn is_br(tag: &str) -> bool {
-    let name = tag[1..].trim_end_matches('>').trim_end_matches('/').trim_end();
+    let name = tag[1..].split(|c: char| c.is_whitespace() || matches!(c, '/' | '>')).next().unwrap_or_default();
     name.eq_ignore_ascii_case("br")
 }
 
@@ -503,7 +504,13 @@ impl Center {
             && (self.slots[i].entry.live || !self.would_show(&identity, critical, now))
         {
             self.slots[i].arrived = now;
-            return self.slots[i].entry.id;
+            let id = self.slots[i].entry.id;
+            // A live bubble still waiting beyond `max_visible` comes to the top, as a fresh one would.
+            let waiting = self.shows(&self.slots[i]) && self.slots.range(..i).filter(|s| self.shows(s)).count() >= self.max_visible;
+            if waiting && let Some(slot) = self.slots.remove(i) {
+                self.slots.push_front(slot);
+            }
+            return id;
         }
         // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
         // recomputed); it only shows once do-not-disturb is off, unless critical.
@@ -597,11 +604,16 @@ impl Center {
         self.slots.iter().filter_map(|s| s.expiry).min()
     }
 
+    /// Whether `s` is a bubble `bubbles` may draw: live, and critical under do-not-disturb.
+    fn shows(&self, s: &Slot) -> bool {
+        s.entry.live && (!self.dnd || s.entry.urgency == Urgency::Critical)
+    }
+
     /// The bubbles to draw: live, newest first, at most `max_visible`; under do-not-disturb, critical only.
     pub fn bubbles(&self) -> Vec<Shown<'_>> {
         self.slots
             .iter()
-            .filter(|s| s.entry.live && (!self.dnd || s.entry.urgency == Urgency::Critical))
+            .filter(|s| self.shows(s))
             .take(self.max_visible)
             .map(|s| Shown { entry: &s.entry, critical: s.entry.urgency == Urgency::Critical })
             .collect()
@@ -801,6 +813,14 @@ mod tests {
         assert_eq!(strip_markup("x<br>y"), "x\ny");
     }
 
+    /// A `<br>` is known by its first token, cut at whitespace or `/`: spaces before the slash or
+    /// the `>`, and attributes, keep it a line break; a longer name never is one.
+    #[test]
+    fn a_br_with_spaces_or_attributes_is_a_line_break() {
+        assert_eq!(body_text("a<br / >b<br/ >c<br clear=\"all\">d<BR\tclear=x>e<br\n/>f"), "a\nb\nc\nd\ne\nf");
+        assert_eq!(body_text("a<brx>b<br-x/>c<b r>d"), "abcd", "another name: removed, no break");
+    }
+
     #[test]
     fn an_action_needs_a_sane_key_and_its_label_is_capped() {
         assert_eq!(action("default", "Open"), Some(Action { key: "default".into(), label: "Open".into() }));
@@ -948,6 +968,23 @@ mod tests {
         assert_eq!(c.notify(note("newcomer", "hi"), t0 + ms(100), 0), newcomer, "still none: merged");
     }
 
+    /// A merge slides the window but never outlives the bucket: the token that comes back a
+    /// second after the bucket ran dry gives the next copy its bubble, even inside the window.
+    #[test]
+    fn a_token_back_ends_a_merge_inside_a_sliding_window() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ms = Duration::from_millis;
+        for i in 0..BUCKET {
+            c.notify(note("spammer", &format!("n{i}")), t0, 0);
+        }
+        let dry = c.notify(note("spammer", "again"), t0, 0);
+        assert!(!c.entry(dry).unwrap().live, "the bucket is dry at t0");
+        assert_eq!(c.notify(note("spammer", "again"), t0 + ms(900), 0), dry, "+0.9 s, no token yet: merged, the window slides");
+        let fresh = c.notify(note("spammer", "again"), t0 + ms(1_100), 0);
+        assert_ne!(fresh, dry, "+1.1 s, still in the slid window, but a token is back: a new one");
+        assert!(c.entry(fresh).unwrap().live, "with its bubble");
+    }
+
     #[test]
     fn ten_bubbles_then_one_per_second_and_critical_bypasses_the_bucket() {
         let (mut c, t0) = (center(), Instant::now());
@@ -1083,6 +1120,21 @@ mod tests {
         let top = c.bubbles()[0];
         assert_eq!((top.entry.id, top.critical), (urgent, true));
         assert!(!c.bubbles()[1].critical);
+    }
+
+    /// A copy merged into a live bubble still waiting beyond `max_visible` brings it to the top,
+    /// as a fresh one would; one already shown keeps its place.
+    #[test]
+    fn a_merge_into_a_waiting_bubble_brings_it_to_the_top() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ms = Duration::from_millis;
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
+        assert_eq!(shown(&c), [ids[4], ids[3], ids[2], ids[1]], "a waits");
+        assert_eq!(c.notify(note("a", "a"), t0 + ms(500), 0), ids[0], "merged");
+        assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "and on top");
+        assert_eq!(history(&c), ["a", "e", "d", "c", "b"], "the newest in the history too");
+        assert_eq!(c.notify(note("d", "d"), t0 + ms(600), 0), ids[3]);
+        assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "shown already: it stays where it is");
     }
 
     #[test]
