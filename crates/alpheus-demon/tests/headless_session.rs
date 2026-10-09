@@ -2005,8 +2005,16 @@ fn media_bar(name: &str, outputs: u32, extra: &[&str]) -> (PrivateBus, Sway, Fak
     for p in &players {
         assert!(p.wait_call("GetAll", DELAY).is_some(), "the daemon read every fake player: {:?}", d.log());
     }
-    std::thread::sleep(Duration::from_millis(500)); // read, drawn
+    // Read and drawn: a player plays, so the module shows in the purple (catppuccin dark).
+    let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
     (bus, sway, hypr, d, players)
+}
+
+/// The pixels of the media popup's title row (row 0, its 30 content cells), hung from MEDIA_AT.
+fn popup_title(s: &Ppm) -> Vec<[u8; 3]> {
+    let ((x0, y), (x1, _)) = (popup_cell(0, 1, 0), popup_cell(0, 30, 0));
+    (y - 8..y + 8).flat_map(|y| (x0 - 4..x1 + 4).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
 /// Layout coordinates of the popup's cell (column, row) on a bar whose media zone starts at cell 1 at
@@ -2148,12 +2156,25 @@ fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
     let (_bus, sway, _hypr, d, mut players) = media_bar("media-gone", 1, &["beta"]);
-    players[1].set_status("Paused"); // lumen plays: it is the active one
-    std::thread::sleep(Duration::from_millis(500));
+    // beta, the latest to play, is active; once it pauses, lumen is, and the bar shows its title.
+    let shown = sway.screenshot("HEADLESS-1").map(|s| media_cells(&s)).unwrap();
+    players[1].set_status("Paused");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != shown), "the bar never moved to lumen: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
-    assert!(d.wait_for("media popup shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("media popup shown: Paper Lanterns", DELAY), "lumen active: {:?}", d.log());
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| popup_title(s).contains(&accent)), "the popup drawn: {:?}", d.log());
+    let before = sway.screenshot("HEADLESS-1").map(|s| popup_title(&s)).unwrap();
     players.remove(0).kill(); // lumen
-    std::thread::sleep(Duration::from_secs(1));
+    // The title row repainted with beta's track ("Second Song"), still in the accent: still open.
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| {
+            let t = popup_title(s);
+            t.contains(&accent) && t != before
+        }),
+        "beta's title never drawn: {:?}",
+        d.log()
+    );
     assert_eq!(d.count("popup closed"), 0, "beta is left: the popup shows it: {:?}", d.log());
     players.remove(0).kill(); // beta
     assert!(d.wait_for("popup closed (player gone)", DELAY), "{:?}", d.log());

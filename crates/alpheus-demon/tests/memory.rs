@@ -920,16 +920,36 @@ fn fake_players(session: &PrivateBus, names: &[&str]) -> Vec<FakePlayer> {
     players
 }
 
-/// Bar step 5: what the media module costs at start with no player (its session connection and
-/// match rules), and what 3 players add. Each configuration alone, its daemon gone before the next.
+/// Bar step 5: what the media module costs at start with no player, and what 3 players add. Each
+/// configuration alone, its daemon gone before the next. In mode `auto` (no `theme.toml`) the bar's
+/// session link is open anyway, for the light/dark portal: the module adds its match rules and
+/// Mpris to it. In mode `dark` nothing else opens it: the module's cost includes the connection
+/// itself (fix wave A).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn media_module_pss_without_and_with_players() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("media-cost");
-    let measure = |name: &str, toml: &str, players: &[&str]| {
+    let measure = |name: &str, toml: &str, players: &[&str], theme: Option<&str>| {
         let session = PrivateBus::start(&format!("{name}-session"));
-        let (_sway, _hypr, d) = start(name, 1, &bus, Some(&session), Some(toml), PwDump::Silent);
+        let sway = Sway::start(name, 1);
+        if let Some(theme) = theme {
+            let config = sway.runtime.join("config/alpheus");
+            std::fs::create_dir_all(&config).unwrap();
+            std::fs::write(config.join("theme.toml"), theme).unwrap();
+        }
+        let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+        let d = start_daemon_with(
+            &sway,
+            &DaemonOptions {
+                bar_toml: Some(toml),
+                system_bus: Some(&bus.address),
+                session_bus: Some(&session.address),
+                pw_dump: PwDump::Silent,
+                ..DaemonOptions::default()
+            },
+        );
+        assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
         // A cost of 0 must come from a module that runs, not from one that never started.
         if toml.contains("\"media\"") {
             assert!(d.wait_for("media: on the bar's session bus", DELAY), "{:?}", d.log());
@@ -938,16 +958,22 @@ fn media_module_pss_without_and_with_players() {
         std::thread::sleep(TRAY_SETTLE);
         d.pss_kb()
     };
-    let base = measure("media-cost-a", NO_MEDIA_BAR, &[]);
-    let empty = measure("media-cost-b", MEDIA_BAR, &[]);
-    let three = measure("media-cost-c", MEDIA_BAR, &["alpha", "beta", "gamma"]);
+    let base = measure("media-cost-a", NO_MEDIA_BAR, &[], None);
+    let empty = measure("media-cost-b", MEDIA_BAR, &[], None);
+    let three = measure("media-cost-c", MEDIA_BAR, &["alpha", "beta", "gamma"], None);
     let (module_cost, players_cost) = (empty.saturating_sub(base), three.saturating_sub(empty));
+    const DARK: &str = "theme = \"catppuccin\"\nmode = \"dark\"\n";
+    let dark_base = measure("media-cost-d", NO_MEDIA_BAR, &[], Some(DARK));
+    let dark_empty = measure("media-cost-e", MEDIA_BAR, &[], Some(DARK));
+    let own_link = dark_empty.saturating_sub(dark_base);
     eprintln!(
-        "media PSS (KB): {base} without the module, {empty} with it and no player (module cost {module_cost}), \
-         {three} with 3 fake players (players cost {players_cost})"
+        "media PSS (KB): mode auto (the portal's link open anyway): {base} without the module, {empty} with it and no player \
+         (module cost {module_cost}), {three} with 3 fake players (players cost {players_cost}); mode dark (no link otherwise): \
+         {dark_base} without, {dark_empty} with it and no player (module and its own connection {own_link})"
     );
     assert!(three < STARTUP_MAX_KB, "{three} KB >= 15 MB — report to Mae, never raise");
-    assert!(module_cost <= 1024, "the module alone costs {module_cost} KB (a session connection and three rules: ≤ 1 MB)");
+    assert!(module_cost <= 1024, "the module on the portal's connection costs {module_cost} KB (its rules and Mpris: ≤ 1 MB)");
+    assert!(own_link <= 1024, "the module with its own connection costs {own_link} KB (≤ 1 MB)");
     assert!(players_cost <= 512, "3 players cost {players_cost} KB (bounded strings: ≤ 512 KB)");
 }
 

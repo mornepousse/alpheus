@@ -43,8 +43,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Bar shapes, per style at start (all modules, 3 outputs) | flat ≈ 8.0 MB; others −76…+116 KB over flat | `startup_pss_per_style`, 3 runs (flat 8,142–8,224 KB: the same bar as the start row above); corner masks on first use −32…+88 KB (islands − flat), +36…+116 KB (floating − flat, its taller buffer included) (computed: 128 B for islands, 200 B for floating, at scale 1; one per radius and scale used) |
 | Bar shapes, 48 style switches (3 outputs; floating reconfigures every bar) | +20 KB | `style_switches_no_growth`, +20 KB in each of 3 runs; 0 loop wake-ups at rest under each of the six styles (`at_rest_no_wakeups_under_each_style`) |
 | Media, linked in but unused (no `media` in `modules`) | within noise (−52…+32 KB) vs. the delivery before this one | binary 5.24 → 5.33 MiB (+92 KiB stripped); measured `55ba754` vs this delivery, release, back to back, 3 runs each, separate target directories |
-| Media module, no player (on the bar's own session connection, tray off) | 0–4 KB | `media_module_pss_without_and_with_players`, 3 runs (7.2 MB with it, 1 output): that connection is the light/dark portal's, already open in mode `auto`; with the tray on it shares the tray's connection |
-| Media, 3 fake players | 112 KB | same test, 112 KB in each of 3 runs; at most 16 players, strings capped at 256 characters, 8 artists |
+| Media module, no player (on the bar's own session connection, tray off) | 0–4 KB in mode `auto`; 286–395 KB in a fixed mode | `media_module_pss_without_and_with_players`, 3 runs (7.2–7.3 MB with it, 1 output): in mode `auto` that connection is the light/dark portal's, already open; in a fixed mode (`dark`) the module opens it, and the figure includes the connection itself; with the tray on it shares the tray's connection |
+| Media, 3 fake players | 85–112 KB | same test, 3 runs; at most 16 players, strings capped at 256 characters, 8 artists |
 | Media, 100 track changes | +0 KB | `track_changes_no_growth`, +0 KB in each of 3 runs (the titles reuse glyphs already drawn: the glyph cache's own bound is measured by the 8,300-events row); 0 loop wake-ups at rest with a player playing and the popup closed, tray on and off (`at_rest_no_wakeups_with_a_playing_player`); the popup's 1 s tick runs only while it is open and the track plays |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
@@ -212,7 +212,8 @@ resources from `/proc`. The tray talks to the session bus
 (StatusNotifierItem, dbusmenu): one connection on the bar's own loop, no
 thread. The media module speaks MPRIS on that same connection (or on one of its own when the tray is off,
 shared with the light/dark portal): players found at start and on arrival, their changes read from
-signals, never polled; while its popup is open the time ticks once a second, and only then. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
+signals, never polled; while its popup is open the time ticks once a second, and only then. A known
+limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
 
