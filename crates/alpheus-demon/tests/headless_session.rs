@@ -2031,13 +2031,20 @@ fn media_bar(name: &str, outputs: u32, extra: &[&str]) -> (PrivateBus, Sway, Fak
     );
     assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
     let mut players = vec![FakePlayer::start(&bus, PlayerSpec::playing("lumen", "Paper Lanterns"))];
-    players.extend(extra.iter().map(|n| FakePlayer::start(&bus, PlayerSpec::playing(n, "Second Song"))));
-    for p in &players {
-        assert!(p.wait_call("GetAll", DELAY).is_some(), "the daemon read every fake player: {:?}", d.log());
-    }
+    assert!(players[0].wait_call("GetAll", DELAY).is_some(), "the daemon read the fake player: {:?}", d.log());
     // Read and drawn: a player plays, so the module shows in the purple (catppuccin dark).
     let purple = rgb(preset("catppuccin").unwrap().dark.hues.purple);
     assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s).contains(&purple)), "never drawn: {:?}", d.log());
+    // Each extra player, the latest to play, takes the bar: on screen before the next one (or the
+    // test) starts. Its GetAll asked is not its reply read: a test taking the bar as its reference
+    // before that could see the previous player, and miss the change it waits for.
+    for n in extra {
+        let before = sway.screenshot("HEADLESS-1").map(|s| media_cells(&s)).unwrap();
+        let player = FakePlayer::start(&bus, PlayerSpec::playing(n, "Second Song"));
+        assert!(player.wait_call("GetAll", DELAY).is_some(), "the daemon read {n}: {:?}", d.log());
+        assert!(sway.wait_for_screen("HEADLESS-1", |s| media_cells(s) != before), "{n} never took the bar: {:?}", d.log());
+        players.push(player);
+    }
     (bus, sway, hypr, d, players)
 }
 
