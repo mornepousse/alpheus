@@ -1313,8 +1313,8 @@ fn the_notification_server_has_no_panicking_path() {
 }
 
 /// OSD spec § 2 and its guardrails: the OSD reads sysfs and shows, nothing else. Its three files
-/// write no file, create nothing, change no permission (and, through `NO_THREAD_NOR_COMMAND`, run
-/// no command). Production code only.
+/// write no file, create nothing, change no permission, make no raw system call (no `libc::`, no
+/// `unsafe`), and, through `NO_THREAD_NOR_COMMAND`, run no command. Production code only.
 #[test]
 fn the_osd_only_reads() {
     let mut checked = 0;
@@ -1325,8 +1325,19 @@ fn the_osd_only_reads() {
         }
         checked += 1;
         let prod = production_code(&t);
-        for never in ["fs::write", "OpenOptions", "File::create", "set_permissions", "remove_file", "create_dir", "fs::rename", "fs::copy"]
-        {
+        for never in [
+            "fs::write",
+            "OpenOptions",
+            "File::create",
+            "File::options(",
+            "set_permissions",
+            "remove_file",
+            "create_dir",
+            "fs::rename",
+            "fs::copy",
+            "libc::",
+            "unsafe",
+        ] {
             assert!(!prod.contains(never), "{never} in {name}: the OSD only reads");
         }
     }

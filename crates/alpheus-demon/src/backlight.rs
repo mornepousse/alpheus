@@ -66,7 +66,7 @@ mod tests {
         let root = tree("sorted");
         fake(&root, "intel_backlight", "9696\n", "19393\n");
         fake(&root, "acpi_video0", "3\n", "12\n");
-        fake(&root, "nv_backlight", "1\n", "4\n");
+        fake(&root, "nv_backlight", "3\n", "4\n");
         // The directory's own order (creation, its reverse, or a hash of the names) must not put
         // the sorted first first, or the sort goes untested: renamed until it does not.
         let listed_first = || fs::read_dir(&root).unwrap().next().unwrap().unwrap().file_name();

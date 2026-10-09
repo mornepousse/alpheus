@@ -3485,6 +3485,47 @@ fn osd_the_brightness_verb_reads_the_fake_backlight_and_shows_the_pill() {
     assert_eq!(std::fs::metadata(dir.join("brightness")).unwrap().modified().unwrap(), before);
 }
 
+/// OSD spec § 3: a volume change while the brightness pill shows replaces its content on the same
+/// surface and pushes its deadline back: it goes `timeout_ms` after the volume change, not after
+/// the brightness. The volume lights more of the bar (90 % against 50 %), counted in the accent
+/// below the screen's middle (the bar's own gauge, at the top, is never counted).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn osd_a_volume_change_replaces_the_brightness_pill_and_pushes_its_deadline_back() {
+    let (sway, _hypr, d) = osd_daemon("osd-replace", 1, "", |sway| {
+        fake_backlight(sway, "intel_backlight", 9696, 19393);
+    });
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    let lit = |s: &Ppm| -> usize { (s.height / 2..s.height).map(|y| (0..s.width).filter(|&x| s.at(x, y) == Some(accent)).count()).sum() };
+    let asked = Instant::now();
+    assert_eq!(osd_brightness(&sway), EXIT_OK);
+    assert!(d.wait_for(": brightness 50%", DELAY), "{:?}", d.log());
+    let brightness = Cell::new(0);
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| {
+            brightness.set(lit(s));
+            osd_box(s).is_some() && brightness.get() > 0
+        }),
+        "{:?}",
+        d.log()
+    );
+    // Well inside the brightness pill's 1.3 s, late enough that its own deadline comes first.
+    thread::sleep(Duration::from_millis(700).saturating_sub(asked.elapsed()));
+    let changed = Instant::now();
+    assert!(changed - asked < Duration::from_millis(1100), "the brightness pill may be gone already ({:?})", changed - asked);
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
+    assert!(
+        sway.wait_for_screen("HEADLESS-1", |s| lit(s) * 2 > brightness.get() * 3),
+        "90 % lights more than 50 %: {} px lit at 50 %: {:?}",
+        brightness.get(),
+        d.log()
+    );
+    assert!(d.wait_for("osd surface dropped (timeout, 2 shown)", DELAY), "{:?}", d.log());
+    let gone = changed.elapsed();
+    assert!(gone >= Duration::from_millis(1000), "it went {gone:?} after the volume change (timeout 1.3 s): not pushed back");
+    assert_eq!(d.count("osd surface on"), 1, "one surface, its content replaced: {:?}", d.log());
+}
+
 /// OSD spec § 4: with no backlight device, or without the module, the verb answers Done (exit 0)
 /// and nothing shows.
 #[test]
