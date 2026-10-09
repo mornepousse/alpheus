@@ -414,8 +414,11 @@ fn the_panel_marks_read_only_after_it_opened() {
     let body = function_body(&wayland, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
+    let shown = body.find("\"panel shown (entries").expect("panel_toggle logs the shown panel");
     assert_eq!(body.matches("mark_read()").count(), 1, "one mark, on the shown path: {body}");
     assert!(open < read, "marked read only once `popup_open` answered true: {body}");
+    // Inside the shown branch: after the open, before its log line (never after the `if`).
+    assert!(read < shown, "marked read inside the shown branch, before `panel shown`: {body}");
 }
 
 /// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
