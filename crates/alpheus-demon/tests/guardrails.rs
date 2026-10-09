@@ -353,13 +353,15 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
     assert!(hover_fire.contains("hover_surface"), "hover_fire must use the surface identity carried from hover_moved: {hover_fire}");
 }
 
-/// `launcher_fail` must take the launcher out of `self` FIRST, then release the keyboard, then
-/// early-return on "nothing was open". `keyboard_release` is a no-op while `keyboard_wanted()`
-/// holds, which it does as long as `self.launcher` is `Some`: releasing before the take (the order
-/// task 15 locked in, final review R2) left the keyboard, its keymap and its repeat source resident
-/// after a panic closed the launcher. And the release must precede the early return, for a panic
-/// inside `launcher_close` that already took the launcher. No `wl_keyboard` can be built without a
-/// compositor, so the order is checked in the source.
+/// `launcher_fail` must take the launcher out of `self` FIRST, drop its box, then release the
+/// keyboard, then early-return on "nothing was open". `keyboard_release` is a no-op while
+/// `keyboard_wanted()` holds, which it does as long as `self.launcher` is `Some`: releasing before
+/// the take (the order task 15 locked in, final review R2) left the keyboard, its keymap and its
+/// repeat source resident after a panic closed the launcher. While the box lives, a key down on it
+/// defers the release to a key-up its dead surface never sends (media fix wave A): released after
+/// the box is dropped (the guarded close consumes it). And the release must precede the early
+/// return, for a panic inside `launcher_close` that already took the launcher. No `wl_keyboard`
+/// can be built without a compositor, so the order is checked in the source.
 #[test]
 fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_early() {
     let files = source_files();
@@ -367,10 +369,13 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
     let prod = production_code(host);
     let body = function_body(&prod, "fn launcher_fail(");
     let take_at = body.find("self.launcher.take()").expect("launcher_fail must take the launcher");
+    let close_at = body.find("guarded(\"close\"").expect("launcher_fail must drop the box in a guarded close");
     let release_at = body.find("self.keyboard_release()").expect("launcher_fail must call keyboard_release");
-    let early_return_at = body.find("else { return }").expect("launcher_fail must early-return when nothing was open");
+    let early_return_at = body.find("return;").expect("launcher_fail must early-return when nothing was open");
     assert!(take_at < release_at, "the launcher must be taken BEFORE keyboard_release (still wanted otherwise): {body}");
+    assert!(close_at < release_at, "the box must be dropped BEFORE keyboard_release (a key down on it defers): {body}");
     assert!(release_at < early_return_at, "keyboard_release must run before the early return: {body}");
+    assert_eq!(body.matches("self.keyboard_release()").count(), 1, "one release, on both paths: {body}");
 }
 
 /// Final review R2: three small orderings no fake Wayland surface can exercise. `menu_repaint`
