@@ -14,7 +14,7 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, Workstation,
+    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, Workstation,
     assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send, start_daemon,
     start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
@@ -3155,7 +3155,9 @@ fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let bin = fake_pw_dump_in(&dir, PwDump::Fifo);
-    let mut child = Command::new(bin.join("pw-dump")).stdout(Stdio::piped()).spawn().unwrap();
+    // Reaped with its whole group even when an assert below fails: a `cat` orphaned by a failure
+    // would never exit, and would hold the caller's pipe (`cargo test | tail` hanging).
+    let mut child = GroupChild::spawn(Command::new(bin.join("pw-dump")).stdout(Stdio::piped()));
     let mut out = child.stdout.take().unwrap();
     let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     thread::spawn(move || {
@@ -3185,10 +3187,16 @@ fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
     pw_dump_send(&dir, &second);
     let (a, b) = (read_until(&first), read_until(&second));
     assert!(a < b, "in the order sent");
-    child.kill().unwrap();
-    child.wait().unwrap();
+    drop(child);
     use std::os::unix::fs::OpenOptionsExt;
     let left = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(dir.join("pw-dump.fifo"));
     assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A send above PIPE_BUF would not be atomic: refused loudly, before the pipe is even opened.
+#[test]
+#[should_panic(expected = "PIPE_BUF")]
+fn a_pw_dump_send_above_pipe_buf_fails_clearly() {
+    pw_dump_send(Path::new("/nonexistent-alpheus-it"), &"x".repeat(4096));
 }

@@ -6,6 +6,7 @@
 //! names.
 
 use crate::system::{DeviceName, SoundState, Volume};
+use crate::tray::codec::clean;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, Read};
@@ -156,9 +157,15 @@ fn capped(s: &str) -> String {
     s[..end].to_string()
 }
 
+/// Text the OSD draws: control and invisible formatting characters removed (`codec::clean`: a
+/// device name posing as another), trimmed, capped.
+fn drawable(s: &str) -> String {
+    capped(clean(s).trim())
+}
+
 /// What a person reads: the description, else the nick (blank text is absent); None: neither.
 fn label_of(p: &NodeProps) -> Option<String> {
-    [p.description.as_deref(), p.nick.as_deref()].into_iter().flatten().map(str::trim).find(|s| !s.is_empty()).map(capped)
+    [p.description.as_deref(), p.nick.as_deref()].into_iter().flatten().map(drawable).find(|s| !s.is_empty())
 }
 
 /// The last entry of subject 0 that sets `key`, or clears every key (a null key): Some(the new
@@ -222,7 +229,7 @@ impl Model {
             // A re-dump without params keeps the last known volume; one without a label, the label.
             let volume = info.params.props.iter().find_map(to_volume).or(known.and_then(|n| n.volume));
             let name = info.props.node_name.clone().unwrap_or_default();
-            let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone())).unwrap_or_else(|| capped(&name));
+            let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone())).unwrap_or_else(|| drawable(&name));
             self.nodes.insert(o.id, Node { kind, name, label, volume });
         }
     }
@@ -234,9 +241,23 @@ impl Model {
         self.nodes.iter().filter(|(_, n)| n.kind == kind && &n.name == name).min_by_key(|(id, _)| **id).map(|(_, n)| n)
     }
 
+    /// Whether `state()` would equal `s`, without building it (no String cloned for a delta that
+    /// changes nothing, as most do: a level of some other node, a port, a client).
+    pub fn matches(&self, s: &SoundState) -> bool {
+        fn same(node: Option<&Node>, volume: Option<Volume>, name: Option<&DeviceName>) -> bool {
+            node.and_then(|n| n.volume) == volume
+                && node.map(|n| (n.name.as_str(), n.label.as_str())) == name.map(|d| (d.node.as_str(), d.label.as_str()))
+        }
+        let (sink, source) = self.defaults();
+        same(sink, s.sink, s.sink_name.as_ref()) && same(source, s.source, s.source_name.as_ref())
+    }
+
+    fn defaults(&self) -> (Option<&Node>, Option<&Node>) {
+        (self.resolve(Kind::Sink, self.default_sink.as_ref()), self.resolve(Kind::Source, self.default_source.as_ref()))
+    }
+
     pub fn state(&self) -> SoundState {
-        let sink = self.resolve(Kind::Sink, self.default_sink.as_ref());
-        let source = self.resolve(Kind::Source, self.default_source.as_ref());
+        let (sink, source) = self.defaults();
         let named = |n: &Node| DeviceName { node: n.name.clone(), label: n.label.clone() };
         SoundState {
             sink: sink.and_then(|n| n.volume),
@@ -261,13 +282,14 @@ pub fn follow(output: impl Read, publish: &mut dyn FnMut(SoundState) -> bool) ->
     for batch in serde_json::Deserializer::from_reader(io::BufReader::new(output)).into_iter::<Vec<Object>>() {
         let batch = batch.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("pw-dump: {e}")))?;
         model.apply(batch);
-        let s = model.state();
-        if last.as_ref() != Some(&s) {
-            if !publish(s.clone()) {
-                return Ok(());
-            }
-            last = Some(s);
+        if last.as_ref().is_some_and(|l| model.matches(l)) {
+            continue;
         }
+        let s = model.state();
+        if !publish(s.clone()) {
+            return Ok(());
+        }
+        last = Some(s);
     }
     Err(io::Error::new(io::ErrorKind::UnexpectedEof, "pw-dump: end of output"))
 }
@@ -473,6 +495,46 @@ mod tests {
         let got = label(&format!(r#""node.name":"s","node.description":"{long}""#)).unwrap();
         assert_eq!(got.len(), LABEL_MAX, "capped, on a character boundary");
         assert!(got.chars().all(|c| c == 'é'));
+    }
+
+    /// The OSD draws the label: control characters and invisible formatting characters (bidi
+    /// overrides, zero-width space) are removed like any drawn text (`codec::clean`), a newline is a
+    /// space; a description of nothing but those is blank. The node name, the identity, stays raw.
+    #[test]
+    fn device_labels_are_cleaned_like_any_drawn_text() {
+        let meta = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.sink","value":{"name":"s\u202ex"}}]}]"#;
+        let named = |props: &str| {
+            let node = format!(
+                r#"[{{"id":7,"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"Audio/Sink","node.name":"s\u202ex",{props}}},"params":{{"Props":[{{"channelVolumes":[0.125,0.125],"mute":false}}]}}}}}}]"#
+            );
+            let (seen, _) = published(&format!("{meta}\n{node}\n"));
+            seen.last().and_then(|s| s.sink_name.clone()).unwrap()
+        };
+        let n = named(r#""node.description":"Desk\u202eevil\u200b\n2\u0007""#);
+        assert_eq!(n.label, "Deskevil 2");
+        assert_eq!(n.node, "s\u{202e}x", "the identity is never altered");
+        assert_eq!(named(r#""node.description":"\u202e\u200b\u0007","node.nick":"D""#).label, "D", "nothing drawable: blank");
+        assert_eq!(named(r#""node.nick":"\t""#).label, "sx", "the node name as a label is cleaned too");
+    }
+
+    /// `follow` asks `matches` before building a state (no String cloned for a delta that changes
+    /// nothing): it must be exactly equality with `state()`, whatever field moved.
+    #[test]
+    fn matches_is_equality_with_the_state() {
+        let mut m = Model::default();
+        let mut states: Vec<SoundState> = Vec::new();
+        let label = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo","node.description":"Renamed"},"params":{}}}]"#;
+        let text = format!("{INITIAL}{DELTAS}{label}\n");
+        for batch in serde_json::Deserializer::from_str(&text).into_iter::<Vec<Object>>() {
+            m.apply(batch.unwrap());
+            let now = m.state();
+            assert!(m.matches(&now));
+            for before in &states {
+                assert_eq!(m.matches(before), *before == now, "{before:?} vs {now:?}");
+            }
+            states.push(now);
+        }
+        assert!(states.iter().any(|s| s.source_name.as_ref().is_some_and(|n| n.label == "Renamed")));
     }
 
     /// `pw-metadata -d 0`: every key of subject 0 cleared, the sink's and the source's alike.

@@ -244,6 +244,10 @@ mod tests {
         let mic = SoundState { source: Some(Volume { percent: 100, muted: true }), ..s.clone() };
         assert!(!b.apply(Msg::Sound(Some(mic.clone()))), "the bar draws the sink only");
         assert_eq!(b.sound, Feed::Ready(mic), "kept all the same");
+        let named = |node: &str| Some(DeviceName { node: node.into(), label: node.into() });
+        let switched = SoundState { sink_name: named("speaker"), ..s.clone() };
+        assert!(!b.apply(Msg::Sound(Some(switched.clone()))), "another sink at the same volume: the bar draws the same");
+        assert_eq!(b.sound, Feed::Ready(switched), "kept for the OSD's name card");
         let louder = SoundState { sink: Some(Volume { percent: 85, muted: false }), ..s };
         assert!(b.apply(Msg::Sound(Some(louder))), "the sink moved: redraw");
         assert!(b.apply(Msg::Sound(None)), "down: redraw");

@@ -392,6 +392,40 @@ fn full_size_initial_dump(fixtures: &Path, to: &Path) {
     fs::write(to, dump).unwrap();
 }
 
+/// A child run in its own process group (never the test's), its stderr discarded: on drop, even
+/// while a failed assert unwinds, the whole group is killed and the child reaped. A fake that a
+/// failure leaves behind (the `Fifo` fake's `cat`) would never exit, and would hold the caller's
+/// pipe open (`cargo test | tail` hanging).
+pub struct GroupChild(Child);
+
+impl GroupChild {
+    pub fn spawn(command: &mut Command) -> GroupChild {
+        GroupChild(command.process_group(0).stderr(Stdio::null()).spawn().unwrap())
+    }
+}
+
+impl std::ops::Deref for GroupChild {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for GroupChild {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+impl Drop for GroupChild {
+    fn drop(&mut self) {
+        // SAFETY: plain kill(2) on our child's own group (process_group(0) at spawn), not reaped
+        // yet: still ours, never -1 nor 0.
+        unsafe { libc::kill(-(self.0.id() as i32), libc::SIGKILL) };
+        let _ = self.0.wait();
+    }
+}
+
 /// The `Fifo` fake's pipe, in the runtime directory.
 pub const PW_DUMP_FIFO: &str = "pw-dump.fifo";
 
@@ -462,9 +496,16 @@ fn fake_pw_dump(sway: &Sway, mode: PwDump) -> PathBuf {
 
 /// One delta (one JSON array, or several back to back) to the `Fifo` fake. The pipe is opened
 /// without blocking, retried for 10 s while the fake has not opened it yet (ENXIO), then written
-/// whole: one small write, atomic.
+/// whole in one write. A pipe write is atomic only up to PIPE_BUF (4096 bytes on Linux), newline
+/// included: a longer one could be cut, so it is refused before anything is opened.
 pub fn pw_dump_send(runtime: &Path, json: &str) {
     use std::os::unix::fs::OpenOptionsExt;
+    assert!(
+        json.len() < libc::PIPE_BUF,
+        "pw_dump_send: {} bytes and a newline exceed PIPE_BUF ({}), the write would not be atomic: send less at once",
+        json.len(),
+        libc::PIPE_BUF
+    );
     let path = runtime.join(PW_DUMP_FIFO);
     let t = Instant::now();
     let mut f = loop {
