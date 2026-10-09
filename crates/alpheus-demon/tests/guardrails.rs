@@ -23,8 +23,10 @@ use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method}
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
-use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, message};
-use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME};
+use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
+use alpheus_demon::tray::{
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+};
 use std::path::{Path, PathBuf};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
@@ -782,8 +784,9 @@ const DBUS_FILES: [&str; 5] = ["sources/dbus/dbusrs_bus.rs", "tray/bus.rs", "tra
 /// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
 /// no libdbus session lookup (it could autolaunch `dbus-launch`); no
-/// blocking call nor `RefArg` decoding; the only name ever requested is the
-/// watcher's, with DO_NOT_QUEUE, never replacing its owner.
+/// blocking call nor `RefArg` decoding; the only names ever requested are the
+/// watcher's (DO_NOT_QUEUE) and the notification server's (flags 0: queued), never replacing an
+/// owner nor letting one replace us.
 #[test]
 fn tray_d_bus_is_confined_and_allowlisted() {
     let mut built = Vec::new();
@@ -801,9 +804,17 @@ fn tray_d_bus_is_confined_and_allowlisted() {
             assert!(!t.contains(never), "{never} in {name}: libdbus's own session lookup may autolaunch a bus");
         }
         let prod = production_code(&t);
-        for never in
-            ["send_with_reply_and_block", "new_session(", "blocking::", ".process(", "get_refarg", "PropMap", "RefArg", "REPLACE_EXISTING"]
-        {
+        for never in [
+            "send_with_reply_and_block",
+            "new_session(",
+            "blocking::",
+            ".process(",
+            "get_refarg",
+            "PropMap",
+            "RefArg",
+            "REPLACE_EXISTING",
+            "ALLOW_REPLACEMENT",
+        ] {
             assert!(!prod.contains(never), "{never} in {name}");
         }
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
@@ -848,6 +859,12 @@ fn tray_d_bus_is_confined_and_allowlisted() {
     );
     let (name, flags) = message(&Call::RequestName).read2::<String, u32>().unwrap();
     assert_eq!((name.as_str(), flags), (WATCHER_NAME, DBUS_NAME_FLAG_DO_NOT_QUEUE), "the one name, never replacing");
+    let (name, flags) = message(&Call::RequestNotifications).read2::<String, u32>().unwrap();
+    assert_eq!(
+        (name.as_str(), flags, NOTIFICATIONS_NAME_FLAGS),
+        (NOTIFICATIONS_NAME, 0, 0),
+        "the second name: queued behind its owner, never replacing it, never replaceable"
+    );
 }
 
 /// The portal (themes task 6): exactly two members, `ReadOne` (a call, one setting) and
