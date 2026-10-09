@@ -165,6 +165,11 @@ fn launch(args: &[&str], socket: &Path, stdin: &[u8]) -> (i32, String, String) {
 /// it, and counts them until `stop` is set: a client that should not have
 /// connected ends with "another menu is already open" instead of hanging.
 fn counting_daemon(name: &str) -> (TempSocket, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
+    replying_daemon(name, Reply::Busy)
+}
+
+/// `counting_daemon` with another answer.
+fn replying_daemon(name: &str, reply: Reply) -> (TempSocket, Arc<AtomicUsize>, Arc<AtomicBool>, JoinHandle<()>) {
     let path = temp_socket(name);
     let listener = UnixListener::bind(&*path).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -175,7 +180,7 @@ fn counting_daemon(name: &str) -> (TempSocket, Arc<AtomicUsize>, Arc<AtomicBool>
             match listener.accept() {
                 Ok((mut s, _)) => {
                     count.fetch_add(1, Ordering::SeqCst);
-                    let _ = s.write_all(&encode_reply(&Reply::Busy));
+                    let _ = s.write_all(&encode_reply(&reply));
                 }
                 Err(_) => thread::sleep(Duration::from_millis(5)),
             }
@@ -219,6 +224,32 @@ fn index_sends_the_flag_and_prints_the_position() {
     assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into(), "c".into()], flags });
 }
 
+/// fuzzel 1.14.1 keeps empty lines as entries (`dmenu.c`), so `--index` counts stdin lines, empty
+/// ones included; alpheus drops them from the list and maps the daemon's position back.
+#[test]
+fn index_counts_empty_lines_like_fuzzel() {
+    let (socket, daemon) = answering("index-blank", Reply::Index(Some(1)));
+    assert_eq!(launch(&["--dmenu", "--index"], &socket, b"a\n\nb"), (EXIT_OK, "2\n".into(), String::new()));
+    let flags = DmenuFlags { index: true, password: false };
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags });
+    let (socket, daemon) = answering("index-blanks", Reply::Index(Some(2)));
+    assert_eq!(launch(&["--dmenu", "--index"], &socket, b"\n\r\nx\n\ny\n\n\nz\n"), (EXIT_OK, "7\n".into(), String::new()));
+    daemon.join().unwrap();
+    let (socket, daemon) = answering("index-blank-none", Reply::Index(None));
+    assert_eq!(launch(&["--dmenu", "--index"], &socket, b"\na\n"), (EXIT_OK, "-1\n".into(), String::new()), "-1 stays -1");
+    daemon.join().unwrap();
+}
+
+/// A position past the lines sent is the daemon's mistake: an error, never a made-up number.
+#[test]
+fn an_index_past_the_lines_exits_2() {
+    let (socket, daemon) = answering("index-past", Reply::Index(Some(2)));
+    let (code, out, err) = launch(&["--dmenu", "--index"], &socket, b"a\n\nb\n");
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""));
+    assert!(err.contains("unexpected answer"), "{err}");
+    daemon.join().unwrap();
+}
+
 /// Typed text that matched no line: fuzzel 1.14 prints -1 and exits 0 (`execute_selected`,
 /// wayland.c), and so does alpheus.
 #[test]
@@ -233,7 +264,7 @@ fn index_of_typed_text_is_minus_one() {
 #[test]
 fn a_reply_of_the_wrong_kind_exits_2_without_its_text() {
     let (socket, daemon) = answering("index-chosen", Reply::Chosen("hunter2".into()));
-    let (code, out, err) = launch(&["--dmenu", "--index", "--password"], &socket, b"");
+    let (code, out, err) = launch(&["--dmenu", "--index"], &socket, b"");
     assert_eq!((code, out.as_str()), (EXIT_ERROR, ""));
     assert!(err.contains("unexpected answer") && !err.contains("hunter2"), "{err}");
     daemon.join().unwrap();
@@ -441,7 +472,13 @@ fn non_utf8_lines_are_replaced() {
 #[test]
 fn usage_errors_exit_2_without_connecting() {
     let (socket, connections, stop, daemon) = counting_daemon("usage");
-    for args in [&["--dmenu", "--width", "wide"][..], &["--prompt", "x"], &["--toggle", "--close"], &["--dmenu", "-l", "3"]] {
+    for args in [
+        &["--dmenu", "--width", "wide"][..],
+        &["--prompt", "x"],
+        &["--toggle", "--close"],
+        &["--dmenu", "-l", "3"],
+        &["--dmenu", "--password", "--index"],
+    ] {
         let (code, out, err) = launch(args, &socket, b"a\n");
         assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{args:?}");
         assert!(err.starts_with("alpheus-launch: ") && err.contains("--help"), "{args:?}: {err}");
@@ -496,4 +533,43 @@ fn a_refused_verb_exits_2_with_the_daemons_word() {
     assert_eq!(code, EXIT_ERROR);
     assert!(err.contains("unexpected answer"), "{err}");
     daemon.join().unwrap();
+}
+
+/// What a daemon from before `--index`/`--password` answers a request that carries them: its
+/// header decoder knew `dmenu <p> <len>` only, so the extra words fall to "unknown request", and
+/// `socket::describe` prefixes "malformed request: ".
+const OLD_DAEMON_ERROR: &str = "malformed request: unknown request \"dmenu\"";
+
+/// A new client in front of a daemon still running the old binary (an upgrade before a re-login):
+/// the menu it asked for cannot be shown with its flags, so the daemon counts as unusable — exit 3,
+/// on which nixos-config falls back to fuzzel with `--index`/`--password` intact. One connection
+/// only: never retried without the flags (an index printed as text, a password shown in clear).
+#[test]
+fn an_old_daemon_refusing_the_flags_exits_3_without_a_retry() {
+    for (i, flag) in ["--index", "--password"].into_iter().enumerate() {
+        let (socket, connections, stop, daemon) = replying_daemon(&format!("old-{i}"), Reply::Error(OLD_DAEMON_ERROR.into()));
+        let (code, out, err) = launch(&["--dmenu", flag], &socket, b"a\n");
+        assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{flag}: {err}");
+        assert!(err.contains(flag), "{flag}: {err}");
+        stop.store(true, Ordering::SeqCst);
+        daemon.join().unwrap();
+        assert_eq!(connections.load(Ordering::SeqCst), 1, "{flag}: one request, no retry");
+    }
+}
+
+/// Only that refusal, only for a flagged request: anything else stays an error (2).
+#[test]
+fn other_refusals_of_a_dmenu_stay_errors() {
+    let cases = [
+        (&["--dmenu"][..], OLD_DAEMON_ERROR),
+        (&["--dmenu", "--index"], "launcher unavailable"),
+        (&["--dmenu", "--password"], "malformed request: unknown dmenu flag \"x\""),
+        (&["--dmenu", "--index"], "request too large (dmenu input)"),
+    ];
+    for (i, (args, error)) in cases.into_iter().enumerate() {
+        let (socket, daemon) = answering(&format!("refused-{i}"), Reply::Error(error.into()));
+        let (code, _, err) = launch(args, &socket, b"a\n");
+        assert_eq!(code, EXIT_ERROR, "{args:?} / {error}: {err}");
+        daemon.join().unwrap();
+    }
 }

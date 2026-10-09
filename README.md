@@ -284,9 +284,13 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 | Option | What it does |
 |---|---|
 | `-p`, `--prompt TEXT` | text shown before the input |
-| `--index` | print the chosen line's 0-based position on standard input instead of its text (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
-| `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close |
+| `--index` | print the chosen line's 0-based position on standard input instead of its text, empty lines counted as fuzzel does (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
+| `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close; not with `--index` |
 | `--placeholder TEXT`, `--width N`, `--lines N` | accepted and ignored (the box keeps its own size) |
+
+A running `alpheus-demon` older than `--index`/`--password` (upgraded but not restarted) refuses
+them: `alpheus-launch` then exits 3, like an unreachable daemon, so a script falls back to another
+menu with the same options.
 
 ### Themes
 

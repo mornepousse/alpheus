@@ -357,6 +357,12 @@ impl Ranker {
         best
     }
 
+    /// How many times the whole `Prepared` was computed (tests outside this module).
+    #[cfg(test)]
+    pub fn preparations(&self) -> usize {
+        self.preparations
+    }
+
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
         let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.now);
         let mut prepared = match self.prepared.take() {

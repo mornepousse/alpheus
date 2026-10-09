@@ -7,12 +7,12 @@
 //! other changes: the chosen line on stdout and exit 0; Escape → nothing,
 //! exit 1; anything wrong (another menu open, bad usage, no answer) → a
 //! message on stderr, exit 2. One code of its own: 3 when the daemon is
-//! unreachable (not running), the only case where a caller may fall back
-//! to another menu.
+//! unreachable (not running) or too old for `--index`/`--password`, the only
+//! cases where a caller may fall back to another menu.
 
 use alpheus_commun::launcher_ipc::{
     DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, Reply, Request, decode_reply, encode_request,
-    split_lines, wipe, zero,
+    numbered_lines, wipe, zero,
 };
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
@@ -53,7 +53,8 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
-module not in bar.toml), 3 alpheus-demon not running (launcher unreachable).
+module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
+--index/--password (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -137,6 +138,8 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
         }
     }
     match (mode, dmenu_only) {
+        // A masked entry has no list to point into: refused rather than silently answered -1.
+        (Some(Invocation::Dmenu { .. }), _) if flags.index && flags.password => Err("--password and --index do not go together".into()),
         (Some(Invocation::Dmenu { .. }), _) => Ok(Invocation::Dmenu { prompt, flags }),
         (_, Some(option)) => Err(format!("{option} only goes with --dmenu")),
         (mode, None) => Ok(mode.unwrap_or(Invocation::Toggle)),
@@ -269,14 +272,21 @@ fn read_reply(stream: &mut UnixStream, answer: &mut Vec<u8>, deadline: Option<In
 }
 
 /// stdin → lines, refused (Err message) above the protocol's limits — before any connection.
-fn read_lines(stdin: &mut dyn Read) -> Result<Vec<String>, String> {
+/// With `numbered`, also each line's position on stdin (`numbered_lines`), for `--index`.
+fn read_lines(stdin: &mut dyn Read, numbered: bool) -> Result<(Vec<String>, Vec<usize>), String> {
     let mut bytes = Vec::new();
     (&mut *stdin).take(MAX_DMENU_BYTES as u64 + 1).read_to_end(&mut bytes).map_err(|e| format!("cannot read standard input: {e}"))?;
     let too_large = || format!("standard input is larger than {} MiB", MAX_DMENU_BYTES >> 20);
     if bytes.len() > MAX_DMENU_BYTES {
         return Err(too_large());
     }
-    let lines = split_lines(&String::from_utf8_lossy(&bytes));
+    let (mut lines, mut positions) = (Vec::new(), Vec::new());
+    for (position, line) in numbered_lines(&String::from_utf8_lossy(&bytes)) {
+        lines.push(line.to_string());
+        if numbered {
+            positions.push(position);
+        }
+    }
     if lines.len() > MAX_LINES {
         return Err(format!("more than {MAX_LINES} lines on standard input"));
     }
@@ -284,7 +294,7 @@ fn read_lines(stdin: &mut dyn Read) -> Result<Vec<String>, String> {
     if lines.iter().map(|l| l.len() + 1).sum::<usize>().saturating_sub(1) > MAX_DMENU_BYTES {
         return Err(too_large());
     }
-    Ok(lines)
+    Ok((lines, positions))
 }
 
 /// The whole program, injectable: returns the exit code.
@@ -297,6 +307,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         let _ = writeln!(stderr, "alpheus-launch: {m}");
         EXIT_ERROR
     };
+    // `--index`: the stdin position of each line sent (empty lines are not sent but counted).
+    let mut positions = Vec::new();
     let request = match parse_args(args) {
         Err(m) => return fail(&format!("{m} (see --help)")),
         Ok(Invocation::Help) => {
@@ -309,8 +321,11 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::Osd(v)) => Request::Osd(v),
         // --password: stdin is still read (a writer is never cut off), then ignored — fuzzel
         // accepts it too; no line leaves the client.
-        Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin) {
-            Ok(lines) => Request::Dmenu { prompt, lines: if flags.password { Vec::new() } else { lines }, flags },
+        Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin, flags.index) {
+            Ok((lines, p)) => {
+                positions = p;
+                Request::Dmenu { prompt, lines: if flags.password { Vec::new() } else { lines }, flags }
+            }
             Err(m) => return fail(&m),
         },
     };
@@ -332,12 +347,19 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             code
         }
         // fuzzel prints -1 for typed text that matched no line, and exits 0.
-        (Request::Dmenu { flags, .. }, Reply::Index(index)) if flags.index => {
-            print(&index.map_or_else(|| "-1".to_string(), |i| i.to_string()))
-        }
+        (Request::Dmenu { flags, .. }, Reply::Index(None)) if flags.index => print("-1"),
+        (Request::Dmenu { flags, .. }, Reply::Index(Some(i))) if flags.index => match positions.get(i) {
+            Some(position) => print(&position.to_string()),
+            None => fail(&format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
+        },
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
         (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), Reply::Done) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
+        (Request::Dmenu { flags, .. }, Reply::Error(m)) if (flags.index || flags.password) && refuses_flags(&m) => {
+            let flag = if flags.index { "--index" } else { "--password" };
+            fail(&format!("alpheus-demon does not know {flag} yet (restart it after the upgrade): {m}"));
+            EXIT_UNREACHABLE
+        }
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
         // Never the chosen text itself: with --password, it is the secret.
         (_, Reply::Chosen(mut line)) => {
@@ -346,6 +368,19 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         }
         (_, other) => fail(&format!("unexpected answer from alpheus-demon: {other:?}")),
     }
+}
+
+/// A daemon older than `--index`/`--password` (an upgrade not followed by a restart) decodes
+/// only `dmenu <prompt> <len>`: the trailing flag words make the whole header an unknown request,
+/// which `socket::describe` reports as this exact text — stable since the socket's first version.
+/// Only that refusal of a flagged request reads as "this daemon cannot serve it": exit 3, so the
+/// caller falls back to fuzzel with the flags intact. Never a retry without them: an index would
+/// come back as a line's text, a password typed in clear. Any other error (busy, too large, a
+/// current daemon refusing a word) stays a plain error, 2, as before.
+const OLD_DAEMON_REFUSAL: &str = "malformed request: unknown request \"dmenu\"";
+
+fn refuses_flags(error: &str) -> bool {
+    error == OLD_DAEMON_REFUSAL
 }
 
 #[cfg(test)]
@@ -393,7 +428,6 @@ mod tests {
         let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password } });
         assert_eq!(parse_args(&args(&["--dmenu", "--index"])), dmenu(true, false));
         assert_eq!(parse_args(&args(&["--password", "--dmenu"])), dmenu(false, true));
-        assert_eq!(parse_args(&args(&["--index", "--dmenu", "--password"])), dmenu(true, true));
         assert_eq!(parse_args(&args(&["--dmenu", "--index", "--index"])), dmenu(true, false), "repeated, as fuzzel allows");
         for a in [
             &["--dmenu", "--placeholder", "Search"][..],
@@ -426,6 +460,8 @@ mod tests {
             (&["--dmenu", "--width"], "needs a value"),
             (&["--dmenu", "--lines", "many"], "--lines takes a number"),
             (&["--dmenu", "--width=-1"], "--width takes a number"),
+            (&["--dmenu", "--index", "--password"], "--password and --index do not go together"),
+            (&["--password", "--dmenu", "--index", "--index"], "--password and --index do not go together"),
             (&["--dmenu", "--password=*"], "unknown option"),
             (&["--dmenu", "-l", "3"], "unknown option"),
             (&["firefox"], "unknown option"),

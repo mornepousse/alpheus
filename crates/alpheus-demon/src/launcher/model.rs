@@ -304,6 +304,12 @@ impl Launcher {
     }
 
     fn rank(&mut self) {
+        // `--password`: no list to rank, and a nucleo pattern built from the query would copy
+        // the secret into heap buffers the drop cannot wipe.
+        if self.password {
+            self.results.clear();
+            return;
+        }
         let (apps, commands) = match &self.catalog {
             Some(c) => (&c.apps[..], &c.commands[..]),
             None => (&[][..], &[][..]),
@@ -881,6 +887,7 @@ mod tests {
         assert_eq!(s.key(Key::Enter), Outcome::Nothing, "nothing typed");
         typed(&mut s, " al pha");
         assert!(s.results.is_empty(), "nothing filtered either: {:?}", sources(&s));
+        assert_eq!(s.ranker.preparations(), 0, "never ranked: no nucleo pattern built from the secret");
         assert_eq!(s.key(Key::Down), Outcome::Nothing);
         assert_eq!(s.key(Key::Enter), choose(" al pha", None));
         assert_eq!(s.key(Key::CtrlEnter), choose(" al pha", None));

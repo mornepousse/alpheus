@@ -465,7 +465,13 @@ pub fn wipe(s: &mut String) {
 /// dmenu stdin → lines: split on '\n', one trailing '\r' stripped per line,
 /// empty lines dropped, invalid UTF-8 replaced (U+FFFD) by the caller before.
 pub fn split_lines(input: &str) -> Vec<String> {
-    input.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).filter(|l| !l.is_empty()).map(str::to_string).collect()
+    numbered_lines(input).map(|(_, l)| l.to_string()).collect()
+}
+
+/// `split_lines`'s lines, each with its position among the input's lines (from 0), the dropped
+/// empty ones counted: fuzzel keeps empty lines as entries, so its `--index` counts them.
+pub fn numbered_lines(input: &str) -> impl Iterator<Item = (usize, &str)> {
+    input.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).enumerate().filter(|(_, l)| !l.is_empty())
 }
 
 #[cfg(test)]
@@ -757,6 +763,8 @@ mod tests {
         assert_eq!(split_lines("\n\n a \n\r\n"), [" a "]);
         assert_eq!(split_lines("x\r\r\n"), ["x\r"], "one '\\r' stripped, not all");
         assert!(split_lines("").is_empty());
+        assert_eq!(numbered_lines("a\n\nb").collect::<Vec<_>>(), [(0, "a"), (2, "b")]);
+        assert_eq!(numbered_lines("\r\n\nx\r\n").collect::<Vec<_>>(), [(2, "x")], "\"\\r\" alone is an empty line too");
     }
 
     /// A password's bytes are overwritten before they are freed, spare capacity included (what a
