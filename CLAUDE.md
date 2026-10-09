@@ -163,7 +163,7 @@ breakdown), then the spec of the sub-project currently in progress in
   - **Pending, Mae's decision (nixos-config, never edited from here):**
     - *DND.* `tools-menu` runs `shell-ctl dnd-toggle`, gaming mode `shell-ctl dnd-on`/`dnd-off`, the TUI `shell-ctl dnd-status`/`dnd-on`/`dnd-off`; under `alpheus` they reach shell-ctl's classic branches (`makoctl mode -a/-r do-not-disturb`). One change covers all three: `alpheus:dnd-on|off|toggle|status` branches in shell-ctl calling `alpheus-launch --dnd on|off|toggle`; `status` reads the file (`$XDG_STATE_HOME/alpheus/dnd` exists → on, else off).
     - *mako.* Not started by systemd: `restore-wallpaper` (`home/scripts/wallpaper.nix`) runs `pkill mako; mako &`, and `services.mako.enable` keeps its D-Bus activation file (a Notify with no owner starts it). Under the alpheus shell the relaunch must stop and mako should not stay activatable (as under `dms`): mako first means alpheus waits in the queue; a mako started after alpheus is refused and exits ("File exists", sd-bus asks with DO_NOT_QUEUE).
-    - *History.* `notif-history` (Mod+Shift+V, `makoctl history`) and `shell-ctl notif-restore` (`makoctl restore`) break without mako: drop them, or use the alpheus panel (a verb to open it would be a later addition).
+    - *History.* `notif-history` (Mod+Shift+V, `makoctl history`) and `shell-ctl notif-restore` (`makoctl restore`) break without mako: drop them, or use the alpheus panel, which opens only from the bell (Mae, 2026-10-09: no verb to open it).
 - Next, in order: the **OSD** (replaces swayosd, 7.6 MB PSS on Mae's session); the wallpaper (swaybg) is optional.
 - **Later, goal "replace as many costly pieces as possible" (Mae,
   2026-10-05)**: a **lock screen** replacing hyprlock (measure hyprlock's
