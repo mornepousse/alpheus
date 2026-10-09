@@ -25,6 +25,7 @@ pub mod media;
 pub mod media_popup;
 pub mod memory;
 pub mod nonblocking;
+pub mod notify;
 pub mod painter;
 pub mod pipewire;
 pub mod placement;

@@ -4,7 +4,7 @@
 //! JetBrainsMonoNerdFontMono-Regular.ttf.
 
 /// (pattern looked up in the lowercased class, glyph), first match wins.
-const TABLE: [(&str, char); 32] = [
+const TABLE: [(&str, char); 40] = [
     ("firefox", '\u{f0239}'),   // md-firefox
     ("chrom", '\u{f02af}'),     // md-google_chrome
     ("alacritty", '\u{f018d}'), // md-console
@@ -37,14 +37,29 @@ const TABLE: [(&str, char); 32] = [
     ("libreoffice", '\u{f0219}'), // md-file_document
     ("obsidian", '\u{f082e}'),    // md-notebook
     ("github", '\u{f02a4}'),      // md-github
+    // Notification apps (notifications spec § 2); checked in the 3.4.0 post table.
+    ("signal", '\u{f0369}'),       // md-message_text
+    ("element", '\u{f0628}'),      // md-matrix
+    ("slack", '\u{f04b1}'),        // md-slack
+    ("telegram", '\u{f2c6}'),      // fa-telegram (the tray's)
+    ("equibop", '\u{f066f}'),      // md-discord
+    ("evolution", '\u{f01ee}'),    // md-email
+    ("kdeconnect", '\u{f011c}'),   // md-cellphone
+    ("transmission", '\u{f01da}'), // md-download
 ];
 
 /// Unknown applications: md-application.
 pub const GENERIC: char = '\u{f08c6}';
 
-pub fn glyph(class: &str) -> char {
+/// The table's glyph for `class` (substring of the lowercased class, first match wins); None when
+/// nothing matches, so a notification can fall back to its category, then a letter.
+pub fn find(class: &str) -> Option<char> {
     let c = class.to_lowercase();
-    TABLE.iter().find(|(m, _)| c.contains(m)).map(|(_, g)| *g).unwrap_or(GENERIC)
+    TABLE.iter().find(|(m, _)| c.contains(m)).map(|(_, g)| *g)
+}
+
+pub fn glyph(class: &str) -> char {
+    find(class).unwrap_or(GENERIC)
 }
 
 #[cfg(test)]
@@ -61,6 +76,25 @@ mod tests {
         assert_eq!(glyph("VSCodium"), '\u{f0a1e}');
         assert_eq!(glyph(""), GENERIC);
         assert_eq!(glyph("unknown-app"), GENERIC);
+    }
+
+    #[test]
+    fn find_tells_a_miss_from_the_generic_glyph() {
+        assert_eq!(find("firefox"), Some('\u{f0239}'));
+        assert_eq!(find("unknown-app"), None);
+        assert_eq!(glyph("unknown-app"), GENERIC);
+        for (app, g) in [
+            ("signal-desktop", '\u{f0369}'),
+            ("Element", '\u{f0628}'),
+            ("slack", '\u{f04b1}'),
+            ("org.telegram.desktop", '\u{f2c6}'),
+            ("equibop", '\u{f066f}'),
+            ("org.gnome.Evolution", '\u{f01ee}'),
+            ("org.kde.kdeconnect.daemon", '\u{f011c}'),
+            ("transmission-gtk", '\u{f01da}'),
+        ] {
+            assert_eq!(find(app), Some(g), "{app}");
+        }
     }
 
     #[test]

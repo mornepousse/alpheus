@@ -440,7 +440,7 @@ pub fn clean(s: &str) -> String {
 /// another). U+200C (ZWNJ) and U+200D (ZWJ) are excluded: they are ordinary
 /// text shaping (Arabic/Indic ligature control, emoji ZWJ sequences), not
 /// spoofing tools, so removing them would corrupt otherwise legible text.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
