@@ -365,7 +365,7 @@ fn close_reasons_are_expired_dismissed_and_closed_by_call() {
     assert!(client.wait_heard(&Heard::Closed(brief, 1)), "expired: reason 1");
     server.with(|d| assert!(d.n.center().history().any(|e| e.id == brief && !e.live), "an expired bubble stays in the history"));
     let dismissed = client.notify(&Note::new("Fictional", "dismiss me").timeout(0)).unwrap(); // 0: timeout_max
-    server.with(|d| d.act(|c| c.close(dismissed, CloseReason::Dismissed)));
+    server.with(|d| d.act(|c| c.close(dismissed, CloseReason::Dismissed, Instant::now())));
     assert!(client.wait_heard(&Heard::Closed(dismissed, 2)), "dismissed: reason 2");
     let retracted = client.notify(&Note::new("Fictional", "retract me")).unwrap();
     assert_eq!(client.close(retracted), Ok(0), "an empty reply");
@@ -404,7 +404,7 @@ fn action_invoked_is_broadcast_to_a_listener_on_another_connection() {
     let chat = |s: &str| Note::new("Fictional Chat", s).action("default", "Open").action("archive", "Archive");
     let id = sender.notify(&chat("Message from Lina")).unwrap();
     let revision = server.with(|d| d.revision(id));
-    server.with(|d| d.act(|c| c.invoke(id, revision, "archive")));
+    server.with(|d| d.act(|c| c.invoke(id, revision, "archive", Instant::now())));
     assert!(listener.wait_heard(&Heard::Invoked(id, "archive".into())), "heard on a connection that never called Notify");
     assert!(sender.wait_heard(&Heard::Invoked(id, "archive".into())), "and by the sender");
     assert!(listener.wait_heard(&Heard::Closed(id, 2)), "not resident: the bubble closes, dismissed");
@@ -412,10 +412,10 @@ fn action_invoked_is_broadcast_to_a_listener_on_another_connection() {
     let kept = sender.notify(&resident("first")).unwrap();
     let old = server.with(|d| d.revision(kept));
     assert_eq!(sender.notify(&resident("second").replaces(kept)), Ok(kept));
-    server.with(|d| d.act(|c| c.invoke(kept, old, "default")));
+    server.with(|d| d.act(|c| c.invoke(kept, old, "default", Instant::now())));
     assert_eq!(listener.heard_within(QUIET), Vec::<Heard>::new(), "a stale revision does nothing");
     let new = server.with(|d| d.revision(kept));
-    server.with(|d| d.act(|c| c.invoke(kept, new, "default")));
+    server.with(|d| d.act(|c| c.invoke(kept, new, "default", Instant::now())));
     assert!(listener.wait_heard(&Heard::Invoked(kept, "default".into())));
     assert_eq!(listener.heard_within(QUIET), Vec::<Heard>::new(), "resident: no NotificationClosed after its action");
 }
@@ -490,8 +490,13 @@ fn spam_is_bounded_merged_and_critical_bypasses_the_bucket() {
     let b = client.notify(&Note::new("Fictional Echo", "same").body("same body")).unwrap();
     assert_eq!(a, b, "an identical one within 1 s is merged");
     server.with(|d| assert_eq!(d.n.center().history().filter(|e| e.identity == "Fictional Echo").count(), 1));
-    let many: Vec<u32> = (0..300).map(|i| client.send(Note::new("Fictional Hostile", &format!("n{i}")).message(NAME))).collect();
-    assert!(client.replies(&many).iter().all(Result::is_ok), "every call of a flood answered");
+    // In batches of 100: dbus-daemon refuses a connection more than 128 calls awaiting replies
+    // (LimitsExceeded), however fast the server answers.
+    for batch in 0..3 {
+        let many: Vec<u32> =
+            (0..100).map(|i| client.send(Note::new("Fictional Hostile", &format!("n{batch}-{i}")).message(NAME))).collect();
+        assert!(client.replies(&many).iter().all(Result::is_ok), "every call of a flood answered");
+    }
     server.with(|d| {
         assert!(d.n.center().history().count() <= 50, "the history is capped");
         assert_eq!(d.bus.pending(), 0);

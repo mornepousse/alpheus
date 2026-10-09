@@ -98,11 +98,12 @@ impl App {
     /// `Closed(id, 2)`); without one, dismissed. A late click on a replaced or closed notification
     /// does nothing (spec § 3).
     pub(crate) fn notify_activate(&mut self, id: u32, revision: u32) {
+        let now = Instant::now();
         self.notify_act(|n| {
             let what = bubbles::activation(bubbles::find(n.center(), id), revision);
             n.act(|c| match what {
-                Activation::Invoke { .. } => c.invoke(id, revision, DEFAULT_ACTION),
-                Activation::Dismiss => c.close(id, CloseReason::Dismissed),
+                Activation::Invoke { .. } => c.invoke(id, revision, DEFAULT_ACTION, now),
+                Activation::Dismiss => c.close(id, CloseReason::Dismissed, now),
                 Activation::Stale => Vec::new(),
             });
         });
@@ -110,7 +111,8 @@ impl App {
 
     /// A right click on a bubble: dismissed (reason 2), nothing run.
     pub(crate) fn notify_dismiss(&mut self, id: u32) {
-        self.notify_act(|n| n.act(|c| c.close(id, CloseReason::Dismissed)));
+        let now = Instant::now();
+        self.notify_act(|n| n.act(|c| c.close(id, CloseReason::Dismissed, now)));
     }
 
     /// The stack as the consumer has it now: empty without the module, while the name is not held
@@ -119,7 +121,7 @@ impl App {
         let width = self.bar.config.notifications.width;
         notifications_of(self.tray.as_ref(), self.link.as_ref())
             .filter(|n| n.held())
-            .map(|n| bubbles::stack(&n.center().bubbles(), width))
+            .map(|n| bubbles::stack(&n.center().bubbles(), width, crate::tray::notifications::minute_now()))
             .unwrap_or_default()
     }
 

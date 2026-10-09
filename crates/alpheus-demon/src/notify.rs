@@ -3,7 +3,7 @@
 //! merge window, a token bucket per application, a cap on live bubbles); the history, do-not-disturb
 //! and the unread count; which bubbles show. Pure: it never names D-Bus (tray/codec.rs decodes the
 //! calls and calls the `*_text` cleaners here), starts nothing and never reads the clock (its callers
-//! pass the `Instant` and the minute of the day). Bounded: `history + MAX_LIVE` entries, each capped.
+//! pass the `Instant` and the local time, `clock::local_minutes`). Bounded: `history + MAX_LIVE` entries, each capped.
 
 use crate::config::NotificationsConfig;
 use crate::grid::text_width;
@@ -103,8 +103,9 @@ pub struct Entry {
     pub body: String,
     pub actions: Vec<Action>,
     pub urgency: Urgency,
-    /// Minutes since local midnight, for "14:02".
-    pub at_minute: u16,
+    /// When it arrived, in local minutes since 1970 (`clock::local_minutes`): "14:02" today,
+    /// "Oct 8" on another day.
+    pub at: u32,
     /// It has a bubble (shown or waiting).
     pub live: bool,
     pub read: bool,
@@ -305,12 +306,20 @@ fn first_letter(s: &str) -> Option<char> {
 /// A notification's glyph (spec § 2): the bar's table by identity, then the category's glyph, then
 /// the identity's first letter (a reverse-DNS identity's last label first), then GENERIC.
 pub fn glyph_for(identity: &str, category: Option<&str>) -> char {
-    let label = if identity.contains(char::is_whitespace) { identity } else { identity.rsplit('.').next().unwrap_or(identity) };
     icons::find(identity)
         .or_else(|| category.and_then(|c| CATEGORIES.iter().find(|(p, _)| c.starts_with(*p)).map(|(_, g)| *g)))
-        .or_else(|| first_letter(label))
+        .or_else(|| first_letter(app_label(identity)))
         .or_else(|| first_letter(identity))
         .unwrap_or(icons::GENERIC)
+}
+
+/// The name shown for `identity` when the app sent none (the portal's): a reverse-DNS desktop
+/// entry's last label ("Fractal" for org.gnome.Fractal), else the identity as it is.
+pub fn app_label(identity: &str) -> &str {
+    match identity.rsplit('.').next() {
+        Some(label) if !label.is_empty() && !identity.contains(char::is_whitespace) => label,
+        _ => identity,
+    }
 }
 
 /// What the bell shows.
@@ -336,7 +345,10 @@ struct Slot {
     tag: Option<String>,
     /// When it last arrived (the merge window slides).
     arrived: Instant,
-    /// When its bubble expires: Some only while live with a finite timeout.
+    /// How long its bubble stays once shown: Some only while live with a finite timeout.
+    life: Option<Duration>,
+    /// When its bubble expires: armed (`Center::arm`) the first time it is among the bubbles that
+    /// show, do-not-disturb aside; None while it waits beyond `max_visible`, and for a sticky one.
     expiry: Option<Instant>,
     /// In the history (not transient, and within the cap).
     kept: bool,
@@ -393,6 +405,8 @@ pub struct Center {
     timeouts: Timeouts,
     max_visible: usize,
     history: usize,
+    /// What `notify` itself closed (a critical demoted), for the D-Bus side (`take_effects`).
+    effects: Vec<Effect>,
 }
 
 impl Center {
@@ -405,6 +419,7 @@ impl Center {
             timeouts: Timeouts::of(cfg),
             max_visible: usize::from(cfg.max_visible),
             history: usize::from(cfg.history),
+            effects: Vec::new(),
         }
     }
 
@@ -482,7 +497,7 @@ impl Center {
 
     /// Takes in one notification and returns its id: always answered, bubble or not (see the
     /// decisions of the plan's Task 1 for replacement, tags, merging, the bucket and the history).
-    pub fn notify(&mut self, n: Incoming, now: Instant, minute: u16) -> u32 {
+    pub fn notify(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
         let identity = n.desktop_entry.as_deref().filter(|d| !d.is_empty()).unwrap_or(&n.app_name).to_string();
         let critical = n.urgency == Urgency::Critical;
         let target = if n.replaces_id != 0 {
@@ -507,11 +522,12 @@ impl Center {
             let id = self.slots[i].entry.id;
             // A live bubble still waiting beyond `max_visible` comes to the top, as a fresh one would,
             // with the copy's time: the history stays newest first, its times in order.
-            let waiting = self.shows(&self.slots[i]) && self.slots.range(..i).filter(|s| self.shows(s)).count() >= self.max_visible;
+            let waiting = self.shows(&self.slots[i]) && !self.bubbles().iter().any(|b| b.entry.id == id);
             if waiting && let Some(mut slot) = self.slots.remove(i) {
-                slot.entry.at_minute = minute;
+                slot.entry.at = at;
                 self.slots.push_front(slot);
             }
+            self.arm(now);
             return id;
         }
         // A live bubble replaced stays live under do-not-disturb (updated in place, its expiry
@@ -529,9 +545,9 @@ impl Center {
             None => (self.fresh_id(), 1),
         };
         let glyph = glyph_for(&identity, n.category.as_deref());
-        let expiry = if bubble { timeout(n.urgency, n.expire_ms, &self.timeouts).and_then(|d| now.checked_add(d)) } else { None };
+        let life = if bubble { timeout(n.urgency, n.expire_ms, &self.timeouts) } else { None };
         let kept = !n.transient && self.history > 0;
-        let app = if n.app_name.is_empty() { identity.clone() } else { n.app_name };
+        let app = if n.app_name.is_empty() { app_label(&identity).to_string() } else { n.app_name };
         let entry = Entry {
             id,
             revision,
@@ -542,19 +558,67 @@ impl Center {
             body: n.body,
             actions: n.actions,
             urgency: n.urgency,
-            at_minute: minute,
+            at,
             live: bubble,
             read: false,
             resident: n.resident,
         };
-        self.slots.push_front(Slot { entry, tag: n.tag, arrived: now, expiry, kept });
+        self.slots.push_front(Slot { entry, tag: n.tag, arrived: now, life, expiry: None, kept });
+        if critical && bubble {
+            self.demote_criticals();
+        }
         self.trim();
+        self.arm(now);
         id
+    }
+
+    /// Live criticals beyond `max_visible` × 2 (a flood never blocks a real one): the oldest go to
+    /// the history, closed as expired.
+    fn demote_criticals(&mut self) {
+        let cap = self.max_visible.saturating_mul(2);
+        let mut seen = 0;
+        for s in &mut self.slots {
+            if s.entry.live && s.entry.urgency == Urgency::Critical {
+                seen += 1;
+                if seen > cap {
+                    s.entry.live = false;
+                    s.expiry = None;
+                    self.effects.push(Effect::Closed(s.entry.id, CloseReason::Expired));
+                }
+            }
+        }
+    }
+
+    /// Live slots in the order the bubbles show, do-not-disturb aside: the critical ones first,
+    /// then the others, newest first within each.
+    fn queue(&self) -> impl Iterator<Item = &Slot> {
+        let live = |critical: bool| self.slots.iter().filter(move |s| s.entry.live && (s.entry.urgency == Urgency::Critical) == critical);
+        live(true).chain(live(false))
+    }
+
+    /// The expiries after a change to the bubbles, from `now` (spec § 3, extras wait): each bubble
+    /// that shows, do-not-disturb aside (a bubble it hides keeps its timer), is armed when it has no
+    /// expiry yet; each one pushed back beyond `max_visible` waits again, disarmed. A bubble gets its
+    /// whole timeout from the moment it shows, however long it waited, even after a first showing.
+    fn arm(&mut self, now: Instant) {
+        let mut room = self.max_visible;
+        for critical in [true, false] {
+            for s in self.slots.iter_mut().filter(|s| s.entry.live && (s.entry.urgency == Urgency::Critical) == critical) {
+                if room == 0 {
+                    s.expiry = None;
+                } else {
+                    room -= 1;
+                    if s.expiry.is_none() {
+                        s.expiry = s.life.and_then(|d| now.checked_add(d));
+                    }
+                }
+            }
+        }
     }
 
     /// Ends `id`'s bubble: `Closed(id, reason)` when it was live. `Dismissed` marks it read;
     /// `Closed` (the app's call) removes it from the history too; a transient one goes.
-    pub fn close(&mut self, id: u32, reason: CloseReason) -> Vec<Effect> {
+    pub fn close(&mut self, id: u32, reason: CloseReason, now: Instant) -> Vec<Effect> {
         let Some(i) = self.position(id) else { return Vec::new() };
         let s = &mut self.slots[i];
         let was_live = std::mem::replace(&mut s.entry.live, false);
@@ -565,13 +629,14 @@ impl Center {
         if reason == CloseReason::Closed || !s.kept {
             self.slots.remove(i);
         }
+        self.arm(now);
         if was_live { vec![Effect::Closed(id, reason)] } else { Vec::new() }
     }
 
     /// Runs `key` on `id`: only live, at its current `revision`, with a key it offered (a stale
     /// revision or anything else: nothing). A resident entry stays (read); any other is removed and
     /// closed as dismissed.
-    pub fn invoke(&mut self, id: u32, revision: u32, key: &str) -> Vec<Effect> {
+    pub fn invoke(&mut self, id: u32, revision: u32, key: &str, now: Instant) -> Vec<Effect> {
         let Some(i) = self.position(id) else { return Vec::new() };
         let e = &mut self.slots[i].entry;
         if !e.live || e.revision != revision || !e.actions.iter().any(|a| a.key == key) {
@@ -583,6 +648,7 @@ impl Center {
         } else {
             self.slots.remove(i);
             out.push(Effect::Closed(id, CloseReason::Dismissed));
+            self.arm(now);
         }
         out
     }
@@ -598,7 +664,13 @@ impl Center {
             }
         }
         self.slots.retain(|s| s.kept || s.entry.live);
+        self.arm(now);
         out
+    }
+
+    /// What `notify` closed on its own (a critical demoted by a flood), taken.
+    pub fn take_effects(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.effects)
     }
 
     /// The earliest expiry over the live notifications; None at rest or with sticky ones only.
@@ -611,10 +683,10 @@ impl Center {
         s.entry.live && (!self.dnd || s.entry.urgency == Urgency::Critical)
     }
 
-    /// The bubbles to draw: live, newest first, at most `max_visible`; under do-not-disturb, critical only.
+    /// The bubbles to draw: live, critical first, newest first within each, at most `max_visible`;
+    /// under do-not-disturb, critical only.
     pub fn bubbles(&self) -> Vec<Shown<'_>> {
-        self.slots
-            .iter()
+        self.queue()
             .filter(|s| self.shows(s))
             .take(self.max_visible)
             .map(|s| Shown { entry: &s.entry, critical: s.entry.urgency == Urgency::Critical })
@@ -936,7 +1008,7 @@ mod tests {
         let again = c.notify(Incoming { replaces_id: id, ..note("Firefox", "Downloading 90%") }, t0 + secs(7), 607);
         assert_eq!(again, id, "the same id");
         let e = c.entry(id).unwrap();
-        assert_eq!((e.revision, e.summary.as_str(), e.live, e.read, e.at_minute), (2, "Downloading 90%", true, false, 607));
+        assert_eq!((e.revision, e.summary.as_str(), e.live, e.read, e.at), (2, "Downloading 90%", true, false, 607));
         assert_eq!(history(&c), ["Downloading 90%", "Mail"], "one entry, now the newest");
         assert_eq!(shown(&c), [id], "shown again");
     }
@@ -946,9 +1018,9 @@ mod tests {
         let (mut c, t0) = (center(), Instant::now());
         let id = c.notify(with_actions(note("Equibop", "Lina: hi"), &["default"]), t0, 0);
         c.notify(Incoming { replaces_id: id, ..with_actions(note("Equibop", "Lina: hi again"), &["default"]) }, t0, 0);
-        assert!(c.invoke(id, 1, "default").is_empty(), "revision 1 was replaced: stale");
-        assert!(c.invoke(id, 2, "nope").is_empty(), "a key it never offered");
-        assert_eq!(c.invoke(id, 2, "default"), [Effect::Invoked(id, "default".into()), Effect::Closed(id, CloseReason::Dismissed)]);
+        assert!(c.invoke(id, 1, "default", t0).is_empty(), "revision 1 was replaced: stale");
+        assert!(c.invoke(id, 2, "nope", t0).is_empty(), "a key it never offered");
+        assert_eq!(c.invoke(id, 2, "default", t0), [Effect::Invoked(id, "default".into()), Effect::Closed(id, CloseReason::Dismissed)]);
     }
 
     #[test]
@@ -1009,7 +1081,7 @@ mod tests {
         let mut c = center();
         for i in 0..MAX_BUCKETS {
             let id = c.notify(note(&format!("app{i}"), "x"), t0, 0);
-            c.close(id, CloseReason::Dismissed);
+            c.close(id, CloseReason::Dismissed, t0);
         }
         let newcomer = c.notify(note("newcomer", "hi"), t0, 0);
         assert!(!c.entry(newcomer).unwrap().live, "no bucket left for a new identity");
@@ -1115,15 +1187,15 @@ mod tests {
         let expired = c.notify(note("a", "expires"), t0, 0);
         let dismissed = c.notify(note("a", "dismissed"), t0, 0);
         let called = c.notify(note("a", "closed by its app"), t0, 0);
-        assert_eq!(c.close(dismissed, CloseReason::Dismissed), [Effect::Closed(dismissed, CloseReason::Dismissed)]);
+        assert_eq!(c.close(dismissed, CloseReason::Dismissed, t0), [Effect::Closed(dismissed, CloseReason::Dismissed)]);
         assert_eq!(c.entry(dismissed).map(|e| (e.live, e.read)), Some((false, true)), "kept, read");
-        assert_eq!(c.close(called, CloseReason::Closed), [Effect::Closed(called, CloseReason::Closed)]);
+        assert_eq!(c.close(called, CloseReason::Closed, t0), [Effect::Closed(called, CloseReason::Closed)]);
         assert!(c.entry(called).is_none(), "the app's CloseNotification removes it");
         assert_eq!(c.expire(t0 + secs(5)), [Effect::Closed(expired, CloseReason::Expired)]);
         assert_eq!(c.entry(expired).map(|e| (e.live, e.read)), Some((false, false)), "expired: in the history, unread");
-        assert!(c.close(expired, CloseReason::Closed).is_empty(), "not live: no signal");
+        assert!(c.close(expired, CloseReason::Closed, t0).is_empty(), "not live: no signal");
         assert!(c.entry(expired).is_none(), "but removed");
-        assert!(c.close(424_242, CloseReason::Closed).is_empty(), "unknown: nothing");
+        assert!(c.close(424_242, CloseReason::Closed, t0).is_empty(), "unknown: nothing");
         assert_eq!(c.history().count(), 1);
     }
 
@@ -1131,13 +1203,13 @@ mod tests {
     fn an_action_closes_its_notification_unless_resident() {
         let (mut c, t0) = (center(), Instant::now());
         let id = c.notify(with_actions(note("Firefox", "Download finished"), &["default", "open"]), t0, 0);
-        assert_eq!(c.invoke(id, 1, "open"), [Effect::Invoked(id, "open".into()), Effect::Closed(id, CloseReason::Dismissed)]);
+        assert_eq!(c.invoke(id, 1, "open", t0), [Effect::Invoked(id, "open".into()), Effect::Closed(id, CloseReason::Dismissed)]);
         assert!(c.entry(id).is_none(), "done: out of the history too");
         let r = c.notify(Incoming { resident: true, ..with_actions(note("Rhythmbox", "Now playing"), &["next"]) }, t0, 0);
-        assert_eq!(c.invoke(r, 1, "next"), [Effect::Invoked(r, "next".into())]);
+        assert_eq!(c.invoke(r, 1, "next", t0), [Effect::Invoked(r, "next".into())]);
         assert_eq!(c.entry(r).map(|e| (e.live, e.read)), Some((true, true)), "resident: stays");
         c.expire(t0 + secs(5));
-        assert!(c.invoke(r, 1, "next").is_empty(), "no longer live: nothing runs");
+        assert!(c.invoke(r, 1, "next", t0).is_empty(), "no longer live: nothing runs");
     }
 
     #[test]
@@ -1162,12 +1234,85 @@ mod tests {
         let (mut c, t0) = (center(), Instant::now());
         let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
         assert_eq!(shown(&c), [ids[4], ids[3], ids[2], ids[1]]);
-        c.close(ids[3], CloseReason::Dismissed);
+        c.close(ids[3], CloseReason::Dismissed, t0);
         assert_eq!(shown(&c), [ids[4], ids[2], ids[1], ids[0]], "the waiting one shows as room frees");
         let urgent = c.notify(critical("f", "f"), t0, 0);
         let top = c.bubbles()[0];
         assert_eq!((top.entry.id, top.critical), (urgent, true));
         assert!(!c.bubbles()[1].critical);
+    }
+
+    /// Spec § 3, "extras wait and show as space frees up": a bubble waiting beyond `max_visible`
+    /// has no expiry yet; it gets its whole timeout from the moment it shows.
+    #[test]
+    fn a_waiting_bubble_gets_its_full_timeout_once_shown() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e", "f"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
+        assert_eq!(shown(&c), [ids[5], ids[4], ids[3], ids[2]], "four show, two wait");
+        assert_eq!(c.next_expiry(), Some(t0 + secs(5)));
+        let first: Vec<Effect> = ids[2..].iter().rev().map(|&id| Effect::Closed(id, CloseReason::Expired)).collect();
+        let mut gone = c.expire(t0 + secs(5));
+        gone.sort_by_key(|e| match e {
+            Effect::Closed(id, _) | Effect::Invoked(id, _) => std::cmp::Reverse(*id),
+        });
+        assert_eq!(gone, first, "only the four shown expire");
+        assert_eq!(shown(&c), [ids[1], ids[0]], "the two waiting show now");
+        assert_eq!(c.next_expiry(), Some(t0 + secs(10)), "with their whole timeout from now");
+        assert!(c.expire(t0 + secs(9)).is_empty());
+        assert_eq!(c.expire(t0 + secs(10)).len(), 2);
+        assert_eq!(c.next_expiry(), None);
+    }
+
+    /// A dismissal frees room too: the bubble that takes it starts its timeout then.
+    #[test]
+    fn a_bubble_shown_by_a_dismissal_starts_its_timeout_then() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 0)).collect();
+        c.close(ids[4], CloseReason::Dismissed, t0 + secs(3));
+        assert_eq!(shown(&c), [ids[3], ids[2], ids[1], ids[0]]);
+        assert_eq!(c.expire(t0 + secs(5)).len(), 3, "the three shown at t0");
+        assert_eq!(c.next_expiry(), Some(t0 + secs(8)), "the one shown at +3 s");
+        // An action run frees room the same way.
+        let (mut c, t0) = (center(), Instant::now());
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(with_actions(note(s, s), &["go"]), t0, 0)).collect();
+        assert_eq!(c.invoke(ids[4], 1, "go", t0 + secs(2)).len(), 2);
+        assert_eq!(c.expire(t0 + secs(5)).len(), 3);
+        assert_eq!(c.next_expiry(), Some(t0 + secs(7)), "shown at +2 s");
+    }
+
+    /// Critical bubbles come first, newest first; then the others, newest first.
+    #[test]
+    fn critical_bubbles_show_before_the_others() {
+        let (mut c, t0) = (center(), Instant::now());
+        let a = c.notify(note("a", "a"), t0, 0);
+        let x = c.notify(critical("x", "x"), t0, 0);
+        let b = c.notify(note("b", "b"), t0, 0);
+        let y = c.notify(critical("y", "y"), t0, 0);
+        let d = c.notify(note("d", "d"), t0, 0);
+        assert_eq!(shown(&c), [y, x, d, b], "a waits behind the two criticals");
+        assert!(c.entry(a).unwrap().live);
+    }
+
+    /// A flood of distinct criticals never blocks a real one: past `max_visible` × 2 live criticals,
+    /// the oldest goes to the history, closed as expired.
+    #[test]
+    fn a_flood_of_criticals_never_blocks_a_real_one() {
+        let (mut c, t0) = (center(), Instant::now());
+        let flood: Vec<u32> = (0..8).map(|i| c.notify(critical("flooder", &format!("f{i}")), t0, 0)).collect();
+        assert!(c.take_effects().is_empty(), "eight live criticals: the cap, nothing demoted");
+        let real = c.notify(critical("upower", "Battery at 3%"), t0, 0);
+        assert_eq!(c.take_effects(), [Effect::Closed(flood[0], CloseReason::Expired)], "the oldest demoted");
+        assert!(c.take_effects().is_empty(), "taken once");
+        assert_eq!(c.entry(flood[0]).map(|e| e.live), Some(false), "kept in the history");
+        assert_eq!(shown(&c)[0], real, "the real one on top");
+        for i in 8..40 {
+            c.notify(critical("flooder", &format!("f{i}")), t0, 0);
+        }
+        assert_eq!(c.take_effects().len(), 32, "one demoted per newcomer");
+        let crit = c.slots.iter().filter(|s| s.entry.live && s.entry.urgency == Urgency::Critical).count();
+        assert_eq!(crit, 8, "never more than max_visible × 2");
+        let last = c.notify(critical("udiskie", "Disk failing"), t0, 0);
+        assert_eq!(shown(&c)[0], last, "a real one still shows after a long flood");
     }
 
     /// A copy merged into a live bubble still waiting beyond `max_visible` brings it to the top,
@@ -1182,10 +1327,27 @@ mod tests {
         assert_eq!(c.notify(note("a", "a"), t0 + ms(500), 601), ids[0], "merged");
         assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "and on top");
         assert_eq!(history(&c), ["a", "e", "d", "c", "b"], "the newest in the history too");
-        assert_eq!(c.entry(ids[0]).map(|e| e.at_minute), Some(601), "with the copy's time");
+        assert_eq!(c.entry(ids[0]).map(|e| e.at), Some(601), "with the copy's time");
         assert_eq!(c.notify(note("d", "d"), t0 + ms(600), 601), ids[3]);
         assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]], "shown already: it stays where it is");
-        assert_eq!(c.entry(ids[3]).map(|e| e.at_minute), Some(600), "and keeps its time");
+        assert_eq!(c.entry(ids[3]).map(|e| e.at), Some(600), "and keeps its time");
+    }
+
+    /// A copy merged into a waiting bubble shows it at once: its timeout starts then, and the one it
+    /// pushes back waits again, its timer stopped.
+    #[test]
+    fn a_merge_that_shows_a_waiting_bubble_starts_its_timeout() {
+        let (mut c, t0) = (center(), Instant::now());
+        let ms = Duration::from_millis;
+        let ids: Vec<u32> = ["a", "b", "c", "d", "e"].iter().map(|s| c.notify(note(s, s), t0, 600)).collect();
+        c.notify(note("a", "a"), t0 + ms(500), 600);
+        assert_eq!(shown(&c), [ids[0], ids[4], ids[3], ids[2]]);
+        let gone = c.expire(t0 + secs(5));
+        assert_eq!(gone.len(), 3, "e, d and c; b was pushed back: {gone:?}");
+        assert_eq!(shown(&c), [ids[0], ids[1]]);
+        assert_eq!(c.next_expiry(), Some(t0 + ms(5_500)), "a, from the merge");
+        assert_eq!(c.expire(t0 + ms(5_500)), [Effect::Closed(ids[0], CloseReason::Expired)]);
+        assert_eq!(c.next_expiry(), Some(t0 + secs(10)), "b, shown again at +5 s, gets a whole timeout");
     }
 
     #[test]
@@ -1267,6 +1429,16 @@ mod tests {
         assert_eq!((c.history().count(), c.bubbles().len(), c.next_expiry()), (0, 0, None));
     }
 
+    /// The portal sends an empty app name: the desktop entry's last label is shown.
+    #[test]
+    fn a_portal_notification_shows_its_desktop_entrys_last_label() {
+        let (mut c, t0) = (center(), Instant::now());
+        let id = c.notify(Incoming { desktop_entry: Some("org.gnome.Fractal".into()), ..note("", "Lina: hi") }, t0, 0);
+        assert_eq!(c.entry(id).map(|e| (e.app.as_str(), e.identity.as_str())), Some(("Fractal", "org.gnome.Fractal")));
+        let named = c.notify(Incoming { desktop_entry: Some("org.gnome.Fractal".into()), ..note("Fractal Beta", "x") }, t0, 0);
+        assert_eq!(c.entry(named).map(|e| e.app.as_str()), Some("Fractal Beta"), "a name sent wins");
+    }
+
     // ---- glyphs (spec § 2, Identity and glyph) ----
 
     #[test]
@@ -1287,6 +1459,10 @@ mod tests {
         assert_eq!(glyph_for("…", None), icons::GENERIC);
         assert_eq!(glyph_for("微信", None), icons::GENERIC, "a letter two cells wide never stands in for a glyph");
         assert_eq!(glyph_for("微x", None), 'X', "the first one-cell letter");
+        assert_eq!(app_label("org.gnome.Fractal"), "Fractal");
+        assert_eq!(app_label("firefox"), "firefox");
+        assert_eq!(app_label("org.example."), "org.example.", "an empty last label: the whole name");
+        assert_eq!(app_label("Unknown Mailer"), "Unknown Mailer");
         for g in [EMAIL, CHAT, NETWORK, DEVICE, DOWNLOAD] {
             assert_eq!(text_width(&g.to_string()), 1, "{g:?}");
         }

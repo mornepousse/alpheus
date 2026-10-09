@@ -165,10 +165,24 @@ impl Panel {
         match found {
             Some(i) => self.selected = i,
             None => {
-                self.selected = self.selected.min(items.len().saturating_sub(1));
+                self.selected = match self.chosen {
+                    Some(Chosen::Entry(_)) => neighbour(items, self.selected),
+                    _ => self.selected.min(items.len().saturating_sub(1)),
+                };
                 self.remember(center, items);
             }
         }
+    }
+}
+
+/// Where the selection goes when its entry, at `row` of `items` before it went, is gone: the entry
+/// above it, else the one that took its row; with no entry left, the first row after them
+/// ("Do not disturb").
+fn neighbour(items: &[Item], row: usize) -> usize {
+    let entries: Vec<usize> = items.iter().enumerate().filter(|(_, i)| matches!(i, Item::Entry(_))).map(|(r, _)| r).collect();
+    match (entries.first(), entries.last()) {
+        (Some(&first), Some(&last)) => row.saturating_sub(1).clamp(first, last),
+        _ => items.iter().position(|i| *i == Item::Dnd).unwrap_or(0),
     }
 }
 
@@ -191,7 +205,8 @@ pub fn scroll_into_view(p: &mut Panel, center: &Center, players: Option<&Players
 }
 
 /// The panel's cells: `WIDTH` wide plus the pad cells, the separator rows recorded for the painter.
-pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant) -> Boxed {
+/// `now` times the media card; `today` (local minutes since 1970) the entries: "14:02" or "Oct 8".
+pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant, today: u32) -> Boxed {
     let items = items(center, players);
     let selected = items.get(p.selected).copied();
     let history: Vec<&Entry> = center.history().collect();
@@ -217,7 +232,7 @@ pub fn rows(center: &Center, players: Option<&Players>, p: &Panel, now: Instant)
             Line::CardSeparator | Line::Separator => out.separators.push(r),
             Line::Entry(i, second) => {
                 if let Some(e) = history.get(i) {
-                    entry_row(&mut g, e, second, selected == Some(Item::Entry(i)));
+                    entry_row(&mut g, e, second, selected == Some(Item::Entry(i)), today);
                 }
             }
             Line::Empty => plain(&mut g, "No notifications", "", Style::MUTED, false),
@@ -236,13 +251,16 @@ fn plain(g: &mut Grid, text: &str, right: &str, style: Style, selected: bool) {
 }
 
 /// An entry: the glyph, the app and the time, then the summary under the app.
-fn entry_row(g: &mut Grid, e: &Entry, second: bool, selected: bool) {
+fn entry_row(g: &mut Grid, e: &Entry, second: bool, selected: bool, today: u32) {
     let end = g.width();
     if second {
-        let text = format!("  {}", e.summary);
+        // No summary: the body's first line stands in for it.
+        let line =
+            if e.summary.is_empty() { e.body.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or_default() } else { &e.summary };
+        let text = format!("  {line}");
         list::row(g, 0, end, &Row { icon: None, icon_style: Style::NORMAL, text: &text, right: "", style: Style::NORMAL, selected });
     } else {
-        let time = clock(e.at_minute);
+        let time = clock(e.at, today);
         list::row(
             g,
             0,
@@ -380,6 +398,8 @@ mod tests {
     use std::time::Duration;
 
     const LEN: i64 = 245_000_000; // 4:05
+    /// 14:30 on day 0, the entries' own day: their times show.
+    const TODAY: u32 = 14 * 60 + 30;
 
     /// What GetAll returns for a fictional track.
     fn props(status: &str, title: &str, artist: &str) -> Vec<(String, Value)> {
@@ -453,7 +473,7 @@ mod tests {
         let players = one(t0);
         let p = Panel::new(&c, Some(&players), 40);
         assert_eq!(p.selected, 1, "the newest entry, after the card");
-        let b = rows(&c, Some(&players), &p, t0);
+        let b = rows(&c, Some(&players), &p, t0, TODAY);
         assert_eq!(b.cells(), (WIDTH + 2, 4 + 1 + 4 + 3), "card, separator, two entries of two lines, separator, two rows");
         assert_eq!(b.separators, vec![4, 9]);
         let t = texts(&b);
@@ -478,20 +498,20 @@ mod tests {
         let c = Center::new(&NotificationsConfig::default(), false);
         let p = Panel::new(&c, None, 40);
         assert_eq!(items(&c, None)[p.selected], Item::Dnd, "nothing else to select");
-        let b = rows(&c, None, &p, Instant::now());
+        let b = rows(&c, None, &p, Instant::now(), TODAY);
         let dnd = format!(" Do not disturb{}○", " ".repeat(15));
         assert_eq!(texts(&b), [" No notifications".to_string(), String::new(), dnd, " Clear all".to_string()]);
         assert_eq!(b.separators, vec![1]);
         assert_eq!(&b.rows[0].styles()[1..17], "m".repeat(16), "muted");
         let none = Players::default();
-        assert_eq!(rows(&c, Some(&none), &Panel::new(&c, Some(&none), 40), Instant::now()).cells().1, 4, "no player shown: no card");
+        assert_eq!(rows(&c, Some(&none), &Panel::new(&c, Some(&none), 40), Instant::now(), TODAY).cells().1, 4, "no player shown: no card");
     }
 
     #[test]
     fn do_not_disturb_shows_a_full_dot_when_on() {
         let mut c = Center::new(&NotificationsConfig::default(), false);
         c.set_dnd(true);
-        let b = rows(&c, None, &Panel::new(&c, None, 40), Instant::now());
+        let b = rows(&c, None, &Panel::new(&c, None, 40), Instant::now(), TODAY);
         assert_eq!(texts(&b)[2], format!(" Do not disturb{}●", " ".repeat(15)));
     }
 
@@ -543,7 +563,7 @@ mod tests {
         let mut p = Panel::new(&c, Some(&players), 40);
         assert_eq!(key(&mut p, &c, Some(&players), Key::Up), PanelAction::Redraw);
         assert_eq!(p.selected, 0, "on the card");
-        let b = rows(&c, Some(&players), &p, t0);
+        let b = rows(&c, Some(&players), &p, t0, TODAY);
         assert_eq!(&b.rows[3].styles()[15..18], "SSS", "now the card shows its band, on play/pause");
         assert_eq!(key(&mut p, &c, Some(&players), Key::Right), PanelAction::Media(MediaAction::Redraw));
         assert_eq!(key(&mut p, &c, Some(&players), Key::Enter), PanelAction::Media(MediaAction::Control(Control::Next)));
@@ -595,13 +615,13 @@ mod tests {
         // Room 13: the footer takes 3, so 5 entries of two lines show.
         let mut p = Panel::new(&c, None, 13);
         scroll_into_view(&mut p, &c, None);
-        assert_eq!(rows(&c, None, &p, t0).cells().1, 13, "within the room");
+        assert_eq!(rows(&c, None, &p, t0, TODAY).cells().1, 13, "within the room");
         for _ in 0..7 {
             assert_eq!(key(&mut p, &c, None, Key::Down), PanelAction::Redraw);
         }
         scroll_into_view(&mut p, &c, None);
         assert_eq!(p.top, 3, "entry 7 is the last of the five shown");
-        let b = rows(&c, None, &p, t0);
+        let b = rows(&c, None, &p, t0, TODAY);
         assert_eq!(texts(&b)[9], "   Event 42", "newest first: entry 7 is Event 42");
         assert_eq!(b.rows[8].styles(), "S".repeat(32));
         assert_eq!(key(&mut p, &c, None, Key::End), PanelAction::Redraw);
@@ -612,7 +632,7 @@ mod tests {
         assert_eq!(p.top, 0);
         let mut tiny = Panel::new(&c, None, 0);
         scroll_into_view(&mut tiny, &c, None);
-        assert_eq!(rows(&c, None, &tiny, t0).cells().1, 2 + 3, "at least one entry, whatever the room");
+        assert_eq!(rows(&c, None, &tiny, t0, TODAY).cells().1, 2 + 3, "at least one entry, whatever the room");
     }
 
     /// Fix round 1: the selection is the entry, not its row. A notification arriving above it moves
@@ -632,7 +652,7 @@ mod tests {
         assert_eq!(c.history().next().unwrap().id, calendar, "the newcomer is first");
         scroll_into_view(&mut p, &c, None);
         assert_eq!(p.selected, 1, "the highlight moved down with Chat");
-        let b = rows(&c, None, &p, t0);
+        let b = rows(&c, None, &p, t0, TODAY);
         assert_eq!(b.rows[2].styles(), "S".repeat(32), "Chat's row on the band");
         assert!(!b.rows[0].styles().contains('S'), "not the newcomer's");
         let revision = c.history().nth(1).unwrap().revision;
@@ -702,6 +722,66 @@ mod tests {
         assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(old), "Mailer followed");
     }
 
+    /// An entry with no summary shows its body's first line in its place.
+    #[test]
+    fn an_entry_without_a_summary_shows_its_first_body_line() {
+        let t0 = Instant::now();
+        let mut c = Center::new(&NotificationsConfig::default(), false);
+        let n = Incoming { body: "\n  Lina sent a photo\nsecond line".into(), ..incoming("Chat", "", &[], Urgency::Normal) };
+        let _ = c.notify(n, t0, 14 * 60 + 2);
+        let b = rows(&c, None, &Panel::new(&c, None, 40), t0, TODAY);
+        assert_eq!(texts(&b)[1], "   Lina sent a photo");
+    }
+
+    /// Past midnight, yesterday's entries show their date, today's their time.
+    #[test]
+    fn entries_from_another_day_show_their_date() {
+        use crate::clock::{DAY_MINUTES, days_from_civil};
+        let day = |d| u32::try_from(days_from_civil(2026, 10, d)).unwrap() * DAY_MINUTES;
+        let t0 = Instant::now();
+        let mut c = Center::new(&NotificationsConfig::default(), false);
+        let _ = c.notify(incoming("Mailer", "Weekly report ready", &[], Urgency::Normal), t0, day(8) + 23 * 60 + 59);
+        let _ = c.notify(incoming("Chat", "Message from Lina", &[], Urgency::Normal), t0, day(9) + 1);
+        let t = texts(&rows(&c, None, &Panel::new(&c, None, 40), t0, day(9) + 2));
+        assert!(t[0].ends_with("00:01"), "{}", t[0]);
+        assert!(t[2].ends_with("Oct 8"), "{}", t[2]);
+    }
+
+    /// The selected entry deleted: the selection goes to the entry above it, or the one below when it
+    /// was the first; never to "Do not disturb" or "Clear all" while an entry is left.
+    #[test]
+    fn deleting_the_selected_entry_selects_its_neighbour() {
+        let t0 = Instant::now();
+        let mut c = Center::new(&NotificationsConfig::default(), false);
+        let ids: Vec<u32> = ["a", "b", "c"].iter().map(|s| c.notify(incoming(s, s, &[], Urgency::Normal), t0, 600)).collect();
+        // History, newest first: c, b, a.
+        let mut p = Panel::new(&c, None, 40);
+        assert_eq!(key(&mut p, &c, None, Key::End), PanelAction::Redraw);
+        assert_eq!(key(&mut p, &c, None, Key::Up), PanelAction::Redraw);
+        assert_eq!(key(&mut p, &c, None, Key::Up), PanelAction::Redraw);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[0]), "the last entry, a");
+        c.remove(ids[0]);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(items(&c, None)[p.selected], Item::Entry(1), "b, above it, not Do not disturb");
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[1]));
+        assert_eq!(key(&mut p, &c, None, Key::Up), PanelAction::Redraw);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[2]), "c, the first");
+        c.remove(ids[2]);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[1]), "the first gone: the one below it");
+        c.remove(ids[1]);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(items(&c, None)[p.selected], Item::Dnd, "no entry left: Do not disturb");
+        // One in the middle: the entry above it, not the one that slid into its row.
+        let ids: Vec<u32> = ["d", "e", "f"].iter().map(|s| c.notify(incoming(s, s, &[], Urgency::Normal), t0, 600)).collect();
+        let mut p = Panel::new(&c, None, 40);
+        assert_eq!(key(&mut p, &c, None, Key::Down), PanelAction::Redraw);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[1]), "e, between f and d");
+        c.remove(ids[1]);
+        scroll_into_view(&mut p, &c, None);
+        assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[2]), "f, above it");
+    }
+
     /// Review Focus: a notification arriving while the panel is open shows first, and the selection
     /// stays on a row that exists.
     #[test]
@@ -710,10 +790,10 @@ mod tests {
         let (mut c, _, _) = center(t0);
         let mut p = Panel::new(&c, None, 40);
         assert_eq!(key(&mut p, &c, None, Key::Down), PanelAction::Redraw); // the older entry
-        let before = rows(&c, None, &p, t0);
+        let before = rows(&c, None, &p, t0, TODAY);
         let _ = c.notify(incoming("Calendar", "Standup in 5 minutes", &[], Urgency::Normal), t0 + Duration::from_secs(40), 14 * 60 + 5);
         scroll_into_view(&mut p, &c, None);
-        let after = rows(&c, None, &p, t0);
+        let after = rows(&c, None, &p, t0, TODAY);
         assert_eq!(after.cells().1, before.cells().1 + 2);
         assert_eq!(texts(&after)[1], "   Standup in 5 minutes");
         assert!(p.selected < items(&c, None).len());

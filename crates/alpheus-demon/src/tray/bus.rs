@@ -689,6 +689,19 @@ pub mod testing {
         m.set_sender(Some(":1.42".into()));
         m
     }
+
+    /// The same Notify, critical (`urgency` 2).
+    pub fn critical_notify_call(summary: &str) -> Message {
+        let hints: BTreeMap<String, Variant<u8>> = [("urgency".to_string(), Variant(2u8))].into();
+        let mut m = Message::new_method_call(":1.1", super::super::NOTIFICATIONS_PATH, super::super::NOTIFICATIONS_INTERFACE, "Notify")
+            .unwrap()
+            .append3("Fictional", 0u32, "")
+            .append3(summary, "", Vec::<String>::new())
+            .append2(hints, -1i32);
+        m.set_serial(9);
+        m.set_sender(Some(":1.42".into()));
+        m
+    }
 }
 
 #[cfg(test)]

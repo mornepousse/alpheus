@@ -1310,7 +1310,7 @@ impl App {
             notifications_of(tray.as_ref(), link.as_ref()).map(|n| {
                 let mut p = Panel::new(n.center(), players, room);
                 panel::scroll_into_view(&mut p, n.center(), players);
-                let rows = panel::rows(n.center(), players, &p, now);
+                let rows = panel::rows(n.center(), players, &p, now, crate::tray::notifications::minute_now());
                 let card = panel::items(n.center(), players).first() == Some(&panel::Item::Card);
                 (p, rows, card)
             })
@@ -1404,7 +1404,7 @@ impl App {
                     panel::scroll_into_view(p, n.center(), players);
                     let before = p.entries;
                     p.entries = n.center().history().count();
-                    Some((panel::rows(n.center(), players, p, now), before, p.entries))
+                    Some((panel::rows(n.center(), players, p, now, crate::tray::notifications::minute_now()), before, p.entries))
                 }
                 _ => None,
             }

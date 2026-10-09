@@ -4,7 +4,8 @@
 //! bubble a pointer falls on, the input region, and what a left click does. The surface is
 //! `bubbles_surface.rs`'s: nothing here talks to Wayland or a bus, starts a thread or runs a command.
 
-use crate::grid::{Grid, Style};
+use crate::clock::{DAY_MINUTES, SHORT_MONTHS, civil_from_days};
+use crate::grid::{Grid, Style, text_width};
 use crate::list::{self, Boxed};
 use crate::media::truncate_title;
 use crate::notify::{Center, Entry, Shown};
@@ -15,8 +16,6 @@ pub const GAP: u32 = 6;
 pub const BODY_LINES: usize = 3;
 /// The action a left click on a bubble (or Enter in the panel) runs (spec § 3).
 pub const DEFAULT_ACTION: &str = "default";
-/// Cells of the time at the header's right end ("14:02").
-const TIME: u16 = 5;
 
 /// One bubble: its notification (id and revision: a late click on a replaced one does nothing) and
 /// its rows, padded like the popups' (`list::padded`).
@@ -28,9 +27,15 @@ pub struct BubbleBox {
     pub critical: bool,
 }
 
-/// "14:02" from minutes since local midnight.
-pub fn clock(minute: u16) -> String {
-    format!("{:02}:{:02}", (minute / 60) % 24, minute % 60)
+/// When a notification came (`at`, local minutes since 1970, `clock::local_minutes`), seen at
+/// `now`: "14:02" on the same day, else the short date, "Oct 8".
+pub fn clock(at: u32, now: u32) -> String {
+    if at / DAY_MINUTES != now / DAY_MINUTES {
+        let (_, month, day) = civil_from_days(i64::from(at / DAY_MINUTES));
+        return format!("{} {day}", SHORT_MONTHS[usize::from(month.clamp(1, 12)) - 1]);
+    }
+    let minute = at % DAY_MINUTES;
+    format!("{:02}:{:02}", minute / 60, minute % 60)
 }
 
 /// The body as a bubble shows it: split on `\n`, blank lines dropped, at most `BODY_LINES`, each cut
@@ -48,8 +53,8 @@ pub fn body_lines(body: &str, width: u16) -> Vec<String> {
     out
 }
 
-/// One bubble's rows, `width` cells of content.
-fn bubble(shown: &Shown, width: u16) -> BubbleBox {
+/// One bubble's rows, `width` cells of content, its time as seen at `now` (`clock`).
+fn bubble(shown: &Shown, width: u16, now: u32) -> BubbleBox {
     let e = shown.entry;
     let mut rows = Vec::with_capacity(2 + BODY_LINES);
     let mut header = Grid::empty(width);
@@ -57,9 +62,11 @@ fn bubble(shown: &Shown, width: u16) -> BubbleBox {
     let x = header.write(0, width, &e.glyph.to_string(), glyph);
     let x = header.write(x, width, " ", Style::NORMAL);
     // The app name stops one cell before the time: a long one is cut, the time always shows.
-    let app_end = width.saturating_sub(TIME + 1);
+    let time = clock(e.at, now);
+    let time_width = text_width(&time);
+    let app_end = width.saturating_sub(time_width + 1);
     header.write(x, app_end, &truncate_title(&e.app, app_end.saturating_sub(x)), Style::NORMAL);
-    header.write(width.saturating_sub(TIME), width, &clock(e.at_minute), Style::MUTED);
+    header.write(width.saturating_sub(time_width), width, &time, Style::MUTED);
     rows.push(header);
     if !e.summary.trim().is_empty() {
         let mut g = Grid::empty(width);
@@ -74,9 +81,10 @@ fn bubble(shown: &Shown, width: u16) -> BubbleBox {
     BubbleBox { id: e.id, revision: e.revision, boxed: list::padded(&rows), critical: shown.critical }
 }
 
-/// The stack as drawn, top to bottom, in the order given (`Center::bubbles`: newest first).
-pub fn stack(shown: &[Shown], width: u16) -> Vec<BubbleBox> {
-    shown.iter().map(|s| bubble(s, width)).collect()
+/// The stack as drawn, top to bottom, in the order given (`Center::bubbles`), the times as seen at
+/// `now` (local minutes since 1970).
+pub fn stack(shown: &[Shown], width: u16, now: u32) -> Vec<BubbleBox> {
+    shown.iter().map(|s| bubble(s, width, now)).collect()
 }
 
 /// Each bubble's (top, height) in logical px, top to bottom, `gap` px apart.
@@ -179,12 +187,15 @@ mod tests {
             body: body.to_string(),
             actions: Vec::new(),
             urgency: Urgency::Normal,
-            at_minute: 14 * 60 + 2,
+            at: 14 * 60 + 2,
             live: true,
             read: false,
             resident: false,
         }
     }
+
+    /// 14:30 on day 0 (1970-01-01): the entries' own day.
+    const NOW: u32 = 14 * 60 + 30;
 
     fn shown(e: &Entry) -> Shown<'_> {
         Shown { entry: e, critical: false }
@@ -197,7 +208,7 @@ mod tests {
     #[test]
     fn a_bubble_shows_the_glyph_the_app_and_the_time_then_the_summary_in_bold() {
         let e = entry(7, "Mailer", "Weekly report ready", "");
-        let s = stack(&[shown(&e)], 40);
+        let s = stack(&[shown(&e)], 40, NOW);
         assert_eq!(s.len(), 1);
         let b = &s[0];
         assert_eq!((b.id, b.revision, b.critical), (7, 1, false));
@@ -213,15 +224,33 @@ mod tests {
         assert_eq!(b.boxed.rows[0].cells()[41].ch, ' ', "the right pad cell is never written over");
     }
 
+    /// Past midnight, an entry from the day before shows its date: "Oct 8", or "Oct 18" one cell
+    /// wider, the app name cut before it; the same day, its time.
+    #[test]
+    fn an_entry_from_another_day_shows_its_date() {
+        use crate::clock::days_from_civil;
+        let day = |y, m, d| u32::try_from(days_from_civil(y, m, d)).unwrap() * DAY_MINUTES;
+        let late = day(2026, 10, 8) + 23 * 60 + 59;
+        assert_eq!(clock(late, late), "23:59", "the same day");
+        assert_eq!(clock(late - 1, late), "23:58");
+        assert_eq!(clock(late, day(2026, 10, 9) + 1), "Oct 8", "two minutes later, past midnight");
+        assert_eq!(clock(day(2026, 10, 18) + 600, day(2027, 1, 2)), "Oct 18");
+        let mut e = entry(1, &"x".repeat(80), "Old", "");
+        e.at = day(2026, 10, 18) + 600;
+        let t = texts(&stack(&[shown(&e)], 24, day(2026, 10, 19))[0].boxed);
+        assert!(t[0].ends_with(" Oct 18"), "right-aligned, a cell before it: {}", t[0]);
+        assert!(t[0].contains('…'), "{}", t[0]);
+    }
+
     #[test]
     fn the_body_keeps_its_newlines_up_to_three_lines() {
         let e = entry(1, "Chat", "Lina", "First line\n\nSecond line\r\nThird line\nFourth line");
-        let t = texts(&stack(&[shown(&e)], 40)[0].boxed);
+        let t = texts(&stack(&[shown(&e)], 40, NOW)[0].boxed);
         assert_eq!(&t[1..], [" Lina", " First line", " Second line", " Third line…"], "blank lines dropped; the cut marked");
         assert_eq!(body_lines("one\ntwo\nthree", 40), ["one", "two", "three"], "exactly three: nothing marked");
         assert!(body_lines("", 40).is_empty() && body_lines("\n \n", 40).is_empty(), "no body: no row");
         let e = entry(2, "Chat", "", "Only a body");
-        assert_eq!(&texts(&stack(&[shown(&e)], 40)[0].boxed)[1..], [" Only a body"], "an empty summary takes no row");
+        assert_eq!(&texts(&stack(&[shown(&e)], 40, NOW)[0].boxed)[1..], [" Only a body"], "an empty summary takes no row");
     }
 
     #[test]
@@ -229,7 +258,7 @@ mod tests {
         let long = "x".repeat(80);
         let wide = "日本語の通知のとても長い件名です日本語の通知のとても長い件名です";
         let e = entry(1, &long, wide, &format!("{long}\n{wide}"));
-        let b = &stack(&[shown(&e)], 24)[0];
+        let b = &stack(&[shown(&e)], 24, NOW)[0];
         assert_eq!(b.boxed.cells(), (26, 4));
         for g in &b.boxed.rows {
             assert_eq!(g.width(), 26);
@@ -247,7 +276,7 @@ mod tests {
     #[test]
     fn a_critical_bubble_is_flagged_and_its_glyph_urgent() {
         let (a, b) = (entry(1, "Mailer", "One", ""), entry(2, "Monitor", "Disk almost full", ""));
-        let s = stack(&[Shown { entry: &b, critical: true }, shown(&a)], 40);
+        let s = stack(&[Shown { entry: &b, critical: true }, shown(&a)], 40, NOW);
         assert_eq!(s.iter().map(|x| (x.id, x.critical)).collect::<Vec<_>>(), [(2, true), (1, false)], "the order given: newest first");
         assert_eq!(&s[0].boxed.rows[0].styles()[1..2], "u");
         assert_eq!(&s[1].boxed.rows[0].styles()[1..2], "a");
@@ -331,10 +360,10 @@ mod tests {
         let mut c = Center::new(&cfg, false);
         let now = Instant::now();
         let ids: Vec<u32> = (0..10).map(|n| c.notify(incoming(&format!("Alert {n}"), Urgency::Critical), now, 600)).collect();
-        let shown = |c: &Center| stack(&c.bubbles(), cfg.width).iter().map(|b| b.id).collect::<Vec<_>>();
+        let shown = |c: &Center| stack(&c.bubbles(), cfg.width, NOW).iter().map(|b| b.id).collect::<Vec<_>>();
         assert_eq!(shown(&c), [ids[9], ids[8], ids[7], ids[6]], "max_visible, newest on top");
         assert_eq!(find(&c, ids[2]).map(|e| e.id), Some(ids[2]), "a waiting one is found too");
-        assert_eq!(c.close(ids[9], CloseReason::Dismissed), [Effect::Closed(ids[9], CloseReason::Dismissed)]);
+        assert_eq!(c.close(ids[9], CloseReason::Dismissed, now), [Effect::Closed(ids[9], CloseReason::Dismissed)]);
         assert_eq!(shown(&c), [ids[8], ids[7], ids[6], ids[5]], "the next waiting one shows");
         assert_eq!(activation(find(&c, ids[9]), 1), Activation::Stale, "the dismissed one: a late click does nothing");
     }

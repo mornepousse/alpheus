@@ -14,7 +14,7 @@
 use super::bus::{self, Call, CallError, CallId, Message, Outbox, refusal};
 use super::codec::{self, Inbound, Reply, Signal};
 use super::{NOTIFICATIONS_NAME, NOTIFICATIONS_PATH};
-use crate::clock::LocalTime;
+use crate::clock::{LocalTime, local_minutes};
 use crate::config::NotificationsConfig;
 use crate::log::write as log;
 use crate::notify::{Center, CloseReason, Effect, NotifyView};
@@ -26,11 +26,11 @@ pub fn serves(call: &Message) -> bool {
     call.path().is_some_and(|p| &*p == NOTIFICATIONS_PATH)
 }
 
-/// Minutes since local midnight, for the panel's "14:02": read only for a call on the
-/// Notifications path.
-pub fn minute_now() -> u16 {
+/// The local time in minutes since 1970 (`clock::local_minutes`), for "14:02" or "Oct 8": read
+/// for a Notify served, and when the bubbles or the panel are drawn.
+pub fn minute_now() -> u32 {
     let (t, _) = LocalTime::now();
-    u16::from(t.hour) * 60 + u16::from(t.minute)
+    local_minutes(&t)
 }
 
 pub struct Notifications {
@@ -137,7 +137,7 @@ impl Notifications {
     /// One call on the Notifications path (`serves`): the reply to send, None when the call asked
     /// for none. Refused while the name is not held. `minute` (the local time, `minute_now`) is read
     /// only for a Notify served.
-    pub fn handle(&mut self, call: &Message, now: Instant, minute: impl FnOnce() -> u16) -> Option<Message> {
+    pub fn handle(&mut self, call: &Message, now: Instant, minute: impl FnOnce() -> u32) -> Option<Message> {
         let wanted = !call.get_no_reply();
         if !self.held {
             return wanted.then(|| refusal(call));
@@ -145,11 +145,13 @@ impl Notifications {
         let reply = match codec::inbound(call) {
             Inbound::Notify(n) => {
                 let id = self.center.notify(n, now, minute());
-                self.touched();
+                // A critical demoted by a flood ends like any bubble: NotificationClosed (1).
+                let effects = self.center.take_effects();
+                self.emit(effects);
                 bus::notify_reply(call, id)
             }
             Inbound::Close(id) => {
-                let effects = self.center.close(id, CloseReason::Closed);
+                let effects = self.center.close(id, CloseReason::Closed, now);
                 self.emit(effects);
                 bus::empty_reply(call)
             }
@@ -368,11 +370,29 @@ mod tests {
         assert!(n.handle(&caps, Instant::now(), || 600).is_none(), "no reply wanted: none sent");
     }
 
+    /// A flood of criticals: the one `notify` demotes to the history goes out as NotificationClosed
+    /// (reason 1, expired), like any bubble that ends.
+    #[test]
+    fn a_critical_demoted_by_a_flood_is_signalled_closed() {
+        let mut n = held();
+        let ids: Vec<u32> = (0..9)
+            .map(|i| {
+                let reply =
+                    n.handle(&crate::tray::bus::testing::critical_notify_call(&format!("alert {i}")), Instant::now(), || 600).unwrap();
+                reply.read1::<u32>().unwrap()
+            })
+            .collect();
+        let effects = n.take_effects();
+        assert_eq!(effects.len(), 1, "the ninth demotes the first");
+        assert_eq!(effects[0].member().as_deref(), Some("NotificationClosed"));
+        assert_eq!(effects[0].read2::<u32, u32>().unwrap(), (ids[0], 1));
+    }
+
     /// Task 4's review: the local time is read only for a Notify served while the name is held,
     /// never for a refused call nor for the other methods.
     #[test]
     fn the_minute_is_read_only_for_a_served_notify() {
-        let never = || -> u16 { panic!("the clock read for a call that needs no time") };
+        let never = || -> u32 { panic!("the clock read for a call that needs no time") };
         let notify = || crate::tray::bus::testing::notify_call("hello");
         let (_, mut queued) = started(false);
         assert!(queued.handle(&notify(), Instant::now(), never).is_some(), "refused while not held, no clock read");
@@ -390,7 +410,7 @@ mod tests {
             .is_some()
         );
         assert_eq!(read.get(), 1, "read once for a served Notify");
-        assert_eq!(n.center().history().next().map(|e| e.at_minute), Some(14 * 60 + 2));
+        assert_eq!(n.center().history().next().map(|e| e.at), Some(14 * 60 + 2));
     }
 
     #[test]
@@ -398,13 +418,13 @@ mod tests {
         let (_, mut n) = started(false);
         let now = Instant::now();
         let id = n.center_mut().notify(note("unseen"), now, 600);
-        n.act(|c| c.close(id, CloseReason::Dismissed));
+        n.act(|c| c.close(id, CloseReason::Dismissed, now));
         assert!(n.take_effects().is_empty(), "nobody to tell while another server has the name");
         let mut n = held();
         let open = Action { key: "default".into(), label: "Open".into() };
         let id = n.center_mut().notify(Incoming { actions: vec![open], ..note("open me") }, now, 600);
         let revision = n.center().history().find(|e| e.id == id).map(|e| e.revision).unwrap();
-        n.act(|c| c.invoke(id, revision, "default"));
+        n.act(|c| c.invoke(id, revision, "default", now));
         let effects = n.take_effects();
         assert_eq!(effects[0].member().as_deref(), Some("ActionInvoked"));
         assert_eq!(effects[0].read2::<u32, &str>().unwrap(), (id, "default"));
@@ -482,7 +502,8 @@ mod tests {
     }
 
     #[test]
-    fn the_minute_is_within_a_day() {
-        assert!(minute_now() < 24 * 60);
+    fn the_minute_counts_the_days_since_1970() {
+        let day = minute_now() / crate::clock::DAY_MINUTES;
+        assert!(i64::from(day) >= crate::clock::days_from_civil(2026, 1, 1), "day {day}: the date, not only the time of day");
     }
 }
