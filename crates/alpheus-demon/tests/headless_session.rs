@@ -1219,6 +1219,85 @@ fn a_click_elsewhere_closes_it_and_leaves_no_timer() {
     assert_eq!(delta, 0, "the loop woke {delta} times at rest after the calendar: {:?}", d.log());
 }
 
+/// The bar still runs a second later, and never panicked: a debug build's panic takes a while to
+/// print its backtrace before the abort, so the log is checked too.
+fn survives(d: &mut Daemon, after: &str) {
+    assert_eq!(d.exit(Duration::from_millis(1000)), None, "the bar died after {after}: {:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("panicked")), "the bar panicked after {after}: {:?}", d.log());
+}
+
+/// Mae's crash (2026-10-06, 2026-10-09: "RefCell already borrowed" in calloop, then an abort):
+/// a key that repeats (any letter, Right…) arms SCTK's repeat timer; once its delay has passed,
+/// the timer is gone but its token stays in the keyboard's data. The keyboard released after that,
+/// with no key arming a new timer (an outside click, a Toggle), had its last reference dropped
+/// inside calloop's dispatch when the compositor's `delete_id` was read, and that data's Drop
+/// re-entered calloop. On headless sway, wtype's virtual keyboard is the seat's only one: each
+/// wtype below stays alive (its trailing `-s`) past the close, so the close is what releases it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_keyboard_released_after_its_repeat_delay_keeps_the_bar_alive() {
+    let (sway, _hypr, mut d) = clock_bar("keyboard-drop", "");
+    ready(&d);
+    // The calendar, then Right (a repeating key), then past sway's 600 ms repeat delay an outside
+    // click: "popup closed (outside click)", as in Mae's journal.
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Right", "-s", "2500"]);
+    assert!(d.wait_for("calendar shows", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1000));
+    sway.click(640, 10, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("keyboard released", DELAY), "{:?}", d.log());
+    survives(&mut d, "the popup");
+    let _ = held.wait();
+    // The launcher, a letter typed, then past the delay a Toggle closes it.
+    for round in 1..=3 {
+        assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+        assert!(d.wait_for_count(SHOWN, round, DELAY), "{:?}", d.log());
+        let held = wtype_spawn(&sway, &["-s", "300", "x", "-s", "2000"]);
+        thread::sleep(Duration::from_millis(1300));
+        assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+        assert!(d.wait_for_count("launcher closed (toggle)", round, DELAY), "{:?}", d.log());
+        assert!(d.wait_for_count("keyboard released", round + 1, DELAY), "{:?}", d.log());
+        survives(&mut d, &format!("the launcher, round {round}"));
+        let _ = held.wait();
+    }
+}
+
+/// The closes of Mae's daily use, many times in a row: Enter (a script menu answered) and Escape
+/// on the launcher, then an outside click on the calendar after Right's repeat delay. The bar must
+/// outlive all of them. (A close by a repeating key arms a fresh repeat timer that keeps the
+/// keyboard's data alive past the `delete_id`, so those 60 closes alone never crashed; the last
+/// close is the one that did.)
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn thirty_launcher_closes_by_key_then_an_outside_click_keep_the_bar_alive() {
+    let (sway, _hypr, mut d) = clock_bar("keyboard-cycles", "");
+    ready(&d);
+    for round in 1..=30 {
+        let shown = 2 * round - 1;
+        let menu = script(&sway, &["--dmenu"], "one\ntwo\n");
+        assert!(d.wait_for_count(SHOWN, shown, DELAY), "{:?}", d.log());
+        assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+        let (code, out, _) = menu.join().unwrap();
+        assert_eq!((code, out.as_str()), (EXIT_OK, "one\n"), "round {round}");
+        assert!(d.wait_for_count("launcher closed (activated)", round, DELAY), "{:?}", d.log());
+        assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+        assert!(d.wait_for_count(SHOWN, shown + 1, DELAY), "{:?}", d.log());
+        assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+        assert!(d.wait_for_count("launcher closed (escape)", round, DELAY), "{:?}", d.log());
+    }
+    sway.click(40, 10, "button1");
+    assert!(d.wait_for("calendar shown", DELAY), "{:?}", d.log());
+    let held = wtype_spawn(&sway, &["-s", "300", "-k", "Right", "-s", "2500"]);
+    assert!(d.wait_for("calendar shows", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(1000));
+    sway.click(640, 10, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    survives(&mut d, "sixty launcher closes and an outside click");
+    let _ = held.wait();
+}
+
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn an_output_going_away_closes_the_calendar() {

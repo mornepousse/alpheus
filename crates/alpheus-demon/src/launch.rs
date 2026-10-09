@@ -723,6 +723,8 @@ pub fn run() -> i32 {
         }
         after_dispatch(&mut state);
         after_dispatch_windows(&mut state);
+        // Outside the dispatch: a released keyboard's last reference (`retired`).
+        state.retired_keyboards.drain();
         // After the whole batch (so any `output_destroyed` paired with a
         // `closed` of this same batch has already run): places the bar
         // back on outputs `closed` marked for restoration and that are

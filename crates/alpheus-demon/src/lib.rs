@@ -29,6 +29,7 @@ pub mod painter;
 pub mod pipewire;
 pub mod placement;
 pub mod popup;
+pub mod retired;
 pub mod segments;
 pub mod sources;
 pub mod state;

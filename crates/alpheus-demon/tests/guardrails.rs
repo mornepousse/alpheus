@@ -378,6 +378,28 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
     assert_eq!(body.matches("self.keyboard_release()").count(), 1, "one release, on both paths: {body}");
 }
 
+/// Mae's crash (2026-10-06, 2026-10-09): a released `wl_keyboard`'s last reference, dropped inside
+/// calloop's dispatch, made SCTK's repeat data re-enter the loop. Every release goes through
+/// `keyboard_retire`, which holds the keyboard in `retired_keyboards`, and the loop drains that
+/// list right after each `dispatch` returns. The ordering needs a compositor's `delete_id`, so the
+/// wiring is checked in the source (`retired.rs` tests the hazard and the drain on a real loop).
+#[test]
+fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (popup, launch) = (src("popup.rs"), src("launch.rs"));
+    for f in ["pub(crate) fn keyboard_release(", "pub(crate) fn keyboard_lost("] {
+        let body = function_body(&popup, f);
+        assert!(body.contains("self.keyboard_retire(k)"), "{f} must retire the keyboard, never drop it: {body}");
+    }
+    let retire = function_body(&popup, "fn keyboard_retire(");
+    assert!(retire.contains("self.retired_keyboards.hold(k)"), "keyboard_retire must hold it: {retire}");
+    let run = function_body(&launch, "pub fn run(");
+    let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
+    let drain = run.find("state.retired_keyboards.drain()").expect("the loop must drain the retired keyboards");
+    assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
+}
+
 /// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
