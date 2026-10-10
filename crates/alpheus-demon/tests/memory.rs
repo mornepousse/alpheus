@@ -21,11 +21,12 @@ use alpheus_commun::launcher_ipc::{DmenuFlags, Reply, Request, encode_request, s
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, launcher,
-    pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, fake_source,
+    launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const DELAY: Duration = Duration::from_secs(10);
@@ -170,11 +171,25 @@ fn many_apps() -> Vec<(String, String)> {
         .collect()
 }
 
-fn start_launcher(name: &str, bus: &PrivateBus, bar_toml: Option<&str>, apps: &[(String, String)]) -> (Sway, FakeHyprland, Daemon) {
+/// `launcher_toml` builds launcher.toml from the sway runtime directory (a fake source lives in it).
+fn start_launcher(
+    name: &str,
+    bus: &PrivateBus,
+    bar_toml: Option<&str>,
+    apps: &[(String, String)],
+    launcher_toml: Option<&dyn Fn(&Path) -> String>,
+) -> (Sway, FakeHyprland, Daemon) {
     let files: Vec<(&str, &str)> = apps.iter().map(|(n, t)| (n.as_str(), t.as_str())).collect();
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let options = DaemonOptions { bar_toml, system_bus: Some(&bus.address), desktop_files: &files, ..DaemonOptions::default() };
+    let toml = launcher_toml.map(|build| build(&sway.runtime));
+    let options = DaemonOptions {
+        bar_toml,
+        system_bus: Some(&bus.address),
+        desktop_files: &files,
+        launcher_toml: toml.as_deref(),
+        ..DaemonOptions::default()
+    };
     let d = start_daemon_with(&sway, &options);
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
@@ -210,7 +225,7 @@ fn key_cycle(sway: &Sway, d: &Daemon, n: usize) {
 fn launcher_open_latency_under_20ms() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("latency");
-    let (sway, _hypr, d) = start_launcher("latency", &bus, None, &many_apps());
+    let (sway, _hypr, d) = start_launcher("latency", &bus, None, &many_apps(), None);
     std::thread::sleep(Duration::from_secs(2));
     let mut us = Vec::new();
     for n in 1..=20 {
@@ -228,7 +243,7 @@ fn launcher_open_latency_under_20ms() {
 fn launcher_open_close_cycles_no_growth() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("cycles");
-    let (sway, _hypr, d) = start_launcher("cycles", &bus, None, &many_apps());
+    let (sway, _hypr, d) = start_launcher("cycles", &bus, None, &many_apps(), None);
     std::thread::sleep(Duration::from_secs(3)); // startup settled, as in pss_under_30mb_and_stable
     let closed = d.pss_kb();
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
@@ -270,12 +285,87 @@ fn launcher_open_close_cycles_no_growth() {
     assert!(end <= baseline + 1024, "50 open/close cycles grew PSS: {baseline} -> {end} KB");
 }
 
+/// 300 fictional source lines in tools-menu's shape.
+fn source_lines(n: usize) -> Vec<String> {
+    (0..n).map(|i| format!("Catégorie {} · Entrée {i}", i / 20)).collect()
+}
+
+/// Delivered-source summaries in the log: "launcher sources: <n> entries, <ms> ms after the request"
+/// (not the "previous open's are still being read" notice).
+fn source_summaries(d: &Daemon) -> Vec<String> {
+    d.log()
+        .into_iter()
+        .filter(|l| l.split_once("launcher sources: ").is_some_and(|(_, r)| r.starts_with(|c: char| c.is_ascii_digit())))
+        .collect()
+}
+
+/// ms from a summary line.
+fn entries_ms(line: &str) -> Option<u64> {
+    line.rsplit_once(", ")?.1.strip_suffix(" ms after the request")?.trim().parse().ok()
+}
+
+/// Sources spec § 7: PSS with no source and with a 300-line source, open latency with it (the box
+/// shows at once, the entries follow), and 0 wake-ups at rest after. Printed for the README; the
+/// latency keeps the launcher's 20 ms budget, the rest its <= 4 wake-ups.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_sources_pss_latency_and_rest() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("sources");
+    for lines in [0, 300] {
+        let build = move |runtime: &Path| fake_source(runtime, "Outils", &source_lines(lines));
+        let toml: Option<&dyn Fn(&Path) -> String> = if lines > 0 { Some(&build) } else { None };
+        let (sway, _hypr, d) = start_launcher(&format!("sources-{lines}"), &bus, Some(AT_REST), &many_apps(), toml);
+        std::thread::sleep(Duration::from_secs(3));
+        let closed = d.pss_kb();
+        let (mut us, mut open) = (Vec::new(), 0);
+        for n in 1..=21 {
+            assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+            assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+            if lines > 0 {
+                let t = Instant::now();
+                while source_summaries(&d).len() < n && t.elapsed() < DELAY {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert!(source_summaries(&d).len() >= n, "{:?}", d.log());
+            }
+            us.push(d.last_open_latency_us().expect("the latency is logged"));
+            std::thread::sleep(Duration::from_millis(300)); // past the toggle debounce
+            if n == 1 {
+                open = d.pss_kb();
+            }
+            assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+            assert!(d.wait_for_count("launcher closed (", n, DELAY), "{:?}", d.log());
+        }
+        let mut ms: Vec<u64> = source_summaries(&d).iter().filter_map(|l| entries_ms(l)).collect();
+        us.sort_unstable();
+        ms.sort_unstable();
+        std::thread::sleep(Duration::from_secs(3));
+        let (before, ticks) = (d.wakeups(), d.cpu_ticks());
+        std::thread::sleep(Duration::from_secs(5));
+        let wakeups = d.wakeups().saturating_sub(before);
+        assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), "the daemon after source runs");
+        let after = d.pss_kb();
+        eprintln!(
+            "launcher sources, {lines}-line source: PSS closed {closed} KB, open {open} KB (+{} KB), after 21 opens {after} KB; \
+             open latency median {} us (max {}); entries median {:?} ms (max {:?}); wake-ups at rest (5 s): {wakeups}",
+            open.saturating_sub(closed),
+            us[us.len() / 2],
+            us[us.len() - 1],
+            ms.get(ms.len() / 2),
+            ms.last()
+        );
+        assert!(us[us.len() / 2] < 20_000, "median open latency {} us >= 20 ms: report to Mae", us[us.len() / 2]);
+        assert!(wakeups <= 4, "{wakeups} wake-ups in 5 s at rest after source runs");
+    }
+}
+
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn at_rest_no_wakeups_after_a_launcher_cycle() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("launcher-rest");
-    let (sway, _hypr, d) = start_launcher("launcher-rest", &bus, Some(AT_REST), &[]);
+    let (sway, _hypr, d) = start_launcher("launcher-rest", &bus, Some(AT_REST), &[], None);
     std::thread::sleep(Duration::from_secs(2));
     let threads = d.threads();
     // Closed by a typed Escape: a key that closes arms sctk's repeat timer
@@ -305,7 +395,7 @@ fn at_rest_no_wakeups_after_a_launcher_cycle() {
 fn launcher_threads_back_to_baseline() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("launcher-threads");
-    let (sway, _hypr, d) = start_launcher("launcher-threads", &bus, Some(AT_REST), &many_apps());
+    let (sway, _hypr, d) = start_launcher("launcher-threads", &bus, Some(AT_REST), &many_apps(), None);
     std::thread::sleep(Duration::from_secs(2));
     let before = d.threads();
     cycle(&sway, &d, 1);
@@ -328,7 +418,7 @@ fn launcher_threads_back_to_baseline() {
 fn large_dmenu_pss_is_reported() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("large-dmenu");
-    let (sway, _hypr, d) = start_launcher("large-dmenu", &bus, None, &[]);
+    let (sway, _hypr, d) = start_launcher("large-dmenu", &bus, None, &[], None);
     std::thread::sleep(Duration::from_secs(2));
     let closed = d.pss_kb();
     let socket = socket_path(&sway.runtime);
