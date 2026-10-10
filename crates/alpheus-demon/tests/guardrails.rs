@@ -543,6 +543,29 @@ fn the_launcher_socket_is_bound_only_in_socket_rs() {
     assert_eq!(binds, 1, "the launcher socket is bound once");
 }
 
+/// Launcher sources (sources spec § 6): `Executor::capture` blocks for up to its deadline, so only
+/// the source runner calls it, on the scan thread (`NonBlocking` delegates it); and the runner never
+/// builds a shell command from a line — the line is one argv element.
+#[test]
+fn only_the_source_runner_captures_and_never_through_a_shell() {
+    let mut runner = None;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if prod.contains(".capture(") {
+            assert!(matches!(name.as_str(), "launcher/sources.rs" | "nonblocking.rs"), ".capture( in {name}: it blocks");
+        }
+        if name == "launcher/sources.rs" {
+            runner = Some(prod);
+        }
+    }
+    let runner = runner.expect("launcher/sources.rs");
+    assert!(runner.contains(".capture("), "the runner reads through the executor");
+    for never in ["shell_argv", "\"sh\"", "\"-c\"", "spawn("] {
+        assert!(!runner.contains(never), "{never} in launcher/sources.rs");
+    }
+}
+
 /// Not a behavioural test of the socket itself: this match has no wildcard,
 /// so it is an exhaustive-match tripwire — a new `Request` variant stops
 /// THIS FILE compiling until the match below (and the review that goes with
