@@ -359,8 +359,9 @@ impl Launcher {
         };
         self.results = self.ranker.rank(&q);
         // `--visible N`: an empty query lists the first N lines (`everything` keeps input order).
+        // Empty as the ranker sees it: a blank query ("  ") holds no atom and lists every line.
         if let Some(n) = self.visible
-            && self.query.is_empty()
+            && self.query.trim().is_empty()
         {
             self.results.truncate(n);
         }
@@ -929,6 +930,9 @@ mod tests {
         assert_eq!(sources(&s), [Source::Line(3)], "typing searches every line");
         s.key(Key::CtrlU);
         assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)], "back to the first two");
+        typed(&mut s, " ");
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)], "a lone space is no search (no atom): still the first two");
+        s.key(Key::CtrlU);
         typed(&mut s, "a");
         assert_eq!(s.results.len(), 4, "a typed query matching more than N lines lists all of them");
         let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(true, Some(2)));
