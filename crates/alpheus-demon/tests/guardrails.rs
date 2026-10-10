@@ -6,18 +6,20 @@
 //! forbidden words appear nowhere in its sources.
 
 use alpheus_commun::exec::fake::FakeExecutor;
+use alpheus_commun::exec::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::appearance::SETTING_RULE;
 use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
 use alpheus_demon::config::BarConfig;
 use alpheus_demon::keys::Key;
-use alpheus_demon::launcher::config::LauncherConfig;
+use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
 use alpheus_demon::launcher::history::History;
 use alpheus_demon::launcher::matching::Mode;
 use alpheus_demon::launcher::model::{Launcher, Outcome};
 use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
+use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
@@ -1135,7 +1137,9 @@ fn launcher_app(id: &str, name: &str, exec: &str, terminal: bool, actions: &[(&s
 /// or in its systemd scope, after the terminal for Terminal=true; a $PATH
 /// command, alone (Ctrl+Enter, detached) or held in the terminal (Enter,
 /// `terminal_hold`); `sh -c` only from the Commands mode, alone or held the
-/// same way; the focus template, never wrapped. And each shape is reached.
+/// same way; the focus template, never wrapped; a command-source entry, its
+/// source's `run` with the whole line as one argv element (never `sh -c`),
+/// from All only. And each shape is reached.
 #[test]
 fn every_launcher_activation_stays_on_the_allowlist() {
     let catalog = Catalog {
@@ -1154,6 +1158,15 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         focused: false,
     };
     let windows = vec![toplevel("address:0x583d9c60da90"), toplevel("id:12")];
+    // A source line full of shell syntax: it must reach `run` as one argument, as is.
+    let line = "Captures · Zone; echo $(id) > ~/x";
+    let outils = SourceConfig {
+        name: "Outils".into(),
+        list: vec!["tools-menu".into(), "--list".into()],
+        run: vec!["tools-menu".into(), "--run".into(), "{line}".into()],
+    };
+    let entries = Entries { sources: vec![outils], items: vec![SourceEntry::new(0, line)] };
+    let entry_call = format!("tools-menu --run {line}");
     // Every program the fixture may start, as executable stubs on a $PATH of
     // its own (never run: the executor is fake). `_bin_guard` removes the
     // directory when this function returns, even if an assertion below
@@ -1161,7 +1174,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh"] {
+    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh", "tools-menu"] {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1181,6 +1194,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             let fresh = || {
                 let mut l = Launcher::for_apps(LauncherConfig::default(), windows.clone(), History::empty(200), 1_800_000_000);
                 l.set_catalog(catalog.clone());
+                l.set_entries(entries.clone());
                 l.click_mode(mode);
                 l
             };
@@ -1197,6 +1211,13 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             outcomes.push((typed.key(Key::Enter), mode));
             outcomes.push((typed.key(Key::CtrlEnter), mode));
+            // A typed query reaches the source entries (in All only).
+            let mut sourced = fresh();
+            for c in "zone".chars() {
+                sourced.key(Key::Char(c));
+            }
+            outcomes.push((sourced.key(Key::Enter), mode));
+            outcomes.push((sourced.key(Key::CtrlEnter), mode));
             if mode == Mode::All {
                 // The prefix route into Commands mode (Global Constraints:
                 // `>` by default): starting in All and typing the prefix
@@ -1229,11 +1250,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     } else if terminal_hold_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
                         "terminal hold command"
+                    } else if unwrapped == entry_call {
+                        assert_eq!(mode, Mode::All, "a source entry outside the All mode: {c}");
+                        "source entry"
                     } else if let Some(text) =
                         unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
                     {
                         assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
-                        assert_eq!(text, "ls -la", "only typed text goes through the shell: {c}");
+                        assert!(matches!(text, "ls -la" | "zone"), "only typed text goes through the shell: {c}");
                         if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
                     } else {
                         panic!("command outside the allowlist: {c}")
@@ -1251,10 +1275,56 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         ("shell", true),
         ("terminal hold shell", false),
         ("focus", false),
+        ("source entry", true),
+        ("source entry", false),
     ] {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+    // The joined call lines above cannot tell one argument from several: the entry's argv, as
+    // given to the executor, is the source's `run` with the line as exactly one element.
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), vec![], History::empty(200), 1_800_000_000);
+        l.set_entries(entries.clone());
+        for c in "zone".chars() {
+            l.key(Key::Char(c));
+        }
+        let Outcome::Activate(a) = l.key(Key::Enter) else { panic!("Enter on a source entry activates nothing") };
+        let spy = ArgvSpy::default();
+        let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &path_dirs });
+        let calls = spy.0.lock().unwrap().clone();
+        let scoped: Vec<String> = SYSTEMD_RUN.iter().map(|s| s.to_string()).collect();
+        let argv = calls.first().expect("the entry ran nothing");
+        let argv = if spawner == Spawner::SystemdScope { argv.strip_prefix(&scoped[..]).expect("not in its scope") } else { &argv[..] };
+        assert_eq!(argv, ["tools-menu", "--run", line], "{spawner:?}: the line is one argv element, as is");
+        assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell: {argv:?}");
+    }
+}
+
+/// Records each call's argv as given (program first), element by element; every call fails.
+#[derive(Default)]
+struct ArgvSpy(std::sync::Mutex<Vec<Vec<String>>>);
+
+impl ArgvSpy {
+    fn record(&self, prog: &str, args: &[&str]) -> ExecError {
+        self.0.lock().unwrap().push(std::iter::once(prog).chain(args.iter().copied()).map(String::from).collect());
+        ExecError::NotFound
+    }
+}
+
+impl Executor for ArgvSpy {
+    fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError> {
+        Err(self.record(prog, args))
+    }
+    fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
+        Err(self.record(prog, args))
+    }
+    fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
+        Err(self.record(prog, args))
+    }
+    fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
+        Err(self.record(prog, args))
+    }
 }
 
 /// Themes task 4: the daemon paints with the 16 roles only. Task 1's temporary 7-colour

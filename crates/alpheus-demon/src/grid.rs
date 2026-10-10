@@ -56,6 +56,9 @@ impl Style {
     pub const ACTIVE: Style = Style { fg: Tint::OnAccent, bg: Tint::AccentContainer, bold: false };
     /// The selected row of a menu or of the launcher (spec § 4).
     pub const SELECTED: Style = Style { fg: Tint::Fg, bg: Tint::Selection, bold: false };
+    /// Secondary text on the selected row: dimmed, on the selection band (a source entry's path,
+    /// sources spec § 3).
+    pub const SELECTED_MUTED: Style = Style { fg: Tint::FgDim, bg: Tint::Selection, bold: false };
     pub const SURFACE: Style = Style { fg: Tint::Fg, bg: Tint::Pill, bold: false };
     pub const ERROR: Style = Style { fg: Tint::Error, bg: Tint::Bg, bold: false };
     /// Low battery, a degraded state.
@@ -82,6 +85,7 @@ impl Style {
             Style::MUTED => 'm',
             Style::ACTIVE => 'A',
             Style::SELECTED => 'S',
+            Style::SELECTED_MUTED => 'M',
             Style::SURFACE => 's',
             Style::ERROR => 'e',
             Style::WARN => 'w',
@@ -416,6 +420,7 @@ mod tests {
             (Style::MUTED, 'm'),
             (Style::ACTIVE, 'A'),
             (Style::SELECTED, 'S'),
+            (Style::SELECTED_MUTED, 'M'),
             (Style::SURFACE, 's'),
             (Style::ERROR, 'e'),
             (Style::WARN, 'w'),

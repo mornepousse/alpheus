@@ -9,9 +9,10 @@
 
 use crate::actions::substitute;
 use crate::launcher::desktop::{BadExec, DesktopEntry, ExecContext, exec_argv};
-use crate::launcher::history::{app_key, command_key};
+use crate::launcher::history::{app_key, command_key, source_key};
 use crate::launcher::model::{Activation, Launcher};
 use crate::launcher::scan::has_program;
+use crate::launcher::sources::run_argv;
 use crate::log::write as log;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{Reply, wipe};
@@ -137,7 +138,8 @@ fn remember(l: &mut Launcher, ctx: &RunContext, key: &str) {
 /// Looks the program up in `path_dirs` (argv[0] after the terminal is prepended; windows
 /// excepted), spawns through the executor (systemd-run NotFound → retried Detached), records
 /// history (apps under app_key, actions under their app, commands under command_key; Shell and
-/// windows never recorded) then saves it (a save error is logged, not shown; no fsync on the event
+/// windows never recorded; a source entry runs its source's `run` with the whole line as one
+/// argument, recorded under source_key) then saves it (a save error is logged, not shown; no fsync on the event
 /// loop). Err(message) on a missing program or a spawn failure: the caller shows it in the box
 /// and stays open.
 pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done, String> {
@@ -163,6 +165,15 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
             launch(ctx, terminal.iter().cloned().chain([name.clone()]).collect())?;
             remember(l, ctx, &command_key(&name));
         }
+        Activation::Entry(i) => {
+            let entries = l.entries.as_ref().ok_or_else(gone)?;
+            let item = entries.items.get(i).ok_or_else(gone)?;
+            let source = entries.sources.get(item.source).ok_or_else(gone)?;
+            let argv = run_argv(&source.run, &item.line);
+            let key = source_key(&source.name, &item.line);
+            launch(ctx, argv)?;
+            remember(l, ctx, &key);
+        }
         Activation::Shell { text, terminal } => {
             let terminal = terminal.then_some(&l.config.terminal_hold[..]);
             launch(ctx, shell_argv(&text, terminal))?;
@@ -180,10 +191,11 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
 mod tests {
     use super::*;
     use crate::compositor::Toplevel;
-    use crate::launcher::config::LauncherConfig;
+    use crate::launcher::config::{LauncherConfig, SourceConfig};
     use crate::launcher::desktop::DesktopAction;
     use crate::launcher::history::History;
     use crate::launcher::scan::Catalog;
+    use crate::launcher::sources::{Entries, SourceEntry};
     use crate::launcher::testing::TempDir;
     use alpheus_commun::exec::fake::FakeExecutor;
     use alpheus_commun::launcher_ipc::DmenuFlags;
@@ -531,5 +543,43 @@ mod tests {
             assert!(perform(&mut l, a, &c).unwrap_err().contains("list changed"));
         }
         assert!(f.calls().is_empty());
+    }
+
+    fn entries_launcher() -> Launcher {
+        let mut l = launcher();
+        let source = SourceConfig { name: "Outils".into(), list: v(&["tools-menu", "--list"]), run: v(&["tools-menu", "--run", "{line}"]) };
+        l.set_entries(Entries { sources: vec![source], items: vec![SourceEntry::new(0, "Captures · Screenshot zone")] });
+        l
+    }
+
+    #[test]
+    fn a_source_entry_runs_its_run_in_its_scope_and_is_remembered_by_line() {
+        let d = TempDir::new("run-source-state");
+        let h = d.join("launcher-history");
+        let bin = stubs("source", &["tools-menu"]);
+        let dirs = [bin.to_path_buf()];
+        let f = FakeExecutor::new();
+        f.ok(&format!("{SCOPE} tools-menu --run Captures · Screenshot zone"), "");
+        let mut l = entries_launcher();
+        let r = perform(&mut l, Activation::Entry(0), &ctx(&f, Spawner::SystemdScope, Some(&h), &dirs));
+        assert_eq!(r, Ok(Done::Close));
+        assert_eq!(f.calls(), [format!("{SCOPE} tools-menu --run Captures · Screenshot zone")]);
+        let saved = std::fs::read_to_string(&h).unwrap();
+        assert!(saved.lines().any(|x| x.ends_with("\tsource:Outils:Captures · Screenshot zone")), "{saved}");
+    }
+
+    #[test]
+    fn a_source_entry_whose_program_is_missing_says_so_and_records_nothing() {
+        let d = TempDir::new("run-source-missing");
+        let h = d.join("launcher-history");
+        let bin = bin("source-missing");
+        let dirs = [bin.to_path_buf()];
+        let f = FakeExecutor::new();
+        let mut l = entries_launcher();
+        let r = perform(&mut l, Activation::Entry(0), &ctx(&f, Spawner::Detached, Some(&h), &dirs));
+        assert_eq!(r, Err("tools-menu: program not found".to_string()));
+        assert!(f.calls().is_empty() && !h.exists(), "nothing ran, nothing recorded");
+        let r = perform(&mut l, Activation::Entry(5), &ctx(&f, Spawner::Detached, Some(&h), &dirs));
+        assert_eq!(r, Err("the list changed: try again".to_string()));
     }
 }
