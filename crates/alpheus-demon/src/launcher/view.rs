@@ -516,7 +516,7 @@ mod tests {
     /// even "no match".
     #[test]
     fn password_mode_draws_dots_and_no_list() {
-        let flags = DmenuFlags { index: false, password: true };
+        let flags = DmenuFlags { index: false, password: true, visible: None };
         let mut l = Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), vec!["saved".into()], flags);
         typed(&mut l, "pä ss");
         let (b, rows) = draw(&mut l, 100);

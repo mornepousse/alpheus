@@ -94,6 +94,8 @@ pub struct Launcher {
     pub index: bool,
     /// Script mode, `--password`: no list, the query drawn as dots, wiped on drop (`Drop`).
     pub password: bool,
+    /// Script mode, `--visible N`: an empty query lists the first N lines only (sources spec § 4).
+    pub visible: Option<usize>,
     /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
     /// preview falls back to naming $PATH alone.
@@ -135,6 +137,7 @@ impl Launcher {
             lines: Vec::new(),
             index: false,
             password: false,
+            visible: None,
             path_dirs: Vec::new(),
             history: History::empty(0),
             now: 0,
@@ -175,6 +178,7 @@ impl Launcher {
         } else {
             l.lines = lines;
         }
+        l.visible = if flags.password { None } else { flags.visible };
         l.refilter();
         l
     }
@@ -354,6 +358,12 @@ impl Launcher {
             now: self.now,
         };
         self.results = self.ranker.rank(&q);
+        // `--visible N`: an empty query lists the first N lines (`everything` keeps input order).
+        if let Some(n) = self.visible
+            && self.query.is_empty()
+        {
+            self.results.truncate(n);
+        }
     }
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
@@ -897,7 +907,7 @@ mod tests {
     #[test]
     fn a_chosen_line_keeps_its_position_on_stdin_through_filtering() {
         let lines = ["alpha", "beta", "gamma", "delta", "gamma"].map(String::from).to_vec();
-        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines, DmenuFlags { index: true, password: false });
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines, DmenuFlags { index: true, password: false, visible: None });
         typed(&mut s, "gam");
         assert_eq!(sources(&s), [Source::Line(2), Source::Line(4)], "the two gammas, in input order");
         assert_eq!(s.key(Key::Down), Outcome::Redraw);
@@ -908,13 +918,39 @@ mod tests {
         assert_eq!(s.click(0, false), choose("b", Some(1)), "a click too: the first result is the second line");
     }
 
+    /// `--visible N` (sources spec § 4): the first N lines on an empty query, every line once typing.
+    #[test]
+    fn visible_lists_the_first_lines_on_an_empty_query_and_searches_them_all() {
+        let lines = ["Captures", "Affichage", "Captures · Zone", "Affichage · Luminosité · 50%"].map(String::from).to_vec();
+        let flags = |index, visible| DmenuFlags { index, password: false, visible };
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(false, Some(2)));
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)]);
+        typed(&mut s, "lumi");
+        assert_eq!(sources(&s), [Source::Line(3)], "typing searches every line");
+        s.key(Key::CtrlU);
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)], "back to the first two");
+        typed(&mut s, "a");
+        assert_eq!(s.results.len(), 4, "a typed query matching more than N lines lists all of them");
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(true, Some(2)));
+        typed(&mut s, "zone");
+        assert_eq!(s.key(Key::Enter), choose("Captures · Zone", Some(2)), "its position among all the lines");
+        let none = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(false, Some(0)));
+        assert!(none.results.is_empty(), "--visible 0: nothing until typing");
+        let all = Launcher::for_dmenu(LauncherConfig::default(), None, lines, flags(false, Some(99)));
+        assert_eq!(all.results.len(), 4, "N above the line count: every line");
+    }
+
     /// `--password`: no list (the lines are dropped at open, nothing is ranked or shown), Enter
     /// returns the typed text as is, spaces included; nothing typed → nothing.
     #[test]
     fn password_mode_has_no_list_and_returns_the_typed_text() {
         let lines = ["alpha", "beta"].map(String::from).to_vec();
-        let mut s =
-            Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), lines, DmenuFlags { index: false, password: true });
+        let mut s = Launcher::for_dmenu(
+            LauncherConfig::default(),
+            Some("Key: ".into()),
+            lines,
+            DmenuFlags { index: false, password: true, visible: None },
+        );
         assert!(s.password && s.lines.is_empty() && s.results.is_empty(), "no list");
         assert_eq!(s.key(Key::Enter), Outcome::Nothing, "nothing typed");
         typed(&mut s, " al pha");

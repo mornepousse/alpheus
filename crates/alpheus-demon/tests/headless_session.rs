@@ -374,6 +374,36 @@ fn dmenu_index_prints_the_position() {
     assert_eq!(menu.join().unwrap(), (EXIT_OK, "-1\n".into(), String::new()));
 }
 
+/// `--dmenu --visible 2` (tools-menu's home menu under alpheus): the two categories on an empty
+/// query, any line by typing; with `--index`, its position among all the lines.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn dmenu_visible_lists_the_first_lines_and_searches_them_all() {
+    let sway = Sway::start("launcher-visible", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon(&sway);
+    ready(&d);
+    let input = "Captures\nAffichage\nCaptures · Zone\nAffichage · Luminosité · 50%\n";
+    let menu = script(&sway, &["--dmenu", "--visible", "2"], input);
+    assert!(d.wait_for_count(SHOWN, 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Down", "-k", "Down", "-k", "Down", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "Affichage\n".into(), String::new()), "two lines listed: Down stops on the second");
+    let menu = script(&sway, &["--dmenu", "--visible", "2"], input);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "lumi", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "Affichage · Luminosité · 50%\n".into(), String::new()));
+    let menu = script(&sway, &["--dmenu", "--index", "--visible", "2"], input);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "zone", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "2\n".into(), String::new()));
+    // A query matching more than N lines lists them all: "a" matches the four, the fourth is
+    // reachable (cut to two, the third Down would stay on the second ranked line).
+    let menu = script(&sway, &["--dmenu", "--index", "--visible", "2"], input);
+    assert!(d.wait_for_count(SHOWN, 4, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "a", "-k", "Down", "-k", "Down", "-k", "Down", "-k", "Return"]).success());
+    assert_eq!(menu.join().unwrap(), (EXIT_OK, "2\n".into(), String::new()));
+}
+
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn dmenu_client_killed_closes_the_launcher() {

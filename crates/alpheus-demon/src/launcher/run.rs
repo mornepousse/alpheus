@@ -490,11 +490,11 @@ mod tests {
         let d = TempDir::new("run-script-history");
         let h = d.join("launcher-history");
         let c = ctx(&f, Spawner::SystemdScope, Some(&h), &[]);
-        let index = DmenuFlags { index: true, password: false };
+        let index = DmenuFlags { index: true, password: false, visible: None };
         let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, v(&["a", "b"]), index);
         assert_eq!(perform(&mut l, Activation::Choose { text: "b".into(), line: Some(1) }, &c), Ok(Done::Reply(Reply::Index(Some(1)))));
         assert_eq!(perform(&mut l, Activation::Choose { text: "zz".into(), line: None }, &c), Ok(Done::Reply(Reply::Index(None))));
-        let password = DmenuFlags { index: false, password: true };
+        let password = DmenuFlags { index: false, password: true, visible: None };
         let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], password);
         let typed = Activation::Choose { text: " hunter 2".into(), line: None };
         assert_eq!(perform(&mut l, typed, &c), Ok(Done::Reply(Reply::Chosen(" hunter 2".into()))));

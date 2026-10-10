@@ -551,7 +551,7 @@ mod tests {
 
     #[test]
     fn a_dmenus_flags_reach_the_menu() {
-        let flags = DmenuFlags { index: true, password: true };
+        let flags = DmenuFlags { index: true, password: true, visible: Some(2) };
         let (action, _) = decide(Request::Dmenu { prompt: None, lines: vec![], flags }, None, PAST_DEBOUNCE);
         assert_eq!(action, Action::OpenScript { prompt: None, lines: vec![], flags });
     }

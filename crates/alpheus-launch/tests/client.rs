@@ -220,7 +220,7 @@ fn dmenu_sends_prompt_and_lines_and_prints_the_choice() {
 fn index_sends_the_flag_and_prints_the_position() {
     let (socket, daemon) = answering("index", Reply::Index(Some(2)));
     assert_eq!(launch(&["--dmenu", "--index"], &socket, b"a\nb\nc\n"), (EXIT_OK, "2\n".into(), String::new()));
-    let flags = DmenuFlags { index: true, password: false };
+    let flags = DmenuFlags { index: true, password: false, visible: None };
     assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into(), "c".into()], flags });
 }
 
@@ -230,7 +230,7 @@ fn index_sends_the_flag_and_prints_the_position() {
 fn index_counts_empty_lines_like_fuzzel() {
     let (socket, daemon) = answering("index-blank", Reply::Index(Some(1)));
     assert_eq!(launch(&["--dmenu", "--index"], &socket, b"a\n\nb"), (EXIT_OK, "2\n".into(), String::new()));
-    let flags = DmenuFlags { index: true, password: false };
+    let flags = DmenuFlags { index: true, password: false, visible: None };
     assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags });
     let (socket, daemon) = answering("index-blanks", Reply::Index(Some(2)));
     assert_eq!(launch(&["--dmenu", "--index"], &socket, b"\n\r\nx\n\ny\n\n\nz\n"), (EXIT_OK, "7\n".into(), String::new()));
@@ -284,7 +284,7 @@ fn password_sends_no_lines_and_prints_the_typed_text() {
         launch(&["--dmenu", "--password", "-p", "Key: "], &socket, b"saved\nlines\n"),
         (EXIT_OK, " pass word \n".into(), String::new())
     );
-    let flags = DmenuFlags { index: false, password: true };
+    let flags = DmenuFlags { index: false, password: true, visible: None };
     assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: Some("Key: ".into()), lines: vec![], flags });
 }
 
@@ -491,7 +491,7 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
-    for option in ["--index", "--password", "--placeholder TEXT", "--width N", "--lines N"] {
+    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N"] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
 }
@@ -557,6 +557,40 @@ fn an_old_daemon_refusing_the_flags_exits_3_without_a_retry() {
     }
 }
 
+/// `--visible N` (tools-menu's home menu): the count goes on the request, the choice comes back as usual.
+#[test]
+fn visible_sends_its_count() {
+    let (socket, daemon) = answering("visible", Reply::Chosen("Captures · Zone".into()));
+    let input = b"Captures\nAffichage\nCaptures \xc2\xb7 Zone\n";
+    assert_eq!(launch(&["--dmenu", "--visible", "2"], &socket, input), (EXIT_OK, "Captures · Zone\n".into(), String::new()));
+    let lines = vec!["Captures".into(), "Affichage".into(), "Captures · Zone".into()];
+    let flags = DmenuFlags { index: false, password: false, visible: Some(2) };
+    assert_eq!(daemon.join().unwrap(), Request::Dmenu { prompt: None, lines, flags });
+}
+
+/// Review Focus 5: `--index` with `--visible` still answers the line's position on stdin, empty lines counted.
+#[test]
+fn visible_with_index_counts_empty_lines() {
+    let (socket, daemon) = answering("visible-index", Reply::Index(Some(2)));
+    assert_eq!(launch(&["--dmenu", "--index", "--visible", "1"], &socket, b"a\n\nb\nc"), (EXIT_OK, "3\n".into(), String::new()));
+    daemon.join().unwrap();
+}
+
+/// A daemon that knows `--index`/`--password` but not `--visible` refuses the word: like an older
+/// daemon, exit 3, one connection, so tools-menu falls back to fuzzel.
+#[test]
+fn a_daemon_without_visible_exits_3_without_a_retry() {
+    for (i, error) in [OLD_DAEMON_ERROR, "malformed request: unknown dmenu flag \"visible\""].into_iter().enumerate() {
+        let (socket, connections, stop, daemon) = replying_daemon(&format!("no-visible-{i}"), Reply::Error(error.into()));
+        let (code, out, err) = launch(&["--dmenu", "--visible", "2"], &socket, b"a\n");
+        assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{error}: {err}");
+        assert!(err.contains("--visible"), "{err}");
+        stop.store(true, Ordering::SeqCst);
+        daemon.join().unwrap();
+        assert_eq!(connections.load(Ordering::SeqCst), 1, "one request, no retry");
+    }
+}
+
 /// Only that refusal, only for a flagged request: anything else stays an error (2).
 #[test]
 fn other_refusals_of_a_dmenu_stay_errors() {
@@ -564,6 +598,7 @@ fn other_refusals_of_a_dmenu_stay_errors() {
         (&["--dmenu"][..], OLD_DAEMON_ERROR),
         (&["--dmenu", "--index"], "launcher unavailable"),
         (&["--dmenu", "--password"], "malformed request: unknown dmenu flag \"x\""),
+        (&["--dmenu", "--index"], "malformed request: unknown dmenu flag \"visible\""),
         (&["--dmenu", "--index"], "request too large (dmenu input)"),
     ];
     for (i, (args, error)) in cases.into_iter().enumerate() {

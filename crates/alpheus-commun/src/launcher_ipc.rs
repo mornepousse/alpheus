@@ -77,6 +77,9 @@ pub struct DmenuFlags {
     /// `--password`: the input drawn as one `•` per character, no list, the text never logged
     /// nor kept.
     pub password: bool,
+    /// `--visible N`: with the query empty, only the first N lines are listed; typing searches
+    /// them all (sources spec § 4). None: every line, as before.
+    pub visible: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,7 +138,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
 ///   "alpheus-launcher/1 osd brightness\n"
-///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password]\n" <prompt bytes> <body bytes>
+///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
 /// body = lines joined by '\n' (no trailing '\n'). The flag words (`DmenuFlags`) are optional,
 /// each at most once and in this order: a client that sends none is read as before, so the
 /// header stays `alpheus-launcher/1`; a daemon older than the flags refuses them as malformed
@@ -159,7 +162,8 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
             let prompt_len = prompt.as_ref().map_or_else(|| "-".to_string(), |p| p.len().to_string());
             let index = if flags.index { " index" } else { "" };
             let password = if flags.password { " password" } else { "" };
-            let mut out = format!("{MAGIC} dmenu {prompt_len} {}{index}{password}\n", body.len()).into_bytes();
+            let visible = flags.visible.map_or_else(String::new, |n| format!(" visible {n}"));
+            let mut out = format!("{MAGIC} dmenu {prompt_len} {}{index}{password}{visible}\n", body.len()).into_bytes();
             if let Some(p) = prompt {
                 out.extend_from_slice(p.as_bytes());
             }
@@ -351,6 +355,10 @@ fn dmenu_flags(words: &[&str]) -> Result<DmenuFlags, IpcError> {
         flags.password = true;
         rest = tail;
     }
+    if let ["visible", n, tail @ ..] = rest {
+        flags.visible = Some(number(n, "visible count")?);
+        rest = tail;
+    }
     match rest {
         [] => Ok(flags),
         [word, ..] => Err(IpcError::Malformed(format!("unknown dmenu flag {:?}", cut(word)))),
@@ -489,9 +497,31 @@ mod tests {
                 lines: vec!["a b c".into(), "tab\there".into(), "cr\rinside".into(), "café ☕ 日本".into(), "  padded  ".into()],
                 flags: DmenuFlags::default(),
             },
-            Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags { index: true, password: false } },
-            Request::Dmenu { prompt: Some("Key: ".into()), lines: vec![], flags: DmenuFlags { index: false, password: true } },
-            Request::Dmenu { prompt: Some("x".into()), lines: vec!["l".into()], flags: DmenuFlags { index: true, password: true } },
+            Request::Dmenu {
+                prompt: None,
+                lines: vec!["a".into(), "b".into()],
+                flags: DmenuFlags { index: true, password: false, visible: None },
+            },
+            Request::Dmenu {
+                prompt: Some("Key: ".into()),
+                lines: vec![],
+                flags: DmenuFlags { index: false, password: true, visible: None },
+            },
+            Request::Dmenu {
+                prompt: Some("x".into()),
+                lines: vec!["l".into()],
+                flags: DmenuFlags { index: true, password: true, visible: None },
+            },
+            Request::Dmenu {
+                prompt: None,
+                lines: vec!["a".into(), "b".into(), "c".into()],
+                flags: DmenuFlags { index: false, password: false, visible: Some(2) },
+            },
+            Request::Dmenu {
+                prompt: Some("Go".into()),
+                lines: vec!["a".into()],
+                flags: DmenuFlags { index: true, password: false, visible: Some(0) },
+            },
             Request::Dnd(DndVerb::On),
             Request::Dnd(DndVerb::Off),
             Request::Dnd(DndVerb::Toggle),
@@ -542,10 +572,21 @@ mod tests {
         );
         let dmenu = Request::Dmenu { prompt: Some("Go: ".into()), lines: vec!["a".into(), "bé".into()], flags: DmenuFlags::default() };
         assert_eq!(encode_request(&dmenu), "alpheus-launcher/1 dmenu 4 5\nGo: a\nbé".as_bytes());
-        let flagged = |index, password| Request::Dmenu { prompt: None, lines: vec!["a".into()], flags: DmenuFlags { index, password } };
+        let flagged = |index, password| Request::Dmenu {
+            prompt: None,
+            lines: vec!["a".into()],
+            flags: DmenuFlags { index, password, visible: None },
+        };
         assert_eq!(encode_request(&flagged(true, false)), b"alpheus-launcher/1 dmenu - 1 index\na");
         assert_eq!(encode_request(&flagged(false, true)), b"alpheus-launcher/1 dmenu - 1 password\na");
         assert_eq!(encode_request(&flagged(true, true)), b"alpheus-launcher/1 dmenu - 1 index password\na");
+        let visible = |index, visible| Request::Dmenu {
+            prompt: None,
+            lines: vec!["a".into()],
+            flags: DmenuFlags { index, password: false, visible },
+        };
+        assert_eq!(encode_request(&visible(false, Some(3))), b"alpheus-launcher/1 dmenu - 1 visible 3\na");
+        assert_eq!(encode_request(&visible(true, Some(0))), b"alpheus-launcher/1 dmenu - 1 index visible 0\na");
         assert_eq!(encode_reply(&Reply::Index(Some(2))), b"index 2\n");
         assert_eq!(encode_reply(&Reply::Index(None)), b"index -\n");
         assert_eq!(encode_reply(&Reply::Done), b"done\n");
@@ -582,6 +623,12 @@ mod tests {
             b"alpheus-launcher/1 osd  brightness\n",
             b"alpheus-launcher/1 dmenu - 0 indexes\n",
             b"alpheus-launcher/1 dmenu - 0 index index\n",
+            b"alpheus-launcher/1 dmenu - 0 visible\n",
+            b"alpheus-launcher/1 dmenu - 0 visible x\n",
+            b"alpheus-launcher/1 dmenu - 0 visible -1\n",
+            b"alpheus-launcher/1 dmenu - 0 visible 1234567890123\n",
+            b"alpheus-launcher/1 dmenu - 0 visible 1 visible 2\n",
+            b"alpheus-launcher/1 dmenu - 0 visible 1 index\n",
             b"alpheus-launcher/1 dmenu - 0 password password\n",
             b"alpheus-launcher/1 dmenu - 0 password index\n",
             b"alpheus-launcher/1 dmenu - 0  index\n",
