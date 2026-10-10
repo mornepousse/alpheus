@@ -292,18 +292,49 @@ enum Stop {
 /// keep the pipe open long after): only while a capture runs, never at rest.
 const EXIT_CHECK: Duration = Duration::from_millis(25);
 
-/// Where `bytes` is cut once a cap is passed: just after the `max_lines`-th line when anything
-/// follows it, or at `max_bytes`; None while within both.
-fn cut_at(bytes: &[u8], limits: &CaptureLimits) -> Option<usize> {
-    let line_end = match limits.max_lines {
-        0 => Some(0),
-        n => bytes.iter().enumerate().filter(|(_, b)| **b == b'\n').nth(n - 1).map(|(i, _)| i + 1),
-    };
-    match line_end {
-        Some(end) if bytes.len() > end => Some(end.min(limits.max_bytes)),
-        _ if bytes.len() > limits.max_bytes => Some(limits.max_bytes),
-        _ => None,
+/// Where the read is cut once a cap is passed: just after the `max_lines`-th line when anything
+/// follows it, or at `max_bytes`. Incremental: the buffer only grows between calls, and each byte is
+/// scanned for newlines once (a line per write stays linear).
+#[derive(Default)]
+struct Cutter {
+    /// Bytes already scanned, and the newlines among them.
+    scanned: usize,
+    lines: usize,
+    /// Just after the `max_lines`-th newline, once seen.
+    line_end: Option<usize>,
+}
+
+impl Cutter {
+    /// The cut for `bytes` (the previous call's bytes plus what was read since), None while within
+    /// both caps.
+    fn cut(&mut self, bytes: &[u8], limits: &CaptureLimits) -> Option<usize> {
+        if limits.max_lines == 0 {
+            self.line_end = Some(0);
+        }
+        if self.line_end.is_none() {
+            for (i, b) in bytes[self.scanned..].iter().enumerate() {
+                if *b == b'\n' {
+                    self.lines += 1;
+                    if self.lines == limits.max_lines {
+                        self.line_end = Some(self.scanned + i + 1);
+                        break;
+                    }
+                }
+            }
+            self.scanned = bytes.len();
+        }
+        match self.line_end {
+            Some(end) if bytes.len() > end => Some(end.min(limits.max_bytes)),
+            _ if bytes.len() > limits.max_bytes => Some(limits.max_bytes),
+            _ => None,
+        }
     }
+}
+
+/// The cut for a whole buffer at once: the reference the incremental cut is tested against.
+#[cfg(test)]
+fn cut_at(bytes: &[u8], limits: &CaptureLimits) -> Option<usize> {
+    Cutter::default().cut(bytes, limits)
 }
 
 /// Waits up to `ms` for `fd` to be readable: true when a read would not block (data, end of file
@@ -325,10 +356,16 @@ fn read_until(out: &mut ChildStdout, pid: u32, start: Instant, limits: &CaptureL
     let fd = out.as_raw_fd();
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 16 * 1024];
+    let mut cutter = Cutter::default();
     let mut eof = false;
-    // The command is gone: no wait any more, but what it wrote before ending may still sit in the
-    // pipe (written between the last poll and its exit) — read until nothing is ready.
+    // The command is gone and its group killed: no wait any more, but what was written before may
+    // still sit in the pipe — read until end of file or until nothing is ready. A write racing the
+    // kill (between the last poll(0) and the SIGKILL's delivery) is lost; no test can force that
+    // window, and those bytes came after the command's own end anyway.
     let mut draining = false;
+    // When the command's exit was last checked: at least every EXIT_CHECK, quiet pipe or not, so a
+    // child it left behind writing on and on cannot keep the read going (final review A1).
+    let mut checked = Instant::now();
     loop {
         let Some(left) = limits.deadline.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) else {
             return (bytes, Stop::TimedOut);
@@ -339,22 +376,29 @@ fn read_until(out: &mut ChildStdout, pid: u32, start: Instant, limits: &CaptureL
             }
             // The pipe closed: the command itself must still end within the deadline.
             match exited(pid) {
-                Ok(false) => std::thread::sleep(left.min(Duration::from_millis(5))),
+                Ok(false) => std::thread::sleep(left.min(EXIT_CHECK)),
                 _ => return (bytes, Stop::Exited),
             }
             continue;
+        }
+        if !draining && checked.elapsed() >= EXIT_CHECK {
+            checked = Instant::now();
+            draining = ended(pid);
         }
         let ms = if draining { 0 } else { i32::try_from(left.min(EXIT_CHECK).as_millis()).unwrap_or(i32::MAX).max(1) };
         match readable(fd, ms) {
             Err(()) => eof = true,
             Ok(false) if draining => return (bytes, Stop::Exited),
             // Quiet: the command may be gone while something it started keeps the pipe open.
-            Ok(false) => draining = exited(pid).unwrap_or(true),
+            Ok(false) => {
+                checked = Instant::now();
+                draining = ended(pid);
+            }
             Ok(true) => match out.read(&mut chunk) {
                 Ok(0) => eof = true,
                 Ok(n) => {
                     bytes.extend_from_slice(&chunk[..n]);
-                    if let Some(at) = cut_at(&bytes, limits) {
+                    if let Some(at) = cutter.cut(&bytes, limits) {
                         bytes.truncate(at);
                         return (bytes, Stop::Capped);
                     }
@@ -363,6 +407,21 @@ fn read_until(out: &mut ChildStdout, pid: u32, start: Instant, limits: &CaptureL
                 Err(_) => eof = true,
             },
         }
+    }
+}
+
+/// Has the command `pid` ended? If so its group is killed at once: whatever it left behind stops
+/// writing, and the drain that follows meets the end of the pipe. The leader is not reaped yet
+/// (`exited` waits with WNOWAIT): its PID, the group's, is still ours.
+fn ended(pid: u32) -> bool {
+    match exited(pid) {
+        Ok(true) => {
+            kill_group(pid);
+            true
+        }
+        Ok(false) => false,
+        // waitid failing on our own unreaped child: stop waiting for it, read what is there.
+        Err(_) => true,
     }
 }
 
@@ -512,7 +571,7 @@ impl Executor for SystemExecutor {
         Ok(Box::new(ChildStream { child, stdout, running: self.running.clone() }))
     }
     fn capture(&self, prog: &str, args: &[&str], limits: CaptureLimits) -> Result<Captured, ExecError> {
-        if self.running.lock().unwrap().closed {
+        if self.running.lock().unwrap_or_else(|p| p.into_inner()).closed {
             return Err(ExecError::Io("alpheus is shutting down".into()));
         }
         let parent = std::process::id();
@@ -542,7 +601,7 @@ impl Executor for SystemExecutor {
             return Err(ExecError::Io("no standard output".into()));
         };
         {
-            let mut guard = self.running.lock().unwrap();
+            let mut guard = self.running.lock().unwrap_or_else(|p| p.into_inner());
             if guard.closed {
                 // Shutdown between the check and the spawn (see `run`).
                 drop(guard);
@@ -988,6 +1047,66 @@ mod tests {
         wait_for_death(pid);
     }
 
+    /// Final review A1: a command that leaves a chatty child behind (it writes on and on) ends the
+    /// read when IT ends: its exit is checked while data flows too, then the group is killed. What
+    /// the child wrote before that exit is indistinguishable from the command's own lines.
+    #[test]
+    fn capture_ends_with_the_command_even_if_a_child_keeps_writing() {
+        let f = std::env::temp_dir().join(format!("alpheus-grandchild-{}-capture-chatty", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("(while :; do echo orphan; sleep 0.002; done) & echo $! > {}; sleep 0.1; echo own; exit 0", f.display());
+        let big = CaptureLimits { deadline: Duration::from_millis(3000), max_bytes: 1 << 20, max_lines: 100_000 };
+        let t = Instant::now();
+        let c = exec().capture("sh", &["-c", &script], big).unwrap();
+        let elapsed = t.elapsed();
+        let pid = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        wait_for_death(pid);
+        assert!(elapsed < Duration::from_secs(1), "read to the deadline, not to the exit: {elapsed:?}");
+        assert_eq!(c.end, CaptureEnd::Exited(Some(0)));
+        let out = String::from_utf8(c.stdout).unwrap();
+        assert!(out.lines().all(|l| l == "orphan" || l == "own") && out.contains("own\n"), "{out:?}");
+    }
+
+    /// Once the command is seen gone, its group is killed before the drain: a child it left behind
+    /// writing on and on could otherwise keep the drain reading.
+    #[test]
+    fn a_command_seen_gone_takes_its_group_with_it() {
+        use std::os::unix::process::CommandExt;
+        let f = std::env::temp_dir().join(format!("alpheus-grandchild-{}-ended", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        let script = format!("sleep 30 & echo $! > {}; exit 0", f.display());
+        let mut child = Command::new("sh").args(["-c", &script]).process_group(0).spawn().unwrap();
+        let pid = child.id();
+        let t = Instant::now();
+        while !exited(pid).unwrap() {
+            assert!(t.elapsed() < Duration::from_secs(5), "sh never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let orphan = pid_written(&f);
+        let _ = std::fs::remove_file(&f);
+        assert!(alive(orphan), "left behind, still running");
+        assert!(ended(pid));
+        wait_for_death(orphan);
+        child.wait().unwrap();
+    }
+
+    /// Final review A5: a lock poisoned by a panic elsewhere never makes `capture` panic (only the
+    /// launcher's scan thread calls it, and a panic after the spawn would leave a zombie behind).
+    #[test]
+    fn capture_survives_a_poisoned_lock() {
+        let e = exec();
+        let running = e.running.clone();
+        let poisoner = std::thread::spawn(move || {
+            let _guard = running.lock().unwrap();
+            panic!("poisoning the lock on purpose");
+        });
+        assert!(poisoner.join().is_err());
+        assert!(e.running.is_poisoned());
+        let c = e.capture("sh", &["-c", "echo still"], limits(2000)).unwrap();
+        assert_eq!(c, Captured { stdout: b"still\n".to_vec(), end: CaptureEnd::Exited(Some(0)) });
+    }
+
     #[test]
     fn capture_stops_at_the_caps() {
         let lines = exec().capture("sh", &["-c", "i=0; while :; do i=$((i+1)); echo \"l$i\"; done"], limits(5000)).unwrap();
@@ -1013,5 +1132,31 @@ mod tests {
         assert_eq!(cut_at(b"abcdef", &l(10, 4)), Some(4), "past the byte cap");
         assert_eq!(cut_at(b"abcd", &l(10, 4)), None);
         assert_eq!(cut_at(b"a\nb\nc", &l(0, 100)), Some(0));
+    }
+
+    /// Final review A2: the cut is found incrementally (each byte scanned once across chunks), and
+    /// it lands where a scan of the whole buffer would, a line or a byte per write alike.
+    #[test]
+    fn the_cut_found_chunk_by_chunk_is_the_whole_buffer_s() {
+        let l = |max_lines, max_bytes| CaptureLimits { deadline: Duration::ZERO, max_bytes, max_lines };
+        let text: Vec<u8> = (1..=40).flat_map(|i| format!("line {i}\n").into_bytes()).collect();
+        for limits in [l(10, 1 << 20), l(1, 1 << 20), l(0, 100), l(1000, 50), l(5, 30)] {
+            let per_line: Vec<&[u8]> = text.split_inclusive(|b| *b == b'\n').collect();
+            let writes = [1, 3, 8].map(|step| text.chunks(step).collect::<Vec<_>>());
+            for (n, chunks) in writes.iter().chain([&per_line]).enumerate() {
+                let mut cutter = Cutter::default();
+                let mut bytes = Vec::new();
+                let mut got = None;
+                for chunk in chunks {
+                    bytes.extend_from_slice(chunk);
+                    if let Some(at) = cutter.cut(&bytes, &limits) {
+                        got = Some(at);
+                        break;
+                    }
+                }
+                let expected = (1..=text.len()).find_map(|n| cut_at(&text[..n], &limits));
+                assert_eq!(got, expected, "{} lines, {} bytes, writes #{n}", limits.max_lines, limits.max_bytes);
+            }
+        }
     }
 }
