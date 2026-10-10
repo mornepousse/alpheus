@@ -152,21 +152,21 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
 }
 
 /// A command-source entry (sources spec § 3): the entry, then its path dimmed two cells after it,
-/// cut to fit; no glyph, nothing right-aligned. Selected: SELECTED across the span, the path still
-/// dimmed on that band (SELECTED_MUTED).
+/// cut to fit; no glyph, nothing right-aligned. Selected: SELECTED across the span, the path
+/// included, as `list::row` draws its secondary text.
 fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>, selected: bool) {
-    let (text, dim) = if selected { (Style::SELECTED, Style::SELECTED_MUTED) } else { (Style::NORMAL, Style::MUTED) };
+    let pick = |s: Style| if selected { Style::SELECTED } else { s };
     if selected {
         g.write(start, end, &" ".repeat(usize::from(end.saturating_sub(start))), Style::SELECTED);
     }
     let stop = end.saturating_sub(1);
     let x = start + 1;
-    let x = g.write(x, stop, &truncate(entry, stop.saturating_sub(x)), text);
+    let x = g.write(x, stop, &truncate(entry, stop.saturating_sub(x)), pick(Style::NORMAL));
     if let Some(path) = path
         && stop.saturating_sub(x) > 2
     {
-        let x = g.write(x, stop, "  ", text);
-        g.write(x, stop, &truncate(path, stop.saturating_sub(x)), dim);
+        let x = g.write(x, stop, "  ", pick(Style::NORMAL));
+        g.write(x, stop, &truncate(path, stop.saturating_sub(x)), pick(Style::MUTED));
     }
 }
 
@@ -897,15 +897,18 @@ mod tests {
         assert_eq!(g.styles(), "S".repeat(40), "selected: the whole span, as list::row");
     }
 
-    /// Sources spec § 3: on the selected row the path stays dimmed, on the selection band.
+    /// Sources spec § 3: on the selected row the path takes the treatment `list::row` gives its
+    /// secondary text — SELECTED, like the rest of the band.
     #[test]
-    fn a_selected_entry_row_keeps_its_path_dimmed_on_the_band() {
+    fn a_selected_entry_row_draws_its_path_as_list_row_draws_secondary_text() {
         let mut g = Grid::empty(40);
         entry_row(&mut g, 0, 40, "Vibrant", Some("Apparence › Schéma couleurs"), true);
         assert_eq!(g.text(), format!(" Vibrant  Apparence › Schéma couleurs{}", " ".repeat(3)));
-        assert_eq!(g.styles(), format!("{}{}{}", "S".repeat(10), "M".repeat(27), "S".repeat(3)));
-        assert_eq!(Style::SELECTED_MUTED.bg, Style::SELECTED.bg, "the selection band");
-        assert_eq!(Style::SELECTED_MUTED.fg, Style::MUTED.fg, "dimmed text");
+        assert_eq!(g.styles(), "S".repeat(40), "the path undimmed on the band");
+        let mut r = Grid::empty(40);
+        let row = Row { icon: None, icon_style: Style::ACCENT, text: "Vibrant", right: "kind", style: Style::NORMAL, selected: true };
+        list::row(&mut r, 0, 40, &row);
+        assert_eq!(r.styles(), "S".repeat(40), "list::row's secondary text on a selected row: the same");
     }
 
     #[test]
