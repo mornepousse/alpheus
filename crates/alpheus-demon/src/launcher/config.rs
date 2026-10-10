@@ -181,7 +181,8 @@ impl LauncherConfig {
     }
 }
 
-/// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, unique; `list` and `run`
+/// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, without a control character
+/// or U+FFFD, unique; `list` and `run`
 /// non-empty with a non-blank program; `run[0]` without "{line}"; "{line}" exactly once in `run`,
 /// as a whole element (no partial substitution: a line is never split nor reinterpreted).
 fn check_sources(sources: &[SourceConfig]) -> Result<(), String> {
@@ -195,6 +196,11 @@ fn check_sources(sources: &[SourceConfig]) -> Result<(), String> {
         }
         if s.name.trim().is_empty() {
             return Err(format!("{at}.name must not be blank"));
+        }
+        // The name is part of every history key of the source ("source:<name>:<line>"), and the
+        // history refuses ids holding either: the source's frecency would be silently off.
+        if s.name.contains(|c: char| c.is_control() || c == '\u{FFFD}') {
+            return Err(format!("{at}.name must not hold a control character or U+FFFD"));
         }
         if sources[..i].iter().any(|o| o.name == s.name) {
             return Err(format!("{at}.name {:?} is used twice", s.name));
@@ -371,6 +377,10 @@ mod tests {
             (source("Outils", r#"[" ", "{line}"]"#), "sources[0].run empty"),
             (source("", r#"["x", "{line}"]"#), "sources[0].name must be 1 to 32 characters"),
             (source("   ", r#"["x", "{line}"]"#), "must not be blank"),
+            // Either would make every history key of the source invalid: frecency silently off.
+            (source("Out\tils", r#"["x", "{line}"]"#), "sources[0].name must not hold a control character or U+FFFD"),
+            (source("Out\nils", r#"["x", "{line}"]"#), "must not hold a control character"),
+            (source("Out\u{FFFD}ils", r#"["x", "{line}"]"#), "must not hold a control character or U+FFFD"),
             (source(&"n".repeat(33), r#"["x", "{line}"]"#), "1 to 32 characters"),
             (
                 format!("{}{}", source("Outils", r#"["x", "{line}"]"#), source("Outils", r#"["y", "{line}"]"#)),
