@@ -1,10 +1,10 @@
 //! The launcher's history, for frecency ranking: which entries were
 //! launched, how often, how recently. It holds entry ids ("app:<desktop
-//! id>", "cmd:<name>") and numbers only, never typed text — the API takes
+//! id>", "cmd:<name>", "source:<name>:<line>") and numbers only, never typed text — the API takes
 //! ids. File `$XDG_STATE_HOME/alpheus/launcher-history`, one line per entry
 //! "<last>\t<count>\t<id>", bounded, written atomically.
 
-use super::config::HISTORY_MAX;
+use super::config::{HISTORY_MAX, LINE_MAX, NAME_MAX};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -13,10 +13,13 @@ use std::path::{Path, PathBuf};
 
 pub const FILE_NAME: &str = "launcher-history";
 const COUNT_MAX: u32 = 10_000;
-/// Longer ids are refused (and skipped when read).
-const ID_MAX: usize = 256;
+/// A source entry's id starts so (sources spec § 3).
+const SOURCE_PREFIX: &str = "source:";
+/// Longer ids are refused (and skipped when read): the longest is a source key, "source:" + a name
+/// of NAME_MAX four-byte characters + ':' + a line of LINE_MAX bytes (648).
+const ID_MAX: usize = SOURCE_PREFIX.len() + 4 * NAME_MAX + 1 + LINE_MAX;
 /// What `load` reads at most: the largest valid file, HISTORY_MAX lines of
-/// "<last: 20 digits>\t<count: 5 digits>\t<id>\n" (≈ 277 KiB; 200 typical entries ≈ 12 KiB).
+/// "<last: 20 digits>\t<count: 5 digits>\t<id>\n" (≈ 680 KiB; 200 typical entries ≈ 12 KiB).
 const READ_MAX: u64 = (HISTORY_MAX * (20 + 1 + 5 + 1 + ID_MAX + 1)) as u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +151,13 @@ impl History {
         (apps, commands)
     }
 
+    /// Frecency of every "source:" entry, keyed by the id with that prefix stripped
+    /// (`source_id`: "<name>:<line>"), borrowed from the entry. Built once per catalog of
+    /// entries, only when there are entries to rank (matching.rs).
+    pub fn source_frecency(&self, now: u64) -> HashMap<&str, u32> {
+        self.entries.iter().filter_map(|u| u.id.strip_prefix(SOURCE_PREFIX).map(|id| (id, frecency_of(u, now)))).collect()
+    }
+
     pub fn entries(&self) -> &[Use] {
         &self.entries
     }
@@ -207,6 +217,16 @@ pub fn command_key(name: &str) -> String {
     format!("cmd:{name}")
 }
 
+/// A source entry's id without its prefix: what `History::source_frecency` keys by.
+pub fn source_id(name: &str, line: &str) -> String {
+    format!("{name}:{line}")
+}
+
+/// A source entry's history id (sources spec § 3): its source's name and its whole line.
+pub fn source_key(name: &str, line: &str) -> String {
+    format!("{SOURCE_PREFIX}{}", source_id(name, line))
+}
+
 pub fn history_path(state_dir: &Path) -> PathBuf {
     state_dir.join(FILE_NAME)
 }
@@ -239,6 +259,36 @@ mod tests {
     fn weight_buckets() {
         let ages = [0, HOUR - 1, HOUR, DAY - 1, DAY, 7 * DAY - 1, 7 * DAY, 30 * DAY - 1, 30 * DAY, 400 * DAY];
         assert_eq!(ages.map(weight), [100, 100, 70, 70, 50, 50, 30, 30, 10, 10]);
+    }
+
+    /// Sources spec § 3: a source line at its limit (512 bytes), under a name of 32 four-byte
+    /// characters, is a valid id — recorded, saved, read back.
+    #[test]
+    fn a_source_key_holds_a_whole_line_at_its_limits() {
+        let line = format!("Apparence · {}x", "é".repeat(249));
+        assert_eq!(line.len(), LINE_MAX);
+        let name = "𝄞".repeat(NAME_MAX);
+        let key = source_key(&name, &line);
+        assert_eq!(key.len(), ID_MAX, "the longest id there can be");
+        let mut h = History::empty(10);
+        h.record(&key, NOW);
+        assert_eq!(ids(&h), [key.as_str()], "a source key is a valid id");
+        assert_eq!(ids(&History::parse(&h.to_text(), 10, NOW)), [key.as_str()], "and survives the file");
+    }
+
+    #[test]
+    fn source_frecency_strips_the_prefix_and_stays_out_of_the_other_maps() {
+        let text = format!(
+            "{now}\t3\tsource:Outils:Captures · Screenshot zone\n{now}\t1\tapp:org.example.Mail.desktop\n{now}\t2\tcmd:htop\n",
+            now = NOW - 60
+        );
+        let h = History::parse(&text, 10, NOW);
+        let sources = h.source_frecency(NOW);
+        assert_eq!(sources.get(source_id("Outils", "Captures · Screenshot zone").as_str()), Some(&300));
+        assert_eq!(sources.len(), 1, "apps and commands are not sources: {sources:?}");
+        let (apps, commands) = h.frecency_maps(NOW);
+        assert_eq!((apps.len(), commands.len()), (1, 1), "a source entry is neither an app nor a command");
+        assert_eq!(source_key("Outils", "Verrouiller"), "source:Outils:Verrouiller");
     }
 
     #[test]
