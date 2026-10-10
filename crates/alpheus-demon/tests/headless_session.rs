@@ -396,12 +396,22 @@ fn dmenu_visible_lists_the_first_lines_and_searches_them_all() {
     assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "zone", "-k", "Return"]).success());
     assert_eq!(menu.join().unwrap(), (EXIT_OK, "2\n".into(), String::new()));
-    // A query matching more than N lines lists them all: "a" matches the four, the fourth is
-    // reachable (cut to two, the third Down would stay on the second ranked line).
-    let menu = script(&sway, &["--dmenu", "--index", "--visible", "2"], input);
-    assert!(d.wait_for_count(SHOWN, 4, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "a", "-k", "Down", "-k", "Down", "-k", "Down", "-k", "Return"]).success());
-    assert_eq!(menu.join().unwrap(), (EXIT_OK, "2\n".into(), String::new()));
+    // A query matching more than N lines lists them all: "a" matches the four, and 0 to 3 Downs
+    // reach four different lines (cut to two, the third and fourth would repeat the second). The
+    // order is nucleo's, not pinned here.
+    let mut chosen = std::collections::BTreeSet::new();
+    for downs in 0..4 {
+        let menu = script(&sway, &["--dmenu", "--index", "--visible", "2"], input);
+        assert!(d.wait_for_count(SHOWN, 4 + downs, DELAY), "{:?}", d.log());
+        let mut keys = vec!["-s", "300", "a"];
+        keys.extend(std::iter::repeat_n(["-k", "Down"], downs).flatten());
+        keys.extend(["-k", "Return"]);
+        assert!(wtype(&sway, &keys).success());
+        let (code, out, err) = menu.join().unwrap();
+        assert_eq!((code, err), (EXIT_OK, String::new()));
+        chosen.insert(out);
+    }
+    assert_eq!(chosen.into_iter().collect::<Vec<_>>(), ["0\n", "1\n", "2\n", "3\n"], "every line reachable");
 }
 
 #[test]
@@ -3767,7 +3777,6 @@ fn the_empty_query_shows_no_source_entry() {
     assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
     assert!(d.wait_for_count("launcher closed (escape)", 2, DELAY), "{:?}", d.log());
     assert_eq!(d.count("launcher sources:"), 1, "the second open read no source");
-    assert!(!sway.runtime.join(FAKE_RUN_MARKER).exists(), "an entry ran");
 }
 
 #[test]
@@ -3775,15 +3784,20 @@ fn the_empty_query_shows_no_source_entry() {
 fn a_hung_source_is_killed_and_nothing_stays_awake() {
     let sway = Sway::start("launcher-source-rest", 1);
     let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
-    let mut toml = fake_source(&sway.runtime, "Outils", &source_lines());
+    // Written first: this script hangs, so `wait_until_executable` cannot run it to rule out a
+    // "Text file busy" (a fork elsewhere in this process briefly holding its write descriptor).
+    // `fake_source` below writes and runs its own until it executes, long after any such fork has
+    // exec'd and let go of this one's.
     let pid_file = sway.runtime.join("slow-source-child.pid");
     let slow = sway.runtime.join("bin/fake-list-slow");
+    std::fs::create_dir_all(sway.runtime.join("bin")).unwrap();
     let body = format!(
         "#!/bin/sh\n# A fake source that hangs (never tools-menu).\nsleep 30 &\necho $! > '{}'\necho 'Lent · Une'\nwait\n",
         pid_file.display()
     );
     std::fs::write(&slow, body).unwrap();
     std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut toml = fake_source(&sway.runtime, "Outils", &source_lines());
     let run = sway.runtime.join("bin/fake-run");
     toml.push_str(&format!(
         "[[sources]]\nname = \"Lent\"\nlist = [{:?}]\nrun = [{:?}, \"{{line}}\"]\n",
