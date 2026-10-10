@@ -19,7 +19,7 @@ const SOURCE_PREFIX: &str = "source:";
 /// of NAME_MAX four-byte characters + ':' + a line of LINE_MAX bytes (648).
 const ID_MAX: usize = SOURCE_PREFIX.len() + 4 * NAME_MAX + 1 + LINE_MAX;
 /// What `load` reads at most: the largest valid file, HISTORY_MAX lines of
-/// "<last: 20 digits>\t<count: 5 digits>\t<id>\n" (≈ 680 KiB; 200 typical entries ≈ 12 KiB).
+/// "<last: 20 digits>\t<count: 5 digits>\t<id>\n" (≈ 660 KiB; 200 typical entries ≈ 12 KiB).
 const READ_MAX: u64 = (HISTORY_MAX * (20 + 1 + 5 + 1 + ID_MAX + 1)) as u64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

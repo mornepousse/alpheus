@@ -290,12 +290,19 @@ A line `Captures · Screenshot zone` shows as **Screenshot zone**, then `Capture
 
 ```toml
 [[sources]]
-name = "Tools"                     # 1 to 32 characters, unique (logs, history)
+name = "Tools"                     # 1 to 32 characters, unique, no control character (logs, history)
 list = ["my-menu", "--list"]       # argv, no shell
 run  = ["my-menu", "{line}"]       # "{line}": the chosen line, as one argument
 ```
 
 A source that fails, hangs or floods is cut off and logged once. The launcher opens as usual.
+Whatever the list command started is killed with it when the read ends. If the daemon itself is
+killed mid-read, the list command dies too, but processes it left in the background do not; a
+systemd unit with `KillMode=control-group` (the default) cleans them up.
+
+While the launcher is open, each kept line costs about three times its text (the line, its entry
+and its path): ≈ 6–8 MB at the bounds (8 sources × 256 KiB) plus the ranker, released on close. A
+300-line source costs ≈ 0.5 MB (table above).
 
 `alpheus-launch --dmenu` takes fuzzel's dmenu options that scripts use:
 
@@ -304,7 +311,7 @@ A source that fails, hangs or floods is cut off and logged once. The launcher op
 | `-p`, `--prompt TEXT` | text shown before the input |
 | `--index` | print the chosen line's 0-based position on standard input instead of its text, empty lines counted as fuzzel does (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
 | `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close; not with `--index` |
-| `--visible N` | with an empty query, list only the first N lines; typing searches every line (a script's home menu: its categories first, every entry by typing); not with `--password` |
+| `--visible N` | with an empty query, list only the first N non-empty lines; typing searches every line (a script's home menu: its categories first, every entry by typing); not with `--password` |
 | `--placeholder TEXT`, `--width N`, `--lines N` | accepted and ignored (the box keeps its own size) |
 
 A running `alpheus-demon` older than `--index`/`--password`/`--visible` (upgraded but not restarted) refuses

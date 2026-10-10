@@ -133,6 +133,15 @@ pub fn catalog_is_current(open: Option<(u64, bool)>, generation: u64) -> bool {
 
 /// Whether a source delivery is for the open launcher: the catalog's rule (`catalog_is_current`),
 /// on an app launcher only (a script menu has no use for entries).
+///
+/// Two narrow races remain, both harmless. An open with no entries yet adopts whatever delivery
+/// comes first: if the previous open's run lands, then its own (a reopen after that run ended but
+/// before it was delivered), the open takes both, the second replacing the first — the same
+/// sources, read twice. And the scan thread's "the previous open's are still being read" log
+/// assumes the refused thread is the later one: an earlier open's thread that lost the race to the
+/// next open's (it delivered its apps, then stalled before claiming the run) logs it too, though
+/// the run in flight is then the next open's — the one the open launcher adopts anyway. The log
+/// can name the wrong open, never the entries shown.
 pub fn entries_are_current(open: Option<(u64, bool)>, script: bool, generation: u64) -> bool {
     !script && catalog_is_current(open, generation)
 }
