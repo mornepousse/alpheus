@@ -797,6 +797,17 @@ mod tests {
         );
     }
 
+    /// Spec § 3: a hit that needs the path ranks below an App hit, even a weaker match.
+    #[test]
+    fn a_hit_that_needs_the_path_ranks_below_an_app_hit() {
+        // The app matches by one of its keywords only (no name bonus), letters scattered, and the entry
+        // is used often: only the tier keeps the app first.
+        let mut l = with_entries(&["Captures · Zone"]);
+        l.apps = vec![app("shots.desktop", "Shots", None, &["clip and paste tures"], "shots")];
+        l.history = history(&[("source:Outils:Captures · Zone", 50)]);
+        assert_eq!(l.sources(Mode::All, "captures"), [Source::App(0), Source::Entry(0)]);
+    }
+
     /// Review Focus 4.
     #[test]
     fn a_query_spanning_the_path_and_the_entry_finds_it() {

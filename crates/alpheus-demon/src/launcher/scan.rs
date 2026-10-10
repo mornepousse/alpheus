@@ -2,10 +2,14 @@
 //! (spec § 1): `.desktop` files from the XDG data dirs — no cache, a NixOS
 //! rebuild changes every path — and the executables on $PATH. Bounded
 //! everywhere (files, depth, counts); nothing outlives the delivery.
+//! Then, with sources configured, their lines (`sources.rs`), delivered second.
 
+use super::config::SourceConfig;
 use super::desktop::{DesktopEntry, Locale, ParseEnv, Verdict, desktop_id, parse};
+use super::sources::{self, Entries};
 use crate::log::write as log;
 use crate::sources::panic_text;
+use alpheus_commun::exec::Executor;
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -14,6 +18,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const SCAN_THREAD: &str = "launcher-scan";
@@ -231,6 +236,18 @@ pub fn has_program(path_dirs: &[PathBuf], program: &str) -> bool {
     !program.is_empty() && !program.contains('/') && path_dirs.iter().any(|d| is_executable_file(&d.join(program)))
 }
 
+/// What one open reads after its apps (sources spec § 2): its configured sources, and the
+/// executor that runs their `list` (the daemon's own).
+pub struct SourcePlan {
+    pub sources: Vec<SourceConfig>,
+    pub exec: Arc<dyn Executor>,
+}
+
+/// The real source run: each source in turn (`sources::read_all`), its failures logged.
+fn read_plan(plan: &SourcePlan) -> Entries {
+    sources::read_all(&plan.sources, plan.exec.as_ref(), &mut |m| log(m))
+}
+
 pub fn scan(env: &ScanEnv) -> Catalog {
     Catalog { apps: scan_apps(env), commands: scan_commands(&env.path_dirs) }
 }
@@ -249,15 +266,61 @@ impl Drop for Running {
     }
 }
 
-/// Runs `scan` on a thread named SCAN_THREAD that ends once `deliver` returns; a panic inside
-/// is caught, logged, and delivers an empty Catalog. One scan at a time: while a previous scan
-/// thread still runs, Err(WouldBlock) and no thread. Err also if the thread cannot start.
-pub fn spawn_scan(env: ScanEnv, deliver: impl FnOnce(Catalog) + Send + 'static) -> io::Result<()> {
-    spawn_with(env, scan, deliver)
+/// Set while a thread reads sources (up to 8 × 1 s): one run at a time across opens, so a quick
+/// close and reopen never piles up a second one. The reopen still gets its apps at once
+/// (SCAN_RUNNING is free by then) and adopts the run in flight (`host::entries_are_current`).
+static SOURCES_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Clears SOURCES_RUNNING however the run ends.
+struct SourcesRunning;
+
+impl Drop for SourcesRunning {
+    fn drop(&mut self) {
+        SOURCES_RUNNING.store(false, Ordering::Release);
+    }
 }
 
-/// `spawn_scan` with the scan injected (tests make it panic, or hang).
-fn spawn_with(env: ScanEnv, run_scan: fn(&ScanEnv) -> Catalog, deliver: impl FnOnce(Catalog) + Send + 'static) -> io::Result<()> {
+/// One open's second delivery (sources spec § 6): its sources, unless another open's are still
+/// being read (then nothing: this open adopts those). A panic is caught and logged; the entries
+/// are then empty, the apps already delivered.
+fn read_sources_after(plan: &SourcePlan, run_sources: fn(&SourcePlan) -> Entries, deliver: impl FnOnce(Entries)) {
+    if SOURCES_RUNNING.swap(true, Ordering::AcqRel) {
+        log("launcher sources: the previous open's are still being read; this open adopts them");
+        return;
+    }
+    let running = SourcesRunning;
+    let entries = catch_unwind(AssertUnwindSafe(|| run_sources(plan))).unwrap_or_else(|p| {
+        log(&format!("launcher sources failed: {}", panic_text(&*p)));
+        Entries { sources: plan.sources.clone(), items: Vec::new() }
+    });
+    // Cleared before `deliver`, for SCAN_RUNNING's reason (review M1): a reopen racing this delivery.
+    drop(running);
+    deliver(entries);
+}
+
+/// Runs `scan` on a thread named SCAN_THREAD: `deliver` gets the catalog first, exactly as before
+/// the sources; then, with a `plan`, the same thread reads the sources (`read_sources_after`) and
+/// `deliver_entries` gets them — never with no plan. A panic in the scan delivers an empty
+/// Catalog. One apps scan at a time: while a previous one runs, Err(WouldBlock) and no thread (no
+/// sources either). Err also if the thread cannot start.
+pub fn spawn_scan(
+    env: ScanEnv,
+    plan: Option<SourcePlan>,
+    deliver: impl FnOnce(Catalog) + Send + 'static,
+    deliver_entries: impl FnOnce(Entries) + Send + 'static,
+) -> io::Result<()> {
+    spawn_with(env, scan, plan, read_plan, deliver, deliver_entries)
+}
+
+/// `spawn_scan` with the scan and the source run injected (tests make them panic, or hang).
+fn spawn_with(
+    env: ScanEnv,
+    run_scan: fn(&ScanEnv) -> Catalog,
+    plan: Option<SourcePlan>,
+    run_sources: fn(&SourcePlan) -> Entries,
+    deliver: impl FnOnce(Catalog) + Send + 'static,
+    deliver_entries: impl FnOnce(Entries) + Send + 'static,
+) -> io::Result<()> {
     if SCAN_RUNNING.swap(true, Ordering::AcqRel) {
         return Err(io::Error::new(io::ErrorKind::WouldBlock, "the previous scan is still running"));
     }
@@ -276,6 +339,9 @@ fn spawn_with(env: ScanEnv, run_scan: fn(&ScanEnv) -> Catalog, deliver: impl FnO
         // a scan that, by the time `deliver` runs, has nothing left to give it.
         drop(running);
         deliver(catalog);
+        if let Some(plan) = plan {
+            read_sources_after(&plan, run_sources, deliver_entries);
+        }
     })?;
     Ok(())
 }
@@ -287,6 +353,10 @@ mod tests {
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::sync::{Mutex, mpsc};
     use std::time::{Duration, Instant};
+    // `SourceConfig`, `Entries` and `Arc` come through `use super::*;`.
+    use crate::launcher::sources::SourceEntry;
+    use alpheus_commun::exec::fake::FakeExecutor;
+    use alpheus_commun::exec::{CaptureEnd, Captured};
 
     const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/desktop-tree");
 
@@ -598,6 +668,29 @@ mod tests {
         assert!(!has_program(&dirs, ""));
     }
 
+    /// The apps scan alone, as before the sources: no plan, no second delivery.
+    fn apps_only(env: ScanEnv, run_scan: fn(&ScanEnv) -> Catalog, deliver: impl FnOnce(Catalog) + Send + 'static) -> io::Result<()> {
+        spawn_with(env, run_scan, None, read_plan, deliver, |_| {})
+    }
+
+    fn empty() -> ScanEnv {
+        ScanEnv { app_dirs: vec![], path_dirs: vec![], locale: None, desktops: vec![] }
+    }
+
+    fn outils() -> SourceConfig {
+        SourceConfig { name: "Outils".into(), list: vec!["fake-list".into()], run: vec!["fake-run".into(), "{line}".into()] }
+    }
+
+    fn plan(fake: FakeExecutor) -> SourcePlan {
+        SourcePlan { sources: vec![outils()], exec: Arc::new(fake) }
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum Delivered {
+        Catalog(Catalog),
+        Entries(Entries),
+    }
+
     /// The spawn tests look for threads by name: one at a time.
     static SPAWNS: Mutex<()> = Mutex::new(());
 
@@ -626,7 +719,7 @@ mod tests {
         let (_root, env) = tree("spawn");
         let expected = scan(&env);
         let (tx, rx) = mpsc::channel();
-        spawn_scan(env, move |c| tx.send((c, std::thread::current().name().map(str::to_string))).unwrap()).unwrap();
+        spawn_scan(env, None, move |c| tx.send((c, std::thread::current().name().map(str::to_string))).unwrap(), |_| {}).unwrap();
         let (catalog, thread) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!((catalog, thread.as_deref()), (expected, Some(SCAN_THREAD)));
         assert!(rx.recv_timeout(Duration::from_secs(5)).is_err(), "delivered once, then the sender is dropped");
@@ -636,9 +729,8 @@ mod tests {
     #[test]
     fn a_panicking_scan_delivers_an_empty_catalog() {
         let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
-        let env = ScanEnv { app_dirs: vec![], path_dirs: vec![], locale: None, desktops: vec![] };
         let (tx, rx) = mpsc::channel();
-        spawn_with(env, |_| panic!("scan exploded"), move |c| tx.send(c).unwrap()).unwrap();
+        apps_only(empty(), |_| panic!("scan exploded"), move |c| tx.send(c).unwrap()).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Catalog::default());
         assert!(no_scan_thread_within(Duration::from_secs(1)));
     }
@@ -662,11 +754,10 @@ mod tests {
     #[test]
     fn scan_running_clears_before_deliver_so_a_racing_reopen_is_never_stuck() {
         let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
-        let empty = || ScanEnv { app_dirs: vec![], path_dirs: vec![], locale: None, desktops: vec![] };
         let (result_tx, result_rx) = mpsc::channel();
         let (inner_tx, inner_rx) = mpsc::channel();
-        spawn_with(empty(), scan, move |_catalog| {
-            let started_again = spawn_with(empty(), scan, move |c| inner_tx.send(c).unwrap());
+        apps_only(empty(), scan, move |_catalog| {
+            let started_again = apps_only(empty(), scan, move |c| inner_tx.send(c).unwrap());
             result_tx.send(started_again.is_ok()).unwrap();
         })
         .unwrap();
@@ -681,18 +772,115 @@ mod tests {
     #[test]
     fn one_scan_at_a_time() {
         let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
-        let empty = || ScanEnv { app_dirs: vec![], path_dirs: vec![], locale: None, desktops: vec![] };
         let (tx, rx) = mpsc::channel();
         let gate = GATE.lock().unwrap_or_else(|p| p.into_inner());
         let first = tx.clone();
-        spawn_with(empty(), stuck_scan, move |c| first.send(c).unwrap()).unwrap();
-        let refused = spawn_with(empty(), stuck_scan, |_| panic!("a second scan ran")).unwrap_err();
+        apps_only(empty(), stuck_scan, move |c| first.send(c).unwrap()).unwrap();
+        let refused = apps_only(empty(), stuck_scan, |_| panic!("a second scan ran")).unwrap_err();
         assert_eq!(refused.kind(), io::ErrorKind::WouldBlock, "{refused}");
         drop(gate);
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Catalog::default());
         assert!(no_scan_thread_within(Duration::from_secs(1)));
-        spawn_with(empty(), stuck_scan, move |c| tx.send(c).unwrap()).expect("the next open scans again");
+        apps_only(empty(), stuck_scan, move |c| tx.send(c).unwrap()).expect("the next open scans again");
         assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Catalog::default());
+        assert!(no_scan_thread_within(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn sources_are_read_after_the_apps_and_delivered_second() {
+        let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
+        let fake = FakeExecutor::new();
+        let out = "Captures · Zone\nVerrouiller\n".as_bytes().to_vec();
+        fake.capture_ok("fake-list", Captured { stdout: out, end: CaptureEnd::Exited(Some(0)) });
+        let (tx, rx) = mpsc::channel();
+        let tx2 = tx.clone();
+        spawn_scan(
+            empty(),
+            Some(plan(fake)),
+            move |c| tx.send((Delivered::Catalog(c), std::thread::current().name().map(str::to_string))).unwrap(),
+            move |e| tx2.send((Delivered::Entries(e), std::thread::current().name().map(str::to_string))).unwrap(),
+        )
+        .unwrap();
+        let thread = Some(SCAN_THREAD.to_string());
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), (Delivered::Catalog(Catalog::default()), thread.clone()));
+        let expected =
+            Entries { sources: vec![outils()], items: vec![SourceEntry::new(0, "Captures · Zone"), SourceEntry::new(0, "Verrouiller")] };
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), (Delivered::Entries(expected), thread), "second, on the same thread");
+        assert!(no_scan_thread_within(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn with_no_source_there_is_no_second_delivery() {
+        let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let (etx, erx) = mpsc::channel::<Entries>();
+        spawn_scan(empty(), None, move |c| tx.send(c).unwrap(), move |e| etx.send(e).unwrap()).unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Catalog::default());
+        assert!(erx.recv_timeout(Duration::from_secs(1)).is_err(), "never called: its sender went with the thread");
+        assert!(no_scan_thread_within(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn a_panicking_source_run_loses_its_entries_never_the_apps() {
+        let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let tx2 = tx.clone();
+        spawn_with(
+            empty(),
+            scan,
+            Some(plan(FakeExecutor::new())),
+            |_| panic!("source exploded"),
+            move |c| tx.send(Delivered::Catalog(c)).unwrap(),
+            move |e| tx2.send(Delivered::Entries(e)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Delivered::Catalog(Catalog::default()));
+        let none = Entries { sources: vec![outils()], items: vec![] };
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), Delivered::Entries(none));
+        assert!(no_scan_thread_within(Duration::from_secs(1)));
+    }
+
+    /// Holds an injected source run until the test lets it go, like a source stuck on its 1 s.
+    static SOURCE_GATE: Mutex<()> = Mutex::new(());
+
+    fn stuck_sources(plan: &SourcePlan) -> Entries {
+        drop(SOURCE_GATE.lock().unwrap_or_else(|p| p.into_inner()));
+        Entries { sources: plan.sources.clone(), items: vec![] }
+    }
+
+    /// Review Focus 3: closed and reopened while the first open's sources still run.
+    #[test]
+    fn one_source_run_at_a_time_and_a_reopen_still_gets_its_apps() {
+        let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let gate = SOURCE_GATE.lock().unwrap_or_else(|p| p.into_inner());
+        let (c1, e1) = (tx.clone(), tx.clone());
+        spawn_with(
+            empty(),
+            scan,
+            Some(plan(FakeExecutor::new())),
+            stuck_sources,
+            move |_| c1.send("catalog 1").unwrap(),
+            move |_| e1.send("entries 1").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "catalog 1");
+        let (c2, e2) = (tx.clone(), tx.clone());
+        spawn_with(
+            empty(),
+            scan,
+            Some(plan(FakeExecutor::new())),
+            stuck_sources,
+            move |_| c2.send("catalog 2").unwrap(),
+            move |_| e2.send("entries 2").unwrap(),
+        )
+        .expect("the apps scan is free again");
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "catalog 2", "the reopen gets its apps at once");
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "nothing else while the run is stuck");
+        drop(gate);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), "entries 1", "the run in flight delivers; the reopen adopts it");
+        drop(tx);
+        assert!(rx.recv_timeout(Duration::from_secs(1)).is_err(), "no second source run was started");
         assert!(no_scan_thread_within(Duration::from_secs(1)));
     }
 }

@@ -14,9 +14,9 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway,
-    TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, launcher, process_alive, pw_dump_send,
-    start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE,
+    SPEAKER_SINK, Sway, TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, fake_source, launcher,
+    process_alive, pw_dump_send, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -3658,4 +3658,133 @@ fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
     assert!(d_off.wait_for("the osd module is not in modules", DELAY), "{:?}", d_off.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
+}
+
+/// The fake source's lines (fictional, in tools-menu's shape).
+fn source_lines() -> Vec<String> {
+    ["Apparence · Schéma couleurs · Vibrant", "Captures · Screenshot zone", "Verrouiller"].map(String::from).to_vec()
+}
+
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_source_entry_is_found_by_typing_and_runs_its_whole_line() {
+    let sway = Sway::start("launcher-source", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = fake_source(&sway.runtime, "Outils", &source_lines());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher sources: 3 entries", DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "vibrant", "-k", "Return"]).success());
+    let marker = sway.runtime.join(FAKE_RUN_MARKER);
+    wait_for_file(&marker, DELAY);
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "--from-alpheus\nApparence · Schéma couleurs · Vibrant\n",
+        "the whole line, one argument"
+    );
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    let history = std::fs::read_to_string(sway.runtime.join("state/alpheus/launcher-history")).unwrap();
+    assert!(history.lines().any(|l| l.ends_with("\tsource:Outils:Apparence · Schéma couleurs · Vibrant")), "{history:?}");
+    assert!(!d.log().iter().any(|l| l.contains("Vibrant")), "a line reached the log: {:?}", d.log());
+}
+
+/// The launcher box once it stops changing (rows below the bar, whose clock may tick): grim
+/// every 100 ms until two shots in a row agree.
+fn settled_box(sway: &Sway) -> Vec<[u8; 3]> {
+    const BELOW_THE_BAR: u32 = 48;
+    let shot = || {
+        let s = sway.screenshot("HEADLESS-1").expect("grim reads the output");
+        (BELOW_THE_BAR..s.height).flat_map(|y| (0..s.width).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect::<Vec<_>>()
+    };
+    let t = Instant::now();
+    let mut last = shot();
+    loop {
+        thread::sleep(Duration::from_millis(100));
+        let next = shot();
+        if next == last {
+            return next;
+        }
+        assert!(t.elapsed() < DELAY, "the launcher box never settled");
+        last = next;
+    }
+}
+
+/// Spec § 3: an empty query lists today's apps and windows, never a source entry. Watched on
+/// screen, never by pressing Return (it would act on the fixture's windows): the box with the
+/// entries delivered is the box of an open with no source at all.
+#[test]
+#[ignore = "headless sway, wtype and grim (nix develop)"]
+fn the_empty_query_shows_no_source_entry() {
+    let sway = Sway::start("launcher-source-empty", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = fake_source(&sway.runtime, "Outils", &source_lines());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher sources: 3 entries", DELAY), "{:?}", d.log());
+    let with_entries = settled_box(&sway);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    // launcher.toml is read at each open: the next one has no source, hence no entries.
+    std::fs::write(sway.runtime.join("config/alpheus/launcher.toml"), "").unwrap();
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    let without = settled_box(&sway);
+    assert!(with_entries == without, "the empty query listed something more with the source's entries");
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("launcher closed (escape)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("launcher sources:"), 1, "the second open read no source");
+    assert!(!sway.runtime.join(FAKE_RUN_MARKER).exists(), "an entry ran");
+}
+
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_hung_source_is_killed_and_nothing_stays_awake() {
+    let sway = Sway::start("launcher-source-rest", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let mut toml = fake_source(&sway.runtime, "Outils", &source_lines());
+    let pid_file = sway.runtime.join("slow-source-child.pid");
+    let slow = sway.runtime.join("bin/fake-list-slow");
+    let body = format!(
+        "#!/bin/sh\n# A fake source that hangs (never tools-menu).\nsleep 30 &\necho $! > '{}'\necho 'Lent · Une'\nwait\n",
+        pid_file.display()
+    );
+    std::fs::write(&slow, body).unwrap();
+    std::fs::set_permissions(&slow, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = sway.runtime.join("bin/fake-run");
+    toml.push_str(&format!(
+        "[[sources]]\nname = \"Lent\"\nlist = [{:?}]\nrun = [{:?}, \"{{line}}\"]\n",
+        slow.display().to_string(),
+        run.display().to_string()
+    ));
+    // A quiet bar (the clock only), as every rest test: the default modules tick (resources, 2 s).
+    let options = DaemonOptions { bar_toml: Some(CLOCK_BAR), launcher_toml: Some(&toml), ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    ready(&d);
+    let threads = d.threads();
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher source \"Lent\": timed out after 1 s, 1 lines kept", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("launcher sources: 4 entries", DELAY), "the hung source's line kept: {:?}", d.log());
+    let child = wait_for_pid_file(&pid_file, DELAY);
+    let t = Instant::now();
+    while process_alive(child) {
+        assert!(t.elapsed() < Duration::from_secs(2), "the hung source's child {child} survived");
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
+    let t = Instant::now();
+    while d.threads() != threads {
+        assert!(t.elapsed() < Duration::from_secs(2), "{} threads, {threads} before the open", d.threads());
+        thread::sleep(Duration::from_millis(20));
+    }
+    // The scrim gone, the pointer enters what lies beneath: one event, with or without sources
+    // (an open with none shows it too). Let it land, as the other rest tests do.
+    sway.hover(640, 400);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(rest_over_5_s(&d), 0, "the loop woke at rest after an open that ran sources");
 }

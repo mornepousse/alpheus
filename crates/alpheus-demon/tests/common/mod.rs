@@ -712,6 +712,56 @@ pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
     path
 }
 
+/// Where the fake source's `run` records its arguments, in the runtime directory.
+pub const FAKE_RUN_MARKER: &str = "launched-fake-run";
+
+/// A fake command source of the launcher tests (never tools-menu): `<runtime>/bin/fake-list-<name>`
+/// prints `lines`; `<runtime>/bin/fake-run` writes its arguments, one per line, to
+/// `<runtime>/launched-fake-run`. Returns the `[[sources]]` table naming them (run =
+/// [fake-run, "--from-alpheus", "{line}"]), to put in launcher.toml. Both are executed directly
+/// by the daemon (no `sh` in front), as a real menu script is.
+pub fn fake_source(runtime: &Path, name: &str, lines: &[String]) -> String {
+    let bin = runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let data = runtime.join(format!("source-lines-{name}"));
+    fs::write(&data, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+    let list = bin.join(format!("fake-list-{name}"));
+    let run = bin.join("fake-run");
+    let marker = runtime.join(FAKE_RUN_MARKER);
+    for (path, body) in [
+        (&list, format!("exec cat '{}'", data.display())),
+        (&run, format!("printf '%s\\n' \"$@\" > '{0}.tmp' && mv '{0}.tmp' '{0}'", marker.display())),
+    ] {
+        fs::write(path, format!("#!/bin/sh\n# Fake command source of the launcher tests.\n{body}\n")).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    wait_until_executable(&list);
+    format!(
+        "[[sources]]\nname = {name:?}\nlist = [{:?}]\nrun = [{:?}, \"--from-alpheus\", \"{{line}}\"]\n",
+        list.display().to_string(),
+        run.display().to_string()
+    )
+}
+
+/// Runs a script just written (one with no side effect) until it no longer fails with "Text file
+/// busy": a fork elsewhere in this process may still hold its write descriptor for a moment
+/// (rust-lang/rust#114554). The daemon then executes it directly without racing that.
+pub fn wait_until_executable(script: &Path) {
+    let t = Instant::now();
+    loop {
+        match Command::new(script).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && t.elapsed() < Duration::from_secs(5) => {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("{} cannot run: {e}", script.display()),
+            Ok(status) => {
+                assert!(status.success(), "{} failed: {status}", script.display());
+                return;
+            }
+        }
+    }
+}
+
 /// Is `pid` alive? A zombie (waiting to be reaped) counts as dead.
 pub fn process_alive(pid: i32) -> bool {
     match fs::read_to_string(format!("/proc/{pid}/stat")) {
