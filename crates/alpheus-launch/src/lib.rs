@@ -7,7 +7,7 @@
 //! other changes: the chosen line on stdout and exit 0; Escape → nothing,
 //! exit 1; anything wrong (another menu open, bad usage, no answer) → a
 //! message on stderr, exit 2. One code of its own: 3 when the daemon is
-//! unreachable (not running) or too old for `--index`/`--password`, the only
+//! unreachable (not running) or too old for `--index`/`--password`/`--visible`, the only
 //! cases where a caller may fall back to another menu.
 
 use alpheus_commun::launcher_ipc::{
@@ -33,7 +33,7 @@ pub const EXIT_UNREACHABLE: i32 = 3;
 pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
-Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password]
+Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
                       | --dnd on|off|toggle | --clear-notifications | --osd brightness | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
@@ -44,6 +44,8 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           its text; -1 for typed text that matches no line
   --password              with --dmenu: show the typed text as dots and no list (standard
                           input is ignored); the text is printed as typed, never logged
+  --visible N             with --dmenu: list only the first N lines until something is typed;
+                          typing searches every line (not with --password)
   --placeholder TEXT, --width N, --lines N
                           with --dmenu: accepted for fuzzel's sake, ignored
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
@@ -54,7 +56,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -116,6 +118,11 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 flags.password = true;
                 dmenu_only.get_or_insert("--password");
             }
+            "--visible" => {
+                let value = it.next().ok_or_else(|| "--visible needs a number".to_string())?;
+                set_visible(&mut flags, utf8(value)?)?;
+                dmenu_only.get_or_insert("--visible");
+            }
             _ => {
                 let (name, inline) = match arg.split_once('=') {
                     Some((name, value)) => (name, Some(value)),
@@ -124,6 +131,11 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 if let ("--prompt", Some(value)) = (name, inline) {
                     set_prompt(&mut prompt, value)?;
                     dmenu_only.get_or_insert("--prompt");
+                    continue;
+                }
+                if let ("--visible", Some(value)) = (name, inline) {
+                    set_visible(&mut flags, value)?;
+                    dmenu_only.get_or_insert("--visible");
                     continue;
                 }
                 let Some(&name) = IGNORED.iter().find(|&&n| n == name) else {
@@ -140,10 +152,25 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
     match (mode, dmenu_only) {
         // A masked entry has no list to point into: refused rather than silently answered -1.
         (Some(Invocation::Dmenu { .. }), _) if flags.index && flags.password => Err("--password and --index do not go together".into()),
+        (Some(Invocation::Dmenu { .. }), _) if flags.password && flags.visible.is_some() => {
+            Err("--password and --visible do not go together".into())
+        }
         (Some(Invocation::Dmenu { .. }), _) => Ok(Invocation::Dmenu { prompt, flags }),
         (_, Some(option)) => Err(format!("{option} only goes with --dmenu")),
         (mode, None) => Ok(mode.unwrap_or(Invocation::Toggle)),
     }
+}
+
+/// `--visible N`: decimal digits only (at most 12, as the wire's numbers), given once.
+fn set_visible(flags: &mut DmenuFlags, value: &str) -> Result<(), String> {
+    if flags.visible.is_some() {
+        return Err("--visible given twice".into());
+    }
+    if value.is_empty() || value.len() > 12 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("--visible takes a number, not {value:?}"));
+    }
+    flags.visible = value.parse().ok();
+    Ok(())
 }
 
 /// fuzzel's options that `--dmenu` accepts and ignores.
@@ -355,8 +382,14 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
         (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), Reply::Done) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
-        (Request::Dmenu { flags, .. }, Reply::Error(m)) if (flags.index || flags.password) && refuses_flags(&m) => {
-            let flag = if flags.index { "--index" } else { "--password" };
+        (Request::Dmenu { flags, .. }, Reply::Error(m)) if refuses_flags(&m, flags) => {
+            let flag = if flags.visible.is_some() {
+                "--visible"
+            } else if flags.index {
+                "--index"
+            } else {
+                "--password"
+            };
             fail(&format!("alpheus-demon does not know {flag} yet (restart it after the upgrade): {m}"));
             EXIT_UNREACHABLE
         }
@@ -370,7 +403,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
     }
 }
 
-/// A daemon older than `--index`/`--password` (an upgrade not followed by a restart) decodes
+/// A daemon older than `--index`/`--password`/`--visible` (an upgrade not followed by a restart) decodes
 /// only `dmenu <prompt> <len>`: the trailing flag words make the whole header an unknown request,
 /// which `socket::describe` reports as this exact text — stable since the socket's first version.
 /// Only that refusal of a flagged request reads as "this daemon cannot serve it": exit 3, so the
@@ -379,8 +412,14 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
 /// current daemon refusing a word) stays a plain error, 2, as before.
 const OLD_DAEMON_REFUSAL: &str = "malformed request: unknown request \"dmenu\"";
 
-fn refuses_flags(error: &str) -> bool {
-    error == OLD_DAEMON_REFUSAL
+/// What a daemon that knows `--index`/`--password` but not `--visible` answers it.
+const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visible\"";
+
+/// Whether `error` means "this daemon is older than the flags this request carries": the oldest
+/// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
+fn refuses_flags(error: &str, flags: &DmenuFlags) -> bool {
+    let flagged = flags.index || flags.password || flags.visible.is_some();
+    (flagged && error == OLD_DAEMON_REFUSAL) || (flags.visible.is_some() && error == NO_VISIBLE_REFUSAL)
 }
 
 #[cfg(test)]
@@ -425,10 +464,14 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
-        let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password } });
+        let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password, visible: None } });
         assert_eq!(parse_args(&args(&["--dmenu", "--index"])), dmenu(true, false));
         assert_eq!(parse_args(&args(&["--password", "--dmenu"])), dmenu(false, true));
         assert_eq!(parse_args(&args(&["--dmenu", "--index", "--index"])), dmenu(true, false), "repeated, as fuzzel allows");
+        let visible = |index, visible| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password: false, visible } });
+        assert_eq!(parse_args(&args(&["--dmenu", "--visible", "2"])), visible(false, Some(2)));
+        assert_eq!(parse_args(&args(&["--visible=0", "--dmenu"])), visible(false, Some(0)));
+        assert_eq!(parse_args(&args(&["--dmenu", "--index", "--visible", "12"])), visible(true, Some(12)));
         for a in [
             &["--dmenu", "--placeholder", "Search"][..],
             &["--dmenu", "--placeholder", "--index"],
@@ -461,6 +504,13 @@ mod tests {
             (&["--dmenu", "--lines", "many"], "--lines takes a number"),
             (&["--dmenu", "--width=-1"], "--width takes a number"),
             (&["--dmenu", "--index", "--password"], "--password and --index do not go together"),
+            (&["--visible", "2"], "--visible only goes with --dmenu"),
+            (&["--dmenu", "--visible"], "--visible needs a number"),
+            (&["--dmenu", "--visible", "x"], "--visible takes a number"),
+            (&["--dmenu", "--visible", "-1"], "--visible takes a number"),
+            (&["--dmenu", "--visible", "+2"], "--visible takes a number"),
+            (&["--dmenu", "--visible", "1", "--visible", "2"], "--visible given twice"),
+            (&["--dmenu", "--password", "--visible", "2"], "--password and --visible do not go together"),
             (&["--password", "--dmenu", "--index", "--index"], "--password and --index do not go together"),
             (&["--dmenu", "--password=*"], "unknown option"),
             (&["--dmenu", "-l", "3"], "unknown option"),

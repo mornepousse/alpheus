@@ -9,6 +9,7 @@ use crate::config::{BarConfig, ModuleId, ResourcesConfig};
 use crate::launcher::host::guarded;
 use crate::launcher::scan::Catalog;
 use crate::launcher::socket::{Conn, MAX_CONNECTIONS, Progress, REQUEST_DEADLINE, Server};
+use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
 use crate::lock;
 use crate::nonblocking::NonBlocking;
@@ -62,6 +63,12 @@ pub enum Mail {
     Catalog {
         generation: u64,
         catalog: Catalog,
+    },
+    /// A finished source run (sources spec § 6): the same open's second delivery, adopted under
+    /// the catalog's rule on an app launcher only (`host::entries_are_current`).
+    Entries {
+        generation: u64,
+        entries: Entries,
     },
     Stop,
 }
@@ -668,6 +675,7 @@ pub fn run() -> i32 {
             on_message(state, m, || LocalTime::now().0);
         }
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
+        channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,
     });
     // Clock: one wakeup per display change (minute, or second if the format

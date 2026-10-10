@@ -62,6 +62,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, open latency | ≈ 0.8–1.3 ms median (max 1.7–2.9 ms) | request accepted → first frame committed, 20 opens, with dbus-rs |
 | Launcher, 50 open/close cycles | ≈ +0.1–0.2 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
 | Launcher, 100,000-line dmenu | ≈ +6.6–6.8 MB open, back to +0.5 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
+| Launcher command sources, linked in but none configured | within noise of the delivery before this one (−4…+92 KB closed; +0.1–0.2 MB open) | one-time cost of a bigger binary (stripped 5.54 → 5.59 MiB); measured back to back in release, 3 runs each, separate target directories |
+| Launcher, open with a 300-line command source | ≈ +2.4–2.5 MB over closed (≈ +1.9–2.4 MB with no source) | headless sway, 300 synthetic apps, `tests/memory.rs` `launcher_sources_pss_latency_and_rest`, 3 runs |
+| Launcher, a 300-line source's entries | ≈ 15–17 ms after the request (median of 21 opens) | the box shows first: open latency ≈ 1.7–2.2 ms median against 1.6–1.9 ms with no source; 0 wake-ups at rest after; the harness drifts between runs: trust the deltas |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
@@ -139,6 +142,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | **Launcher** | | | | | |
 | Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
 | Script/dmenu mode | ✅ (fuzzel's exit codes) | ➖ | ➖ | ❌ | ✅ |
+| Menu scripts' entries in the search (`[[sources]]`: a `list` command per open, `run` with the chosen line) | ✅ the entry, then its path dimmed; nothing resident, nothing per keystroke | ➖ | ✅ | ❌ | ❌ |
 | Calculator, units, currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
@@ -279,6 +283,27 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 0 wake-ups in 5 s at rest after use (2 in one of three runs). A 100,000-line dmenu peaks at
 +6.6–6.8 MB and drops back to +0.5 MB a second after it is cancelled.
 
+**Command sources.** A menu script's lines can be searched next to the apps.
+A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` command. `list` runs once per open, on the thread that already scans the applications, after them: 1 s at most, 2,000 lines, 256 KiB. `run` receives the chosen line as one argument, never through a shell.
+
+A line `Captures · Screenshot zone` shows as **Screenshot zone**, then `Captures` dimmed. It is found by typing either part. It is never listed on an empty query, in another mode or behind a prefix. Its use is remembered for the ranking like an app's.
+
+```toml
+[[sources]]
+name = "Tools"                     # 1 to 32 characters, unique, no control character (logs, history)
+list = ["my-menu", "--list"]       # argv, no shell
+run  = ["my-menu", "{line}"]       # "{line}": the chosen line, as one argument
+```
+
+A source that fails, hangs or floods is cut off and logged once. The launcher opens as usual.
+Whatever the list command started is killed with it when the read ends. If the daemon itself is
+killed mid-read, the list command dies too, but processes it left in the background do not; a
+systemd unit with `KillMode=control-group` (the default) cleans them up.
+
+While the launcher is open, each kept line costs about three times its text (the line, its entry
+and its path): ≈ 6–8 MB at the bounds (8 sources × 256 KiB) plus the ranker, released on close. A
+300-line source costs ≈ 0.5 MB (table above).
+
 `alpheus-launch --dmenu` takes fuzzel's dmenu options that scripts use:
 
 | Option | What it does |
@@ -286,9 +311,10 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 | `-p`, `--prompt TEXT` | text shown before the input |
 | `--index` | print the chosen line's 0-based position on standard input instead of its text, empty lines counted as fuzzel does (`-1`, exit 0, for typed text that matches no line, as fuzzel) |
 | `--password` | draw one `•` per typed character, show no list (standard input is read and ignored), print the text as typed; never logged nor kept in the history, wiped from memory on close; not with `--index` |
+| `--visible N` | with an empty query, list only the first N non-empty lines; typing searches every line (a script's home menu: its categories first, every entry by typing); not with `--password` |
 | `--placeholder TEXT`, `--width N`, `--lines N` | accepted and ignored (the box keeps its own size) |
 
-A running `alpheus-demon` older than `--index`/`--password` (upgraded but not restarted) refuses
+A running `alpheus-demon` older than `--index`/`--password`/`--visible` (upgraded but not restarted) refuses
 them: `alpheus-launch` then exits 3, like an unreachable daemon, so a script falls back to another
 menu with the same options.
 
@@ -569,7 +595,7 @@ back to default values with a warning, never a crash.
 - `displays.toml`: screen profiles, written by the Displays tab.
 - `bar.toml`: the bar.
 - `launcher.toml`: the launcher (terminal command, result rows, history
-  size, mode prefixes, the focus command); read fresh at each open,
+  size, mode prefixes, the focus command, command sources); read fresh at each open,
   nothing kept while it is closed.
 
 ```toml

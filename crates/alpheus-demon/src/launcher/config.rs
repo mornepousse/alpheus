@@ -12,6 +12,10 @@
 //! rows = 10                                        # result rows, 3 to 30
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
+//! [[sources]]                                      # menu scripts whose lines are searchable (at most 8)
+//! name = "Outils"                                  # 1 to 32 characters, unique; in logs and the history key
+//! list = ["tools-menu", "--list"]                  # argv, no shell, run once per open on the scan thread
+//! run = ["tools-menu", "{line}"]                   # argv; the one element "{line}" becomes the chosen line
 //! [prefixes]
 //! commands = ">"
 //! windows = "w "
@@ -22,8 +26,27 @@ use std::path::{Path, PathBuf};
 
 pub const ROWS_MIN: u16 = 3;
 pub const ROWS_MAX: u16 = 30;
-/// Bounds the history file: HISTORY_MAX lines of at most ~290 bytes (history::ID_MAX).
+/// Bounds the history file: HISTORY_MAX lines of at most ~680 bytes (history::ID_MAX).
 pub const HISTORY_MAX: usize = 1_000;
+/// At most this many `[[sources]]` (sources spec § 1).
+pub const MAX_SOURCES: usize = 8;
+/// A source's name: 1 to NAME_MAX characters (not bytes).
+pub const NAME_MAX: usize = 32;
+/// A source's line, cleaned, is at most this many bytes; longer ones are skipped (sources spec § 2).
+pub const LINE_MAX: usize = 512;
+/// The one element of `run` replaced by the chosen line, whole: never part of an argument.
+pub const LINE_PLACEHOLDER: &str = "{line}";
+
+/// One `[[sources]]` table: a menu script whose lines the launcher searches (sources spec § 1).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceConfig {
+    pub name: String,
+    /// Run once per open, without a shell: its standard output's lines are the entries.
+    pub list: Vec<String>,
+    /// Run when an entry is chosen; its `{line}` element becomes the whole line, one argument.
+    pub run: Vec<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -50,6 +73,8 @@ pub struct LauncherConfig {
     pub history: usize,
     pub prefixes: Prefixes,
     pub focus: Vec<String>,
+    /// Command sources (sources spec § 1): none by default.
+    pub sources: Vec<SourceConfig>,
 }
 
 impl Default for LauncherConfig {
@@ -61,6 +86,7 @@ impl Default for LauncherConfig {
             history: 200,
             prefixes: Prefixes::default(),
             focus: vec!["wm-set".into(), "focus-window".into(), "{window}".into()],
+            sources: Vec::new(),
         }
     }
 }
@@ -74,12 +100,21 @@ struct Raw {
     history: usize,
     prefixes: Prefixes,
     focus: Vec<String>,
+    sources: Vec<SourceConfig>,
 }
 
 impl Default for Raw {
     fn default() -> Self {
         let d = LauncherConfig::default();
-        Raw { terminal: d.terminal, terminal_hold: d.terminal_hold, rows: d.rows, history: d.history, prefixes: d.prefixes, focus: d.focus }
+        Raw {
+            terminal: d.terminal,
+            terminal_hold: d.terminal_hold,
+            rows: d.rows,
+            history: d.history,
+            prefixes: d.prefixes,
+            focus: d.focus,
+            sources: d.sources,
+        }
     }
 }
 
@@ -99,7 +134,7 @@ impl LauncherConfig {
     /// Validation: terminal, terminal_hold and focus non-empty with a non-blank program; focus
     /// contains "{window}"; rows in ROWS_MIN..=ROWS_MAX; history ≤ HISTORY_MAX; prefixes
     /// non-empty, not starting with whitespace, neither one a prefix of the other (equal
-    /// included).
+    /// included); sources: `check_sources`.
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
@@ -133,6 +168,7 @@ impl LauncherConfig {
         if c.starts_with(w.as_str()) || w.starts_with(c.as_str()) {
             return Err(format!("prefixes.commands {c:?} and prefixes.windows {w:?}: a query starting with both is ambiguous"));
         }
+        check_sources(&r.sources)?;
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
@@ -140,8 +176,50 @@ impl LauncherConfig {
             history: r.history,
             prefixes: r.prefixes,
             focus: r.focus,
+            sources: r.sources,
         })
     }
+}
+
+/// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, without a control character
+/// or U+FFFD, unique; `list` and `run`
+/// non-empty with a non-blank program; `run[0]` without "{line}"; "{line}" exactly once in `run`,
+/// as a whole element (no partial substitution: a line is never split nor reinterpreted).
+fn check_sources(sources: &[SourceConfig]) -> Result<(), String> {
+    if sources.len() > MAX_SOURCES {
+        return Err(format!("sources: {} configured, at most {MAX_SOURCES}", sources.len()));
+    }
+    for (i, s) in sources.iter().enumerate() {
+        let at = format!("sources[{i}]");
+        if !(1..=NAME_MAX).contains(&s.name.chars().count()) {
+            return Err(format!("{at}.name must be 1 to {NAME_MAX} characters"));
+        }
+        if s.name.trim().is_empty() {
+            return Err(format!("{at}.name must not be blank"));
+        }
+        // The name is part of every history key of the source ("source:<name>:<line>"), and the
+        // history refuses ids holding either: the source's frecency would be silently off.
+        if s.name.contains(|c: char| c.is_control() || c == '\u{FFFD}') {
+            return Err(format!("{at}.name must not hold a control character or U+FFFD"));
+        }
+        if sources[..i].iter().any(|o| o.name == s.name) {
+            return Err(format!("{at}.name {:?} is used twice", s.name));
+        }
+        for (key, command) in [("list", &s.list), ("run", &s.run)] {
+            if command.first().is_none_or(|p| p.trim().is_empty()) {
+                return Err(format!("{at}.{key} empty (expected: [\"program\", \"argument\", …])"));
+            }
+        }
+        if s.run[0].contains(LINE_PLACEHOLDER) {
+            return Err(format!("{at}.run[0] (the program) must not contain \"{LINE_PLACEHOLDER}\""));
+        }
+        let whole = s.run.iter().filter(|a| a.as_str() == LINE_PLACEHOLDER).count();
+        let partial = s.run.iter().any(|a| a.contains(LINE_PLACEHOLDER) && a.as_str() != LINE_PLACEHOLDER);
+        if whole != 1 || partial {
+            return Err(format!("{at}.run must hold \"{LINE_PLACEHOLDER}\" exactly once, as a whole argument"));
+        }
+    }
+    Ok(())
 }
 
 pub fn config_path(config_dir: &Path) -> PathBuf {
@@ -171,6 +249,7 @@ mod tests {
         assert_eq!((c.rows, c.history), (10, 200));
         assert_eq!((c.prefixes.commands.as_str(), c.prefixes.windows.as_str()), (">", "w "));
         assert_eq!(c.focus, ["wm-set", "focus-window", "{window}"]);
+        assert!(c.sources.is_empty(), "no source by default");
     }
 
     #[test]
@@ -186,6 +265,7 @@ mod tests {
             history: 0,
             prefixes: Prefixes { commands: "!".into(), windows: "win:".into() },
             focus: vec!["my-wm".into(), "focus".into(), "--window={window}".into()],
+            sources: vec![],
         };
         assert_eq!(c, expected);
     }
@@ -254,6 +334,79 @@ mod tests {
         assert_eq!(c, LauncherConfig::default());
         let w = w.unwrap();
         assert!(w.starts_with("launcher.toml unreadable"), "{w}");
+    }
+
+    /// A `[[sources]]` table (sources spec § 1), `list` as tools-menu's, `run` given as TOML.
+    fn source(name: &str, run: &str) -> String {
+        format!("[[sources]]\nname = {name:?}\nlist = [\"tools-menu\", \"--list\"]\nrun = {run}\n")
+    }
+
+    #[test]
+    fn sources_are_read_in_order() {
+        let text = format!(
+            "{}{}",
+            source("Outils", r#"["tools-menu", "{line}"]"#),
+            source("Réseau", r#"["net-menu", "--run", "{line}", "--quiet"]"#)
+        );
+        let c = LauncherConfig::from_text(&text).unwrap();
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            c.sources,
+            [
+                SourceConfig { name: "Outils".into(), list: v(&["tools-menu", "--list"]), run: v(&["tools-menu", "{line}"]) },
+                SourceConfig {
+                    name: "Réseau".into(),
+                    list: v(&["tools-menu", "--list"]),
+                    run: v(&["net-menu", "--run", "{line}", "--quiet"])
+                },
+            ]
+        );
+        assert_eq!((c.rows, c.history), (10, 200), "the other keys keep their defaults");
+    }
+
+    #[test]
+    fn each_source_rule_refuses_with_its_reason() {
+        let nine: String = (0..9).map(|i| source(&format!("s{i}"), r#"["x", "{line}"]"#)).collect();
+        let cases = [
+            (source("Outils", r#"["tools-menu"]"#), "exactly once, as a whole argument"),
+            (source("Outils", r#"["tools-menu", "--line={line}"]"#), "exactly once, as a whole argument"),
+            (source("Outils", r#"["tools-menu", "{line}", "--line={line}"]"#), "exactly once, as a whole argument"),
+            (source("Outils", r#"["tools-menu", "{line}", "{line}"]"#), "exactly once, as a whole argument"),
+            (source("Outils", r#"["{line}"]"#), "run[0] (the program)"),
+            (source("Outils", r#"[]"#), "sources[0].run empty"),
+            (source("Outils", r#"[" ", "{line}"]"#), "sources[0].run empty"),
+            (source("", r#"["x", "{line}"]"#), "sources[0].name must be 1 to 32 characters"),
+            (source("   ", r#"["x", "{line}"]"#), "must not be blank"),
+            // Either would make every history key of the source invalid: frecency silently off.
+            (source("Out\tils", r#"["x", "{line}"]"#), "sources[0].name must not hold a control character or U+FFFD"),
+            (source("Out\nils", r#"["x", "{line}"]"#), "must not hold a control character"),
+            (source("Out\u{FFFD}ils", r#"["x", "{line}"]"#), "must not hold a control character or U+FFFD"),
+            (source(&"n".repeat(33), r#"["x", "{line}"]"#), "1 to 32 characters"),
+            (
+                format!("{}{}", source("Outils", r#"["x", "{line}"]"#), source("Outils", r#"["y", "{line}"]"#)),
+                "sources[1].name \"Outils\" is used twice",
+            ),
+            (nine, "sources: 9 configured, at most 8"),
+            ("[[sources]]\nname = \"Outils\"\nlist = []\nrun = [\"x\", \"{line}\"]\n".to_string(), "sources[0].list empty"),
+            ("[[sources]]\nname = \"Outils\"\nrun = [\"x\", \"{line}\"]\n".to_string(), "missing field `list`"),
+            (format!("{}icon = \"x\"\n", source("Outils", r#"["x", "{line}"]"#)), "unknown field `icon`"),
+        ];
+        for (text, needle) in cases {
+            let e = LauncherConfig::from_text(&text).unwrap_err();
+            assert!(e.contains(needle), "{text:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_source_limits_themselves_are_accepted() {
+        let eight: String = (0..8).map(|i| source(&format!("s{i}"), r#"["x", "{line}"]"#)).collect();
+        assert_eq!(LauncherConfig::from_text(&eight).unwrap().sources.len(), 8);
+        let long = "é".repeat(NAME_MAX); // 32 characters, 64 bytes: the rule counts characters
+        assert!(LauncherConfig::from_text(&source(&long, r#"["x", "{line}"]"#)).is_ok());
+        assert!(
+            LauncherConfig::from_text(&source("a", r#"["x", "--", "{line}", "--then"]"#)).is_ok(),
+            "{{line}} anywhere after the program"
+        );
     }
 
     #[test]

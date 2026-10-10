@@ -12,6 +12,7 @@ pub mod model;
 pub mod run;
 pub mod scan;
 pub mod socket;
+pub mod sources;
 pub mod surface;
 pub mod view;
 

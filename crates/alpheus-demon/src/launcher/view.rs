@@ -131,13 +131,43 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         }
         Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
+        // Reached only if the entry vanished: `result_row` draws the real row.
+        Source::Entry(i) => {
+            (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
+        }
     }
 }
 
 fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
+    let selected = index == l.selected;
+    if let Source::Entry(i) = l.results[index].source
+        && let Some(e) = l.entries.as_ref().and_then(|e| e.items.get(i))
+    {
+        entry_row(g, 1, b.pane_end(), &e.entry, e.path.as_deref(), selected);
+        return;
+    }
     let (icon, name, kind) = describe(l, l.results[index].source);
-    let row = Row { icon, icon_style: Style::ACCENT, text: &name, right: &kind, style: Style::NORMAL, selected: index == l.selected };
+    let row = Row { icon, icon_style: Style::ACCENT, text: &name, right: &kind, style: Style::NORMAL, selected };
     list::row(g, 1, b.pane_end(), &row);
+}
+
+/// A command-source entry (sources spec § 3): the entry, then its path dimmed two cells after it,
+/// cut to fit; no glyph, nothing right-aligned. Selected: SELECTED across the span, the path
+/// included, as `list::row` draws its secondary text.
+fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>, selected: bool) {
+    let pick = |s: Style| if selected { Style::SELECTED } else { s };
+    if selected {
+        g.write(start, end, &" ".repeat(usize::from(end.saturating_sub(start))), Style::SELECTED);
+    }
+    let stop = end.saturating_sub(1);
+    let x = start + 1;
+    let x = g.write(x, stop, &truncate(entry, stop.saturating_sub(x)), pick(Style::NORMAL));
+    if let Some(path) = path
+        && stop.saturating_sub(x) > 2
+    {
+        let x = g.write(x, stop, "  ", pick(Style::NORMAL));
+        g.write(x, stop, &truncate(path, stop.saturating_sub(x)), pick(Style::MUTED));
+    }
 }
 
 fn help_text(l: &Launcher) -> &'static str {
@@ -226,6 +256,16 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 // it open in the configured terminal; Ctrl+Enter runs it detached, no terminal.
                 out.push(("enter  run in terminal".to_string(), Style::NORMAL));
                 out.push(("ctrl+enter  run in background".to_string(), Style::NORMAL));
+            }
+        }
+        Source::Entry(i) => {
+            if let Some(e) = l.entries.as_ref().and_then(|e| e.items.get(i)) {
+                out.push((e.entry.clone(), Style::BOLD_ACCENT));
+                if let Some(p) = &e.path {
+                    out.push((p.clone(), Style::MUTED));
+                }
+                out.push((String::new(), Style::NORMAL));
+                out.push(("enter  run".to_string(), Style::NORMAL));
             }
         }
         // Unreachable in practice: a `Source::Line` hit only exists in Script mode, where
@@ -332,10 +372,11 @@ mod tests {
     use super::*;
     use crate::compositor::Toplevel;
     use crate::keys::Key;
-    use crate::launcher::config::LauncherConfig;
+    use crate::launcher::config::{LauncherConfig, SourceConfig};
     use crate::launcher::desktop::{DesktopAction, DesktopEntry};
     use crate::launcher::history::History;
     use crate::launcher::scan::Catalog;
+    use crate::launcher::sources::{Entries, SourceEntry};
     use alpheus_commun::launcher_ipc::DmenuFlags;
     use std::path::PathBuf;
 
@@ -475,7 +516,7 @@ mod tests {
     /// even "no match".
     #[test]
     fn password_mode_draws_dots_and_no_list() {
-        let flags = DmenuFlags { index: false, password: true };
+        let flags = DmenuFlags { index: false, password: true, visible: None };
         let mut l = Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), vec!["saved".into()], flags);
         typed(&mut l, "pä ss");
         let (b, rows) = draw(&mut l, 100);
@@ -842,5 +883,54 @@ mod tests {
             let t = r.text();
             assert!(!t.contains(HOSTILE), "a control character or bidi override leaked into a row: {t:?}");
         }
+    }
+
+    #[test]
+    fn an_entry_row_shows_its_path_dimmed_two_cells_after_it() {
+        let mut g = Grid::empty(40);
+        entry_row(&mut g, 0, 40, "Vibrant", Some("Apparence › Schéma couleurs"), false);
+        assert_eq!(g.text(), format!(" Vibrant  Apparence › Schéma couleurs{}", " ".repeat(3)));
+        assert_eq!(g.styles(), format!("{}{}{}", ".".repeat(10), "m".repeat(27), ".".repeat(3)));
+        let mut g = Grid::empty(40);
+        entry_row(&mut g, 0, 40, "Verrouiller", None, true);
+        assert_eq!(g.text().trim_end(), " Verrouiller", "no path: the entry alone, no glyph");
+        assert_eq!(g.styles(), "S".repeat(40), "selected: the whole span, as list::row");
+    }
+
+    /// Sources spec § 3: on the selected row the path takes the treatment `list::row` gives its
+    /// secondary text — SELECTED, like the rest of the band.
+    #[test]
+    fn a_selected_entry_row_draws_its_path_as_list_row_draws_secondary_text() {
+        let mut g = Grid::empty(40);
+        entry_row(&mut g, 0, 40, "Vibrant", Some("Apparence › Schéma couleurs"), true);
+        assert_eq!(g.text(), format!(" Vibrant  Apparence › Schéma couleurs{}", " ".repeat(3)));
+        assert_eq!(g.styles(), "S".repeat(40), "the path undimmed on the band");
+        let mut r = Grid::empty(40);
+        let row = Row { icon: None, icon_style: Style::ACCENT, text: "Vibrant", right: "kind", style: Style::NORMAL, selected: true };
+        list::row(&mut r, 0, 40, &row);
+        assert_eq!(r.styles(), "S".repeat(40), "list::row's secondary text on a selected row: the same");
+    }
+
+    #[test]
+    fn a_long_path_is_cut_to_fit_the_row() {
+        let mut g = Grid::empty(24);
+        entry_row(&mut g, 0, 24, "Vibrant", Some("Apparence › Schéma couleurs"), false);
+        let t = g.text();
+        assert!(t.starts_with(" Vibrant  Appar"), "{t:?}");
+        assert!(t.trim_end().ends_with('…'), "{t:?}");
+        assert!(text_width(t.trim_end()) <= 23, "one cell kept for the margin: {t:?}");
+    }
+
+    #[test]
+    fn a_typed_query_lists_the_entry_with_its_path_and_previews_it() {
+        let mut l = launcher();
+        let source = SourceConfig { name: "Outils".into(), list: vec!["x".into()], run: vec!["x".into(), "{line}".into()] };
+        l.set_entries(Entries { sources: vec![source], items: vec![SourceEntry::new(0, "Apparence · Schéma couleurs · Vibrant")] });
+        typed(&mut l, "vibrant");
+        let (b, rows) = draw(&mut l, 100);
+        let first = rows.rows[usize::from(b.list_top) - 1].text();
+        assert!(first.contains("Vibrant  Apparence › Schéma couleurs"), "{first:?}");
+        let all = snapshot(&rows);
+        assert!(all.contains("enter  run"), "the preview says what Enter does: {all}");
     }
 }

@@ -1,7 +1,7 @@
 //! Fake executor for tests: programmed responses, logged calls. An
 //! unprogrammed command replies "not found": a test can NEVER reach a real tool.
 
-use super::{ExecError, Executor, Output, Stream};
+use super::{CaptureLimits, Captured, ExecError, Executor, Output, Stream};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -10,6 +10,7 @@ use std::time::Duration;
 pub struct FakeExecutor {
     responses: Mutex<HashMap<String, Result<Output, ExecError>>>,
     streams: Mutex<HashMap<String, Result<Vec<u8>, ExecError>>>,
+    captures: Mutex<HashMap<String, Result<Captured, ExecError>>>,
     calls: Mutex<Vec<String>>,
     delay: Duration,
 }
@@ -34,7 +35,7 @@ impl FakeExecutor {
         self.respond(cmdline, Ok(Output::ok(stdout)));
     }
 
-    /// Command lines received (run, spawn and stream), in order.
+    /// Command lines received (run, spawn, stream and capture), in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
@@ -47,6 +48,16 @@ impl FakeExecutor {
     /// Programs a failure to start the stream "prog arg1 arg2".
     pub fn stream_err(&self, cmdline: &str, e: ExecError) {
         self.streams.lock().unwrap().insert(cmdline.to_string(), Err(e));
+    }
+
+    /// Programs the capture of "prog arg1 arg2".
+    pub fn capture_ok(&self, cmdline: &str, captured: Captured) {
+        self.captures.lock().unwrap().insert(cmdline.to_string(), Ok(captured));
+    }
+
+    /// Programs a failure to start the capture of "prog arg1 arg2".
+    pub fn capture_err(&self, cmdline: &str, e: ExecError) {
+        self.captures.lock().unwrap().insert(cmdline.to_string(), Err(e));
     }
 }
 
@@ -83,11 +94,18 @@ impl Executor for FakeExecutor {
             None => Err(ExecError::NotFound),
         }
     }
+
+    fn capture(&self, prog: &str, args: &[&str], _limits: CaptureLimits) -> Result<Captured, ExecError> {
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        self.captures.lock().unwrap().get(&l).cloned().unwrap_or(Err(ExecError::NotFound))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::CaptureEnd;
     use std::time::Instant;
 
     #[test]
@@ -135,5 +153,18 @@ mod tests {
         assert_eq!(f.stream("broken", &[]).err(), Some(ExecError::Timeout));
         assert_eq!(f.stream("unknown", &[]).err(), Some(ExecError::NotFound), "never a real tool");
         assert_eq!(f.calls(), ["pw-dump -m -N -R", "broken", "unknown"]);
+    }
+
+    #[test]
+    fn capture_programmed_and_logged() {
+        let f = FakeExecutor::new();
+        let c = Captured { stdout: b"x\n".to_vec(), end: CaptureEnd::Exited(Some(0)) };
+        f.capture_ok("tools-menu --list", c.clone());
+        f.capture_err("slow-menu", ExecError::Io("boom".into()));
+        let l = CaptureLimits { deadline: Duration::from_secs(1), max_bytes: 10, max_lines: 10 };
+        assert_eq!(f.capture("tools-menu", &["--list"], l), Ok(c));
+        assert_eq!(f.capture("slow-menu", &[], l), Err(ExecError::Io("boom".into())));
+        assert_eq!(f.capture("other", &[], l), Err(ExecError::NotFound));
+        assert_eq!(f.calls(), ["tools-menu --list", "slow-menu", "other"]);
     }
 }

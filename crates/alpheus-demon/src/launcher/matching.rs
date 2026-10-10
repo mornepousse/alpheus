@@ -5,8 +5,10 @@
 //! opens, dropped when it closes (nothing kept at rest).
 
 use crate::compositor::Toplevel;
+use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
-use crate::launcher::history::History;
+use crate::launcher::history::{History, source_id};
+use crate::launcher::sources::SourceEntry;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::borrow::Cow;
@@ -61,6 +63,8 @@ pub enum Source {
     Window(usize),
     Command(usize),
     Line(usize),
+    /// A command-source entry (sources spec § 3): an index into `Query::entries`.
+    Entry(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +91,10 @@ pub struct Query<'a> {
     pub commands: &'a [String],
     pub windows: &'a [Toplevel],
     pub lines: &'a [String],
+    /// Command-source entries: matched in All only, on a typed query.
+    pub entries: &'a [SourceEntry],
+    /// Their sources (`SourceEntry::source` indexes it): the names key the frecency.
+    pub entry_sources: &'a [SourceConfig],
     pub history: &'a History,
     pub now: u64,
 }
@@ -113,9 +121,9 @@ pub struct Ranker {
 /// or closing, is common while the launcher is open and must not re-walk the history or
 /// re-sort thousands of commands (`Ranker::forget_windows`).
 struct Prepared {
-    /// Lengths of apps, commands and lines, and `now`: a mismatch recomputes the catalog (a
-    /// stale fact never indexes out of range).
-    catalog_key: (usize, usize, usize, u64),
+    /// Lengths of apps, commands, lines and entries, and `now`: a mismatch recomputes the
+    /// catalog (a stale fact never indexes out of range).
+    catalog_key: (usize, usize, usize, usize, u64),
     /// Last length the window facts were built for; a mismatch refreshes them even without
     /// an explicit `forget_windows` (the same "never a stale index" guarantee as the catalog).
     windows_len: usize,
@@ -131,6 +139,8 @@ struct Prepared {
     app_name_rank: Vec<u32>,
     command_name_rank: Vec<u32>,
     line_name_rank: Vec<u32>,
+    entry_frecency: Vec<u32>,
+    entry_name_rank: Vec<u32>,
     /// Apps, then commands, in empty-query order (frecency desc, name, index): built once per
     /// catalog so an empty query is a slice of this, not a fresh sort.
     apps_empty_order: Vec<u32>,
@@ -153,13 +163,15 @@ impl Prepared {
         let app_name_rank = name_ranks(q.apps.len(), |i| q.apps[i].name.as_str());
         let command_name_rank = name_ranks(q.commands.len(), |i| q.commands[i].as_str());
         let line_name_rank = name_ranks(q.lines.len(), |i| q.lines[i].as_str());
+        let entry_frecency = entry_frecency(q);
+        let entry_name_rank = name_ranks(q.entries.len(), |i| q.entries[i].entry.as_str());
         let apps_empty_order = order_by_frecency(q.apps.len(), &app_frecency, &app_name_rank);
         let commands_empty_order = order_by_frecency(q.commands.len(), &command_frecency, &command_name_rank);
         let class_index = build_class_index(q.apps, &programs);
         let window_apps: Vec<Option<usize>> = q.windows.iter().map(|w| lookup_class(&class_index, &w.class)).collect();
         let window_name_rank = name_ranks(q.windows.len(), |i| q.windows[i].title.as_str());
         Prepared {
-            catalog_key: (q.apps.len(), q.commands.len(), q.lines.len(), q.now),
+            catalog_key: (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now),
             windows_len: q.windows.len(),
             windows_stale: false,
             app_frecency,
@@ -168,6 +180,8 @@ impl Prepared {
             app_name_rank,
             command_name_rank,
             line_name_rank,
+            entry_frecency,
+            entry_name_rank,
             apps_empty_order,
             commands_empty_order,
             class_index,
@@ -189,6 +203,22 @@ impl Prepared {
     fn window_frecency(&self, i: usize) -> u32 {
         self.window_apps[i].map_or(0, |a| self.app_frecency[a])
     }
+}
+
+/// Each entry's frecency, from the history's "source:<name>:<line>" ids: the map is built only when
+/// there are entries, and a key formatted only when the history holds any source id at all.
+fn entry_frecency(q: &Query) -> Vec<u32> {
+    if q.entries.is_empty() {
+        return Vec::new();
+    }
+    let map = q.history.source_frecency(q.now);
+    if map.is_empty() {
+        return vec![0; q.entries.len()];
+    }
+    q.entries
+        .iter()
+        .map(|e| q.entry_sources.get(e.source).and_then(|s| map.get(source_id(&s.name, &e.line).as_str()).copied()).unwrap_or(0))
+        .collect()
 }
 
 /// Position of each of the `len` items (named by `name`) in case-insensitive name order,
@@ -284,19 +314,21 @@ impl Default for Ranker {
     }
 }
 
-/// Window, App, Command, Line: the order between kinds at equal score and frecency.
+/// Window, App, Entry, Command, Line: the order between kinds at equal score and frecency
+/// (sources spec § 3: Window, App, Source, Command).
 fn kind(s: Source) -> u8 {
     match s {
         Source::Window(_) => 0,
         Source::App(_) => 1,
-        Source::Command(_) => 2,
-        Source::Line(_) => 3,
+        Source::Entry(_) => 2,
+        Source::Command(_) => 3,
+        Source::Line(_) => 4,
     }
 }
 
 fn index(s: Source) -> usize {
     match s {
-        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) => i,
+        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) => i,
     }
 }
 
@@ -312,6 +344,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Window(i) => &q.windows[i].title,
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
+        Source::Entry(i) => &q.entries[i].entry,
     }
 }
 
@@ -364,7 +397,7 @@ impl Ranker {
     }
 
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
-        let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.now);
+        let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now);
         let mut prepared = match self.prepared.take() {
             Some(p) if p.catalog_key == catalog_key => p,
             _ => {
@@ -473,6 +506,22 @@ impl Ranker {
                 }
             }
         }
+        // Command-source entries (sources spec § 3), in All only: a prefix leaves All, so none shows
+        // behind one. A hit on the entry ranks as is; a hit that needs the path — scored on the whole
+        // line, so "captures zone" finds "Captures · Zone" — ranks below every other hit.
+        let mut path_hits = Vec::new();
+        if q.mode == Mode::All {
+            for (i, e) in q.entries.iter().enumerate() {
+                let frecency = pr.entry_frecency[i];
+                if let Some(score) = self.score(p, &e.entry) {
+                    hits.push(Hit { source: Source::Entry(i), score, frecency });
+                } else if e.path.is_some()
+                    && let Some(score) = self.score(p, &e.line)
+                {
+                    path_hits.push(Hit { source: Source::Entry(i), score, frecency });
+                }
+            }
+        }
         if q.mode == Mode::Commands {
             for (i, c) in q.commands.iter().enumerate() {
                 if let Some(score) = self.score(p, c) {
@@ -487,7 +536,11 @@ impl Ranker {
                 }
             }
         }
-        finish(hits, q, pr)
+        let mut ranked = finish(hits, q, pr);
+        if !path_hits.is_empty() {
+            ranked.extend(finish(path_hits, q, pr));
+        }
+        ranked
     }
 }
 
@@ -508,6 +561,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Window(i) => pr.window_name_rank[i],
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
+            Source::Entry(i) => pr.entry_name_rank[i],
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {
@@ -637,12 +691,22 @@ mod tests {
         commands: Vec<String>,
         windows: Vec<Toplevel>,
         lines: Vec<String>,
+        entries: Vec<SourceEntry>,
+        entry_sources: Vec<SourceConfig>,
         history: History,
     }
 
     impl Lists {
         fn new() -> Lists {
-            Lists { apps: apps(), commands: vec![], windows: vec![], lines: vec![], history: History::empty(200) }
+            Lists {
+                apps: apps(),
+                commands: vec![],
+                windows: vec![],
+                lines: vec![],
+                entries: vec![],
+                entry_sources: vec![],
+                history: History::empty(200),
+            }
         }
 
         fn query<'a>(&'a self, mode: Mode, text: &'a str) -> Query<'a> {
@@ -653,6 +717,8 @@ mod tests {
                 commands: &self.commands,
                 windows: &self.windows,
                 lines: &self.lines,
+                entries: &self.entries,
+                entry_sources: &self.entry_sources,
                 history: &self.history,
                 now: NOW,
             }
@@ -685,12 +751,86 @@ mod tests {
         l.windows = vec![window("id:1", "firefox", "Mail")];
         l.commands = vec!["firejail".into()];
         l.lines = vec!["fire drill".into()];
+        l.entry_sources = vec![outils()];
+        l.entries = vec![SourceEntry::new(0, "Alarme · fire drill")];
         let kinds = |m: Mode| l.rank(m, "fire").iter().map(|h| kind(h.source)).collect::<Vec<_>>();
-        assert_eq!(kinds(Mode::All), [0, 1], "All: windows and apps");
+        assert_eq!(kinds(Mode::All), [0, 1, 2], "All: windows, apps, then source entries");
         assert_eq!(kinds(Mode::Apps), [1]);
         assert_eq!(kinds(Mode::Windows), [0]);
-        assert_eq!(kinds(Mode::Commands), [2]);
-        assert_eq!(kinds(Mode::Script), [3]);
+        assert_eq!(kinds(Mode::Commands), [3]);
+        assert_eq!(kinds(Mode::Script), [4]);
+    }
+
+    fn outils() -> SourceConfig {
+        SourceConfig {
+            name: "Outils".into(),
+            list: vec!["tools-menu".into(), "--list".into()],
+            run: vec!["tools-menu".into(), "{line}".into()],
+        }
+    }
+
+    fn with_entries(lines: &[&str]) -> Lists {
+        let mut l = Lists::new();
+        l.entry_sources = vec![outils()];
+        l.entries = lines.iter().map(|x| SourceEntry::new(0, x)).collect();
+        l
+    }
+
+    #[test]
+    fn entries_show_on_a_typed_query_in_all_only() {
+        let l = with_entries(&["Captures · Zone", "Verrouiller"]);
+        assert!(l.sources(Mode::All, "").iter().all(|s| !matches!(s, Source::Entry(_))), "empty query: today's list");
+        assert_eq!(l.sources(Mode::All, "verrouil"), [Source::Entry(1)]);
+        for mode in [Mode::Apps, Mode::Windows, Mode::Commands, Mode::Script] {
+            assert!(l.sources(mode, "verrouil").is_empty(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn an_entry_hit_ranks_before_every_hit_that_needs_the_path() {
+        let mut l = with_entries(&["Captures · Zone", "Captures · Fenêtre", "Vieilles captures"]);
+        l.history = history(&[("source:Outils:Captures · Zone", 50)]);
+        assert_eq!(
+            l.sources(Mode::All, "captures"),
+            [Source::Entry(2), Source::Entry(0), Source::Entry(1)],
+            "the entry named so first, then the group — frecency first within it"
+        );
+    }
+
+    /// Spec § 3: a hit that needs the path ranks below an App hit, even a weaker match.
+    #[test]
+    fn a_hit_that_needs_the_path_ranks_below_an_app_hit() {
+        // The app matches by one of its keywords only (no name bonus), letters scattered, and the entry
+        // is used often: only the tier keeps the app first.
+        let mut l = with_entries(&["Captures · Zone"]);
+        l.apps = vec![app("shots.desktop", "Shots", None, &["clip and paste tures"], "shots")];
+        l.history = history(&[("source:Outils:Captures · Zone", 50)]);
+        assert_eq!(l.sources(Mode::All, "captures"), [Source::App(0), Source::Entry(0)]);
+    }
+
+    /// Review Focus 4.
+    #[test]
+    fn a_query_spanning_the_path_and_the_entry_finds_it() {
+        let l = with_entries(&["Captures · Zone", "Affichage · Zoom"]);
+        assert_eq!(l.sources(Mode::All, "captures zone"), [Source::Entry(0)]);
+    }
+
+    #[test]
+    fn ties_go_window_app_entry_command() {
+        assert!(kind(Source::Window(0)) < kind(Source::App(0)));
+        assert!(kind(Source::App(0)) < kind(Source::Entry(0)));
+        assert!(kind(Source::Entry(0)) < kind(Source::Command(0)));
+        let mut l = with_entries(&["Zone"]);
+        l.apps = vec![app("x.desktop", "Xyz", Some("Zone"), &[], "xyz")];
+        l.windows = vec![window("id:1", "unlinked", "Zone")];
+        assert_eq!(l.sources(Mode::All, "zon"), [Source::Window(0), Source::App(0), Source::Entry(0)]);
+    }
+
+    #[test]
+    fn entry_frecency_is_kept_per_source_and_line() {
+        let mut l = with_entries(&["Zone A", "Zone B"]);
+        l.history = history(&[("source:Outils:Zone B", 3), ("source:Autre:Zone A", 9)]);
+        assert_eq!(l.sources(Mode::All, "zone"), [Source::Entry(1), Source::Entry(0)], "Zone A's uses were another source's");
     }
 
     #[test]
@@ -1063,6 +1203,8 @@ mod tests {
             commands: &commands,
             windows: &[],
             lines: &[],
+            entries: &[],
+            entry_sources: &[],
             history: &history,
             now: 0,
         };
@@ -1111,6 +1253,8 @@ mod tests {
             commands: &[],
             windows: &windows,
             lines: &[],
+            entries: &[],
+            entry_sources: &[],
             history: &empty_history,
             now: NOW,
         };
@@ -1139,6 +1283,8 @@ mod tests {
             commands: &[],
             windows: &windows,
             lines: &[],
+            entries: &[],
+            entry_sources: &[],
             history: &empty_history,
             now: NOW,
         };

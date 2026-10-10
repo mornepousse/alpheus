@@ -9,8 +9,9 @@ use crate::launch::Mail;
 use crate::launcher::config::{LauncherConfig, config_path};
 use crate::launcher::history::History;
 use crate::launcher::model::Launcher;
-use crate::launcher::scan::{self, Catalog, ScanEnv};
+use crate::launcher::scan::{self, Catalog, ScanEnv, SourcePlan};
 use crate::launcher::socket::Conn;
+use crate::launcher::sources::Entries;
 use crate::launcher::surface::{CloseReason, history_path_for, reply_on_close};
 use crate::log::write as log;
 use crate::sources::panic_text;
@@ -128,6 +129,21 @@ pub fn catalog_is_current(open: Option<(u64, bool)>, generation: u64) -> bool {
         Some((g, has_catalog)) => g == generation || !has_catalog,
         None => false,
     }
+}
+
+/// Whether a source delivery is for the open launcher: the catalog's rule (`catalog_is_current`),
+/// on an app launcher only (a script menu has no use for entries).
+///
+/// Two narrow races remain, both harmless. An open with no entries yet adopts whatever delivery
+/// comes first: if the previous open's run lands, then its own (a reopen after that run ended but
+/// before it was delivered), the open takes both, the second replacing the first — the same
+/// sources, read twice. And the scan thread's "the previous open's are still being read" log
+/// assumes the refused thread is the later one: an earlier open's thread that lost the race to the
+/// next open's (it delivered its apps, then stalled before claiming the run) logs it too, though
+/// the run in flight is then the next open's — the one the open launcher adopts anyway. The log
+/// can name the wrong open, never the entries shown.
+pub fn entries_are_current(open: Option<(u64, bool)>, script: bool, generation: u64) -> bool {
+    !script && catalog_is_current(open, generation)
 }
 
 /// Whether a scan refusal (`spawn_scan`'s `Err`) is shown as an error in the
@@ -283,6 +299,7 @@ impl App {
 
     fn launcher_open_apps(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         let config = read_config(&paths::config_dir(), &mut |m| log(m));
+        let sources = config.sources.clone();
         let now = unix_now();
         let history = match history_path_for(&config, &paths::state_dir()) {
             Some(path) => {
@@ -309,13 +326,23 @@ impl App {
         let Some(open) = self.launcher.as_mut() else { return };
         let generation = open.generation;
         let Some(tx) = self.mail.clone() else { return };
+        // Sources (sources spec § 2): read after the apps on the same thread; no plan, no cost.
+        let plan = (!sources.is_empty()).then(|| SourcePlan { sources, exec: self.exec.clone() });
+        let entries_tx = tx.clone();
         // How long the scan this reopen is about to wait on (if refused) has
         // already been running: computed BEFORE `spawn_scan`, which is the
         // one call that would start a brand new one (review item 1).
         let running_for = self.scan_started.map(|t| t.elapsed());
-        match scan::spawn_scan(env, move |catalog| {
-            let _ = tx.send(Mail::Catalog { generation, catalog });
-        }) {
+        match scan::spawn_scan(
+            env,
+            plan,
+            move |catalog| {
+                let _ = tx.send(Mail::Catalog { generation, catalog });
+            },
+            move |entries| {
+                let _ = entries_tx.send(Mail::Entries { generation, entries });
+            },
+        ) {
             Ok(()) => self.scan_started = Some(Instant::now()),
             Err(e) if !scan_refusal_is_an_error(e.kind(), running_for) => {
                 // A quick reopen while the previous open's scan is still
@@ -359,6 +386,29 @@ impl App {
             if let Some(open) = app.launcher.as_mut() {
                 open.model.set_catalog(catalog);
             }
+            app.launcher_redraw();
+        });
+    }
+
+    /// An open's source entries, its second delivery (sources spec § 6): adopted under
+    /// `entries_are_current`, else dropped. One log line — how many, how long after the request —
+    /// never a line.
+    pub fn launcher_entries(&mut self, generation: u64, entries: Entries) {
+        self.launcher_guarded("entries", move |app| {
+            let open = app.launcher.as_ref().map(|o| (o.generation, o.model.entries.is_some()));
+            let script = app.launcher.as_ref().is_some_and(|o| o.model.is_script());
+            if !entries_are_current(open, script, generation) {
+                drop(entries);
+                crate::memory::release_memory();
+                return;
+            }
+            let Some(open) = app.launcher.as_mut() else { return };
+            log(&format!(
+                "launcher sources: {} entries, {} ms after the request",
+                entries.items.len(),
+                open.requested_at.elapsed().as_millis()
+            ));
+            open.model.set_entries(entries);
             app.launcher_redraw();
         });
     }
@@ -510,7 +560,7 @@ mod tests {
 
     #[test]
     fn a_dmenus_flags_reach_the_menu() {
-        let flags = DmenuFlags { index: true, password: true };
+        let flags = DmenuFlags { index: true, password: true, visible: Some(2) };
         let (action, _) = decide(Request::Dmenu { prompt: None, lines: vec![], flags }, None, PAST_DEBOUNCE);
         assert_eq!(action, Action::OpenScript { prompt: None, lines: vec![], flags });
     }
@@ -533,6 +583,15 @@ mod tests {
         assert!(catalog_is_current(Some((3, false)), 2), "no catalog of its own yet: adopts the in-flight scan's result");
         assert!(catalog_is_current(Some((3, false)), 99), "whatever generation it carries");
         assert!(catalog_is_current(Some((3, false)), 3), "its own generation too, obviously");
+    }
+
+    #[test]
+    fn entries_follow_the_catalog_rule_on_an_app_launcher_only() {
+        assert!(entries_are_current(Some((3, false)), false, 3), "its own open");
+        assert!(entries_are_current(Some((3, false)), false, 2), "no entries yet: adopts the run in flight");
+        assert!(!entries_are_current(Some((3, true)), false, 2), "already fed: a previous open's run is stale");
+        assert!(!entries_are_current(None, false, 3), "closed");
+        assert!(!entries_are_current(Some((3, false)), true, 3), "a script menu has no use for entries");
     }
 
     #[test]

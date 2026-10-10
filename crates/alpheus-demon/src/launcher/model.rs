@@ -7,9 +7,10 @@
 use crate::compositor::Toplevel;
 use crate::keys::Key;
 use crate::launcher::config::LauncherConfig;
-use crate::launcher::history::History;
+use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::scan::Catalog;
+use crate::launcher::sources::Entries;
 use crate::list;
 use alpheus_commun::launcher_ipc::{DmenuFlags, wipe};
 use std::path::PathBuf;
@@ -43,6 +44,8 @@ pub enum Activation {
         text: String,
         line: Option<usize>,
     },
+    /// A command-source entry (sources spec § 3): its source's `run` with the whole line.
+    Entry(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +64,8 @@ enum Identity {
     App(String),
     Command(String),
     Line(usize),
+    /// Its history key (`source_key`): the source's name and the whole line.
+    Entry(String),
 }
 
 pub struct Launcher {
@@ -76,6 +81,9 @@ pub struct Launcher {
     /// Changed only through `set_catalog`: assigning it directly would leave the ranker's
     /// per-catalog facts (and the selection) stale — same reason as `windows` below.
     pub catalog: Option<Catalog>,
+    /// Command-source entries (sources spec § 3): None until the scan delivers them (never with no
+    /// source configured). Changed only through `set_entries`, for the reason `catalog` is.
+    pub entries: Option<Entries>,
     /// Changed only through `set_windows`: a direct assignment skips `ranker.forget_windows()`
     /// and the identity-preserving reselection `set_windows` does (`Launcher::identity`).
     pub windows: Vec<Toplevel>,
@@ -86,6 +94,8 @@ pub struct Launcher {
     pub index: bool,
     /// Script mode, `--password`: no list, the query drawn as dots, wiped on drop (`Drop`).
     pub password: bool,
+    /// Script mode, `--visible N`: an empty query lists the first N lines only (sources spec § 4).
+    pub visible: Option<usize>,
     /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
     /// preview falls back to naming $PATH alone.
@@ -122,10 +132,12 @@ impl Launcher {
             message: None,
             prompt: None,
             catalog: None,
+            entries: None,
             windows: Vec::new(),
             lines: Vec::new(),
             index: false,
             password: false,
+            visible: None,
             path_dirs: Vec::new(),
             history: History::empty(0),
             now: 0,
@@ -166,6 +178,7 @@ impl Launcher {
         } else {
             l.lines = lines;
         }
+        l.visible = if flags.password { None } else { flags.visible };
         l.refilter();
         l
     }
@@ -190,6 +203,15 @@ impl Launcher {
         self.refilter_keeping(kept);
     }
 
+    /// The sources' entries, the open's second delivery (sources spec § 6): refilters, keeping the
+    /// selection by identity like `set_catalog` (back on top unless the user moved).
+    pub fn set_entries(&mut self, entries: Entries) {
+        let kept = self.selected_hit().and_then(|h| self.identity(h.source));
+        self.entries = Some(entries);
+        self.ranker.forget();
+        self.refilter_keeping(kept);
+    }
+
     /// What makes a result the "same" one across a refilter, independent of its numeric index:
     /// a window by its `Toplevel::selector` (a window's index shifts whenever another window
     /// opens or closes before it in the list), an app by its `DesktopEntry::id`, a command by
@@ -202,6 +224,11 @@ impl Launcher {
             Source::App(i) => Identity::App(self.catalog.as_ref()?.apps.get(i)?.id.clone()),
             Source::Command(i) => Identity::Command(self.catalog.as_ref()?.commands.get(i)?.clone()),
             Source::Line(i) => Identity::Line(i),
+            Source::Entry(i) => {
+                let e = self.entries.as_ref()?;
+                let item = e.items.get(i)?;
+                Identity::Entry(source_key(&e.sources.get(item.source)?.name, &item.line))
+            }
         })
     }
 
@@ -314,6 +341,10 @@ impl Launcher {
             Some(c) => (&c.apps[..], &c.commands[..]),
             None => (&[][..], &[][..]),
         };
+        let (entries, entry_sources) = match &self.entries {
+            Some(e) => (&e.items[..], &e.sources[..]),
+            None => (&[][..], &[][..]),
+        };
         let q = Query {
             text: &self.query,
             mode: self.mode,
@@ -321,10 +352,19 @@ impl Launcher {
             commands,
             windows: &self.windows,
             lines: &self.lines,
+            entries,
+            entry_sources,
             history: &self.history,
             now: self.now,
         };
         self.results = self.ranker.rank(&q);
+        // `--visible N`: an empty query lists the first N lines (`everything` keeps input order).
+        // Empty as the ranker sees it: a blank query ("  ") holds no atom and lists every line.
+        if let Some(n) = self.visible
+            && self.query.trim().is_empty()
+        {
+            self.results.truncate(n);
+        }
     }
 
     /// New results, selection back on the first one. A typed character, Backspace, Ctrl+U,
@@ -407,6 +447,7 @@ impl Launcher {
                 Some(Source::Window(i)) => Outcome::Activate(Activation::Window(i)),
                 Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: true }),
                 Some(Source::Line(i)) => self.choose_line(i),
+                Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
                 None => Outcome::Nothing,
             },
         }
@@ -489,7 +530,9 @@ impl Drop for Launcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::launcher::config::SourceConfig;
     use crate::launcher::desktop::{DesktopAction, DesktopEntry};
+    use crate::launcher::sources::SourceEntry;
     use std::path::PathBuf;
 
     const NOW: u64 = 1_800_000_000;
@@ -865,7 +908,7 @@ mod tests {
     #[test]
     fn a_chosen_line_keeps_its_position_on_stdin_through_filtering() {
         let lines = ["alpha", "beta", "gamma", "delta", "gamma"].map(String::from).to_vec();
-        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines, DmenuFlags { index: true, password: false });
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines, DmenuFlags { index: true, password: false, visible: None });
         typed(&mut s, "gam");
         assert_eq!(sources(&s), [Source::Line(2), Source::Line(4)], "the two gammas, in input order");
         assert_eq!(s.key(Key::Down), Outcome::Redraw);
@@ -876,13 +919,42 @@ mod tests {
         assert_eq!(s.click(0, false), choose("b", Some(1)), "a click too: the first result is the second line");
     }
 
+    /// `--visible N` (sources spec § 4): the first N lines on an empty query, every line once typing.
+    #[test]
+    fn visible_lists_the_first_lines_on_an_empty_query_and_searches_them_all() {
+        let lines = ["Captures", "Affichage", "Captures · Zone", "Affichage · Luminosité · 50%"].map(String::from).to_vec();
+        let flags = |index, visible| DmenuFlags { index, password: false, visible };
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(false, Some(2)));
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)]);
+        typed(&mut s, "lumi");
+        assert_eq!(sources(&s), [Source::Line(3)], "typing searches every line");
+        s.key(Key::CtrlU);
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)], "back to the first two");
+        typed(&mut s, " ");
+        assert_eq!(sources(&s), [Source::Line(0), Source::Line(1)], "a lone space is no search (no atom): still the first two");
+        s.key(Key::CtrlU);
+        typed(&mut s, "a");
+        assert_eq!(s.results.len(), 4, "a typed query matching more than N lines lists all of them");
+        let mut s = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(true, Some(2)));
+        typed(&mut s, "zone");
+        assert_eq!(s.key(Key::Enter), choose("Captures · Zone", Some(2)), "its position among all the lines");
+        let none = Launcher::for_dmenu(LauncherConfig::default(), None, lines.clone(), flags(false, Some(0)));
+        assert!(none.results.is_empty(), "--visible 0: nothing until typing");
+        let all = Launcher::for_dmenu(LauncherConfig::default(), None, lines, flags(false, Some(99)));
+        assert_eq!(all.results.len(), 4, "N above the line count: every line");
+    }
+
     /// `--password`: no list (the lines are dropped at open, nothing is ranked or shown), Enter
     /// returns the typed text as is, spaces included; nothing typed → nothing.
     #[test]
     fn password_mode_has_no_list_and_returns_the_typed_text() {
         let lines = ["alpha", "beta"].map(String::from).to_vec();
-        let mut s =
-            Launcher::for_dmenu(LauncherConfig::default(), Some("Key: ".into()), lines, DmenuFlags { index: false, password: true });
+        let mut s = Launcher::for_dmenu(
+            LauncherConfig::default(),
+            Some("Key: ".into()),
+            lines,
+            DmenuFlags { index: false, password: true, visible: None },
+        );
         assert!(s.password && s.lines.is_empty() && s.results.is_empty(), "no list");
         assert_eq!(s.key(Key::Enter), Outcome::Nothing, "nothing typed");
         typed(&mut s, " al pha");
@@ -1028,5 +1100,49 @@ mod tests {
         l.show_message("oops".into());
         assert_eq!(l.click(0, false), Outcome::Redraw, "nothing to run on a blank query, but the message still clears");
         assert_eq!(l.message, None);
+    }
+
+    fn entries(lines: &[&str]) -> Entries {
+        let outils = SourceConfig {
+            name: "Outils".into(),
+            list: vec!["tools-menu".into(), "--list".into()],
+            run: vec!["tools-menu".into(), "{line}".into()],
+        };
+        Entries { sources: vec![outils], items: lines.iter().map(|l| SourceEntry::new(0, l)).collect() }
+    }
+
+    #[test]
+    fn entries_show_on_a_typed_query_and_enter_runs_them() {
+        let mut l = launcher();
+        l.set_entries(entries(&["Apparence · Schéma couleurs · Vibrant", "Captures · Zone", "Verrouiller"]));
+        assert!(!sources(&l).iter().any(|s| matches!(s, Source::Entry(_))), "empty query: today's list");
+        typed(&mut l, "vibrant");
+        assert_eq!(sources(&l), [Source::Entry(0)]);
+        assert_eq!(l.key(Key::Enter), activate(Activation::Entry(0)));
+        assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Entry(0)), "Ctrl+Enter does the same");
+        l.key(Key::CtrlU);
+        typed(&mut l, ">vibrant");
+        assert!(sources(&l).is_empty(), "behind a prefix: never");
+    }
+
+    #[test]
+    fn entries_arriving_after_typing_join_the_results() {
+        let mut l = launcher();
+        typed(&mut l, "zone");
+        assert!(sources(&l).is_empty());
+        l.set_entries(entries(&["Captures · Zone"]));
+        assert_eq!(sources(&l), [Source::Entry(0)]);
+    }
+
+    #[test]
+    fn a_moved_selection_stays_on_its_entry_when_entries_arrive_again() {
+        let mut l = launcher();
+        l.set_entries(entries(&["Zone A", "Zone B"]));
+        typed(&mut l, "zone");
+        assert_eq!(sources(&l), [Source::Entry(0), Source::Entry(1)]);
+        l.key(Key::Down);
+        l.set_entries(entries(&["Zone B", "Zone A"]));
+        assert_eq!(sources(&l), [Source::Entry(1), Source::Entry(0)], "ranked again: \"Zone A\" (now index 1) first");
+        assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Entry(0)), "still \"Zone B\", now index 0");
     }
 }
