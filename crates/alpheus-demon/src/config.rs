@@ -494,7 +494,7 @@ pub fn state_form(s: &str) -> Result<StateForm, String> {
     }
     if let Some(path) = s.strip_prefix("file:") {
         let anchored = path.starts_with('/') || path.starts_with("~/") || path.starts_with("$XDG_RUNTIME_DIR/");
-        if !anchored || path.contains('\0') {
+        if !anchored || path.chars().any(char::is_control) {
             return Err(format!("the file must be an absolute path (\"/…\", \"~/…\" or \"$XDG_RUNTIME_DIR/…\"), not {path:?}"));
         }
         return Ok(StateForm::File(path.to_string()));
@@ -511,7 +511,7 @@ pub fn state_form(s: &str) -> Result<StateForm, String> {
     Err(format!("expected \"\", \"file:<path>\" or \"process:<name>\", not {s:?}"))
 }
 
-/// `[quick]` checked: `step` in range; every non-empty command with a non-blank program; a toggle's
+/// `[quick]` checked: `step` in range; every non-empty command with a non-blank program and no NUL; a toggle's
 /// `state` only with its `toggle`, and in one of the three forms.
 fn check_quick(q: &QuickConfig) -> Result<(), String> {
     if !(1..=QUICK_STEP_MAX).contains(&q.step) {
@@ -527,6 +527,10 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
     ] {
         if command.first().is_some_and(|p| p.trim().is_empty()) {
             return Err(format!("{key}: the program is blank"));
+        }
+        // spawn refuses an argument with a NUL in it: refused here, with the reason, never at a click.
+        if command.iter().any(|a| a.contains('\0')) {
+            return Err(format!("{key}: an argument holds a NUL"));
         }
     }
     for (key, t) in [("quick.keep_awake", &q.keep_awake), ("quick.night_light", &q.night_light)] {
@@ -1134,6 +1138,12 @@ mod tests {
                 "quick.night_light.state: a process name is 1 to 15 bytes",
             ),
             ("[quick]\nnight_light = { toggle = [\"x\"], state = \"process:a/b\" }", "quick.night_light.state: a process name has no '/'"),
+            (
+                "[quick]\nnight_light = { toggle = [\"x\"], state = \"file:/run/a\\nb\" }",
+                "quick.night_light.state: the file must be an absolute path",
+            ),
+            ("[quick]\nlogout = [\"fake-logout\", \"a\\u0000b\"]", "quick.logout: an argument holds a NUL"),
+            ("[quick]\nkeep_awake = { toggle = [\"x\\u0000\"] }", "quick.keep_awake.toggle: an argument holds a NUL"),
         ] {
             let e = err(t);
             assert!(e.contains(want), "{t}: {e}");

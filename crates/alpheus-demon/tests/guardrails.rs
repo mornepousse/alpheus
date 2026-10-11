@@ -10,7 +10,7 @@ use alpheus_commun::exec::{CaptureLimits, Captured, ExecError, Executor, Output,
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::appearance::SETTING_RULE;
 use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
-use alpheus_demon::config::BarConfig;
+use alpheus_demon::config::{BarConfig, QuickConfig, ToggleConfig};
 use alpheus_demon::keys::Key;
 use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
@@ -21,6 +21,7 @@ use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
+use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
@@ -30,6 +31,7 @@ use alpheus_demon::tray::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
 };
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
     Workspace { name: name.into(), reference: name.into(), output: output.into(), windows, urgent: false, visible, focused: visible }
@@ -1005,7 +1007,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 24] = [
+const NO_THREAD_NOR_COMMAND: [&str; 26] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1030,6 +1032,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 24] = [
     "painter/",
     "placement.rs",
     "text.rs",
+    "quick.rs",
+    "quick_state.rs",
 ];
 
 #[test]
@@ -1452,5 +1456,133 @@ fn the_osd_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick spec § 5, § 6: the panel's model and its state reader read and decide, nothing else: no
+/// file written, nothing created, no raw system call; and, through `NO_THREAD_NOR_COMMAND`, no
+/// command run. Production code only.
+#[test]
+fn the_quick_model_and_its_state_reader_only_read() {
+    let mut checked = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !["quick.rs", "quick_state.rs"].contains(&name.as_str()) {
+            continue;
+        }
+        checked += 1;
+        let prod = production_code(&t);
+        for never in [
+            "fs::write",
+            "OpenOptions",
+            "File::create",
+            "File::options(",
+            "set_permissions",
+            "remove_file",
+            "create_dir",
+            "fs::rename",
+            "fs::copy",
+            "libc::",
+            "unsafe",
+        ] {
+            assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
+        }
+    }
+    assert_eq!(checked, 2, "quick.rs and quick_state.rs");
+}
+
+/// Quick spec § 5: every command the panel can build — every key on every row (twice: the
+/// confirmation's second activation), the outputs detail, every press of every cell with every
+/// button (twice), the wheel both ways — is one of the exact shapes; the configured commands run as
+/// given. And each shape is reached.
+#[test]
+fn every_quick_command_stays_on_the_allowlist() {
+    let config = QuickConfig {
+        keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() },
+        night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
+        logout: vec!["fake-logout".into()],
+        ..QuickConfig::default()
+    };
+    let sound = SoundState {
+        sink: Some(Volume { percent: 64, muted: false }),
+        source: Some(Volume { percent: 100, muted: false }),
+        ..SoundState::default()
+    };
+    let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
+    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config };
+    let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
+    let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
+    let fresh = || Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    let t = Instant::now();
+    let mut calls: Vec<String> = Vec::new();
+    let mut record = |a: QuickAction| {
+        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } = a {
+            calls.push(argv.join(" "));
+        }
+    };
+    let keys = [Key::Up, Key::Down, Key::Left, Key::Right, Key::Char(' '), Key::Enter, Key::Home, Key::End, Key::Escape];
+    for row in quick::shown(&live, &fresh()) {
+        for k in keys {
+            let mut q = fresh();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, t));
+        }
+    }
+    let mut q = fresh();
+    for k in [Key::Enter, Key::Up, Key::Enter, Key::Down, Key::Enter] {
+        record(q.key(&live, k, false, t));
+    }
+    let lines = quick::lines(&live, &fresh()).len() as u16;
+    for y in 0..lines {
+        for x in 0..quick::WIDTH + 2 {
+            for b in [Button::Left, Button::Right, Button::Middle] {
+                let mut q = fresh();
+                record(q.press(&live, (x, y), b, t));
+                record(q.press(&live, (x, y), b, t));
+            }
+            for steps in [-1, 1, -3] {
+                record(fresh().scroll(&live, Some((x, y)), steps, t));
+            }
+        }
+    }
+    let percent = |n: &str| {
+        ["%+", "%-", "%"]
+            .iter()
+            .any(|s| n.strip_suffix(s).is_some_and(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit())))
+    };
+    let configured =
+        ["fake-keep-awake", "fake-night --toggle", "fake-logout", "loginctl lock-session", "systemctl reboot", "systemctl poweroff"];
+    for c in &calls {
+        let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
+            ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n),
+            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
+            ["wpctl", "set-default", id] => ["99", "122"].contains(id),
+            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n),
+            ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
+            _ => configured.contains(&c.as_str()),
+        };
+        assert!(ok, "command outside the allowlist: {c}");
+        assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
+    }
+    for expected in [
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 50%",
+        "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+        "wpctl set-default 99",
+        "brightnessctl --class=backlight --device=intel_backlight set 5%+",
+        "brightnessctl --class=backlight --device=intel_backlight set 5%-",
+        "brightnessctl --class=backlight --device=intel_backlight set 50%",
+        "powerprofilesctl set performance",
+        "fake-keep-awake",
+        "fake-night --toggle",
+        "fake-logout",
+        "loginctl lock-session",
+        "systemctl reboot",
+        "systemctl poweroff",
+    ] {
+        assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
 }

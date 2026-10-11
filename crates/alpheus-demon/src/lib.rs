@@ -38,6 +38,7 @@ pub mod pipewire;
 pub mod placement;
 pub mod popup;
 pub mod quick;
+pub mod quick_state;
 pub mod retired;
 pub mod segments;
 pub mod sources;

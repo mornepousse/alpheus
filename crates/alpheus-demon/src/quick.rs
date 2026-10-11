@@ -5,6 +5,7 @@
 //! commands themselves are the wiring's (`quick_app.rs`): nothing here reads a file, starts a
 //! thread or runs a command.
 
+use crate::actions::Button;
 use crate::config::{ModuleId, QuickConfig, ToggleConfig};
 use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
@@ -13,15 +14,20 @@ use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph}
 use crate::segments::BELL;
 use crate::state::{Bar, Feed};
 use crate::system::{ProfileState, Sink, SoundState, Volume};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Content width in cells; a row is two more (a blank pad cell each side, as the other popups').
 pub const WIDTH: u16 = 32;
-/// A slider's bar: its first column (Boxed coordinates: column 0 is the pad) and its cells.
-pub const BAR_START: u16 = 3;
+/// A slider's glyph (Boxed coordinates: column 0 is the pad), where `osd::level` starts.
+pub const GLYPH_AT: u16 = 1;
+/// A slider's bar: its first column (after the glyph and a space) and its cells.
+pub const BAR_START: u16 = GLYPH_AT + 2;
 pub const BAR: u16 = 22;
 /// The percentage's first cell ("{:>3}%", `osd::PERCENT_CELLS`).
 pub const PERCENT_AT: u16 = 26;
+// `osd::level(g, GLYPH_AT, PERCENT_AT + PERCENT_CELLS, …)` draws `end − at − 3 − PERCENT_CELLS`
+// bar cells: the click mapping (`bar_value`) counts on BAR being that width.
+const _: () = assert!(PERCENT_AT + PERCENT_CELLS - GLYPH_AT - 3 - PERCENT_CELLS == BAR);
 /// The volume's `›` (the outputs detail), on the column where the text rows end.
 pub const MORE_AT: u16 = 32;
 /// The session buttons' first glyph column, and the gap from one to the next.
@@ -38,6 +44,13 @@ pub const LOCK: char = '\u{f033e}';
 pub const LOGOUT: char = '\u{f0343}';
 pub const REBOOT: char = '\u{f0709}';
 pub const POWER: char = '\u{23fb}';
+/// Re-reads after a command (spec § 5): the backlight, a configured toggle's state.
+pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
+pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
+/// How long "Reboot? ⏎" waits for its second activation (spec § 2).
+pub const CONFIRM: Duration = Duration::from_secs(3);
+/// A session button takes this many cells either side of its glyph for a click.
+const REACH: u16 = 2;
 
 /// Where the panel opens (spec § 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,6 +134,14 @@ impl Toggle {
             Toggle::NightLight => &c.night_light,
         }
     }
+
+    /// In the log: "quick: keep awake".
+    fn word(self) -> &'static str {
+        match self {
+            Toggle::KeepAwake => "keep awake",
+            Toggle::NightLight => "night light",
+        }
+    }
 }
 
 /// A session button (spec § 2), left to right.
@@ -161,6 +182,21 @@ impl Session {
             Session::Logout => "Log out",
             Session::Reboot => "Reboot",
             Session::Poweroff => "Power off",
+        }
+    }
+
+    /// Reboot and power off ask once more first (spec § 2).
+    fn asks(self) -> bool {
+        matches!(self, Session::Reboot | Session::Poweroff)
+    }
+
+    /// In the log.
+    fn word(self) -> &'static str {
+        match self {
+            Session::Lock => "lock",
+            Session::Logout => "log out",
+            Session::Reboot => "reboot",
+            Session::Poweroff => "power off",
         }
     }
 }
@@ -231,6 +267,50 @@ pub enum QuickAction {
     },
     /// Do-not-disturb flips through `App::set_dnd`, the bell's and the verb's one path.
     ToggleDnd,
+}
+
+/// What a tick finds due (`Quick::due`): the re-reads to do, and whether the question went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Due {
+    pub backlight: bool,
+    pub toggles: [bool; 2],
+    pub redraw: bool,
+}
+
+/// A brightness command: by a step, or to a level.
+#[derive(Debug, Clone, Copy)]
+enum Level {
+    Up(u8),
+    Down(u8),
+    Set(u8),
+}
+
+fn run(parts: &[&str], what: &str) -> QuickAction {
+    QuickAction::Run { argv: argv(parts), what: what.to_string() }
+}
+
+/// `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ <amount>`: never beyond 100 % from the panel.
+fn volume(amount: &str, what: String) -> QuickAction {
+    QuickAction::Run { argv: argv(&["wpctl", "set-volume", "-l", "1.0", SINK, amount]), what }
+}
+
+/// The percent a press on a slider's bar sets (decision 10); None off the bar.
+fn bar_value(col: u16) -> Option<u8> {
+    (BAR_START..BAR_START + BAR).contains(&col).then(|| ((u32::from(col - BAR_START) + 1) * 100 / u32::from(BAR)) as u8)
+}
+
+/// Enter or a click on the profile: the next one the daemon offers, wrapping (decision 8).
+fn cycle(live: &Live) -> QuickAction {
+    let Some(p) = live.profile else { return QuickAction::Nothing };
+    let Some(active) = p.active else { return QuickAction::Nothing };
+    let next = match p.offered.iter().position(|o| *o == active) {
+        Some(i) => p.offered.get((i + 1) % p.offered.len()).copied(),
+        None => p.offered.first().copied(),
+    };
+    match next {
+        Some(n) if n != active => run(&["powerprofilesctl", "set", n.name()], &format!("profile {}", n.name())),
+        _ => QuickAction::Nothing,
+    }
 }
 
 /// The open panel's own state: dropped whole with its popup.
@@ -397,9 +477,11 @@ impl Quick {
             return QuickAction::Nothing;
         }
         self.fit(live);
+        // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
+        let cancelled = k != Key::Enter && self.confirm.take().is_some();
         let action = if self.detail { self.detail_key(k) } else { self.rows_key(live, k, now) };
         self.keep_in_view(live);
-        action
+        if cancelled && action == QuickAction::Nothing { QuickAction::Redraw } else { action }
     }
 
     fn rows_key(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
@@ -424,9 +506,211 @@ impl Quick {
         }
     }
 
-    /// Space, Enter, ← → on a row: Task 5.
-    fn act(&mut self, _live: &Live, _k: Key, _now: Instant) -> QuickAction {
-        QuickAction::Nothing
+    /// Space, Enter and ← → on a row (spec § 3).
+    fn act(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
+        let step = live.config.step;
+        match (self.selected, k) {
+            (Row::Volume, Key::Right) => volume(&format!("{step}%+"), format!("volume +{step}%")),
+            (Row::Volume, Key::Left) => volume(&format!("{step}%-"), format!("volume -{step}%")),
+            (Row::Volume, Key::Char(' ')) => run(&["wpctl", "set-mute", SINK, "toggle"], "mute"),
+            (Row::Brightness, Key::Right) => self.brightness(Level::Up(step), now),
+            (Row::Brightness, Key::Left) => self.brightness(Level::Down(step), now),
+            (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
+            (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
+            (Row::Profile, Key::Enter) => cycle(live),
+            (Row::KeepAwake, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::KeepAwake, now),
+            (Row::NightLight, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::NightLight, now),
+            (Row::Session, Key::Left) => self.move_button(live, -1),
+            (Row::Session, Key::Right) => self.move_button(live, 1),
+            (Row::Session, Key::Enter) => self.activate(live, self.button, now),
+            _ => QuickAction::Nothing,
+        }
+    }
+
+    /// The backlight by a step or to a level: shown at once, re-read BRIGHTNESS_REREAD later (spec § 5).
+    fn brightness(&mut self, to: Level, now: Instant) -> QuickAction {
+        let Some(b) = self.backlight.as_mut() else { return QuickAction::Nothing };
+        let (amount, expected, what) = match to {
+            Level::Up(s) => (format!("{s}%+"), b.percent.saturating_add(s).min(100), format!("brightness +{s}%")),
+            Level::Down(s) => (format!("{s}%-"), b.percent.saturating_sub(s), format!("brightness -{s}%")),
+            Level::Set(n) => (format!("{n}%"), n.min(100), format!("brightness {n}%")),
+        };
+        b.percent = expected;
+        let argv =
+            vec!["brightnessctl".to_string(), "--class=backlight".to_string(), format!("--device={}", b.device), "set".to_string(), amount];
+        self.reread_backlight = Some(now + BRIGHTNESS_REREAD);
+        QuickAction::Run { argv, what }
+    }
+
+    /// A configured toggle: its command as given; its state re-read TOGGLE_REREAD later.
+    fn toggle(&mut self, live: &Live, t: Toggle, now: Instant) -> QuickAction {
+        let argv = t.config(live.config).toggle.clone();
+        if argv.is_empty() {
+            return QuickAction::Nothing;
+        }
+        self.reread_toggles[t.index()] = Some(now + TOGGLE_REREAD);
+        QuickAction::Run { argv, what: t.word().to_string() }
+    }
+
+    /// ← → between the session buttons, clamped.
+    fn move_button(&mut self, live: &Live, delta: i32) -> QuickAction {
+        let drawn = self.buttons(live);
+        let at = drawn.iter().position(|b| *b == self.button).unwrap_or(0);
+        match drawn.get(list::step(at, delta, drawn.len(), |_| true)) {
+            Some(b) if *b != self.button => {
+                self.button = *b;
+                QuickAction::Redraw
+            }
+            _ => QuickAction::Nothing,
+        }
+    }
+
+    /// A session button (spec § 2): lock and log out at once; reboot and power off on a second
+    /// activation within CONFIRM, the first one turning the row into the question.
+    fn activate(&mut self, live: &Live, s: Session, now: Instant) -> QuickAction {
+        let argv = s.command(live.config).to_vec();
+        if argv.is_empty() {
+            return QuickAction::Nothing;
+        }
+        let confirmed = matches!(self.confirm, Some((c, until)) if c == s && now < until);
+        if s.asks() && !confirmed {
+            self.confirm = Some((s, now + CONFIRM));
+            return QuickAction::Redraw;
+        }
+        self.confirm = None;
+        QuickAction::RunAndClose { argv, what: s.word().to_string() }
+    }
+
+    /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown), spec § 3.
+    pub fn press(&mut self, live: &Live, cell: (u16, u16), b: Button, now: Instant) -> QuickAction {
+        self.fit(live);
+        let all = lines(live, self);
+        let top = self.top.min(all.len().saturating_sub(self.visible()));
+        let Some(line) = all.get(top + usize::from(cell.1)).copied() else { return QuickAction::Nothing };
+        // A press anywhere but the session row cancels the question.
+        let cancelled = line != Line::Row(Row::Session) && self.confirm.take().is_some();
+        let before = self.selected;
+        let action = match (line, b) {
+            (Line::Header, Button::Left) => {
+                self.detail = false;
+                self.top = 0;
+                QuickAction::Redraw
+            }
+            (Line::Sink(i), Button::Left) => {
+                self.sink = self.sinks.get(i).map(|s| s.id);
+                self.choose_sink(i)
+            }
+            (Line::Row(Row::Volume), Button::Right) => {
+                self.selected = Row::Volume;
+                run(&["wpctl", "set-mute", SINK, "toggle"], "mute")
+            }
+            (Line::Row(Row::Volume), Button::Left) => {
+                self.selected = Row::Volume;
+                match bar_value(cell.0) {
+                    Some(n) => volume(&format!("{n}%"), format!("volume {n}%")),
+                    None => self.open_outputs(),
+                }
+            }
+            (Line::Row(Row::Brightness), Button::Left) => {
+                self.selected = Row::Brightness;
+                match bar_value(cell.0) {
+                    Some(n) => self.brightness(Level::Set(n), now),
+                    None => QuickAction::Nothing,
+                }
+            }
+            (Line::Row(Row::Session), Button::Left) => self.press_session(live, cell.0, now),
+            // A left click on any other row is Enter (spec § 3).
+            (Line::Row(r), Button::Left) => {
+                self.selected = r;
+                self.act(live, Key::Enter, now)
+            }
+            _ => QuickAction::Nothing,
+        };
+        if action == QuickAction::Nothing && (cancelled || self.selected != before) { QuickAction::Redraw } else { action }
+    }
+
+    /// A left press on the session row: the button under it; while the question shows, anywhere on
+    /// the row is the second activation.
+    fn press_session(&mut self, live: &Live, col: u16, now: Instant) -> QuickAction {
+        self.selected = Row::Session;
+        if let Some((s, _)) = self.confirm {
+            return self.activate(live, s, now);
+        }
+        let drawn = self.buttons(live);
+        let hit = drawn.iter().enumerate().find(|(i, _)| col.abs_diff(SESSION_AT + SESSION_GAP * *i as u16) <= REACH).map(|(_, s)| *s);
+        let Some(s) = hit else { return QuickAction::Nothing };
+        self.button = s;
+        self.activate(live, s, now)
+    }
+
+    /// The wheel, `steps` notches (negative: up), at most 10 (decision 9): over a slider, one
+    /// command of `steps × step` percent (up: louder, brighter); elsewhere the window moves when the
+    /// lines do not fit.
+    pub fn scroll(&mut self, live: &Live, cell: Option<(u16, u16)>, steps: i32, now: Instant) -> QuickAction {
+        let notches = steps.unsigned_abs().min(10) as u8;
+        if notches == 0 {
+            return QuickAction::Nothing;
+        }
+        self.fit(live);
+        let all = lines(live, self);
+        let visible = self.visible();
+        let top = self.top.min(all.len().saturating_sub(visible));
+        let line = cell.and_then(|c| all.get(top + usize::from(c.1))).copied();
+        let amount = live.config.step.saturating_mul(notches).min(100);
+        let up = steps < 0;
+        match line {
+            Some(Line::Row(Row::Volume)) => {
+                let sign = if up { '+' } else { '-' };
+                volume(&format!("{amount}%{sign}"), format!("volume {sign}{amount}%"))
+            }
+            Some(Line::Row(Row::Brightness)) => self.brightness(if up { Level::Up(amount) } else { Level::Down(amount) }, now),
+            _ if all.len() > visible => {
+                let last_top = all.len() - visible;
+                let to = if up { top.saturating_sub(usize::from(notches)) } else { (top + usize::from(notches)).min(last_top) };
+                if to == top {
+                    QuickAction::Nothing
+                } else {
+                    self.top = to;
+                    QuickAction::Redraw
+                }
+            }
+            _ => QuickAction::Nothing,
+        }
+    }
+
+    /// The earliest pending re-read or the question's end; None: nothing to wait for (no timer).
+    pub fn deadline(&self) -> Option<Instant> {
+        [self.reread_backlight, self.reread_toggles[0], self.reread_toggles[1], self.confirm.map(|(_, at)| at)].into_iter().flatten().min()
+    }
+
+    /// At `now`: what is due, cleared (the re-reads to do, the question gone).
+    pub fn due(&mut self, now: Instant) -> Due {
+        let mut d = Due::default();
+        if self.reread_backlight.is_some_and(|at| at <= now) {
+            self.reread_backlight = None;
+            d.backlight = true;
+        }
+        for t in Toggle::ALL {
+            let i = t.index();
+            if self.reread_toggles[i].is_some_and(|at| at <= now) {
+                self.reread_toggles[i] = None;
+                d.toggles[i] = true;
+            }
+        }
+        if self.confirm.is_some_and(|(_, at)| at <= now) {
+            self.confirm = None;
+            d.redraw = true;
+        }
+        d
+    }
+
+    /// `program` failed to start: true the first time this open (log it), false after (spec § 6).
+    pub fn note_failure(&mut self, program: &str) -> bool {
+        if self.failed.iter().any(|p| p == program) {
+            return false;
+        }
+        self.failed.push(program.to_string());
+        true
     }
 
     /// `›`, or Enter on the volume (spec § 2): the outputs in place of the rows, the default chosen.
@@ -571,7 +855,7 @@ fn slider(g: &mut Grid, glyph: char, v: Volume, more: bool, selected: bool) {
     if selected {
         g.write(0, end, &" ".repeat(usize::from(end)), Style::SELECTED);
     }
-    osd::level(g, BAR_START - 2, PERCENT_AT + PERCENT_CELLS, glyph, v, selected);
+    osd::level(g, GLYPH_AT, PERCENT_AT + PERCENT_CELLS, glyph, v, selected);
     if more {
         g.write(MORE_AT, MORE_AT + 1, "›", if selected { Style::SELECTED } else { Style::MUTED });
     }
@@ -947,5 +1231,192 @@ mod tests {
         assert!(!shown(&w.live(), &q).contains(&Row::Brightness), "the device went: its row with it");
         q.set_toggle(Toggle::NightLight, Some(true));
         assert_eq!(q.toggles, [None, Some(true)]);
+    }
+
+    const DND_LINE: u16 = 4;
+    const SESSION_LINE: u16 = 7;
+
+    #[test]
+    fn volume_steps_mutes_and_takes_a_click_on_its_bar() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Sound);
+        let t = Instant::now();
+        let set = |amount: &str, what: &str| run(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", amount], what);
+        let mute = run(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], "mute");
+        assert_eq!(q.key(&l, Key::Right, false, t), set("5%+", "volume +5%"));
+        assert_eq!(q.key(&l, Key::Left, false, t), set("5%-", "volume -5%"));
+        assert_eq!(q.key(&l, Key::Right, true, t), set("5%+", "volume +5%"), "← → repeat");
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), mute);
+        assert_eq!(q.press(&l, (BAR_START, 0), Button::Left, t), set("4%", "volume 4%"), "the bar's first cell");
+        assert_eq!(q.press(&l, (BAR_START + 10, 0), Button::Left, t), set("50%", "volume 50%"), "(10 + 1) × 100 / 22");
+        assert_eq!(q.press(&l, (BAR_START + BAR - 1, 0), Button::Left, t), set("100%", "volume 100%"), "its last cell");
+        assert_eq!(q.press(&l, (1, 0), Button::Right, t), mute, "a right click on the volume: mute");
+        assert_eq!(q.scroll(&l, Some((5, 0)), -1, t), set("5%+", "volume +5%"), "the wheel up: louder");
+        assert_eq!(q.scroll(&l, Some((5, 0)), 2, t), set("10%-", "volume -10%"), "two notches, one command");
+        assert_eq!(q.press(&l, (MORE_AT, 0), Button::Left, t), QuickAction::Redraw, "› opens the outputs");
+        assert!(q.detail);
+        let ten = World { config: QuickConfig { step: 10, ..QuickConfig::default() }, ..World::full() };
+        let mut q = quick(&ten, Focus::Sound);
+        assert_eq!(q.key(&ten.live(), Key::Right, false, t), set("10%+", "volume +10%"), "[quick] step");
+    }
+
+    #[test]
+    fn brightness_shows_the_expected_level_until_its_re_read() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Brightness;
+        let t = Instant::now();
+        let set = |amount: &str, what: &str| run(&["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", amount], what);
+        assert_eq!(q.key(&l, Key::Right, false, t), set("5%+", "brightness +5%"));
+        assert_eq!(q.backlight, backlight(80), "the expected level at once");
+        assert_eq!(q.deadline(), Some(t + BRIGHTNESS_REREAD));
+        assert_eq!(q.due(t + Duration::from_millis(149)), Due::default(), "not yet");
+        assert_eq!(q.due(t + BRIGHTNESS_REREAD), Due { backlight: true, ..Due::default() });
+        assert_eq!(q.deadline(), None, "nothing pending: no timer");
+        q.set_backlight(Some(78));
+        assert_eq!(q.backlight, backlight(78), "the re-read wins");
+        q.backlight = backlight(3);
+        assert_eq!(q.key(&l, Key::Left, false, t), set("5%-", "brightness -5%"));
+        assert_eq!(q.backlight, backlight(0), "never below 0");
+        q.backlight = backlight(98);
+        q.key(&l, Key::Right, false, t);
+        assert_eq!(q.backlight, backlight(100), "never above 100");
+        assert_eq!(q.press(&l, (BAR_START + 10, 1), Button::Left, t), set("50%", "brightness 50%"), "a click on its bar");
+        assert_eq!(q.scroll(&l, Some((5, 1)), -2, t), set("10%+", "brightness +10%"));
+    }
+
+    #[test]
+    fn the_toggles_run_their_command_and_re_read_their_state() {
+        let mut w = World::full();
+        w.config.keep_awake.toggle = vec!["fake-keep-awake".into()];
+        w.config.night_light.toggle = vec!["fake-night".into(), "--toggle".into()];
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        let t = Instant::now();
+        let mic = run(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"], "microphone mute");
+        q.selected = Row::Mic;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), mic);
+        assert_eq!(q.key(&l, Key::Enter, false, t), mic);
+        q.selected = Row::Dnd;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::ToggleDnd, "set_dnd's one path, in the wiring");
+        assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "Review Focus 5: a held Space acts once");
+        q.selected = Row::KeepAwake;
+        assert_eq!(q.key(&l, Key::Enter, false, t), run(&["fake-keep-awake"], "keep awake"), "run as given");
+        q.selected = Row::NightLight;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t + Duration::from_millis(100)), run(&["fake-night", "--toggle"], "night light"));
+        assert_eq!(q.deadline(), Some(t + TOGGLE_REREAD), "keep awake's re-read comes first");
+        assert_eq!(q.due(t + TOGGLE_REREAD), Due { toggles: [true, false], ..Due::default() });
+        assert_eq!(q.due(t + TOGGLE_REREAD + Duration::from_millis(100)), Due { toggles: [false, true], ..Due::default() });
+        q.selected = Row::Volume;
+        assert_eq!(q.press(&l, (10, 4), Button::Left, t), QuickAction::ToggleDnd, "a left click on a row is Enter");
+        assert_eq!(q.selected, Row::Dnd);
+    }
+
+    #[test]
+    fn enter_cycles_the_power_profile_and_space_does_not() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Profile;
+        let t = Instant::now();
+        assert_eq!(q.key(&l, Key::Enter, false, t), run(&["powerprofilesctl", "set", "performance"], "profile performance"));
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "decision 8");
+        let top = ProfileState { active: Some(Profile::Performance), offered: Profile::ALL.to_vec() };
+        assert_eq!(
+            q.key(&Live { profile: Some(&top), ..l }, Key::Enter, false, t),
+            run(&["powerprofilesctl", "set", "power-saver"], "profile power-saver"),
+            "wrapping"
+        );
+        let two = ProfileState { active: Some(Profile::Balanced), offered: vec![Profile::PowerSaver, Profile::Balanced] };
+        assert_eq!(
+            q.key(&Live { profile: Some(&two), ..l }, Key::Enter, false, t),
+            run(&["powerprofilesctl", "set", "power-saver"], "profile power-saver"),
+            "only what the daemon offers"
+        );
+    }
+
+    #[test]
+    fn reboot_and_power_off_ask_first_and_the_question_expires() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Session;
+        let t = Instant::now();
+        let lock = QuickAction::RunAndClose { argv: argv(&["loginctl", "lock-session"]), what: "lock".into() };
+        assert_eq!(q.key(&l, Key::Enter, false, t), lock, "lock: at once");
+        q.button = Session::Reboot;
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "the first activation asks");
+        assert_eq!(q.confirm, Some((Session::Reboot, t + CONFIRM)));
+        let b = rows(&l, &q);
+        assert_eq!(texts(&b)[7], format!(" {REBOOT} Reboot? ⏎"));
+        assert_eq!(b.rows[7].styles()[1..12], "w".repeat(11), "in warn");
+        assert_eq!(q.deadline(), Some(t + CONFIRM), "the timer waits for it");
+        assert_eq!(
+            q.key(&l, Key::Enter, false, t + Duration::from_secs(2)),
+            QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
+            "the second within 3 s runs it"
+        );
+        q.button = Session::Poweroff;
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
+        assert_eq!(q.due(t + CONFIRM), Due { redraw: true, ..Due::default() }, "3 s later the question goes");
+        assert_eq!(q.confirm, None);
+        assert_eq!(q.key(&l, Key::Enter, false, t + CONFIRM), QuickAction::Redraw, "the next Enter asks again");
+        assert_eq!(texts(&rows(&l, &q))[7], format!(" {POWER} Power off? ⏎"));
+    }
+
+    /// Review Focus 3.
+    #[test]
+    fn moving_away_cancels_the_confirmation_and_coming_back_asks_again() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Session;
+        q.button = Session::Reboot;
+        let t = Instant::now();
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
+        assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Redraw, "← moves to lock");
+        assert_eq!((q.confirm, q.button), (None, Session::Lock), "and cancels");
+        q.key(&l, Key::Right, false, t);
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "back on reboot: it asks again, never runs");
+        assert_eq!(q.key(&l, Key::Up, false, t), QuickAction::Redraw);
+        assert_eq!(q.confirm, None, "↑ cancels too");
+        q.selected = Row::Session;
+        q.key(&l, Key::Enter, false, t);
+        assert_eq!(q.press(&l, (10, DND_LINE), Button::Left, t), QuickAction::ToggleDnd, "a press on another row");
+        assert_eq!(q.confirm, None, "cancels it");
+        assert_eq!(q.press(&l, (SESSION_AT + SESSION_GAP, SESSION_LINE), Button::Left, t), QuickAction::Redraw, "a press on reboot asks");
+        assert_eq!(
+            q.press(&l, (20, SESSION_LINE), Button::Left, t),
+            QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
+            "anywhere on the question: the second activation"
+        );
+    }
+
+    #[test]
+    fn the_wheel_elsewhere_moves_the_window_only_when_the_lines_do_not_fit() {
+        let w = World::full();
+        let l = w.live();
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Top);
+        assert_eq!(q.scroll(&l, Some((10, 4)), 1, t), QuickAction::Nothing, "everything fits");
+        let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 3);
+        assert_eq!(q.scroll(&l, Some((10, 2)), 1, t), QuickAction::Redraw, "on the separator, three rows of room");
+        assert_eq!(q.top, 1);
+        assert_eq!(q.scroll(&l, Some((10, 2)), 10, t), QuickAction::Redraw);
+        assert_eq!(q.top, 5, "clamped: the last three lines");
+        assert_eq!(q.scroll(&l, Some((10, 2)), -1, t), QuickAction::Redraw);
+        assert_eq!(q.top, 4);
+        assert_eq!(q.scroll(&l, None, 0, t), QuickAction::Nothing);
+    }
+
+    #[test]
+    fn a_program_that_fails_is_noted_once_per_open() {
+        let w = World::full();
+        let mut q = quick(&w, Focus::Top);
+        assert!(q.note_failure("wpctl"));
+        assert!(!q.note_failure("wpctl"), "logged once");
+        assert!(q.note_failure("brightnessctl"));
     }
 }
