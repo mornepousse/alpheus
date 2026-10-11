@@ -23,7 +23,7 @@ use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
-use crate::system::{BtState, NetState, PowerState, ProfileState, WifiScope, WifiState};
+use crate::system::{BtState, NetState, PowerState, ProfileState, SavedWifi, WifiScope, WifiState};
 use props::{Objects, Props};
 use std::io;
 use std::marker::PhantomData;
@@ -61,6 +61,13 @@ pub trait Bus {
     fn enumerate_devices(&mut self, destination: &str) -> io::Result<Vec<String>>;
     /// `org.freedesktop.NetworkManager.GetDevices` (quick Wi-Fi spec § 5): the devices' paths.
     fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>>;
+    /// `org.freedesktop.NetworkManager.Settings.ListConnections`: the saved connections' paths.
+    fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>>;
+    /// `org.freedesktop.NetworkManager.Settings.Connection.GetSettings` on `path`, reduced to a Wi-Fi
+    /// profile's uuid and SSID (`wifi::saved_wifi`); None for any other kind. Never its secrets.
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>>;
+    /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).
+    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()>;
     /// Blocks until the next signal the bar subscribed to; Err: connection lost.
     fn next_signal(&mut self) -> io::Result<Signal>;
 }
@@ -183,6 +190,21 @@ impl Signal {
 
     pub fn is_poke(&self) -> bool {
         self.path.is_empty() && self.member.is_empty()
+    }
+
+    /// A Wi-Fi detail signal (quick Wi-Fi spec § 5), heard only while its rules are on: an access
+    /// point's properties the panel shows, the device's list, the saved connections. None: not one.
+    pub fn wifi_change(&self) -> Option<wifi::WifiChange> {
+        const AP_PROPS: [&str; 5] = ["Ssid", "Strength", "Flags", "WpaFlags", "RsnFlags"];
+        match self.member.as_str() {
+            "PropertiesChanged" if under(&self.path, wifi::AP_ROOT) => {
+                let read = self.names.is_empty() || self.names.iter().any(|n| AP_PROPS.contains(&n.as_str()));
+                read.then(|| wifi::WifiChange::AccessPoint(self.path.clone()))
+            }
+            "AccessPointAdded" | "AccessPointRemoved" if self.interface == wifi::WIRELESS => Some(wifi::WifiChange::AccessPoints),
+            "NewConnection" | "ConnectionRemoved" if self.interface == wifi::SETTINGS => Some(wifi::WifiChange::Saved),
+            _ => None,
+        }
     }
 
     /// The domain to re-read on this signal; None: not ours, or nothing the
@@ -533,6 +555,21 @@ pub fn session(
             }
             continue;
         }
+        // A detail signal (its rules are on only while the detail is open): never a domain's
+        // re-read, an access point's change reads that access point only.
+        let change = signal.wifi_change();
+        if change.is_some() || under(&signal.path, wifi::AP_ROOT) {
+            if let Some(change) = change
+                && reader.scope() == WifiScope::Detail
+            {
+                let r = wifi_into(reader.changed(bus, &change), &mut s);
+                if !publish_if_changed(&mut last, &s, publish) {
+                    return Ok(());
+                }
+                r?;
+            }
+            continue;
+        }
         let Some(d) = signal.domain().filter(|d| domains.contains(d)) else { continue };
         let r = read(bus, d, &mut s, log_state);
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
@@ -652,8 +689,9 @@ pub fn start(domains: Vec<Domain>, wifi: Option<Arc<WifiTap>>, send: impl Fn(Opt
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{BLUEZ_OWNER, FakeBus, NM_OWNER, Step, WIFI_DEVICE, signal, with_names};
+    use super::fake::{AP, BLUEZ_OWNER, FakeBus, NM_OWNER, Step, WIFI_DEVICE, signal, with_names};
     use super::props::Prop;
+    use super::wifi::WifiChange;
     use super::*;
     use crate::state::Msg;
     use crate::system::*;
@@ -968,6 +1006,80 @@ mod tests {
         assert!(p.is_poke() && !p.is_wake() && p.domain().is_none());
         assert!(!radio_changed().is_poke());
         assert_eq!(radio_changed().domain(), Some(Domain::Network), "WirelessEnabled re-reads the network domain");
+    }
+
+    fn open_the_detail(b: &mut FakeBus) {
+        b.tap.set(WifiScope::Detail);
+    }
+
+    fn voisin_at_90(b: &mut FakeBus) {
+        b.props_mut(&format!("{AP}/11"), wifi::ACCESS_POINT).0.insert("Strength".into(), Prop::Int(90));
+    }
+
+    fn voisin_at_45(b: &mut FakeBus) {
+        b.props_mut(&format!("{AP}/11"), wifi::ACCESS_POINT).0.insert("Strength".into(), Prop::Int(45));
+    }
+
+    fn voisin_changed() -> Signal {
+        with_names(signal(&format!("{AP}/11"), PROPERTIES, "PropertiesChanged", Some(wifi::ACCESS_POINT)), &["Strength"])
+    }
+
+    fn voisin(s: &SystemState) -> Option<u8> {
+        let d = s.wifi.as_ref()?.device.as_ref()?;
+        d.access_points.as_ref()?.iter().find(|a| a.ssid == b"Voisin-Test").map(|a| a.strength)
+    }
+
+    /// Quick Wi-Fi spec § 5: an access point's change is read only while the detail is open.
+    #[test]
+    fn detail_signals_are_followed_only_while_the_detail_is_open() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let steps: [Step; 5] = [
+            (voisin_changed(), nothing),
+            (Signal::poke(), open_the_detail),
+            (voisin_changed(), voisin_at_90),
+            (Signal::poke(), open_the_row),
+            (voisin_changed(), voisin_at_45),
+        ];
+        bus.script = VecDeque::from(steps);
+        let (seen, r) = run(&mut bus);
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(seen.iter().map(voisin).collect::<Vec<_>>(), [None, Some(30), Some(90), None], "initial, detail, the change, the row");
+        let reads = bus.calls.iter().filter(|c| c.contains(&format!("{AP}/11 "))).count();
+        assert_eq!(reads, 2, "at the detail's open and on its signal; never closed nor on the row");
+    }
+
+    /// A list's signal still in flight when the detail closed (its rules removed) re-reads nothing,
+    /// never the network domain either: closed or on the row, not one call.
+    #[test]
+    fn a_late_list_signal_reads_nothing_outside_the_detail() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let added = signal(WIFI_DEVICE, wifi::WIRELESS, "AccessPointAdded", None);
+        let saved = signal(wifi::SETTINGS_PATH, wifi::SETTINGS, "NewConnection", None);
+        let steps: [Step; 5] =
+            [(added.clone(), nothing), (saved.clone(), nothing), (Signal::poke(), open_the_row), (added, nothing), (saved, nothing)];
+        bus.script = VecDeque::from(steps);
+        let (seen, _) = run(&mut bus);
+        assert_eq!(seen.len(), 2, "initial and the row only");
+        let mut quiet = FakeBus::workstation();
+        quiet.with_wifi();
+        quiet.script = VecDeque::from([(Signal::poke(), open_the_row as fn(&mut FakeBus))]);
+        let _ = run(&mut quiet);
+        assert_eq!(bus.calls, quiet.calls, "the same calls as without those signals");
+    }
+
+    #[test]
+    fn wifi_signals_are_told_apart() {
+        assert_eq!(voisin_changed().wifi_change(), Some(WifiChange::AccessPoint(format!("{AP}/11"))));
+        let noise = with_names(signal(&format!("{AP}/11"), PROPERTIES, "PropertiesChanged", Some(wifi::ACCESS_POINT)), &["LastSeen"]);
+        assert_eq!(noise.wifi_change(), None, "LastSeen changes every scan: never read");
+        let device = "/org/freedesktop/NetworkManager/Devices/5";
+        assert_eq!(signal(device, wifi::WIRELESS, "AccessPointAdded", None).wifi_change(), Some(WifiChange::AccessPoints));
+        assert_eq!(signal(device, wifi::WIRELESS, "AccessPointRemoved", None).wifi_change(), Some(WifiChange::AccessPoints));
+        assert_eq!(signal(wifi::SETTINGS_PATH, wifi::SETTINGS, "NewConnection", None).wifi_change(), Some(WifiChange::Saved));
+        assert_eq!(signal(wifi::SETTINGS_PATH, wifi::SETTINGS, "ConnectionRemoved", None).wifi_change(), Some(WifiChange::Saved));
+        assert_eq!(radio_changed().wifi_change(), None, "the root: the network domain's");
     }
 
     fn profile_performance(b: &mut FakeBus) {

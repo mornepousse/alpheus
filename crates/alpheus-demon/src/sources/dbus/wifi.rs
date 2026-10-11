@@ -1,12 +1,16 @@
 //! NetworkManager's Wi-Fi for the quick panel (quick Wi-Fi spec § 5), read only and only while the
 //! panel is open: the radio, the first Wi-Fi device and the access point it is on
-//! (`WifiScope::Row`). The loop asks through a `WifiTap`; the D-Bus thread reads here, through
-//! NetworkManager's unique name as every reader does. Secrets are never asked for.
+//! (`WifiScope::Row`); with the detail open, every access point and the saved Wi-Fi profiles too,
+//! their signals followed through five match rules added and removed with it (`WifiScope::Detail`).
+//! The loop asks through a `WifiTap`; the D-Bus thread reads here, through NetworkManager's unique
+//! name as every reader does. Secrets are never asked for.
 
+use super::dbusrs_bus::WIFI_RULES;
 use super::props::Props;
 use super::{Bus, NM, network, optional};
 use crate::log::write as log;
-use crate::system::{AccessPoint, Security, WifiDevice, WifiScope, WifiState};
+use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
+use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
@@ -22,6 +26,24 @@ pub const MAX_DEVICES: usize = 16;
 /// An SSID's longest, in bytes (802.11).
 pub const SSID_MAX: usize = 32;
 const UUID_MAX: usize = 64;
+/// The detail reads at most this many access points and saved connections (quick Wi-Fi spec § 6).
+pub const MAX_APS: usize = 64;
+pub const MAX_SAVED: usize = 64;
+pub const AP_ROOT: &str = "/org/freedesktop/NetworkManager/AccessPoint";
+pub const SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
+pub const SETTINGS: &str = "org.freedesktop.NetworkManager.Settings";
+pub const CONNECTION: &str = "org.freedesktop.NetworkManager.Settings.Connection";
+
+/// What a detail signal asks to read again (`Signal::wifi_change`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WifiChange {
+    /// One access point's properties.
+    AccessPoint(String),
+    /// The device's list of access points (AccessPointAdded, AccessPointRemoved).
+    AccessPoints,
+    /// The saved connections (NewConnection, ConnectionRemoved).
+    Saved,
+}
 
 /// What the loop asks the D-Bus thread (quick Wi-Fi decision 1): the scope the open panel shows,
 /// and a socket pair whose first end the thread polls beside the bus's own socket; the loop writes
@@ -94,6 +116,18 @@ pub fn access_point(p: &Props) -> Option<AccessPoint> {
     Some(AccessPoint { ssid: ssid.to_vec(), strength, security: Security::from_flags(flag("Flags"), flag("WpaFlags"), flag("RsnFlags")) })
 }
 
+/// A saved connection's `connection` and `802-11-wireless` settings, as a Wi-Fi profile: its uuid
+/// (checked) and SSID (1 to 32 bytes); None for any other kind of connection.
+pub fn saved_wifi(connection: Option<&Props>, wireless: Option<&Props>) -> Option<SavedWifi> {
+    let c = connection?;
+    if c.str("type") != Some("802-11-wireless") {
+        return None;
+    }
+    let uuid = c.str("uuid").filter(|u| valid_uuid(u))?;
+    let ssid = wireless?.bytes("ssid")?;
+    (!ssid.is_empty() && ssid.len() <= SSID_MAX).then(|| SavedWifi { uuid: uuid.to_string(), ssid: ssid.to_vec() })
+}
+
 /// The D-Bus thread's Wi-Fi reading for one session: what it reads for the scope asked, and what it
 /// remembers between two reads while the panel is open (NetworkManager's owner, the device's path).
 /// Closed, it is back to its default: nothing kept.
@@ -104,6 +138,18 @@ pub struct WifiReader {
     owner: Option<String>,
     /// The Wi-Fi device found this open.
     device: Option<String>,
+    /// Detail only: the device's access points by path (at most MAX_APS), None for a hidden or
+    /// unreadable one (read again only on its own signal).
+    aps: BTreeMap<String, Option<AccessPoint>>,
+    /// Detail only: the saved connections by path (at most MAX_SAVED), None for any other kind
+    /// (or an unreadable one).
+    saved: BTreeMap<String, Option<SavedWifi>>,
+    /// The saved connections must be listed again: the detail opened, or one was added or removed.
+    saved_stale: bool,
+    /// WIFI_RULES are on this connection.
+    watching: bool,
+    /// The last state read: one access point's change patches it.
+    last: Option<WifiState>,
     /// One failed read is logged per open.
     logged: bool,
 }
@@ -113,25 +159,76 @@ impl WifiReader {
         self.scope
     }
 
-    /// The loop asked for `scope` (a poke): Closed forgets everything and reads nothing; otherwise
-    /// the state is read for it. Err only when the bus itself went away (`UnexpectedEof`).
+    /// The loop asked for `scope` (a poke). The same scope: read again, nothing added. Leaving the
+    /// detail removes its rules and drops its lists; entering it adds the rules and reads both lists
+    /// whole; Closed forgets everything and reads nothing. Err only when the bus itself went away
+    /// (`UnexpectedEof`).
     pub fn rescope(&mut self, bus: &mut dyn Bus, scope: WifiScope) -> io::Result<Option<WifiState>> {
+        if scope == self.scope && scope != WifiScope::Closed {
+            return self.reread(bus);
+        }
+        let detail = scope == WifiScope::Detail;
+        if self.watching && !detail {
+            self.watching = false;
+            let r = bus.match_rules(&WIFI_RULES, false);
+            self.soft_unit(r)?;
+        }
         if scope == WifiScope::Closed {
             *self = WifiReader::default();
             return Ok(None);
         }
+        if detail && !self.watching {
+            let r = bus.match_rules(&WIFI_RULES, true);
+            self.watching = r.is_ok();
+            self.soft_unit(r)?;
+        }
+        self.aps.clear();
+        self.saved.clear();
+        self.saved_stale = detail;
         self.scope = scope;
         self.reread(bus)
     }
 
-    /// The state again (a network signal, the machine resuming): None when closed. A failed read
-    /// hides the row (logged once per open); the bus going away is an error.
+    /// The state again (a network signal, a list's signal, the machine resuming): None when closed.
+    /// A failed read hides the row (logged once per open); the bus going away is an error.
     pub fn reread(&mut self, bus: &mut dyn Bus) -> io::Result<Option<WifiState>> {
         if self.scope == WifiScope::Closed {
             return Ok(None);
         }
         let r = self.read(bus);
-        self.soft(r).map(Some)
+        let s = self.soft(r)?;
+        self.last = Some(s.clone());
+        Ok(Some(s))
+    }
+
+    /// A detail signal (quick Wi-Fi spec § 5): one access point read again (only one the device
+    /// lists), the list of access points reconciled, or the saved connections listed again.
+    /// Outside the detail: nothing read, the last state as it was.
+    pub fn changed(&mut self, bus: &mut dyn Bus, c: &WifiChange) -> io::Result<Option<WifiState>> {
+        if self.scope != WifiScope::Detail {
+            return Ok(self.last.clone());
+        }
+        match c {
+            WifiChange::AccessPoint(path) => {
+                let Some(nm) = self.owner.clone().filter(|_| self.aps.contains_key(path)) else { return Ok(self.last.clone()) };
+                match optional(bus.get_all(&nm, path, ACCESS_POINT)) {
+                    Ok(p) => {
+                        self.aps.insert(path.clone(), p.as_ref().and_then(access_point));
+                    }
+                    Err(e) => self.soft_unit(Err(e))?,
+                }
+                let listed = self.listed();
+                if let Some(d) = self.last.as_mut().and_then(|s| s.device.as_mut()) {
+                    d.access_points = Some(listed);
+                }
+                Ok(self.last.clone())
+            }
+            WifiChange::AccessPoints => self.reread(bus),
+            WifiChange::Saved => {
+                self.saved_stale = true;
+                self.reread(bus)
+            }
+        }
     }
 
     fn soft(&mut self, r: io::Result<WifiState>) -> io::Result<WifiState> {
@@ -139,17 +236,54 @@ impl WifiReader {
             Ok(s) => Ok(s),
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Err(e),
             Err(e) => {
-                if !std::mem::replace(&mut self.logged, true) {
-                    log(&format!("D-Bus Wi-Fi: {e}"));
-                }
+                self.note(&e);
                 Ok(WifiState::default())
             }
         }
     }
 
+    fn soft_unit(&mut self, r: io::Result<()>) -> io::Result<()> {
+        match r {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Err(e),
+            Err(e) => {
+                self.note(&e);
+                Ok(())
+            }
+        }
+    }
+
+    /// One item of a list (an access point, a saved connection) that could not be read: None for
+    /// it, the rest of the detail kept (ruling P4); the bus going away is still an error.
+    fn soft_item<T>(&mut self, r: io::Result<Option<T>>) -> io::Result<Option<T>> {
+        match r {
+            Ok(v) => Ok(v),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Err(e),
+            Err(e) => {
+                self.note(&e);
+                Ok(None)
+            }
+        }
+    }
+
+    fn note(&mut self, e: &io::Error) {
+        if !std::mem::replace(&mut self.logged, true) {
+            log(&format!("D-Bus Wi-Fi: {e}"));
+        }
+    }
+
+    /// Another NetworkManager (or none): every path read from the last one is someone else's now.
     fn forget(&mut self) {
         self.owner = None;
         self.device = None;
+        self.aps.clear();
+        self.saved.clear();
+        self.saved_stale = self.scope == WifiScope::Detail;
+    }
+
+    fn listed(&self) -> Vec<AccessPoint> {
+        self.aps.values().flatten().cloned().collect()
     }
 
     fn read(&mut self, bus: &mut dyn Bus) -> io::Result<WifiState> {
@@ -175,8 +309,18 @@ impl WifiReader {
             }
             None => None,
         };
+        let (access_points, saved) = if self.scope == WifiScope::Detail {
+            self.reconcile_aps(bus, &nm, wireless.paths("AccessPoints"))?;
+            if self.saved_stale {
+                self.reconcile_saved(bus, &nm)?;
+                self.saved_stale = false;
+            }
+            (Some(self.listed()), Some(self.saved.values().flatten().cloned().collect()))
+        } else {
+            (None, None)
+        };
         let state = device.int("State").and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-        Ok(WifiState { enabled, device: Some(WifiDevice { state, active, active_uuid, access_points: None, saved: None }) })
+        Ok(WifiState { enabled, device: Some(WifiDevice { state, active, active_uuid, access_points, saved }) })
     }
 
     /// The Wi-Fi device and its `Device` properties: the one found this open while it still is
@@ -204,6 +348,41 @@ impl WifiReader {
             }
         }
         Ok(None)
+    }
+
+    /// The access points the device lists now (the first MAX_APS): the ones gone dropped, the new ones
+    /// read; the others kept as their own signals left them.
+    fn reconcile_aps(&mut self, bus: &mut dyn Bus, nm: &str, listed: &[String]) -> io::Result<()> {
+        let listed = &listed[..listed.len().min(MAX_APS)];
+        self.aps.retain(|p, _| listed.contains(p));
+        for p in listed {
+            if !self.aps.contains_key(p) {
+                let r = bus.get_all(nm, p, ACCESS_POINT).map(Some);
+                let ap = self.soft_item(r)?;
+                self.aps.insert(p.clone(), ap.as_ref().and_then(access_point));
+            }
+        }
+        Ok(())
+    }
+
+    /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
+    /// through GetSettings (never their secrets).
+    fn reconcile_saved(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<()> {
+        let all = match bus.list_connections(nm) {
+            Ok(p) => p,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let listed = &all[..all.len().min(MAX_SAVED)];
+        self.saved.retain(|p, _| listed.contains(p));
+        for p in listed {
+            if !self.saved.contains_key(p) {
+                let r = bus.get_settings(nm, p);
+                let s = self.soft_item(r)?;
+                self.saved.insert(p.clone(), s);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -409,5 +588,213 @@ mod tests {
         bus.failing.insert(WIFI_DEVICE.into());
         r.rescope(&mut bus, WifiScope::Row).unwrap();
         assert!(r.logged);
+    }
+
+    fn detail(bus: &mut FakeBus) -> (WifiReader, WifiDevice) {
+        let mut r = WifiReader::default();
+        let s = r.rescope(bus, WifiScope::Detail).unwrap().expect("open: a state");
+        (r, s.device.expect("the Wi-Fi device"))
+    }
+
+    fn ssids(d: &WifiDevice) -> Vec<String> {
+        d.access_points.iter().flatten().map(|a| String::from_utf8_lossy(&a.ssid).into_owned()).collect()
+    }
+
+    #[test]
+    fn the_detail_adds_its_rules_and_reads_both_lists() {
+        let mut bus = wifi_bus();
+        let (_, d) = detail(&mut bus);
+        assert_eq!(ssids(&d), ["MON_WIFI_1", "Voisin-Test", "Cafe-Libre"], "the hidden one left out");
+        assert_eq!(
+            d.saved,
+            Some(vec![SavedWifi { uuid: RECORDED_UUID.into(), ssid: b"MON_WIFI_1".to_vec() }]),
+            "the wired profile left out"
+        );
+        let added: Vec<&String> = bus.calls.iter().filter(|c| c.starts_with("AddMatch ")).collect();
+        assert_eq!(added.len(), WIFI_RULES.len(), "{added:?}");
+        for n in 11..=13 {
+            assert_eq!(bus.calls.iter().filter(|c| c.contains(&format!("{AP}/{n} "))).count(), 1, "AccessPoint/{n} read once");
+        }
+        assert_eq!(
+            bus.calls.iter().filter(|c| c.contains(&format!("{AP}/10 "))).count(),
+            2,
+            "the device's own: as the row's, and in the list"
+        );
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetSettings ")).count(), 2);
+        assert!(bus.calls.iter().all(|c| !c.contains("Secret")), "no secret asked: {:?}", bus.calls);
+    }
+
+    #[test]
+    fn leaving_the_detail_removes_its_rules_and_drops_the_lists() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        let row = r.rescope(&mut bus, WifiScope::Row).unwrap().unwrap().device.unwrap();
+        assert_eq!((row.access_points, row.saved), (None, None));
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("RemoveMatch ")).count(), WIFI_RULES.len());
+        r.rescope(&mut bus, WifiScope::Detail).unwrap();
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("AddMatch ")).count(), 2 * WIFI_RULES.len(), "added again");
+        assert_eq!(bus.calls.iter().filter(|c| c.contains(&format!("{AP}/11 "))).count(), 2, "read again: nothing kept between");
+        r.rescope(&mut bus, WifiScope::Closed).unwrap();
+        assert_eq!(
+            bus.calls.iter().filter(|c| c.starts_with("RemoveMatch ")).count(),
+            2 * WIFI_RULES.len(),
+            "closing from the detail removes them too"
+        );
+        let calls = bus.calls.len();
+        r.rescope(&mut bus, WifiScope::Detail).unwrap();
+        let again = bus.calls.len();
+        r.rescope(&mut bus, WifiScope::Detail).unwrap();
+        assert_eq!(
+            bus.calls[calls..].iter().filter(|c| c.starts_with("AddMatch ")).count(),
+            WIFI_RULES.len(),
+            "a poke for the same scope adds nothing"
+        );
+        let kept = |c: &&String| c.starts_with("ListConnections ") || c.starts_with("GetSettings ") || c.contains(&format!("{AP}/11 "));
+        assert_eq!(bus.calls[again..].iter().filter(kept).count(), 0, "nor reads the lists again: {:?}", &bus.calls[again..]);
+    }
+
+    #[test]
+    fn one_access_points_change_reads_that_access_point_only() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.props_mut(&format!("{AP}/11"), ACCESS_POINT).0.insert("Strength".into(), Prop::Int(90));
+        let calls = bus.calls.len();
+        let d = r.changed(&mut bus, &WifiChange::AccessPoint(format!("{AP}/11"))).unwrap().unwrap().device.unwrap();
+        assert_eq!(bus.calls[calls..], [format!("GetAll {NM_OWNER} {AP}/11 {ACCESS_POINT}")]);
+        assert_eq!(d.access_points.unwrap().iter().find(|a| a.ssid == b"Voisin-Test").map(|a| a.strength), Some(90));
+        let calls = bus.calls.len();
+        r.changed(&mut bus, &WifiChange::AccessPoint(format!("{AP}/99"))).unwrap();
+        assert_eq!(bus.calls.len(), calls, "an access point the device does not list: nothing read");
+    }
+
+    /// Outside the detail its signals read nothing (their rules are off; one still in flight when
+    /// the detail closed is ignored).
+    #[test]
+    fn detail_changes_outside_the_detail_read_nothing() {
+        let mut bus = wifi_bus();
+        let mut r = WifiReader::default();
+        for scope in [WifiScope::Closed, WifiScope::Row] {
+            r.rescope(&mut bus, scope).unwrap();
+            let calls = bus.calls.len();
+            for c in [WifiChange::AccessPoint(format!("{AP}/11")), WifiChange::AccessPoints, WifiChange::Saved] {
+                r.changed(&mut bus, &c).unwrap();
+            }
+            assert_eq!(bus.calls[calls..], [] as [String; 0], "{scope:?}: nothing read");
+        }
+    }
+
+    #[test]
+    fn added_and_removed_access_points_are_reconciled() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.props.insert(
+            (format!("{AP}/14"), ACCESS_POINT.into()),
+            Props([("Ssid".to_string(), Prop::Bytes(b"Labo-Test".to_vec())), ("Strength".to_string(), Prop::Int(40))].into()),
+        );
+        let listed: Vec<String> = [10, 11, 14].iter().map(|n| format!("{AP}/{n}")).collect();
+        bus.props_mut(WIFI_DEVICE, WIRELESS).0.insert("AccessPoints".into(), Prop::Paths(listed));
+        let calls = bus.calls.len();
+        let d = r.changed(&mut bus, &WifiChange::AccessPoints).unwrap().unwrap().device.unwrap();
+        assert_eq!(ssids(&d), ["MON_WIFI_1", "Voisin-Test", "Labo-Test"], "12 gone, 14 come");
+        let aps: Vec<&String> = bus.calls[calls..].iter().filter(|c| c.ends_with(ACCESS_POINT)).collect();
+        assert_eq!(aps.len(), 2, "the new one, and the device's own access point (the row's): {aps:?}");
+    }
+
+    #[test]
+    fn saved_profiles_are_read_on_their_signal_only() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        r.reread(&mut bus).unwrap();
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("ListConnections ")).count(), 1, "a network re-read does not list them again");
+        bus.connections.as_mut().unwrap().push("/org/freedesktop/NetworkManager/Settings/5".into());
+        bus.settings.insert(
+            "/org/freedesktop/NetworkManager/Settings/5".into(),
+            Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() }),
+        );
+        let calls = bus.calls.len();
+        let d = r.changed(&mut bus, &WifiChange::Saved).unwrap().unwrap().device.unwrap();
+        assert_eq!(d.saved.map(|s| s.len()), Some(2));
+        let settings: Vec<&String> = bus.calls[calls..].iter().filter(|c| c.starts_with("GetSettings ")).collect();
+        assert_eq!(settings.len(), 1, "the new one only: {settings:?}");
+    }
+
+    #[test]
+    fn the_lists_are_capped() {
+        let mut bus = wifi_bus();
+        let mut listed = Vec::new();
+        for n in 100..170 {
+            let path = format!("{AP}/{n}");
+            let ssid = format!("Reseau-Test-{n}");
+            bus.props.insert((path.clone(), ACCESS_POINT.into()), Props([("Ssid".to_string(), Prop::Bytes(ssid.into_bytes()))].into()));
+            listed.push(path);
+        }
+        bus.props_mut(WIFI_DEVICE, WIRELESS).0.insert("AccessPoints".into(), Prop::Paths(listed));
+        let connections: Vec<String> = (100..170).map(|n| format!("/org/freedesktop/NetworkManager/Settings/{n}")).collect();
+        for c in &connections {
+            bus.settings.insert(c.clone(), None);
+        }
+        bus.connections = Some(connections);
+        let (_, d) = detail(&mut bus);
+        assert_eq!(d.access_points.map(|a| a.len()), Some(MAX_APS));
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetSettings ")).count(), MAX_SAVED);
+    }
+
+    /// Ruling P4: one access point or one profile that fails to read (a timeout) is left out; the
+    /// rest of the detail stays, and the failure is logged once per open.
+    #[test]
+    fn one_unreadable_item_is_left_out_never_the_whole_detail() {
+        let mut bus = wifi_bus();
+        bus.failing.insert(format!("{AP}/11"));
+        let voisin = "/org/freedesktop/NetworkManager/Settings/5";
+        bus.connections.as_mut().unwrap().push(voisin.into());
+        bus.settings
+            .insert(voisin.into(), Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() }));
+        bus.failing.insert("/org/freedesktop/NetworkManager/Settings/3".into());
+        let (r, d) = detail(&mut bus);
+        assert_eq!(ssids(&d), ["MON_WIFI_1", "Cafe-Libre"], "Voisin-Test left out, the others kept");
+        let saved: Vec<Vec<u8>> = d.saved.unwrap().into_iter().map(|s| s.ssid).collect();
+        assert_eq!(saved, [b"Voisin-Test".to_vec()], "the unreadable profile left out, the readable one kept");
+        assert!(d.active.is_some(), "the row's part kept");
+        assert!(r.logged, "the failure noted");
+        let mut bus = wifi_bus();
+        bus.disconnecting.insert(format!("{AP}/11"));
+        let e = WifiReader::default().rescope(&mut bus, WifiScope::Detail).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "the bus itself gone: still the session's");
+    }
+
+    /// Review Focus 1: NetworkManager restarted with the detail open: another unique name, the same
+    /// paths now other objects. Every cached path is dropped and read again from the new owner.
+    #[test]
+    fn a_new_networkmanager_owner_drops_every_cached_path() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.owners.insert(NM, ":1.99");
+        bus.props_mut(&format!("{AP}/11"), ACCESS_POINT).0.insert("Ssid".into(), Prop::Bytes(b"Autre-Test".to_vec()));
+        let calls = bus.calls.len();
+        let d = r.reread(&mut bus).unwrap().unwrap().device.unwrap();
+        assert!(ssids(&d).contains(&"Autre-Test".to_string()), "{:?}", ssids(&d));
+        let new: Vec<&String> = bus.calls[calls..].iter().collect();
+        assert!(new.iter().any(|c| c.starts_with("GetDevices :1.99")), "the device found again: {new:?}");
+        assert!(new.iter().any(|c| *c == &format!("GetAll :1.99 {AP}/12 {ACCESS_POINT}")), "every access point read again");
+        assert!(new.iter().any(|c| c.starts_with("ListConnections :1.99")), "the saved profiles listed again");
+    }
+
+    #[test]
+    fn a_saved_profile_keeps_its_uuid_and_ssid_only() {
+        let p = |pairs: &[(&str, Prop)]| Props(pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let connection =
+            p(&[("type", Prop::Str("802-11-wireless".into())), ("uuid", Prop::Str("11111111-2222-4333-8444-555555555555".into()))]);
+        let wireless = p(&[("ssid", Prop::Bytes(b"Maison-Test".to_vec()))]);
+        assert_eq!(
+            saved_wifi(Some(&connection), Some(&wireless)),
+            Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Maison-Test".to_vec() })
+        );
+        let ethernet = p(&[("type", Prop::Str("802-3-ethernet".into())), ("uuid", Prop::Str("aaaa".into()))]);
+        assert_eq!(saved_wifi(Some(&ethernet), None), None);
+        let odd = p(&[("type", Prop::Str("802-11-wireless".into())), ("uuid", Prop::Str("-rf".into()))]);
+        assert_eq!(saved_wifi(Some(&odd), Some(&wireless)), None, "a uuid nmcli would read as an option");
+        let long = p(&[("ssid", Prop::Bytes(vec![b'x'; 33]))]);
+        assert_eq!(saved_wifi(Some(&connection), Some(&long)), None);
+        assert_eq!(saved_wifi(Some(&connection), None), None, "no 802-11-wireless setting");
     }
 }

@@ -6,6 +6,7 @@
 use super::props::{Objects, Prop, Props, busctl};
 use super::wifi::{self, WifiTap};
 use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power};
+use crate::system::SavedWifi;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
@@ -72,6 +73,10 @@ pub struct FakeBus {
     pub devices: Vec<String>,
     /// NetworkManager's GetDevices answer; None: not there (the recording has none): NotFound.
     pub nm_devices: Option<Vec<String>>,
+    /// ListConnections' answer; None: NotFound.
+    pub connections: Option<Vec<String>>,
+    /// GetSettings' answers by path, already reduced (None: not a Wi-Fi profile).
+    pub settings: BTreeMap<String, Option<SavedWifi>>,
     /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
     pub tap: Arc<WifiTap>,
     pub script: VecDeque<Step>,
@@ -89,6 +94,8 @@ impl FakeBus {
             bluez: Objects::new(),
             devices: Vec::new(),
             nm_devices: None,
+            connections: None,
+            settings: BTreeMap::new(),
             tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
@@ -166,6 +173,13 @@ impl FakeBus {
                 ]),
             );
         }
+        // The recorded Wi-Fi connection's profile (Settings/3, its uuid in dbus-nm-active-9.json),
+        // and a wired one.
+        let (home, wired) = ("/org/freedesktop/NetworkManager/Settings/3", "/org/freedesktop/NetworkManager/Settings/4");
+        self.connections = Some(vec![home.into(), wired.into()]);
+        self.settings
+            .insert(home.into(), Some(SavedWifi { uuid: "00000000-0000-0000-0000-000000000009".into(), ssid: b"MON_WIFI_1".to_vec() }));
+        self.settings.insert(wired.into(), None);
     }
 
     /// Synthesized (nothing was connected during the recording): the
@@ -241,6 +255,28 @@ impl Bus for FakeBus {
         self.calls.push(format!("GetDevices {destination}"));
         self.reach(destination)?;
         self.nm_devices.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: GetDevices"))
+    }
+
+    fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        self.calls.push(format!("ListConnections {destination}"));
+        self.reach(destination)?;
+        self.connections.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: ListConnections"))
+    }
+
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
+        self.calls.push(format!("GetSettings {destination} {path}"));
+        self.reach(destination)?;
+        if self.failing.contains(path) {
+            return Err(io::Error::other(format!("timeout: {path}")));
+        }
+        self.settings.get(path).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("UnknownObject: {path}")))
+    }
+
+    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()> {
+        for r in rules {
+            self.calls.push(format!("{} {r}", if add { "AddMatch" } else { "RemoveMatch" }));
+        }
+        Ok(())
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {

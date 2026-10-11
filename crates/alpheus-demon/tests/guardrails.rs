@@ -22,7 +22,7 @@ use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
-use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
+use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
@@ -841,6 +841,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
                 "\"ActivateConnection\"",
                 "\"DeactivateConnection\"",
                 "\"Enable\"",
+                "\"GetSecrets\"",
                 "\"Sleep\"",
                 "\"Pair\"",
                 "\"RemoveDevice\"",
@@ -855,7 +856,20 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         }
     }
     let names: Vec<&str> = Method::ALL.iter().map(|m| m.name()).collect();
-    assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices", "GetDevices"]);
+    assert_eq!(
+        names,
+        [
+            "GetNameOwner",
+            "AddMatch",
+            "RemoveMatch",
+            "GetAll",
+            "GetManagedObjects",
+            "EnumerateDevices",
+            "GetDevices",
+            "ListConnections",
+            "GetSettings"
+        ]
+    );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
     let prod = production_code(&file);
     assert_eq!(prod.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
@@ -881,8 +895,14 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     }
     assert!(
         MATCH_RULES.iter().all(|(_, r)| !r.contains("AccessPoint")),
-        "the network module is icons only (Q1): no AccessPoint signal is ever read"
+        "the network module is icons only (Q1): the access points' rules are the Wi-Fi detail's (WIFI_RULES), added and removed with it"
     );
+    for rule in WIFI_RULES {
+        assert!(
+            rule.starts_with("type='signal',sender='org.freedesktop.NetworkManager',"),
+            "{rule}: the detail follows NetworkManager only"
+        );
+    }
     assert!(
         MATCH_RULES.iter().filter(|(_, r)| r.contains("PowerProfiles")).all(|(_, r)| r.contains("'net.hadess.PowerProfiles'")),
         "power profiles: its own signals only, never a write (quick spec § 5)"
