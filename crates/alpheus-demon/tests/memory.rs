@@ -17,12 +17,12 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{DmenuFlags, Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, Workstation, assert_no_spin, fake_source,
-    launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, TempDir, Workstation, assert_no_spin,
+    fake_source, launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -1338,6 +1338,109 @@ fn at_rest_no_wakeups_after_the_osd() {
     let delta = d.wakeups().saturating_sub(before);
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after the osd (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The quick measurements' bars: every system module (their D-Bus thread is there with or without
+/// the panel), without and with `quick`. `[osd] backlight_dir` is a fake directory of the test's own
+/// (never the real /sys): the panel reads it once when it opens.
+fn quick_bar(with_quick: bool, backlight_dir: &Path) -> String {
+    let quick = if with_quick { "\"quick\", " } else { "" };
+    format!(
+        "modules = [\"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", {quick}\"clock\"]\n\
+         [osd]\nbacklight_dir = {:?}\n",
+        backlight_dir.display().to_string()
+    )
+}
+
+/// A fake backlight directory: one device at 75 %.
+fn fake_backlight(name: &str) -> TempDir {
+    let dir = TempDir::new(name);
+    let device = dir.0.join("panel");
+    std::fs::create_dir_all(&device).unwrap();
+    std::fs::write(device.join("brightness"), "75\n").unwrap();
+    std::fs::write(device.join("max_brightness"), "100\n").unwrap();
+    dir
+}
+
+/// Quick spec § 7: PSS without the module, with it at rest, the panel open (by the verb), closed,
+/// and after 20 more open/close cycles.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn quick_pss_idle_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("quick-cost");
+    let _workstation = Workstation::serve(&bus);
+    let backlight = fake_backlight("quick-cost-backlight");
+    let base = {
+        let (_sway, _hypr, d) = start("quick-cost-a", 1, &bus, None, Some(&quick_bar(false, &backlight.0)), PwDump::Fifo);
+        std::thread::sleep(TRAY_SETTLE);
+        d.pss_kb()
+    };
+    let (sway, _hypr, d) = start("quick-cost-b", 1, &bus, None, Some(&quick_bar(true, &backlight.0)), PwDump::Fifo);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Sound)), Reply::Done);
+    toggle();
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    let open = d.pss_kb();
+    toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let closed = d.pss_kb();
+    for n in 2..=21 {
+        toggle();
+        assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        toggle();
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let cycled = d.pss_kb();
+    let (module_cost, panel_cost) = (idle.saturating_sub(base), open.saturating_sub(idle));
+    eprintln!(
+        "quick PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
+         {open} open (panel cost {panel_cost}), {closed} closed, {cycled} after 20 more cycles"
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(module_cost <= 256, "the module at rest costs {module_cost} KB (a profile state and a tap: ≤ 256 KB)");
+    assert!(panel_cost <= 1024, "the open panel costs {panel_cost} KB (its pool, two buffers: ≤ 1 MB)");
+    // Closed, the first open leaves ≈ 320 KB: /proc/<pid>/smaps shows it is the binary's code pages
+    // (r-xp, ≈ +320 KB) and the font file's (≈ +64 KB), touched for the first time and now resident
+    // (any first popup pays it), while the heap, the shm pool and the model are back to idle's
+    // (heap 216 → 212 KB, pool 220 → 160 KB). So: a one-time warm-up bound, and a leak bound.
+    assert!(closed <= idle + 512, "closed {closed} KB vs {idle} KB: more than the first open's code and font pages");
+    assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
+}
+
+/// Spec § 7: once the panel closed, no timer, no wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_quick_panel() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("quick-rest");
+    let _workstation = Workstation::serve(&bus);
+    let backlight = fake_backlight("quick-rest-backlight");
+    let (sway, _hypr, d) = start("quick-rest", 1, &bus, None, Some(&quick_bar(true, &backlight.0)), PwDump::Fifo);
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    for n in 1..=3 {
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
+        assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+    }
+    // Not the 3 s settle: a stray one-second timer armed by the last close must fall inside the window.
+    std::thread::sleep(Duration::from_millis(300));
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the quick panel");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after the quick panel (10 s): {delta} whole daemon, {main_delta} loop thread");
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
