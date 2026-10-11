@@ -31,7 +31,7 @@ use alpheus_demon::tray::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
 };
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
     Workspace { name: name.into(), reference: name.into(), output: output.into(), windows, urgent: false, visible, focused: visible }
@@ -1556,6 +1556,36 @@ fn every_quick_command_stays_on_the_allowlist() {
             }
         }
     }
+    // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
+    // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
+    let line = |a: &QuickAction| match a {
+        QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } => Some(argv.join(" ")),
+        _ => None,
+    };
+    let soon = t + Duration::from_millis(1);
+    let (mut by_due, mut by_flush) = (Vec::new(), Vec::new());
+    for row in quick::shown(&live, &fresh()) {
+        for k in keys {
+            let mut q = fresh();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, soon));
+            by_flush.extend(q.clone().flush().iter().filter_map(line));
+            by_due.extend(q.due(t + quick::COALESCE).run.iter().filter_map(line));
+            by_flush.extend(q.flush().iter().filter_map(line));
+        }
+    }
+    for paced in [
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 74%",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 54%",
+        "brightnessctl --class=backlight --device=intel_backlight set 60%",
+        "brightnessctl --class=backlight --device=intel_backlight set 40%",
+    ] {
+        assert!(by_due.iter().any(|c| c == paced), "{paced} never sent by due(): {by_due:?}");
+        assert!(by_flush.iter().any(|c| c == paced), "{paced} never sent by flush(): {by_flush:?}");
+    }
+    calls.extend(by_due);
+    calls.extend(by_flush);
     // Fix S1: absolute levels only, 0 to 100 (`min` up); never a relative step.
     let percent = |n: &str, min: u8| {
         n.strip_suffix('%')
