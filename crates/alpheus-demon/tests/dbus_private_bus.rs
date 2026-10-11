@@ -6,8 +6,8 @@ mod common;
 
 use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
 use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
-use alpheus_demon::system::{BtState, NetState, PowerState};
-use common::{Peer, PrivateBus, Workstation, process_alive};
+use alpheus_demon::system::{BtState, NetState, PowerState, Profile, ProfileState};
+use common::{FakePowerProfiles, Peer, PrivateBus, Workstation, process_alive};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::mpsc;
@@ -108,6 +108,28 @@ fn the_session_on_an_empty_bus_hides_everything() {
     assert!(r.is_ok());
     let s = first.expect("an initial state");
     assert_eq!((s.network, s.bluetooth, s.battery), (Some(NetState::Absent), Some(BtState::Absent), Some(PowerState::default())));
+    assert_eq!(s.power, Some(ProfileState::default()), "no power-profiles-daemon: the row hidden");
+}
+
+/// Quick spec § 7: the profile is read at start, follows a `PropertiesChanged`, and an owner going
+/// away hides the row — over the wire, through the real connection and its match rules.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn the_power_profile_is_read_followed_and_hidden_on_a_private_bus() {
+    let b = PrivateBus::start("power");
+    let daemon = FakePowerProfiles::serve(&b, "balanced");
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Power]).unwrap();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &mut |s| tx.send(s.power).is_ok());
+    });
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
+    let all = Profile::ALL.to_vec();
+    assert_eq!(next(), Some(ProfileState { active: Some(Profile::Balanced), offered: all.clone() }), "read at start");
+    daemon.set_active("performance");
+    assert_eq!(next(), Some(ProfileState { active: Some(Profile::Performance), offered: all }), "followed");
+    drop(daemon);
+    assert_eq!(next(), Some(ProfileState::default()), "its owner gone: the row hides");
 }
 
 #[test]

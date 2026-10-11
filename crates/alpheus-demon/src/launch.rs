@@ -193,7 +193,8 @@ use crate::log::write as log;
 pub struct Wanted {
     /// The pw-dump child: for the volume module, the OSD (its passive trigger) or the quick panel's rows.
     pub sound: bool,
-    /// The D-Bus domains to read and follow; empty: no D-Bus thread.
+    /// The D-Bus domains to read and follow (the quick panel's power profile among them); empty: no
+    /// D-Bus thread.
     pub dbus: Vec<Domain>,
     pub resources: bool,
     /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
@@ -208,11 +209,16 @@ pub struct Wanted {
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
     let has = |m: ModuleId| modules.contains(&m);
-    let dbus = [(ModuleId::Network, Domain::Network), (ModuleId::Bluetooth, Domain::Bluetooth), (ModuleId::Battery, Domain::Battery)]
-        .into_iter()
-        .filter(|(m, _)| has(*m))
-        .map(|(_, d)| d)
-        .collect();
+    let dbus = [
+        (ModuleId::Network, Domain::Network),
+        (ModuleId::Bluetooth, Domain::Bluetooth),
+        (ModuleId::Battery, Domain::Battery),
+        (ModuleId::Quick, Domain::Power),
+    ]
+    .into_iter()
+    .filter(|(m, _)| has(*m))
+    .map(|(_, d)| d)
+    .collect();
     Wanted {
         sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick),
         dbus,
@@ -824,7 +830,7 @@ mod tests {
 
     #[test]
     fn only_the_sources_the_modules_need() {
-        let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
+        let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
         assert_eq!(
             wanted(&ModuleId::ALL),
             Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true }
@@ -857,6 +863,7 @@ mod tests {
             wanted(&[ModuleId::Volume, ModuleId::Resources]),
             Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false }
         );
+        assert_eq!(wanted(&[ModuleId::Quick]).dbus, vec![Domain::Power], "the panel's power profile: read only, on the system bus");
     }
 
     #[test]
@@ -905,7 +912,12 @@ mod tests {
     #[test]
     fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
-        let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
+        let s = SystemState {
+            network: Some(NetState::Offline),
+            bluetooth: Some(BtState::Off),
+            battery: Some(PowerState::default()),
+            power: None,
+        };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
         }

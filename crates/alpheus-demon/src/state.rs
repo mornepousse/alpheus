@@ -6,7 +6,7 @@ use crate::compositor::CompositorState;
 use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
-use crate::system::{BtState, NetState, PowerState, Resources, Sample, SoundState};
+use crate::system::{BtState, NetState, PowerState, ProfileState, Resources, Sample, SoundState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
@@ -29,6 +29,8 @@ pub enum Msg {
     Network(Option<NetState>),
     Bluetooth(Option<BtState>),
     Battery(Option<PowerState>),
+    /// power-profiles-daemon (quick spec § 5); None: the system bus is down.
+    Profile(Option<ProfileState>),
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring (task 11).
     Tray(Vec<TrayIcon>),
@@ -48,6 +50,8 @@ pub struct Bar {
     pub network: Feed<NetState>,
     pub bluetooth: Feed<BtState>,
     pub battery: Feed<PowerState>,
+    /// The power profile, for the quick panel; nothing in the bar draws it.
+    pub profile: Feed<ProfileState>,
     pub resources: Resources,
     /// The tray's icons, in registration order; empty at start.
     pub tray: Vec<TrayIcon>,
@@ -112,6 +116,7 @@ impl Bar {
             network: Feed::Waiting,
             bluetooth: Feed::Waiting,
             battery: Feed::Waiting,
+            profile: Feed::Waiting,
             resources: Resources::default(),
             tray: Vec::new(),
             media: None,
@@ -155,6 +160,11 @@ impl Bar {
             Msg::Network(s) => update(&mut self.network, s),
             Msg::Bluetooth(s) => update(&mut self.bluetooth, s),
             Msg::Battery(s) => update(&mut self.battery, s),
+            // Kept for the quick panel (quick_app.rs repaints it): no bar redraw.
+            Msg::Profile(p) => {
+                update(&mut self.profile, p);
+                false
+            }
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => {
                 if self.tray == icons {
@@ -251,6 +261,17 @@ mod tests {
         assert!(!b.apply(Msg::Battery(Some(PowerState::default()))));
         assert!(b.apply(Msg::Battery(None)));
         assert_eq!(b.battery, Feed::Down);
+    }
+
+    /// Quick spec § 5: the profile is kept for the panel; nothing in the bar draws it.
+    #[test]
+    fn a_profile_change_is_kept_and_redraws_no_bar() {
+        let mut b = Bar::new(BarConfig::default());
+        let p = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
+        assert!(!b.apply(Msg::Profile(Some(p.clone()))));
+        assert_eq!(b.profile, Feed::Ready(p));
+        assert!(!b.apply(Msg::Profile(None)));
+        assert_eq!(b.profile, Feed::Down);
     }
 
     /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads

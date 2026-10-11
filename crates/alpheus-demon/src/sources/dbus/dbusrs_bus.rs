@@ -23,6 +23,8 @@ const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 /// A service that doesn't answer blocks this thread at most this long.
 pub const TIMEOUT: Duration = Duration::from_secs(2);
+/// The most dictionaries kept from an `aa{sv}` (power-profiles-daemon offers three profiles).
+pub const MAX_DICTS: usize = 16;
 
 /// Every method the daemon may call: reads, and the subscription to
 /// signals (`Hello` is libdbus's own, sent once when connecting).
@@ -64,7 +66,7 @@ impl Method {
 /// NameAcquired every client receives). BlueZ's PropertiesChanged is split
 /// by interface (arg0): a headset's volume (MediaTransport1) or track
 /// (MediaPlayer1) never reaches the daemon.
-pub const MATCH_RULES: [(Domain, &str); 11] = [
+pub const MATCH_RULES: [(Domain, &str); 13] = [
     (
         Domain::Network,
         "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
@@ -97,6 +99,10 @@ pub const MATCH_RULES: [(Domain, &str); 11] = [
     ),
     (Domain::Bluetooth, "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager'"),
     (
+        Domain::Power,
+        "type='signal',sender='net.hadess.PowerProfiles',path='/net/hadess/PowerProfiles',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='net.hadess.PowerProfiles'",
+    ),
+    (
         Domain::Network,
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.NetworkManager'",
     ),
@@ -107,6 +113,10 @@ pub const MATCH_RULES: [(Domain, &str); 11] = [
     (
         Domain::Bluetooth,
         "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.bluez'",
+    ),
+    (
+        Domain::Power,
+        "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',member='NameOwnerChanged',arg0='net.hadess.PowerProfiles'",
     ),
 ];
 
@@ -196,6 +206,7 @@ pub fn prop(v: &mut Iter<'_>) -> Prop {
         ArgType::Array => match sig(v).as_deref() {
             Some("ao") => v.get::<Vec<Path>>().map(|ps| Prop::Paths(ps.into_iter().map(path_string).collect())).unwrap_or(Prop::Other),
             Some("ay") => v.get::<&[u8]>().map(|b| Prop::Bytes(b.to_vec())).unwrap_or(Prop::Other),
+            Some("aa{sv}") => dicts(v),
             _ => Prop::Other,
         },
         ArgType::Variant => v.recurse(ArgType::Variant).map(|mut inner| prop(&mut inner)).unwrap_or(Prop::Other),
@@ -218,6 +229,21 @@ fn props(it: &mut Iter<'_>) -> io::Result<Props> {
         entries.next();
     }
     Ok(Props(out))
+}
+
+/// `aa{sv}` at `v`: each dictionary read as `props` reads a GetAll reply, at most MAX_DICTS; one
+/// that does not parse makes the whole value `Other` (never read).
+fn dicts(v: &mut Iter<'_>) -> Prop {
+    let Some(mut items) = v.recurse(ArgType::Array) else { return Prop::Other };
+    let mut out = Vec::new();
+    while out.len() < MAX_DICTS && items.arg_type() != ArgType::Invalid {
+        match props(&mut items) {
+            Ok(p) => out.push(p),
+            Err(_) => return Prop::Other,
+        }
+        items.next();
+    }
+    Prop::Dicts(out)
 }
 
 /// A `GetAll` reply (`a{sv}`).
@@ -488,6 +514,29 @@ mod tests {
             interfaces.retain(|i, _| [bluez::ADAPTER, bluez::DEVICE, bluez::BATTERY].contains(&i.as_str()));
         }
         assert_eq!(objects_reply(&recorded(bluez)).unwrap(), expected);
+    }
+
+    #[test]
+    fn an_array_of_dictionaries_decodes_like_busctl_and_is_capped() {
+        let json = include_str!("../../../tests/fixtures/dbus-powerprofiles.json");
+        let p = get_all_reply(&recorded(json)).unwrap();
+        assert_eq!(p, busctl::get_all(json));
+        let names: Vec<&str> = p.dicts("Profiles").iter().filter_map(|d| d.str("Profile")).collect();
+        assert_eq!(names, ["power-saver", "balanced", "performance"]);
+        let many = format!(
+            r#"{{"type":"a{{sv}}","data":[{{"L":{{"type":"aa{{sv}}","data":[{}]}}}}]}}"#,
+            vec![r#"{"K":{"type":"u","data":1}}"#; 20].join(",")
+        );
+        assert_eq!(get_all_reply(&recorded(&many)).unwrap().dicts("L").len(), MAX_DICTS, "capped");
+    }
+
+    #[test]
+    fn the_power_profiles_rules_name_their_service() {
+        let power: Vec<&str> = MATCH_RULES.iter().filter(|(d, _)| *d == Domain::Power).map(|(_, r)| *r).collect();
+        assert_eq!(power.len(), 2);
+        assert!(power.iter().all(|r| r.contains("'net.hadess.PowerProfiles'")), "{power:?}");
+        assert!(power[0].contains("path='/net/hadess/PowerProfiles'") && power[0].contains("member='PropertiesChanged'"), "{power:?}");
+        assert!(power[1].contains("member='NameOwnerChanged'"), "{power:?}");
     }
 
     #[test]

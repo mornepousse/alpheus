@@ -4,7 +4,7 @@
 //! well-known name: on a real bus, that call could start the service.
 
 use super::props::{Objects, Prop, Props, busctl};
-use super::{BLUEZ, Bus, NM, Signal, UPOWER};
+use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 
@@ -23,11 +23,14 @@ const UPOWER_DEVICES: [(&str, &str); 4] = [
 ];
 const UPOWER_LIST: &str = include_str!("../../../tests/fixtures/dbus-upower-devices.json");
 const BLUEZ_OBJECTS: &str = include_str!("../../../tests/fixtures/dbus-bluez-objects.json");
+/// Fictional: power-profiles-daemon's shape, made-up drivers and version.
+const POWER_PROFILES_JSON: &str = include_str!("../../../tests/fixtures/dbus-powerprofiles.json");
 
 /// Unique names of the recorded services: what `owner` (GetNameOwner) answers.
 pub const NM_OWNER: &str = ":1.10";
 pub const UPOWER_OWNER: &str = ":1.11";
 pub const BLUEZ_OWNER: &str = ":1.12";
+pub const POWER_OWNER: &str = ":1.13";
 
 /// A step of a scripted session: the signal, and what changes on the bus
 /// just before it is received.
@@ -107,6 +110,13 @@ impl FakeBus {
     /// A recorded object's properties, to change one in a test.
     pub fn props_mut(&mut self, path: &str, interface: &str) -> &mut Props {
         self.props.get_mut(&(path.to_string(), interface.to_string())).expect("recorded object")
+    }
+
+    /// power-profiles-daemon running, `active` its active profile (the fixture's three offered).
+    pub fn with_power_profiles(&mut self, active: &str) {
+        self.owners.insert(POWER_PROFILES, POWER_OWNER);
+        self.set(power::PATH, power::INTERFACE, POWER_PROFILES_JSON);
+        self.props_mut(power::PATH, power::INTERFACE).0.insert("ActiveProfile".into(), Prop::Str(active.into()));
     }
 
     /// Synthesized (nothing was connected during the recording): the

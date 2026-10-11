@@ -127,6 +127,49 @@ pub struct PowerState {
     pub peripherals: Vec<Peripheral>,
 }
 
+/// A power profile power-profiles-daemon offers (quick spec § 2); only these three are shown or set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Profile {
+    PowerSaver,
+    Balanced,
+    Performance,
+}
+
+impl Profile {
+    pub const ALL: [Profile; 3] = [Profile::PowerSaver, Profile::Balanced, Profile::Performance];
+
+    /// The daemon's name for it: what `ActiveProfile` holds and `powerprofilesctl set` takes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Profile::PowerSaver => "power-saver",
+            Profile::Balanced => "balanced",
+            Profile::Performance => "performance",
+        }
+    }
+
+    /// What the panel shows (spec § 2).
+    pub fn label(self) -> &'static str {
+        match self {
+            Profile::PowerSaver => "saver",
+            Profile::Balanced => "balanced",
+            Profile::Performance => "performance",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Profile> {
+        Profile::ALL.into_iter().find(|p| p.name() == s)
+    }
+}
+
+/// What power-profiles-daemon says. The default (no active profile, none offered): no daemon on
+/// the system bus, the row hidden.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProfileState {
+    pub active: Option<Profile>,
+    /// In the daemon's order, each once.
+    pub offered: Vec<Profile>,
+}
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {

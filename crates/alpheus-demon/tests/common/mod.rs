@@ -30,6 +30,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
@@ -1167,6 +1168,86 @@ impl Workstation {
         });
         Workstation
     }
+}
+
+/// power-profiles-daemon's well-known name (quick spec § 5).
+pub const POWER_PROFILES_NAME: &str = "net.hadess.PowerProfiles";
+const POWER_PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
+
+/// A power-profiles-daemon on a private bus (test code only): owns its name, answers `GetAll` on its
+/// one object with the active profile and the three offered, and emits `PropertiesChanged` when the
+/// test sets another. Dropped: its connection closes, the name loses its owner.
+pub struct FakePowerProfiles {
+    tx: Option<mpsc::Sender<String>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl FakePowerProfiles {
+    pub fn serve(bus: &PrivateBus, active: &str) -> FakePowerProfiles {
+        let peer = Peer::connect(bus);
+        peer.own(POWER_PROFILES_NAME);
+        let (tx, rx) = mpsc::channel::<String>();
+        let mut active = active.to_string();
+        let thread = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(p) => {
+                        active = p;
+                        let mut m =
+                            dbus::Message::new_signal(POWER_PROFILES_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged").unwrap();
+                        busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"s","data":["{POWER_PROFILES_NAME}"]}}"#));
+                        busctl_wire::push_reply(
+                            &mut m,
+                            &format!(r#"{{"type":"a{{sv}}","data":[{{"ActiveProfile":{{"type":"s","data":"{active}"}}}}]}}"#),
+                        );
+                        busctl_wire::push_reply(&mut m, r#"{"type":"as","data":[[]]}"#);
+                        let _ = peer.channel.send(m);
+                        peer.channel.flush();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match peer.channel.blocking_pop_message(Duration::from_millis(20)) {
+                    Ok(Some(call)) if call.msg_type() == dbus::message::MessageType::MethodCall => {
+                        let mut r = call.method_return();
+                        busctl_wire::push_reply(&mut r, &power_profiles_reply(&active));
+                        let _ = peer.channel.send(r);
+                        peer.channel.flush();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        FakePowerProfiles { tx: Some(tx), thread: Some(thread) }
+    }
+
+    /// Sets the active profile and emits `PropertiesChanged` for it.
+    pub fn set_active(&self, profile: &str) {
+        if let Some(tx) = &self.tx {
+            tx.send(profile.to_string()).unwrap();
+        }
+    }
+}
+
+impl Drop for FakePowerProfiles {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// `GetAll`'s reply as busctl prints it: the active profile and the three offered (fictional drivers).
+fn power_profiles_reply(active: &str) -> String {
+    let profile = |p: &str| format!(r#"{{"Profile":{{"type":"s","data":"{p}"}},"Driver":{{"type":"s","data":"placeholder"}}}}"#);
+    format!(
+        r#"{{"type":"a{{sv}}","data":[{{"ActiveProfile":{{"type":"s","data":"{active}"}},"Profiles":{{"type":"aa{{sv}}","data":[{},{},{}]}}}}]}}"#,
+        profile("power-saver"),
+        profile("balanced"),
+        profile("performance")
+    )
 }
 
 /// A binary PPM (P6, maxval 255), as grim writes it.

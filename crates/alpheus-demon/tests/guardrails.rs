@@ -873,6 +873,10 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         MATCH_RULES.iter().all(|(_, r)| !r.contains("AccessPoint")),
         "the network module is icons only (Q1): no AccessPoint signal is ever read"
     );
+    assert!(
+        MATCH_RULES.iter().filter(|(_, r)| r.contains("PowerProfiles")).all(|(_, r)| r.contains("'net.hadess.PowerProfiles'")),
+        "power profiles: its own signals only, never a write (quick spec § 5)"
+    );
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
