@@ -476,7 +476,9 @@ pub fn session(
     let mut reader = WifiReader::default();
     let mut last = None;
     let mut failed = read_all(bus, domains, &mut s, log_state);
-    // A panel already open when this session starts (a reconnection): its Wi-Fi read now.
+    // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
+    // left waiting from the previous session is answered by this read: drained, never read twice.
+    wifi.drain();
     if let Err(e) = wifi_into(reader.rescope(bus, wifi.scope()), &mut s) {
         failed = Some(e);
     }
@@ -942,6 +944,22 @@ mod tests {
         let (seen, r) = run(&mut bus);
         assert_eq!(seen.len(), 3, "initial, the row, then the failed re-read published");
         assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus);
+    }
+
+    /// A word the loop wrote while the bus was down is answered by the new session's first read:
+    /// drained, so the thread does not wake once more for it.
+    #[test]
+    fn a_session_starts_with_the_taps_word_drained() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        bus.tap = Arc::new(WifiTap::new().unwrap());
+        bus.tap.set(WifiScope::Row);
+        let fd = bus.tap.wake_fd().expect("a socket pair");
+        let (seen, _) = run(&mut bus);
+        assert!(seen[0].wifi.is_some(), "the row read at the start");
+        let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        // SAFETY: poll(2) on one pollfd owned here, no wait.
+        assert_eq!(unsafe { libc::poll(&mut p, 1, 0) }, 0, "the word left waiting was drained");
     }
 
     #[test]

@@ -392,10 +392,10 @@ mod tests {
         }
     }
 
-    /// One `D-Bus Wi-Fi:` line per open: a second failure in the same open is quiet, a new open
-    /// may log again.
+    /// The flag that keeps the `D-Bus Wi-Fi:` line to one per open: raised by a failure, kept for
+    /// the rest of the open, lowered on close (the log call itself is not captured here).
     #[test]
-    fn a_failed_read_is_logged_once_per_open() {
+    fn the_failure_flag_is_raised_once_and_lowered_on_close() {
         let mut bus = wifi_bus();
         bus.failing.insert(WIFI_DEVICE.into());
         let mut r = WifiReader::default();

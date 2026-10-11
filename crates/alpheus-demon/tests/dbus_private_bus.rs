@@ -321,6 +321,10 @@ fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
     assert_eq!((device.state, device.active.map(|a| a.ssid)), (100, Some(b"Maison-Test".to_vec())));
     assert_eq!(device.active_uuid.as_deref(), Some(UUID_HOME));
     assert_eq!((device.access_points, device.saved), (None, None), "the row reads no list");
+    // The tap's byte was drained: the thread sleeps again, nothing more is asked of NetworkManager.
+    let calls = nm.calls().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(nm.calls().len(), calls, "no re-read at rest: {:?}", &nm.calls()[calls..]);
     nm.change(NmChange::Radio(false));
     assert_eq!(next().map(|w| w.enabled), Some(false), "the radio followed");
     tap.set(WifiScope::Closed);
