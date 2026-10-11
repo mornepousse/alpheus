@@ -40,6 +40,9 @@ pub const ACTIVATING: RangeInclusive<u32> = 40..=90;
 pub const FAILED: u32 = 120;
 /// No word from NetworkManager this long after Enter: failed (quick Wi-Fi spec § 2).
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// An attempt still activating on its network at CONNECT_TIMEOUT waits up to this long from its
+/// start (beyond NetworkManager's default 45 s DHCP timeout); then it ends, its profile kept.
+pub const ACTIVATION_BOUND: Duration = Duration::from_secs(60);
 /// How long a failed network shows `failed`.
 pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
 /// How long an open password field outlives its network leaving the list (an access point aged
@@ -52,6 +55,7 @@ pub const TOO_LONG: &str = "too long";
 /// Why an attempt failed, for the log (never an SSID).
 const ACTIVATION_FAILED: &str = "the activation failed";
 const NO_ANSWER: &str = "no answer in 20 s";
+const STILL_ACTIVATING: &str = "still activating after 60 s";
 const NM_GONE: &str = "NetworkManager went away";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
 
@@ -172,7 +176,9 @@ pub struct Field {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Attempt {
     pub ssid: Vec<u8>,
-    /// No word by then: failed.
+    /// Enter, when it began.
+    pub started: Instant,
+    /// No word by then: failed (or, still activating on its network, ACTIVATION_BOUND from `started`).
     pub until: Instant,
     /// An activating state was seen: leaving it for anything but activated on this SSID is a failure.
     pub activating: bool,
@@ -210,7 +216,7 @@ impl Attempt {
     /// Enter on `ssid` at `now`, with `state` the last read: the saved profiles noted.
     pub fn new(ssid: &[u8], creates: bool, state: Option<&WifiState>, now: Instant) -> Attempt {
         let known = saved_in(state).map(|s| s.iter().map(|p| p.uuid.clone()).collect());
-        Attempt { ssid: ssid.to_vec(), until: now + CONNECT_TIMEOUT, activating: false, known, created: None, creates }
+        Attempt { ssid: ssid.to_vec(), started: now, until: now + CONNECT_TIMEOUT, activating: false, known, created: None, creates }
     }
 
     /// NetworkManager's word: activated on its SSID ends it; an activating state on its SSID is
@@ -253,9 +259,23 @@ impl Attempt {
     /// The clock: no word by `until`, failed; nothing deleted when the device was last seen
     /// activated on what may be the new profile (its uuid or its access point unread, never shown
     /// to be another network's).
-    pub fn expired(&self, state: Option<&WifiState>, now: Instant) -> Outcome {
+    /// Still activating on its network (or on an access point unread) at the timeout: a slow
+    /// activation, never one to lose its profile; the deadline moves to ACTIVATION_BOUND from its
+    /// start, and there the attempt ends with nothing deleted.
+    pub fn expired(&mut self, state: Option<&WifiState>, now: Instant) -> Outcome {
         if self.until > now {
             return Outcome::Waiting;
+        }
+        let activating = state
+            .and_then(|s| s.device.as_ref())
+            .is_some_and(|d| ACTIVATING.contains(&d.state) && d.active.as_ref().is_none_or(|ap| ap.ssid == self.ssid));
+        if activating {
+            let bound = self.started + ACTIVATION_BOUND;
+            if now < bound {
+                self.until = bound;
+                return Outcome::Waiting;
+            }
+            return Outcome::Failed { why: STILL_ACTIVATING, cleanup: None };
         }
         let maybe_ours = state.and_then(|s| s.device.as_ref()).is_some_and(|d| {
             d.state == ACTIVATED
@@ -485,7 +505,7 @@ impl Wifi {
     /// `failed` mark gone, the field whose network stayed away FIELD_KEPT closed (a repaint each).
     pub fn due(&mut self, now: Instant) -> (Vec<QuickAction>, Option<&'static str>, bool) {
         let (mut run, mut failed, mut redraw) = (Vec::new(), None, false);
-        if let Some(Outcome::Failed { why, cleanup }) = self.attempt.as_ref().map(|a| a.expired(self.state.as_ref(), now)) {
+        if let Some(Outcome::Failed { why, cleanup }) = self.attempt.as_mut().map(|a| a.expired(self.state.as_ref(), now)) {
             self.mark_failed(now);
             run.extend(cleanup);
             (failed, redraw) = (Some(why), true);
@@ -1616,5 +1636,40 @@ mod tests {
             vec![delete(NEW)],
             "activated on another profile's uuid (the old one): a failure, cleaned"
         );
+    }
+
+    /// Fix round 3 (controller ruling): a slow activation never loses its profile. Still activating
+    /// on its network at 20 s: the deadline moves to 60 s from the start; still activating then: it
+    /// ends, nothing deleted; activated meanwhile: connected. The follower keeps the same deadline.
+    #[test]
+    fn a_slow_activation_keeps_its_profile() {
+        let (c, t) = (config(), Instant::now());
+        let slow = |active: Option<&str>| {
+            let mut w = open(state());
+            pick(&mut w, "Cafe-Libre");
+            w.key(&c, Key::Enter, t);
+            saved_added(&mut w, NEW, "Cafe-Libre", t);
+            device_at(&mut w, 70, active, t);
+            w
+        };
+        let mut w = slow(Some("Cafe-Libre"));
+        assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![], None, false), "20 s, still activating: no delete");
+        assert_eq!(w.deadline(), Some(t + ACTIVATION_BOUND));
+        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with("connecting…"));
+        assert_eq!(w.due(t + ACTIVATION_BOUND), (vec![], Some("still activating after 60 s"), true), "60 s: ends, its profile kept");
+        assert!(w.attempt.is_none());
+        let mut w = slow(None);
+        assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![], None, false), "its access point unread: waits too");
+        let mut w = slow(Some("Cafe-Libre"));
+        w.due(t + CONNECT_TIMEOUT);
+        assert_eq!(device_at(&mut w, ACTIVATED, Some("Cafe-Libre"), t + Duration::from_secs(30)), (QuickAction::Redraw, None));
+        assert!(w.attempt.is_none() && w.failed.is_none(), "connected at 30 s, nothing deleted");
+        let mut w = slow(Some("Bureau-Test"));
+        assert_eq!(w.due(t + CONNECT_TIMEOUT).0, vec![delete(NEW)], "activating another network: a failure, cleaned");
+        let mut w = slow(Some("Cafe-Libre"));
+        let mut f = WifiFollow::leaving(&mut w).expect("followed");
+        assert_eq!(f.due(t + CONNECT_TIMEOUT), Outcome::Waiting);
+        assert_eq!(f.deadline(), t + ACTIVATION_BOUND, "the follower's timer moves too");
+        assert_eq!(f.due(t + ACTIVATION_BOUND), Outcome::Failed { why: "still activating after 60 s", cleanup: None });
     }
 }

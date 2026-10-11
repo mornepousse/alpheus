@@ -80,7 +80,8 @@ impl WifiFollow {
         WifiScope::Detail
     }
 
-    /// The attempt's timeout: the panel's one timer stays armed for it, and for nothing after.
+    /// The attempt's timeout (moved to ACTIVATION_BOUND for a slow activation): the panel's one
+    /// timer stays armed for it, and for nothing after.
     pub fn deadline(&self) -> Instant {
         self.attempt.until
     }
@@ -94,7 +95,7 @@ impl WifiFollow {
 
     /// The timer, at `now`: `Failed` once the attempt timed out (its new profile deleted if still
     /// saved in the last state seen).
-    pub fn due(&self, now: Instant) -> Outcome {
+    pub fn due(&mut self, now: Instant) -> Outcome {
         self.attempt.expired(self.state.as_ref(), now)
     }
 
