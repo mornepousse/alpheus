@@ -37,6 +37,7 @@ pub mod panel;
 pub mod pipewire;
 pub mod placement;
 pub mod popup;
+pub mod quick;
 pub mod retired;
 pub mod segments;
 pub mod sources;
