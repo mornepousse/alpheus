@@ -57,6 +57,9 @@ pub const CONFIRM_AFTER: Duration = Duration::from_millis(400);
 pub const COALESCE: Duration = BRIGHTNESS_REREAD;
 /// The backlight's floor from the panel (Mae, 2026-10-11): never a black screen.
 pub const BRIGHTNESS_MIN: u8 = 1;
+/// How long a slider keeps showing (and stepping from) the level it sent while the live source
+/// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may lag a window under load.
+pub const SETTLE: Duration = Duration::from_secs(1);
 /// A session button takes this many cells either side of its glyph for a click.
 const REACH: u16 = 2;
 
@@ -396,11 +399,16 @@ pub struct Quick {
     pub toggles: [Option<bool>; 2],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
     pub confirm: Option<(Session, Instant)>,
-    /// The volume shown and sent while its slider moves (fix S1); None: pw-dump's own level.
+    /// The volume shown and sent while its slider moves (fix S1), and the default sink's node it
+    /// was set for; None: pw-dump's own level. Kept until pw-dump reports it, or SETTLE passes.
     pub volume_level: Option<u8>,
+    pub volume_sink: Option<String>,
     /// The sliders' paces; the backlight is re-read once its window ends with nothing waiting.
     pub volume: Pace,
     pub brightness: Pace,
+    /// After a quiet window, until when the level sent stands against a live one that differs.
+    pub volume_settle: Option<Instant>,
+    pub brightness_settle: Option<Instant>,
     /// When to re-read each toggle's state.
     pub reread_toggles: [Option<Instant>; 2],
     /// The first line shown, and the rows the panel may take under its bar.
@@ -471,8 +479,11 @@ impl Quick {
             toggles,
             confirm: None,
             volume_level: None,
+            volume_sink: None,
             volume: Pace::default(),
             brightness: Pace::default(),
+            volume_settle: None,
+            brightness_settle: None,
             reread_toggles: [None; 2],
             top: 0,
             room,
@@ -501,6 +512,20 @@ impl Quick {
     /// by id (else the default); the selection back on a shown row (the next one down the order when
     /// its own went, else the one above); the session button on a drawn one.
     pub fn fit(&mut self, live: &Live) {
+        if self.volume_level.is_some() {
+            let sound = live.sound;
+            let sink = sound.and_then(|s| s.sink_name.as_ref()).map(|d| d.node.as_str());
+            if sink != self.volume_sink.as_deref() {
+                // The default sink switched: the level was the old one's, never sent to the new.
+                self.volume_level = None;
+                self.volume.waiting = false;
+                self.volume_settle = None;
+            } else if self.volume.until.is_none() && sound.and_then(|s| s.sink).map(|v| v.percent) == self.volume_level {
+                // pw-dump reports the level sent: its own from now on.
+                self.volume_level = None;
+                self.volume_settle = None;
+            }
+        }
         if self.detail && self.sinks.len() < 2 {
             self.detail = false;
             self.top = 0;
@@ -606,7 +631,11 @@ impl Quick {
             return QuickAction::Nothing;
         };
         let n = to.from(from, 0);
+        if self.volume_level.is_none() {
+            self.volume_sink = live.sound.and_then(|s| s.sink_name.as_ref()).map(|d| d.node.clone());
+        }
         self.volume_level = Some(n);
+        self.volume_settle = None;
         if self.volume.ask(now) { volume_command(n) } else { QuickAction::Redraw }
     }
 
@@ -615,6 +644,7 @@ impl Quick {
     fn brightness(&mut self, to: Level, now: Instant) -> QuickAction {
         let Some(b) = self.backlight.as_mut() else { return QuickAction::Nothing };
         b.percent = to.from(b.percent, BRIGHTNESS_MIN);
+        self.brightness_settle = None;
         if self.brightness.ask(now) { brightness_command(b) } else { QuickAction::Redraw }
     }
 
@@ -764,10 +794,18 @@ impl Quick {
     /// The earliest slider window's end, pending re-read or the question's end; None: nothing to
     /// wait for (no timer).
     pub fn deadline(&self) -> Option<Instant> {
-        [self.volume.until, self.brightness.until, self.reread_toggles[0], self.reread_toggles[1], self.confirm.map(|(_, at)| at)]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.volume.until,
+            self.brightness.until,
+            self.volume_settle,
+            self.brightness_settle,
+            self.reread_toggles[0],
+            self.reread_toggles[1],
+            self.confirm.map(|(_, at)| at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// At `now`: what is due, cleared (the levels that waited, the re-reads to do, the question gone).
@@ -775,17 +813,28 @@ impl Quick {
         let mut d = Due::default();
         match self.volume.due(now) {
             Some(true) => d.run.extend(self.volume_level.map(volume_command)),
-            // Quiet: the row shows pw-dump's level again.
-            Some(false) => {
-                self.volume_level = None;
-                d.redraw = true;
-            }
-            None => {}
+            // Quiet: the level sent stands until pw-dump reports it (`fit`), SETTLE at most.
+            Some(false) if self.volume_level.is_some() => self.volume_settle = Some(now + SETTLE),
+            _ => {}
+        }
+        if self.volume_settle.is_some_and(|at| at <= now) {
+            self.volume_settle = None;
+            self.volume_level = None;
+            d.redraw = true;
         }
         match self.brightness.due(now) {
             Some(true) => d.run.extend(self.backlight.as_ref().map(brightness_command)),
-            Some(false) => d.backlight = true,
+            // Quiet: re-read; a reading that differs is kept back until SETTLE (`set_backlight`).
+            Some(false) => {
+                d.backlight = true;
+                self.brightness_settle = Some(now + SETTLE);
+            }
             None => {}
+        }
+        if self.brightness_settle.is_some_and(|at| at <= now) {
+            // One last re-read, taken whatever it says.
+            self.brightness_settle = None;
+            d.backlight = true;
         }
         for t in Toggle::ALL {
             let i = t.index();
@@ -873,9 +922,15 @@ impl Quick {
     }
 
     /// A re-read of the backlight: its level now; None: the device went, and its row with it.
+    /// Within SETTLE of a quiet window, a level that differs from the one sent is not taken yet
+    /// (brightnessctl may not have written it): the last re-read, at SETTLE, is.
     pub fn set_backlight(&mut self, percent: Option<u8>) {
         match (percent, self.backlight.as_mut()) {
-            (Some(p), Some(b)) => b.percent = p,
+            (Some(p), Some(b)) if self.brightness_settle.is_some() && p != b.percent => {}
+            (Some(p), Some(b)) => {
+                b.percent = p;
+                self.brightness_settle = None;
+            }
             (None, _) => self.backlight = None,
             (Some(_), None) => {}
         }
@@ -1405,7 +1460,10 @@ mod tests {
         assert_eq!(q.deadline(), Some(t + COALESCE), "the window's end");
         assert_eq!(q.due(t + COALESCE), Due { run: vec![set_volume(80)], ..Due::default() }, "the latest level, once");
         assert_eq!(q.deadline(), Some(t + COALESCE * 2), "a new window after it");
-        assert_eq!(q.due(t + COALESCE * 2), Due { redraw: true, ..Due::default() }, "quiet: back to pw-dump's level");
+        assert_eq!(q.due(t + COALESCE * 2), Due::default(), "quiet, pw-dump still at 30 %: the level sent stays");
+        assert!(texts(&rows(&l, &q))[0].contains(" 80%"));
+        assert_eq!(q.deadline(), Some(t + COALESCE * 2 + SETTLE), "for SETTLE at most");
+        assert_eq!(q.due(t + COALESCE * 2 + SETTLE), Due { redraw: true, ..Due::default() }, "then pw-dump's level");
         assert_eq!(q.deadline(), None, "nothing pending: no timer");
         assert!(texts(&rows(&l, &q))[0].contains(" 30%"), "pw-dump's own level again");
         let mut q = quick(&w, Focus::Top);
@@ -1421,6 +1479,54 @@ mod tests {
         assert_eq!(q.flush(), vec![], "once");
     }
 
+    /// Fix round 2: wpctl and pw-dump (or brightnessctl) slower than a window. The level sent stays
+    /// until the live source reports it, or SETTLE passes: a stale reading never makes the next
+    /// press step backwards.
+    #[test]
+    fn a_stale_live_level_never_makes_the_next_press_step_backwards() {
+        let mut w = World::full();
+        w.sound.sink = vol(30, false);
+        let mut q = quick(&w, Focus::Sound);
+        let t = Instant::now();
+        assert_eq!(q.key(&w.live(), Key::Right, false, t), set_volume(35));
+        assert_eq!(q.key(&w.live(), Key::Right, true, t + Duration::from_millis(10)), QuickAction::Redraw);
+        assert_eq!(q.due(later(t, 1)).run, vec![set_volume(40)]);
+        w.sound.sink = vol(35, false); // pw-dump one command behind
+        q.fit(&w.live());
+        assert_eq!(q.due(later(t, 2)), Due::default(), "quiet, pw-dump still behind");
+        q.fit(&w.live());
+        assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 2)), set_volume(45), "from 40 % shown, never 35 %");
+        q.due(later(t, 3));
+        w.sound.sink = vol(45, false);
+        q.fit(&w.live());
+        assert_eq!(q.volume_level, None, "pw-dump caught up: its level from now on");
+        assert_eq!(q.deadline(), None, "and nothing left to wait for");
+        q.selected = Row::Brightness;
+        assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 4)), set_brightness(80));
+        assert_eq!(q.due(later(t, 5)), Due { backlight: true, ..Due::default() });
+        q.set_backlight(Some(75)); // read before brightnessctl wrote
+        assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 5)), set_brightness(85), "from 80 % shown, never 75 %");
+    }
+
+    /// Fix round 2: the default sink switched while a level is held or waiting: that level was the
+    /// old sink's; it is dropped, never sent to the new one.
+    #[test]
+    fn a_default_sink_switch_drops_the_held_volume() {
+        let mut w = World::full();
+        w.sound.sink_name = Some(crate::system::DeviceName { node: "alsa_output.ag06".into(), label: "AG06/AG03".into() });
+        let mut q = quick(&w, Focus::Sound);
+        let t = Instant::now();
+        assert_eq!(q.key(&w.live(), Key::Right, false, t), set_volume(69));
+        assert_eq!(q.key(&w.live(), Key::Right, true, t + Duration::from_millis(10)), QuickAction::Redraw, "74 % waits");
+        w.sound.sink_name = Some(crate::system::DeviceName { node: "alsa_output.speaker".into(), label: "Speaker".into() });
+        w.sound.sink = vol(40, false);
+        q.fit(&w.live());
+        assert_eq!(q.due(later(t, 1)).run, vec![], "never sent to the new sink");
+        assert_eq!(q.flush(), vec![]);
+        assert!(texts(&rows(&w.live(), &q))[0].contains(" 40%"), "the new sink's level");
+        assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 2)), set_volume(45), "stepped from it");
+    }
+
     #[test]
     fn brightness_shows_the_expected_level_until_its_re_read() {
         let w = World::full();
@@ -1433,9 +1539,16 @@ mod tests {
         assert_eq!(q.deadline(), Some(t + BRIGHTNESS_REREAD));
         assert_eq!(q.due(t + Duration::from_millis(149)), Due::default(), "not yet");
         assert_eq!(q.due(t + BRIGHTNESS_REREAD), Due { backlight: true, ..Due::default() });
-        assert_eq!(q.deadline(), None, "nothing pending: no timer");
+        q.set_backlight(Some(80));
+        assert_eq!(q.deadline(), None, "the re-read agrees: nothing pending, no timer");
+        q.key(&l, Key::Left, false, later(t, 1));
+        q.due(later(t, 2));
         q.set_backlight(Some(78));
-        assert_eq!(q.backlight, backlight(78), "the re-read wins");
+        assert_eq!(q.backlight, backlight(75), "a re-read that disagrees is kept back for SETTLE");
+        assert_eq!(q.due(later(t, 2) + SETTLE), Due { backlight: true, ..Due::default() }, "one more re-read");
+        q.set_backlight(Some(78));
+        assert_eq!(q.backlight, backlight(78), "then the re-read wins");
+        assert_eq!(q.deadline(), None);
         q.backlight = backlight(98);
         q.key(&l, Key::Right, false, later(t, 2));
         assert_eq!(q.backlight, backlight(100), "never above 100");
