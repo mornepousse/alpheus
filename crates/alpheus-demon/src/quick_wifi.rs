@@ -225,6 +225,10 @@ impl Attempt {
         {
             self.created = saved.iter().find(|p| p.ssid == self.ssid && !known.contains(&p.uuid)).map(|p| p.uuid.clone());
         }
+        // Activated on the profile it made, its access point unread: connected all the same.
+        if d.state == ACTIVATED && d.active_uuid.is_some() && d.active_uuid == self.created {
+            return Outcome::Connected;
+        }
         let on = d.active.as_ref().map(|ap| ap.ssid == self.ssid);
         if d.state == FAILED {
             return self.failure(state, ACTIVATION_FAILED);
@@ -246,9 +250,24 @@ impl Attempt {
         Outcome::Waiting
     }
 
-    /// The clock: no word by `until`, failed.
+    /// The clock: no word by `until`, failed; nothing deleted when the device was last seen
+    /// activated on what may be the new profile (its uuid or its access point unread, never shown
+    /// to be another network's).
     pub fn expired(&self, state: Option<&WifiState>, now: Instant) -> Outcome {
-        if self.until <= now { self.failure(state, NO_ANSWER) } else { Outcome::Waiting }
+        if self.until > now {
+            return Outcome::Waiting;
+        }
+        let maybe_ours = state.and_then(|s| s.device.as_ref()).is_some_and(|d| {
+            d.state == ACTIVATED
+                && match &d.active_uuid {
+                    Some(uuid) => self.created.as_ref() == Some(uuid),
+                    None => d.active.as_ref().is_none_or(|ap| ap.ssid == self.ssid),
+                }
+        });
+        match self.failure(state, NO_ANSWER) {
+            Outcome::Failed { why, .. } if maybe_ours => Outcome::Failed { why, cleanup: None },
+            failed => failed,
+        }
     }
 
     /// Failed: its new profile deleted, only when the attempt could make one (never a `connection
@@ -1559,6 +1578,43 @@ mod tests {
             device_at(&mut w, 50, Some("Bureau-Test"), t),
             (QuickAction::Redraw, Some("the activation failed")),
             "another took over"
+        );
+    }
+
+    /// Fix round 2: activated on the profile the attempt made counts even with its access point
+    /// unread; and a timeout while the device was last seen activated deletes nothing.
+    #[test]
+    fn an_activated_device_is_never_cleaned_up() {
+        let (c, t) = (config(), Instant::now());
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        saved_added(&mut w, NEW, "Cafe-Libre", t);
+        let mut s = w.state.clone().expect("a state");
+        let d = device(&mut s);
+        (d.state, d.active, d.active_uuid) = (ACTIVATED, None, Some(NEW.into()));
+        assert_eq!(w.set_state(Some(s), t), (QuickAction::Redraw, None));
+        assert!(w.attempt.is_none(), "activated on its new profile: connected");
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        saved_added(&mut w, NEW, "Cafe-Libre", t);
+        let mut s = w.state.clone().expect("a state");
+        let d = device(&mut s);
+        (d.state, d.active, d.active_uuid) = (ACTIVATED, None, None);
+        w.set_state(Some(s), t);
+        assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![], Some("no answer in 20 s"), true), "last seen activated: nothing deleted");
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        saved_added(&mut w, NEW, "Cafe-Libre", t);
+        let mut s = w.state.clone().expect("a state");
+        device(&mut s).active = None;
+        w.set_state(Some(s), t);
+        assert_eq!(
+            w.due(t + CONNECT_TIMEOUT).0,
+            vec![delete(NEW)],
+            "activated on another profile's uuid (the old one): a failure, cleaned"
         );
     }
 }

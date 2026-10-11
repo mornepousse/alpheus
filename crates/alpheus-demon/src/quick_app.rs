@@ -58,7 +58,8 @@ pub(crate) fn verb_debounced(opened: Option<Instant>, now: Instant) -> bool {
 /// An attempt on a not-saved network that outlives the panel (Mae's ruling P1): followed until it
 /// ends, so a failed new profile is still deleted after the panel closed. It holds the attempt and
 /// the last Wi-Fi state it saw, nothing else (never a password: the field closed when it was sent);
-/// None at rest.
+/// None at rest. Task 7: handing over must keep the D-Bus thread's reader as it is (scope Detail,
+/// never Closed in between): a reset would read a profile it skipped before as a new one.
 #[derive(Debug)]
 pub struct WifiFollow {
     attempt: Attempt,

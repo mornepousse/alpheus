@@ -323,14 +323,17 @@ impl WifiReader {
                 // Listing failing (not absent) keeps the row and the access points; the saved list
                 // is listed again at the next read.
                 match self.reconcile_saved(bus, &nm) {
-                    Ok(()) => self.saved_stale = false,
+                    Ok(whole) => self.saved_stale = !whole,
                     Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
                     Err(e) => self.note(&e),
                 }
             }
             // Only a whole, current list is sent: the panel takes the profiles it holds when an
             // attempt begins as the ones never to delete, so a partial one (not listed yet, a failed
-            // listing, more than MAX_SAVED) is None, and then nothing is ever deleted.
+            // listing, a profile that could not be read, more than MAX_SAVED) is None, and then
+            // nothing is ever deleted. The reader must keep its lists when the panel hands an
+            // attempt to its follower (quick_app::WifiFollow): a reset would read a profile skipped
+            // before as new.
             let whole = !self.saved_stale && self.saved_whole;
             (Some(self.listed()), whole.then(|| self.saved.values().flatten().cloned().collect()))
         } else {
@@ -383,8 +386,10 @@ impl WifiReader {
     }
 
     /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
-    /// through GetSettings (never their secrets).
-    fn reconcile_saved(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<()> {
+    /// through GetSettings (never their secrets). True when every one was read: one that failed
+    /// (not gone, not another kind) is left out of the map, so the next listing reads it again,
+    /// and the list stays unknown until then.
+    fn reconcile_saved(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
         let all = match bus.list_connections(nm) {
             Ok(p) => p,
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -393,14 +398,25 @@ impl WifiReader {
         self.saved_whole = all.len() <= MAX_SAVED;
         let listed = &all[..all.len().min(MAX_SAVED)];
         self.saved.retain(|p, _| listed.contains(p));
+        let mut whole = true;
         for p in listed {
             if !self.saved.contains_key(p) {
-                let r = bus.get_settings(nm, p);
-                let s = self.soft_item(r)?;
-                self.saved.insert(p.clone(), s);
+                match bus.get_settings(nm, p) {
+                    Ok(s) => {
+                        self.saved.insert(p.clone(), s);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        self.saved.insert(p.clone(), None);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+                    Err(e) => {
+                        self.note(&e);
+                        whole = false;
+                    }
+                }
             }
         }
-        Ok(())
+        Ok(whole)
     }
 }
 
@@ -769,12 +785,15 @@ mod tests {
         bus.settings
             .insert(voisin.into(), Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() }));
         bus.failing.insert("/org/freedesktop/NetworkManager/Settings/3".into());
-        let (r, d) = detail(&mut bus);
+        let (mut r, d) = detail(&mut bus);
         assert_eq!(ssids(&d), ["MON_WIFI_1", "Cafe-Libre"], "Voisin-Test left out, the others kept");
-        let saved: Vec<Vec<u8>> = d.saved.unwrap().into_iter().map(|s| s.ssid).collect();
-        assert_eq!(saved, [b"Voisin-Test".to_vec()], "the unreadable profile left out, the readable one kept");
+        assert_eq!(d.saved, None, "a profile unread: the list unknown (fix round 2), so nothing is ever deleted");
         assert!(d.active.is_some(), "the row's part kept");
         assert!(r.logged, "the failure noted");
+        bus.failing.clear();
+        let d = r.reread(&mut bus).unwrap().unwrap().device.unwrap();
+        let saved: Vec<Vec<u8>> = d.saved.expect("read whole at last").into_iter().map(|s| s.ssid).collect();
+        assert!(saved.contains(&b"Voisin-Test".to_vec()) && saved.len() == 2, "the unread one read again: {saved:?}");
         let mut bus = wifi_bus();
         bus.disconnecting.insert(format!("{AP}/11"));
         let e = WifiReader::default().rescope(&mut bus, WifiScope::Detail).unwrap_err();
