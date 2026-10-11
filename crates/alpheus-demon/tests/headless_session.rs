@@ -8,6 +8,7 @@ mod common;
 use alpheus_commun::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
+use alpheus_demon::quick::{BAR, BAR_START};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
@@ -15,8 +16,9 @@ use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
     AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE,
-    SPEAKER_SINK, Sway, TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, fake_source, launcher,
-    process_alive, pw_dump_send, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    SPEAKER_SINK, Sway, TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder,
+    fake_source, launcher, process_alive, pw_dump_send, recorded, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file,
+    write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -3698,6 +3700,292 @@ fn osd_without_a_backlight_or_the_module_the_verb_exits_0_and_shows_nothing() {
     assert!(d_off.wait_for("the osd module is not in modules", DELAY), "{:?}", d_off.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!((d.count("osd surface on"), d_off.count("osd surface on")), (0, 0), "nothing shown");
+}
+
+const QUICK_BAR: &str = "modules = [\"volume\", \"quick\", \"clock\"]\n";
+/// A press on the volume module: the first one, from cell 1.
+const VOLUME_AT: (u32, u32) = (16, 10);
+
+/// The quick panel's bar (catppuccin dark): the volume and the panel, a private system bus with no
+/// power-profiles-daemon (the D-Bus source settles instead of retrying), the `Fifo` fake pw-dump,
+/// fake `wpctl`, `brightnessctl` and `alpheus-toggle` recording their calls, a fake backlight.
+fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    for program in ["wpctl", "brightnessctl", "alpheus-toggle"] {
+        fake_recorder(&sway, program);
+    }
+    fake_backlight(&sway, "intel_backlight", 9696, 19393);
+    let toml = format!("{QUICK_BAR}[osd]\nbacklight_dir = \"{}\"\n{extra}", sway.runtime.join("backlight").display());
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read, the bar drawn
+    (bus, sway, hypr, d)
+}
+
+/// Waits until `program` recorded `call`.
+fn wait_for_call(sway: &Sway, program: &str, call: &str) -> bool {
+    wait_until(|| recorded(sway, program).iter().any(|c| c == call))
+}
+
+/// The pixels of the panel's volume bar (row 0, its 22 cells), the panel hanging from cell 1.
+fn quick_volume_bar(s: &Ppm) -> Vec<[u8; 3]> {
+    let ((x0, y), (x1, _)) = (popup_cell(0, u32::from(BAR_START), 0), popup_cell(0, u32::from(BAR_START + BAR - 1), 0));
+    (y - 8..y + 8).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// Quick spec § 1, § 3, § 7: a left click on the volume opens the panel at the volume row; → sets
+/// the volume through wpctl (84 % + 5, fix S1: an absolute level), then ↓ → the brightness through
+/// brightnessctl (50 % + 5), on the configured device.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_brightnessctl() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-open", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 3)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    keys(&sway, &["Right"]);
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 89%"),
+        "{:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    // Fix S1: two → 40 ms apart, inside one window (the fake wpctl moves nothing: from 84 % again
+    // once the last window ended): the first goes at once, the second waits, and the timer sends it,
+    // 94 %. (wtype's first key needs the lead-in `keys` gives it too.)
+    thread::sleep(Duration::from_millis(400));
+    assert!(wtype(&sway, &["-s", "300", "-k", "Right", "-s", "40", "-k", "Right"]).success());
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 94%"),
+        "{:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    keys(&sway, &["Down", "Right"]);
+    let call = "brightnessctl --class=backlight --device=intel_backlight set 55%";
+    assert!(wait_for_call(&sway, "brightnessctl", call), "{:?} {:?}", recorded(&sway, "brightnessctl"), d.log());
+    assert!(d.wait_for("quick: brightness 55%", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 7: the outputs detail lists two sinks (the HDMI output unplugged first); Enter on the one
+/// above the default records `wpctl set-default <its id>`.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_the_outputs_detail_lists_two_sinks_and_enter_sets_the_default() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-outputs", "");
+    pw_dump_send(&sway.runtime, r#"[{"id":64,"info":null}]"#);
+    thread::sleep(Duration::from_millis(500)); // applied by the sound thread: no publication to wait for
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 2)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    keys(&sway, &["Return", "Up", "Return"]);
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-default 99"),
+        "the speaker, above the AG06: {:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    assert!(d.wait_for("quick: default sink 99", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 1, § 7: a pw-dump volume change made elsewhere repaints the open panel.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_a_volume_change_elsewhere_repaints_the_open_panel() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-repaint", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    let before = quick_volume_bar(&sway.screenshot("HEADLESS-1").expect("grim"));
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 30, false));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| quick_volume_bar(s) != before), "84 % to 30 %: the bar repainted: {:?}", d.log());
+}
+
+/// The panel's lines below the bar (the first six, its whole width), hanging from cell 1.
+fn quick_panel(s: &Ppm) -> Vec<[u8; 3]> {
+    let ((x0, y0), (x1, y1)) = (popup_cell(0, 0, 0), popup_cell(0, u32::from(alpheus_demon::quick::WIDTH) + 1, 5));
+    (y0 - 11..y1 + 11).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
+}
+
+/// Controller reconciliation P4: without the `osd` module the sound thread never publishes a
+/// microphone mute alone; the panel reads the state at open, so a mute made while it was closed
+/// shows at the next open, never the stale row.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_a_microphone_muted_while_closed_shows_at_the_next_open() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-mic", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic session", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    let before = quick_panel(&sway.screenshot("HEADLESS-1").expect("grim"));
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    pw_dump_send(&sway.runtime, &volume_delta(AG06_SOURCE, 100, true));
+    thread::sleep(Duration::from_millis(500)); // applied by the sound thread: nothing published (no osd)
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d); // compared once drawn: never the bare screen under it
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| quick_panel(s) != before), "the microphone muted at open: {:?}", d.log());
+}
+
+/// Spec § 1: with the panel, the right click opens the TUI tab the left click used to.
+#[test]
+#[ignore = "headless sway, dbus-daemon (nix develop)"]
+fn quick_the_right_click_still_opens_the_tui_tab() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-right", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button3");
+    assert!(wait_for_call(&sway, "alpheus-toggle", "alpheus-toggle sound"), "{:?} {:?}", recorded(&sway, "alpheus-toggle"), d.log());
+    assert_eq!(d.count("quick shown"), 0, "the right click opens no panel");
+}
+
+/// Spec § 1, § 7: Escape, a second click on the module and a click elsewhere on the bar close it;
+/// 0 loop wake-ups while it is open and idle, and once it closed.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_escape_and_clicks_close_it_and_nothing_stays_awake() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-close", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    assert_eq!(rest_over_5_s(&d), 0, "open and idle: nothing armed, nothing wakes");
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "a second click on the module closes it: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("quick shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for_count("quick shown", 3, DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    sway.click(640, 10, "button1"); // the bar, far from the volume
+    assert!(d.wait_for_count("popup closed (outside click)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(rest_over_5_s(&d), 0, "closed: nothing left awake");
+}
+
+/// The loop thread's wake-ups in the second after `batch` reaches the fake pw-dump.
+fn wakeups_over_a_batch(sway: &Sway, d: &Daemon, batch: &str) -> u64 {
+    away_from_the_minute();
+    thread::sleep(Duration::from_millis(300));
+    let before = d.main_thread_wakeups();
+    pw_dump_send(&sway.runtime, batch);
+    thread::sleep(Duration::from_secs(1));
+    d.main_thread_wakeups().saturating_sub(before)
+}
+
+/// Fix I1: closing the panel takes the sound thread back to its own scope. Open, a sink unplugged
+/// that is not the default changes the list, published and drawn (a wake-up); closed, the same
+/// change is no news to the bar (no `osd`: `Scope::Bar`) and wakes nothing.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_closed_the_sound_thread_wakes_nothing_for_the_sink_list() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-scope", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 3)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    assert!(wakeups_over_a_batch(&sway, &d, r#"[{"id":64,"info":null}]"#) > 0, "open: the list published: {:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // the close settles (one late wake-up, pw-dump's or not)
+    assert_eq!(wakeups_over_a_batch(&sway, &d, r#"[{"id":99,"info":null}]"#), 0, "closed: the base scope, nothing published");
+}
+
+fn quick_verb(sway: &Sway, args: &[&str]) -> i32 {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
+}
+
+/// The verb's panel hangs from the bar's right end: its first row (the volume, its bar lit in the
+/// accent) somewhere in the right half, just under the bar.
+fn quick_drawn_on_the_right(s: &Ppm) -> bool {
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    (29..51).any(|y| (s.width / 2..s.width).any(|x| s.at(x, y) == Some(accent)))
+}
+
+/// Quick spec § 1, decision 1: `alpheus-launch --quick sound` opens the panel under the bar's
+/// right end at the volume row; its keys work without a grab; Escape closes it and gives the
+/// keyboard back; the verb again closes an open one; nothing stays awake. The bar's keyboard
+/// interactivity is read from sway's seat focus: 0 while the bar holds the keyboard (Exclusive),
+/// back on the workspace once it is None again (Task 6 review: `Input::Keys`' reset on close).
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-verb", "");
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "closed: the bar holds no keyboard");
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("quick shown (rows: volume", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", quick_drawn_on_the_right), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "open: the bar is Exclusive, no grab needed");
+    // One continuous wtype (headless sway's only keyboard is its own, gone when it exits): → at
+    // 0.4 s, Escape at 1.6 s, the keyboard kept alive for the verb's second round.
+    let typist = wtype_spawn(&sway, &["-s", "400", "-k", "Right", "-s", "1200", "-k", "Escape", "-s", "12000"]);
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 89%"),
+        "{:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "Escape: the bar is back to None");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "reopened: Exclusive again");
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "the verb again closes it: {:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 2, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "the verb again: the bar is back to None");
+    drop(typist);
+    thread::sleep(Duration::from_secs(1)); // the virtual keyboard's capability going settles
+    assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
+}
+
+/// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb that really toggles.
+const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Final review B-I1: Hyprland re-fires a press bind, so two verbs back to back are one key press:
+/// the second is debounced and the panel stays open; a third, past the window, closes it.
+#[test]
+#[ignore = "headless sway, dbus-daemon (nix develop)"]
+fn quick_a_verb_right_after_the_verb_opened_it_is_debounced() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-debounce", "");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick: toggle debounced", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "still open: {:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "past the window, the verb closes it: {:?}", d.log());
+    assert_eq!(d.count("quick shown"), 1, "{:?}", d.log());
+}
+
+/// Spec § 1: without `quick` in `modules`, the verb exits 0 and opens nothing.
+#[test]
+#[ignore = "headless sway, dbus-daemon (nix develop)"]
+fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
+    let sway = Sway::start("quick-off", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"volume\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("quick: asked, but the quick module is not in modules", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("quick shown"), 0);
 }
 
 /// The fake source's lines (fictional, in tools-menu's shape).

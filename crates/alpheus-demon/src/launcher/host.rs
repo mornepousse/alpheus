@@ -42,13 +42,13 @@ const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 /// the box right back. Ignoring it is what keeps the press bind usable — the
 /// release bind nixos-config tried instead misses whenever Mae lets go of
 /// Super before Space.
-const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
+pub(crate) const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Whether a Toggle arriving `since_open` after the launcher opened must be
 /// ignored rather than close it (see `TOGGLE_DEBOUNCE`). A real double click
 /// on the bar button within the window is treated the same way — ignored,
 /// not a bug.
-fn toggle_is_debounced(since_open: Duration) -> bool {
+pub(crate) fn toggle_is_debounced(since_open: Duration) -> bool {
     since_open < TOGGLE_DEBOUNCE
 }
 
@@ -98,9 +98,9 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
         (Request::Dmenu { .. }, Some(true)) => (Action::Nothing, Some(Reply::Busy)),
         (Request::Dmenu { prompt, lines, flags }, _) => (Action::OpenScript { prompt, lines, flags }, None),
-        // Not the launcher's (notifications task 5, osd task 4): `watch_connection` answers them
+        // Not the launcher's (notifications task 5, osd task 4, quick task 7): `watch_connection` answers them
         // before they could reach here. Answered all the same, never a panic.
-        (Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), _) => {
+        (Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_), _) => {
             (Action::Nothing, Some(Reply::Error("not a launcher request".into())))
         }
     }
@@ -474,7 +474,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb};
+    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb, QuickVerb};
 
     fn dmenu() -> Request {
         Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }
@@ -502,6 +502,7 @@ mod tests {
             (Request::Dnd(DndVerb::Toggle), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::ClearNotifications, Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::Osd(OsdVerb::Brightness), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::Quick(QuickVerb::Sound), Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
         ];
         for (request, open, action, reply) in rows {
             let label = format!("{request:?} while {open:?}");

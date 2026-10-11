@@ -191,9 +191,10 @@ use crate::log::write as log;
 /// (no thread, no child process, no timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
-    /// The pw-dump child: for the volume module or the OSD (its passive trigger).
+    /// The pw-dump child: for the volume module, the OSD (its passive trigger) or the quick panel's rows.
     pub sound: bool,
-    /// The D-Bus domains to read and follow; empty: no D-Bus thread.
+    /// The D-Bus domains to read and follow (the quick panel's power profile among them); empty: no
+    /// D-Bus thread.
     pub dbus: Vec<Domain>,
     pub resources: bool,
     /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
@@ -208,13 +209,18 @@ pub struct Wanted {
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
     let has = |m: ModuleId| modules.contains(&m);
-    let dbus = [(ModuleId::Network, Domain::Network), (ModuleId::Bluetooth, Domain::Bluetooth), (ModuleId::Battery, Domain::Battery)]
-        .into_iter()
-        .filter(|(m, _)| has(*m))
-        .map(|(_, d)| d)
-        .collect();
+    let dbus = [
+        (ModuleId::Network, Domain::Network),
+        (ModuleId::Bluetooth, Domain::Bluetooth),
+        (ModuleId::Battery, Domain::Battery),
+        (ModuleId::Quick, Domain::Power),
+    ]
+    .into_iter()
+    .filter(|(m, _)| has(*m))
+    .map(|(_, d)| d)
+    .collect();
     Wanted {
-        sound: has(ModuleId::Volume) || has(ModuleId::Osd),
+        sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick),
         dbus,
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
@@ -492,6 +498,12 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 let reply = state.osd_verb(&request);
                 reply_guarded(conn, &reply);
             }
+            // The quick panel's verb (quick task 7): answered here like the OSD's, before the
+            // launcher's guard.
+            Progress::Ready(request @ Request::Quick(_)) => {
+                let reply = state.quick_verb(&request);
+                reply_guarded(conn, &reply);
+            }
             Progress::Ready(request) => {
                 // A dmenu request may have buffered up to 4 MiB: once it
                 // reached RELEASE_AFTER, give the pages back as soon as it
@@ -665,7 +677,9 @@ pub fn run() -> i32 {
     // raises `WindowsFeed`'s flag, fed to an open launcher at most once the
     // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
-        channel::Event::Msg(Mail::Bar(m)) => {
+        channel::Event::Msg(Mail::Bar(mut m)) => {
+            // The quick panel first (quick task 6): a sound message's sink list goes to it, or nowhere.
+            let quick = state.quick_take(&mut m);
             // The OSD reads every sound message first (osd task 3): its trigger rules compare it
             // with the last one; the bar then keeps it.
             if let Msg::Sound(s) = &m {
@@ -673,6 +687,9 @@ pub fn run() -> i32 {
             }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);
+            if quick {
+                state.quick_refresh();
+            }
         }
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
@@ -735,7 +752,10 @@ pub fn run() -> i32 {
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        sources::sound::start(exec.clone(), scope, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+        // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
+        let tap = Arc::new(crate::pipewire::SoundTap::default());
+        state.sound_tap = Some(tap.clone());
+        sources::sound::start(exec.clone(), scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
@@ -822,7 +842,7 @@ mod tests {
 
     #[test]
     fn only_the_sources_the_modules_need() {
-        let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery];
+        let all = vec![Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
         assert_eq!(
             wanted(&ModuleId::ALL),
             Wanted { sound: true, dbus: all, resources: true, tray: true, media: true, notifications: true }
@@ -855,6 +875,7 @@ mod tests {
             wanted(&[ModuleId::Volume, ModuleId::Resources]),
             Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false }
         );
+        assert_eq!(wanted(&[ModuleId::Quick]).dbus, vec![Domain::Power], "the panel's power profile: read only, on the system bus");
     }
 
     #[test]
@@ -903,7 +924,12 @@ mod tests {
     #[test]
     fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         let mut c = Counter { bar: Bar::new(BarConfig::default()), dirty: false, redraws: 0, osd_flushes: 0 };
-        let s = SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Off), battery: Some(PowerState::default()) };
+        let s = SystemState {
+            network: Some(NetState::Offline),
+            bluetooth: Some(BtState::Off),
+            battery: Some(PowerState::default()),
+            power: None,
+        };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);
         }
@@ -1210,5 +1236,14 @@ mod tests {
         assert!(wanted(&[ModuleId::Osd]).sound, "the OSD reads pw-dump even without the volume module");
         assert!(wanted(&[ModuleId::Volume]).sound);
         assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
+    }
+
+    /// Quick spec § 5: the panel's volume and microphone rows read pw-dump, even without the volume
+    /// module; the sink list is the panel's to ask for while it is open, never the base scope.
+    #[test]
+    fn the_quick_panel_reads_the_sound() {
+        assert!(wanted(&[ModuleId::Quick]).sound);
+        assert_eq!(sound_scope(&[ModuleId::Quick]), Scope::Bar);
+        assert!(!wanted(&[ModuleId::Clock]).sound, "nothing else asks for it");
     }
 }

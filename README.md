@@ -53,6 +53,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | OSD, linked in but unused (no `osd` in `modules`) | within noise (−28…+172 KB) vs. the delivery before this one | binary 5.48 → 5.54 MiB (+56 KiB stripped); measured `1662cb4` vs this delivery, release, back to back, 3 runs each, separate target directories |
 | OSD, module on, nothing shown | 0–96 KB | `osd_pss_idle_shown_and_gone`, 3 runs (10.9–11.0 MB with it, 1 output): the last sound state and three instants; no surface, no timer, no sysfs read until `alpheus-launch --osd brightness` |
 | OSD, one pill shown | 4–30 KB, −38…−12 KB once gone | same test; its surface and pool exist only while it shows (1.3 s after the last change); a held key keeps one surface; 0 loop wake-ups at rest once it went (`at_rest_no_wakeups_after_the_osd`) |
+| Quick settings, linked in but unused (no `quick` in `modules`) | +64…+196 KB vs. the delivery before this one | binary 5.59 → 5.70 MiB (+108 KiB stripped); measured `d483590` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (its `modules` list has no `quick`): the code linked in, unused |
+| Quick settings, module on, panel closed | 96–108 KB | `quick_pss_idle_open_and_closed`, 3 runs (8.0 MB with it, 1 output): the power profile's state, read once from the system bus (no daemon: one GetNameOwner), and the sound tap; no surface, no timer, no sink list. With `quick` alone in `modules`, the D-Bus source thread may start for that profile (the default modules already run it) |
+| Quick settings panel, open | 444–448 KB, +340–344 KB over idle once closed | same test; the closed figure is the first open's one-time warm-up, not a leak: `/proc/<pid>/smaps` shows the binary's code pages (≈ +320 KB) and the font file's (≈ +64 KB) now resident, the heap and the shm pool back to idle's; 20 more open/close cycles −18…+36 KB over closed; its surface and pool exist only while it shows; 0 loop wake-ups at rest once it closed (`at_rest_no_wakeups_after_the_quick_panel`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -76,7 +79,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 > (KB/1024, one decimal; 2 runs for the themes rows). The launcher rows come
 > from the tray-delivery measurement (three runs); the themes rows from two
 > alternated runs against the delivery before; the bar shapes rows likewise
-> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise; the OSD rows likewise.
+> (three alternated runs, HEAD and base built in separate target directories); the media rows likewise; the notifications rows likewise; the OSD rows likewise; the quick settings rows likewise.
 >
 > **Note:** the "live" row above (≈ 11.3 MB) and the resident total it
 > feeds into (≈ 14 MB) predate the move from zbus to dbus-rs, the launcher
@@ -133,8 +136,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
-| Control center (quick settings) | ✅ TUI (≈ 2 MB + terminal, only while open) | ✅ | ✅ | ➖ | ❌ |
-| Power menu | ✅ TUI | ✅ | ✅ | ✅ | ❌ |
+| Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick`): volume and output, brightness, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
+| Power menu | ✅ the panel's session buttons (reboot and power off ask first) and the TUI | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ➖ TUI + nmtui, bluetui, wiremix | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
@@ -216,11 +219,13 @@ In the default `flat` style, a line of monospace characters on the theme's bar c
 
 ![The OSD: volume, microphone muted, brightness (fictional levels, real font, default theme (catppuccin, dark))](docs/images/osd.png)
 
+![The quick settings panel: volume and output, brightness, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons (fictional data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/quick.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
-**volume** (gauge, wheel ±5 %, right click
+**volume** (gauge, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU graph,
 memory, temperature), **tray** (status icons of running apps as Nerd
@@ -230,9 +235,9 @@ app's menu in a popup, keyboard and mouse),
 server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **clock** (a click opens the
+clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound]`: the volume with its output devices, the backlight, the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **clock** (a click opens the
 month's calendar). Clicking a module opens the matching tab
-of the control center. One bar per screen, screens plugged and unplugged
+of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
@@ -258,7 +263,7 @@ exist only while one shows. One timer is armed for the earliest expiry, and none
 do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
-show, or the `osd` module is off; 3 when the bar is not running). A known
+show, or the `osd` module is off; 3 when the bar is not running). `--quick [sound]` opens or closes the quick panel on the focused output (exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick`); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -601,7 +606,7 @@ back to default values with a warning, never a crash.
 ```toml
 # bar.toml — default values
 modules = ["launcher", "workspaces", "window", "media", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "clock"]
+           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "clock"]
 height = 22
 
 [font]
@@ -639,7 +644,16 @@ timeout_ms = 1300    # how long the pill stays after the last change (600 to 500
 width = 32           # cells of its row (24 to 60)
 margin = 48          # px above the bottom edge (0 to 400)
 backlight = ""       # a device in backlight_dir; "": the first one, in sorted order
-backlight_dir = "/sys/class/backlight"   # read only, and only on `alpheus-launch --osd brightness`
+backlight_dir = "/sys/class/backlight"   # read only: on `alpheus-launch --osd brightness` and when the quick panel opens
+
+[quick]
+step = 5                                   # % per ←/→ or wheel notch on a slider (1 to 25)
+keep_awake = { toggle = [], state = "" }   # toggle: a command, run as given; [] hides the row
+night_light = { toggle = [], state = "" }  # state: "", "file:<path>" (on while it exists) or "process:<name>" (on while it runs)
+lock = ["loginctl", "lock-session"]        # session buttons, run as given; [] hides one
+logout = []
+reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
+poweroff = ["systemctl", "poweroff"]
 
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]

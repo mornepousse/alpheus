@@ -30,6 +30,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
@@ -712,6 +713,27 @@ pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
     path
 }
 
+/// A program that appends one line, `<name> <its arguments>`, to `<runtime>/calls-<name>` and
+/// exits: what the quick panel ran, in order (never the real tool).
+pub fn fake_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the quick settings tests: records its arguments, nothing else.\nprintf '%s\\n' \"{name} $*\" >> '{}'\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// What `fake_recorder`'s `name` recorded, in order.
+pub fn recorded(sway: &Sway, name: &str) -> Vec<String> {
+    fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default().lines().map(String::from).collect()
+}
+
 /// Where the fake source's `run` records its arguments, in the runtime directory.
 pub const FAKE_RUN_MARKER: &str = "launched-fake-run";
 
@@ -1169,6 +1191,86 @@ impl Workstation {
     }
 }
 
+/// power-profiles-daemon's well-known name (quick spec § 5).
+pub const POWER_PROFILES_NAME: &str = "net.hadess.PowerProfiles";
+const POWER_PROFILES_PATH: &str = "/net/hadess/PowerProfiles";
+
+/// A power-profiles-daemon on a private bus (test code only): owns its name, answers `GetAll` on its
+/// one object with the active profile and the three offered, and emits `PropertiesChanged` when the
+/// test sets another. Dropped: its connection closes, the name loses its owner.
+pub struct FakePowerProfiles {
+    tx: Option<mpsc::Sender<String>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl FakePowerProfiles {
+    pub fn serve(bus: &PrivateBus, active: &str) -> FakePowerProfiles {
+        let peer = Peer::connect(bus);
+        peer.own(POWER_PROFILES_NAME);
+        let (tx, rx) = mpsc::channel::<String>();
+        let mut active = active.to_string();
+        let thread = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(p) => {
+                        active = p;
+                        let mut m =
+                            dbus::Message::new_signal(POWER_PROFILES_PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged").unwrap();
+                        busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"s","data":["{POWER_PROFILES_NAME}"]}}"#));
+                        busctl_wire::push_reply(
+                            &mut m,
+                            &format!(r#"{{"type":"a{{sv}}","data":[{{"ActiveProfile":{{"type":"s","data":"{active}"}}}}]}}"#),
+                        );
+                        busctl_wire::push_reply(&mut m, r#"{"type":"as","data":[[]]}"#);
+                        let _ = peer.channel.send(m);
+                        peer.channel.flush();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match peer.channel.blocking_pop_message(Duration::from_millis(20)) {
+                    Ok(Some(call)) if call.msg_type() == dbus::message::MessageType::MethodCall => {
+                        let mut r = call.method_return();
+                        busctl_wire::push_reply(&mut r, &power_profiles_reply(&active));
+                        let _ = peer.channel.send(r);
+                        peer.channel.flush();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        FakePowerProfiles { tx: Some(tx), thread: Some(thread) }
+    }
+
+    /// Sets the active profile and emits `PropertiesChanged` for it.
+    pub fn set_active(&self, profile: &str) {
+        if let Some(tx) = &self.tx {
+            tx.send(profile.to_string()).unwrap();
+        }
+    }
+}
+
+impl Drop for FakePowerProfiles {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// `GetAll`'s reply as busctl prints it: the active profile and the three offered (fictional drivers).
+fn power_profiles_reply(active: &str) -> String {
+    let profile = |p: &str| format!(r#"{{"Profile":{{"type":"s","data":"{p}"}},"Driver":{{"type":"s","data":"placeholder"}}}}"#);
+    format!(
+        r#"{{"type":"a{{sv}}","data":[{{"ActiveProfile":{{"type":"s","data":"{active}"}},"Profiles":{{"type":"aa{{sv}}","data":[{},{},{}]}}}}]}}"#,
+        profile("power-saver"),
+        profile("balanced"),
+        profile("performance")
+    )
+}
+
 /// A binary PPM (P6, maxval 255), as grim writes it.
 pub struct Ppm {
     pub width: u32,
@@ -1234,6 +1336,16 @@ impl Sway {
         let text = String::from_utf8(out.stdout).ok()?;
         let rect = &text[text.find("\"rect\"")?..];
         let after = rect[rect.find("\"y\"")? + 3..].trim_start().strip_prefix(':')?.trim_start();
+        let end = after.find(|c: char| !c.is_ascii_digit())?;
+        after[..end].parse().ok()
+    }
+
+    /// The seat's `focus` from sway's `get_seats`: 0 while a layer surface holds the keyboard (a
+    /// bar that is `Exclusive`), a container's id otherwise. None if swaymsg fails.
+    pub fn seat_focus(&self) -> Option<u64> {
+        let out = Command::new("swaymsg").arg("-s").arg(&self.ipc).args(["-t", "get_seats", "-r"]).output().ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        let after = text[text.find("\"focus\"")? + 7..].trim_start().strip_prefix(':')?.trim_start();
         let end = after.find(|c: char| !c.is_ascii_digit())?;
         after[..end].parse().ok()
     }

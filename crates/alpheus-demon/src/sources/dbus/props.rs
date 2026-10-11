@@ -14,6 +14,9 @@ pub enum Prop {
     Path(String),
     Paths(Vec<String>),
     Bytes(Vec<u8>),
+    /// An array of dictionaries (`aa{sv}`), each read like a GetAll reply, at most
+    /// `dbusrs_bus::MAX_DICTS`: power-profiles-daemon's `Profiles`.
+    Dicts(Vec<Props>),
     /// Anything else (dictionaries, string arrays…): never read by the bar.
     Other,
 }
@@ -66,6 +69,13 @@ impl Props {
         }
     }
 
+    pub fn dicts(&self, k: &str) -> &[Props] {
+        match self.0.get(k) {
+            Some(Prop::Dicts(v)) => v,
+            _ => &[],
+        }
+    }
+
     pub fn bytes(&self, k: &str) -> Option<&[u8]> {
         match self.0.get(k)? {
             Prop::Bytes(b) => Some(b),
@@ -97,6 +107,7 @@ pub mod busctl {
             "ay" => {
                 Prop::Bytes(data.as_array().into_iter().flatten().filter_map(|b| b.as_u64().and_then(|b| u8::try_from(b).ok())).collect())
             }
+            "aa{sv}" => Prop::Dicts(data.as_array().into_iter().flatten().map(props_of).collect()),
             _ => Prop::Other,
         }
     }
@@ -153,6 +164,15 @@ mod tests {
         assert_eq!(p.bytes("B"), Some(&b"MO"[..]));
         assert_eq!(p.0.get("Map"), Some(&Prop::Other));
         assert_eq!((p.bool("N"), p.str("missing"), p.paths("S")), (None, None, &[][..]), "wrong type or missing: nothing");
+    }
+
+    #[test]
+    fn an_array_of_dictionaries_reads_as_dicts() {
+        let p = busctl::get_all(include_str!("../../../tests/fixtures/dbus-powerprofiles.json"));
+        let names: Vec<&str> = p.dicts("Profiles").iter().filter_map(|d| d.str("Profile")).collect();
+        assert_eq!(names, ["power-saver", "balanced", "performance"]);
+        assert_eq!(p.str("ActiveProfile"), Some("balanced"));
+        assert!(p.dicts("ActiveProfile").is_empty() && p.dicts("missing").is_empty(), "not dictionaries: nothing");
     }
 
     #[test]

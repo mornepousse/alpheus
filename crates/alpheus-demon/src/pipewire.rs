@@ -5,11 +5,12 @@
 //! sink's and source's volume and label, and the default sink's and source's
 //! names.
 
-use crate::system::{DeviceName, SoundState, Volume};
+use crate::system::{DeviceName, Sink, SoundState, Volume};
 use crate::text::clean;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::io::{self, Read};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 /// One object of an array; every field this module doesn't name is skipped.
 #[derive(Deserialize)]
@@ -133,6 +134,9 @@ pub fn to_volume(p: &PropsParam) -> Option<Volume> {
 /// A label's longest form, in bytes (cut on a character boundary).
 pub const LABEL_MAX: usize = 128;
 
+/// The most sinks the quick panel lists (spec § 6).
+pub const MAX_SINKS: usize = 32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Sink,
@@ -188,6 +192,8 @@ pub enum Scope {
     /// The OSD too: also the default sink's node and label, the default source's node and mute
     /// (never its level: the microphone pill shows on a mute flip only, Mae 2026-10-09).
     Osd,
+    /// The quick panel is open: the OSD's, and the sink list.
+    Panel,
 }
 
 /// A default named by the `default` metadata: its node.name, the label shown while its node is not
@@ -287,7 +293,12 @@ impl Model {
     /// The default node of `kind` named `name`. Two nodes can share a `node.name` (two instances of
     /// the same device profile): the lowest id, never the HashMap's order.
     fn resolve(&self, kind: Kind, name: &str) -> Option<&Node> {
-        self.nodes.iter().filter(|(_, n)| n.kind == kind && n.name == name).min_by_key(|(id, _)| **id).map(|(_, n)| n)
+        self.resolve_id(kind, name).and_then(|id| self.nodes.get(&id))
+    }
+
+    /// The id of the node of `kind` named `name`: the lowest id when two share it.
+    fn resolve_id(&self, kind: Kind, name: &str) -> Option<u32> {
+        self.nodes.iter().filter(|(_, n)| n.kind == kind && n.name == name).map(|(id, _)| *id).min()
     }
 
     /// The default of `kind` as the state shows it. Its node when in the dump; not there yet (the
@@ -308,7 +319,7 @@ impl Model {
 
     /// Whether `state()` would equal `s` on what `scope` reads, without building it (no String
     /// cloned for a delta that changes nothing, as most do: a level of some other node, a port, a
-    /// client).
+    /// client); the panel, also the sink list (a state without one never matches it).
     pub fn matches(&self, s: &SoundState, scope: Scope) -> bool {
         let (sink, sink_name) = self.seen(Kind::Sink);
         if sink != s.sink {
@@ -318,15 +329,36 @@ impl Model {
             return true;
         }
         let (source, source_name) = self.seen(Kind::Source);
-        sink_name == s.sink_name.as_ref().map(|d| (d.node.as_str(), d.label.as_str()))
+        let osd = sink_name == s.sink_name.as_ref().map(|d| (d.node.as_str(), d.label.as_str()))
             && source.map(|v| v.muted) == s.source.map(|v| v.muted)
-            && source_name.map(|(node, _)| node) == s.source_name.as_ref().map(|d| d.node.as_str())
+            && source_name.map(|(node, _)| node) == s.source_name.as_ref().map(|d| d.node.as_str());
+        osd && (scope != Scope::Panel || s.sinks.as_ref().is_some_and(|l| *l == self.sinks()))
     }
 
     pub fn state(&self) -> SoundState {
         let named = |(node, label): (&str, &str)| DeviceName { node: node.to_string(), label: label.to_string() };
         let ((sink, sink_name), (source, source_name)) = (self.seen(Kind::Sink), self.seen(Kind::Source));
-        SoundState { sink, source, sink_name: sink_name.map(named), source_name: source_name.map(named) }
+        SoundState { sink, source, sink_name: sink_name.map(named), source_name: source_name.map(named), sinks: None }
+    }
+
+    /// Every sink, by label (case-insensitive) then id, the first MAX_SINKS; the default marked
+    /// (the node `seen` resolves, whatever its volume).
+    pub fn sinks(&self) -> Vec<Sink> {
+        let default = self.default_sink.as_ref().filter(|n| !n.gone).and_then(|n| self.resolve_id(Kind::Sink, &n.name));
+        let mut v: Vec<Sink> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.kind == Kind::Sink)
+            .map(|(id, n)| Sink { id: *id, label: n.label.clone(), default: Some(*id) == default })
+            .collect();
+        v.sort_by_cached_key(|s| (s.label.to_lowercase(), s.id));
+        v.truncate(MAX_SINKS);
+        v
+    }
+
+    /// The state as `scope` reads it: with the sink list under `Scope::Panel` only.
+    pub fn state_in(&self, scope: Scope) -> SoundState {
+        SoundState { sinks: (scope == Scope::Panel).then(|| self.sinks()), ..self.state() }
     }
 
     /// Sinks and sources kept in memory (tests: nothing else of the dump is).
@@ -335,23 +367,103 @@ impl Model {
     }
 }
 
-/// Reads `pw-dump -m` until its output ends. Each array is parsed on its own
-/// (StreamDeserializer over a BufReader), applied, then dropped; the state
-/// is published each time what `scope` reads of it changes.
+/// What the sound thread shares with the loop (quick spec § 5): its pw-dump model, so an opening
+/// quick panel reads the sinks at once (pw-dump is silent at rest), and whether that panel is open,
+/// so the thread publishes the sink list (`Scope::Panel`) only then. Locked once per pw-dump batch
+/// and once per open or close; a poisoned lock is taken over, never a panic.
+#[derive(Debug, Default)]
+pub struct SoundTap(Mutex<Tapped>);
+
+#[derive(Debug, Default)]
+struct Tapped {
+    model: Model,
+    panel: bool,
+    /// The last state published: what a batch is compared with.
+    last: Option<SoundState>,
+}
+
+impl SoundTap {
+    fn lock(&self) -> MutexGuard<'_, Tapped> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The panel opened: the thread publishes the sink list from its next batch on. Returns the
+    /// whole state as the panel reads it now (the sinks, and both defaults with their mute), so
+    /// what the base scope never published (a microphone mute without the OSD) is never stale.
+    pub fn open(&self) -> SoundState {
+        let mut t = self.lock();
+        t.panel = true;
+        t.model.state_in(Scope::Panel)
+    }
+
+    /// The panel closed: back to the base scope; the list the thread kept goes.
+    pub fn close(&self) {
+        let mut t = self.lock();
+        t.panel = false;
+        if let Some(last) = t.last.as_mut() {
+            last.sinks = None;
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.lock().panel
+    }
+
+    /// Whether the last publication kept is holding a sink list (tests).
+    #[cfg(test)]
+    fn keeps_a_list(&self) -> bool {
+        self.lock().last.as_ref().is_some_and(|l| l.sinks.is_some())
+    }
+}
+
+/// Empties the tap's model and last state when dropped: a stream that ended, however (its end, a
+/// parse error, a panic `supervise` catches), leaves nothing an opening panel could read through
+/// the backoff — never a dead PipeWire's volumes or node ids.
+struct Forget<'a>(&'a SoundTap);
+
+impl Drop for Forget<'_> {
+    fn drop(&mut self) {
+        let mut t = self.0.lock();
+        t.model = Model::default();
+        t.last = None;
+    }
+}
+
+/// Reads `pw-dump -m` until its output ends, with nobody to open a panel (`Scope::Bar` or
+/// `Scope::Osd` throughout).
 pub fn follow(output: impl Read, scope: Scope, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
-    let mut model = Model::default();
-    let mut last: Option<SoundState> = None;
+    follow_tapped(output, scope, &SoundTap::default(), publish)
+}
+
+/// Reads `pw-dump -m` until its output ends. Each array is parsed on its own (StreamDeserializer
+/// over a BufReader), without the lock; then, under it, applied to the tap's model and compared
+/// with the last state published under the scope in effect (`base`, or `Scope::Panel` while the
+/// panel is open). A new stream starts from a new model and keeps the panel's flag; the model goes
+/// when the stream does (`Forget`).
+pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
+    {
+        let mut t = tap.lock();
+        t.model = Model::default();
+        t.last = None;
+    }
+    let _forget = Forget(tap);
     for batch in serde_json::Deserializer::from_reader(io::BufReader::new(output)).into_iter::<Vec<Object>>() {
         let batch = batch.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("pw-dump: {e}")))?;
-        model.apply(batch);
-        if last.as_ref().is_some_and(|l| model.matches(l, scope)) {
-            continue;
-        }
-        let s = model.state();
-        if !publish(s.clone()) {
+        let state = {
+            let mut t = tap.lock();
+            let Tapped { model, panel, last } = &mut *t;
+            model.apply(batch);
+            let scope = if *panel { Scope::Panel } else { base };
+            if last.as_ref().is_some_and(|l| model.matches(l, scope)) {
+                continue;
+            }
+            let s = model.state_in(scope);
+            *last = Some(s.clone());
+            s
+        };
+        if !publish(state) {
             return Ok(());
         }
-        last = Some(s);
     }
     Err(io::Error::new(io::ErrorKind::UnexpectedEof, "pw-dump: end of output"))
 }
@@ -404,6 +516,7 @@ mod tests {
                 source: vol(100, false),
                 sink_name: name(AG06_OUT, "AG06/AG03 Analog Stereo"),
                 source_name: name(AG06_IN, "AG06/AG03 Analog Stereo"),
+                sinks: None,
             }]
         );
     }
@@ -683,5 +796,187 @@ mod tests {
         assert!(follow(INITIAL.as_bytes(), Scope::Osd, &mut |_| false).is_ok());
         let e = follow(&b"[{\"id\": \"x\"}]"[..], Scope::Osd, &mut |_| true).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+    }
+
+    const HDMI: &str = "600 Series Chipset Family HD Audio HDMI / DisplayPort 3 Output";
+    const SPEAKER: &str = "600 Series Chipset Family HD Audio Speaker";
+    const AG06_LABEL: &str = "AG06/AG03 Analog Stereo";
+    /// The fixture's `default` metadata naming the laptop speaker (id 99) the default sink.
+    const TO_SPEAKER: &str = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","metadata":[{"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"alsa_output.pci-0000_00_1f.3-platform-skl_hda_dsp_generic.HiFi__Speaker__sink"}}]}]"#;
+
+    fn sink(id: u32, label: &str, default: bool) -> Sink {
+        Sink { id, label: label.into(), default }
+    }
+
+    /// Quick spec § 5: every sink with its node id (what `wpctl set-default` takes) and its label,
+    /// the default marked; the plain state carries no list.
+    #[test]
+    fn every_sink_by_label_with_its_node_id_and_the_default_marked() {
+        let mut m = Model::default();
+        m.apply(serde_json::from_str::<Vec<Object>>(INITIAL).unwrap());
+        assert_eq!(m.sinks(), [sink(64, HDMI, false), sink(99, SPEAKER, false), sink(122, AG06_LABEL, true)]);
+        assert_eq!(m.state().sinks, None, "the plain state carries no list");
+        assert_eq!(m.state_in(Scope::Osd).sinks, None);
+        assert_eq!(m.state_in(Scope::Panel).sinks, Some(m.sinks()));
+    }
+
+    /// Spec § 6: at most 32 sinks, the first by label (case-insensitive); labels cleaned like the OSD's.
+    #[test]
+    fn the_list_is_capped_and_its_labels_cleaned() {
+        let node = |id: u32, desc: &str| {
+            format!(
+                r#"{{"id":{id},"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"Audio/Sink","node.name":"s{id}","node.description":"{desc}"}},"params":{{}}}}}}"#
+            )
+        };
+        // Ids descending while the labels ascend: the order can only come from the labels.
+        let many: Vec<String> = (1..=40u32).map(|i| node(2000 - i, &format!("Out {i:02}"))).collect();
+        let mut m = Model::default();
+        m.apply(serde_json::from_str::<Vec<Object>>(&format!("[{}]", many.join(","))).unwrap());
+        let s = m.sinks();
+        assert_eq!(s.len(), MAX_SINKS);
+        assert_eq!((s[0].label.as_str(), s[31].label.as_str()), ("Out 01", "Out 32"), "the first 32 by label");
+        m.apply(serde_json::from_str::<Vec<Object>>(&format!("[{}]", node(7, "desk\\u202e\\u200bTop\\u0007"))).unwrap());
+        assert_eq!(m.sinks()[0], sink(7, "deskTop", false), "cleaned (text::clean); \"desk\" sorts before \"Out\" whatever the case");
+    }
+
+    /// The panel's scope publishes a sink going and a default switch; the OSD's ignores the sink going.
+    #[test]
+    fn the_panel_scope_publishes_a_sink_going_and_the_default_moving() {
+        let text = format!("{INITIAL}[{{\"id\":64,\"info\":null}}]\n{TO_SPEAKER}\n");
+        let (osd, _) = published_for(&text, Scope::Osd);
+        assert_eq!(osd.len(), 2, "the initial dump, then the switch: a sink going is no news to the OSD");
+        assert!(osd.iter().all(|s| s.sinks.is_none()));
+        let (panel, _) = published_for(&text, Scope::Panel);
+        let lists: Vec<Vec<Sink>> = panel.iter().map(|s| s.sinks.clone().unwrap_or_default()).collect();
+        assert_eq!(
+            lists,
+            [
+                vec![sink(64, HDMI, false), sink(99, SPEAKER, false), sink(122, AG06_LABEL, true)],
+                vec![sink(99, SPEAKER, false), sink(122, AG06_LABEL, true)],
+                vec![sink(99, SPEAKER, true), sink(122, AG06_LABEL, false)],
+            ]
+        );
+    }
+
+    /// A panel just opened has a last state without the list: the next batch must publish it.
+    #[test]
+    fn a_state_without_the_list_never_matches_the_panel_scope() {
+        let mut m = Model::default();
+        m.apply(serde_json::from_str::<Vec<Object>>(INITIAL).unwrap());
+        let plain = m.state_in(Scope::Osd);
+        assert!(m.matches(&plain, Scope::Osd));
+        assert!(!m.matches(&plain, Scope::Panel));
+        let full = m.state_in(Scope::Panel);
+        assert!(m.matches(&full, Scope::Panel));
+        assert!(m.matches(&full, Scope::Osd) && m.matches(&full, Scope::Bar), "the list is no news to the bar or the OSD");
+    }
+
+    fn run_tapped(text: &str, base: Scope, tap: &SoundTap) -> Vec<SoundState> {
+        let mut seen = Vec::new();
+        let _ = follow_tapped(text.as_bytes(), base, tap, &mut |s| {
+            seen.push(s);
+            true
+        });
+        seen
+    }
+
+    /// Spec § 5: closed, nothing is built; opening reads the sinks at once from the thread's model
+    /// (pw-dump is silent at rest); closing goes back to the base scope.
+    #[test]
+    fn the_tap_reads_the_sinks_at_open_and_the_stream_carries_them_while_open() {
+        let tap = SoundTap::default();
+        let mut at_open = None;
+        let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |s| {
+            assert!(s.sinks.is_none(), "closed: no list");
+            // Opened while the stream is live (pw-dump silent after its initial dump).
+            at_open = Some(tap.open());
+            assert!(tap.is_open());
+            tap.close();
+            assert!(!tap.is_open());
+            true
+        });
+        assert_eq!(at_open.and_then(|s| s.sinks).map(|l| l.len()), Some(3), "the thread's model: read at once");
+        assert!(run_tapped(INITIAL, Scope::Osd, &tap).iter().all(|s| s.sinks.is_none()), "closed again: none");
+    }
+
+    /// Controller ruling P4: without the OSD (`Scope::Bar`) a microphone mute publishes nothing,
+    /// so the loop's copy is stale; opening hands over the whole state as the panel reads it —
+    /// the sinks and both defaults with their mute — read from the thread's model at once.
+    #[test]
+    fn opening_reads_the_whole_panel_state_even_what_the_base_scope_never_published() {
+        let muted = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo"},"params":{"Props":[{"channelVolumes":[1.0,1.0],"mute":true}]}}}]"#;
+        /// pw-dump silent after its last batch, still running: the panel opens then.
+        struct OpenAtTheEnd<'a> {
+            data: &'a [u8],
+            tap: &'a SoundTap,
+            open: Option<SoundState>,
+        }
+        impl Read for OpenAtTheEnd<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.data.is_empty() && self.open.is_none() {
+                    self.open = Some(self.tap.open());
+                }
+                self.data.read(buf)
+            }
+        }
+        let tap = SoundTap::default();
+        let text = format!("{INITIAL}{muted}\n");
+        let mut reader = OpenAtTheEnd { data: text.as_bytes(), tap: &tap, open: None };
+        let mut seen = Vec::new();
+        let _ = follow_tapped(&mut reader, Scope::Bar, &tap, &mut |s| {
+            seen.push(s.source);
+            true
+        });
+        assert_eq!(seen, [vol(100, false)], "the mute is no news to the bar");
+        let open = reader.open.unwrap_or_default();
+        assert_eq!(open.source, vol(100, true), "the microphone as it is now");
+        assert_eq!(open.sink, vol(84, false));
+        assert_eq!(open.sinks.map(|l| l.len()), Some(3));
+    }
+
+    /// Fix round 1: a stream that ended (EOF, a parse error, a panic) leaves nothing behind. Through
+    /// the backoff an opening panel reads an empty model — no sink, no microphone, an empty list —
+    /// never the dead instance's volumes or node ids (`wpctl set-default` on a recycled id).
+    #[test]
+    fn a_stream_that_ended_leaves_no_state_to_open_on() {
+        let empty = SoundState { sinks: Some(Vec::new()), ..SoundState::default() };
+        let tap = SoundTap::default();
+        assert_eq!(run_tapped(INITIAL, Scope::Osd, &tap).len(), 1, "EOF");
+        assert_eq!(tap.open(), empty, "after EOF");
+        tap.close();
+        assert!(follow_tapped(&b"[{\"id\": \"x\"}]"[..], Scope::Osd, &tap, &mut |_| true).is_err());
+        assert_eq!(tap.open(), empty, "after a parse error");
+        tap.close();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |_| panic!("publish"));
+        }));
+        assert!(caught.is_err());
+        assert_eq!(tap.open(), empty, "after a panic (`supervise` catches it), the lock taken over");
+    }
+
+    /// Closing drops the list the thread kept as its last publication (nothing kept while closed).
+    #[test]
+    fn closing_drops_the_list_kept_as_the_last_publication() {
+        let tap = SoundTap::default();
+        let _ = tap.open();
+        let mut checked = false;
+        let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |s| {
+            assert!(s.sinks.is_some() && tap.keeps_a_list(), "open: published and kept");
+            tap.close();
+            checked = !tap.keeps_a_list();
+            true
+        });
+        assert!(checked, "closed: the kept list went");
+    }
+
+    /// Review Focus 1: PipeWire restarts while the panel is open. The new stream starts from a new
+    /// model but keeps the panel's scope: every publication carries the list.
+    #[test]
+    fn a_restarted_stream_keeps_publishing_the_sinks_while_the_panel_is_open() {
+        let tap = SoundTap::default();
+        let _ = tap.open();
+        let seen = run_tapped(&format!("{INITIAL}{DELTAS}"), Scope::Osd, &tap);
+        assert!(!seen.is_empty() && seen.iter().all(|s| s.sinks.is_some()), "{seen:?}");
+        assert_eq!(seen[0].sinks.as_ref().map(Vec::len), Some(3));
     }
 }

@@ -1,5 +1,5 @@
-//! The system D-Bus, READ ONLY: NetworkManager, UPower, BlueZ. One
-//! connection on one thread, blocked on the bus while nothing changes; each
+//! The system D-Bus, READ ONLY: NetworkManager, UPower, BlueZ, power-profiles-daemon.
+//! One connection on one thread, blocked on the bus while nothing changes; each
 //! signal re-reads the domain it concerns. `Bus` only has reads (checked by
 //! tests/guardrails.rs), and a service is only ever called through the
 //! unique name of the process that owns it: never through its well-known
@@ -8,6 +8,7 @@
 pub mod bluez;
 pub mod dbusrs_bus;
 pub mod network;
+pub mod power;
 pub mod props;
 pub mod upower;
 
@@ -21,7 +22,7 @@ use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
-use crate::system::{BtState, NetState, PowerState};
+use crate::system::{BtState, NetState, PowerState, ProfileState};
 use props::{Objects, Props};
 use std::io;
 use std::marker::PhantomData;
@@ -31,6 +32,8 @@ use std::time::{Duration, Instant};
 pub const NM: &str = "org.freedesktop.NetworkManager";
 pub const UPOWER: &str = "org.freedesktop.UPower";
 pub const BLUEZ: &str = "org.bluez";
+/// power-profiles-daemon (quick spec § 5): read, never set (the panel runs powerprofilesctl).
+pub const POWER_PROFILES: &str = "net.hadess.PowerProfiles";
 pub const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 pub const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 /// Not called (reading only): only its `PrepareForSleep` signal is heard.
@@ -76,10 +79,11 @@ pub enum Domain {
     Network,
     Bluetooth,
     Battery,
+    Power,
 }
 
 /// Every domain, in reading order.
-pub const DOMAINS: [Domain; 3] = [Domain::Network, Domain::Bluetooth, Domain::Battery];
+pub const DOMAINS: [Domain; 4] = [Domain::Network, Domain::Bluetooth, Domain::Battery, Domain::Power];
 
 /// `path` is `root` or below it.
 fn under(path: &str, root: &str) -> bool {
@@ -114,6 +118,8 @@ const BLUEZ_ADAPTER_PROPS: [&str; 1] = ["Powered"];
 // doesn't, for anything the bar actually shows.
 const BLUEZ_DEVICE_PROPS: [&str; 2] = ["Connected", "Alias"];
 const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
+/// power-profiles-daemon: what the quick panel shows.
+const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 
 /// The properties of `path`/`interface` the bar reads (I1, review): an
 /// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
@@ -126,6 +132,8 @@ fn relevant_properties(path: &str, interface: Option<&str>) -> Option<&'static [
         Some(&NM_ROOT_PROPS)
     } else if under(path, "/org/freedesktop/UPower") {
         Some(&UPOWER_PROPS)
+    } else if under(path, power::PATH) {
+        Some(&POWER_PROFILES_PROPS)
     } else if under(path, "/org/bluez") {
         match interface {
             Some("org.bluez.Adapter1") => Some(&BLUEZ_ADAPTER_PROPS),
@@ -169,6 +177,7 @@ impl Signal {
                 NM => Some(Domain::Network),
                 BLUEZ => Some(Domain::Bluetooth),
                 UPOWER => Some(Domain::Battery),
+                POWER_PROFILES => Some(Domain::Power),
                 _ => None,
             };
         }
@@ -176,6 +185,8 @@ impl Signal {
             Domain::Network
         } else if under(&self.path, "/org/freedesktop/UPower") {
             Domain::Battery
+        } else if under(&self.path, power::PATH) {
+            Domain::Power
         } else if under(&self.path, "/org/bluez") || (self.path == "/" && self.interface == OBJECT_MANAGER) {
             Domain::Bluetooth
         } else {
@@ -239,6 +250,7 @@ pub struct SystemState {
     pub network: Option<NetState>,
     pub bluetooth: Option<BtState>,
     pub battery: Option<PowerState>,
+    pub power: Option<ProfileState>,
 }
 
 /// Why a session ended (I2, review): a single domain's read failing, its
@@ -300,6 +312,7 @@ fn domain_index(d: Domain) -> usize {
         Domain::Network => 0,
         Domain::Bluetooth => 1,
         Domain::Battery => 2,
+        Domain::Power => 3,
     }
 }
 
@@ -340,6 +353,7 @@ fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut Domai
         Domain::Network => network::read(bus).map(|v| s.network = Some(v)),
         Domain::Bluetooth => bluez::read(bus).map(|v| s.bluetooth = Some(v)),
         Domain::Battery => upower::read(bus).map(|v| s.battery = Some(v)),
+        Domain::Power => power::read(bus).map(|v| s.power = Some(v)),
     };
     let Err(e) = r else {
         log_state.note_success(d);
@@ -349,6 +363,7 @@ fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut Domai
         Domain::Network => s.network = None,
         Domain::Bluetooth => s.bluetooth = None,
         Domain::Battery => s.battery = None,
+        Domain::Power => s.power = None,
     }
     // Rate limited per domain (follow-up, re-review): NotFound never logs
     // (worth_logging), and a short-circuiting `&&` means it never touches
@@ -421,7 +436,7 @@ pub fn session(
     log_state: &mut DomainLog,
     publish: &mut dyn FnMut(SystemState) -> bool,
 ) -> io::Result<()> {
-    let mut s = SystemState { network: None, bluetooth: None, battery: None };
+    let mut s = SystemState { network: None, bluetooth: None, battery: None, power: None };
     let mut last = None;
     let failed = read_all(bus, domains, &mut s, log_state);
     if !publish_if_changed(&mut last, &s, publish) {
@@ -469,12 +484,12 @@ pub fn session(
     }
 }
 
-/// The bar's messages for a published state; None (the whole bus down):
-/// "–" for the three modules.
-pub fn messages(s: Option<SystemState>) -> [Msg; 3] {
+/// The bar's messages for a published state; None (the whole bus down): "–" for every module, and
+/// no power profile.
+pub fn messages(s: Option<SystemState>) -> [Msg; 4] {
     match s {
-        Some(s) => [Msg::Network(s.network), Msg::Bluetooth(s.bluetooth), Msg::Battery(s.battery)],
-        None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None)],
+        Some(s) => [Msg::Network(s.network), Msg::Bluetooth(s.bluetooth), Msg::Battery(s.battery), Msg::Profile(s.power)],
+        None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None)],
     }
 }
 
@@ -495,7 +510,7 @@ fn run_supervised(
 ) {
     let mut backoff = Backoff::new();
     let mut first = true;
-    let mut last = SystemState { network: None, bluetooth: None, battery: None };
+    let mut last = SystemState { network: None, bluetooth: None, battery: None, power: None };
     loop {
         let mut publications = 0u32;
         let mut closed = false;
@@ -657,7 +672,8 @@ mod tests {
             SystemState {
                 network: Some(workstation_network()),
                 bluetooth: Some(BtState::On { devices: vec![] }),
-                battery: Some(workstation_battery())
+                battery: Some(workstation_battery()),
+                power: Some(ProfileState::default())
             }
         );
         assert!(matches!(&seen[1].network, Some(NetState::Online { link: Link::Wifi, .. })), "{:?}", seen[1]);
@@ -778,13 +794,75 @@ mod tests {
         assert_eq!(bus.script.len(), 1, "no signal read after the bar said stop");
     }
 
+    fn profile_performance(b: &mut FakeBus) {
+        b.props_mut(power::PATH, power::INTERFACE).0.insert("ActiveProfile".into(), Prop::Str("performance".into()));
+    }
+
+    fn profiles_gone(b: &mut FakeBus) {
+        b.owners.remove(POWER_PROFILES);
+    }
+
+    /// Quick spec § 5: read at start, followed on `PropertiesChanged` (only the two properties the
+    /// panel shows), gone with its owner; every call to its one object, through its unique name.
+    #[test]
+    fn the_power_profile_is_read_followed_and_gone_with_its_daemon() {
+        let mut bus = FakeBus::empty();
+        bus.with_power_profiles("balanced");
+        let changed = |names: &[&str]| with_names(signal(power::PATH, PROPERTIES, "PropertiesChanged", Some(power::INTERFACE)), names);
+        bus.script = VecDeque::from([
+            (changed(&["ActiveProfile"]), profile_performance as fn(&mut FakeBus)),
+            (changed(&["PerformanceDegraded"]), nothing as fn(&mut FakeBus)),
+            (
+                signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(POWER_PROFILES)),
+                profiles_gone as fn(&mut FakeBus),
+            ),
+        ]);
+        let (seen, _) = run_over(&mut bus, &[Domain::Power]);
+        let all = Profile::ALL.to_vec();
+        assert_eq!(
+            seen.iter().map(|s| s.power.clone()).collect::<Vec<_>>(),
+            [
+                Some(ProfileState { active: Some(Profile::Balanced), offered: all.clone() }),
+                Some(ProfileState { active: Some(Profile::Performance), offered: all }),
+                Some(ProfileState::default()),
+            ]
+        );
+        let reads: Vec<&String> = bus.calls.iter().filter(|c| c.starts_with("GetAll")).collect();
+        assert_eq!(reads.len(), 2, "PerformanceDegraded re-reads nothing: {:?}", bus.calls);
+        assert!(reads.iter().all(|c| *c == "GetAll :1.13 /net/hadess/PowerProfiles net.hadess.PowerProfiles"), "{:?}", bus.calls);
+    }
+
+    #[test]
+    fn power_profiles_signals_point_to_their_domain() {
+        let changed = |names: &[&str]| with_names(signal(power::PATH, PROPERTIES, "PropertiesChanged", Some(power::INTERFACE)), names);
+        assert_eq!(changed(&["ActiveProfile"]).domain(), Some(Domain::Power));
+        assert_eq!(changed(&["Profiles"]).domain(), Some(Domain::Power));
+        assert_eq!(changed(&["PerformanceDegraded", "ActiveProfileHolds"]).domain(), None, "not shown: nothing re-read");
+        let owner = signal("/org/freedesktop/DBus", "org.freedesktop.DBus", "NameOwnerChanged", Some(POWER_PROFILES));
+        assert_eq!(owner.domain(), Some(Domain::Power));
+    }
+
     #[test]
     fn messages_for_the_bar() {
-        assert_eq!(messages(None), [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None)], "bus down: \"–\" everywhere");
-        let s = SystemState { network: Some(NetState::Offline), bluetooth: None, battery: Some(PowerState::default()) };
+        assert_eq!(
+            messages(None),
+            [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None)],
+            "bus down: \"–\" everywhere"
+        );
+        let s = SystemState {
+            network: Some(NetState::Offline),
+            bluetooth: None,
+            battery: Some(PowerState::default()),
+            power: Some(ProfileState::default()),
+        };
         assert_eq!(
             messages(Some(s)),
-            [Msg::Network(Some(NetState::Offline)), Msg::Bluetooth(None), Msg::Battery(Some(PowerState::default()))]
+            [
+                Msg::Network(Some(NetState::Offline)),
+                Msg::Bluetooth(None),
+                Msg::Battery(Some(PowerState::default())),
+                Msg::Profile(Some(ProfileState::default()))
+            ]
         );
     }
 
@@ -1002,7 +1080,7 @@ mod tests {
         // I2, review: a tagged domain failure keeps the others' last
         // published value showing during the backoff delay.
         let sends = RefCell::new(Vec::new());
-        let shown = SystemState { network: Some(NetState::Offline), bluetooth: None, battery: Some(PowerState::default()) };
+        let shown = SystemState { network: Some(NetState::Offline), bluetooth: None, battery: Some(PowerState::default()), power: None };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {
                 publish(shown.clone());
@@ -1024,8 +1102,12 @@ mod tests {
     #[test]
     fn a_bus_outage_blanks_everything_during_the_backoff() {
         let sends = RefCell::new(Vec::new());
-        let shown =
-            SystemState { network: Some(NetState::Offline), bluetooth: Some(BtState::Absent), battery: Some(PowerState::default()) };
+        let shown = SystemState {
+            network: Some(NetState::Offline),
+            bluetooth: Some(BtState::Absent),
+            battery: Some(PowerState::default()),
+            power: None,
+        };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {
                 publish(shown.clone());
@@ -1054,7 +1136,7 @@ mod tests {
     fn a_bus_disconnect_during_a_domains_read_is_tagged_as_a_bus_outage() {
         let mut bus = FakeBus::workstation();
         bus.disconnecting.insert(network::PATH.into());
-        let mut s = SystemState { network: None, bluetooth: None, battery: None };
+        let mut s = SystemState { network: None, bluetooth: None, battery: None, power: None };
         let e = read(&mut bus, Domain::Network, &mut s, &mut DomainLog::default()).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(outage_of(&e), Outage::Bus, "a bus disconnect blanks every domain, not just this one");
@@ -1071,7 +1153,7 @@ mod tests {
         let mut bus = FakeBus::workstation();
         bus.failing.insert(network::PATH.into()); // Network: an ordinary timeout
         bus.disconnecting.insert(upower::DISPLAY_DEVICE.into()); // Battery: the bus itself gone
-        let mut s = SystemState { network: None, bluetooth: None, battery: None };
+        let mut s = SystemState { network: None, bluetooth: None, battery: None, power: None };
         let e = read_all(&mut bus, &DOMAINS, &mut s, &mut DomainLog::default()).expect("both reads failed");
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
         assert_eq!(outage_of(&e), Outage::Bus, "the later bus outage must win over the earlier domain one");

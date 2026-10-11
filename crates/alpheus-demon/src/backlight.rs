@@ -1,4 +1,5 @@
-//! The laptop's backlight, read once per `alpheus-launch --osd brightness` (OSD spec § 2):
+//! The laptop's backlight, read once per `alpheus-launch --osd brightness` (OSD spec § 2), and when
+//! the quick panel opens (or 150 ms after its brightness command):
 //! `<backlight_dir>/<device>/brightness` and `max_brightness`, each a small number. Read only and
 //! capped (`read_capped`); never watched, never written. The brightness keys change it outside
 //! alpheus, then call the verb.
@@ -32,13 +33,42 @@ pub fn device(dir: &Path, wanted: &str) -> Option<PathBuf> {
     names.into_iter().map(|n| dir.join(n)).find(|d| d.is_dir())
 }
 
+/// The device's name (what `brightnessctl --device=` takes) and its level, read once (the quick
+/// panel's row, spec § 5); None as `level`.
+pub fn named_level(dir: &Path, wanted: &str) -> Option<(String, u8)> {
+    let d = device(dir, wanted)?;
+    let name = d.file_name()?.to_str()?.to_string();
+    let brightness = read_capped(&d.join("brightness")).ok()?;
+    let max = read_capped(&d.join("max_brightness")).ok()?;
+    Some((name, osd::brightness_percent(&brightness, &max)?))
+}
+
+/// A re-read of the device the quick panel shows (150 ms after its brightness command).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reread {
+    Level(u8),
+    /// The device is there but its files did not read as a level this time (a transient sysfs
+    /// error): the last level stands.
+    Unreadable,
+    /// The device's directory went: its row with it.
+    Gone,
+}
+
+/// Re-reads `device` (a name `named_level` gave) under `dir`.
+pub fn reread(dir: &Path, device: &str) -> Reread {
+    if device.is_empty() || self::device(dir, device).is_none() {
+        return Reread::Gone;
+    }
+    match named_level(dir, device) {
+        Some((_, p)) => Reread::Level(p),
+        None => Reread::Unreadable,
+    }
+}
+
 /// The backlight's level in percent, read once; None without a device, or with a file that is not
 /// a small number, or a zero maximum.
 pub fn level(dir: &Path, wanted: &str) -> Option<u8> {
-    let d = device(dir, wanted)?;
-    let brightness = read_capped(&d.join("brightness")).ok()?;
-    let max = read_capped(&d.join("max_brightness")).ok()?;
-    osd::brightness_percent(&brightness, &max)
+    named_level(dir, wanted).map(|(_, p)| p)
 }
 
 #[cfg(test)]
@@ -126,6 +156,31 @@ mod tests {
         // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         assert_eq!(level(&root, "fifo"), None, "a FIFO is not a regular file: refused, never read (it would block)");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_named_level_says_which_device() {
+        let root = tree("named");
+        fake(&root, "intel_backlight", "9696\n", "19393\n");
+        assert_eq!(named_level(&root, ""), Some(("intel_backlight".to_string(), 50)), "brightnessctl's --device");
+        assert_eq!(named_level(&root, "nope"), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Final review A-m2: one failed read is not a device gone.
+    #[test]
+    fn a_re_read_tells_an_unreadable_device_from_a_gone_one() {
+        let root = tree("reread");
+        fake(&root, "panel", "50\n", "100\n");
+        assert_eq!(reread(&root, "panel"), Reread::Level(50));
+        fs::write(root.join("panel").join("brightness"), "").unwrap();
+        assert_eq!(reread(&root, "panel"), Reread::Unreadable, "a file that does not read as a level");
+        fs::remove_file(root.join("panel").join("max_brightness")).unwrap();
+        assert_eq!(reread(&root, "panel"), Reread::Unreadable, "a file missing for now");
+        fs::remove_dir_all(root.join("panel")).unwrap();
+        assert_eq!(reread(&root, "panel"), Reread::Gone, "the device's directory went");
+        assert_eq!(reread(&root, ""), Reread::Gone, "no device shown");
         let _ = fs::remove_dir_all(&root);
     }
 

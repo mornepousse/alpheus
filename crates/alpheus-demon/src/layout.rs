@@ -81,9 +81,13 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
         ModuleId::Workspaces => GroupKind::Workspaces,
         ModuleId::Window => GroupKind::Title,
         ModuleId::Media => GroupKind::Media,
-        ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth | ModuleId::Battery | ModuleId::Notifications | ModuleId::Osd => {
-            GroupKind::Status
-        }
+        ModuleId::Volume
+        | ModuleId::Network
+        | ModuleId::Bluetooth
+        | ModuleId::Battery
+        | ModuleId::Notifications
+        | ModuleId::Osd
+        | ModuleId::Quick => GroupKind::Status,
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
@@ -99,7 +103,13 @@ pub const fn module_hue(m: ModuleId) -> Option<Hue> {
         ModuleId::Network => Some(Hue::Cyan),
         ModuleId::Battery => Some(Hue::Green),
         ModuleId::Resources => Some(Hue::Orange),
-        ModuleId::Launcher | ModuleId::Workspaces | ModuleId::Tray | ModuleId::Notifications | ModuleId::Osd | ModuleId::Clock => None,
+        ModuleId::Launcher
+        | ModuleId::Workspaces
+        | ModuleId::Tray
+        | ModuleId::Notifications
+        | ModuleId::Osd
+        | ModuleId::Quick
+        | ModuleId::Clock => None,
     }
 }
 
@@ -232,6 +242,8 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Notifications => segments::notifications(bar.notifications.as_ref()),
         // The OSD draws its own surface (osd_surface.rs), never in the bar.
         ModuleId::Osd => None,
+        // The quick panel is a popup (quick.rs), never a segment.
+        ModuleId::Quick => None,
     }
 }
 
@@ -1111,5 +1123,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The quick panel is a popup of its own (quick spec § 1): its module draws nothing in the bar.
+    #[test]
+    fn the_quick_module_draws_nothing_in_the_bar() {
+        let mut with = bar();
+        assert!(with.config.modules.contains(&ModuleId::Quick), "on by default");
+        with.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
+        let mut without = with.clone();
+        without.config.modules.retain(|m| *m != ModuleId::Quick);
+        for style in [BarStyle::Flat, BarStyle::Islands] {
+            let (with, without) = (styled(with.clone(), style), styled(without.clone(), style));
+            for width in [100, 60, 40] {
+                assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{style:?}, {width} cells");
+            }
+        }
+        assert_eq!(module_hue(ModuleId::Quick), None);
     }
 }

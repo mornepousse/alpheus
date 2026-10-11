@@ -7,7 +7,7 @@
 //! a command.
 
 use crate::config::OsdConfig;
-use crate::grid::{Grid, Style};
+use crate::grid::{Grid, Style, Tint};
 use crate::list::{self, Boxed};
 use crate::media::truncate_title;
 use crate::segments::{VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
@@ -250,19 +250,26 @@ fn glyph_style(v: Volume) -> Style {
     if v.muted { Style::MUTED } else { Style::ACCENT }
 }
 
-/// The percentage, right-aligned in the row's last `PERCENT_CELLS`.
-fn percent(g: &mut Grid, v: Volume) {
-    let w = g.width();
-    let style = if v.muted { Style::MUTED } else { Style::NORMAL };
-    g.write(w.saturating_sub(PERCENT_CELLS), w, &format!("{:>3}%", v.percent), style);
+/// The percentage, right-aligned in the last `PERCENT_CELLS` before `end`; on the selection band
+/// when `selected` (the quick panel's slider rows).
+pub(crate) fn percent(g: &mut Grid, end: u16, v: Volume, selected: bool) {
+    let style = match (selected, v.muted) {
+        (true, _) => Style::SELECTED,
+        (false, true) => Style::MUTED,
+        (false, false) => Style::NORMAL,
+    };
+    g.write(end.saturating_sub(PERCENT_CELLS), end, &format!("{:>3}%", v.percent), style);
 }
 
-/// "G ━━━━━━━━━━━━━━━━─────────  64%": filled in the accent, the rest dim; muted, all dim; above
-/// 100 %, the whole bar in `warn`.
-fn level(g: &mut Grid, glyph: char, v: Volume, bar: u16) {
-    let w = g.width();
-    let x = g.write(0, w, &glyph.to_string(), glyph_style(v));
-    let x = g.write(x, w, " ", Style::NORMAL);
+/// "G ━━━━━━━━━━━━━━━━─────────  64%" from `at` to `end` (excluded): the glyph, a space, the bar,
+/// one blank cell, the percentage. Filled in the accent, the rest dim; muted, all dim; above
+/// 100 %, the whole bar in `warn`. `selected` (the quick panel's slider rows): the whole of it on the
+/// selection band, the bar cells keeping their own foreground (accent, dim, warn).
+pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, selected: bool) {
+    let pick = |s: Style| if selected { Style::SELECTED } else { s };
+    let bar = end.saturating_sub(at).saturating_sub(3 + PERCENT_CELLS);
+    let x = g.write(at, end, &glyph.to_string(), pick(glyph_style(v)));
+    let x = g.write(x, end, " ", pick(Style::NORMAL));
     let over = v.percent > 100;
     // percent ≤ 100 here, so filled ≤ bar.
     let filled = if over { bar } else { (u32::from(v.percent) * u32::from(bar) / 100) as u16 };
@@ -271,9 +278,11 @@ fn level(g: &mut Grid, glyph: char, v: Volume, bar: u16) {
         (false, true) => (Style::WARN, Style::WARN),
         (false, false) => (Style::ACCENT, Style::MUTED),
     };
-    let x = g.write(x, w, &"━".repeat(usize::from(filled)), on);
-    g.write(x, w, &"─".repeat(usize::from(bar.saturating_sub(filled))), off);
-    percent(g, v);
+    let band = |s: Style| if selected { Style { bg: Tint::Selection, ..s } } else { s };
+    let (on, off) = (band(on), band(off));
+    let x = g.write(x, end, &"━".repeat(usize::from(filled)), on);
+    g.write(x, end, &"─".repeat(usize::from(bar.saturating_sub(filled))), off);
+    percent(g, end, v, selected);
 }
 
 /// The pill's one row: `width` cells of content, padded like the popups' (`list::padded`).
@@ -282,14 +291,14 @@ pub fn rows(pill: &Pill, width: u16) -> Boxed {
     // Glyph, two spaces, the percentage.
     let bar = width.saturating_sub(3 + PERCENT_CELLS);
     match pill {
-        Pill::Volume(v) => level(&mut g, volume_glyph(*v), *v, bar),
-        Pill::Mic(v) => level(&mut g, if v.muted { MIC_OFF } else { MIC_ON }, *v, bar),
-        Pill::Brightness(p) => level(&mut g, BRIGHTNESS, Volume { percent: *p, muted: false }, bar),
+        Pill::Volume(v) => level(&mut g, 0, width, volume_glyph(*v), *v, false),
+        Pill::Mic(v) => level(&mut g, 0, width, if v.muted { MIC_OFF } else { MIC_ON }, *v, false),
+        Pill::Brightness(p) => level(&mut g, 0, width, BRIGHTNESS, Volume { percent: *p, muted: false }, false),
         Pill::Sink { label, volume } => {
             let x = g.write(0, width, &volume_glyph(*volume).to_string(), glyph_style(*volume));
             let x = g.write(x, width, " ", Style::NORMAL);
             g.write(x, x.saturating_add(bar), &truncate_title(label, bar), Style::NORMAL);
-            percent(&mut g, *volume);
+            percent(&mut g, width, *volume, false);
         }
     }
     list::padded(&[g])
@@ -347,6 +356,7 @@ mod tests {
             source: Some(vol(mic, mic_muted)),
             sink_name: dev(OUT, "Desk speakers"),
             source_name: dev(IN, "Desk microphone"),
+            sinks: None,
         }
     }
 

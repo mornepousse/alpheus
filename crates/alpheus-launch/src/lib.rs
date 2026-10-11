@@ -11,8 +11,8 @@
 //! cases where a caller may fall back to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, Reply, Request, decode_reply, encode_request,
-    numbered_lines, wipe, zero,
+    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, Reply, Request, decode_reply,
+    encode_request, numbered_lines, wipe, zero,
 };
 use std::ffi::OsString;
 use std::io::{self, ErrorKind, Read, Write};
@@ -34,7 +34,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --help]
+                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound] | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -51,12 +51,13 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
+  --quick [sound]         open or close the bar's quick settings (at the volume with sound)
   -h, --help              show this help
 
-Exit codes: 0 done or chosen (--osd: also when there is nothing to show), 1 menu cancelled,
+Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--quick (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -70,6 +71,7 @@ pub enum Invocation {
     Dnd(DndVerb),
     ClearNotifications,
     Osd(OsdVerb),
+    Quick(QuickVerb),
     Help,
 }
 
@@ -84,7 +86,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
     let mut flags = DmenuFlags::default();
     // The first dmenu-only option seen, for the message when --dmenu is missing.
     let mut dmenu_only: Option<&'static str> = None;
-    let mut it = args.iter();
+    let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
         let arg = utf8(arg)?;
         match arg {
@@ -103,6 +105,16 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 let value = utf8(value)?;
                 let verb = OsdVerb::parse(value).ok_or_else(|| format!("--osd takes brightness, not {value:?}"))?;
                 choose(&mut mode, Invocation::Osd(verb))?
+            }
+            "--quick" => {
+                // The one optional word: taken only when it is "sound".
+                let verb = if it.peek().and_then(|a| a.to_str()) == Some("sound") {
+                    it.next();
+                    QuickVerb::Sound
+                } else {
+                    QuickVerb::Top
+                };
+                choose(&mut mode, Invocation::Quick(verb))?
             }
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
@@ -193,7 +205,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
-        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --help".into());
+        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --help".into());
     }
     *slot = Some(i);
     Ok(())
@@ -233,7 +245,9 @@ pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> 
     // that a daemon trickling one byte at a time could restart forever).
     let timeout = match request {
         Request::Dmenu { .. } => None,
-        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) => Some(CLIENT_REPLY_TIMEOUT),
+        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_) => {
+            Some(CLIENT_REPLY_TIMEOUT)
+        }
     };
     stream.set_write_timeout(timeout).map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
     let deadline = timeout.map(|t| Instant::now() + t);
@@ -346,6 +360,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::Dnd(v)) => Request::Dnd(v),
         Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
         Ok(Invocation::Osd(v)) => Request::Osd(v),
+        Ok(Invocation::Quick(v)) => Request::Quick(v),
         // --password: stdin is still read (a writer is never cut off), then ignored — fuzzel
         // accepts it too; no line leaves the client.
         Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin, flags.index) {
@@ -380,7 +395,10 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             None => fail(&format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
         },
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
-        (Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_), Reply::Done) => EXIT_OK,
+        (
+            Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_),
+            Reply::Done,
+        ) => EXIT_OK,
         (_, Reply::Busy) => fail("another menu is already open"),
         (Request::Dmenu { flags, .. }, Reply::Error(m)) if refuses_flags(&m, flags) => {
             let flag = if flags.visible.is_some() {
@@ -391,6 +409,10 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
                 "--password"
             };
             fail(&format!("alpheus-demon does not know {flag} yet (restart it after the upgrade): {m}"));
+            EXIT_UNREACHABLE
+        }
+        (Request::Quick(_), Reply::Error(m)) if m == OLD_QUICK_REFUSAL => {
+            fail(&format!("alpheus-demon does not know --quick yet (restart it after the upgrade): {m}"));
             EXIT_UNREACHABLE
         }
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
@@ -414,6 +436,9 @@ const OLD_DAEMON_REFUSAL: &str = "malformed request: unknown request \"dmenu\"";
 
 /// What a daemon that knows `--index`/`--password` but not `--visible` answers it.
 const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visible\"";
+/// What a daemon older than `--quick` answers it (`socket::describe` of an unknown request): exit 3,
+/// as for the other verbs, so a key bound to it can fall back.
+const OLD_QUICK_REFUSAL: &str = "malformed request: unknown request \"quick\"";
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
@@ -464,6 +489,8 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
+        assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
+        assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
         let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password, visible: None } });
         assert_eq!(parse_args(&args(&["--dmenu", "--index"])), dmenu(true, false));
         assert_eq!(parse_args(&args(&["--password", "--dmenu"])), dmenu(false, true));
@@ -517,6 +544,9 @@ mod tests {
             (&["firefox"], "unknown option"),
             (&["--dmenu", "--dmenu"], "only one of"),
             (&["--toggle", "--close"], "only one of"),
+            (&["--quick", "volume"], "unknown option"),
+            (&["--quick", "--close"], "only one of"),
+            (&["--quick", "sound", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--help", "--dmenu"], "only one of"),
             (&["--dmenu", "--prompt"], "needs a value"),
             (&["--dmenu", "-p", "a", "-p", "b"], "given twice"),

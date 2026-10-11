@@ -10,7 +10,7 @@ use alpheus_commun::exec::{CaptureLimits, Captured, ExecError, Executor, Output,
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::appearance::SETTING_RULE;
 use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
-use alpheus_demon::config::BarConfig;
+use alpheus_demon::config::{BarConfig, ModuleId, QuickConfig, ToggleConfig};
 use alpheus_demon::keys::Key;
 use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
@@ -21,6 +21,7 @@ use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
+use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
@@ -30,6 +31,7 @@ use alpheus_demon::tray::{
     APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
 };
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 fn workspace(name: &str, output: &str, windows: u16, visible: bool) -> Workspace {
     Workspace { name: name.into(), reference: name.into(), output: output.into(), windows, urgent: false, visible, focused: visible }
@@ -79,21 +81,27 @@ fn full_bar() -> Bar {
     b
 }
 
-/// Every zone of a bar where every module is shown, every button: only the
-/// commands of the allowlist (Global Constraints), and each of them reached.
+/// Every zone of a bar where every module is shown, every button, with the quick panel and without
+/// it: only the commands of the allowlist, and each of them reached (the mute on the bar without the
+/// panel, whose right click is the TUI tab's).
 #[test]
 fn every_click_on_a_full_bar_stays_on_the_allowlist() {
-    let b = full_bar();
-    let fake = FakeExecutor::new();
-    for output in ["eDP-1", "HDMI-A-1"] {
-        let g = b.grid(output, 240);
-        for z in g.zones() {
-            for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
-                if let Some(argv) = command(&b, output, &z.target, bt) {
-                    run(&fake, &argv);
+    let mut without_quick = full_bar();
+    without_quick.config.modules.retain(|m| *m != ModuleId::Quick);
+    let mut calls = Vec::new();
+    for b in [full_bar(), without_quick] {
+        let fake = FakeExecutor::new();
+        for output in ["eDP-1", "HDMI-A-1"] {
+            let g = b.grid(output, 240);
+            for z in g.zones() {
+                for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                    if let Some(argv) = command(&b, output, &z.target, bt) {
+                        run(&fake, &argv);
+                    }
                 }
             }
         }
+        calls.extend(fake.calls());
     }
     let fixed = [
         "alpheus-toggle sound",
@@ -105,7 +113,6 @@ fn every_click_on_a_full_bar_stays_on_the_allowlist() {
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
     ];
-    let calls = fake.calls();
     for c in &calls {
         assert!(c.starts_with("wm-set workspace ") || fixed.contains(&c.as_str()), "command outside the allowlist: {c}");
         assert!(!c.to_lowercase().contains("dpms"), "{c}");
@@ -485,9 +492,9 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let opening = function_body(&popup, "pub fn popup_open(");
     assert!(
         opening.contains(
-            "if grab && self.exclusive_during_grab {\n                    layer.set_keyboard_interactivity(KeyboardInteractivity::None)"
+            "if grab && (self.exclusive_during_grab || keyed) {\n                    layer.set_keyboard_interactivity(KeyboardInteractivity::None)"
         ),
-        "popup_open's error path must only reset what it set: {opening}"
+        "popup_open's error path must only reset what it set (a keyed popup set it on every compositor): {opening}"
     );
 }
 
@@ -579,7 +586,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -588,6 +595,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Dnd(_) => "dnd",
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
+            Request::Quick(_) => "quick",
         }
     }
     let all = [
@@ -597,8 +605,9 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Dnd(DndVerb::Toggle),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
+        Request::Quick(QuickVerb::Top),
     ];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd"]);
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd", "quick"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -775,8 +784,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // (bar step 5, task 7), armed only while that popup is open and its player plays; the
         // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
         // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
-        // only while the pill shows.
-        ("wayland.rs", "Timer::", 6),
+        // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
+        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending.
+        ("wayland.rs", "Timer::", 7),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -872,6 +882,10 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert!(
         MATCH_RULES.iter().all(|(_, r)| !r.contains("AccessPoint")),
         "the network module is icons only (Q1): no AccessPoint signal is ever read"
+    );
+    assert!(
+        MATCH_RULES.iter().filter(|(_, r)| r.contains("PowerProfiles")).all(|(_, r)| r.contains("'net.hadess.PowerProfiles'")),
+        "power profiles: its own signals only, never a write (quick spec § 5)"
     );
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
@@ -1001,7 +1015,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 24] = [
+const NO_THREAD_NOR_COMMAND: [&str; 26] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1026,6 +1040,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 24] = [
     "painter/",
     "placement.rs",
     "text.rs",
+    "quick.rs",
+    "quick_state.rs",
 ];
 
 #[test]
@@ -1448,5 +1464,216 @@ fn the_osd_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick spec § 5, § 6: the panel's model and its state reader read and decide, nothing else: no
+/// file written, nothing created, no raw system call; and, through `NO_THREAD_NOR_COMMAND`, no
+/// command run. Production code only.
+#[test]
+fn the_quick_model_and_its_state_reader_only_read() {
+    let mut checked = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !["quick.rs", "quick_state.rs"].contains(&name.as_str()) {
+            continue;
+        }
+        checked += 1;
+        let prod = production_code(&t);
+        for never in [
+            "fs::write",
+            "OpenOptions",
+            "File::create",
+            "File::options(",
+            "set_permissions",
+            "remove_file",
+            "create_dir",
+            "fs::rename",
+            "fs::copy",
+            "libc::",
+            "unsafe",
+        ] {
+            assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
+        }
+    }
+    assert_eq!(checked, 2, "quick.rs and quick_state.rs");
+}
+
+/// Quick spec § 5: every command the panel can build — every key on every row (twice: the
+/// confirmation's second activation), the outputs detail, every press of every cell with every
+/// button (twice), the wheel both ways — is one of the exact shapes; the configured commands run as
+/// given. And each shape is reached.
+#[test]
+fn every_quick_command_stays_on_the_allowlist() {
+    let config = QuickConfig {
+        keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() },
+        night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
+        logout: vec!["fake-logout".into()],
+        ..QuickConfig::default()
+    };
+    let sound = SoundState {
+        sink: Some(Volume { percent: 64, muted: false }),
+        source: Some(Volume { percent: 100, muted: false }),
+        ..SoundState::default()
+    };
+    let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
+    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config };
+    let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
+    let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
+    let fresh = || Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    let t = Instant::now();
+    // Mae (M1): a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
+    let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
+    let mut calls: Vec<String> = Vec::new();
+    let mut record = |a: QuickAction| {
+        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } = a {
+            calls.push(argv.join(" "));
+        }
+    };
+    let keys = [Key::Up, Key::Down, Key::Left, Key::Right, Key::Char(' '), Key::Enter, Key::Home, Key::End, Key::Escape];
+    for row in quick::shown(&live, &fresh()) {
+        for k in keys {
+            let mut q = fresh();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, later));
+        }
+    }
+    let mut q = fresh();
+    for k in [Key::Enter, Key::Up, Key::Enter, Key::Down, Key::Enter] {
+        record(q.key(&live, k, false, t));
+    }
+    let lines = quick::lines(&live, &fresh()).len() as u16;
+    for y in 0..lines {
+        for x in 0..quick::WIDTH + 2 {
+            for b in [Button::Left, Button::Right, Button::Middle] {
+                let mut q = fresh();
+                record(q.press(&live, (x, y), b, t));
+                record(q.press(&live, (x, y), b, later));
+            }
+            for steps in [-1, 1, -3] {
+                record(fresh().scroll(&live, Some((x, y)), steps, t));
+            }
+        }
+    }
+    // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
+    // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
+    let line = |a: &QuickAction| match a {
+        QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } => Some(argv.join(" ")),
+        _ => None,
+    };
+    let soon = t + Duration::from_millis(1);
+    let (mut by_due, mut by_flush) = (Vec::new(), Vec::new());
+    for row in quick::shown(&live, &fresh()) {
+        for k in keys {
+            let mut q = fresh();
+            q.selected = row;
+            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, soon));
+            by_flush.extend(q.clone().flush().iter().filter_map(line));
+            by_due.extend(q.due(t + quick::COALESCE).run.iter().filter_map(line));
+            by_flush.extend(q.flush().iter().filter_map(line));
+        }
+    }
+    for paced in [
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 74%",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 54%",
+        "brightnessctl --class=backlight --device=intel_backlight set 60%",
+        "brightnessctl --class=backlight --device=intel_backlight set 40%",
+    ] {
+        assert!(by_due.iter().any(|c| c == paced), "{paced} never sent by due(): {by_due:?}");
+        assert!(by_flush.iter().any(|c| c == paced), "{paced} never sent by flush(): {by_flush:?}");
+    }
+    calls.extend(by_due);
+    calls.extend(by_flush);
+    // Fix S1: absolute levels only, 0 to 100 (`min` up); never a relative step.
+    let percent = |n: &str, min: u8| {
+        n.strip_suffix('%')
+            .filter(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|d| d.parse::<u8>().ok())
+            .is_some_and(|p| (min..=100).contains(&p))
+    };
+    let configured =
+        ["fake-keep-awake", "fake-night --toggle", "fake-logout", "loginctl lock-session", "systemctl reboot", "systemctl poweroff"];
+    for c in &calls {
+        let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
+            ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
+            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
+            ["wpctl", "set-default", id] => ["99", "122"].contains(id),
+            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
+            ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
+            _ => configured.contains(&c.as_str()),
+        };
+        assert!(ok, "command outside the allowlist: {c}");
+        assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
+    }
+    for expected in [
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 69%",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 59%",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 50%",
+        "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
+        "wpctl set-default 99",
+        "brightnessctl --class=backlight --device=intel_backlight set 55%",
+        "brightnessctl --class=backlight --device=intel_backlight set 45%",
+        "brightnessctl --class=backlight --device=intel_backlight set 50%",
+        "powerprofilesctl set performance",
+        "fake-keep-awake",
+        "fake-night --toggle",
+        "fake-logout",
+        "loginctl lock-session",
+        "systemctl reboot",
+        "systemctl poweroff",
+    ] {
+        assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
+    }
+}
+
+/// Quick spec § 6: no panic in the panel's production code.
+#[test]
+fn the_quick_panel_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Quick spec § 5: whatever closes the panel (Escape, an outside click, a restyle, the output gone,
+/// a replacing popup), the sound thread goes back to its own scope and the panel's timer goes; a
+/// do-not-disturb change from anywhere repaints its row. No fake Wayland popup can be closed every
+/// way in a unit test: the wiring is checked in the source.
+#[test]
+fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify_app.rs"));
+    let close = function_body(&popup, "pub fn popup_close(");
+    assert!(close.contains("self.quick_closed()"), "popup_close must let the quick panel go: {close}");
+    // Fix S1: a slider level still waiting for its window is sent before the panel's body goes.
+    let (flush, take) = (close.find("self.quick_flush()"), close.find("self.popup.take()"));
+    assert!(matches!((flush, take), (Some(f), Some(t)) if f < t), "popup_close flushes the sliders first: {close}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
+    let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
+    assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
+}
+
+/// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
+/// press: both repeat paths raise `key_repeat` around `key_event`.
+#[test]
+fn the_keyboards_own_repeat_is_told_from_a_press() {
+    let files = source_files();
+    let popup = production_code(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
+    for f in ["pub(crate) fn keyboard_acquire(", "fn repeat_key("] {
+        let body = function_body(&popup, f);
+        let (raised, lowered) = (body.find("key_repeat = true"), body.find("key_repeat = false"));
+        let event = body.find("key_event(");
+        assert!(matches!((raised, event, lowered), (Some(r), Some(e), Some(l)) if r < e && e < l), "{f}: {body}");
     }
 }
