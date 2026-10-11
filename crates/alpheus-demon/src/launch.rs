@@ -73,9 +73,12 @@ pub enum Mail {
     Stop,
 }
 
-/// bar.toml, read at startup, and its warnings to log.
+/// bar.toml, read at startup, and its warnings to log. `[quick] wifi_more`'s default comes from
+/// launcher.toml's `terminal`, read once here (its warnings are the launcher's, logged at its own open).
 pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
-    let (config, warning) = BarConfig::load(&directory.join("bar.toml"));
+    let (mut config, warning) = BarConfig::load(&directory.join("bar.toml"));
+    let (launcher, _) = crate::launcher::config::LauncherConfig::load(&crate::launcher::config::config_path(directory));
+    crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
     (config, warning.into_iter().collect())
 }
 
@@ -1055,15 +1058,25 @@ mod tests {
 
     #[test]
     fn settings_absent_or_invalid() {
+        use crate::launcher::config::LauncherConfig;
         let d = std::env::temp_dir().join(format!("alpheus-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
+        let mut expected = BarConfig::default();
+        crate::config::resolve_wifi_more(&mut expected.quick, &LauncherConfig::default().terminal);
         let (c, w) = settings(&d);
-        assert_eq!((c, w.len()), (BarConfig::default(), 0));
+        assert_eq!((c, w.len()), (expected.clone(), 0));
+        assert_eq!(expected.quick.wifi_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui".into()]), "More… defaults to nmtui");
         std::fs::write(d.join("bar.toml"), "modules = [\"weather\"]").unwrap();
         let (c, w) = settings(&d);
-        assert_eq!(c, BarConfig::default());
+        assert_eq!(c, expected, "defaults, More… resolved all the same");
         assert!(w.iter().any(|m| m.contains("bar.toml")), "{w:?}");
+        // Quick Wi-Fi spec § 4: the launcher's terminal, read once at startup.
+        std::fs::write(d.join("bar.toml"), "height = 22\n").unwrap();
+        std::fs::write(d.join("launcher.toml"), "terminal = [\"alacritty\", \"-e\"]\n").unwrap();
+        assert_eq!(settings(&d).0.quick.wifi_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui".into()]));
+        std::fs::write(d.join("bar.toml"), "[quick]\nwifi_more = []\n").unwrap();
+        assert_eq!(settings(&d).0.quick.wifi_more, Some(vec![]), "given in bar.toml: kept");
         let _ = std::fs::remove_dir_all(&d);
     }
 

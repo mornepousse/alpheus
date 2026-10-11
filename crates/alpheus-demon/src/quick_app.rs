@@ -167,6 +167,7 @@ impl App {
         let focus = match verb {
             QuickVerb::Top => Focus::Top,
             QuickVerb::Sound => Focus::Sound,
+            QuickVerb::Wifi => Focus::Wifi,
         };
         let qh = self.qh.clone();
         self.quick_toggle(&qh, None, focus);

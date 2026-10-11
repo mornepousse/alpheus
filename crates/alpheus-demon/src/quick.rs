@@ -67,17 +67,24 @@ const REACH: u16 = 2;
 /// Where the panel opens (spec § 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// The first row: a click on the network or Bluetooth module (their own sections come in
-    /// deliveries 2 and 3), or the bare verb.
+    /// The first row: a click on the Bluetooth module (its section comes in delivery 3), or the
+    /// bare verb.
     Top,
     /// The volume row: a click on the volume module, or `--quick sound`.
     Sound,
+    /// The Wi-Fi row, its detail opened once the Wi-Fi state arrives (quick Wi-Fi spec § 1): a
+    /// click on the network module, or `--quick wifi`. Without a Wi-Fi row, the first row.
+    Wifi,
 }
 
 impl Focus {
     /// The section a left click on `target` opens.
     pub fn of(target: &Target) -> Focus {
-        if *target == Target::Module(ModuleId::Volume) { Focus::Sound } else { Focus::Top }
+        match target {
+            Target::Module(ModuleId::Volume) => Focus::Sound,
+            Target::Module(ModuleId::Network) => Focus::Wifi,
+            _ => Focus::Top,
+        }
     }
 }
 
@@ -1247,7 +1254,8 @@ mod tests {
     #[test]
     fn the_section_asked_for_is_selected_at_open() {
         assert_eq!(Focus::of(&Target::Module(ModuleId::Volume)), Focus::Sound);
-        assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Top);
+        assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "quick Wi-Fi spec § 1");
+        assert_eq!(quick(&World::full(), Focus::Wifi).selected, Row::Volume, "no Wi-Fi row (yet): the first row");
         assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Top);
         let w = World::full();
         assert_eq!(quick(&w, Focus::Sound).selected, Row::Volume);
