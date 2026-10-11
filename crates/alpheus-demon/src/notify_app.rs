@@ -118,6 +118,8 @@ impl App {
         if self.notifications().is_none() && self.bar.notifications.is_some() {
             self.bell_without_server();
         }
+        // The quick panel's row follows, whichever of the four paths changed it (quick spec § 2).
+        self.quick_refresh();
     }
 
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).

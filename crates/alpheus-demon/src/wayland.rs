@@ -8,6 +8,7 @@ use crate::actions::{self, Button, Wheel};
 use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::calendar::{Calendar, locale_first_day};
 use crate::clock::LocalTime;
+use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
 use crate::keys::Mods;
@@ -22,7 +23,8 @@ use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::panel::{self, Panel, PanelAction};
 use crate::placement::{Placement, input_rect};
-use crate::popup::{Anchor as PopupAnchor, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
+use crate::quick::Focus;
 use crate::state::{Bar, Msg};
 use crate::tray::bus::SessionBus;
 use crate::tray::hover::{self, Hover, HoverChange};
@@ -350,7 +352,7 @@ pub(crate) struct Surface {
     /// hold (`still_placing`).
     answered: u8,
     /// Last grid drawn: no redraw if nothing changed.
-    last: Option<Grid>,
+    pub(crate) last: Option<Grid>,
     /// SHM buffers reused across redraws, each with the physical size it
     /// was created at — `plan_buffer` needs it to decide whether a buffer
     /// still fits. At most two in steady state: the compositor keeps the
@@ -507,6 +509,14 @@ pub struct App {
     pub(crate) osd_open: Option<OpenOsd>,
     /// The pill's hide timer: armed only while it shows.
     pub(crate) osd_timer: DeadlineTimer,
+    /// The quick panel's timer (quick task 6): armed only while the panel is open and a re-read
+    /// (150 ms, 300 ms) or the reboot question (3 s) is pending.
+    pub(crate) quick_timer: DeadlineTimer,
+    /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
+    /// asks for them while open. None without a sound source.
+    pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
+    /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
+    pub(crate) key_repeat: bool,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
     pub(crate) tooltip_item: Option<ItemKey>,
     /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
@@ -683,6 +693,9 @@ impl App {
             osd: Osd::default(),
             osd_open: None,
             osd_timer: DeadlineTimer::new(),
+            quick_timer: DeadlineTimer::new(),
+            sound_tap: None,
+            key_repeat: false,
             tooltip_item: None,
             last_icon: None,
             menu_for: None,
@@ -1154,14 +1167,16 @@ impl App {
         true
     }
 
-    /// The module popup a press of `b` at `x` on bar `i` toggles, and its module's cells (its anchor).
-    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor)> {
+    /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
+    /// and the zone's target (the quick panel's section).
+    fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
+        let quick = self.bar.config.modules.contains(&ModuleId::Quick);
         let s = &self.surfaces[i];
         let zone = s.last.as_ref()?.zone_at(column)?;
-        let popup = ModulePopup::of(&zone.target, b)?;
-        Some((popup, PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }))
+        let popup = ModulePopup::of(&zone.target, b, quick)?;
+        Some((popup, PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
     }
 
     /// Left press on the clock zone: toggles the calendar under it (a second click closes it).
@@ -1176,7 +1191,7 @@ impl App {
         let rows = crate::list::padded(&calendar.render());
         let month = crate::popup::calendar_month(&calendar);
         let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Calendar(calendar), columns, height, true) {
+        if self.popup_open(qh, anchor, PopupBody::Calendar(calendar), columns, height, Input::Grab) {
             self.popup_paint(rows);
             log(&format!("calendar shown {month}"));
         }
@@ -1198,7 +1213,7 @@ impl App {
             });
         let Some((popup, rows, heading)) = built else { return };
         let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, true) {
+        if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, Input::Grab) {
             self.popup_paint(rows);
             self.mpris_do(|m, out| m.popup_opened(out));
             self.media_timer_sync();
@@ -1330,7 +1345,7 @@ impl App {
         let Some((p, rows, card)) = built else { return };
         let entries = p.entries;
         let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Panel(p), columns, height, true) {
+        if self.popup_open(qh, anchor, PopupBody::Panel(p), columns, height, Input::Grab) {
             self.popup_paint(rows);
             // Only once it shows: a refused open leaves the count on the bell.
             self.notify_do(|n| n.center_mut().mark_read());
@@ -1435,11 +1450,12 @@ impl App {
     /// press (`pointer_frame` already closed it, as a click outside, before
     /// calling here): the same press must not reopen it (`toggles_launcher`).
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
-        if let Some((popup, anchor)) = self.module_popup_at(i, x, b) {
+        if let Some((popup, anchor, target)) = self.module_popup_at(i, x, b) {
             match popup {
                 ModulePopup::Calendar => self.calendar_toggle(qh, anchor),
                 ModulePopup::Media => self.media_toggle(qh, anchor),
                 ModulePopup::Panel => self.panel_toggle(qh, anchor),
+                ModulePopup::Quick => self.quick_toggle(qh, Some(anchor), Focus::of(&target)),
             }
             return;
         }
@@ -1878,7 +1894,7 @@ impl PointerHandler for App {
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client, fact check 5): it is a click outside that popup —
                     // except a module popup's own second click: its toggle closes it.
-                    let pressed_popup = b.and_then(|b| self.module_popup_at(i, ev.position.0, b)).map(|(p, _)| p);
+                    let pressed_popup = b.and_then(|b| self.module_popup_at(i, ev.position.0, b)).map(|(p, _, _)| p);
                     let toggles_own_popup =
                         pressed_popup.is_some() && pressed_popup == self.popup.as_ref().and_then(|o| o.body.module_popup());
                     if self.popup.is_some() {
@@ -2071,7 +2087,7 @@ impl App {
         let rows = crate::list::padded(&[hover::tooltip_row(&text, room)]);
         let qh = app.qh.clone();
         let (columns, height) = rows.cells();
-        if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, false) {
+        if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, Input::Tooltip) {
             app.tooltip_item = Some(key);
             app.popup_paint(rows);
             log("tooltip shown");
@@ -2177,7 +2193,7 @@ impl App {
         let grid = m.render(layout, columns, rows);
         let qh = self.qh.clone();
         let (columns, rows) = grid.cells();
-        if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, true) {
+        if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, Input::Grab) {
             self.popup_paint(grid);
             log(&format!("menu shown for {}{}", key.owner, key.path));
         } else {
@@ -2187,7 +2203,7 @@ impl App {
     }
 
     /// Cells a popup may take under bar `i`: its columns, and the output's rows below the bar.
-    fn popup_room(&self, i: usize) -> (u16, u16) {
+    pub(crate) fn popup_room(&self, i: usize) -> (u16, u16) {
         let s = &self.surfaces[i];
         let columns = s.last.as_ref().map_or(0, Grid::width);
         let height = self.bar.config.height.max(1);

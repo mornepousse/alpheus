@@ -88,19 +88,27 @@ fn tab(m: ModuleId) -> Option<&'static str> {
     }
 }
 
+/// The TUI tab of `m`, through `[actions] open_tab`.
+fn open_tab(bar: &Bar, m: ModuleId) -> Option<Vec<String>> {
+    let t = tab(m)?;
+    Some(bar.config.actions.open_tab.iter().map(|a| substitute(a, &[("{tab}", t)])).collect())
+}
+
 fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
+    let quick = bar.config.modules.contains(&ModuleId::Quick);
     match (m, b) {
         // Opens the launcher inside the daemon (`toggles_launcher`): no command.
         (ModuleId::Launcher, _) => None,
+        // With the quick panel (quick spec § 1): the left click opens it (`ModulePopup::Quick`), the
+        // right click takes over the TUI tab the left click used to open.
+        (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Left) if quick => None,
+        (ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth, Button::Right) if quick => open_tab(bar, m),
         // -l 1.0: never beyond 100 %, like the TUI.
         (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
         (ModuleId::Resources, Button::Left) => Some(bar.config.actions.resources.clone()),
-        (m, Button::Left) => {
-            let t = tab(m)?;
-            Some(bar.config.actions.open_tab.iter().map(|a| substitute(a, &[("{tab}", t)])).collect())
-        }
+        (m, Button::Left) => open_tab(bar, m),
         _ => None,
     }
 }
@@ -465,9 +473,15 @@ mod tests {
         b
     }
 
+    /// The bar as it was before the quick panel: `quick` out of `modules`.
+    fn without_quick(mut b: Bar) -> Bar {
+        b.config.modules.retain(|m| *m != ModuleId::Quick);
+        b
+    }
+
     #[test]
     fn volume_clicks_tab_mute_and_wheel() {
-        let b = full();
+        let b = without_quick(full());
         let v = Target::Module(ModuleId::Volume);
         assert_eq!(command(&b, "HDMI-A-1", &v, Button::Left), argv(&["alpheus-toggle", "sound"]));
         assert_eq!(command(&b, "HDMI-A-1", &v, Button::Right), argv(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"]));
@@ -484,7 +498,7 @@ mod tests {
 
     #[test]
     fn indicators_open_their_tab_resources_open_the_monitor() {
-        let b = full();
+        let b = without_quick(full());
         for (m, tab) in [(ModuleId::Network, "network"), (ModuleId::Bluetooth, "bluetooth"), (ModuleId::Battery, "home")] {
             let t = Target::Module(m);
             assert_eq!(command(&b, "eDP-1", &t, Button::Left), argv(&["alpheus-toggle", tab]), "{m:?}");
@@ -499,7 +513,7 @@ mod tests {
 
     #[test]
     fn click_commands_configurable_in_bar_toml() {
-        let mut b = full();
+        let mut b = without_quick(full());
         b.config.actions.open_tab = vec!["my-panel".into(), "--tab={tab}".into(), "{output}".into()];
         b.config.actions.resources = vec!["foot".into(), "htop".into()];
         assert_eq!(
@@ -508,6 +522,21 @@ mod tests {
             "only {{tab}} is a placeholder here"
         );
         assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Left), argv(&["foot", "htop"]));
+    }
+
+    /// Quick spec § 1: with the panel, the left click is its popup's (no command), the right click
+    /// takes over the TUI tab on the three modules; the wheel and the battery are unchanged.
+    #[test]
+    fn with_the_quick_panel_the_right_click_opens_the_tab() {
+        let b = full();
+        for (m, tab) in [(ModuleId::Volume, "sound"), (ModuleId::Network, "network"), (ModuleId::Bluetooth, "bluetooth")] {
+            let t = Target::Module(m);
+            assert_eq!(command(&b, "eDP-1", &t, Button::Left), None, "{m:?}: the panel's");
+            assert_eq!(command(&b, "eDP-1", &t, Button::Right), argv(&["alpheus-toggle", tab]), "{m:?}");
+        }
+        let v = Target::Module(ModuleId::Volume);
+        assert_eq!(command(&b, "eDP-1", &v, Button::WheelUp), argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%+"]));
+        assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Battery), Button::Left), argv(&["alpheus-toggle", "home"]));
     }
 
     #[test]
@@ -527,7 +556,7 @@ mod tests {
 
     #[test]
     fn right_click_on_the_drawn_volume_mutes() {
-        let b = full();
+        let b = without_quick(full());
         let g = b.grid("HDMI-A-1", 160);
         let col = g.cells().iter().position(|c| c.ch == crate::segments::VOLUME_HIGH).unwrap();
         let x = col as f64 * 8.0 + 4.0;

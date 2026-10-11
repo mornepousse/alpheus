@@ -671,7 +671,9 @@ pub fn run() -> i32 {
     // raises `WindowsFeed`'s flag, fed to an open launcher at most once the
     // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
-        channel::Event::Msg(Mail::Bar(m)) => {
+        channel::Event::Msg(Mail::Bar(mut m)) => {
+            // The quick panel first (quick task 6): a sound message's sink list goes to it, or nowhere.
+            let quick = state.quick_take(&mut m);
             // The OSD reads every sound message first (osd task 3): its trigger rules compare it
             // with the last one; the bar then keeps it.
             if let Msg::Sound(s) = &m {
@@ -679,6 +681,9 @@ pub fn run() -> i32 {
             }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);
+            if quick {
+                state.quick_refresh();
+            }
         }
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
@@ -741,8 +746,9 @@ pub fn run() -> i32 {
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        // Shared with the quick panel (task 6 keeps a clone in `App`).
+        // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
         let tap = Arc::new(crate::pipewire::SoundTap::default());
+        state.sound_tap = Some(tap.clone());
         sources::sound::start(exec.clone(), scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {

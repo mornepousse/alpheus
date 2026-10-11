@@ -1,4 +1,5 @@
-//! The laptop's backlight, read once per `alpheus-launch --osd brightness` (OSD spec § 2):
+//! The laptop's backlight, read once per `alpheus-launch --osd brightness` (OSD spec § 2), and when
+//! the quick panel opens (or 150 ms after its brightness command):
 //! `<backlight_dir>/<device>/brightness` and `max_brightness`, each a small number. Read only and
 //! capped (`read_capped`); never watched, never written. The brightness keys change it outside
 //! alpheus, then call the verb.
@@ -32,13 +33,20 @@ pub fn device(dir: &Path, wanted: &str) -> Option<PathBuf> {
     names.into_iter().map(|n| dir.join(n)).find(|d| d.is_dir())
 }
 
+/// The device's name (what `brightnessctl --device=` takes) and its level, read once (the quick
+/// panel's row, spec § 5); None as `level`.
+pub fn named_level(dir: &Path, wanted: &str) -> Option<(String, u8)> {
+    let d = device(dir, wanted)?;
+    let name = d.file_name()?.to_str()?.to_string();
+    let brightness = read_capped(&d.join("brightness")).ok()?;
+    let max = read_capped(&d.join("max_brightness")).ok()?;
+    Some((name, osd::brightness_percent(&brightness, &max)?))
+}
+
 /// The backlight's level in percent, read once; None without a device, or with a file that is not
 /// a small number, or a zero maximum.
 pub fn level(dir: &Path, wanted: &str) -> Option<u8> {
-    let d = device(dir, wanted)?;
-    let brightness = read_capped(&d.join("brightness")).ok()?;
-    let max = read_capped(&d.join("max_brightness")).ok()?;
-    osd::brightness_percent(&brightness, &max)
+    named_level(dir, wanted).map(|(_, p)| p)
 }
 
 #[cfg(test)]
@@ -126,6 +134,15 @@ mod tests {
         // SAFETY: a valid NUL-terminated path; mkfifo only creates the node.
         assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
         assert_eq!(level(&root, "fifo"), None, "a FIFO is not a regular file: refused, never read (it would block)");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_named_level_says_which_device() {
+        let root = tree("named");
+        fake(&root, "intel_backlight", "9696\n", "19393\n");
+        assert_eq!(named_level(&root, ""), Some(("intel_backlight".to_string(), 50)), "brightnessctl's --device");
+        assert_eq!(named_level(&root, "nope"), None);
         let _ = fs::remove_dir_all(&root);
     }
 

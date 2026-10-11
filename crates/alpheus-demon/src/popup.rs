@@ -25,6 +25,7 @@ use crate::log::write as log;
 use crate::media_popup::{self, MediaPopup};
 use crate::painter::{Frame, FrameInk};
 use crate::panel::{self, Panel};
+use crate::quick::{Quick, QuickAction};
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
@@ -193,6 +194,19 @@ pub fn bar_exclusive_during_grab(on_hyprland: bool) -> bool {
     !on_hyprland
 }
 
+/// How a popup takes input (quick spec § 1, decision 1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    /// A tooltip: neither a grab nor the keyboard.
+    Tooltip,
+    /// Menus, the calendar, the media popup, the panels opened by a click: an xdg grab with the
+    /// press's serial, the keyboard, closed by a click elsewhere.
+    Grab,
+    /// The quick panel opened by `alpheus-launch --quick`: no press to grab with, so no grab; the
+    /// bar's layer surface goes `Exclusive` on every compositor, so the keys reach it.
+    Keys,
+}
+
 /// What a popup shows (filled by tasks 16–18); dropped whole on close.
 pub enum PopupBody {
     Menu(Menu),
@@ -203,6 +217,8 @@ pub enum PopupBody {
     Media(MediaPopup),
     /// The notifications panel under the bell (the media card, the history, DND, Clear all).
     Panel(Panel),
+    /// The quick settings panel (quick spec).
+    Quick(Quick),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -215,15 +231,19 @@ pub enum ModulePopup {
     Media,
     /// The bell's panel (notifications task 7).
     Panel,
+    /// The quick settings panel: the volume, network and Bluetooth modules (quick task 6).
+    Quick,
 }
 
 impl ModulePopup {
-    /// The popup a press of `b` on `target` toggles: a left press on its module's zone.
-    pub fn of(target: &Target, b: Button) -> Option<ModulePopup> {
+    /// The popup a press of `b` on `target` toggles: a left press on its module's zone. `quick`:
+    /// the quick module is in `modules` (without it, those three modules keep their own clicks).
+    pub fn of(target: &Target, b: Button, quick: bool) -> Option<ModulePopup> {
         match (target, b) {
             (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
             (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
             (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
+            (Target::Module(ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth), Button::Left) if quick => Some(ModulePopup::Quick),
             _ => None,
         }
     }
@@ -236,6 +256,7 @@ impl PopupBody {
             PopupBody::Calendar(_) => Some(ModulePopup::Calendar),
             PopupBody::Media(_) => Some(ModulePopup::Media),
             PopupBody::Panel(_) => Some(ModulePopup::Panel),
+            PopupBody::Quick(_) => Some(ModulePopup::Quick),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -253,13 +274,17 @@ pub enum PopupPointer {
 pub struct OpenPopup {
     pub anchor: Anchor,
     pub body: PopupBody,
-    /// The keyboard and an outside click (menus, the calendar); false for a tooltip.
+    /// The keyboard and closing on a click on the bar (menus, the calendar, the panels, a keyed
+    /// quick panel too); false for a tooltip.
     pub grab: bool,
     /// The bar's `wl_surface` this popup was opened under (cloned from its `layer.wl_surface()`
     /// at `popup_open`): `popup_close`/`popup_output_gone` reset THIS surface's keyboard
     /// interactivity, by identity — never by `anchor.output` or a bar's `name`, which
     /// `update_output` can change after the fact, or which two bars could briefly share.
     parent: wl_surface::WlSurface,
+    /// Opened without an xdg grab (`Input::Keys`): the bar went `Exclusive` on every compositor,
+    /// and goes back on close.
+    keyed: bool,
     popup: Popup,
     /// Its own pool: dropped with it (a SlotPool never shrinks).
     pool: SlotPool,
@@ -393,10 +418,11 @@ pub(crate) fn calendar_month(c: &Calendar) -> String {
 impl App {
     /// Closes any open popup (Replaced) and the launcher (it closes with ClickOutside first, decision of
     /// the launcher plan), then opens `body` under `anchor`, `columns` × `rows` cells (the frame's margin
-    /// comes on top: `Fonts::frame`). `grab`: take the
-    /// keyboard and close on an outside click (menus, calendar; uses `last_press`'s serial); false for a
-    /// tooltip. false when the output's bar is not configured.
-    pub fn popup_open(&mut self, qh: &QueueHandle<App>, anchor: Anchor, body: PopupBody, columns: u16, rows: u16, grab: bool) -> bool {
+    /// comes on top: `Fonts::frame`). `input`: `Grab` takes the keyboard and closes on an outside
+    /// click (uses `last_press`'s serial); `Keys` takes the keyboard without a grab (the quick verb);
+    /// `Tooltip` neither. false when the output's bar is not configured.
+    pub fn popup_open(&mut self, qh: &QueueHandle<App>, anchor: Anchor, body: PopupBody, columns: u16, rows: u16, input: Input) -> bool {
+        let (grab, keyed) = (input != Input::Tooltip, input == Input::Keys);
         // Every refusal first (moved above the launcher/popup closes below, task 15 fix round:
         // `SlotPool::new` and `XdgPositioner::new` can fail too, and must refuse here, before
         // anything already shown is torn down): a popup that cannot open closes neither the
@@ -405,10 +431,10 @@ impl App {
             return false;
         }
         let Some(i) = self.bar_surface(&anchor.output) else { return false };
-        let serial = match (grab, self.last_press) {
-            (true, Some((serial, _, _))) => Some(serial),
-            (true, None) => return false, // a grab needs the press that asked for it
-            (false, _) => None,
+        let serial = match (input, self.last_press) {
+            (Input::Grab, Some((serial, _, _))) => Some(serial),
+            (Input::Grab, None) => return false, // a grab needs the press that asked for it
+            _ => None,
         };
         let scale = self.surfaces[i].scale.max(1);
         let height = self.bar.config.height;
@@ -443,9 +469,10 @@ impl App {
         // Closing the launcher or a popup never touches `surfaces`: `i` still points at the bar.
         let layer = self.surfaces[i].layer.clone();
         let parent = layer.wl_surface().clone();
-        if grab && self.exclusive_during_grab {
+        if grab && (self.exclusive_during_grab || keyed) {
             // Fact check 5: committed before the popup exists, so the bar's surface holds the
-            // keyboard focus while the grab lasts (back to None on close).
+            // keyboard focus while the grab lasts (back to None on close). A keyed popup has no
+            // grab to hand it the keyboard: the bar goes Exclusive on every compositor.
             layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             layer.commit();
         }
@@ -458,7 +485,7 @@ impl App {
                 log(&format!("popup: {e}"));
                 // Only what was set: on Hyprland nothing was (`exclusive_during_grab`), and a
                 // needless commit on the bar is a needless roundtrip of its own.
-                if grab && self.exclusive_during_grab {
+                if grab && (self.exclusive_during_grab || keyed) {
                     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                     layer.commit();
                 }
@@ -476,6 +503,7 @@ impl App {
             body,
             grab,
             parent,
+            keyed,
             popup,
             pool,
             buffers: Vec::new(),
@@ -605,8 +633,9 @@ impl App {
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
+        let quick = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Quick(_)));
         let Some(open) = self.popup.take() else { return };
-        let (grab, parent) = (open.grab, open.parent.clone());
+        let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
         // that no longer exists (fix round 2026-10-06, item 3) — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
@@ -614,6 +643,10 @@ impl App {
             self.tooltip_item = None;
         }
         drop(open);
+        if quick {
+            // Whatever the reason: the sound thread back to its own scope, the panel's timer gone.
+            self.quick_closed();
+        }
         if media {
             // Whatever the reason (Escape, outside click, restyle, output gone, replaced): the
             // Seeked rule goes and the tick with it — `media_timer_sync` sees no popup now.
@@ -625,8 +658,9 @@ impl App {
             // 15 fix round, CRITICAL): a name can change after the fact (`update_output`) or be
             // shared for a moment by two bars, and the wrong bar — or none — would stay stuck
             // `Exclusive`, holding Mae's keyboard.
-            // Only if `popup_open` set it (`exclusive_during_grab`: not on Hyprland).
-            let bar = if self.exclusive_during_grab { position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) } else { None };
+            // Only if `popup_open` set it (`exclusive_during_grab`: not on Hyprland, unless keyed).
+            let bar =
+                if self.exclusive_during_grab || keyed { position_by(&self.surfaces, |s| s.layer.wl_surface(), &parent) } else { None };
             if let Some(i) = bar {
                 let layer = &self.surfaces[i].layer;
                 layer.set_keyboard_interactivity(KeyboardInteractivity::None);
@@ -671,6 +705,12 @@ impl App {
             PopupBody::Panel(_) => {
                 let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
                 self.panel_action(action);
+            }
+            // ↑ ↓ ← →, Space, Enter, Escape, Home, End (quick spec § 3); the repeat tells a held key.
+            PopupBody::Quick(_) => {
+                let (repeat, now) = (self.key_repeat, Instant::now());
+                let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
+                self.quick_action(action);
             }
             PopupBody::Tooltip(_) => {}
         }
@@ -745,6 +785,16 @@ impl App {
                 }
                 _ => {}
             },
+            // A press acts on its row; the wheel steps a slider or moves the window (quick spec § 3).
+            PopupBody::Quick(_) => {
+                let now = Instant::now();
+                let action = match (kind, cell) {
+                    (PopupPointer::Press(b), Some(c)) => self.quick_with(|q, live| q.press(live, c, b, now)),
+                    (PopupPointer::Scroll(steps), _) => self.quick_with(|q, live| q.scroll(live, cell, steps, now)),
+                    _ => QuickAction::Nothing,
+                };
+                self.quick_action(action);
+            }
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
                 if let PopupPointer::Press(_) = kind {
@@ -826,7 +876,12 @@ impl App {
             return;
         }
         let (Some(handle), Some(seat)) = (self.loop_handle.clone(), self.seat.clone()) else { return };
-        let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| app.key_event(event));
+        let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
+            // SCTK's own repeat: the quick panel lets only the arrows repeat (quick spec § 3).
+            app.key_repeat = true;
+            app.key_event(event);
+            app.key_repeat = false;
+        });
         match self.seats.get_keyboard_with_repeat(qh, &seat, None, handle, repeat) {
             Ok(k) => self.keyboard = Some(k),
             // UnsupportedCapability just means the seat has no keyboard yet
@@ -944,7 +999,9 @@ impl KeyboardHandler for App {
     /// wl_keyboard v10 repeats (compositor-side); calloop repeats go through
     /// the callback given at bind time, to the same place.
     fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
+        self.key_repeat = true;
         self.key_event(event);
+        self.key_repeat = false;
     }
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
@@ -999,21 +1056,37 @@ mod tests {
         use crate::config::ModuleId;
         use crate::grid::Target;
         let clock = Target::Module(ModuleId::Clock);
-        assert_eq!(ModulePopup::of(&clock, Button::Left), Some(ModulePopup::Calendar));
+        assert_eq!(ModulePopup::of(&clock, Button::Left, false), Some(ModulePopup::Calendar));
         for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
-            assert_eq!(ModulePopup::of(&clock, b), None, "{b:?}");
+            assert_eq!(ModulePopup::of(&clock, b, false), None, "{b:?}");
         }
-        assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Volume), Button::Left), None);
+        assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Volume), Button::Left, false), None);
         assert_eq!(PopupBody::Tooltip("x".into()).module_popup(), None, "a tooltip belongs to no module");
         // The media module's left press toggles its own popup (media task 7); its middle button and
         // wheel are controls, never a popup.
         let media = Target::Module(ModuleId::Media);
-        assert_eq!(ModulePopup::of(&media, Button::Left), Some(ModulePopup::Media));
+        assert_eq!(ModulePopup::of(&media, Button::Left, false), Some(ModulePopup::Media));
         for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
-            assert_eq!(ModulePopup::of(&media, b), None, "{b:?}");
+            assert_eq!(ModulePopup::of(&media, b, false), None, "{b:?}");
         }
         let body = PopupBody::Media(MediaPopup { selected: 0, button: 1, chosen: None });
         assert_eq!(body.module_popup(), Some(ModulePopup::Media), "a second press on the module only closes it");
+    }
+
+    /// Quick spec § 1: with the module, a left press on the volume, the network or Bluetooth
+    /// toggles the panel (one popup for the three, decision 2); the right press is the TUI tab's;
+    /// the battery keeps its click.
+    #[test]
+    fn a_left_press_on_volume_network_or_bluetooth_toggles_the_quick_panel() {
+        use crate::config::ModuleId;
+        use crate::grid::Target;
+        for m in [ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth] {
+            let t = Target::Module(m);
+            assert_eq!(ModulePopup::of(&t, Button::Left, true), Some(ModulePopup::Quick), "{m:?}");
+            assert_eq!(ModulePopup::of(&t, Button::Left, false), None, "{m:?}: without the module, today's click");
+            assert_eq!(ModulePopup::of(&t, Button::Right, true), None, "{m:?}");
+        }
+        assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Battery), Button::Left, true), None, "the battery keeps its click");
     }
 
     fn under(output: &str, start: u16, end: u16) -> Anchor {

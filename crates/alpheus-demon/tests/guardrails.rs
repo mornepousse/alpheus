@@ -10,7 +10,7 @@ use alpheus_commun::exec::{CaptureLimits, Captured, ExecError, Executor, Output,
 use alpheus_demon::actions::{Button, command, run};
 use alpheus_demon::appearance::SETTING_RULE;
 use alpheus_demon::compositor::{CompositorState, Toplevel, Window, Workspace};
-use alpheus_demon::config::{BarConfig, QuickConfig, ToggleConfig};
+use alpheus_demon::config::{BarConfig, ModuleId, QuickConfig, ToggleConfig};
 use alpheus_demon::keys::Key;
 use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
@@ -81,21 +81,27 @@ fn full_bar() -> Bar {
     b
 }
 
-/// Every zone of a bar where every module is shown, every button: only the
-/// commands of the allowlist (Global Constraints), and each of them reached.
+/// Every zone of a bar where every module is shown, every button, with the quick panel and without
+/// it: only the commands of the allowlist, and each of them reached (the mute on the bar without the
+/// panel, whose right click is the TUI tab's).
 #[test]
 fn every_click_on_a_full_bar_stays_on_the_allowlist() {
-    let b = full_bar();
-    let fake = FakeExecutor::new();
-    for output in ["eDP-1", "HDMI-A-1"] {
-        let g = b.grid(output, 240);
-        for z in g.zones() {
-            for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
-                if let Some(argv) = command(&b, output, &z.target, bt) {
-                    run(&fake, &argv);
+    let mut without_quick = full_bar();
+    without_quick.config.modules.retain(|m| *m != ModuleId::Quick);
+    let mut calls = Vec::new();
+    for b in [full_bar(), without_quick] {
+        let fake = FakeExecutor::new();
+        for output in ["eDP-1", "HDMI-A-1"] {
+            let g = b.grid(output, 240);
+            for z in g.zones() {
+                for bt in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                    if let Some(argv) = command(&b, output, &z.target, bt) {
+                        run(&fake, &argv);
+                    }
                 }
             }
         }
+        calls.extend(fake.calls());
     }
     let fixed = [
         "alpheus-toggle sound",
@@ -107,7 +113,6 @@ fn every_click_on_a_full_bar_stays_on_the_allowlist() {
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
     ];
-    let calls = fake.calls();
     for c in &calls {
         assert!(c.starts_with("wm-set workspace ") || fixed.contains(&c.as_str()), "command outside the allowlist: {c}");
         assert!(!c.to_lowercase().contains("dpms"), "{c}");
@@ -487,9 +492,9 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let opening = function_body(&popup, "pub fn popup_open(");
     assert!(
         opening.contains(
-            "if grab && self.exclusive_during_grab {\n                    layer.set_keyboard_interactivity(KeyboardInteractivity::None)"
+            "if grab && (self.exclusive_during_grab || keyed) {\n                    layer.set_keyboard_interactivity(KeyboardInteractivity::None)"
         ),
-        "popup_open's error path must only reset what it set: {opening}"
+        "popup_open's error path must only reset what it set (a keyed popup set it on every compositor): {opening}"
     );
 }
 
@@ -777,8 +782,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // (bar step 5, task 7), armed only while that popup is open and its player plays; the
         // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
         // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
-        // only while the pill shows.
-        ("wayland.rs", "Timer::", 6),
+        // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
+        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending.
+        ("wayland.rs", "Timer::", 7),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -1584,5 +1590,49 @@ fn every_quick_command_stays_on_the_allowlist() {
         "systemctl poweroff",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
+    }
+}
+
+/// Quick spec § 6: no panic in the panel's production code.
+#[test]
+fn the_quick_panel_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Quick spec § 5: whatever closes the panel (Escape, an outside click, a restyle, the output gone,
+/// a replacing popup), the sound thread goes back to its own scope and the panel's timer goes; a
+/// do-not-disturb change from anywhere repaints its row. No fake Wayland popup can be closed every
+/// way in a unit test: the wiring is checked in the source.
+#[test]
+fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify_app.rs"));
+    let close = function_body(&popup, "pub fn popup_close(");
+    assert!(close.contains("self.quick_closed()"), "popup_close must let the quick panel go: {close}");
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
+    let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
+    assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
+}
+
+/// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
+/// press: both repeat paths raise `key_repeat` around `key_event`.
+#[test]
+fn the_keyboards_own_repeat_is_told_from_a_press() {
+    let files = source_files();
+    let popup = production_code(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
+    for f in ["pub(crate) fn keyboard_acquire(", "fn repeat_key("] {
+        let body = function_body(&popup, f);
+        let (raised, lowered) = (body.find("key_repeat = true"), body.find("key_repeat = false"));
+        let event = body.find("key_event(");
+        assert!(matches!((raised, event, lowered), (Some(r), Some(e), Some(l)) if r < e && e < l), "{f}: {body}");
     }
 }

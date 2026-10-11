@@ -713,6 +713,27 @@ pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
     path
 }
 
+/// A program that appends one line, `<name> <its arguments>`, to `<runtime>/calls-<name>` and
+/// exits: what the quick panel ran, in order (never the real tool).
+pub fn fake_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the quick settings tests: records its arguments, nothing else.\nprintf '%s\\n' \"{name} $*\" >> '{}'\n",
+        calls.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// What `fake_recorder`'s `name` recorded, in order.
+pub fn recorded(sway: &Sway, name: &str) -> Vec<String> {
+    fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default().lines().map(String::from).collect()
+}
+
 /// Where the fake source's `run` records its arguments, in the runtime directory.
 pub const FAKE_RUN_MARKER: &str = "launched-fake-run";
 
