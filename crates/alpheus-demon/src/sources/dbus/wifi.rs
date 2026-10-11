@@ -148,6 +148,8 @@ pub struct WifiReader {
     saved: BTreeMap<String, Option<SavedWifi>>,
     /// The saved connections must be listed again: the detail opened, or one was added or removed.
     saved_stale: bool,
+    /// The last listing held every saved connection (at most MAX_SAVED of them).
+    saved_whole: bool,
     /// WIFI_RULES are on this connection.
     watching: bool,
     /// The last state read: one access point's change patches it.
@@ -319,14 +321,18 @@ impl WifiReader {
             self.reconcile_aps(bus, &nm, wireless.paths("AccessPoints"))?;
             if self.saved_stale {
                 // Listing failing (not absent) keeps the row and the access points; the saved list
-                // stays as it was (empty at the open) and is listed again at the next read.
+                // is listed again at the next read.
                 match self.reconcile_saved(bus, &nm) {
                     Ok(()) => self.saved_stale = false,
                     Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
                     Err(e) => self.note(&e),
                 }
             }
-            (Some(self.listed()), Some(self.saved.values().flatten().cloned().collect()))
+            // Only a whole, current list is sent: the panel takes the profiles it holds when an
+            // attempt begins as the ones never to delete, so a partial one (not listed yet, a failed
+            // listing, more than MAX_SAVED) is None, and then nothing is ever deleted.
+            let whole = !self.saved_stale && self.saved_whole;
+            (Some(self.listed()), whole.then(|| self.saved.values().flatten().cloned().collect()))
         } else {
             (None, None)
         };
@@ -384,6 +390,7 @@ impl WifiReader {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e),
         };
+        self.saved_whole = all.len() <= MAX_SAVED;
         let listed = &all[..all.len().min(MAX_SAVED)];
         self.saved.retain(|p, _| listed.contains(p));
         for p in listed {
@@ -748,6 +755,7 @@ mod tests {
         let (_, d) = detail(&mut bus);
         assert_eq!(d.access_points.map(|a| a.len()), Some(MAX_APS));
         assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetSettings ")).count(), MAX_SAVED);
+        assert_eq!(d.saved, None, "more than MAX_SAVED: not the whole list, so unknown");
     }
 
     /// Ruling P4: one access point or one profile that fails to read (a timeout) is left out; the
@@ -843,7 +851,7 @@ mod tests {
         bus.failing.insert(SETTINGS_PATH.into());
         let (mut r, d) = detail(&mut bus);
         assert!(d.active.is_some() && d.access_points.is_some_and(|a| a.len() == 3), "the row and the list kept");
-        assert_eq!(d.saved, Some(Vec::new()));
+        assert_eq!(d.saved, None, "not listed: unknown, never empty");
         assert!(r.logged);
         bus.failing.clear();
         let d = r.reread(&mut bus).unwrap().unwrap().device.unwrap();

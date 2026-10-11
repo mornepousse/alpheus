@@ -98,6 +98,11 @@ fn looks_like_bssid(ssid: &[u8]) -> bool {
     })
 }
 
+/// The actions that start an attempt (`Wifi::enter`, `send_password`): their `what`.
+pub fn starts_attempt(what: &str) -> bool {
+    what.starts_with("wifi connect")
+}
+
 /// `[quick] wifi_more`, resolved at startup; unresolved (a test's default) or empty: no `More…`.
 pub fn more(config: &QuickConfig) -> &[String] {
     config.wifi_more.as_deref().unwrap_or(&[])
@@ -208,9 +213,11 @@ impl Attempt {
         Attempt { ssid: ssid.to_vec(), until: now + CONNECT_TIMEOUT, activating: false, known, created: None, creates }
     }
 
-    /// NetworkManager's word: activated on its SSID ends it; an activating state is noted; failed
-    /// (120), or anything but activated once activating, is a failure; NetworkManager gone ends it.
-    /// The new profile is the first saved for its SSID that was not there when it began.
+    /// NetworkManager's word: activated on its SSID ends it; an activating state on its SSID is
+    /// noted (one on another network, an autoconnect, is not ours); failed (120), or, once ours was
+    /// activating, any other state but one whose access point could not be read, is a failure;
+    /// NetworkManager gone ends it. The new profile is the first saved for its SSID that was not
+    /// there when it began, both lists read whole (`known` None: never one).
     pub fn observe(&mut self, state: Option<&WifiState>) -> Outcome {
         let Some(d) = state.and_then(|s| s.device.as_ref()) else { return Outcome::Gone };
         if self.created.is_none()
@@ -218,14 +225,22 @@ impl Attempt {
         {
             self.created = saved.iter().find(|p| p.ssid == self.ssid && !known.contains(&p.uuid)).map(|p| p.uuid.clone());
         }
-        if d.state == ACTIVATED && d.active.as_ref().is_some_and(|ap| ap.ssid == self.ssid) {
-            return Outcome::Connected;
+        let on = d.active.as_ref().map(|ap| ap.ssid == self.ssid);
+        if d.state == FAILED {
+            return self.failure(state, ACTIVATION_FAILED);
         }
-        if ACTIVATING.contains(&d.state) {
-            self.activating = true;
+        if d.state == ACTIVATED || ACTIVATING.contains(&d.state) {
+            match on {
+                Some(true) if d.state == ACTIVATED => return Outcome::Connected,
+                Some(true) => self.activating = true,
+                // Another network took the device after ours was under way.
+                Some(false) if self.activating => return self.failure(state, ACTIVATION_FAILED),
+                // Its access point unread, or not ours before ours began: no word yet.
+                _ => {}
+            }
             return Outcome::Waiting;
         }
-        if d.state == FAILED || self.activating {
+        if self.activating {
             return self.failure(state, ACTIVATION_FAILED);
         }
         Outcome::Waiting
@@ -236,13 +251,14 @@ impl Attempt {
         if self.until <= now { self.failure(state, NO_ANSWER) } else { Outcome::Waiting }
     }
 
-    /// Failed: its new profile deleted, only while `state` still lists it (nmcli may have deleted it).
+    /// Failed: its new profile deleted, only when the attempt could make one (never a `connection
+    /// up`'s) and while `state` still lists it (nmcli may have deleted it).
     fn failure(&self, state: Option<&WifiState>, why: &'static str) -> Outcome {
         let still_saved = |uuid: &str| saved_in(state).is_some_and(|s| s.iter().any(|p| p.uuid == uuid));
         let cleanup = self
             .created
             .as_deref()
-            .filter(|u| still_saved(u))
+            .filter(|u| self.creates && still_saved(u))
             .map(|u| run(&["nmcli", "connection", "delete", "uuid", u], "wifi delete the failed profile"));
         Outcome::Failed { why, cleanup }
     }
@@ -476,6 +492,12 @@ impl Wifi {
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// The attempt's nmcli was never started (not found): it ends at once, nothing to follow or
+    /// clean, no `failed` mark (the log says why).
+    pub fn never_started(&mut self) {
+        self.attempt = None;
     }
 
     /// The open field's secret, for the wiring to hand to nmcli (`quick_spawn_secret`).
@@ -1475,5 +1497,68 @@ mod tests {
         let nets = w.networks();
         assert!(w.is_selected(Line::Network(1), &nets) && !w.is_selected(Line::Network(3), &nets));
         assert_eq!(w.key(&c, Key::Enter, t), run(&["nmcli", "device", "wifi", "connect", "Cafe-Libre"], "wifi connect (open)"));
+    }
+
+    /// Fix round 1 (I2): an attempt begun before the saved list was read whole (a failed listing,
+    /// more than MAX_SAVED profiles: the reader sends None) knows no profile, so it deletes none,
+    /// even one of its SSID that shows later.
+    #[test]
+    fn an_attempt_begun_without_the_whole_saved_list_deletes_nothing() {
+        let (c, t) = (config(), Instant::now());
+        let mut s = state();
+        device(&mut s).saved = None;
+        let mut w = open(s);
+        pick(&mut w, "Cafe-Libre");
+        assert!(matches!(w.key(&c, Key::Enter, t), QuickAction::Run { .. }));
+        assert_eq!(w.attempt.as_ref().map(|a| a.known.clone()), Some(None));
+        let mut listed = state();
+        device(&mut listed).saved.as_mut().expect("saved").push(SavedWifi { uuid: CAFE.into(), ssid: b"Cafe-Libre".to_vec() });
+        w.set_state(Some(listed), t);
+        device_at(&mut w, 50, Some("Cafe-Libre"), t);
+        assert_eq!(device_at(&mut w, 30, None, t), (QuickAction::Redraw, Some("the activation failed")), "an older profile, never deleted");
+    }
+
+    /// Fix round 1 (minor 1): a saved network's `connection up` never deletes, even a profile of its
+    /// SSID that appeared meanwhile.
+    #[test]
+    fn a_connection_up_attempt_never_deletes() {
+        let (c, t) = (config(), Instant::now());
+        let mut s = state();
+        device(&mut s).saved.as_mut().expect("saved").push(SavedWifi { uuid: CAFE.into(), ssid: b"Cafe-Libre".to_vec() });
+        let mut w = open(s);
+        pick(&mut w, "Cafe-Libre");
+        assert!(matches!(w.key(&c, Key::Enter, t), QuickAction::Run { .. }));
+        saved_added(&mut w, NEW, "Cafe-Libre", t);
+        device_at(&mut w, 50, Some("Cafe-Libre"), t);
+        assert_eq!(device_at(&mut w, 30, None, t), (QuickAction::Redraw, Some("the activation failed")));
+    }
+
+    /// Fix round 1 (minor 2): an activation on another network (an autoconnect) is not ours; an
+    /// activated device whose access point could not be read is no word yet; another network taking
+    /// the device once ours was under way is a failure.
+    #[test]
+    fn only_its_own_network_counts_for_an_attempt() {
+        let (c, t) = (config(), Instant::now());
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        assert_eq!(device_at(&mut w, 50, Some("Bureau-Test"), t), (QuickAction::Redraw, None), "an autoconnect elsewhere");
+        assert_eq!(device_at(&mut w, 30, None, t), (QuickAction::Redraw, None), "ours never began: still waiting");
+        assert!(w.attempt.as_ref().is_some_and(|a| !a.activating));
+        assert_eq!(device_at(&mut w, 60, None, t), (QuickAction::Redraw, None), "unread access point: not ours yet");
+        device_at(&mut w, 60, Some("Cafe-Libre"), t);
+        assert_eq!(device_at(&mut w, ACTIVATED, None, t), (QuickAction::Redraw, None), "activated, its access point unread");
+        assert!(w.attempt.is_some());
+        assert_eq!(device_at(&mut w, ACTIVATED, Some("Cafe-Libre"), t), (QuickAction::Redraw, None));
+        assert!(w.attempt.is_none(), "connected");
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        device_at(&mut w, 70, Some("Cafe-Libre"), t);
+        assert_eq!(
+            device_at(&mut w, 50, Some("Bureau-Test"), t),
+            (QuickAction::Redraw, Some("the activation failed")),
+            "another took over"
+        );
     }
 }

@@ -1787,8 +1787,20 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(!body.contains(".spawn("), "never an argument: {body}");
     for name in ["quick.rs", "quick_wifi.rs", "quick_secret.rs", "quick_app.rs", "popup.rs"] {
         let prod = src(name);
-        for leak in ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}"] {
+        for leak in
+            ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
+        {
             assert!(!prod.contains(leak), "{leak} in {name}");
+        }
+        // Positional forms: a `{:?}` (or `{:#?}`) whose arguments, on the rest of its line, name a key,
+        // the secret, the password or the field.
+        for form in ["{:?}", "{:#?}"] {
+            for (at, _) in prod.match_indices(form) {
+                let rest = prod[at..].lines().next().unwrap_or("");
+                for word in ["key", "k)", "k,", "secret", "password", "field"] {
+                    assert!(!rest.contains(word), "{word} formatted with Debug in {name}: {rest}");
+                }
+            }
         }
     }
     let secret = src("quick_secret.rs");

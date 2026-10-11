@@ -620,9 +620,11 @@ impl Quick {
     }
 
     /// A key (spec § 3). `repeat`: the keyboard's auto-repeat, which only ↑ ↓ ← → (and Ctrl+P,
-    /// Ctrl+N) follow: a held Space or Enter acts once (Review Focus 5).
+    /// Ctrl+N) follow, and Backspace in the password field: a held Space or Enter acts once (Review
+    /// Focus 5).
     pub fn key(&mut self, live: &Live, k: Key, repeat: bool, now: Instant) -> QuickAction {
-        if repeat && !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::CtrlP | Key::CtrlN) {
+        let erasing = k == Key::Backspace && self.wifi.field.is_some();
+        if repeat && !erasing && !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::CtrlP | Key::CtrlN) {
             return QuickAction::Nothing;
         }
         self.fit(live);
@@ -2009,5 +2011,27 @@ mod tests {
         let d = q.due(t + crate::quick_wifi::CONNECT_TIMEOUT);
         assert_eq!((d.wifi_failed, d.redraw), (Some("no answer in 20 s"), true));
         assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT + crate::quick_wifi::FAILED_SHOWN));
+    }
+
+    /// Fix round 1 (minor 5): a held Backspace keeps erasing in the password field; elsewhere it
+    /// does not repeat, nor does a held character.
+    #[test]
+    fn backspace_repeats_in_the_password_field_only() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.set_wifi(Some(wifi_state(true, true, true)), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        q.key(&l, Key::Down, false, t);
+        q.key(&l, Key::Enter, false, t);
+        for c in "abc".chars() {
+            q.key(&l, Key::Char(c), false, t);
+        }
+        assert_eq!(q.key(&l, Key::Char('d'), true, t), QuickAction::Nothing, "a held character: once");
+        assert_eq!(q.key(&l, Key::Backspace, true, t), QuickAction::Redraw, "a held Backspace erases");
+        assert_eq!(q.wifi.password().map(|s| s.bytes()), Some(&b"ab"[..]));
+        q.key(&l, Key::Escape, false, t);
+        assert_eq!(q.key(&l, Key::Backspace, true, t), QuickAction::Nothing, "no field: no repeat");
     }
 }

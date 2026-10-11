@@ -12,11 +12,12 @@ use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle};
 use crate::quick_state;
-use crate::quick_wifi::{Attempt, Outcome, Wifi};
+use crate::quick_wifi::{Attempt, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
 use crate::system::{Sink, SoundState, WifiScope, WifiState};
 use crate::wayland::App;
+use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::Path;
@@ -115,6 +116,55 @@ pub(crate) fn wifi_scope(panel: WifiScope, follow: Option<&WifiFollow>) -> WifiS
 /// dropped, unless a follower still needs it (then the tap keeps its scope, and no word is sent).
 pub(crate) fn wifi_closed(tap: &WifiTap, follow: Option<&WifiFollow>) {
     tap.set(wifi_scope(WifiScope::Closed, follow));
+}
+
+/// Spawns `argv` for the open panel `q` (None: none open), never waiting (spec § 5): the log line,
+/// "quick: <what>", or a program that cannot start, once per open (spec § 6; its row stays). A
+/// connection whose nmcli never started (NotFound) ends its attempt at once: nothing to follow.
+pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[String], what: &str) -> Option<String> {
+    let (program, args) = argv.split_first()?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    match exec.spawn(program, &args) {
+        Ok(()) => Some(format!("quick: {what}")),
+        Err(e) => {
+            let first = match q {
+                Some(q) => {
+                    if e == ExecError::NotFound && starts_attempt(what) {
+                        q.wifi.never_started();
+                    }
+                    q.note_failure(program)
+                }
+                None => true,
+            };
+            first.then(|| format!("quick: {program} could not start ({e:?})"))
+        }
+    }
+}
+
+/// Spawns `argv` with the open password field's bytes and a newline on its standard input
+/// (quick Wi-Fi spec § 3), never as an argument; the field closes right after, its buffer wiped,
+/// whatever happened. The log line: "quick: <what>", never the password, never the SSID. nmcli
+/// not found ends the attempt at once; any other error may come after it started (it closed its
+/// input early): the attempt stays, never retried, and ends by NetworkManager's word or its timeout.
+pub(crate) fn quick_spawn_secret(exec: &dyn Executor, q: &mut Quick, argv: &[String], what: &str) -> Option<String> {
+    let started = match (argv.split_first(), q.wifi.password()) {
+        (Some((program, args)), Some(secret)) => {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            Some((program.clone(), exec.spawn_with_input(program, &args, &[secret.bytes(), b"\n"])))
+        }
+        _ => None,
+    };
+    q.wifi.password_sent();
+    match started {
+        Some((_, Ok(()))) => Some(format!("quick: {what}")),
+        Some((program, Err(e))) => {
+            if e == ExecError::NotFound {
+                q.wifi.never_started();
+            }
+            q.note_failure(&program).then(|| format!("quick: {program} could not start or take its input ({e:?})"))
+        }
+        None => None,
+    }
 }
 
 impl App {
@@ -263,7 +313,7 @@ impl App {
                 self.popup_close(PopupClose::Activated);
             }
             QuickAction::RunSecret { argv, what } => {
-                self.quick_spawn_secret(&argv, &what);
+                self.quick_send_secret(&argv, &what);
                 self.quick_refresh();
             }
             // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
@@ -275,47 +325,24 @@ impl App {
         }
     }
 
-    /// Spawns `argv` through the daemon's executor, never waiting (spec § 5): "quick: <what>"; a
-    /// program that cannot start is logged once per open (spec § 6), and its row stays.
+    /// Spawns `argv` through the daemon's executor, never waiting (spec § 5): `spawn_logged`.
     fn quick_spawn(&mut self, argv: &[String], what: &str) {
-        let Some((program, args)) = argv.split_first() else { return };
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        match self.exec.spawn(program, &args) {
-            Ok(()) => log(&format!("quick: {what}")),
-            Err(e) => {
-                let first = match self.popup.as_mut().map(|p| &mut p.body) {
-                    Some(PopupBody::Quick(q)) => q.note_failure(program),
-                    _ => true,
-                };
-                if first {
-                    log(&format!("quick: {program} could not start ({e:?})"));
-                }
-            }
+        let App { popup, exec, .. } = self;
+        let q = match popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => Some(q.as_mut()),
+            _ => None,
+        };
+        if let Some(line) = spawn_logged(exec.as_ref(), q, argv, what) {
+            log(&line);
         }
     }
 
-    /// Spawns `argv` with the open password field's bytes and a newline on its standard input
-    /// (quick Wi-Fi spec § 3), never as an argument; the field closes right after, its buffer wiped,
-    /// whatever happened. Logged as "quick: <what>": never the password, never the SSID. An error
-    /// may come after nmcli started (it closed its input early): the attempt stays, never retried,
-    /// and ends by NetworkManager's word or its timeout.
-    fn quick_spawn_secret(&mut self, argv: &[String], what: &str) {
+    /// The open password field handed to nmcli (`quick_spawn_secret`), then the panel repainted.
+    fn quick_send_secret(&mut self, argv: &[String], what: &str) {
         let App { popup, exec, .. } = self;
         let Some(PopupBody::Quick(q)) = popup.as_mut().map(|p| &mut p.body) else { return };
-        let started = match (argv.split_first(), q.wifi.password()) {
-            (Some((program, args)), Some(secret)) => {
-                let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                Some((program.clone(), exec.spawn_with_input(program, &args, &[secret.bytes(), b"\n"])))
-            }
-            _ => None,
-        };
-        q.wifi.password_sent();
-        match started {
-            Some((_, Ok(()))) => log(&format!("quick: {what}")),
-            Some((program, Err(e))) if q.note_failure(&program) => {
-                log(&format!("quick: {program} could not start or take its input ({e:?})"));
-            }
-            Some((_, Err(_))) | None => {}
+        if let Some(line) = quick_spawn_secret(exec.as_ref(), q, argv, what) {
+            log(&line);
         }
     }
 
@@ -435,9 +462,12 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BarConfig;
+    use crate::config::{BarConfig, QuickConfig};
+    use crate::keys::Key;
     use crate::quick::{Row, shown};
+    use crate::quick_wifi::Pick;
     use crate::system::Volume;
+    use alpheus_commun::exec::fake::FakeExecutor;
 
     /// Mae's ruling P1: closing the panel lets the D-Bus thread go back to reading nothing, unless
     /// an attempt on a new network is still followed: then the detail's reading stays, so a failed
@@ -543,5 +573,101 @@ mod tests {
         let q = Quick::new(Focus::Sound, &live, sinks, None, [None, None], 20);
         let rows = shown(&live, &q);
         assert!(!rows.contains(&Row::Volume) && !rows.contains(&Row::Mic), "{rows:?}");
+    }
+
+    /// Bureau-Test (WPA2) and Cafe-Libre, Labo-Test (open) around, the device disconnected, no
+    /// profile saved (fictional networks).
+    fn wifi_around() -> WifiState {
+        use crate::system::{AccessPoint, Security, WifiDevice};
+        let ap = |s: &str, security| AccessPoint { ssid: s.as_bytes().to_vec(), strength: 60, security };
+        WifiState {
+            enabled: true,
+            device: Some(WifiDevice {
+                state: 30,
+                active: None,
+                active_uuid: None,
+                access_points: Some(vec![
+                    ap("Bureau-Test", Security::Psk),
+                    ap("Cafe-Libre", Security::Open),
+                    ap("Labo-Test", Security::Open),
+                ]),
+                saved: Some(vec![]),
+            }),
+        }
+    }
+
+    /// A panel with the Wi-Fi detail open on `wifi_around`, `ssid` picked.
+    fn panel_on(ssid: &str) -> Quick {
+        let bar = Bar::new(BarConfig::default());
+        let mut q = Quick::new(Focus::Top, &quick::live(&bar, false), vec![], None, [None, None], 20);
+        q.wifi = Wifi { state: Some(wifi_around()), ..Wifi::default() };
+        q.wifi.open_detail();
+        q.wifi.pick = Pick::Network(ssid.as_bytes().to_vec());
+        q
+    }
+
+    const ASK: &str = "nmcli --ask device wifi connect Bureau-Test";
+
+    /// `q` with the field open on Bureau-Test, `fake-pass` typed, Enter pressed: the RunSecret.
+    fn password_typed(q: &mut Quick, t: Instant) -> (Vec<String>, String) {
+        let c = QuickConfig::default();
+        q.wifi.key(&c, Key::Enter, t);
+        for ch in "fake-pass".chars() {
+            q.wifi.key(&c, Key::Char(ch), t);
+        }
+        match q.wifi.key(&c, Key::Enter, t) {
+            QuickAction::RunSecret { argv, what } => (argv, what),
+            other => panic!("not sent: {other:?}"),
+        }
+    }
+
+    /// Fix round 1 (minor 4): the password goes to nmcli's standard input with a newline, never in
+    /// its arguments; the field closes. An `Io` error may come after nmcli started: the attempt stays.
+    #[test]
+    fn the_password_is_handed_on_stdin_and_the_field_closes() {
+        let t = Instant::now();
+        let fake = FakeExecutor::new();
+        fake.ok(ASK, "");
+        let mut q = panel_on("Bureau-Test");
+        let (argv, what) = password_typed(&mut q, t);
+        assert_eq!(quick_spawn_secret(&fake, &mut q, &argv, &what), Some("quick: wifi connect (password)".into()));
+        assert_eq!(fake.inputs(), [(ASK.to_string(), b"fake-pass\n".to_vec())]);
+        assert_eq!(fake.calls(), [ASK]);
+        assert!(q.wifi.field.is_none() && q.wifi.password().is_none(), "the field closed, wiped");
+        assert!(q.wifi.attempt.is_some(), "followed");
+        let fake = FakeExecutor::new();
+        fake.respond(ASK, Err(ExecError::Io("Broken pipe".into())));
+        let mut q = panel_on("Bureau-Test");
+        let (argv, what) = password_typed(&mut q, t);
+        let line = quick_spawn_secret(&fake, &mut q, &argv, &what).unwrap_or_default();
+        assert!(!line.contains("fake-pass"), "{line}");
+        assert!(q.wifi.field.is_none() && q.wifi.attempt.is_some(), "maybe started: the attempt stays, never retried");
+    }
+
+    /// Fix round 1 (I1): nmcli not found never started anything: the attempt ends at once (nothing
+    /// to follow, no false timeout), and Enter on another network acts.
+    #[test]
+    fn an_nmcli_never_started_ends_the_attempt_at_once() {
+        let (t, c) = (Instant::now(), QuickConfig::default());
+        let fake = FakeExecutor::new();
+        let mut q = panel_on("Bureau-Test");
+        let (argv, what) = password_typed(&mut q, t);
+        assert!(quick_spawn_secret(&fake, &mut q, &argv, &what).is_some_and(|l| l.contains("could not start")));
+        assert!(q.wifi.attempt.is_none() && q.wifi.deadline().is_none(), "no attempt, no timer");
+        assert!(WifiFollow::leaving(&mut q.wifi).is_none(), "nothing to follow");
+        q.wifi.pick = Pick::Network(b"Cafe-Libre".to_vec());
+        let open = q.wifi.key(&c, Key::Enter, t);
+        assert!(matches!(&open, QuickAction::Run { what, .. } if what == "wifi connect (open)"), "{open:?}");
+        let QuickAction::Run { argv, what } = open else { return };
+        assert_eq!(spawn_logged(&fake, Some(&mut q), &argv, &what), None, "logged once per open");
+        assert!(q.wifi.attempt.is_none(), "an open network's nmcli not found: ended too");
+        q.wifi.pick = Pick::Network(b"Labo-Test".to_vec());
+        assert!(matches!(q.wifi.key(&c, Key::Enter, t), QuickAction::Run { .. }), "and the next one acts");
+        let fake = FakeExecutor::new();
+        fake.respond("nmcli device wifi connect Labo-Test", Err(ExecError::Io("busy".into())));
+        let mut q = panel_on("Labo-Test");
+        let QuickAction::Run { argv, what } = q.wifi.key(&c, Key::Enter, t) else { panic!("an open network") };
+        spawn_logged(&fake, Some(&mut q), &argv, &what);
+        assert!(q.wifi.attempt.is_some(), "Io: maybe started, kept");
     }
 }
