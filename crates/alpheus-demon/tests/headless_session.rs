@@ -3740,8 +3740,9 @@ fn quick_volume_bar(s: &Ppm) -> Vec<[u8; 3]> {
     (y - 8..y + 8).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
-/// Quick spec § 1, § 3, § 7: a left click on the volume opens the panel at the volume row; → steps
-/// the volume through wpctl, then ↓ → the brightness through brightnessctl, on the configured device.
+/// Quick spec § 1, § 3, § 7: a left click on the volume opens the panel at the volume row; → sets
+/// the volume through wpctl (84 % + 5, fix S1: an absolute level), then ↓ → the brightness through
+/// brightnessctl (50 % + 5), on the configured device.
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
 fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_brightnessctl() {
@@ -3751,15 +3752,26 @@ fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_br
     wait_for_the_popup_drawn(&sway, &d);
     keys(&sway, &["Right"]);
     assert!(
-        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"),
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 89%"),
+        "{:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    // Fix S1: two → 40 ms apart, inside one window (the fake wpctl moves nothing: from 84 % again
+    // once the last window ended): the first goes at once, the second waits, and the timer sends it,
+    // 94 %. (wtype's first key needs the lead-in `keys` gives it too.)
+    thread::sleep(Duration::from_millis(400));
+    assert!(wtype(&sway, &["-s", "300", "-k", "Right", "-s", "40", "-k", "Right"]).success());
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 94%"),
         "{:?} {:?}",
         recorded(&sway, "wpctl"),
         d.log()
     );
     keys(&sway, &["Down", "Right"]);
-    let call = "brightnessctl --class=backlight --device=intel_backlight set 5%+";
+    let call = "brightnessctl --class=backlight --device=intel_backlight set 55%";
     assert!(wait_for_call(&sway, "brightnessctl", call), "{:?} {:?}", recorded(&sway, "brightnessctl"), d.log());
-    assert!(d.wait_for("quick: brightness +5%", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick: brightness 55%", DELAY), "{:?}", d.log());
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }

@@ -49,6 +49,14 @@ pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
 /// How long "Reboot? ⏎" waits for its second activation (spec § 2).
 pub const CONFIRM: Duration = Duration::from_secs(3);
+/// The second activation counts only this long after the question showed (Mae, 2026-10-11): a
+/// double click or a double Enter never confirms.
+pub const CONFIRM_AFTER: Duration = Duration::from_millis(400);
+/// A slider sends at most one command per window this long (fix S1): a held key, the wheel or
+/// clicks in a row coalesce into the latest level, sent when the window ends.
+pub const COALESCE: Duration = BRIGHTNESS_REREAD;
+/// The backlight's floor from the panel (Mae, 2026-10-11): never a black screen.
+pub const BRIGHTNESS_MIN: u8 = 1;
 /// A session button takes this many cells either side of its glyph for a click.
 const REACH: u16 = 2;
 
@@ -269,15 +277,17 @@ pub enum QuickAction {
     ToggleDnd,
 }
 
-/// What a tick finds due (`Quick::due`): the re-reads to do, and whether the question went.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// What a tick finds due (`Quick::due`): the re-reads to do, whether to repaint (the question
+/// went, a slider back on the level read), and the slider levels that waited for their window.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Due {
     pub backlight: bool,
     pub toggles: [bool; 2],
     pub redraw: bool,
+    pub run: Vec<QuickAction>,
 }
 
-/// A brightness command: by a step, or to a level.
+/// A slider's move: by a step, or to a level.
 #[derive(Debug, Clone, Copy)]
 enum Level {
     Up(u8),
@@ -285,13 +295,69 @@ enum Level {
     Set(u8),
 }
 
+impl Level {
+    /// From `from`, clamped to `min..=100`.
+    fn from(self, from: u8, min: u8) -> u8 {
+        match self {
+            Level::Up(s) => from.saturating_add(s),
+            Level::Down(s) => from.saturating_sub(s),
+            Level::Set(n) => n,
+        }
+        .clamp(min, 100)
+    }
+}
+
+/// A slider's pace (fix S1): the window opened by the last command it sent, and whether a newer
+/// level waits for that window's end. Only the latest level goes, one command per window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Pace {
+    pub until: Option<Instant>,
+    pub waiting: bool,
+}
+
+impl Pace {
+    /// A new level at `now`: true when it goes at once (a window opens), false when it waits.
+    fn ask(&mut self, now: Instant) -> bool {
+        if self.until.is_some_and(|u| now < u) {
+            self.waiting = true;
+            return false;
+        }
+        self.until = Some(now + COALESCE);
+        self.waiting = false;
+        true
+    }
+
+    /// At `now`: None while the window runs (or none is open); Some(true) when the waiting level
+    /// goes now (a new window opens); Some(false) when the window ended with nothing waiting.
+    fn due(&mut self, now: Instant) -> Option<bool> {
+        if !self.until.is_some_and(|u| u <= now) {
+            return None;
+        }
+        let send = std::mem::take(&mut self.waiting);
+        self.until = send.then_some(now + COALESCE);
+        Some(send)
+    }
+}
+
 fn run(parts: &[&str], what: &str) -> QuickAction {
     QuickAction::Run { argv: argv(parts), what: what.to_string() }
 }
 
-/// `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ <amount>`: never beyond 100 % from the panel.
-fn volume(amount: &str, what: String) -> QuickAction {
-    QuickAction::Run { argv: argv(&["wpctl", "set-volume", "-l", "1.0", SINK, amount]), what }
+/// `wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ N%`: never beyond 100 % from the panel.
+fn volume_command(n: u8) -> QuickAction {
+    QuickAction::Run { argv: argv(&["wpctl", "set-volume", "-l", "1.0", SINK, &format!("{n}%")]), what: format!("volume {n}%") }
+}
+
+/// `brightnessctl --class=backlight --device=<name> set N%`.
+fn brightness_command(b: &Backlight) -> QuickAction {
+    let argv = vec![
+        "brightnessctl".to_string(),
+        "--class=backlight".to_string(),
+        format!("--device={}", b.device),
+        "set".to_string(),
+        format!("{}%", b.percent),
+    ];
+    QuickAction::Run { argv, what: format!("brightness {}%", b.percent) }
 }
 
 /// The percent a press on a slider's bar sets (decision 10); None off the bar.
@@ -330,8 +396,12 @@ pub struct Quick {
     pub toggles: [Option<bool>; 2],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
     pub confirm: Option<(Session, Instant)>,
-    /// When to re-read the backlight, and each toggle's state (Task 5 arms them).
-    pub reread_backlight: Option<Instant>,
+    /// The volume shown and sent while its slider moves (fix S1); None: pw-dump's own level.
+    pub volume_level: Option<u8>,
+    /// The sliders' paces; the backlight is re-read once its window ends with nothing waiting.
+    pub volume: Pace,
+    pub brightness: Pace,
+    /// When to re-read each toggle's state.
     pub reread_toggles: [Option<Instant>; 2],
     /// The first line shown, and the rows the panel may take under its bar.
     pub top: usize,
@@ -400,7 +470,9 @@ impl Quick {
             backlight,
             toggles,
             confirm: None,
-            reread_backlight: None,
+            volume_level: None,
+            volume: Pace::default(),
+            brightness: Pace::default(),
             reread_toggles: [None; 2],
             top: 0,
             room,
@@ -510,8 +582,8 @@ impl Quick {
     fn act(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
         let step = live.config.step;
         match (self.selected, k) {
-            (Row::Volume, Key::Right) => volume(&format!("{step}%+"), format!("volume +{step}%")),
-            (Row::Volume, Key::Left) => volume(&format!("{step}%-"), format!("volume -{step}%")),
+            (Row::Volume, Key::Right) => self.volume(live, Level::Up(step), now),
+            (Row::Volume, Key::Left) => self.volume(live, Level::Down(step), now),
             (Row::Volume, Key::Char(' ')) => run(&["wpctl", "set-mute", SINK, "toggle"], "mute"),
             (Row::Brightness, Key::Right) => self.brightness(Level::Up(step), now),
             (Row::Brightness, Key::Left) => self.brightness(Level::Down(step), now),
@@ -527,19 +599,23 @@ impl Quick {
         }
     }
 
-    /// The backlight by a step or to a level: shown at once, re-read BRIGHTNESS_REREAD later (spec § 5).
+    /// The volume by a step or to a level, from the level shown (fix S1): shown at once, sent as an
+    /// absolute level now or when its window ends.
+    fn volume(&mut self, live: &Live, to: Level, now: Instant) -> QuickAction {
+        let Some(from) = self.volume_level.or(live.sound.and_then(|s| s.sink).map(|v| v.percent)) else {
+            return QuickAction::Nothing;
+        };
+        let n = to.from(from, 0);
+        self.volume_level = Some(n);
+        if self.volume.ask(now) { volume_command(n) } else { QuickAction::Redraw }
+    }
+
+    /// The backlight by a step or to a level, never below BRIGHTNESS_MIN: shown at once, sent as
+    /// the volume is; re-read BRIGHTNESS_REREAD after the last command (spec § 5).
     fn brightness(&mut self, to: Level, now: Instant) -> QuickAction {
         let Some(b) = self.backlight.as_mut() else { return QuickAction::Nothing };
-        let (amount, expected, what) = match to {
-            Level::Up(s) => (format!("{s}%+"), b.percent.saturating_add(s).min(100), format!("brightness +{s}%")),
-            Level::Down(s) => (format!("{s}%-"), b.percent.saturating_sub(s), format!("brightness -{s}%")),
-            Level::Set(n) => (format!("{n}%"), n.min(100), format!("brightness {n}%")),
-        };
-        b.percent = expected;
-        let argv =
-            vec!["brightnessctl".to_string(), "--class=backlight".to_string(), format!("--device={}", b.device), "set".to_string(), amount];
-        self.reread_backlight = Some(now + BRIGHTNESS_REREAD);
-        QuickAction::Run { argv, what }
+        b.percent = to.from(b.percent, BRIGHTNESS_MIN);
+        if self.brightness.ask(now) { brightness_command(b) } else { QuickAction::Redraw }
     }
 
     /// A configured toggle: its command as given; its state re-read TOGGLE_REREAD later.
@@ -572,10 +648,18 @@ impl Quick {
         if argv.is_empty() {
             return QuickAction::Nothing;
         }
-        let confirmed = matches!(self.confirm, Some((c, until)) if c == s && now < until);
-        if s.asks() && !confirmed {
-            self.confirm = Some((s, now + CONFIRM));
-            return QuickAction::Redraw;
+        if s.asks() {
+            match self.confirm {
+                // Too soon after the question (Mae): a double activation; the question stays.
+                Some((c, until)) if c == s && now < until && until.saturating_duration_since(now) > CONFIRM - CONFIRM_AFTER => {
+                    return QuickAction::Nothing;
+                }
+                Some((c, until)) if c == s && now < until => {}
+                _ => {
+                    self.confirm = Some((s, now + CONFIRM));
+                    return QuickAction::Redraw;
+                }
+            }
         }
         self.confirm = None;
         QuickAction::RunAndClose { argv, what: s.word().to_string() }
@@ -607,7 +691,7 @@ impl Quick {
             (Line::Row(Row::Volume), Button::Left) => {
                 self.selected = Row::Volume;
                 match bar_value(cell.0) {
-                    Some(n) => volume(&format!("{n}%"), format!("volume {n}%")),
+                    Some(n) => self.volume(live, Level::Set(n), now),
                     None => self.open_outputs(),
                 }
             }
@@ -643,9 +727,9 @@ impl Quick {
         self.activate(live, s, now)
     }
 
-    /// The wheel, `steps` notches (negative: up), at most 10 (decision 9): over a slider, one
-    /// command of `steps × step` percent (up: louder, brighter); elsewhere the window moves when the
-    /// lines do not fit.
+    /// The wheel, `steps` notches (negative: up), at most 10 (decision 9): over a slider, one move
+    /// of `steps × step` percent (up: louder, brighter); elsewhere the window moves when the lines
+    /// do not fit.
     pub fn scroll(&mut self, live: &Live, cell: Option<(u16, u16)>, steps: i32, now: Instant) -> QuickAction {
         let notches = steps.unsigned_abs().min(10) as u8;
         if notches == 0 {
@@ -656,14 +740,13 @@ impl Quick {
         let visible = self.visible();
         let top = self.top.min(all.len().saturating_sub(visible));
         let line = cell.and_then(|c| all.get(top + usize::from(c.1))).copied();
-        let amount = live.config.step.saturating_mul(notches).min(100);
+        // Saturating, then clamped to a level: no further cap needed.
+        let amount = live.config.step.saturating_mul(notches);
         let up = steps < 0;
+        let to = if up { Level::Up(amount) } else { Level::Down(amount) };
         match line {
-            Some(Line::Row(Row::Volume)) => {
-                let sign = if up { '+' } else { '-' };
-                volume(&format!("{amount}%{sign}"), format!("volume {sign}{amount}%"))
-            }
-            Some(Line::Row(Row::Brightness)) => self.brightness(if up { Level::Up(amount) } else { Level::Down(amount) }, now),
+            Some(Line::Row(Row::Volume)) => self.volume(live, to, now),
+            Some(Line::Row(Row::Brightness)) => self.brightness(to, now),
             _ if all.len() > visible => {
                 let last_top = all.len() - visible;
                 let to = if up { top.saturating_sub(usize::from(notches)) } else { (top + usize::from(notches)).min(last_top) };
@@ -678,17 +761,31 @@ impl Quick {
         }
     }
 
-    /// The earliest pending re-read or the question's end; None: nothing to wait for (no timer).
+    /// The earliest slider window's end, pending re-read or the question's end; None: nothing to
+    /// wait for (no timer).
     pub fn deadline(&self) -> Option<Instant> {
-        [self.reread_backlight, self.reread_toggles[0], self.reread_toggles[1], self.confirm.map(|(_, at)| at)].into_iter().flatten().min()
+        [self.volume.until, self.brightness.until, self.reread_toggles[0], self.reread_toggles[1], self.confirm.map(|(_, at)| at)]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
-    /// At `now`: what is due, cleared (the re-reads to do, the question gone).
+    /// At `now`: what is due, cleared (the levels that waited, the re-reads to do, the question gone).
     pub fn due(&mut self, now: Instant) -> Due {
         let mut d = Due::default();
-        if self.reread_backlight.is_some_and(|at| at <= now) {
-            self.reread_backlight = None;
-            d.backlight = true;
+        match self.volume.due(now) {
+            Some(true) => d.run.extend(self.volume_level.map(volume_command)),
+            // Quiet: the row shows pw-dump's level again.
+            Some(false) => {
+                self.volume_level = None;
+                d.redraw = true;
+            }
+            None => {}
+        }
+        match self.brightness.due(now) {
+            Some(true) => d.run.extend(self.backlight.as_ref().map(brightness_command)),
+            Some(false) => d.backlight = true,
+            None => {}
         }
         for t in Toggle::ALL {
             let i = t.index();
@@ -702,6 +799,18 @@ impl Quick {
             d.redraw = true;
         }
         d
+    }
+
+    /// The panel closes: the levels still waiting for their window, sent now (never lost).
+    pub fn flush(&mut self) -> Vec<QuickAction> {
+        let mut v = Vec::new();
+        if std::mem::take(&mut self.volume.waiting) {
+            v.extend(self.volume_level.map(volume_command));
+        }
+        if std::mem::take(&mut self.brightness.waiting) {
+            v.extend(self.backlight.as_ref().map(brightness_command));
+        }
+        v
     }
 
     /// `program` failed to start: true the first time this open (log it), false after (spec § 6).
@@ -806,6 +915,7 @@ fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
     match row {
         Row::Volume => {
             if let Some(v) = live.sound.and_then(|s| s.sink) {
+                let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
                 slider(g, volume_glyph(v), v, q.sinks.len() >= 2, selected);
             }
         }
@@ -1236,29 +1346,79 @@ mod tests {
     const DND_LINE: u16 = 4;
     const SESSION_LINE: u16 = 7;
 
+    /// The `i`-th instant a slider may send again: each a full COALESCE after the one before.
+    fn later(t: Instant, i: u32) -> Instant {
+        t + COALESCE * i
+    }
+
+    fn set_volume(n: u8) -> QuickAction {
+        run(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", &format!("{n}%")], &format!("volume {n}%"))
+    }
+
+    fn set_brightness(n: u8) -> QuickAction {
+        run(&["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", &format!("{n}%")], &format!("brightness {n}%"))
+    }
+
+    /// Fix S1: every volume command an absolute level the model computed from what it shows.
     #[test]
     fn volume_steps_mutes_and_takes_a_click_on_its_bar() {
         let w = World::full();
         let l = w.live();
         let mut q = quick(&w, Focus::Sound);
         let t = Instant::now();
-        let set = |amount: &str, what: &str| run(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", amount], what);
         let mute = run(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"], "mute");
-        assert_eq!(q.key(&l, Key::Right, false, t), set("5%+", "volume +5%"));
-        assert_eq!(q.key(&l, Key::Left, false, t), set("5%-", "volume -5%"));
-        assert_eq!(q.key(&l, Key::Right, true, t), set("5%+", "volume +5%"), "← → repeat");
-        assert_eq!(q.key(&l, Key::Char(' '), false, t), mute);
-        assert_eq!(q.press(&l, (BAR_START, 0), Button::Left, t), set("4%", "volume 4%"), "the bar's first cell");
-        assert_eq!(q.press(&l, (BAR_START + 10, 0), Button::Left, t), set("50%", "volume 50%"), "(10 + 1) × 100 / 22");
-        assert_eq!(q.press(&l, (BAR_START + BAR - 1, 0), Button::Left, t), set("100%", "volume 100%"), "its last cell");
-        assert_eq!(q.press(&l, (1, 0), Button::Right, t), mute, "a right click on the volume: mute");
-        assert_eq!(q.scroll(&l, Some((5, 0)), -1, t), set("5%+", "volume +5%"), "the wheel up: louder");
-        assert_eq!(q.scroll(&l, Some((5, 0)), 2, t), set("10%-", "volume -10%"), "two notches, one command");
-        assert_eq!(q.press(&l, (MORE_AT, 0), Button::Left, t), QuickAction::Redraw, "› opens the outputs");
+        assert_eq!(q.key(&l, Key::Right, false, later(t, 0)), set_volume(69), "64 % + 5");
+        assert!(texts(&rows(&l, &q))[0].contains(" 69%"), "the expected level shown at once");
+        assert_eq!(q.key(&l, Key::Left, false, later(t, 1)), set_volume(64), "from the level shown, not pw-dump's");
+        assert_eq!(q.key(&l, Key::Right, true, later(t, 2)), set_volume(69), "← → repeat");
+        assert_eq!(q.key(&l, Key::Char(' '), false, later(t, 2)), mute);
+        assert_eq!(q.press(&l, (BAR_START, 0), Button::Left, later(t, 3)), set_volume(4), "the bar's first cell");
+        assert_eq!(q.press(&l, (BAR_START + BAR - 1, 0), Button::Left, later(t, 4)), set_volume(100), "its last cell");
+        assert_eq!(q.press(&l, (BAR_START + 10, 0), Button::Left, later(t, 5)), set_volume(50), "(10 + 1) × 100 / 22");
+        assert_eq!(q.press(&l, (1, 0), Button::Right, later(t, 5)), mute, "a right click on the volume: mute");
+        assert_eq!(q.scroll(&l, Some((5, 0)), -1, later(t, 6)), set_volume(55), "the wheel up: louder");
+        assert_eq!(q.scroll(&l, Some((5, 0)), 2, later(t, 7)), set_volume(45), "two notches, one command");
+        assert_eq!(q.press(&l, (MORE_AT, 0), Button::Left, later(t, 8)), QuickAction::Redraw, "› opens the outputs");
         assert!(q.detail);
         let ten = World { config: QuickConfig { step: 10, ..QuickConfig::default() }, ..World::full() };
         let mut q = quick(&ten, Focus::Sound);
-        assert_eq!(q.key(&ten.live(), Key::Right, false, t), set("10%+", "volume +10%"), "[quick] step");
+        assert_eq!(q.key(&ten.live(), Key::Right, false, t), set_volume(74), "[quick] step");
+        let mut loud = World::full();
+        loud.sound.sink = vol(97, false);
+        let mut q = quick(&loud, Focus::Sound);
+        assert_eq!(q.key(&loud.live(), Key::Right, false, t), set_volume(100), "never beyond 100 %");
+    }
+
+    /// Fix S1: a held → sends at most one command per COALESCE, each the latest level; a burst
+    /// inside one window is two commands, the second the level the burst ended on.
+    #[test]
+    fn a_held_slider_key_sends_the_latest_level_once_per_window() {
+        let mut w = World::full();
+        w.sound.sink = vol(30, false);
+        let l = w.live();
+        let mut q = quick(&w, Focus::Sound);
+        let t = Instant::now();
+        let burst: Vec<QuickAction> = (0..10).map(|i| q.key(&l, Key::Right, i > 0, t + Duration::from_millis(15 * i))).collect();
+        assert_eq!(burst[0], set_volume(35), "the first goes at once");
+        assert!(burst[1..].iter().all(|a| *a == QuickAction::Redraw), "the rest wait: {burst:?}");
+        assert!(texts(&rows(&l, &q))[0].contains(" 80%"), "the level shown follows every key");
+        assert_eq!(q.deadline(), Some(t + COALESCE), "the window's end");
+        assert_eq!(q.due(t + COALESCE), Due { run: vec![set_volume(80)], ..Due::default() }, "the latest level, once");
+        assert_eq!(q.deadline(), Some(t + COALESCE * 2), "a new window after it");
+        assert_eq!(q.due(t + COALESCE * 2), Due { redraw: true, ..Due::default() }, "quiet: back to pw-dump's level");
+        assert_eq!(q.deadline(), None, "nothing pending: no timer");
+        assert!(texts(&rows(&l, &q))[0].contains(" 30%"), "pw-dump's own level again");
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Brightness;
+        let burst: Vec<QuickAction> = (0..10).map(|i| q.key(&l, Key::Right, i > 0, t + Duration::from_millis(15 * i))).collect();
+        assert_eq!(burst[0], set_brightness(80), "75 % + 5");
+        assert!(burst[1..].iter().all(|a| *a == QuickAction::Redraw), "{burst:?}");
+        assert_eq!(q.due(t + COALESCE), Due { run: vec![set_brightness(100)], ..Due::default() });
+        assert_eq!(q.due(t + COALESCE * 2), Due { backlight: true, ..Due::default() }, "quiet: the re-read");
+        assert_eq!(q.key(&l, Key::Left, false, t + COALESCE * 3), set_brightness(95), "a new window: at once");
+        assert_eq!(q.key(&l, Key::Left, true, t + COALESCE * 3), QuickAction::Redraw);
+        assert_eq!(q.flush(), vec![set_brightness(90)], "closing sends what waits");
+        assert_eq!(q.flush(), vec![], "once");
     }
 
     #[test]
@@ -1268,8 +1428,7 @@ mod tests {
         let mut q = quick(&w, Focus::Top);
         q.selected = Row::Brightness;
         let t = Instant::now();
-        let set = |amount: &str, what: &str| run(&["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", amount], what);
-        assert_eq!(q.key(&l, Key::Right, false, t), set("5%+", "brightness +5%"));
+        assert_eq!(q.key(&l, Key::Right, false, t), set_brightness(80));
         assert_eq!(q.backlight, backlight(80), "the expected level at once");
         assert_eq!(q.deadline(), Some(t + BRIGHTNESS_REREAD));
         assert_eq!(q.due(t + Duration::from_millis(149)), Due::default(), "not yet");
@@ -1277,14 +1436,57 @@ mod tests {
         assert_eq!(q.deadline(), None, "nothing pending: no timer");
         q.set_backlight(Some(78));
         assert_eq!(q.backlight, backlight(78), "the re-read wins");
-        q.backlight = backlight(3);
-        assert_eq!(q.key(&l, Key::Left, false, t), set("5%-", "brightness -5%"));
-        assert_eq!(q.backlight, backlight(0), "never below 0");
         q.backlight = backlight(98);
-        q.key(&l, Key::Right, false, t);
+        q.key(&l, Key::Right, false, later(t, 2));
         assert_eq!(q.backlight, backlight(100), "never above 100");
-        assert_eq!(q.press(&l, (BAR_START + 10, 1), Button::Left, t), set("50%", "brightness 50%"), "a click on its bar");
-        assert_eq!(q.scroll(&l, Some((5, 1)), -2, t), set("10%+", "brightness +10%"));
+        assert_eq!(q.press(&l, (BAR_START + 10, 1), Button::Left, later(t, 3)), set_brightness(50), "a click on its bar");
+        assert_eq!(q.scroll(&l, Some((5, 1)), -2, later(t, 4)), set_brightness(60));
+    }
+
+    /// Mae's ruling M2: the panel never takes the backlight below 1 % (a black screen), by a key,
+    /// the wheel or a click.
+    #[test]
+    fn brightness_never_goes_below_one_percent() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Brightness;
+        let t = Instant::now();
+        q.backlight = backlight(3);
+        assert_eq!(q.key(&l, Key::Left, false, later(t, 0)), set_brightness(1), "3 % − 5: 1 %");
+        assert_eq!(q.backlight, backlight(1));
+        assert_eq!(q.key(&l, Key::Left, false, later(t, 1)), set_brightness(1), "at 1 %: stays");
+        q.backlight = backlight(40);
+        assert_eq!(q.scroll(&l, Some((5, 1)), 10, later(t, 2)), set_brightness(1), "ten notches down");
+        assert_eq!(q.press(&l, (BAR_START, 1), Button::Left, later(t, 3)), set_brightness(4), "the bar's first cell");
+        q.backlight = backlight(0);
+        assert_eq!(q.key(&l, Key::Right, false, later(t, 4)), set_brightness(5), "from a dark backlight, up");
+    }
+
+    /// Fix m4: the wheel counts ten notches at most.
+    #[test]
+    fn the_wheel_takes_ten_notches_at_most() {
+        let mut w = World::full();
+        w.sound.sink = vol(30, false);
+        let l = w.live();
+        let mut q = quick(&w, Focus::Sound);
+        let t = Instant::now();
+        assert_eq!(q.scroll(&l, Some((5, 0)), -15, t), set_volume(80), "15 notches of 5: 50, not 75");
+        q.selected = Row::Brightness;
+        q.backlight = backlight(80);
+        assert_eq!(q.scroll(&l, Some((5, 1)), 15, t), set_brightness(30), "15 notches down: 50");
+    }
+
+    /// Fix m3: `BAR` is the width `osd::level` draws, from `BAR_START` (the click mapping counts on it).
+    #[test]
+    fn the_drawn_bar_spans_bar_start_and_its_bar_cells() {
+        let mut g = Grid::empty(WIDTH + 2);
+        slider(&mut g, BRIGHTNESS, Volume { percent: 100, muted: false }, false, false);
+        let styles: Vec<char> = g.styles().chars().collect();
+        let (first, end) = (usize::from(BAR_START), usize::from(BAR_START + BAR));
+        assert!(styles[first..end].iter().all(|c| *c == 'a'), "{}", g.styles());
+        assert_ne!(styles[first - 1], 'a', "the cell before the bar: {}", g.styles());
+        assert_ne!(styles[end], 'a', "the cell after it: {}", g.styles());
     }
 
     #[test]
@@ -1353,6 +1555,17 @@ mod tests {
         assert_eq!(texts(&b)[7], format!(" {REBOOT} Reboot? ⏎"));
         assert_eq!(b.rows[7].styles()[1..12], "w".repeat(11), "in warn");
         assert_eq!(q.deadline(), Some(t + CONFIRM), "the timer waits for it");
+        let early = t + Duration::from_millis(200);
+        assert_eq!(q.key(&l, Key::Enter, false, early), QuickAction::Nothing, "Mae (M1): a double activation never confirms");
+        assert_eq!(q.press(&l, (20, SESSION_LINE), Button::Left, early), QuickAction::Nothing, "nor a double click");
+        assert_eq!(q.confirm, Some((Session::Reboot, t + CONFIRM)), "the question stays, its 3 s unchanged");
+        assert_eq!(
+            q.key(&l, Key::Enter, false, t + Duration::from_millis(500)),
+            QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
+            "0.5 s later: it runs"
+        );
+        q.button = Session::Reboot;
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
         assert_eq!(
             q.key(&l, Key::Enter, false, t + Duration::from_secs(2)),
             QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
@@ -1388,7 +1601,7 @@ mod tests {
         assert_eq!(q.confirm, None, "cancels it");
         assert_eq!(q.press(&l, (SESSION_AT + SESSION_GAP, SESSION_LINE), Button::Left, t), QuickAction::Redraw, "a press on reboot asks");
         assert_eq!(
-            q.press(&l, (20, SESSION_LINE), Button::Left, t),
+            q.press(&l, (20, SESSION_LINE), Button::Left, t + CONFIRM_AFTER),
             QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
             "anywhere on the question: the second activation"
         );

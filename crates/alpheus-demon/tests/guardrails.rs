@@ -1520,6 +1520,8 @@ fn every_quick_command_stays_on_the_allowlist() {
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
     let t = Instant::now();
+    // Mae (M1): a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
+    let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
     let mut calls: Vec<String> = Vec::new();
     let mut record = |a: QuickAction| {
         if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } = a {
@@ -1532,7 +1534,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             let mut q = fresh();
             q.selected = row;
             record(q.key(&live, k, false, t));
-            record(q.key(&live, k, false, t));
+            record(q.key(&live, k, false, later));
         }
     }
     let mut q = fresh();
@@ -1545,26 +1547,28 @@ fn every_quick_command_stays_on_the_allowlist() {
             for b in [Button::Left, Button::Right, Button::Middle] {
                 let mut q = fresh();
                 record(q.press(&live, (x, y), b, t));
-                record(q.press(&live, (x, y), b, t));
+                record(q.press(&live, (x, y), b, later));
             }
             for steps in [-1, 1, -3] {
                 record(fresh().scroll(&live, Some((x, y)), steps, t));
             }
         }
     }
-    let percent = |n: &str| {
-        ["%+", "%-", "%"]
-            .iter()
-            .any(|s| n.strip_suffix(s).is_some_and(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit())))
+    // Fix S1: absolute levels only, 0 to 100 (`min` up); never a relative step.
+    let percent = |n: &str, min: u8| {
+        n.strip_suffix('%')
+            .filter(|d| !d.is_empty() && d.len() <= 3 && d.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|d| d.parse::<u8>().ok())
+            .is_some_and(|p| (min..=100).contains(&p))
     };
     let configured =
         ["fake-keep-awake", "fake-night --toggle", "fake-logout", "loginctl lock-session", "systemctl reboot", "systemctl poweroff"];
     for c in &calls {
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
-            ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n),
+            ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
-            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n),
+            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             _ => configured.contains(&c.as_str()),
         };
@@ -1572,14 +1576,14 @@ fn every_quick_command_stays_on_the_allowlist() {
         assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
     }
     for expected in [
-        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
-        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 69%",
+        "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 59%",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 50%",
         "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
         "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
         "wpctl set-default 99",
-        "brightnessctl --class=backlight --device=intel_backlight set 5%+",
-        "brightnessctl --class=backlight --device=intel_backlight set 5%-",
+        "brightnessctl --class=backlight --device=intel_backlight set 55%",
+        "brightnessctl --class=backlight --device=intel_backlight set 45%",
         "brightnessctl --class=backlight --device=intel_backlight set 50%",
         "powerprofilesctl set performance",
         "fake-keep-awake",
@@ -1617,6 +1621,11 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify_app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("self.quick_closed()"), "popup_close must let the quick panel go: {close}");
+    // Fix S1: a slider level still waiting for its window is sent before the panel's body goes.
+    let (flush, take) = (close.find("self.quick_flush()"), close.find("self.popup.take()"));
+    assert!(matches!((flush, take), (Some(f), Some(t)) if f < t), "popup_close flushes the sliders first: {close}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");

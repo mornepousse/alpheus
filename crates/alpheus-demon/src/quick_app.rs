@@ -218,13 +218,19 @@ impl App {
         }
     }
 
-    /// The timer fired (calloop callback; its source is dropped): the due re-reads, then a refresh.
+    /// The timer fired (calloop callback; its source is dropped): the slider levels that waited
+    /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick_timer.fired();
         let due = match app.popup.as_mut().map(|p| &mut p.body) {
             Some(PopupBody::Quick(q)) => q.due(now),
             _ => return,
         };
+        for a in &due.run {
+            if let QuickAction::Run { argv, what } = a {
+                app.quick_spawn(argv, what);
+            }
+        }
         let level = due.backlight.then(|| app.quick_backlight().map(|b| b.percent));
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
         if let Some(PopupBody::Quick(q)) = app.popup.as_mut().map(|p| &mut p.body) {
@@ -238,6 +244,20 @@ impl App {
             }
         }
         app.quick_refresh();
+    }
+
+    /// The panel is closing (`popup_close`, before its body goes): the slider levels still waiting
+    /// for their window are sent now, never lost.
+    pub(crate) fn quick_flush(&mut self) {
+        let waiting = match self.popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => q.flush(),
+            _ => return,
+        };
+        for a in waiting {
+            if let QuickAction::Run { argv, what } = a {
+                self.quick_spawn(&argv, &what);
+            }
+        }
     }
 
     /// The panel went, whatever closed it (`popup_close`), or never opened: the sound thread back

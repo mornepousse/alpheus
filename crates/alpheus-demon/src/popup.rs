@@ -634,6 +634,9 @@ impl App {
             self.menu_end();
         }
         let quick = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Quick(_)));
+        if quick {
+            self.quick_flush();
+        }
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
