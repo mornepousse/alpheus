@@ -5,7 +5,7 @@
 //! (`quick_timer`) is armed only for a pending re-read or the reboot question. Nothing of it stays
 //! once the panel closes (`quick_closed`).
 
-use crate::backlight;
+use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
@@ -252,8 +252,8 @@ impl App {
     /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick_timer.fired();
-        let due = match app.popup.as_mut().map(|p| &mut p.body) {
-            Some(PopupBody::Quick(q)) => q.due(now),
+        let (due, device) = match app.popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => return,
         };
         for a in &due.run {
@@ -261,7 +261,9 @@ impl App {
                 app.quick_spawn(argv, what);
             }
         }
-        let level = due.backlight.then(|| app.quick_backlight().map(|b| b.percent));
+        // The device shown, re-read: one failed read keeps the row (final review A-m2).
+        let dir = &app.bar.config.osd.backlight_dir;
+        let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
         if let Some(PopupBody::Quick(q)) = app.popup.as_mut().map(|p| &mut p.body) {
             if let Some(level) = level {

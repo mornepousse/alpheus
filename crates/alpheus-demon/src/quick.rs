@@ -6,6 +6,7 @@
 //! thread or runs a command.
 
 use crate::actions::Button;
+use crate::backlight::Reread;
 use crate::config::{ModuleId, QuickConfig, ToggleConfig};
 use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
@@ -921,18 +922,19 @@ impl Quick {
         self.sinks = sinks;
     }
 
-    /// A re-read of the backlight: its level now; None: the device went, and its row with it.
-    /// Within SETTLE of a quiet window, a level that differs from the one sent is not taken yet
+    /// A re-read of the backlight: its level now; Gone: the device went, and its row with it;
+    /// Unreadable (a transient sysfs error): the last level stands (final review A-m2). Within
+    /// SETTLE of a quiet window, a level that differs from the one sent is not taken yet
     /// (brightnessctl may not have written it): the last re-read, at SETTLE, is.
-    pub fn set_backlight(&mut self, percent: Option<u8>) {
-        match (percent, self.backlight.as_mut()) {
-            (Some(p), Some(b)) if self.brightness_settle.is_some() && p != b.percent => {}
-            (Some(p), Some(b)) => {
+    pub fn set_backlight(&mut self, read: Reread) {
+        match (read, self.backlight.as_mut()) {
+            (Reread::Level(p), Some(b)) if self.brightness_settle.is_some() && p != b.percent => {}
+            (Reread::Level(p), Some(b)) => {
                 b.percent = p;
                 self.brightness_settle = None;
             }
-            (None, _) => self.backlight = None,
-            (Some(_), None) => {}
+            (Reread::Gone, _) => self.backlight = None,
+            (Reread::Level(_), None) | (Reread::Unreadable, _) => {}
         }
     }
 
@@ -1402,9 +1404,11 @@ mod tests {
     fn re_reads_replace_the_backlight_and_the_toggles() {
         let w = World::full();
         let mut q = quick(&w, Focus::Top);
-        q.set_backlight(Some(40));
+        q.set_backlight(Reread::Level(40));
         assert_eq!(q.backlight, backlight(40));
-        q.set_backlight(None);
+        q.set_backlight(Reread::Unreadable);
+        assert_eq!(q.backlight, backlight(40), "one failed read: the row and its last level stay");
+        q.set_backlight(Reread::Gone);
         assert!(!shown(&w.live(), &q).contains(&Row::Brightness), "the device went: its row with it");
         q.set_toggle(Toggle::NightLight, Some(true));
         assert_eq!(q.toggles, [None, Some(true)]);
@@ -1516,7 +1520,7 @@ mod tests {
         q.selected = Row::Brightness;
         assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 4)), set_brightness(80));
         assert_eq!(q.due(later(t, 5)), Due { backlight: true, ..Due::default() });
-        q.set_backlight(Some(75)); // read before brightnessctl wrote
+        q.set_backlight(Reread::Level(75)); // read before brightnessctl wrote
         assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 5)), set_brightness(85), "from 80 % shown, never 75 %");
     }
 
@@ -1551,14 +1555,14 @@ mod tests {
         assert_eq!(q.deadline(), Some(t + BRIGHTNESS_REREAD));
         assert_eq!(q.due(t + Duration::from_millis(149)), Due::default(), "not yet");
         assert_eq!(q.due(t + BRIGHTNESS_REREAD), Due { backlight: true, ..Due::default() });
-        q.set_backlight(Some(80));
+        q.set_backlight(Reread::Level(80));
         assert_eq!(q.deadline(), None, "the re-read agrees: nothing pending, no timer");
         q.key(&l, Key::Left, false, later(t, 1));
         q.due(later(t, 2));
-        q.set_backlight(Some(78));
+        q.set_backlight(Reread::Level(78));
         assert_eq!(q.backlight, backlight(75), "a re-read that disagrees is kept back for SETTLE");
         assert_eq!(q.due(later(t, 2) + SETTLE), Due { backlight: true, ..Due::default() }, "one more re-read");
-        q.set_backlight(Some(78));
+        q.set_backlight(Reread::Level(78));
         assert_eq!(q.backlight, backlight(78), "then the re-read wins");
         assert_eq!(q.deadline(), None);
         q.backlight = backlight(98);
