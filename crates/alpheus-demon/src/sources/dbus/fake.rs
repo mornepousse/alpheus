@@ -4,9 +4,11 @@
 //! well-known name: on a real bus, that call could start the service.
 
 use super::props::{Objects, Prop, Props, busctl};
+use super::wifi::{self, WifiTap};
 use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::sync::Arc;
 
 const NM_ROOT: &str = include_str!("../../../tests/fixtures/dbus-nm-root.json");
 const NM_ACTIVE: [(u32, &str); 4] = [
@@ -31,6 +33,12 @@ pub const NM_OWNER: &str = ":1.10";
 pub const UPOWER_OWNER: &str = ":1.11";
 pub const BLUEZ_OWNER: &str = ":1.12";
 pub const POWER_OWNER: &str = ":1.13";
+
+/// Synthesized around the recording (it has no device objects): a wired device, and the Wi-Fi
+/// device of the recorded Wi-Fi connection (ActiveConnection/9).
+pub const WIRED_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/1";
+pub const WIFI_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/5";
+pub const AP: &str = "/org/freedesktop/NetworkManager/AccessPoint";
 
 /// A step of a scripted session: the signal, and what changes on the bus
 /// just before it is received.
@@ -62,6 +70,10 @@ pub struct FakeBus {
     pub disconnecting: BTreeSet<String>,
     pub bluez: Objects,
     pub devices: Vec<String>,
+    /// NetworkManager's GetDevices answer; None: not there (the recording has none): NotFound.
+    pub nm_devices: Option<Vec<String>>,
+    /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
+    pub tap: Arc<WifiTap>,
     pub script: VecDeque<Step>,
     pub calls: Vec<String>,
 }
@@ -76,6 +88,8 @@ impl FakeBus {
             disconnecting: BTreeSet::new(),
             bluez: Objects::new(),
             devices: Vec::new(),
+            nm_devices: None,
+            tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
         }
@@ -117,6 +131,41 @@ impl FakeBus {
         self.owners.insert(POWER_PROFILES, POWER_OWNER);
         self.set(power::PATH, power::INTERFACE, POWER_PROFILES_JSON);
         self.props_mut(power::PATH, power::INTERFACE).0.insert("ActiveProfile".into(), Prop::Str(active.into()));
+    }
+
+    /// Synthesized around the recording (fictional networks): a wired device, then the Wi-Fi device
+    /// of the recorded Wi-Fi connection, activated, on AccessPoint/10 ("MON_WIFI_1" as the recording
+    /// names it, 70 %, WPA2), with 11 ("Voisin-Test", 30 %, WPA2), 12 ("Cafe-Libre", 55 %, open) and 13
+    /// (hidden) around. Hardware addresses from the documentation range.
+    pub fn with_wifi(&mut self) {
+        let props = |pairs: Vec<(&str, Prop)>| Props(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        self.nm_devices = Some(vec![WIRED_DEVICE.into(), WIFI_DEVICE.into()]);
+        self.props.insert((WIRED_DEVICE.into(), wifi::DEVICE.into()), props(vec![("DeviceType", Prop::Int(1)), ("State", Prop::Int(100))]));
+        let active = Prop::Path("/org/freedesktop/NetworkManager/ActiveConnection/9".into());
+        self.props.insert(
+            (WIFI_DEVICE.into(), wifi::DEVICE.into()),
+            props(vec![("DeviceType", Prop::Int(2)), ("State", Prop::Int(100)), ("ActiveConnection", active)]),
+        );
+        let listed: Vec<String> = (10..=13).map(|n| format!("{AP}/{n}")).collect();
+        self.props.insert(
+            (WIFI_DEVICE.into(), wifi::WIRELESS.into()),
+            props(vec![("ActiveAccessPoint", Prop::Path(format!("{AP}/10"))), ("AccessPoints", Prop::Paths(listed))]),
+        );
+        for (n, ssid, strength, rsn) in
+            [(10, "MON_WIFI_1", 70, 0x188), (11, "Voisin-Test", 30, 0x188), (12, "Cafe-Libre", 55, 0), (13, "", 20, 0x188)]
+        {
+            self.props.insert(
+                (format!("{AP}/{n}"), wifi::ACCESS_POINT.into()),
+                props(vec![
+                    ("Ssid", Prop::Bytes(ssid.as_bytes().to_vec())),
+                    ("Strength", Prop::Int(strength)),
+                    ("Flags", Prop::Int(if rsn == 0 { 0 } else { 1 })),
+                    ("WpaFlags", Prop::Int(0)),
+                    ("RsnFlags", Prop::Int(rsn)),
+                    ("HwAddress", Prop::Str(format!("00:00:5E:00:53:{n:02X}"))),
+                ]),
+            );
+        }
     }
 
     /// Synthesized (nothing was connected during the recording): the
@@ -186,6 +235,12 @@ impl Bus for FakeBus {
         self.calls.push(format!("EnumerateDevices {destination}"));
         self.reach(destination)?;
         Ok(self.devices.clone())
+    }
+
+    fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        self.calls.push(format!("GetDevices {destination}"));
+        self.reach(destination)?;
+        self.nm_devices.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: GetDevices"))
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {

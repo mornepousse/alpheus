@@ -932,6 +932,7 @@ mod tests {
             bluetooth: Some(BtState::Off),
             battery: Some(PowerState::default()),
             power: None,
+            wifi: None,
         };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);

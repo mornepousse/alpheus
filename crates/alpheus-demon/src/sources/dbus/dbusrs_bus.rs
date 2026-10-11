@@ -8,7 +8,7 @@
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
-use super::{Bus, Domain, Signal, UPOWER, bluez, upower};
+use super::{Bus, Domain, Signal, UPOWER, bluez, network, upower};
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
 use dbus::channel::{BusType, Channel};
@@ -35,11 +35,12 @@ pub enum Method {
     GetAll,
     GetManagedObjects,
     EnumerateDevices,
+    GetDevices,
 }
 
 impl Method {
-    pub const ALL: [Method; 5] =
-        [Method::GetNameOwner, Method::AddMatch, Method::GetAll, Method::GetManagedObjects, Method::EnumerateDevices];
+    pub const ALL: [Method; 6] =
+        [Method::GetNameOwner, Method::AddMatch, Method::GetAll, Method::GetManagedObjects, Method::EnumerateDevices, Method::GetDevices];
 
     pub fn name(self) -> &'static str {
         match self {
@@ -48,6 +49,7 @@ impl Method {
             Method::GetAll => "GetAll",
             Method::GetManagedObjects => "GetManagedObjects",
             Method::EnumerateDevices => "EnumerateDevices",
+            Method::GetDevices => "GetDevices",
         }
     }
 
@@ -57,6 +59,7 @@ impl Method {
             Method::GetAll => "org.freedesktop.DBus.Properties",
             Method::GetManagedObjects => "org.freedesktop.DBus.ObjectManager",
             Method::EnumerateDevices => UPOWER,
+            Method::GetDevices => network::INTERFACE,
         }
     }
 }
@@ -451,6 +454,10 @@ impl Bus for DbusRsBus {
 
     fn enumerate_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
         paths_reply(&self.call(destination, upower::PATH, Method::EnumerateDevices, None)?)
+    }
+
+    fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        paths_reply(&self.call(destination, network::PATH, Method::GetDevices, None)?)
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {

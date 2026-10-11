@@ -855,7 +855,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         }
     }
     let names: Vec<&str> = Method::ALL.iter().map(|m| m.name()).collect();
-    assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices"]);
+    assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices", "GetDevices"]);
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
     let prod = production_code(&file);
     assert_eq!(prod.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
@@ -1642,6 +1642,18 @@ fn the_quick_panel_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick Wi-Fi spec § 6: no panic in the Wi-Fi reader (the D-Bus thread's): bounded, cleaned, never
+/// unwrapped.
+#[test]
+fn the_wifi_reader_has_no_panicking_path() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "sources/dbus/wifi.rs").expect("sources/dbus/wifi.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in sources/dbus/wifi.rs's production code");
     }
 }
 
