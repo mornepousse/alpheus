@@ -22,6 +22,10 @@ impl<E: Executor> Executor for NonBlocking<E> {
         self.0.spawn(prog, args)
     }
 
+    fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
+        self.0.spawn_with_input(prog, args, input)
+    }
+
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
         self.0.stream(prog, args)
     }
@@ -66,5 +70,14 @@ mod tests {
         let e = NonBlocking(fake);
         let l = CaptureLimits { deadline: Duration::from_secs(1), max_bytes: 10, max_lines: 10 };
         assert_eq!(e.capture("fake-list", &[], l), Ok(c));
+    }
+
+    #[test]
+    fn spawn_with_input_is_delegated() {
+        let fake = FakeExecutor::new();
+        fake.ok("nmcli --ask device wifi connect X", "");
+        let e = NonBlocking(fake);
+        assert_eq!(e.spawn_with_input("nmcli", &["--ask", "device", "wifi", "connect", "X"], &[b"fake-pass", b"\n"]), Ok(()));
+        assert_eq!(e.0.inputs(), [("nmcli --ask device wifi connect X".to_string(), b"fake-pass\n".to_vec())]);
     }
 }
