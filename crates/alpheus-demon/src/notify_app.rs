@@ -138,7 +138,7 @@ impl App {
         match request {
             Request::Dnd(verb) => self.set_dnd(dnd_after(*verb, self.dnd)),
             Request::ClearNotifications => self.clear_notifications(),
-            Request::Toggle | Request::Close | Request::Dmenu { .. } | Request::Osd(_) => {}
+            Request::Toggle | Request::Close | Request::Dmenu { .. } | Request::Osd(_) | Request::Quick(_) => {}
         }
         Reply::Done
     }

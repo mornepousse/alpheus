@@ -586,7 +586,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -595,6 +595,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Dnd(_) => "dnd",
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
+            Request::Quick(_) => "quick",
         }
     }
     let all = [
@@ -604,8 +605,9 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Dnd(DndVerb::Toggle),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
+        Request::Quick(QuickVerb::Top),
     ];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd"]);
+    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd", "quick"]);
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each

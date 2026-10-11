@@ -3902,6 +3902,71 @@ fn quick_closed_the_sound_thread_wakes_nothing_for_the_sink_list() {
     assert_eq!(wakeups_over_a_batch(&sway, &d, r#"[{"id":99,"info":null}]"#), 0, "closed: the base scope, nothing published");
 }
 
+fn quick_verb(sway: &Sway, args: &[&str]) -> i32 {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let args: Vec<OsString> = args.iter().map(OsString::from).collect();
+    run(&args, &socket_path(&sway.runtime), &mut std::io::empty(), &mut out, &mut err)
+}
+
+/// The verb's panel hangs from the bar's right end: its first row (the volume, its bar lit in the
+/// accent) somewhere in the right half, just under the bar.
+fn quick_drawn_on_the_right(s: &Ppm) -> bool {
+    let accent = rgb(preset("catppuccin").unwrap().dark.accent);
+    (29..51).any(|y| (s.width / 2..s.width).any(|x| s.at(x, y) == Some(accent)))
+}
+
+/// Quick spec § 1, decision 1: `alpheus-launch --quick sound` opens the panel under the bar's
+/// right end at the volume row; its keys work without a grab; Escape closes it and gives the
+/// keyboard back; the verb again closes an open one; nothing stays awake. The bar's keyboard
+/// interactivity is read from sway's seat focus: 0 while the bar holds the keyboard (Exclusive),
+/// back on the workspace once it is None again (Task 6 review: `Input::Keys`' reset on close).
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-verb", "");
+    assert_ne!(sway.seat_focus(), Some(0), "closed: the bar holds no keyboard");
+    assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
+    assert!(d.wait_for("quick shown (rows: volume", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", quick_drawn_on_the_right), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "open: the bar is Exclusive, no grab needed");
+    // One continuous wtype (headless sway's only keyboard is its own, gone when it exits): → at
+    // 0.4 s, Escape at 1.6 s, the keyboard kept alive for the verb's second round.
+    let typist = wtype_spawn(&sway, &["-s", "400", "-k", "Right", "-s", "1200", "-k", "Escape", "-s", "12000"]);
+    assert!(
+        wait_for_call(&sway, "wpctl", "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 89%"),
+        "{:?} {:?}",
+        recorded(&sway, "wpctl"),
+        d.log()
+    );
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "Escape: the bar is back to None");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "reopened: Exclusive again");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "the verb again closes it: {:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 2, DELAY), "{:?}", d.log());
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "the verb again: the bar is back to None");
+    drop(typist);
+    thread::sleep(Duration::from_secs(1)); // the virtual keyboard's capability going settles
+    assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
+}
+
+/// Spec § 1: without `quick` in `modules`, the verb exits 0 and opens nothing.
+#[test]
+#[ignore = "headless sway, dbus-daemon (nix develop)"]
+fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
+    let sway = Sway::start("quick-off", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"volume\", \"clock\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("quick: asked, but the quick module is not in modules", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("quick shown"), 0);
+}
+
 /// The fake source's lines (fictional, in tools-menu's shape).
 fn source_lines() -> Vec<String> {
     ["Apparence · Schéma couleurs · Vibrant", "Captures · Screenshot zone", "Verrouiller"].map(String::from).to_vec()

@@ -14,6 +14,7 @@ use crate::quick_state;
 use crate::state::{Bar, Msg};
 use crate::system::{Sink, SoundState};
 use crate::wayland::App;
+use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::Path;
 use std::time::Instant;
@@ -127,6 +128,24 @@ impl App {
         } else {
             self.quick_closed();
         }
+    }
+
+    /// `alpheus-launch --quick [sound]` (spec § 1), answered before the launcher's guard
+    /// (launch.rs): toggles the panel on the focused output, the keyboard without a grab
+    /// (decision 1). Done, also without the module (nothing opens).
+    pub(crate) fn quick_verb(&mut self, request: &Request) -> Reply {
+        let Request::Quick(verb) = request else { return Reply::Done };
+        if !self.quick_enabled() {
+            log("quick: asked, but the quick module is not in modules");
+            return Reply::Done;
+        }
+        let focus = match verb {
+            QuickVerb::Top => Focus::Top,
+            QuickVerb::Sound => Focus::Sound,
+        };
+        let qh = self.qh.clone();
+        self.quick_toggle(&qh, None, focus);
+        Reply::Done
     }
 
     /// `f` on the open panel and what it reads; Nothing when the panel is not open.

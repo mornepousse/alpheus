@@ -68,6 +68,32 @@ impl OsdVerb {
     }
 }
 
+/// `--quick`'s optional word (quick spec § 1): where the panel opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickVerb {
+    /// `--quick`: the first row.
+    Top,
+    /// `--quick sound`: the volume row.
+    Sound,
+}
+
+impl QuickVerb {
+    pub const ALL: [QuickVerb; 2] = [QuickVerb::Top, QuickVerb::Sound];
+
+    /// The word after `quick` (wire) and `--quick` (command line); None for the top.
+    pub fn word(self) -> Option<&'static str> {
+        match self {
+            QuickVerb::Top => None,
+            QuickVerb::Sound => Some("sound"),
+        }
+    }
+
+    /// A word after `quick`: only "sound".
+    pub fn parse(s: &str) -> Option<QuickVerb> {
+        QuickVerb::ALL.into_iter().find(|v| v.word() == Some(s))
+    }
+}
+
 /// `--dmenu`'s options that change what the daemon does (the dmenu inventory, 2026-10-09):
 /// optional trailing words of the dmenu header, so a request without them reads as before.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -98,11 +124,14 @@ pub enum Request {
     /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
     /// module off or no backlight (nothing shown).
     Osd(OsdVerb),
+    /// The quick settings panel (quick spec § 1): toggled, at the volume row with `sound`. Answered
+    /// Done, also with the module off (nothing opens).
+    Quick(QuickVerb),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
-    /// toggle / close / dnd / clear-notifications / osd handled.
+    /// toggle / close / dnd / clear-notifications / osd / quick handled.
     Done,
     /// dmenu: the chosen line, or the typed text when nothing matched.
     Chosen(String),
@@ -138,6 +167,7 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 toggle\n" | "alpheus-launcher/1 close\n"
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
 ///   "alpheus-launcher/1 osd brightness\n"
+///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
 /// body = lines joined by '\n' (no trailing '\n'). The flag words (`DmenuFlags`) are optional,
 /// each at most once and in this order: a client that sends none is read as before, so the
@@ -157,6 +187,10 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
         Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
+        Request::Quick(v) => match v.word() {
+            Some(w) => format!("{MAGIC} quick {w}\n").into_bytes(),
+            None => format!("{MAGIC} quick\n").into_bytes(),
+        },
         Request::Dmenu { prompt, lines, flags } => {
             let body = lines.join("\n");
             let prompt_len = prompt.as_ref().map_or_else(|| "-".to_string(), |p| p.len().to_string());
@@ -181,6 +215,7 @@ enum Header {
     Dnd(DndVerb),
     ClearNotifications,
     Osd(OsdVerb),
+    Quick(QuickVerb),
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -307,6 +342,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
         Header::Osd(v) => Some(Request::Osd(v)),
+        Header::Quick(v) => Some(Request::Quick(v)),
         Header::Dmenu { .. } => None,
     }
 }
@@ -326,6 +362,10 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["clear-notifications"] => Ok(Header::ClearNotifications),
         ["osd", word] => {
             OsdVerb::parse(word).map(Header::Osd).ok_or_else(|| IpcError::Malformed(format!("unknown osd word {:?}", cut(word))))
+        }
+        ["quick"] => Ok(Header::Quick(QuickVerb::Top)),
+        ["quick", word] => {
+            QuickVerb::parse(word).map(Header::Quick).ok_or_else(|| IpcError::Malformed(format!("unknown quick word {:?}", cut(word))))
         }
         ["dmenu", prompt, body, flags @ ..] => {
             let prompt = if *prompt == "-" { None } else { Some(number(prompt, "prompt length")?) };
@@ -527,6 +567,8 @@ mod tests {
             Request::Dnd(DndVerb::Toggle),
             Request::ClearNotifications,
             Request::Osd(OsdVerb::Brightness),
+            Request::Quick(QuickVerb::Top),
+            Request::Quick(QuickVerb::Sound),
         ]
     }
 
@@ -566,6 +608,8 @@ mod tests {
         assert_eq!(encode_request(&Request::Dnd(DndVerb::Toggle)), b"alpheus-launcher/1 dnd toggle\n");
         assert_eq!(encode_request(&Request::ClearNotifications), b"alpheus-launcher/1 clear-notifications\n");
         assert_eq!(encode_request(&Request::Osd(OsdVerb::Brightness)), b"alpheus-launcher/1 osd brightness\n");
+        assert_eq!(encode_request(&Request::Quick(QuickVerb::Top)), b"alpheus-launcher/1 quick\n");
+        assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
         assert_eq!(
             encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
             b"alpheus-launcher/1 dmenu - 0\n"
@@ -621,6 +665,9 @@ mod tests {
             b"alpheus-launcher/1 osd volume\n",
             b"alpheus-launcher/1 osd brightness now\n",
             b"alpheus-launcher/1 osd  brightness\n",
+            b"alpheus-launcher/1 quick volume\n",
+            b"alpheus-launcher/1 quick sound now\n",
+            b"alpheus-launcher/1 quick Sound\n",
             b"alpheus-launcher/1 dmenu - 0 indexes\n",
             b"alpheus-launcher/1 dmenu - 0 index index\n",
             b"alpheus-launcher/1 dmenu - 0 visible\n",
@@ -677,6 +724,18 @@ mod tests {
         }
         assert_eq!(OsdVerb::parse("Brightness"), None, "the words are exact");
         assert_eq!(OsdVerb::parse("volume"), None, "volume is passive: no verb");
+    }
+
+    #[test]
+    fn every_quick_word_parses_back() {
+        for v in QuickVerb::ALL {
+            if let Some(w) = v.word() {
+                assert_eq!(QuickVerb::parse(w), Some(v));
+            }
+        }
+        assert_eq!(QuickVerb::Top.word(), None, "the bare verb");
+        assert_eq!(QuickVerb::parse("Sound"), None, "the words are exact");
+        assert_eq!(QuickVerb::parse("network"), None, "deliveries 2 and 3 add their sections");
     }
 
     #[test]

@@ -1340,6 +1340,16 @@ impl Sway {
         after[..end].parse().ok()
     }
 
+    /// The seat's `focus` from sway's `get_seats`: 0 while a layer surface holds the keyboard (a
+    /// bar that is `Exclusive`), a container's id otherwise. None if swaymsg fails.
+    pub fn seat_focus(&self) -> Option<u64> {
+        let out = Command::new("swaymsg").arg("-s").arg(&self.ipc).args(["-t", "get_seats", "-r"]).output().ok()?;
+        let text = String::from_utf8(out.stdout).ok()?;
+        let after = text[text.find("\"focus\"")? + 7..].trim_start().strip_prefix(':')?.trim_start();
+        let end = after.find(|c: char| !c.is_ascii_digit())?;
+        after[..end].parse().ok()
+    }
+
     /// Screenshots `output` until `ok` holds, 10 s at most: the daemon paints asynchronously.
     pub fn wait_for_screen(&self, output: &str, ok: impl Fn(&Ppm) -> bool) -> bool {
         let t = Instant::now();
