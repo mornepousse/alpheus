@@ -17,6 +17,9 @@ pub struct SoundState {
     /// already, labelled with its node name, its volume unknown; one whose node went is None.
     pub sink_name: Option<DeviceName>,
     pub source_name: Option<DeviceName>,
+    /// Every sink, by label then id, at most `pipewire::MAX_SINKS`: only while the quick panel is
+    /// open (`Scope::Panel`); None otherwise, and never kept by the bar.
+    pub sinks: Option<Vec<Sink>>,
 }
 
 /// A default device: its `node.name` (its identity) and what a person reads (`node.description`,
@@ -25,6 +28,16 @@ pub struct SoundState {
 pub struct DeviceName {
     pub node: String,
     pub label: String,
+}
+
+/// An audio output the quick panel lists (quick spec § 2): its PipeWire node id (what
+/// `wpctl set-default` takes), what a person reads (`pipewire::LABEL_MAX` bytes at most), and
+/// whether it is the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sink {
+    pub id: u32,
+    pub label: String,
+    pub default: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

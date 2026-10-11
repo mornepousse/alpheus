@@ -143,6 +143,8 @@ impl Bar {
                 }
             }
             Msg::Sound(s) => {
+                // The sink list is the open quick panel's (`quick_take` moved it there): never kept here.
+                let s = s.map(|s| SoundState { sinks: None, ..s });
                 // The bar draws the sink only: a microphone or label change is kept for the OSD
                 // (which reads it from this same message, before) without a redraw.
                 let drawn = self.config.modules.contains(&ModuleId::Volume);
@@ -190,6 +192,17 @@ mod tests {
     use alpheus_commun::backends::Volume;
 
     const H: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
+
+    /// Quick spec § 5: the list belongs to the open panel (`quick_take` moves it there first); the bar
+    /// never keeps one, whatever reaches it.
+    #[test]
+    fn the_bar_never_keeps_a_sink_list() {
+        let mut b = Bar::new(BarConfig::default());
+        let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: true }];
+        let s = SoundState { sink: Some(Volume { percent: 84, muted: false }), sinks: Some(sinks), ..SoundState::default() };
+        assert!(b.apply(Msg::Sound(Some(s))));
+        assert!(matches!(&b.sound, Feed::Ready(s) if s.sinks.is_none()), "{:?}", b.sound);
+    }
 
     #[test]
     fn messages_and_changes() {

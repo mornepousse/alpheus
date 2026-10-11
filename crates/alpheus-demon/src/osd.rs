@@ -347,6 +347,7 @@ mod tests {
             source: Some(vol(mic, mic_muted)),
             sink_name: dev(OUT, "Desk speakers"),
             source_name: dev(IN, "Desk microphone"),
+            sinks: None,
         }
     }
 

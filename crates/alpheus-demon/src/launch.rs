@@ -735,7 +735,9 @@ pub fn run() -> i32 {
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        sources::sound::start(exec.clone(), scope, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+        // Shared with the quick panel (task 6 keeps a clone in `App`).
+        let tap = Arc::new(crate::pipewire::SoundTap::default());
+        sources::sound::start(exec.clone(), scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
