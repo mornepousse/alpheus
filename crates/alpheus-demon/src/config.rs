@@ -494,8 +494,11 @@ pub fn state_form(s: &str) -> Result<StateForm, String> {
     }
     if let Some(path) = s.strip_prefix("file:") {
         let anchored = path.starts_with('/') || path.starts_with("~/") || path.starts_with("$XDG_RUNTIME_DIR/");
-        if !anchored || path.chars().any(char::is_control) {
+        if !anchored {
             return Err(format!("the file must be an absolute path (\"/…\", \"~/…\" or \"$XDG_RUNTIME_DIR/…\"), not {path:?}"));
+        }
+        if path.chars().any(char::is_control) {
+            return Err(format!("the file path holds a control character: {path:?}"));
         }
         return Ok(StateForm::File(path.to_string()));
     }
@@ -1140,7 +1143,7 @@ mod tests {
             ("[quick]\nnight_light = { toggle = [\"x\"], state = \"process:a/b\" }", "quick.night_light.state: a process name has no '/'"),
             (
                 "[quick]\nnight_light = { toggle = [\"x\"], state = \"file:/run/a\\nb\" }",
-                "quick.night_light.state: the file must be an absolute path",
+                "quick.night_light.state: the file path holds a control character: \"/run/a\\nb\"",
             ),
             ("[quick]\nlogout = [\"fake-logout\", \"a\\u0000b\"]", "quick.logout: an argument holds a NUL"),
             ("[quick]\nkeep_awake = { toggle = [\"x\\u0000\"] }", "quick.keep_awake.toggle: an argument holds a NUL"),

@@ -41,11 +41,12 @@ fn scan(proc_root: &Path, name: &str, limit: usize) -> bool {
 }
 
 /// A toggle's state from its `state` setting: Some(on) for a file or a process; None for "", a form
-/// bar.toml would have refused, or a path that cannot be expanded.
+/// bar.toml would have refused, a path that cannot be expanded, or a file whose existence cannot
+/// be told (any error but "not found": never "off" on a guess).
 pub fn read(state: &str, proc_root: &Path, env: &dyn Fn(&str) -> Option<OsString>) -> Option<bool> {
     match state_form(state).ok()? {
         StateForm::Unknown => None,
-        StateForm::File(p) => Some(expand(&p, env)?.exists()),
+        StateForm::File(p) => expand(&p, env)?.try_exists().ok(),
         StateForm::Process(name) => Some(process_running(proc_root, &name)),
     }
 }
@@ -110,5 +111,16 @@ mod tests {
         assert_eq!(read("pid:1", &home, &env), None, "not a form: unknown");
         let _ = fs::remove_dir_all(&runtime);
         let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Fix m1: a file whose existence cannot be told (here ENOTDIR: a parent is a plain file) is
+    /// unknown (`·`), never "off"; only a missing file is.
+    #[test]
+    fn an_unreadable_file_state_is_unknown_never_off() {
+        let root = tree("unreadable");
+        fs::write(root.join("plain"), "").unwrap();
+        assert_eq!(read(&format!("file:{}", root.join("plain/flag").display()), &root, &none), None, "cannot tell: ·");
+        assert_eq!(read(&format!("file:{}", root.join("missing").display()), &root, &none), Some(false), "missing: off");
+        let _ = fs::remove_dir_all(&root);
     }
 }
