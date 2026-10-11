@@ -100,7 +100,9 @@ pub trait Executor: Send + Sync {
     /// closed: a secret handed to a program this way (the Wi-Fi password, `nmcli --ask`) is never on
     /// its command line, never through a shell. The parts are written straight from the caller's
     /// memory, never joined into a copy. More than MAX_INPUT bytes in all: refused before anything
-    /// starts. A program that exits before reading may make the write fail: an `Io` error.
+    /// starts. An `Io` error may also come once the program started (it exited, or closed its
+    /// input, before reading it all): the program was launched, so the caller never runs it again
+    /// for that error.
     fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError>;
     /// Launches `prog args…` for as long as its output is read: standard
     /// output piped, standard error discarded, its own process group, and

@@ -1035,7 +1035,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 27] = [
+const NO_THREAD_NOR_COMMAND: [&str; 28] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1063,6 +1063,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 27] = [
     "quick.rs",
     "quick_state.rs",
     "quick_wifi.rs",
+    "quick_secret.rs",
 ];
 
 #[test]
@@ -1551,7 +1552,7 @@ fn every_quick_command_stays_on_the_allowlist() {
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
     let mut calls: Vec<String> = Vec::new();
     let mut record = |a: QuickAction| {
-        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } = a {
+        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } | QuickAction::RunSecret { argv, .. } = a {
             calls.push(argv.join(" "));
         }
     };
@@ -1640,6 +1641,26 @@ fn every_quick_command_stays_on_the_allowlist() {
                 }
             }
         }
+        // The password field, then a failure with the profile nmcli made: `--ask`, then the cleanup.
+        const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
+        let mut q = opened.clone();
+        q.wifi.pick = alpheus_demon::quick_wifi::Pick::Network(b"Bureau-Test".to_vec());
+        record(q.key(&live, Key::Enter, false, t));
+        for ch in "fake-pass".chars() {
+            record(q.key(&live, Key::Char(ch), false, t));
+        }
+        record(q.key(&live, Key::Enter, false, t));
+        let mut failing = wifi_state(enabled);
+        if let Some(d) = failing.device.as_mut() {
+            d.saved.get_or_insert_with(Vec::new).push(SavedWifi { uuid: UUID_NEW.into(), ssid: b"Bureau-Test".to_vec() });
+            d.state = 60;
+        }
+        record(q.set_wifi(Some(failing.clone()), t).action);
+        if let Some(d) = failing.device.as_mut() {
+            d.state = 30;
+        }
+        record(q.set_wifi(Some(failing), t).action);
+        record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
     // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
@@ -1698,12 +1719,15 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["nmcli", "device", "wifi", "rescan"] => true,
             ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED].contains(u),
             ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
+            ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
+            ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
         assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
     }
     assert!(!calls.iter().any(|c| c.ends_with(" -x")), "a refused SSID never reaches nmcli: {calls:?}");
+    assert!(!calls.iter().any(|c| c.contains("fake-pass")), "the password is never an argument: {calls:?}");
     for expected in [
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 69%",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 59%",
@@ -1727,6 +1751,8 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli connection down uuid 11111111-2222-4333-8444-555555555555",
         "nmcli connection up uuid 33333333-4444-4555-8666-777777777777",
         "nmcli device wifi connect Cafe-Libre",
+        "nmcli --ask device wifi connect Bureau-Test",
+        "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
         "fake-more",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
@@ -1737,13 +1763,38 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }
+}
+
+/// Quick Wi-Fi spec § 3: the password goes to nmcli's standard input with a newline, never as an
+/// argument, and its field closes (the buffer wiped) right after; nothing of the panel formats a key
+/// or the secret with Debug; the buffer's only unsafe is its volatile wipe.
+#[test]
+fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let quick_app = src("quick_app.rs");
+    let body = function_body(&quick_app, "fn quick_spawn_secret(");
+    let (input, sent) = (body.find("spawn_with_input("), body.find("password_sent()"));
+    assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
+    assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
+    assert!(!body.contains(".spawn("), "never an argument: {body}");
+    for name in ["quick.rs", "quick_wifi.rs", "quick_secret.rs", "quick_app.rs", "popup.rs"] {
+        let prod = src(name);
+        for leak in ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}"] {
+            assert!(!prod.contains(leak), "{leak} in {name}");
+        }
+    }
+    let secret = src("quick_secret.rs");
+    assert_eq!(secret.matches("unsafe").count(), 1, "one unsafe block: the volatile write");
+    assert!(secret.contains("write_volatile") && secret.contains("compiler_fence"));
+    assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
 }
 
 /// Quick Wi-Fi spec § 6: no panic in the Wi-Fi reader (the D-Bus thread's): bounded, cleaned, never

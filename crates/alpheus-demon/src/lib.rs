@@ -39,6 +39,7 @@ pub mod placement;
 pub mod popup;
 pub mod quick;
 pub mod quick_app;
+pub mod quick_secret;
 pub mod quick_state;
 pub mod quick_wifi;
 pub mod retired;

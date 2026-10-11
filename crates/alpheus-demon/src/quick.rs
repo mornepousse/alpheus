@@ -242,6 +242,8 @@ pub enum Line {
     WifiNote(&'static str),
     /// "More…" (`[quick] wifi_more`).
     WifiMore,
+    /// The Wi-Fi detail's password field, under its network.
+    Password,
 }
 
 /// The backlight as the panel shows it: its device (`brightnessctl --device=`) and level.
@@ -298,6 +300,13 @@ pub enum QuickAction {
     },
     /// Do-not-disturb flips through `App::set_dnd`, the bell's and the verb's one path.
     ToggleDnd,
+    /// Spawn `argv` with the open password field's bytes and a newline on its standard input, then
+    /// close the field (its buffer wiped): `nmcli --ask` (quick Wi-Fi spec § 3). The password is never
+    /// in `argv`, nor anywhere in this action.
+    RunSecret {
+        argv: Vec<String>,
+        what: String,
+    },
 }
 
 /// What a tick finds due (`Quick::due`): the re-reads to do, whether to repaint (the question
@@ -308,6 +317,8 @@ pub struct Due {
     pub toggles: [bool; 2],
     pub redraw: bool,
     pub run: Vec<QuickAction>,
+    /// A Wi-Fi connection failed at this tick (the 20 s timeout): why, for the log.
+    pub wifi_failed: Option<&'static str>,
 }
 
 /// What a Wi-Fi state brought (`Quick::set_wifi`): the action to take (a rescan, a cleanup), and why
@@ -448,7 +459,7 @@ pub struct Quick {
     pub wifi: Wifi,
 }
 
-fn argv(parts: &[&str]) -> Vec<String> {
+pub(crate) fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| s.to_string()).collect()
 }
 
@@ -600,7 +611,7 @@ impl Quick {
         let at = all.iter().position(|l| match *l {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
-            l @ (Line::Network(_) | Line::WifiMore) => self.wifi.is_selected(l, &nets),
+            l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
             _ => false,
         });
         if let Some(at) = at {
@@ -768,7 +779,7 @@ impl Quick {
                 self.sink = self.sinks.get(i).map(|s| s.id);
                 self.choose_sink(i)
             }
-            (l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore), _) => {
+            (l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password), _) => {
                 let a = self.wifi.press(live.config, l, b, now);
                 if !self.wifi.open {
                     self.selected = Row::Wifi;
@@ -864,6 +875,7 @@ impl Quick {
             self.reread_toggles[0],
             self.reread_toggles[1],
             self.confirm.map(|(_, at)| at),
+            self.wifi.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -909,6 +921,10 @@ impl Quick {
             self.confirm = None;
             d.redraw = true;
         }
+        let (run, failed, redraw) = self.wifi.due(now);
+        d.run.extend(run);
+        d.wifi_failed = failed;
+        d.redraw |= redraw;
         d
     }
 
@@ -1049,7 +1065,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
                 }
             }
             Line::Row(row) => draw(&mut g, row, live, q),
-            l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore) => {
+            l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password) => {
                 q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
             }
         }
@@ -1972,5 +1988,26 @@ mod tests {
         let b = rows(&l, &q);
         assert_eq!(b.rows.len(), 6, "the room under the bar");
         assert_eq!(texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", texts(&b));
+    }
+
+    /// The panel's one timer covers the connect timeout and the `failed` display (quick Wi-Fi § 5).
+    #[test]
+    fn the_wifi_attempt_rides_the_panel_s_one_timer() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        q.set_wifi(Some(wifi_state(true, true, true)), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        q.key(&l, Key::Down, false, t);
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "Bureau-Test: the field");
+        for c in "fake-pass".chars() {
+            q.key(&l, Key::Char(c), false, t);
+        }
+        assert!(matches!(q.key(&l, Key::Enter, false, t), QuickAction::RunSecret { .. }));
+        assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT));
+        let d = q.due(t + crate::quick_wifi::CONNECT_TIMEOUT);
+        assert_eq!((d.wifi_failed, d.redraw), (Some("no answer in 20 s"), true));
+        assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT + crate::quick_wifi::FAILED_SHOWN));
     }
 }

@@ -12,9 +12,10 @@ use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle};
 use crate::quick_state;
+use crate::quick_wifi::{Attempt, Outcome, Wifi};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
-use crate::system::{Sink, SoundState, WifiScope};
+use crate::system::{Sink, SoundState, WifiScope, WifiState};
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -54,15 +55,54 @@ pub(crate) fn verb_debounced(opened: Option<Instant>, now: Instant) -> bool {
 }
 
 /// An attempt on a not-saved network that outlives the panel (Mae's ruling P1): followed until it
-/// ends, so a failed new profile is still deleted after the panel closed. The attempt and the last
-/// Wi-Fi state it saw come with the attempt itself (quick Wi-Fi Task 6); None at rest.
+/// ends, so a failed new profile is still deleted after the panel closed. It holds the attempt and
+/// the last Wi-Fi state it saw, nothing else (never a password: the field closed when it was sent);
+/// None at rest.
 #[derive(Debug)]
-pub(crate) struct WifiFollow {}
+pub struct WifiFollow {
+    attempt: Attempt,
+    /// Read again at the timeout: is the new profile still saved?
+    state: Option<WifiState>,
+}
 
 impl WifiFollow {
+    /// The panel closing on `wifi`: its attempt moved out with the state it saw, when it may leave
+    /// a new profile behind; None otherwise (a saved network's attempt goes with the panel).
+    pub fn leaving(wifi: &mut Wifi) -> Option<WifiFollow> {
+        let attempt = wifi.attempt.take_if(|a| a.creates)?;
+        Some(WifiFollow { attempt, state: wifi.state.take() })
+    }
+
     /// What it needs read: the detail's lists, to see the attempt's profile appear and go.
-    pub(crate) fn scope(&self) -> WifiScope {
+    pub fn scope(&self) -> WifiScope {
         WifiScope::Detail
+    }
+
+    /// The attempt's timeout: the panel's one timer stays armed for it, and for nothing after.
+    pub fn deadline(&self) -> Instant {
+        self.attempt.until
+    }
+
+    /// The D-Bus thread's state, no panel open: anything but `Waiting` ends the follower (the
+    /// cleanup to run, why it failed for the log).
+    pub fn set_state(&mut self, state: Option<WifiState>) -> Outcome {
+        self.state = state;
+        self.attempt.observe(self.state.as_ref())
+    }
+
+    /// The timer, at `now`: `Failed` once the attempt timed out (its new profile deleted if still
+    /// saved in the last state seen).
+    pub fn due(&self, now: Instant) -> Outcome {
+        self.attempt.expired(self.state.as_ref(), now)
+    }
+
+    /// A panel opened meanwhile takes the attempt back (no second attempt; its scope stays the
+    /// detail's), and the state seen when it has none yet.
+    pub fn resume(self, wifi: &mut Wifi) {
+        if wifi.state.is_none() {
+            wifi.state = self.state;
+        }
+        wifi.attempt = Some(self.attempt);
     }
 }
 
@@ -222,6 +262,10 @@ impl App {
                 self.quick_spawn(&argv, &what);
                 self.popup_close(PopupClose::Activated);
             }
+            QuickAction::RunSecret { argv, what } => {
+                self.quick_spawn_secret(&argv, &what);
+                self.quick_refresh();
+            }
             // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
@@ -247,6 +291,31 @@ impl App {
                     log(&format!("quick: {program} could not start ({e:?})"));
                 }
             }
+        }
+    }
+
+    /// Spawns `argv` with the open password field's bytes and a newline on its standard input
+    /// (quick Wi-Fi spec § 3), never as an argument; the field closes right after, its buffer wiped,
+    /// whatever happened. Logged as "quick: <what>": never the password, never the SSID. An error
+    /// may come after nmcli started (it closed its input early): the attempt stays, never retried,
+    /// and ends by NetworkManager's word or its timeout.
+    fn quick_spawn_secret(&mut self, argv: &[String], what: &str) {
+        let App { popup, exec, .. } = self;
+        let Some(PopupBody::Quick(q)) = popup.as_mut().map(|p| &mut p.body) else { return };
+        let started = match (argv.split_first(), q.wifi.password()) {
+            (Some((program, args)), Some(secret)) => {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                Some((program.clone(), exec.spawn_with_input(program, &args, &[secret.bytes(), b"\n"])))
+            }
+            _ => None,
+        };
+        q.wifi.password_sent();
+        match started {
+            Some((_, Ok(()))) => log(&format!("quick: {what}")),
+            Some((program, Err(e))) if q.note_failure(&program) => {
+                log(&format!("quick: {program} could not start or take its input ({e:?})"));
+            }
+            Some((_, Err(_))) | None => {}
         }
     }
 
@@ -296,6 +365,9 @@ impl App {
             Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => return,
         };
+        if let Some(why) = due.wifi_failed {
+            log(&format!("quick: wifi connection failed ({why})"));
+        }
         for a in &due.run {
             if let QuickAction::Run { argv, what } = a {
                 app.quick_spawn(argv, what);
@@ -372,13 +444,14 @@ mod tests {
     /// new profile is still seen (and deleted) after the panel went.
     #[test]
     fn closing_the_panel_keeps_the_detail_read_while_an_attempt_is_followed() {
+        let follow = WifiFollow { attempt: Attempt::new(b"Cafe-Libre", true, None, Instant::now()), state: None };
         let tap = WifiTap::new().unwrap();
         tap.set(WifiScope::Detail);
-        wifi_closed(&tap, Some(&WifiFollow {}));
+        wifi_closed(&tap, Some(&follow));
         assert_eq!(tap.scope(), WifiScope::Detail, "a follower: still read");
         wifi_closed(&tap, None);
         assert_eq!(tap.scope(), WifiScope::Closed, "nothing followed: nothing read");
-        assert_eq!(wifi_scope(WifiScope::Row, Some(&WifiFollow {})), WifiScope::Detail, "the wider of the two");
+        assert_eq!(wifi_scope(WifiScope::Row, Some(&follow)), WifiScope::Detail, "the wider of the two");
         assert_eq!(wifi_scope(WifiScope::Detail, None), WifiScope::Detail);
         assert_eq!(wifi_scope(WifiScope::Row, None), WifiScope::Row);
     }
