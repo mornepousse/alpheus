@@ -734,6 +734,29 @@ pub fn recorded(sway: &Sway, name: &str) -> Vec<String> {
     fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default().lines().map(String::from).collect()
 }
 
+/// Like `fake_recorder`, and what it reads on its standard input appended to `<runtime>/stdin-<name>`:
+/// the quick panel's Wi-Fi password (fake passwords only), never on its command line.
+pub fn fake_stdin_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let stdin = sway.runtime.join(format!("stdin-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the quick settings tests: records its arguments and its standard input, nothing else.\nprintf '%s\\n' \"{name} $*\" >> '{}'\ncat >> '{}'\n",
+        calls.display(),
+        stdin.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// What `fake_stdin_recorder`'s `name` read on its standard input, every call's in order.
+pub fn recorded_stdin(sway: &Sway, name: &str) -> Vec<u8> {
+    fs::read(sway.runtime.join(format!("stdin-{name}"))).unwrap_or_default()
+}
+
 /// Where the fake source's `run` records its arguments, in the runtime directory.
 pub const FAKE_RUN_MARKER: &str = "launched-fake-run";
 

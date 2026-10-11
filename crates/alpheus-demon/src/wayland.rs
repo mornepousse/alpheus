@@ -510,7 +510,8 @@ pub struct App {
     /// The pill's hide timer: armed only while it shows.
     pub(crate) osd_timer: DeadlineTimer,
     /// The quick panel's timer (quick task 6): armed only while the panel is open and a re-read
-    /// (150 ms, 300 ms) or the reboot question (3 s) is pending.
+    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending; closed, only for
+    /// an attempt still followed (`wifi_follow`, Mae's ruling P1).
     pub(crate) quick_timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.

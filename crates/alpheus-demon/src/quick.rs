@@ -558,9 +558,14 @@ impl Quick {
     /// by id (else the default); the selection back on a shown row (the next one down the order when
     /// its own went, else the one above); the session button on a drawn one.
     pub fn fit(&mut self, live: &Live) {
+        let was_open = self.wifi.open;
         self.wifi.fit(live.config);
         if self.wifi.open {
             self.detail = false;
+        } else if was_open {
+            // The Wi-Fi detail closed under it (its device gone): back on the rows, from the top.
+            self.selected = Row::Wifi;
+            self.top = 0;
         }
         if self.volume_level.is_some() {
             let sound = live.sound;
@@ -604,17 +609,21 @@ impl Quick {
         usize::from(self.room).max(3)
     }
 
-    /// After a key: the window over the lines keeps the selection in view.
-    fn keep_in_view(&mut self, live: &Live) {
-        let all = lines(live, self);
+    /// The selected line's index among `all` (the lines shown), if any.
+    fn selected_line(&self, all: &[Line]) -> Option<usize> {
         let nets = if self.wifi.open { self.wifi.networks() } else { Vec::new() };
-        let at = all.iter().position(|l| match *l {
+        all.iter().position(|l| match *l {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
             l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
             _ => false,
-        });
-        if let Some(at) = at {
+        })
+    }
+
+    /// After a key: the window over the lines keeps the selection in view.
+    fn keep_in_view(&mut self, live: &Live) {
+        let all = lines(live, self);
+        if let Some(at) = self.selected_line(&all) {
             self.top = list::keep_visible(at, self.top, self.visible(), all.len());
         }
     }
@@ -982,6 +991,19 @@ impl Quick {
             return WifiNews { action: self.open_wifi(), failed };
         }
         WifiNews { action, failed }
+    }
+
+    /// The D-Bus thread's Wi-Fi state for the open panel (`quick_take`): `set_wifi`, then fitted. The
+    /// window follows the selection only when the state moved it (a reorder, the detail opened),
+    /// never undoing a wheel scroll on a mere strength change.
+    pub fn follow_wifi(&mut self, live: &Live, state: Option<WifiState>, now: Instant) -> WifiNews {
+        let before = self.selected_line(&lines(live, self));
+        let news = self.set_wifi(state, now);
+        self.fit(live);
+        if self.selected_line(&lines(live, self)) != before {
+            self.keep_in_view(live);
+        }
+        news
     }
 
     /// What the D-Bus thread is to read while the panel is open.
@@ -1990,6 +2012,45 @@ mod tests {
         let b = rows(&l, &q);
         assert_eq!(b.rows.len(), 6, "the room under the bar");
         assert_eq!(texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", texts(&b));
+    }
+
+    /// Task 5 review: a Wi-Fi state while open (`follow_wifi`) goes through `fit`; the window
+    /// follows the selection only when the state moved it (a reorder), never undoing a wheel scroll
+    /// otherwise; a state that closes the detail (the device gone) brings the window back to the top.
+    #[test]
+    fn a_wifi_state_moves_the_window_with_the_selection_and_a_closed_detail_goes_back_to_the_top() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        // Twenty networks at 50 %, Reseau-Test-00 at `first`: first in the list at 90, last at 10.
+        let around = |first: u8| {
+            let aps = (0..20)
+                .map(|n| AccessPoint {
+                    ssid: format!("Reseau-Test-{n:02}").into_bytes(),
+                    strength: if n == 0 { first } else { 50 },
+                    security: Security::Psk,
+                })
+                .collect();
+            let device = WifiDevice { state: 30, active: None, active_uuid: None, access_points: Some(aps), saved: Some(vec![]) };
+            WifiState { enabled: true, device: Some(device) }
+        };
+        let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 6);
+        q.follow_wifi(&l, Some(around(90)), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        q.key(&l, Key::Home, false, t);
+        assert_eq!(q.top, 0);
+        let picked = |q: &Quick| texts(&rows(&l, q)).iter().any(|r| r.contains("Reseau-Test-00"));
+        assert!(picked(&q), "first: in view");
+        q.follow_wifi(&l, Some(around(10)), t);
+        assert!(q.top > 0 && picked(&q), "moved to the end by the state: the window follows it ({})", q.top);
+        q.scroll(&l, None, -3, t);
+        let scrolled = q.top;
+        assert!(!picked(&q), "scrolled away from the selection");
+        q.follow_wifi(&l, Some(around(10)), t);
+        assert_eq!(q.top, scrolled, "a state that moves nothing keeps the wheel's window");
+        q.follow_wifi(&l, Some(WifiState { enabled: true, device: None }), t);
+        assert!(!q.wifi.open, "the device gone: the detail closed");
+        assert_eq!(q.top, 0, "back to the top");
     }
 
     /// The panel's one timer covers the connect timeout and the `failed` display (quick Wi-Fi § 5).

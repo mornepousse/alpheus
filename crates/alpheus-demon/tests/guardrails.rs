@@ -1838,10 +1838,36 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
-    assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
+    // Mae's ruling P1: the timer goes with the panel, unless an attempt on a new network is still
+    // followed (then it stays on that attempt's deadline only).
+    assert!(
+        closed.contains(".close()")
+            && closed.contains("quick_timer.sync(")
+            && closed.contains("self.wifi_follow.as_ref().map(WifiFollow::deadline)"),
+        "{closed}"
+    );
     // Quick Wi-Fi spec § 5 and Mae's ruling P1: the D-Bus thread stops reading the Wi-Fi, unless an
     // attempt on a new network is still followed.
     assert!(closed.contains("wifi_closed(") && closed.contains("self.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
+    let wifi_closed = function_body(&quick_app, "pub(crate) fn wifi_closed(");
+    assert!(wifi_closed.contains("WifiScope::Closed"), "closed: no Wi-Fi read any more: {wifi_closed}");
+    // Quick Wi-Fi spec § 5: the D-Bus thread follows what the open panel shows, and nothing once closed.
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
+        let body = function_body(&quick_app, f);
+        assert!(body.contains("self.quick_wifi_sync()"), "{f}: the tap follows the panel: {body}");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_wifi(") && take.contains("follow_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
+    // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
+    // its attempt (the tap and the timer let go then).
+    assert!(take.contains("wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
+    assert!(tick.contains("self.wifi_follow") || tick.contains("app.wifi_follow"), "the follower's timeout: {tick}");
+    // A panel reopened while an attempt is followed takes it back: no second attempt.
+    let toggle = function_body(&quick_app, "pub(crate) fn quick_toggle(");
+    let resume = function_body(&quick_app, "fn quick_resume(");
+    assert!(toggle.contains("self.quick_resume()") && resume.contains(".resume("), "{toggle} {resume}");
+    let follow = function_body(&quick_app, "fn quick_follow(");
+    assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }

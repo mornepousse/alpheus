@@ -56,7 +56,7 @@ pub const TOO_LONG: &str = "too long";
 const ACTIVATION_FAILED: &str = "the activation failed";
 const NO_ANSWER: &str = "no answer in 20 s";
 const STILL_ACTIVATING: &str = "still activating after 60 s";
-const NM_GONE: &str = "NetworkManager went away";
+pub(crate) const NM_GONE: &str = "NetworkManager went away";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
 
 /// 1 to 4 steps of signal: 0–24 %, 25–49 %, 50–74 %, 75–100 % (decision 5).
@@ -578,7 +578,7 @@ impl Wifi {
     }
 
     /// Before each use: no device, the detail closes; the selection back on a pick that exists (the
-    /// first one when its own went).
+    /// first one when its own went; none while the list is being searched for).
     pub fn fit(&mut self, config: &QuickConfig) {
         if !self.shows() {
             self.close_detail();
@@ -593,7 +593,10 @@ impl Wifi {
         }
         let picks = self.picks(&nets, config);
         if !picks.contains(&self.pick) {
-            self.pick = picks.into_iter().next().unwrap_or_default();
+            // Searching (the list not read yet, no network known): the selection waits for the
+            // list, never left on `More…` once it arrives.
+            let searching = nets.is_empty() && self.enabled() && self.device().is_some_and(|d| d.access_points.is_none());
+            self.pick = if searching { Pick::None } else { picks.into_iter().next().unwrap_or_default() };
         }
     }
 
@@ -1518,6 +1521,28 @@ mod tests {
 
     /// Task 5 review: the selection is an SSID, not a position: it follows its network across a
     /// reorder.
+    /// Task 7 (headless): the detail opens before its list is read (`Searching…`); the selection
+    /// waits for the list, then lands on the first network, never left on `More…`. An empty list
+    /// read, or the radio off: `More…` is the only pick.
+    #[test]
+    fn the_selection_waits_for_the_list_then_takes_the_first_network() {
+        let mut unread = state();
+        let d = device(&mut unread);
+        (d.state, d.active, d.active_uuid, d.access_points) = (30, None, None, None);
+        let mut w = open(unread);
+        assert_eq!(w.pick, Pick::None, "searching: nothing picked yet");
+        w.state = Some(state());
+        w.fit(&config());
+        assert_eq!(w.pick, Pick::Network(b"Maison-Test".to_vec()), "the list read: its first network");
+        let mut empty = state();
+        device(&mut empty).access_points = Some(vec![]);
+        device(&mut empty).active = None;
+        assert_eq!(open(empty).pick, Pick::More, "no networks: More…");
+        let mut off = state();
+        off.enabled = false;
+        assert_eq!(open(off).pick, Pick::More, "off: More…");
+    }
+
     #[test]
     fn the_pick_follows_its_ssid_across_a_reorder() {
         let (c, t) = (config(), Instant::now());
