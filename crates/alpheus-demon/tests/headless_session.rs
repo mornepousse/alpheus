@@ -3862,6 +3862,34 @@ fn quick_escape_and_clicks_close_it_and_nothing_stays_awake() {
     assert_eq!(rest_over_5_s(&d), 0, "closed: nothing left awake");
 }
 
+/// The loop thread's wake-ups in the second after `batch` reaches the fake pw-dump.
+fn wakeups_over_a_batch(sway: &Sway, d: &Daemon, batch: &str) -> u64 {
+    away_from_the_minute();
+    thread::sleep(Duration::from_millis(300));
+    let before = d.main_thread_wakeups();
+    pw_dump_send(&sway.runtime, batch);
+    thread::sleep(Duration::from_secs(1));
+    d.main_thread_wakeups().saturating_sub(before)
+}
+
+/// Fix I1: closing the panel takes the sound thread back to its own scope. Open, a sink unplugged
+/// that is not the default changes the list, published and drawn (a wake-up); closed, the same
+/// change is no news to the bar (no `osd`: `Scope::Bar`) and wakes nothing.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_closed_the_sound_thread_wakes_nothing_for_the_sink_list() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-scope", "");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 3)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    assert!(wakeups_over_a_batch(&sway, &d, r#"[{"id":64,"info":null}]"#) > 0, "open: the list published: {:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // the close settles (one late wake-up, pw-dump's or not)
+    assert_eq!(wakeups_over_a_batch(&sway, &d, r#"[{"id":99,"info":null}]"#), 0, "closed: the base scope, nothing published");
+}
+
 /// The fake source's lines (fictional, in tools-menu's shape).
 fn source_lines() -> Vec<String> {
     ["Apparence · Schéma couleurs · Vibrant", "Captures · Screenshot zone", "Verrouiller"].map(String::from).to_vec()
