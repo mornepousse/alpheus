@@ -1865,7 +1865,10 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     // A panel reopened while an attempt is followed takes it back: no second attempt.
     let toggle = function_body(&quick_app, "pub(crate) fn quick_toggle(");
     let resume = function_body(&quick_app, "fn quick_resume(");
-    assert!(toggle.contains("self.quick_resume()") && resume.contains(".resume("), "{toggle} {resume}");
+    assert!(
+        toggle.contains("self.quick_resume()") && resume.contains("resumed(") && resume.contains("self.quick_action("),
+        "{toggle} {resume}"
+    );
     let follow = function_body(&quick_app, "fn quick_follow(");
     assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");

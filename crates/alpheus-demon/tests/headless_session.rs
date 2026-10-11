@@ -4198,6 +4198,39 @@ fn quick_wifi_closed_during_a_failing_new_network_attempt_still_deletes_its_prof
     assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
 }
 
+/// Mae's ruling P1, fix round 1 (I1): the panel reopened from the network module while an attempt
+/// is followed takes it back and opens the detail at once (its rescan), with no second attempt and
+/// no word to the D-Bus thread (the tap stays on the detail: nothing removed, nothing re-read).
+/// The attempt then times out in the reopened panel: one failure line, one delete.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_a_panel_reopened_during_a_followed_attempt_takes_it_back_on_the_detail() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-resume");
+    a_new_network_attempt(&nm, &sway, &d);
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Cafe-Libre".into()));
+    assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
+    let (calls, woken) = (nm.calls().len(), d.thread_wakeups("D-Bus").expect("the D-Bus thread"));
+    close_the_panel(&sway, &d);
+    thread::sleep(Duration::from_millis(500));
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    let rescans = || recorded(&sway, "nmcli").iter().filter(|c| *c == "nmcli device wifi rescan").count();
+    assert!(wait_until(|| rescans() == 2), "the detail opened again: {:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(nm.calls().len(), calls, "nothing read again: {:?}", &nm.calls()[calls..]);
+    assert_eq!(d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(woken), 0, "the tap never changed scope");
+    let connects = || recorded(&sway, "nmcli").iter().filter(|c| c.starts_with("nmcli device wifi connect")).count();
+    assert_eq!(connects(), 1, "no second attempt: {:?}", recorded(&sway, "nmcli"));
+    assert!(d.wait_for("quick: wifi connection failed (no answer in 20 s)", Duration::from_secs(25)), "{:?}", d.log());
+    let delete = format!("nmcli connection delete uuid {UUID_NEW}");
+    assert!(wait_for_call(&sway, "nmcli", &delete), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("quick: wifi connection failed"), 1, "{:?}", d.log());
+    assert_eq!(recorded(&sway, "nmcli").iter().filter(|c| **c == delete).count(), 1, "one delete");
+    assert_eq!(connects(), 1);
+    assert!(no_ssid_logged(&d), "{:?}", d.log());
+}
+
 /// Mae's ruling P1: the panel closed during an attempt on a new network that succeeds: the follower
 /// hears NetworkManager's word after the close (the profile made, then activated) and ends there,
 /// so nothing is deleted and no failure is logged, even past the 20 s timeout; then nothing is

@@ -152,6 +152,15 @@ pub(crate) fn followed(exec: &dyn Executor, follow: &mut Option<WifiFollow>, out
     lines
 }
 
+/// The panel `q` just opened takes back the followed attempt `f` (Mae's ruling P1): no second
+/// attempt. Opened on the Wi-Fi (the network module, `--quick wifi`), the detail opens at once from
+/// the state the follower carried, since no word of the D-Bus thread is coming (its scope did not
+/// change). The action to take: the detail's rescan, else a repaint.
+pub(crate) fn resumed(q: &mut Quick, f: WifiFollow) -> QuickAction {
+    f.resume(&mut q.wifi);
+    q.resumed_wifi_focus().unwrap_or(QuickAction::Redraw)
+}
+
 /// Spawns `argv` for the open panel `q` (None: none open), never waiting (spec § 5): the log line,
 /// "quick: <what>", or a program that cannot start, once per open (spec § 6; its row stays). A
 /// connection whose nmcli never started (NotFound) ends its attempt at once: nothing to follow.
@@ -294,26 +303,24 @@ impl App {
             self.quick_verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("quick shown ({what})"));
-            if self.quick_resume() {
-                // A followed attempt taken back: its "connecting…" and its timer.
-                self.quick_refresh();
-            }
+            self.quick_resume();
             self.quick_wifi_sync();
         } else {
             self.quick_closed();
         }
     }
 
-    /// The panel just opened takes back an attempt still followed (Mae's ruling P1): no second
-    /// attempt, the detail's reading kept. True when there was one.
-    fn quick_resume(&mut self) -> bool {
-        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body)
-            && let Some(f) = self.wifi_follow.take()
-        {
-            f.resume(&mut q.wifi);
-            return true;
-        }
-        false
+    /// The panel just opened takes back an attempt still followed (`resumed`): its "connecting…",
+    /// its timer, the detail when asked for (its rescan), the D-Bus thread's reading kept.
+    fn quick_resume(&mut self) {
+        let action = match self.popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => match self.wifi_follow.take() {
+                Some(f) => resumed(q, f),
+                None => return,
+            },
+            _ => return,
+        };
+        self.quick_action(action);
     }
 
     /// `alpheus-launch --quick [sound]` (spec § 1), answered before the launcher's guard
@@ -643,6 +650,30 @@ mod tests {
             ["quick: wifi connection failed (no answer in 20 s)"]
         );
         assert!(f.is_none() && fake.calls().is_empty(), "no profile made: nothing deleted");
+    }
+
+    /// Fix round 1 (I1): a panel reopened on the Wi-Fi (the network module, `--quick wifi`) while an
+    /// attempt is followed takes it back and opens the detail at once from the state it carried
+    /// (no word of the D-Bus thread is coming: its scope never changed), with its one rescan.
+    #[test]
+    fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
+        let t = Instant::now();
+        let bar = Bar::new(BarConfig::default());
+        let live = quick::live(&bar, false);
+        let mut first = panel_on("Cafe-Libre");
+        let QuickAction::Run { .. } = first.wifi.key(&QuickConfig::default(), Key::Enter, t) else { panic!("an open network") };
+        let follow = WifiFollow::leaving(&mut first.wifi).expect("a new network: followed");
+        let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
+        let action = resumed(&mut q, follow);
+        assert_eq!(action, quick::run(&["nmcli", "device", "wifi", "rescan"], "wifi rescan"), "the detail opened");
+        assert!(q.wifi.open && q.selected == Row::Wifi && q.wifi.attempt.is_some(), "taken back, the detail open");
+        assert!(!q.wifi.focus_pending, "spent");
+        let mut top = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        let mut again = panel_on("Cafe-Libre");
+        again.wifi.key(&QuickConfig::default(), Key::Enter, t);
+        let follow = WifiFollow::leaving(&mut again.wifi).expect("followed");
+        assert_eq!(resumed(&mut top, follow), QuickAction::Redraw, "opened on the top: no detail");
+        assert!(!top.wifi.open && top.wifi.attempt.is_some());
     }
 
     fn sink(id: u32, label: &str, default: bool) -> Sink {

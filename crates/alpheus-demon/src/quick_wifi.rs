@@ -319,6 +319,9 @@ pub struct Wifi {
     pub attempt: Option<Attempt>,
     /// The network that just failed, shown `failed` until then.
     pub failed: Option<(Vec<u8>, Instant)>,
+    /// The detail was searching for its list: a `More…` chosen meanwhile gives way to the first
+    /// network once the list arrives.
+    pub searching: bool,
 }
 
 impl Wifi {
@@ -443,6 +446,7 @@ impl Wifi {
     /// Back to the rows: the field closes, its buffer wiped.
     pub fn close_detail(&mut self) {
         self.open = false;
+        self.searching = false;
         self.pick = Pick::None;
         self.field = None;
     }
@@ -591,11 +595,18 @@ impl Wifi {
         if self.field.as_ref().is_some_and(|f| !nets.iter().any(|n| n.ssid == f.ap.ssid)) {
             self.field = None;
         }
+        // Searching (the list not read yet, no network known): the selection waits for the list,
+        // never left on `More…` once it arrives.
+        let searching = nets.is_empty() && self.enabled() && self.device().is_some_and(|d| d.access_points.is_none());
+        if std::mem::replace(&mut self.searching, searching)
+            && !searching
+            && self.pick == Pick::More
+            && let Some(first) = nets.first()
+        {
+            self.pick = Pick::Network(first.ssid.clone());
+        }
         let picks = self.picks(&nets, config);
         if !picks.contains(&self.pick) {
-            // Searching (the list not read yet, no network known): the selection waits for the
-            // list, never left on `More…` once it arrives.
-            let searching = nets.is_empty() && self.enabled() && self.device().is_some_and(|d| d.access_points.is_none());
             self.pick = if searching { Pick::None } else { picks.into_iter().next().unwrap_or_default() };
         }
     }
@@ -1541,6 +1552,25 @@ mod tests {
         let mut off = state();
         off.enabled = false;
         assert_eq!(open(off).pick, Pick::More, "off: More…");
+    }
+
+    /// Fix round 1 (minor a): a Down while searching picks `More…` (the only pick then); the first
+    /// list read moves it to the first network, once: `More…` chosen after the list stays.
+    #[test]
+    fn more_chosen_while_searching_gives_way_to_the_first_network() {
+        let mut unread = state();
+        let d = device(&mut unread);
+        (d.state, d.active, d.active_uuid, d.access_points) = (30, None, None, None);
+        let mut w = open(unread);
+        let t = Instant::now();
+        w.key(&config(), Key::Down, t);
+        assert_eq!(w.pick, Pick::More, "searching: More… the only pick");
+        w.state = Some(state());
+        w.fit(&config());
+        assert_eq!(w.pick, Pick::Network(b"Maison-Test".to_vec()), "the list read: its first network");
+        w.key(&config(), Key::End, t);
+        w.fit(&config());
+        assert_eq!(w.pick, Pick::More, "chosen once the list is read: kept");
     }
 
     #[test]

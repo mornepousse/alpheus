@@ -453,6 +453,9 @@ pub struct Quick {
     /// The first line shown, and the rows the panel may take under its bar.
     pub top: usize,
     pub room: u16,
+    /// The selected line's index when the window last followed it: a Wi-Fi state that leaves it
+    /// there leaves the window (a wheel scroll) alone.
+    pub kept_at: Option<usize>,
     /// Programs that failed to start during this open: each logged once (spec § 6).
     pub failed: Vec<String>,
     /// The Wi-Fi row and its detail (quick_wifi.rs).
@@ -531,6 +534,7 @@ impl Quick {
             brightness_settle: None,
             reread_toggles: [None; 2],
             top: 0,
+            kept_at: None,
             room,
             failed: Vec::new(),
             wifi: Wifi { focus_pending: focus == Focus::Wifi, ..Wifi::default() },
@@ -623,9 +627,16 @@ impl Quick {
     /// After a key: the window over the lines keeps the selection in view.
     fn keep_in_view(&mut self, live: &Live) {
         let all = lines(live, self);
-        if let Some(at) = self.selected_line(&all) {
-            self.top = list::keep_visible(at, self.top, self.visible(), all.len());
+        let at = self.selected_line(&all);
+        self.keep_visible(at, all.len());
+    }
+
+    /// The window over `len` lines keeps the selected line `at` in view; `at` noted (`kept_at`).
+    fn keep_visible(&mut self, at: Option<usize>, len: usize) {
+        if let Some(at) = at {
+            self.top = list::keep_visible(at, self.top, self.visible(), len);
         }
+        self.kept_at = at;
     }
 
     /// A key (spec § 3). `repeat`: the keyboard's auto-repeat, which only ↑ ↓ ← → (and Ctrl+P,
@@ -986,22 +997,35 @@ impl Quick {
     /// or `--quick wifi`, the first state with a device selects the row and opens the detail.
     pub fn set_wifi(&mut self, state: Option<WifiState>, now: Instant) -> WifiNews {
         let (action, failed) = self.wifi.set_state(state, now);
-        if std::mem::take(&mut self.wifi.focus_pending) && self.wifi.shows() {
+        WifiNews { action: self.spend_wifi_focus().unwrap_or(action), failed }
+    }
+
+    /// The focus asked at open (decision 12), spent on the first state: with a device, the row
+    /// selected and the detail opened (its action); without, nothing.
+    fn spend_wifi_focus(&mut self) -> Option<QuickAction> {
+        (std::mem::take(&mut self.wifi.focus_pending) && self.wifi.shows()).then(|| {
             self.selected = Row::Wifi;
-            return WifiNews { action: self.open_wifi(), failed };
-        }
-        WifiNews { action, failed }
+            self.open_wifi()
+        })
+    }
+
+    /// A followed attempt was just taken back with the state it saw (`quick_app::resumed`): the
+    /// focus asked at open spent on that state, since none is coming. None: nothing to open.
+    pub fn resumed_wifi_focus(&mut self) -> Option<QuickAction> {
+        self.wifi.state.as_ref()?;
+        self.spend_wifi_focus()
     }
 
     /// The D-Bus thread's Wi-Fi state for the open panel (`quick_take`): `set_wifi`, then fitted. The
     /// window follows the selection only when the state moved it (a reorder, the detail opened),
     /// never undoing a wheel scroll on a mere strength change.
     pub fn follow_wifi(&mut self, live: &Live, state: Option<WifiState>, now: Instant) -> WifiNews {
-        let before = self.selected_line(&lines(live, self));
         let news = self.set_wifi(state, now);
         self.fit(live);
-        if self.selected_line(&lines(live, self)) != before {
-            self.keep_in_view(live);
+        let all = lines(live, self);
+        let at = self.selected_line(&all);
+        if at != self.kept_at {
+            self.keep_visible(at, all.len());
         }
         news
     }
