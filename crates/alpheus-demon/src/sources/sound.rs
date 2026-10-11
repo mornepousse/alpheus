@@ -49,7 +49,6 @@ pub fn start(exec: Arc<dyn Executor>, scope: Scope, tap: Arc<SoundTap>, send: im
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pipewire::SoundTap;
     use crate::sources::supervise;
     use crate::system::Volume;
     use alpheus_commun::exec::fake::FakeExecutor;

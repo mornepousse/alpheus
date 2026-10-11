@@ -351,7 +351,7 @@ impl Model {
             .filter(|(_, n)| n.kind == Kind::Sink)
             .map(|(id, n)| Sink { id: *id, label: n.label.clone(), default: Some(*id) == default })
             .collect();
-        v.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()).then(a.id.cmp(&b.id)));
+        v.sort_by_cached_key(|s| (s.label.to_lowercase(), s.id));
         v.truncate(MAX_SINKS);
         v
     }
@@ -408,6 +408,25 @@ impl SoundTap {
     pub fn is_open(&self) -> bool {
         self.lock().panel
     }
+
+    /// Whether the last publication kept is holding a sink list (tests).
+    #[cfg(test)]
+    fn keeps_a_list(&self) -> bool {
+        self.lock().last.as_ref().is_some_and(|l| l.sinks.is_some())
+    }
+}
+
+/// Empties the tap's model and last state when dropped: a stream that ended, however (its end, a
+/// parse error, a panic `supervise` catches), leaves nothing an opening panel could read through
+/// the backoff — never a dead PipeWire's volumes or node ids.
+struct Forget<'a>(&'a SoundTap);
+
+impl Drop for Forget<'_> {
+    fn drop(&mut self) {
+        let mut t = self.0.lock();
+        t.model = Model::default();
+        t.last = None;
+    }
 }
 
 /// Reads `pw-dump -m` until its output ends, with nobody to open a panel (`Scope::Bar` or
@@ -419,13 +438,15 @@ pub fn follow(output: impl Read, scope: Scope, publish: &mut dyn FnMut(SoundStat
 /// Reads `pw-dump -m` until its output ends. Each array is parsed on its own (StreamDeserializer
 /// over a BufReader), without the lock; then, under it, applied to the tap's model and compared
 /// with the last state published under the scope in effect (`base`, or `Scope::Panel` while the
-/// panel is open). A new stream starts from a new model and keeps the panel's flag.
+/// panel is open). A new stream starts from a new model and keeps the panel's flag; the model goes
+/// when the stream does (`Forget`).
 pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
     {
         let mut t = tap.lock();
         t.model = Model::default();
         t.last = None;
     }
+    let _forget = Forget(tap);
     for batch in serde_json::Deserializer::from_reader(io::BufReader::new(output)).into_iter::<Vec<Object>>() {
         let batch = batch.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("pw-dump: {e}")))?;
         let state = {
@@ -864,11 +885,17 @@ mod tests {
     #[test]
     fn the_tap_reads_the_sinks_at_open_and_the_stream_carries_them_while_open() {
         let tap = SoundTap::default();
-        assert!(run_tapped(INITIAL, Scope::Osd, &tap).iter().all(|s| s.sinks.is_none()), "closed: no list");
-        assert_eq!(tap.open().sinks.map(|l| l.len()), Some(3), "the model the stream left: read at once");
-        assert!(tap.is_open());
-        tap.close();
-        assert!(!tap.is_open());
+        let mut at_open = None;
+        let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |s| {
+            assert!(s.sinks.is_none(), "closed: no list");
+            // Opened while the stream is live (pw-dump silent after its initial dump).
+            at_open = Some(tap.open());
+            assert!(tap.is_open());
+            tap.close();
+            assert!(!tap.is_open());
+            true
+        });
+        assert_eq!(at_open.and_then(|s| s.sinks).map(|l| l.len()), Some(3), "the thread's model: read at once");
         assert!(run_tapped(INITIAL, Scope::Osd, &tap).iter().all(|s| s.sinks.is_none()), "closed again: none");
     }
 
@@ -878,14 +905,68 @@ mod tests {
     #[test]
     fn opening_reads_the_whole_panel_state_even_what_the_base_scope_never_published() {
         let muted = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.usb-Yamaha_Corporation_AG06_AG03-00.analog-stereo"},"params":{"Props":[{"channelVolumes":[1.0,1.0],"mute":true}]}}}]"#;
+        /// pw-dump silent after its last batch, still running: the panel opens then.
+        struct OpenAtTheEnd<'a> {
+            data: &'a [u8],
+            tap: &'a SoundTap,
+            open: Option<SoundState>,
+        }
+        impl Read for OpenAtTheEnd<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.data.is_empty() && self.open.is_none() {
+                    self.open = Some(self.tap.open());
+                }
+                self.data.read(buf)
+            }
+        }
         let tap = SoundTap::default();
-        let seen = run_tapped(&format!("{INITIAL}{muted}\n"), Scope::Bar, &tap);
-        assert_eq!(seen.len(), 1, "the mute is no news to the bar: {seen:?}");
-        assert_eq!(seen[0].source, vol(100, false));
-        let open = tap.open();
+        let text = format!("{INITIAL}{muted}\n");
+        let mut reader = OpenAtTheEnd { data: text.as_bytes(), tap: &tap, open: None };
+        let mut seen = Vec::new();
+        let _ = follow_tapped(&mut reader, Scope::Bar, &tap, &mut |s| {
+            seen.push(s.source);
+            true
+        });
+        assert_eq!(seen, [vol(100, false)], "the mute is no news to the bar");
+        let open = reader.open.unwrap_or_default();
         assert_eq!(open.source, vol(100, true), "the microphone as it is now");
         assert_eq!(open.sink, vol(84, false));
         assert_eq!(open.sinks.map(|l| l.len()), Some(3));
+    }
+
+    /// Fix round 1: a stream that ended (EOF, a parse error, a panic) leaves nothing behind. Through
+    /// the backoff an opening panel reads an empty model — no sink, no microphone, an empty list —
+    /// never the dead instance's volumes or node ids (`wpctl set-default` on a recycled id).
+    #[test]
+    fn a_stream_that_ended_leaves_no_state_to_open_on() {
+        let empty = SoundState { sinks: Some(Vec::new()), ..SoundState::default() };
+        let tap = SoundTap::default();
+        assert_eq!(run_tapped(INITIAL, Scope::Osd, &tap).len(), 1, "EOF");
+        assert_eq!(tap.open(), empty, "after EOF");
+        tap.close();
+        assert!(follow_tapped(&b"[{\"id\": \"x\"}]"[..], Scope::Osd, &tap, &mut |_| true).is_err());
+        assert_eq!(tap.open(), empty, "after a parse error");
+        tap.close();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |_| panic!("publish"));
+        }));
+        assert!(caught.is_err());
+        assert_eq!(tap.open(), empty, "after a panic (`supervise` catches it), the lock taken over");
+    }
+
+    /// Closing drops the list the thread kept as its last publication (nothing kept while closed).
+    #[test]
+    fn closing_drops_the_list_kept_as_the_last_publication() {
+        let tap = SoundTap::default();
+        let _ = tap.open();
+        let mut checked = false;
+        let _ = follow_tapped(INITIAL.as_bytes(), Scope::Osd, &tap, &mut |s| {
+            assert!(s.sinks.is_some() && tap.keeps_a_list(), "open: published and kept");
+            tap.close();
+            checked = !tap.keeps_a_list();
+            true
+        });
+        assert!(checked, "closed: the kept list went");
     }
 
     /// Review Focus 1: PipeWire restarts while the panel is open. The new stream starts from a new
