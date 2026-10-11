@@ -1354,6 +1354,10 @@ fn quick_bar(with_quick: bool, backlight_dir: &Path) -> String {
     )
 }
 
+/// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb right after the verb opened the panel is
+/// ignored, so a close waits this long.
+const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+
 /// A fake backlight directory: one device at 75 %.
 fn fake_backlight(name: &str) -> TempDir {
     let dir = TempDir::new(name);
@@ -1387,13 +1391,14 @@ fn quick_pss_idle_open_and_closed() {
     assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1)); // configured and painted
     let open = d.pss_kb();
-    toggle();
+    toggle(); // past the daemon's 250 ms debounce of a verb right after the verb's open
     assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
     let closed = d.pss_kb();
     for n in 2..=21 {
         toggle();
         assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
         toggle();
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
     }
@@ -1406,11 +1411,15 @@ fn quick_pss_idle_open_and_closed() {
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
     assert!(module_cost <= 256, "the module at rest costs {module_cost} KB (a profile state and a tap: ≤ 256 KB)");
-    assert!(panel_cost <= 1024, "the open panel costs {panel_cost} KB (its pool, two buffers: ≤ 1 MB)");
-    // Closed, the first open leaves ≈ 320 KB: /proc/<pid>/smaps shows it is the binary's code pages
-    // (r-xp, ≈ +320 KB) and the font file's (≈ +64 KB), touched for the first time and now resident
-    // (any first popup pays it), while the heap, the shm pool and the model are back to idle's
-    // (heap 216 → 212 KB, pool 220 → 160 KB). So: a one-time warm-up bound, and a leak bound.
+    assert!(
+        panel_cost <= 1024,
+        "the open panel costs {panel_cost} KB (its pool, two buffers, and the first open's one-time warm-up below: ≤ 1 MB)"
+    );
+    // Closed, the first open leaves ≈ 340 KB (binary ≈ +320, font ≈ +64, stack ≈ +20; heap and pool
+    // back at idle) — from a manual smaps run, 2026-10-11: the binary's code pages and the font
+    // file's, touched for the first time and now resident (any first popup pays it), while the heap
+    // (216 → 212 KB) and the shm pool (220 → 160 KB) are back to idle's. So: a one-time warm-up
+    // bound, and a leak bound.
     assert!(closed <= idle + 512, "closed {closed} KB vs {idle} KB: more than the first open's code and font pages");
     assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
 }
@@ -1428,6 +1437,7 @@ fn at_rest_no_wakeups_after_the_quick_panel() {
     for n in 1..=3 {
         assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
         assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
         assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
     }

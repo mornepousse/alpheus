@@ -152,6 +152,8 @@ pub enum PopupClose {
     Restyled,
     /// The media popup: no player left to show (spec § 2), or the connection hosting them went.
     PlayerGone,
+    /// The quick panel: `alpheus-launch --quick` again.
+    Verb,
     Error,
 }
 
@@ -172,6 +174,7 @@ impl PopupClose {
             PopupClose::HoverEnded => "hover ended",
             PopupClose::Restyled => "restyled",
             PopupClose::PlayerGone => "player gone",
+            PopupClose::Verb => "verb",
             PopupClose::Error => "error",
         }
     }

@@ -3924,7 +3924,7 @@ fn quick_drawn_on_the_right(s: &Ppm) -> bool {
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
 fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     let (_bus, sway, _hypr, d) = quick_daemon("quick-verb", "");
-    assert_ne!(sway.seat_focus(), Some(0), "closed: the bar holds no keyboard");
+    assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "closed: the bar holds no keyboard");
     assert_eq!(quick_verb(&sway, &["--quick", "sound"]), EXIT_OK);
     assert!(d.wait_for("quick shown (rows: volume", DELAY), "{:?}", d.log());
     assert!(sway.wait_for_screen("HEADLESS-1", quick_drawn_on_the_right), "{:?}", d.log());
@@ -3944,13 +3944,34 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
     assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
     assert!(wait_until(|| sway.seat_focus() == Some(0)), "reopened: Exclusive again");
+    thread::sleep(PAST_DEBOUNCE);
     assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
-    assert!(d.wait_for("popup closed (outside click)", DELAY), "the verb again closes it: {:?}", d.log());
+    assert!(d.wait_for("popup closed (verb)", DELAY), "the verb again closes it: {:?}", d.log());
     assert!(d.wait_for_count("keyboard released", 2, DELAY), "{:?}", d.log());
     assert!(wait_until(|| sway.seat_focus().is_some_and(|f| f != 0)), "the verb again: the bar is back to None");
     drop(typist);
     thread::sleep(Duration::from_secs(1)); // the virtual keyboard's capability going settles
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
+}
+
+/// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb that really toggles.
+const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+
+/// Final review B-I1: Hyprland re-fires a press bind, so two verbs back to back are one key press:
+/// the second is debounced and the panel stays open; a third, past the window, closes it.
+#[test]
+#[ignore = "headless sway, dbus-daemon (nix develop)"]
+fn quick_a_verb_right_after_the_verb_opened_it_is_debounced() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-debounce", "");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick: toggle debounced", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "still open: {:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "past the window, the verb closes it: {:?}", d.log());
+    assert_eq!(d.count("quick shown"), 1, "{:?}", d.log());
 }
 
 /// Spec § 1: without `quick` in `modules`, the verb exits 0 and opens nothing.

@@ -42,13 +42,13 @@ const SCAN_STUCK_AFTER: Duration = Duration::from_secs(2);
 /// the box right back. Ignoring it is what keeps the press bind usable — the
 /// release bind nixos-config tried instead misses whenever Mae lets go of
 /// Super before Space.
-const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
+pub(crate) const TOGGLE_DEBOUNCE: Duration = Duration::from_millis(250);
 
 /// Whether a Toggle arriving `since_open` after the launcher opened must be
 /// ignored rather than close it (see `TOGGLE_DEBOUNCE`). A real double click
 /// on the bar button within the window is treated the same way — ignored,
 /// not a bug.
-fn toggle_is_debounced(since_open: Duration) -> bool {
+pub(crate) fn toggle_is_debounced(since_open: Duration) -> bool {
     since_open < TOGGLE_DEBOUNCE
 }
 

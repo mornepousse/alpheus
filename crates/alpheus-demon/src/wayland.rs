@@ -515,6 +515,9 @@ pub struct App {
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
+    /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
+    /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again (final review).
+    pub(crate) quick_verb_opened: Option<Instant>,
     /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
     pub(crate) key_repeat: bool,
     /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
@@ -695,6 +698,7 @@ impl App {
             osd_timer: DeadlineTimer::new(),
             quick_timer: DeadlineTimer::new(),
             sound_tap: None,
+            quick_verb_opened: None,
             key_repeat: false,
             tooltip_item: None,
             last_icon: None,

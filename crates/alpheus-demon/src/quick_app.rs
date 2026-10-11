@@ -7,6 +7,7 @@
 
 use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
+use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle};
@@ -42,6 +43,13 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
         Msg::Sound(None) => Some(Vec::new()),
         _ => None,
     }
+}
+
+/// Whether a verb arriving at `now` is the key press that opened the panel again (Hyprland
+/// re-fires a press bind; `launcher::host::TOGGLE_DEBOUNCE`, as Mod+Space): ignored rather than
+/// closing it. Only a verb-opened panel (`opened`) is guarded.
+pub(crate) fn verb_debounced(opened: Option<Instant>, now: Instant) -> bool {
+    opened.is_some_and(|at| toggle_is_debounced(now.saturating_duration_since(at)))
 }
 
 impl App {
@@ -85,7 +93,7 @@ impl App {
     /// bar on the focused output, the keyboard taken without one (decision 1).
     pub(crate) fn quick_toggle(&mut self, qh: &QueueHandle<App>, anchor: Option<PopupAnchor>, focus: Focus) {
         if self.quick_shown() {
-            self.popup_close(PopupClose::OutsideClick);
+            self.popup_close(if anchor.is_some() { PopupClose::OutsideClick } else { PopupClose::Verb });
             return;
         }
         if !self.quick_enabled() {
@@ -134,6 +142,7 @@ impl App {
         };
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Quick(q), columns, height, input) {
+            self.quick_verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("quick shown ({what})"));
         } else {
@@ -143,11 +152,16 @@ impl App {
 
     /// `alpheus-launch --quick [sound]` (spec § 1), answered before the launcher's guard
     /// (launch.rs): toggles the panel on the focused output, the keyboard without a grab
-    /// (decision 1). Done, also without the module (nothing opens).
+    /// (decision 1); a verb within TOGGLE_DEBOUNCE of the verb's own open is ignored. Done, also
+    /// without the module (nothing opens).
     pub(crate) fn quick_verb(&mut self, request: &Request) -> Reply {
         let Request::Quick(verb) = request else { return Reply::Done };
         if !self.quick_enabled() {
             log("quick: asked, but the quick module is not in modules");
+            return Reply::Done;
+        }
+        if self.quick_shown() && verb_debounced(self.quick_verb_opened, Instant::now()) {
+            log("quick: toggle debounced");
             return Reply::Done;
         }
         let focus = match verb {
@@ -295,6 +309,7 @@ impl App {
     /// The panel went, whatever closed it (`popup_close`), or never opened: the sound thread back
     /// to its own scope, the timer gone.
     pub(crate) fn quick_closed(&mut self) {
+        self.quick_verb_opened = None;
         if let Some(tap) = &self.sound_tap {
             tap.close();
         }
@@ -382,6 +397,19 @@ mod tests {
         );
         let mut other = Msg::Profile(None);
         assert_eq!(taken_sinks(&mut other), None, "only a sound message carries a list");
+    }
+
+    /// Final review B-I1: a verb within TOGGLE_DEBOUNCE of a verb's open is ignored; past it, or
+    /// with the panel opened by a click, it closes the panel.
+    #[test]
+    fn a_verb_right_after_the_verb_opened_the_panel_is_debounced() {
+        use crate::launcher::host::TOGGLE_DEBOUNCE;
+        use std::time::Duration;
+        let t = Instant::now();
+        assert!(verb_debounced(Some(t), t + Duration::from_millis(100)), "the same press, re-fired");
+        assert!(!verb_debounced(Some(t), t + TOGGLE_DEBOUNCE), "past the window: a real toggle");
+        assert!(!verb_debounced(Some(t), t + Duration::from_millis(300)));
+        assert!(!verb_debounced(None, t), "opened by a click: never debounced");
     }
 
     /// After a pw-dump outage the tap reads an empty model (`sinks: Some([])`, no sink, no source):
