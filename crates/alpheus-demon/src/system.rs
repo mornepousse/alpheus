@@ -171,8 +171,9 @@ pub struct ProfileState {
 }
 
 /// What the quick panel's Wi-Fi reading covers (quick Wi-Fi spec § 5): asked by the loop through
-/// `sources::dbus::wifi::WifiTap`, read by the D-Bus thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// `sources::dbus::wifi::WifiTap`, read by the D-Bus thread. Ordered by what is read: `Closed` <
+/// `Row` < `Detail`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum WifiScope {
     /// The panel is closed: nothing read, nothing followed, nothing kept.
     #[default]

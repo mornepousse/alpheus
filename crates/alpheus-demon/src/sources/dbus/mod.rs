@@ -28,6 +28,7 @@ use props::{Objects, Props};
 use std::io;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wifi::{WifiReader, WifiTap};
 
@@ -536,8 +537,9 @@ pub fn session(
         if !publish_if_changed(&mut last, &s, publish) {
             return Ok(());
         }
-        r?;
+        // The Wi-Fi read fails only with the bus itself gone: that outage wins over the domain's.
         w?;
+        r?;
     }
 }
 
@@ -623,8 +625,9 @@ fn wanted(domains: &[Domain]) -> bool {
 /// again with a growing delay if lost or if a domain's read fails. A
 /// domain's own outage shows "–" for it alone, the others keep their last
 /// value during the delay (I2, review); the bus itself going away blanks
-/// all three.
-pub fn start(domains: Vec<Domain>, send: impl Fn(Option<SystemState>) -> bool + Send + 'static) {
+/// all three. `wifi`: the quick panel's tap (quick Wi-Fi spec § 5), polled beside the bus; None: a
+/// tap nothing ever sets.
+pub fn start(domains: Vec<Domain>, wifi: Option<Arc<WifiTap>>, send: impl Fn(Option<SystemState>) -> bool + Send + 'static) {
     if !wanted(&domains) {
         return;
     }
@@ -633,11 +636,10 @@ pub fn start(domains: Vec<Domain>, send: impl Fn(Option<SystemState>) -> bool + 
         // Owned here, across every `run_supervised` round (follow-up,
         // re-review): a domain stuck down must log once, not once per round.
         let mut log_state = DomainLog::default();
-        // The quick panel's tap: nothing sets it yet (the loop's own, and the poll that wakes this
-        // thread on its word, come with the panel's Wi-Fi wiring), so the Wi-Fi is never read.
-        let tap = WifiTap::default();
+        let tap = wifi.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            session(&mut dbusrs_bus::DbusRsBus::system(&domains)?, &domains, &mut log_state, &tap, p)
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone());
+            session(&mut bus, &domains, &mut log_state, &tap, p)
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });
@@ -914,8 +916,31 @@ mod tests {
         let mut bus = FakeBus::workstation();
         bus.with_wifi();
         bus.disconnecting.insert(WIFI_DEVICE.into());
-        bus.script = VecDeque::from([(Signal::poke(), open_the_row as fn(&mut FakeBus))]);
+        let steps: [Step; 2] = [(Signal::poke(), open_the_row), (radio_changed(), nothing)];
+        bus.script = VecDeque::from(steps);
         let (_, r) = run(&mut bus);
+        let e = r.unwrap_err();
+        assert_eq!(outage_of(&e), Outage::Bus);
+        assert!(e.to_string().contains(WIFI_DEVICE), "the Wi-Fi read's error, not the script's end: {e}");
+        assert_eq!(bus.script.len(), 1, "the session ended at the poke, the next signal never taken");
+    }
+
+    fn the_bus_goes_during_a_network_outage(b: &mut FakeBus) {
+        b.failing.insert("/org/freedesktop/NetworkManager/ActiveConnection/2".into());
+        b.disconnecting.insert(WIFI_DEVICE.into());
+    }
+
+    /// Review 3a: a network signal whose own read fails (the network domain's outage) and whose
+    /// Wi-Fi read then finds the bus gone ends as the bus's outage: every domain blanked, never the
+    /// network domain alone over a dead connection.
+    #[test]
+    fn the_bus_going_away_after_a_network_outage_wins() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let steps: [Step; 2] = [(Signal::poke(), open_the_row), (radio_changed(), the_bus_goes_during_a_network_outage)];
+        bus.script = VecDeque::from(steps);
+        let (seen, r) = run(&mut bus);
+        assert_eq!(seen.len(), 3, "initial, the row, then the failed re-read published");
         assert_eq!(outage_of(&r.unwrap_err()), Outage::Bus);
     }
 
@@ -1373,7 +1398,7 @@ mod tests {
     fn start_with_no_domains_connects_nothing() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c = calls.clone();
-        start(vec![], move |_| {
+        start(vec![], None, move |_| {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             true
         });

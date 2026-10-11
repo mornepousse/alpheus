@@ -8,6 +8,7 @@
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
+use super::wifi::WifiTap;
 use super::{Bus, Domain, Signal, UPOWER, bluez, network, upower};
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -17,6 +18,7 @@ use dbus::strings::{BusName, ErrorName, Interface, Path, Signature};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::time::Duration;
 
 const DBUS: &str = "org.freedesktop.DBus";
@@ -376,6 +378,8 @@ pub fn refusal(call: &Message) -> Message {
 
 pub struct DbusRsBus {
     channel: Channel,
+    /// The quick panel's tap, polled beside the bus's socket (`waking`); None: libdbus sleeps alone.
+    wake: Option<Arc<WifiTap>>,
 }
 
 impl DbusRsBus {
@@ -392,10 +396,21 @@ impl DbusRsBus {
         Self::subscribe(channel, domains)
     }
 
+    /// Also wakes on `tap`'s word (quick Wi-Fi spec § 5): `next_signal` then polls the bus's socket
+    /// and the tap's together and returns `Signal::poke()` when the loop asks. A tap without its
+    /// socket pair changes nothing.
+    pub fn waking(mut self, tap: Arc<WifiTap>) -> DbusRsBus {
+        if tap.wake_fd().is_some() {
+            self.channel.set_watch_enabled(true);
+            self.wake = Some(tap);
+        }
+        self
+    }
+
     /// Connecting and `Hello` are blocking (libdbus's own deadlines); then
     /// the match rules, each with `TIMEOUT`.
     fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
-        let bus = DbusRsBus { channel };
+        let bus = DbusRsBus { channel, wake: None };
         for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
             bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(rule))?;
         }
@@ -421,7 +436,10 @@ impl DbusRsBus {
     pub fn socket_fd(&mut self) -> RawFd {
         self.channel.set_watch_enabled(true);
         let fd = self.channel.watch().fd;
-        self.channel.set_watch_enabled(false);
+        // `waking`'s poll needs the watch: left on with a tap.
+        if self.wake.is_none() {
+            self.channel.set_watch_enabled(false);
+        }
         fd
     }
 
@@ -461,11 +479,12 @@ impl Bus for DbusRsBus {
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {
+        let closed = || io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed");
         loop {
             while let Some(m) = self.channel.pop_message() {
                 match m.msg_type() {
                     MessageType::Signal if m.interface().is_some_and(|i| &*i == "org.freedesktop.DBus.Local") => {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+                        return Err(closed());
                     }
                     MessageType::Signal => return Ok(signal(&m)),
                     // Refused at once, never left queued (the queue would only grow).
@@ -476,9 +495,35 @@ impl Bus for DbusRsBus {
                     _ => {}
                 }
             }
-            // None: asleep on the socket until the bus sends something.
-            if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+            let Some(wake_fd) = self.wake.as_ref().and_then(|t| t.wake_fd()) else {
+                // None: asleep on the socket until the bus sends something.
+                if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
+                    return Err(closed());
+                }
+                continue;
+            };
+            // Asleep on both sockets: the bus's, and the quick panel's tap (no timeout: nothing
+            // wakes the thread at rest). Then whatever the bus sent is read without waiting
+            // (`read_write(0)`), and a word from the loop comes first.
+            let w = self.channel.watch();
+            let events = libc::POLLIN | if w.write { libc::POLLOUT } else { 0 };
+            let mut fds = [libc::pollfd { fd: w.fd, events, revents: 0 }, libc::pollfd { fd: wake_fd, events: libc::POLLIN, revents: 0 }];
+            // SAFETY: poll(2) reads and fills the two pollfd above, owned here for the whole call.
+            if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
+                return Err(closed());
+            }
+            if fds[1].revents & libc::POLLIN != 0 {
+                if let Some(t) = &self.wake {
+                    t.drain();
+                }
+                return Ok(Signal::poke());
             }
         }
     }

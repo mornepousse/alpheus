@@ -12,8 +12,9 @@ use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle};
 use crate::quick_state;
+use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
-use crate::system::{Sink, SoundState};
+use crate::system::{Sink, SoundState, WifiScope};
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -50,6 +51,30 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
 /// closing it. Only a verb-opened panel (`opened`) is guarded.
 pub(crate) fn verb_debounced(opened: Option<Instant>, now: Instant) -> bool {
     opened.is_some_and(|at| toggle_is_debounced(now.saturating_duration_since(at)))
+}
+
+/// An attempt on a not-saved network that outlives the panel (Mae's ruling P1): followed until it
+/// ends, so a failed new profile is still deleted after the panel closed. The attempt and the last
+/// Wi-Fi state it saw come with the attempt itself (quick Wi-Fi Task 6); None at rest.
+#[derive(Debug)]
+pub(crate) struct WifiFollow {}
+
+impl WifiFollow {
+    /// What it needs read: the detail's lists, to see the attempt's profile appear and go.
+    pub(crate) fn scope(&self) -> WifiScope {
+        WifiScope::Detail
+    }
+}
+
+/// The Wi-Fi the D-Bus thread follows: the wider of the open panel's (`panel`) and a follower's.
+pub(crate) fn wifi_scope(panel: WifiScope, follow: Option<&WifiFollow>) -> WifiScope {
+    panel.max(follow.map_or(WifiScope::Closed, WifiFollow::scope))
+}
+
+/// The panel is gone: nothing of the Wi-Fi read or followed any more and the D-Bus thread's copy
+/// dropped, unless a follower still needs it (then the tap keeps its scope, and no word is sent).
+pub(crate) fn wifi_closed(tap: &WifiTap, follow: Option<&WifiFollow>) {
+    tap.set(wifi_scope(WifiScope::Closed, follow));
 }
 
 impl App {
@@ -314,6 +339,9 @@ impl App {
         if let Some(tap) = &self.sound_tap {
             tap.close();
         }
+        if let Some(tap) = &self.wifi_tap {
+            wifi_closed(tap, self.wifi_follow.as_ref());
+        }
         if let Some(handle) = self.loop_handle.clone() {
             self.quick_timer.sync(&handle, None, App::quick_tick);
         }
@@ -338,6 +366,22 @@ mod tests {
     use crate::config::BarConfig;
     use crate::quick::{Row, shown};
     use crate::system::Volume;
+
+    /// Mae's ruling P1: closing the panel lets the D-Bus thread go back to reading nothing, unless
+    /// an attempt on a new network is still followed: then the detail's reading stays, so a failed
+    /// new profile is still seen (and deleted) after the panel went.
+    #[test]
+    fn closing_the_panel_keeps_the_detail_read_while_an_attempt_is_followed() {
+        let tap = WifiTap::new().unwrap();
+        tap.set(WifiScope::Detail);
+        wifi_closed(&tap, Some(&WifiFollow {}));
+        assert_eq!(tap.scope(), WifiScope::Detail, "a follower: still read");
+        wifi_closed(&tap, None);
+        assert_eq!(tap.scope(), WifiScope::Closed, "nothing followed: nothing read");
+        assert_eq!(wifi_scope(WifiScope::Row, Some(&WifiFollow {})), WifiScope::Detail, "the wider of the two");
+        assert_eq!(wifi_scope(WifiScope::Detail, None), WifiScope::Detail);
+        assert_eq!(wifi_scope(WifiScope::Row, None), WifiScope::Row);
+    }
 
     fn sink(id: u32, label: &str, default: bool) -> Sink {
         Sink { id, label: label.into(), default }

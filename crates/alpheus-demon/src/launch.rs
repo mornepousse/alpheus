@@ -196,8 +196,8 @@ use crate::log::write as log;
 pub struct Wanted {
     /// The pw-dump child: for the volume module, the OSD (its passive trigger) or the quick panel's rows.
     pub sound: bool,
-    /// The D-Bus domains to read and follow (the quick panel's power profile among them); empty: no
-    /// D-Bus thread.
+    /// The D-Bus domains to read and follow (the quick panel's Wi-Fi row and power profile among
+    /// them); empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
     pub resources: bool,
     /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
@@ -214,6 +214,8 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
     let has = |m: ModuleId| modules.contains(&m);
     let dbus = [
         (ModuleId::Network, Domain::Network),
+        // The quick panel's Wi-Fi row needs NetworkManager's state (quick Wi-Fi decision 3).
+        (ModuleId::Quick, Domain::Network),
         (ModuleId::Bluetooth, Domain::Bluetooth),
         (ModuleId::Battery, Domain::Battery),
         (ModuleId::Quick, Domain::Power),
@@ -221,7 +223,13 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
     .into_iter()
     .filter(|(m, _)| has(*m))
     .map(|(_, d)| d)
-    .collect();
+    // With the network module and the panel both, the network domain is read once.
+    .fold(Vec::new(), |mut v, d| {
+        if !v.contains(&d) {
+            v.push(d);
+        }
+        v
+    });
     Wanted {
         sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick),
         dbus,
@@ -762,7 +770,17 @@ pub fn run() -> i32 {
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
-        sources::dbus::start(want.dbus.clone(), move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()));
+        // The quick panel's Wi-Fi (quick Wi-Fi spec § 5): the loop asks the D-Bus thread through this
+        // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
+        if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
+            match crate::sources::dbus::wifi::WifiTap::new() {
+                Ok(t) => state.wifi_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
+            }
+        }
+        sources::dbus::start(want.dbus.clone(), state.wifi_tap.clone(), move |s| {
+            sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
+        });
     }
     if let Some(server) = &launcher_server {
         match watch_launcher_socket(&handle, server, qh.clone()) {
@@ -878,7 +896,16 @@ mod tests {
             wanted(&[ModuleId::Volume, ModuleId::Resources]),
             Wanted { sound: true, dbus: vec![], resources: true, tray: false, media: false, notifications: false }
         );
-        assert_eq!(wanted(&[ModuleId::Quick]).dbus, vec![Domain::Power], "the panel's power profile: read only, on the system bus");
+        assert_eq!(
+            wanted(&[ModuleId::Quick]).dbus,
+            vec![Domain::Network, Domain::Power],
+            "the panel's Wi-Fi row (quick Wi-Fi decision 3) and power profile: read only, on the system bus"
+        );
+        assert_eq!(
+            wanted(&[ModuleId::Quick, ModuleId::Network]).dbus,
+            vec![Domain::Network, Domain::Power],
+            "the network domain read once for the module and the panel"
+        );
     }
 
     #[test]

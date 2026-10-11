@@ -7,7 +7,9 @@ use super::props::Props;
 use super::{Bus, NM, network, optional};
 use crate::log::write as log;
 use crate::system::{AccessPoint, Security, WifiDevice, WifiScope, WifiState};
-use std::io;
+use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
 use std::sync::{Mutex, PoisonError};
 
 pub const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
@@ -21,25 +23,56 @@ pub const MAX_DEVICES: usize = 16;
 pub const SSID_MAX: usize = 32;
 const UUID_MAX: usize = 64;
 
-/// What the loop asks the D-Bus thread (quick Wi-Fi decision 1): the scope the open panel shows.
-/// This one (`default()`, the tests' tap) only keeps the scope, and nothing wakes the thread: a
-/// session reads it when it starts and on each `Signal::poke`.
+/// What the loop asks the D-Bus thread (quick Wi-Fi decision 1): the scope the open panel shows,
+/// and a socket pair whose first end the thread polls beside the bus's own socket; the loop writes
+/// one byte to the second when the scope changes, never otherwise (no wake-up at rest). Without the
+/// pair (`default()`, the tests' tap) the scope is still kept, and nothing wakes: a session reads it
+/// when it starts and on each `Signal::poke`.
 #[derive(Debug, Default)]
 pub struct WifiTap {
     scope: Mutex<WifiScope>,
+    wake: Option<(UnixStream, UnixStream)>,
 }
 
 impl WifiTap {
+    /// A tap with its socket pair, both ends non-blocking and close-on-exec.
+    pub fn new() -> io::Result<WifiTap> {
+        let (read, write) = UnixStream::pair()?;
+        read.set_nonblocking(true)?;
+        write.set_nonblocking(true)?;
+        Ok(WifiTap { scope: Mutex::new(WifiScope::Closed), wake: Some((read, write)) })
+    }
+
     pub fn scope(&self) -> WifiScope {
         *self.scope.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The loop asks for `scope`: kept. True when it changed.
+    /// The loop asks for `scope`: kept, and the thread woken when it changed (a byte already waiting
+    /// is enough: a full socket is not an error). True when it changed.
     pub fn set(&self, scope: WifiScope) -> bool {
-        let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
-        let changed = *s != scope;
-        *s = scope;
+        let changed = {
+            let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = *s != scope;
+            *s = scope;
+            changed
+        };
+        if changed && let Some((_, w)) = &self.wake {
+            let _ = (&*w).write(&[1]);
+        }
         changed
+    }
+
+    /// The end the D-Bus thread polls; None for the tests' tap.
+    pub fn wake_fd(&self) -> Option<RawFd> {
+        self.wake.as_ref().map(|(r, _)| r.as_raw_fd())
+    }
+
+    /// Reads every byte waiting, so the poll sleeps again.
+    pub fn drain(&self) {
+        if let Some((r, _)) = &self.wake {
+            let mut buf = [0u8; 64];
+            while matches!((&*r).read(&mut buf), Ok(n) if n > 0) {}
+        }
     }
 }
 
@@ -316,16 +349,65 @@ mod tests {
         }
     }
 
-    /// The tap without its socket pair (the tests' tap; the pair and its wake-up come with the
-    /// D-Bus thread's poll): a scope kept, a change told apart from the same scope again.
     #[test]
-    fn the_tests_tap_keeps_a_scope_and_tells_a_change() {
-        let tap = WifiTap::default();
+    fn the_tap_wakes_only_on_a_change_and_drains() {
+        let tap = WifiTap::new().unwrap();
+        let fd = tap.wake_fd().expect("a socket pair");
+        let readable = || {
+            let mut p = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            // SAFETY: poll(2) on one pollfd owned here, no wait.
+            unsafe { libc::poll(&mut p, 1, 0) == 1 }
+        };
         assert_eq!(tap.scope(), WifiScope::Closed);
-        assert!(tap.set(WifiScope::Row), "a change");
+        assert!(!readable());
+        assert!(tap.set(WifiScope::Row));
+        assert!(readable(), "a change wakes the thread");
+        tap.drain();
+        assert!(!readable(), "drained");
         assert!(!tap.set(WifiScope::Row), "the same scope: no word");
+        assert!(!readable());
         assert_eq!(tap.scope(), WifiScope::Row);
-        assert!(tap.set(WifiScope::Detail) && tap.set(WifiScope::Closed));
-        assert_eq!(tap.scope(), WifiScope::Closed);
+        // SAFETY: fcntl(2) F_GETFD only reads the descriptor's flags.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0, "a child would inherit the tap");
+        let idle = WifiTap::default();
+        assert!(idle.set(WifiScope::Detail) && idle.wake_fd().is_none(), "the tests' tap: a scope, no socket");
+    }
+
+    /// Review Focus 1, the row's part: NetworkManager restarting under a new unique name while the
+    /// panel is open: the device's path, an object of the old instance, is dropped and found again.
+    #[test]
+    fn a_new_networkmanager_owner_finds_the_device_again() {
+        let mut bus = wifi_bus();
+        let mut r = WifiReader::default();
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        r.reread(&mut bus).unwrap();
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetDevices")).count(), 1, "{:?}", bus.calls);
+        bus.owners.insert(NM, ":1.20");
+        bus.calls.clear();
+        assert!(r.reread(&mut bus).unwrap().is_some_and(|w| w.device.is_some()));
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetDevices")).count(), 1, "the new owner asked again: {:?}", bus.calls);
+        for c in &bus.calls {
+            assert!(c.starts_with("GetNameOwner ") || c.split(' ').nth(1) == Some(":1.20"), "{c}: only the new owner");
+        }
+    }
+
+    /// One `D-Bus Wi-Fi:` line per open: a second failure in the same open is quiet, a new open
+    /// may log again.
+    #[test]
+    fn a_failed_read_is_logged_once_per_open() {
+        let mut bus = wifi_bus();
+        bus.failing.insert(WIFI_DEVICE.into());
+        let mut r = WifiReader::default();
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        assert!(r.logged, "the first failure logged");
+        bus.failing.clear();
+        r.reread(&mut bus).unwrap();
+        assert!(r.logged, "still this open: no second line");
+        r.rescope(&mut bus, WifiScope::Closed).unwrap();
+        assert!(!r.logged, "closed: the next open may log");
+        bus.failing.insert(WIFI_DEVICE.into());
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        assert!(r.logged);
     }
 }

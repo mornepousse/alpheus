@@ -1675,6 +1675,9 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
     assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
+    // Quick Wi-Fi spec § 5 and Mae's ruling P1: the D-Bus thread stops reading the Wi-Fi, unless an
+    // attempt on a new network is still followed.
+    assert!(closed.contains("wifi_closed(") && closed.contains("self.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }
