@@ -451,7 +451,7 @@ pub struct QuickConfig {
     pub keep_awake: ToggleConfig,
     pub night_light: ToggleConfig,
     /// The session buttons' commands, run as given; an empty one hides its button. Reboot and power
-    /// off ask once more first. Nothing here handles sleep or `dpms`.
+    /// off ask once more first. Nothing here handles sleep or screen-off.
     pub lock: Vec<String>,
     pub logout: Vec<String>,
     pub reboot: Vec<String>,
