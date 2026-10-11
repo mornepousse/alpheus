@@ -1013,8 +1013,8 @@ fn mark_style(on: Option<bool>) -> Style {
 
 /// "G ━━━━━━━━━━━━━━────────  64%  ›" (spec § 2), the OSD's level (`osd::level`) one pad cell in:
 /// the glyph dim when muted; filled in the accent, the rest dim; muted, all dim; above 100 %, the
-/// whole bar in warn. Selected: the band behind the glyph, the percentage and the arrow; the bar
-/// keeps its colours (decision 6).
+/// whole bar in warn. Selected: the band across the whole row, the track included; the bar
+/// keeps its own foreground on it (decision 6).
 fn slider(g: &mut Grid, glyph: char, v: Volume, more: bool, selected: bool) {
     let end = g.width();
     if selected {
@@ -1066,6 +1066,7 @@ pub fn describe(live: &Live, q: &Quick) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grid::Tint;
     use crate::segments::VOLUME_MEDIUM;
     use crate::system::Profile;
 
@@ -1149,11 +1150,20 @@ mod tests {
         assert_eq!(t[4], format!(" {BELL} Do not disturb{}○", " ".repeat(15)));
         assert_eq!(t[5], format!(" {PROFILE} Power profile{}balanced ›", " ".repeat(7)));
         assert_eq!(t[7], format!("   {LOCK}    {REBOOT}    {POWER}"), "lock, reboot, power off: logout is empty by default");
-        assert_eq!(
-            b.rows[0].styles(),
-            format!("SSS{}{}{}", "a".repeat(14), "m".repeat(8), "S".repeat(9)),
-            "selected: the band around the bar, the bar in its colours (decision 6)"
-        );
+        // Selected: the band spans the whole row, its track included; the bar cells keep their own
+        // foreground on it (decision 6, final review: a band that skipped the track looked broken).
+        let selected = b.rows[0].cells();
+        assert!(selected.iter().all(|c| c.style.bg == Tint::Selection), "the band spans the row: {}", b.rows[0].styles());
+        assert_eq!((&b.rows[0].styles()[..3], &b.rows[0].styles()[25..]), ("SSS", "S".repeat(9).as_str()));
+        let track: String = selected[3..25]
+            .iter()
+            .map(|c| match c.style.fg {
+                Tint::Accent => 'a',
+                Tint::FgDim => 'm',
+                _ => '?',
+            })
+            .collect();
+        assert_eq!(track, format!("{}{}", "a".repeat(14), "m".repeat(8)), "the bar in its colours, on the band");
         assert_eq!(b.rows[1].styles(), format!(".a.{}{}{}", "a".repeat(16), "m".repeat(6), ".".repeat(9)));
         assert_eq!(&b.rows[4].styles()[32..33], "m", "○ in fg_dim");
     }
@@ -1176,11 +1186,13 @@ mod tests {
         assert_eq!(&b.rows[4].styles()[32..33], "a", "● in the accent");
         assert_eq!(t[6], format!(" {KEEP_AWAKE} Keep awake{}●", " ".repeat(19)));
         assert_eq!(t[7], format!(" {NIGHT_LIGHT} Night light{}·", " ".repeat(18)), "unknown state");
-        assert!(b.rows[0].styles()[3..25].chars().all(|c| c == 'w'), "above 100 %: the whole bar in warn: {}", b.rows[0].styles());
+        // The volume row is selected: its track on the band, in its own foreground.
+        let track = |b: &Boxed| b.rows[0].cells()[3..25].iter().map(|c| c.style.fg).collect::<Vec<_>>();
+        assert!(track(&b).iter().all(|f| *f == Tint::Warn), "above 100 %: the whole bar in warn: {:?}", track(&b));
         let mut muted = World::full();
         muted.sound.sink = vol(64, true);
         let b = rows(&muted.live(), &quick(&muted, Focus::Top));
-        assert!(b.rows[0].styles()[3..25].chars().all(|c| c == 'm'), "muted: the bar dimmed");
+        assert!(track(&b).iter().all(|f| *f == Tint::FgDim), "muted: the bar dimmed: {:?}", track(&b));
     }
 
     #[test]

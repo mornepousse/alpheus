@@ -7,7 +7,7 @@
 //! a command.
 
 use crate::config::OsdConfig;
-use crate::grid::{Grid, Style};
+use crate::grid::{Grid, Style, Tint};
 use crate::list::{self, Boxed};
 use crate::media::truncate_title;
 use crate::segments::{VOLUME_HIGH, VOLUME_LOW, VOLUME_MEDIUM, VOLUME_OFF};
@@ -263,8 +263,8 @@ pub(crate) fn percent(g: &mut Grid, end: u16, v: Volume, selected: bool) {
 
 /// "G ━━━━━━━━━━━━━━━━─────────  64%" from `at` to `end` (excluded): the glyph, a space, the bar,
 /// one blank cell, the percentage. Filled in the accent, the rest dim; muted, all dim; above
-/// 100 %, the whole bar in `warn`. `selected` (the quick panel's slider rows): the glyph, its space
-/// and the percentage on the selection band, the bar in its own colours.
+/// 100 %, the whole bar in `warn`. `selected` (the quick panel's slider rows): the whole of it on the
+/// selection band, the bar cells keeping their own foreground (accent, dim, warn).
 pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, selected: bool) {
     let pick = |s: Style| if selected { Style::SELECTED } else { s };
     let bar = end.saturating_sub(at).saturating_sub(3 + PERCENT_CELLS);
@@ -278,6 +278,8 @@ pub(crate) fn level(g: &mut Grid, at: u16, end: u16, glyph: char, v: Volume, sel
         (false, true) => (Style::WARN, Style::WARN),
         (false, false) => (Style::ACCENT, Style::MUTED),
     };
+    let band = |s: Style| if selected { Style { bg: Tint::Selection, ..s } } else { s };
+    let (on, off) = (band(on), band(off));
     let x = g.write(x, end, &"━".repeat(usize::from(filled)), on);
     g.write(x, end, &"─".repeat(usize::from(bar.saturating_sub(filled))), off);
     percent(g, end, v, selected);
