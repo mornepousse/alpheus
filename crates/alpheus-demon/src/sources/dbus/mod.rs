@@ -66,8 +66,27 @@ pub trait Bus {
     /// `org.freedesktop.NetworkManager.Settings.Connection.GetSettings` on `path`, reduced to a Wi-Fi
     /// profile's uuid and SSID (`wifi::saved_wifi`); None for any other kind. Never its secrets.
     fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>>;
+    /// AddMatch (`add`) or RemoveMatch of one rule.
+    fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()>;
     /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).
-    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()>;
+    /// All or nothing when adding: one refused takes back those already added (their own refusals
+    /// ignored), so none is left on the bus that nobody would remove. Removing tries every rule and
+    /// returns the first refusal.
+    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()> {
+        let mut first = None;
+        for (i, r) in rules.iter().enumerate() {
+            if let Err(e) = self.match_rule(r, add) {
+                if add {
+                    for done in &rules[..i] {
+                        let _ = self.match_rule(done, false);
+                    }
+                    return Err(e);
+                }
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
+    }
     /// Blocks until the next signal the bar subscribed to; Err: connection lost.
     fn next_signal(&mut self) -> io::Result<Signal>;
 }

@@ -77,6 +77,10 @@ pub struct FakeBus {
     pub connections: Option<Vec<String>>,
     /// GetSettings' answers by path, already reduced (None: not a Wi-Fi profile).
     pub settings: BTreeMap<String, Option<SavedWifi>>,
+    /// (AddMatch?, rule) refused, as a bus at its limits or timing out would (the call recorded).
+    pub failing_rules: BTreeSet<(bool, String)>,
+    /// The match rules the bus holds for this connection (added, not refused, not removed yet).
+    pub rules: Vec<String>,
     /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
     pub tap: Arc<WifiTap>,
     pub script: VecDeque<Step>,
@@ -96,6 +100,8 @@ impl FakeBus {
             nm_devices: None,
             connections: None,
             settings: BTreeMap::new(),
+            failing_rules: BTreeSet::new(),
+            rules: Vec::new(),
             tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
@@ -260,6 +266,9 @@ impl Bus for FakeBus {
     fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>> {
         self.calls.push(format!("ListConnections {destination}"));
         self.reach(destination)?;
+        if self.failing.contains(wifi::SETTINGS_PATH) {
+            return Err(io::Error::other(format!("timeout: {}", wifi::SETTINGS_PATH)));
+        }
         self.connections.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: ListConnections"))
     }
 
@@ -272,9 +281,15 @@ impl Bus for FakeBus {
         self.settings.get(path).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("UnknownObject: {path}")))
     }
 
-    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()> {
-        for r in rules {
-            self.calls.push(format!("{} {r}", if add { "AddMatch" } else { "RemoveMatch" }));
+    fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()> {
+        self.calls.push(format!("{} {rule}", if add { "AddMatch" } else { "RemoveMatch" }));
+        if self.failing_rules.contains(&(add, rule.to_string())) {
+            return Err(io::Error::other(format!("timeout: {rule}")));
+        }
+        if add {
+            self.rules.push(rule.to_string());
+        } else if let Some(i) = self.rules.iter().position(|r| r == rule) {
+            self.rules.remove(i);
         }
         Ok(())
     }

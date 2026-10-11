@@ -138,6 +138,8 @@ pub struct WifiReader {
     owner: Option<String>,
     /// The Wi-Fi device found this open.
     device: Option<String>,
+    /// The access point the device is on, as last read (its change patches the row's `active`).
+    active_ap: Option<String>,
     /// Detail only: the device's access points by path (at most MAX_APS), None for a hidden or
     /// unreadable one (read again only on its own signal).
     aps: BTreeMap<String, Option<AccessPoint>>,
@@ -211,15 +213,17 @@ impl WifiReader {
         match c {
             WifiChange::AccessPoint(path) => {
                 let Some(nm) = self.owner.clone().filter(|_| self.aps.contains_key(path)) else { return Ok(self.last.clone()) };
-                match optional(bus.get_all(&nm, path, ACCESS_POINT)) {
-                    Ok(p) => {
-                        self.aps.insert(path.clone(), p.as_ref().and_then(access_point));
-                    }
-                    Err(e) => self.soft_unit(Err(e))?,
-                }
+                let r = bus.get_all(&nm, path, ACCESS_POINT).map(Some);
+                let ap = self.soft_item(r)?.as_ref().and_then(access_point);
+                let active = self.active_ap.as_deref() == Some(path.as_str());
+                self.aps.insert(path.clone(), ap.clone());
                 let listed = self.listed();
                 if let Some(d) = self.last.as_mut().and_then(|s| s.device.as_mut()) {
                     d.access_points = Some(listed);
+                    // The device's own: the row's strength and glyph follow (kept when unreadable).
+                    if active && ap.is_some() {
+                        d.active = ap;
+                    }
                 }
                 Ok(self.last.clone())
             }
@@ -277,6 +281,7 @@ impl WifiReader {
     fn forget(&mut self) {
         self.owner = None;
         self.device = None;
+        self.active_ap = None;
         self.aps.clear();
         self.saved.clear();
         self.saved_stale = self.scope == WifiScope::Detail;
@@ -299,6 +304,7 @@ impl WifiReader {
         let enabled = root.bool("WirelessEnabled").unwrap_or(false);
         let Some((path, device)) = self.device(bus, &nm)? else { return Ok(WifiState { enabled, device: None }) };
         let wireless = optional(bus.get_all(&nm, &path, WIRELESS))?.unwrap_or_default();
+        self.active_ap = wireless.path("ActiveAccessPoint").map(String::from);
         let active = match wireless.path("ActiveAccessPoint") {
             Some(ap) => optional(bus.get_all(&nm, ap, ACCESS_POINT))?.as_ref().and_then(access_point),
             None => None,
@@ -312,8 +318,13 @@ impl WifiReader {
         let (access_points, saved) = if self.scope == WifiScope::Detail {
             self.reconcile_aps(bus, &nm, wireless.paths("AccessPoints"))?;
             if self.saved_stale {
-                self.reconcile_saved(bus, &nm)?;
-                self.saved_stale = false;
+                // Listing failing (not absent) keeps the row and the access points; the saved list
+                // stays as it was (empty at the open) and is listed again at the next read.
+                match self.reconcile_saved(bus, &nm) {
+                    Ok(()) => self.saved_stale = false,
+                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+                    Err(e) => self.note(&e),
+                }
             }
             (Some(self.listed()), Some(self.saved.values().flatten().cloned().collect()))
         } else {
@@ -760,6 +771,83 @@ mod tests {
         bus.disconnecting.insert(format!("{AP}/11"));
         let e = WifiReader::default().rescope(&mut bus, WifiScope::Detail).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "the bus itself gone: still the session's");
+    }
+
+    /// Per rule, how many times the bus holds it for this session.
+    fn rules_left(bus: &FakeBus) -> Vec<usize> {
+        WIFI_RULES.iter().map(|r| bus.rules.iter().filter(|h| h == r).count()).collect()
+    }
+
+    /// Fix round 1: one rule refused (a timeout, LimitsExceeded) takes back the ones already added:
+    /// none left on the bus to wake the thread once the panel closes, none doubled at the next open.
+    #[test]
+    fn a_partly_added_set_of_rules_is_taken_back() {
+        let mut bus = wifi_bus();
+        bus.failing_rules.insert((true, WIFI_RULES[3].to_string()));
+        let (mut r, d) = detail(&mut bus);
+        assert_eq!(rules_left(&bus), [0; 5], "{:?}", bus.calls);
+        assert!(d.access_points.is_some_and(|a| !a.is_empty()), "the detail still read once");
+        assert!(r.logged, "the refusal noted");
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        assert_eq!(rules_left(&bus), [0; 5], "nothing removed twice");
+        bus.failing_rules.clear();
+        r.rescope(&mut bus, WifiScope::Detail).unwrap();
+        assert_eq!(rules_left(&bus), [1; 5], "added whole at the next open");
+        r.rescope(&mut bus, WifiScope::Closed).unwrap();
+        assert_eq!(rules_left(&bus), [0; 5]);
+    }
+
+    /// Fix round 1: one RemoveMatch refused does not keep the others on the bus.
+    #[test]
+    fn every_rule_is_removed_even_after_one_fails() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.failing_rules.insert((false, WIFI_RULES[0].to_string()));
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("RemoveMatch ")).count(), WIFI_RULES.len(), "every rule tried");
+        assert_eq!(rules_left(&bus), [1, 0, 0, 0, 0], "only the refused one left");
+        assert!(r.logged);
+    }
+
+    /// Fix round 1 (P4): an access point whose re-read fails is left out, like at the first read.
+    #[test]
+    fn an_access_points_failed_reread_leaves_it_out() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.failing.insert(format!("{AP}/11"));
+        let d = r.changed(&mut bus, &WifiChange::AccessPoint(format!("{AP}/11"))).unwrap().unwrap().device.unwrap();
+        assert_eq!(ssids(&d), ["MON_WIFI_1", "Cafe-Libre"], "Voisin-Test left out, never its old strength");
+        assert!(d.active.is_some(), "the rest kept");
+    }
+
+    /// Fix round 1: the device's own access point changing reaches the row too (its strength, its
+    /// glyph), not only the list.
+    #[test]
+    fn the_active_access_points_change_reaches_the_row() {
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.props_mut(&format!("{AP}/10"), ACCESS_POINT).0.insert("Strength".into(), Prop::Int(20));
+        let d = r.changed(&mut bus, &WifiChange::AccessPoint(format!("{AP}/10"))).unwrap().unwrap().device.unwrap();
+        assert_eq!(d.active.map(|a| a.strength), Some(20));
+        assert_eq!(d.access_points.unwrap()[0].strength, 20);
+        bus.props_mut(&format!("{AP}/11"), ACCESS_POINT).0.insert("Strength".into(), Prop::Int(99));
+        let d = r.changed(&mut bus, &WifiChange::AccessPoint(format!("{AP}/11"))).unwrap().unwrap().device.unwrap();
+        assert_eq!(d.active.map(|a| a.strength), Some(20), "another access point: the row's stays");
+    }
+
+    /// Fix round 1: ListConnections failing (not absent) keeps the row and the access points, the
+    /// saved list empty until a later read lists it.
+    #[test]
+    fn a_failed_listing_keeps_the_row_and_is_tried_again() {
+        let mut bus = wifi_bus();
+        bus.failing.insert(SETTINGS_PATH.into());
+        let (mut r, d) = detail(&mut bus);
+        assert!(d.active.is_some() && d.access_points.is_some_and(|a| a.len() == 3), "the row and the list kept");
+        assert_eq!(d.saved, Some(Vec::new()));
+        assert!(r.logged);
+        bus.failing.clear();
+        let d = r.reread(&mut bus).unwrap().unwrap().device.unwrap();
+        assert_eq!(d.saved.map(|s| s.len()), Some(1), "listed at the next read");
     }
 
     /// Review Focus 1: NetworkManager restarted with the detail open: another unique name, the same

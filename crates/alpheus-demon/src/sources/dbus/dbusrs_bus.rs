@@ -538,9 +538,9 @@ impl Bus for DbusRsBus {
         settings_reply(&self.call(destination, path, Method::GetSettings, None)?)
     }
 
-    fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()> {
+    fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()> {
         let m = if add { Method::AddMatch } else { Method::RemoveMatch };
-        rules.iter().try_for_each(|r| self.call(DBUS, DBUS_PATH, m, Some(r)).map(|_| ()))
+        self.call(DBUS, DBUS_PATH, m, Some(rule)).map(|_| ())
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {
