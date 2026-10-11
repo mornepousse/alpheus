@@ -33,6 +33,17 @@ pub(crate) fn opened_sound(bar: &mut Bar, mut s: SoundState) -> (Vec<Sink>, bool
     (sinks, redraw)
 }
 
+/// The sink list a bar message carries for the open panel, taken out of it (the bar never keeps
+/// one): a sound message's own; none at all when pw-dump went (`Msg::Sound(None)`), so the outputs
+/// detail closes and no `set-default` goes to a node id that is gone or recycled.
+pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
+    match m {
+        Msg::Sound(Some(s)) => s.sinks.take(),
+        Msg::Sound(None) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
 impl App {
     pub(crate) fn quick_enabled(&self) -> bool {
         self.bar.config.modules.contains(&ModuleId::Quick)
@@ -294,8 +305,7 @@ impl App {
     /// panel, or is dropped (the bar never keeps one). True when the open panel shows what it
     /// carries (a sound or profile message): the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
-        if let Msg::Sound(Some(s)) = m
-            && let Some(sinks) = s.sinks.take()
+        if let Some(sinks) = taken_sinks(m)
             && let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body)
         {
             q.set_sinks(sinks);
@@ -342,6 +352,34 @@ mod tests {
         assert_eq!(live.sound.and_then(|s| s.sinks.as_ref()), None, "the bar never keeps a list");
         let q = Quick::new(Focus::Sound, &live, sinks, None, [None, None], 20);
         assert!(shown(&live, &q).contains(&Row::Mic), "{:?}", shown(&live, &q));
+    }
+
+    /// Final review A-I1: pw-dump going while the outputs detail is open empties the panel's list,
+    /// so the detail closes and Enter never sends a `set-default` to a dead node id.
+    #[test]
+    fn a_pw_dump_outage_closes_the_outputs_detail() {
+        let mut bar = Bar::new(BarConfig::default());
+        bar.apply(Msg::Sound(Some(SoundState { sink: vol(64, false), ..SoundState::default() })));
+        let sinks = vec![sink(99, "Speaker", false), sink(122, "AG06", true)];
+        let mut q = Quick::new(Focus::Sound, &quick::live(&bar, false), sinks, None, [None, None], 20);
+        let now = Instant::now();
+        assert_eq!(q.key(&quick::live(&bar, false), crate::keys::Key::Enter, false, now), QuickAction::Redraw);
+        assert!(q.detail, "the outputs detail is open");
+        let mut down = Msg::Sound(None);
+        if let Some(s) = taken_sinks(&mut down) {
+            q.set_sinks(s);
+        }
+        bar.apply(down);
+        let live = quick::live(&bar, false);
+        q.fit(&live); // quick_refresh, after the message
+        assert!(!q.detail, "the detail closed");
+        let enter = q.key(&live, crate::keys::Key::Enter, false, now);
+        assert!(
+            !matches!(&enter, QuickAction::Run { argv, .. } if argv.iter().any(|a| a == "set-default")),
+            "no set-default after the outage: {enter:?}"
+        );
+        let mut other = Msg::Profile(None);
+        assert_eq!(taken_sinks(&mut other), None, "only a sound message carries a list");
     }
 
     /// After a pw-dump outage the tap reads an empty model (`sinks: Some([])`, no sink, no source):
