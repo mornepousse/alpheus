@@ -1035,7 +1035,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 26] = [
+const NO_THREAD_NOR_COMMAND: [&str; 27] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1062,6 +1062,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 26] = [
     "text.rs",
     "quick.rs",
     "quick_state.rs",
+    "quick_wifi.rs",
 ];
 
 #[test]
@@ -1498,7 +1499,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -1519,7 +1520,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 2, "quick.rs and quick_state.rs");
+    assert_eq!(checked, 3, "quick.rs, quick_state.rs and quick_wifi.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -1532,6 +1533,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() },
         night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
         logout: vec!["fake-logout".into()],
+        wifi_more: Some(vec!["fake-more".into()]),
         ..QuickConfig::default()
     };
     let sound = SoundState {
@@ -1579,6 +1581,66 @@ fn every_quick_command_stays_on_the_allowlist() {
             }
         }
     }
+    // Quick Wi-Fi spec § 5: the Wi-Fi row and its detail, the radio on and off, a network of every
+    // kind; every key on every pick (twice), every press of every cell with every button (twice).
+    const UUID_HOME: &str = "11111111-2222-4333-8444-555555555555";
+    const UUID_SAVED: &str = "33333333-4444-4555-8666-777777777777";
+    let ap = |s: &str, strength: u8, security: Security| AccessPoint { ssid: s.as_bytes().to_vec(), strength, security };
+    let wifi_state = |enabled: bool| WifiState {
+        enabled,
+        device: Some(WifiDevice {
+            state: 100,
+            active: Some(ap("Maison-Test", 80, Security::Psk)),
+            active_uuid: Some(UUID_HOME.into()),
+            access_points: Some(vec![
+                ap("Maison-Test", 80, Security::Psk),
+                ap("Bureau-Test", 60, Security::Psk),
+                ap("Cafe-Libre", 40, Security::Open),
+                ap("Labo-Test", 70, Security::Enterprise),
+                ap("Vieux-Test", 50, Security::Other),
+                ap("-x", 30, Security::Open),
+                ap("Atelier-Test", 20, Security::Open),
+            ]),
+            saved: Some(vec![
+                SavedWifi { uuid: UUID_HOME.into(), ssid: b"Maison-Test".to_vec() },
+                SavedWifi { uuid: UUID_SAVED.into(), ssid: b"Atelier-Test".to_vec() },
+            ]),
+        }),
+    };
+    for enabled in [true, false] {
+        let fresh_wifi = || {
+            let mut q = fresh();
+            q.set_wifi(Some(wifi_state(enabled)), t);
+            q.selected = quick::Row::Wifi;
+            q
+        };
+        for k in keys {
+            record(fresh_wifi().key(&live, k, false, t));
+        }
+        let mut opened = fresh_wifi();
+        record(opened.key(&live, Key::Enter, false, t));
+        let picks = opened.wifi.networks().len() + 1;
+        for down in 0..=picks {
+            for k in keys {
+                let mut q = opened.clone();
+                for _ in 0..down {
+                    q.key(&live, Key::Down, false, t);
+                }
+                record(q.key(&live, k, false, t));
+                record(q.key(&live, k, false, later));
+            }
+        }
+        let n = quick::lines(&live, &opened).len() as u16;
+        for y in 0..n {
+            for x in 0..quick::WIDTH + 2 {
+                for b in [Button::Left, Button::Right, Button::Middle] {
+                    let mut q = opened.clone();
+                    record(q.press(&live, (x, y), b, t));
+                    record(q.press(&live, (x, y), b, later));
+                }
+            }
+        }
+    }
     // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
     let line = |a: &QuickAction| match a {
@@ -1616,8 +1678,15 @@ fn every_quick_command_stays_on_the_allowlist() {
             .and_then(|d| d.parse::<u8>().ok())
             .is_some_and(|p| (min..=100).contains(&p))
     };
-    let configured =
-        ["fake-keep-awake", "fake-night --toggle", "fake-logout", "loginctl lock-session", "systemctl reboot", "systemctl poweroff"];
+    let configured = [
+        "fake-keep-awake",
+        "fake-night --toggle",
+        "fake-logout",
+        "loginctl lock-session",
+        "systemctl reboot",
+        "systemctl poweroff",
+        "fake-more",
+    ];
     for c in &calls {
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
@@ -1625,11 +1694,16 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
             ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
+            ["nmcli", "radio", "wifi", "on" | "off"] => true,
+            ["nmcli", "device", "wifi", "rescan"] => true,
+            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED].contains(u),
+            ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
         assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
     }
+    assert!(!calls.iter().any(|c| c.ends_with(" -x")), "a refused SSID never reaches nmcli: {calls:?}");
     for expected in [
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 69%",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 59%",
@@ -1647,6 +1721,13 @@ fn every_quick_command_stays_on_the_allowlist() {
         "loginctl lock-session",
         "systemctl reboot",
         "systemctl poweroff",
+        "nmcli radio wifi off",
+        "nmcli radio wifi on",
+        "nmcli device wifi rescan",
+        "nmcli connection down uuid 11111111-2222-4333-8444-555555555555",
+        "nmcli connection up uuid 33333333-4444-4555-8666-777777777777",
+        "nmcli device wifi connect Cafe-Libre",
+        "fake-more",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
@@ -1656,7 +1737,7 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

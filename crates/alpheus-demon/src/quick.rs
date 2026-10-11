@@ -12,9 +12,10 @@ use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
+use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
 use crate::state::{Bar, Feed};
-use crate::system::{ProfileState, Sink, SoundState, Volume};
+use crate::system::{ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
 use std::time::{Duration, Instant};
 
 /// Content width in cells; a row is two more (a blank pad cell each side, as the other popups').
@@ -92,6 +93,8 @@ impl Focus {
 pub enum Row {
     Volume,
     Brightness,
+    /// The Wi-Fi (quick Wi-Fi spec § 1): first under the sliders' separator.
+    Wifi,
     Mic,
     Dnd,
     Profile,
@@ -102,14 +105,15 @@ pub enum Row {
 
 impl Row {
     /// Top to bottom (spec § 2): also the order a selection falls back along when its row goes.
-    pub const ORDER: [Row; 8] =
-        [Row::Volume, Row::Brightness, Row::Mic, Row::Dnd, Row::Profile, Row::KeepAwake, Row::NightLight, Row::Session];
+    pub const ORDER: [Row; 9] =
+        [Row::Volume, Row::Brightness, Row::Wifi, Row::Mic, Row::Dnd, Row::Profile, Row::KeepAwake, Row::NightLight, Row::Session];
 
     /// For the log line "quick shown (rows: …)".
     pub fn name(self) -> &'static str {
         match self {
             Row::Volume => "volume",
             Row::Brightness => "brightness",
+            Row::Wifi => "wifi",
             Row::Mic => "mic",
             Row::Dnd => "dnd",
             Row::Profile => "profile",
@@ -230,6 +234,14 @@ pub enum Line {
     Header,
     /// The n-th of `Quick::sinks`.
     Sink(usize),
+    /// The Wi-Fi detail's "‹ Wi-Fi".
+    WifiHeader,
+    /// The n-th of the Wi-Fi detail's networks (`Wifi::networks`).
+    Network(usize),
+    /// "Wi-Fi is off", "Searching…", "No networks".
+    WifiNote(&'static str),
+    /// "More…" (`[quick] wifi_more`).
+    WifiMore,
 }
 
 /// The backlight as the panel shows it: its device (`brightnessctl --device=`) and level.
@@ -298,6 +310,14 @@ pub struct Due {
     pub run: Vec<QuickAction>,
 }
 
+/// What a Wi-Fi state brought (`Quick::set_wifi`): the action to take (a rescan, a cleanup), and why
+/// a connection failed, for the log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiNews {
+    pub action: QuickAction,
+    pub failed: Option<&'static str>,
+}
+
 /// A slider's move: by a step, or to a level.
 #[derive(Debug, Clone, Copy)]
 enum Level {
@@ -350,7 +370,7 @@ impl Pace {
     }
 }
 
-fn run(parts: &[&str], what: &str) -> QuickAction {
+pub(crate) fn run(parts: &[&str], what: &str) -> QuickAction {
     QuickAction::Run { argv: argv(parts), what: what.to_string() }
 }
 
@@ -424,6 +444,8 @@ pub struct Quick {
     pub room: u16,
     /// Programs that failed to start during this open: each logged once (spec § 6).
     pub failed: Vec<String>,
+    /// The Wi-Fi row and its detail (quick_wifi.rs).
+    pub wifi: Wifi,
 }
 
 fn argv(parts: &[&str]) -> Vec<String> {
@@ -440,6 +462,7 @@ fn present(r: Row, live: &Live, q: &Quick) -> bool {
     match r {
         Row::Volume => live.sound.is_some_and(|s| s.sink.is_some()),
         Row::Brightness => q.backlight.is_some(),
+        Row::Wifi => q.wifi.shows(),
         Row::Mic => live.sound.is_some_and(|s| s.source.is_some()),
         Row::Dnd => live.dnd.is_some(),
         Row::Profile => live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
@@ -457,6 +480,9 @@ pub fn shown(live: &Live, q: &Quick) -> Vec<Row> {
 /// The lines drawn: the rows with a separator between two blocks; in the detail, its header, a
 /// separator and the sinks.
 pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
+    if q.wifi.open {
+        return q.wifi.lines(live.config);
+    }
     if q.detail {
         let mut v = vec![Line::Header, Line::Separator];
         v.extend((0..q.sinks.len()).map(Line::Sink));
@@ -496,6 +522,7 @@ impl Quick {
             top: 0,
             room,
             failed: Vec::new(),
+            wifi: Wifi { focus_pending: focus == Focus::Wifi, ..Wifi::default() },
         };
         let rows = shown(live, &q);
         q.selected = match focus {
@@ -520,6 +547,10 @@ impl Quick {
     /// by id (else the default); the selection back on a shown row (the next one down the order when
     /// its own went, else the one above); the session button on a drawn one.
     pub fn fit(&mut self, live: &Live) {
+        self.wifi.fit(live.config);
+        if self.wifi.open {
+            self.detail = false;
+        }
         if self.volume_level.is_some() {
             let sound = live.sound;
             let sink = sound.and_then(|s| s.sink_name.as_ref()).map(|d| d.node.as_str());
@@ -565,9 +596,11 @@ impl Quick {
     /// After a key: the window over the lines keeps the selection in view.
     fn keep_in_view(&mut self, live: &Live) {
         let all = lines(live, self);
+        let nets = if self.wifi.open { self.wifi.networks() } else { Vec::new() };
         let at = all.iter().position(|l| match *l {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
+            l @ (Line::Network(_) | Line::WifiMore) => self.wifi.is_selected(l, &nets),
             _ => false,
         });
         if let Some(at) = at {
@@ -584,7 +617,18 @@ impl Quick {
         self.fit(live);
         // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
         let cancelled = k != Key::Enter && self.confirm.take().is_some();
-        let action = if self.detail { self.detail_key(k) } else { self.rows_key(live, k, now) };
+        let action = if self.wifi.open {
+            let a = self.wifi.key(live.config, k, now);
+            if !self.wifi.open {
+                self.selected = Row::Wifi;
+                self.top = 0;
+            }
+            a
+        } else if self.detail {
+            self.detail_key(k)
+        } else {
+            self.rows_key(live, k, now)
+        };
         self.keep_in_view(live);
         if cancelled && action == QuickAction::Nothing { QuickAction::Redraw } else { action }
     }
@@ -620,6 +664,8 @@ impl Quick {
             (Row::Volume, Key::Char(' ')) => run(&["wpctl", "set-mute", SINK, "toggle"], "mute"),
             (Row::Brightness, Key::Right) => self.brightness(Level::Up(step), now),
             (Row::Brightness, Key::Left) => self.brightness(Level::Down(step), now),
+            (Row::Wifi, Key::Char(' ')) => self.wifi.radio(),
+            (Row::Wifi, Key::Enter | Key::Right) => self.open_wifi(),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
             (Row::Profile, Key::Enter) => cycle(live),
@@ -721,6 +767,14 @@ impl Quick {
             (Line::Sink(i), Button::Left) => {
                 self.sink = self.sinks.get(i).map(|s| s.id);
                 self.choose_sink(i)
+            }
+            (l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore), _) => {
+                let a = self.wifi.press(live.config, l, b, now);
+                if !self.wifi.open {
+                    self.selected = Row::Wifi;
+                    self.top = 0;
+                }
+                a
             }
             (Line::Row(Row::Volume), Button::Right) => {
                 self.selected = Row::Volume;
@@ -891,6 +945,32 @@ impl Quick {
         QuickAction::Redraw
     }
 
+    /// Enter, →, or a click on the Wi-Fi row (quick Wi-Fi spec § 1): its detail in place of the rows.
+    fn open_wifi(&mut self) -> QuickAction {
+        if !self.wifi.shows() {
+            return QuickAction::Nothing;
+        }
+        self.detail = false;
+        self.top = 0;
+        self.wifi.open_detail()
+    }
+
+    /// The D-Bus thread's Wi-Fi state, while open (`quick_take`). Asked for from the network module
+    /// or `--quick wifi`, the first state with a device selects the row and opens the detail.
+    pub fn set_wifi(&mut self, state: Option<WifiState>, now: Instant) -> WifiNews {
+        let (action, failed) = self.wifi.set_state(state, now);
+        if std::mem::take(&mut self.wifi.focus_pending) && self.wifi.shows() {
+            self.selected = Row::Wifi;
+            return WifiNews { action: self.open_wifi(), failed };
+        }
+        WifiNews { action, failed }
+    }
+
+    /// What the D-Bus thread is to read while the panel is open.
+    pub fn wifi_scope(&self) -> WifiScope {
+        self.wifi.scope()
+    }
+
     /// Keys in the outputs detail: ↑ ↓ Home End move, Enter makes the sink the default, Esc or ←
     /// go back to the rows (the volume still selected).
     fn detail_key(&mut self, k: Key) -> QuickAction {
@@ -957,6 +1037,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
     let visible = q.visible();
     let top = q.top.min(all.len().saturating_sub(visible));
     let mut out = Boxed::default();
+    let nets = if q.wifi.open { q.wifi.networks() } else { Vec::new() };
     for (r, line) in all.iter().skip(top).take(visible).enumerate() {
         let mut g = Grid::empty(WIDTH + 2);
         match *line {
@@ -968,6 +1049,9 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
                 }
             }
             Line::Row(row) => draw(&mut g, row, live, q),
+            l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore) => {
+                q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
+            }
         }
         out.rows.push(g);
     }
@@ -988,6 +1072,7 @@ fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
                 slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
             }
         }
+        Row::Wifi => text_row(g, Some(q.wifi.glyph()), "Wi-Fi", &format!("{} ›", q.wifi.value()), Style::NORMAL, selected),
         Row::Mic => {
             if let Some(v) = live.sound.and_then(|s| s.source) {
                 let (glyph, word, style) = if v.muted { (MIC_OFF, "muted", Style::WARN) } else { (MIC_ON, "live", Style::NORMAL) };
@@ -1037,7 +1122,7 @@ fn slider(g: &mut Grid, glyph: char, v: Volume, more: bool, selected: bool) {
 
 /// A text row as a menu draws it (`list::row`: the icon in the accent, the label), then `right`
 /// right-aligned one cell from the end in its own style.
-fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &str, right_style: Style, selected: bool) {
+pub(crate) fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &str, right_style: Style, selected: bool) {
     let end = g.width();
     list::row(g, 0, end, &list::Row { icon, icon_style: Style::ACCENT, text: label, right: "", style: Style::NORMAL, selected });
     let w = text_width(right);
@@ -1076,8 +1161,9 @@ pub fn describe(live: &Live, q: &Quick) -> String {
 mod tests {
     use super::*;
     use crate::grid::Tint;
+    use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
     use crate::segments::VOLUME_MEDIUM;
-    use crate::system::Profile;
+    use crate::system::{AccessPoint, Profile, SavedWifi, Security, WifiDevice, WifiState};
 
     fn vol(percent: u8, muted: bool) -> Option<Volume> {
         Some(Volume { percent, muted })
@@ -1255,7 +1341,7 @@ mod tests {
     fn the_section_asked_for_is_selected_at_open() {
         assert_eq!(Focus::of(&Target::Module(ModuleId::Volume)), Focus::Sound);
         assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "quick Wi-Fi spec § 1");
-        assert_eq!(quick(&World::full(), Focus::Wifi).selected, Row::Volume, "no Wi-Fi row (yet): the first row");
+        assert_eq!(quick(&World::full(), Focus::Wifi).selected, Row::Volume, "no Wi-Fi state read yet, so no Wi-Fi row: the first row");
         assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Top);
         let w = World::full();
         assert_eq!(quick(&w, Focus::Sound).selected, Row::Volume);
@@ -1768,5 +1854,123 @@ mod tests {
         assert!(q.note_failure("wpctl"));
         assert!(!q.note_failure("wpctl"), "logged once");
         assert!(q.note_failure("brightnessctl"));
+    }
+
+    const HOME: &str = "11111111-2222-4333-8444-555555555555";
+
+    fn home() -> AccessPoint {
+        AccessPoint { ssid: b"Maison-Test".to_vec(), strength: 80, security: Security::Psk }
+    }
+
+    /// Maison-Test (80 %, saved), Bureau-Test (60 %, WPA2); `connected` to the first; `listed`: the
+    /// detail's lists read.
+    fn wifi_state(enabled: bool, connected: bool, listed: bool) -> WifiState {
+        let aps = vec![home(), AccessPoint { ssid: b"Bureau-Test".to_vec(), strength: 60, security: Security::Psk }];
+        WifiState {
+            enabled,
+            device: Some(WifiDevice {
+                state: if connected { 100 } else { 30 },
+                active: connected.then(home),
+                active_uuid: connected.then(|| HOME.to_string()),
+                access_points: listed.then_some(aps),
+                saved: listed.then(|| vec![SavedWifi { uuid: HOME.into(), ssid: b"Maison-Test".to_vec() }]),
+            }),
+        }
+    }
+
+    fn run_of(parts: &[&str], what: &str) -> QuickAction {
+        QuickAction::Run { argv: argv(parts), what: what.into() }
+    }
+
+    #[test]
+    fn the_wifi_row_in_every_state() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        assert!(!shown(&l, &q).contains(&Row::Wifi), "nothing read yet: hidden");
+        q.set_wifi(Some(WifiState { enabled: true, device: None }), t);
+        assert!(!shown(&l, &q).contains(&Row::Wifi), "no Wi-Fi device: hidden");
+        q.set_wifi(Some(wifi_state(true, true, false)), t);
+        assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Wifi, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
+        assert_eq!(lines(&l, &q)[2..4], [Line::Separator, Line::Row(Row::Wifi)], "first under the sliders' separator");
+        assert_eq!(texts(&rows(&l, &q))[3], format!(" {} Wi-Fi{}Maison-Test ›", STRENGTH[3], " ".repeat(12)), "80 %: four steps");
+        q.set_wifi(Some(wifi_state(true, false, false)), t);
+        assert_eq!(texts(&rows(&l, &q))[3], format!(" {WIFI_ON} Wi-Fi{}on ›", " ".repeat(21)));
+        q.set_wifi(Some(wifi_state(false, false, false)), t);
+        assert_eq!(texts(&rows(&l, &q))[3], format!(" {WIFI_OFF} Wi-Fi{}off ›", " ".repeat(20)));
+        assert!(describe(&l, &q).starts_with("rows: volume brightness wifi mic"), "{}", describe(&l, &q));
+        q.set_wifi(None, t);
+        assert!(!shown(&l, &q).contains(&Row::Wifi), "NetworkManager gone: hidden");
+    }
+
+    #[test]
+    fn space_toggles_the_radio_and_enter_right_or_a_click_open_the_detail() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let rescan = run_of(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
+        let mut q = quick(&w, Focus::Top);
+        q.set_wifi(Some(wifi_state(true, true, true)), t);
+        q.selected = Row::Wifi;
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "off"], "wifi off"));
+        assert_eq!(q.key(&l, Key::Enter, false, t), rescan, "one rescan as it opens");
+        assert!(q.wifi.open && lines(&l, &q)[0] == Line::WifiHeader);
+        assert_eq!(q.wifi_scope(), WifiScope::Detail);
+        assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
+        assert!(!q.wifi.open && q.selected == Row::Wifi, "Escape: back on the Wi-Fi row, the panel open");
+        assert_eq!(q.wifi_scope(), WifiScope::Row);
+        assert_eq!(q.key(&l, Key::Right, false, t), rescan, "→ opens it too");
+        assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Redraw);
+        assert!(!q.wifi.open, "← back");
+        q.selected = Row::Volume;
+        assert_eq!(q.press(&l, (5, 3), Button::Left, t), rescan, "a click on the Wi-Fi row");
+        assert_eq!(q.press(&l, (5, 0), Button::Left, t), QuickAction::Redraw, "a click on the header goes back");
+        assert!(!q.wifi.open && q.selected == Row::Wifi);
+        q.set_wifi(Some(wifi_state(false, false, false)), t);
+        assert_eq!(q.key(&l, Key::Char(' '), false, t), run_of(&["nmcli", "radio", "wifi", "on"], "wifi on"));
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "off: the detail opens, no rescan");
+        assert_eq!(texts(&rows(&l, &q))[2].trim(), OFF_NOTE);
+    }
+
+    /// Quick Wi-Fi spec § 1, decision 12: from the network module (or `--quick wifi`), the first Wi-Fi
+    /// state with a device selects the row and opens the detail, once.
+    #[test]
+    fn the_network_module_opens_the_detail_once_the_state_arrives() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let rescan = run_of(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
+        let mut q = quick(&w, Focus::Wifi);
+        assert_eq!(q.selected, Row::Volume, "nothing read yet: the first row");
+        assert_eq!(q.set_wifi(Some(wifi_state(true, true, false)), t), WifiNews { action: rescan, failed: None });
+        assert!(q.wifi.open && q.selected == Row::Wifi);
+        q.key(&l, Key::Escape, false, t);
+        assert_eq!(q.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "once only");
+        assert!(!q.wifi.open);
+        let mut none = quick(&w, Focus::Wifi);
+        assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None }), t).action, QuickAction::Redraw);
+        none.set_wifi(Some(wifi_state(true, true, false)), t);
+        assert!(!none.wifi.open && none.selected == Row::Volume, "the first state had no device: the focus is spent");
+        let mut top = quick(&w, Focus::Top);
+        assert_eq!(top.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "the top: no detail");
+    }
+
+    #[test]
+    fn the_window_follows_the_selection_in_the_wifi_detail() {
+        let config = QuickConfig { wifi_more: Some(vec!["fake-more".into()]), ..QuickConfig::default() };
+        let (w, t) = (World::full(), Instant::now());
+        let mut l = w.live();
+        l.config = &config;
+        let mut s = wifi_state(true, false, true);
+        let aps: Vec<AccessPoint> = (0..20)
+            .map(|n| AccessPoint { ssid: format!("Reseau-Test-{n:02}").into_bytes(), strength: 50, security: Security::Psk })
+            .collect();
+        s.device.as_mut().expect("a device").access_points = Some(aps);
+        let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 6);
+        q.set_wifi(Some(s), t);
+        q.selected = Row::Wifi;
+        q.key(&l, Key::Enter, false, t);
+        q.key(&l, Key::End, false, t);
+        let b = rows(&l, &q);
+        assert_eq!(b.rows.len(), 6, "the room under the bar");
+        assert_eq!(texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", texts(&b));
     }
 }

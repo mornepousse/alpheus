@@ -166,7 +166,7 @@ impl App {
             return;
         };
         let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Quick(q), columns, height, input) {
+        if self.popup_open(qh, anchor, PopupBody::Quick(Box::new(q)), columns, height, input) {
             self.quick_verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("quick shown ({what})"));

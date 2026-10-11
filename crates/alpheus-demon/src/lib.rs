@@ -40,6 +40,7 @@ pub mod popup;
 pub mod quick;
 pub mod quick_app;
 pub mod quick_state;
+pub mod quick_wifi;
 pub mod retired;
 pub mod segments;
 pub mod sources;
