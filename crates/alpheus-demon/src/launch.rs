@@ -191,7 +191,7 @@ use crate::log::write as log;
 /// (no thread, no child process, no timer).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Wanted {
-    /// The pw-dump child: for the volume module or the OSD (its passive trigger).
+    /// The pw-dump child: for the volume module, the OSD (its passive trigger) or the quick panel's rows.
     pub sound: bool,
     /// The D-Bus domains to read and follow; empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
@@ -214,7 +214,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         .map(|(_, d)| d)
         .collect();
     Wanted {
-        sound: has(ModuleId::Volume) || has(ModuleId::Osd),
+        sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick),
         dbus,
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
@@ -1210,5 +1210,14 @@ mod tests {
         assert!(wanted(&[ModuleId::Osd]).sound, "the OSD reads pw-dump even without the volume module");
         assert!(wanted(&[ModuleId::Volume]).sound);
         assert!(!wanted(&[ModuleId::Workspaces, ModuleId::Clock]).sound);
+    }
+
+    /// Quick spec § 5: the panel's volume and microphone rows read pw-dump, even without the volume
+    /// module; the sink list is the panel's to ask for while it is open, never the base scope.
+    #[test]
+    fn the_quick_panel_reads_the_sound() {
+        assert!(wanted(&[ModuleId::Quick]).sound);
+        assert_eq!(sound_scope(&[ModuleId::Quick]), Scope::Bar);
+        assert!(!wanted(&[ModuleId::Clock]).sound, "nothing else asks for it");
     }
 }

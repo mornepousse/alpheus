@@ -47,6 +47,14 @@
 //! margin = 48                                               # logical px above the bottom edge, 0 to 400
 //! backlight = ""                                            # a device in backlight_dir; "": the first one, in sorted order
 //! backlight_dir = "/sys/class/backlight"                    # where backlight devices are listed; read only on `alpheus-launch --osd brightness`
+//! [quick]                                                   # the quick settings panel (with "quick" in modules)
+//! step = 5                                                  # % per ←/→ or wheel notch on a slider, 1 to 25
+//! keep_awake = { toggle = [], state = "" }                  # toggle: argv, run as given; [] hides the row
+//! night_light = { toggle = [], state = "" }                 # state: "" (unknown), "file:<path>" (on while it exists), "process:<name>" (on while it runs)
+//! lock = ["loginctl", "lock-session"]                       # session buttons, run as given; [] hides one
+//! logout = []
+//! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
+//! poweroff = ["systemctl", "poweroff"]
 //! ```
 
 use crate::clock;
@@ -76,11 +84,14 @@ pub enum ModuleId {
     /// The on-screen display (OSD spec): volume, microphone and brightness in a pill at the bottom
     /// of the focused output. No segment in the bar.
     Osd,
+    /// The quick settings panel (quick spec): opened by a left click on the volume, network or
+    /// Bluetooth module, or `alpheus-launch --quick`. No segment in the bar.
+    Quick,
     Clock,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 13] = [
+    pub const ALL: [ModuleId; 14] = [
         ModuleId::Launcher,
         ModuleId::Workspaces,
         ModuleId::Window,
@@ -93,6 +104,7 @@ impl ModuleId {
         ModuleId::Tray,
         ModuleId::Notifications,
         ModuleId::Osd,
+        ModuleId::Quick,
         ModuleId::Clock,
     ];
 
@@ -111,6 +123,7 @@ impl ModuleId {
             ModuleId::Tray => "tray",
             ModuleId::Notifications => "notifications",
             ModuleId::Osd => "osd",
+            ModuleId::Quick => "quick",
             ModuleId::Clock => "clock",
         }
     }
@@ -413,6 +426,118 @@ fn plain_device(name: &str) -> bool {
         && !name.chars().any(char::is_control)
 }
 
+/// The largest `[quick] step`, in percent.
+pub const QUICK_STEP_MAX: u8 = 25;
+/// The longest process name `/proc/<pid>/comm` holds (TASK_COMM_LEN − 1).
+pub const COMM_MAX: usize = 15;
+
+/// One configured toggle of the panel (quick spec § 4): the command its row runs, and where its
+/// state is read from.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToggleConfig {
+    /// Run as given, never through a shell; empty: the row is hidden.
+    pub toggle: Vec<String>,
+    /// "", "file:<path>" or "process:<name>" (`state_form`).
+    pub state: String,
+}
+
+/// `[quick]` (quick spec § 4).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct QuickConfig {
+    /// Percent per ←/→ or wheel notch on a slider, 1 to 25.
+    pub step: u8,
+    pub keep_awake: ToggleConfig,
+    pub night_light: ToggleConfig,
+    /// The session buttons' commands, run as given; an empty one hides its button. Reboot and power
+    /// off ask once more first. Nothing here handles sleep or `dpms`.
+    pub lock: Vec<String>,
+    pub logout: Vec<String>,
+    pub reboot: Vec<String>,
+    pub poweroff: Vec<String>,
+}
+
+impl Default for QuickConfig {
+    /// Neutral defaults (spec § 4): the session's lock through logind (hypridle or swayidle run the
+    /// lock command), reboot and power off through systemd, no logout and no toggle.
+    fn default() -> Self {
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        QuickConfig {
+            step: 5,
+            keep_awake: ToggleConfig::default(),
+            night_light: ToggleConfig::default(),
+            lock: argv(&["loginctl", "lock-session"]),
+            logout: Vec::new(),
+            reboot: argv(&["systemctl", "reboot"]),
+            poweroff: argv(&["systemctl", "poweroff"]),
+        }
+    }
+}
+
+/// A toggle's `state`, read (quick spec § 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateForm {
+    /// "": the row shows `·`.
+    Unknown,
+    /// "file:<path>": on while the file exists. The path starts with `/`, `~/` or
+    /// `$XDG_RUNTIME_DIR/`, the only two expansions (`quick_state::expand`).
+    File(String),
+    /// "process:<name>": on while a process with that `comm` runs.
+    Process(String),
+}
+
+/// `state` as written in bar.toml; Err: why it is refused (without the key, which the caller adds).
+pub fn state_form(s: &str) -> Result<StateForm, String> {
+    if s.is_empty() {
+        return Ok(StateForm::Unknown);
+    }
+    if let Some(path) = s.strip_prefix("file:") {
+        let anchored = path.starts_with('/') || path.starts_with("~/") || path.starts_with("$XDG_RUNTIME_DIR/");
+        if !anchored || path.contains('\0') {
+            return Err(format!("the file must be an absolute path (\"/…\", \"~/…\" or \"$XDG_RUNTIME_DIR/…\"), not {path:?}"));
+        }
+        return Ok(StateForm::File(path.to_string()));
+    }
+    if let Some(name) = s.strip_prefix("process:") {
+        if name.is_empty() || name.len() > COMM_MAX {
+            return Err(format!("a process name is 1 to {COMM_MAX} bytes (as /proc/<pid>/comm keeps it), not {name:?}"));
+        }
+        if name.contains('/') || name.chars().any(char::is_control) {
+            return Err(format!("a process name has no '/' nor control character: {name:?}"));
+        }
+        return Ok(StateForm::Process(name.to_string()));
+    }
+    Err(format!("expected \"\", \"file:<path>\" or \"process:<name>\", not {s:?}"))
+}
+
+/// `[quick]` checked: `step` in range; every non-empty command with a non-blank program; a toggle's
+/// `state` only with its `toggle`, and in one of the three forms.
+fn check_quick(q: &QuickConfig) -> Result<(), String> {
+    if !(1..=QUICK_STEP_MAX).contains(&q.step) {
+        return Err(format!("quick.step {} out of range 1 to {QUICK_STEP_MAX}", q.step));
+    }
+    for (key, command) in [
+        ("quick.lock", &q.lock),
+        ("quick.logout", &q.logout),
+        ("quick.reboot", &q.reboot),
+        ("quick.poweroff", &q.poweroff),
+        ("quick.keep_awake.toggle", &q.keep_awake.toggle),
+        ("quick.night_light.toggle", &q.night_light.toggle),
+    ] {
+        if command.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!("{key}: the program is blank"));
+        }
+    }
+    for (key, t) in [("quick.keep_awake", &q.keep_awake), ("quick.night_light", &q.night_light)] {
+        if t.toggle.is_empty() && !t.state.is_empty() {
+            return Err(format!("{key}.state without a toggle (the row shows only with one)"));
+        }
+        state_form(&t.state).map_err(|m| format!("{key}.state: {m}"))?;
+    }
+    Ok(())
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -430,6 +555,7 @@ pub struct BarConfig {
     pub media: MediaConfig,
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
+    pub quick: QuickConfig,
 }
 
 impl Default for BarConfig {
@@ -447,6 +573,7 @@ impl Default for BarConfig {
             media: MediaConfig::default(),
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
+            quick: QuickConfig::default(),
         }
     }
 }
@@ -482,6 +609,8 @@ struct Raw {
     notifications: NotificationsConfig,
     #[serde(default)]
     osd: OsdConfig,
+    #[serde(default)]
+    quick: QuickConfig,
 }
 
 impl BarConfig {
@@ -568,6 +697,7 @@ impl BarConfig {
         if !o.backlight_dir.is_absolute() {
             return Err("osd.backlight_dir must be an absolute path".into());
         }
+        check_quick(&b.quick)?;
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -582,6 +712,7 @@ impl BarConfig {
             media: b.media,
             notifications: b.notifications,
             osd: b.osd,
+            quick: b.quick,
         })
     }
 }
@@ -942,5 +1073,99 @@ mod tests {
         let (c, w) = BarConfig::load(&file("osd", "[osd]\nwidth = 5\n"));
         assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
         assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("osd.width")));
+    }
+
+    #[test]
+    fn quick_defaults_and_settings() {
+        let d = BarConfig::default();
+        assert!(d.modules.contains(&ModuleId::Quick), "on by default");
+        assert_eq!(d.modules.last(), Some(&ModuleId::Clock), "the clock stays last");
+        assert_eq!(ModuleId::Quick.name(), "quick");
+        let q = &d.quick;
+        assert_eq!(q.step, 5);
+        assert_eq!((&q.keep_awake, &q.night_light), (&ToggleConfig::default(), &ToggleConfig::default()), "no toggle: rows hidden");
+        assert_eq!(q.lock, ["loginctl", "lock-session"]);
+        assert!(q.logout.is_empty(), "no neutral logout: the button is hidden");
+        assert_eq!(q.reboot, ["systemctl", "reboot"]);
+        assert_eq!(q.poweroff, ["systemctl", "poweroff"]);
+        assert_eq!(BarConfig::from_text("height = 22").unwrap().quick, QuickConfig::default(), "absent: defaults");
+        let c = BarConfig::from_text(
+            "[quick]\nstep = 10\n\
+             keep_awake = { toggle = [\"tools-menu\", \"Système · Garder éveillé\"], state = \"file:$XDG_RUNTIME_DIR/garder-eveille\" }\n\
+             night_light = { toggle = [\"fake-night\"], state = \"process:hyprsunset\" }\n\
+             logout = [\"wm-set\", \"exit\"]\nlock = []\n",
+        )
+        .unwrap();
+        assert_eq!(c.quick.step, 10);
+        assert_eq!(c.quick.keep_awake.toggle, ["tools-menu", "Système · Garder éveillé"]);
+        assert_eq!(c.quick.keep_awake.state, "file:$XDG_RUNTIME_DIR/garder-eveille");
+        assert_eq!(
+            (c.quick.night_light.toggle.as_slice(), c.quick.night_light.state.as_str()),
+            (["fake-night".to_string()].as_slice(), "process:hyprsunset")
+        );
+        assert_eq!(c.quick.logout, ["wm-set", "exit"]);
+        assert!(c.quick.lock.is_empty(), "an empty command hides its button");
+        assert_eq!(c.quick.reboot, ["systemctl", "reboot"], "the others keep their defaults");
+        for t in ["[quick]\nstep = 1", "[quick]\nstep = 25"] {
+            assert!(BarConfig::from_text(t).is_ok(), "{t}: bounds included");
+        }
+    }
+
+    #[test]
+    fn quick_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        for (t, want) in [
+            ("[quick]\nstep = 0", "quick.step 0 out of range 1 to 25"),
+            ("[quick]\nstep = 26", "quick.step 26"),
+            ("[quick]\nlock = [\" \"]", "quick.lock: the program is blank"),
+            ("[quick]\nkeep_awake = { toggle = [\"\"] }", "quick.keep_awake.toggle: the program is blank"),
+            ("[quick]\nkeep_awake = { state = \"file:/run/x\" }", "quick.keep_awake.state without a toggle"),
+            (
+                "[quick]\nnight_light = { toggle = [\"x\"], state = \"pid:12\" }",
+                "quick.night_light.state: expected \"\", \"file:<path>\" or \"process:<name>\"",
+            ),
+            (
+                "[quick]\nnight_light = { toggle = [\"x\"], state = \"file:relative/x\" }",
+                "quick.night_light.state: the file must be an absolute path",
+            ),
+            ("[quick]\nnight_light = { toggle = [\"x\"], state = \"file:\" }", "the file must be an absolute path"),
+            (
+                "[quick]\nnight_light = { toggle = [\"x\"], state = \"process:\" }",
+                "quick.night_light.state: a process name is 1 to 15 bytes",
+            ),
+            ("[quick]\nnight_light = { toggle = [\"x\"], state = \"process:a/b\" }", "quick.night_light.state: a process name has no '/'"),
+        ] {
+            let e = err(t);
+            assert!(e.contains(want), "{t}: {e}");
+        }
+        assert!(BarConfig::from_text("[quick]\nstep = 300").is_err(), "not a u8");
+        assert!(err("[quick]\nsuspend = []").contains("suspend"), "unknown key refused: nothing sleeps from here");
+        assert!(err("[quick]\nkeep_awake = { toggle = [\"x\"], every = 2 }").contains("every"), "unknown key refused");
+        let (c, w) = BarConfig::load(&file("quick", "[quick]\nstep = 0\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("quick.step")));
+    }
+
+    /// Review Focus 4: the kernel keeps 15 bytes of a process name (`/proc/<pid>/comm`):
+    /// "gammastep-indicator" reads "gammastep-indic" there, so a longer name could never match.
+    #[test]
+    fn a_process_state_longer_than_comm_is_refused() {
+        let state = |name: &str| format!("[quick]\nnight_light = {{ toggle = [\"x\"], state = \"process:{name}\" }}\n");
+        let e = BarConfig::from_text(&state("gammastep-indicator")).unwrap_err();
+        assert!(e.contains("1 to 15 bytes") && e.contains("gammastep-indicator"), "{e}");
+        assert!(BarConfig::from_text(&state("abcdefghijklmnop")).is_err(), "16 bytes");
+        assert!(BarConfig::from_text(&state("gammastep-indic")).is_ok(), "15 bytes");
+    }
+
+    #[test]
+    fn state_forms_are_read() {
+        assert_eq!(state_form(""), Ok(StateForm::Unknown));
+        assert_eq!(state_form("file:/run/user/1000/flag"), Ok(StateForm::File("/run/user/1000/flag".into())));
+        assert_eq!(state_form("file:~/.cache/flag"), Ok(StateForm::File("~/.cache/flag".into())));
+        assert_eq!(state_form("file:$XDG_RUNTIME_DIR/garder-eveille"), Ok(StateForm::File("$XDG_RUNTIME_DIR/garder-eveille".into())));
+        assert_eq!(state_form("process:hyprsunset"), Ok(StateForm::Process("hyprsunset".into())));
+        assert!(state_form("file:$HOME/x").is_err(), "only $XDG_RUNTIME_DIR and ~ are expanded");
+        assert!(state_form("File:/x").is_err(), "the prefixes are exact");
+        assert!(state_form("process:a\u{7}").is_err(), "no control character");
     }
 }
