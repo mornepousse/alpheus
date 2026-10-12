@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn a_wifi_state_is_never_kept_nor_drawn_by_the_bar() {
         let mut b = Bar::new(BarConfig::default());
-        assert!(!b.apply(Msg::Wifi { open: Some(1), state: Some(WifiState { enabled: true, device: None }) }));
+        assert!(!b.apply(Msg::Wifi { open: Some(1), state: Some(WifiState { enabled: true, device: None, stale: false }) }));
         assert!(!b.apply(Msg::Wifi { open: None, state: None }));
     }
 

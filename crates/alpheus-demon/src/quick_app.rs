@@ -636,7 +636,7 @@ mod tests {
     /// bar carries nothing.
     #[test]
     fn a_wifi_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
-        let state = WifiState { enabled: true, device: None };
+        let state = WifiState { enabled: true, device: None, stale: false };
         let mut m = Msg::Wifi { open: Some(2), state: Some(state.clone()) };
         assert_eq!(taken_wifi(&mut m), Some((Some(2), Some(state))));
         assert_eq!(m, Msg::Wifi { open: Some(2), state: None }, "emptied");
@@ -861,6 +861,7 @@ mod tests {
                 ]),
                 saved: Some(vec![]),
             }),
+            stale: false,
         }
     }
 

@@ -57,6 +57,8 @@ const ACTIVATION_FAILED: &str = "the activation failed";
 const NO_ANSWER: &str = "no answer in 20 s";
 const STILL_ACTIVATING: &str = "still activating after 60 s";
 pub(crate) const NM_GONE: &str = "NetworkManager went away";
+/// A failure whose last state predates an outage of another domain (F4): its profile kept.
+const STALE: &str = "no fresh state since an outage";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
 /// A network row's tags; the widest one sets the room every row keeps for its tag.
 const CONNECTING: &str = "…";
@@ -295,7 +297,9 @@ impl Attempt {
     }
 
     /// Failed: its new profile deleted, only when the attempt could make one (never a `connection
-    /// up`'s) and while `state` still lists it (nmcli may have deleted it).
+    /// up`'s) and while `state` still lists it (nmcli may have deleted it). Never on a state read
+    /// before another domain's outage (F4: NetworkManager may have connected since): kept, and
+    /// the log says so.
     fn failure(&self, state: Option<&WifiState>, why: &'static str) -> Outcome {
         let still_saved = |uuid: &str| saved_in(state).is_some_and(|s| s.iter().any(|p| p.uuid == uuid));
         let cleanup = self
@@ -303,6 +307,9 @@ impl Attempt {
             .as_deref()
             .filter(|u| self.creates && still_saved(u))
             .map(|u| run(&["nmcli", "connection", "delete", "uuid", u], "wifi delete the failed profile"));
+        if cleanup.is_some() && state.is_some_and(|s| s.stale) {
+            return Outcome::Failed { why: STALE, cleanup: None };
+        }
         Outcome::Failed { why, cleanup }
     }
 }
@@ -928,6 +935,7 @@ mod tests {
                 ]),
                 saved: Some(vec![SavedWifi { uuid: HOME.into(), ssid: b"Maison-Test".to_vec() }]),
             }),
+            stale: false,
         }
     }
 
@@ -1120,7 +1128,7 @@ mod tests {
         w.fit(&config());
         assert!(!w.open && !w.shows() && w.pick == Pick::None);
         let mut w = open(state());
-        w.set_state(Some(WifiState { enabled: true, device: None }), t);
+        w.set_state(Some(WifiState { enabled: true, device: None, stale: false }), t);
         w.fit(&config());
         assert!(!w.open, "the device gone");
     }
@@ -1508,6 +1516,50 @@ mod tests {
         assert_eq!(again.scope(), WifiScope::Detail);
         pick(&mut again, "Bureau-Test");
         assert_eq!(again.key(&c, Key::Enter, t), QuickAction::Nothing, "no second attempt");
+    }
+
+    /// F4: the state the D-Bus thread resends through another domain's outage (BlueZ, UPower, the
+    /// power profile) was read before it, and nothing new comes for the backoff: an attempt that
+    /// expires on it never deletes (NetworkManager may have connected meanwhile); a state read
+    /// after the outage, still disconnected, deletes as before. The display stays as it was.
+    #[test]
+    fn an_attempt_expiring_on_a_state_from_before_an_outage_keeps_its_profile() {
+        let (c, t) = (config(), Instant::now());
+        let base = state();
+        // Between the old network's deactivation and ours preparing, the new profile listed.
+        let between = followed(&base, 30, None, &[(NEW, "Bureau-Test")]);
+        let stale = WifiState { stale: true, ..between.clone() };
+        let attempt = || {
+            let mut w = open(state());
+            pick(&mut w, "Bureau-Test");
+            w.key(&c, Key::Enter, t);
+            typed(&mut w, "fake-pass", t);
+            w.key(&c, Key::Enter, t);
+            w.password_sent();
+            w
+        };
+        // The follower.
+        let mut f = closed_during(&mut attempt()).expect("followed");
+        assert_eq!(f.set_state(Some(between.clone())), Outcome::Waiting);
+        assert_eq!(f.set_state(Some(stale.clone())), Outcome::Waiting);
+        assert_eq!(f.due(t + CONNECT_TIMEOUT), Outcome::Failed { why: "no fresh state since an outage", cleanup: None });
+        let mut f = closed_during(&mut attempt()).expect("followed");
+        assert_eq!(f.set_state(Some(stale.clone())), Outcome::Waiting);
+        assert_eq!(f.set_state(Some(between.clone())), Outcome::Waiting, "read after the outage");
+        assert_eq!(f.due(t + CONNECT_TIMEOUT), Outcome::Failed { why: "no answer in 20 s", cleanup: Some(delete(NEW)) });
+        // The panel: `failed` shown all the same, the profile kept.
+        let mut w = attempt();
+        w.set_state(Some(between.clone()), t);
+        let shown = (w.value(), w.networks());
+        w.set_state(Some(stale.clone()), t);
+        assert_eq!((w.value(), w.networks()), shown, "the display unchanged");
+        let (run, failed, redraw) = w.due(t + CONNECT_TIMEOUT);
+        assert_eq!((run, failed, redraw), (vec![], Some("no fresh state since an outage"), true));
+        assert!(w.failed.as_ref().is_some_and(|(ssid, _)| ssid == b"Bureau-Test"), "shown failed");
+        let mut w = attempt();
+        w.set_state(Some(stale), t);
+        w.set_state(Some(between), t);
+        assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![delete(NEW)], Some("no answer in 20 s"), true));
     }
 
     /// Controller reconciliation P12: an open field whose network leaves the list (an access point

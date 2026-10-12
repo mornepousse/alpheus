@@ -321,7 +321,7 @@ impl WifiReader {
         }
         let root = bus.get_all(&nm, network::PATH, network::INTERFACE)?;
         let enabled = root.bool("WirelessEnabled").unwrap_or(false);
-        let Some((path, device)) = self.device(bus, &nm)? else { return Ok(WifiState { enabled, device: None }) };
+        let Some((path, device)) = self.device(bus, &nm)? else { return Ok(WifiState { enabled, device: None, stale: false }) };
         let wireless = optional(bus.get_all(&nm, &path, WIRELESS))?.unwrap_or_default();
         self.active_ap = wireless.path("ActiveAccessPoint").map(String::from);
         let active = match wireless.path("ActiveAccessPoint") {
@@ -357,7 +357,7 @@ impl WifiReader {
             (None, None)
         };
         let state = device.int("State").and_then(|n| u32::try_from(n).ok()).unwrap_or(0);
-        Ok(WifiState { enabled, device: Some(WifiDevice { state, active, active_uuid, access_points, saved }) })
+        Ok(WifiState { enabled, device: Some(WifiDevice { state, active, active_uuid, access_points, saved }), stale: false })
     }
 
     /// The Wi-Fi device and its `Device` properties: the one found this open while it still is
@@ -466,7 +466,7 @@ mod tests {
         let home = AccessPoint { ssid: b"MON_WIFI_1".to_vec(), strength: 70, security: Security::Psk };
         let device =
             WifiDevice { state: 100, active: Some(home), active_uuid: Some(RECORDED_UUID.into()), access_points: None, saved: None };
-        assert_eq!(row(&mut bus), WifiState { enabled: true, device: Some(device) });
+        assert_eq!(row(&mut bus), WifiState { enabled: true, device: Some(device), stale: false });
         let get_all: Vec<&String> = bus.calls.iter().filter(|c| c.starts_with("GetAll ")).collect();
         assert!(get_all.iter().any(|c| c.contains(WIRED_DEVICE)), "the wired device read, then passed over: {get_all:?}");
         assert!(get_all.iter().any(|c| c.ends_with(&format!("{AP}/10 {ACCESS_POINT}"))), "{get_all:?}");
@@ -512,7 +512,7 @@ mod tests {
         assert_eq!(row(&mut bus), WifiState::default(), "no NetworkManager: the row hidden");
         assert_eq!(bus.calls, ["GetNameOwner org.freedesktop.NetworkManager"], "never a call to a name nobody owns");
         let mut bus = FakeBus::workstation();
-        assert_eq!(row(&mut bus), WifiState { enabled: true, device: None }, "GetDevices unknown (the recording): no device");
+        assert_eq!(row(&mut bus), WifiState { enabled: true, device: None, stale: false }, "GetDevices unknown (the recording): no device");
         let mut bus = wifi_bus();
         bus.props_mut(WIFI_DEVICE, DEVICE).0.insert("DeviceType".into(), Prop::Int(1));
         assert_eq!(row(&mut bus).device, None, "a wired device only: no Wi-Fi row");

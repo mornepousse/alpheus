@@ -1944,6 +1944,7 @@ mod tests {
                 access_points: listed.then_some(aps),
                 saved: listed.then(|| vec![SavedWifi { uuid: HOME.into(), ssid: b"Maison-Test".to_vec() }]),
             }),
+            stale: false,
         }
     }
 
@@ -1957,7 +1958,7 @@ mod tests {
         let l = w.live();
         let mut q = quick(&w, Focus::Top);
         assert!(!shown(&l, &q).contains(&Row::Wifi), "nothing read yet: hidden");
-        q.set_wifi(Some(WifiState { enabled: true, device: None }), t);
+        q.set_wifi(Some(WifiState { enabled: true, device: None, stale: false }), t);
         assert!(!shown(&l, &q).contains(&Row::Wifi), "no Wi-Fi device: hidden");
         q.set_wifi(Some(wifi_state(true, true, false)), t);
         assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Wifi, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
@@ -2015,7 +2016,7 @@ mod tests {
         assert_eq!(q.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "once only");
         assert!(!q.wifi.open);
         let mut none = quick(&w, Focus::Wifi);
-        assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None }), t).action, QuickAction::Redraw);
+        assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None, stale: false }), t).action, QuickAction::Redraw);
         assert!(!none.wifi.open && none.selected == Row::Volume, "no device: nothing to open");
         none.set_wifi(Some(wifi_state(true, true, false)), t);
         assert!(none.wifi.open && none.selected == Row::Wifi, "final review B-M1: spent only on a state with a device");
@@ -2029,7 +2030,7 @@ mod tests {
     fn the_users_first_key_or_click_drops_a_pending_wifi_focus() {
         let (w, t) = (World::full(), Instant::now());
         let l = w.live();
-        let no_device = || Some(WifiState { enabled: true, device: None });
+        let no_device = || Some(WifiState { enabled: true, device: None, stale: false });
         let mut keyed = quick(&w, Focus::Wifi);
         keyed.set_wifi(no_device(), t);
         keyed.key(&l, Key::Down, false, t);
@@ -2093,7 +2094,7 @@ mod tests {
                 })
                 .collect();
             let device = WifiDevice { state: 30, active: None, active_uuid: None, access_points: Some(aps), saved: Some(vec![]) };
-            WifiState { enabled: true, device: Some(device) }
+            WifiState { enabled: true, device: Some(device), stale: false }
         };
         let mut q = Quick::new(Focus::Top, &l, two_sinks(), backlight(75), [None, None], 6);
         q.follow_wifi(&l, Some(around(90)), t);
@@ -2110,7 +2111,7 @@ mod tests {
         assert!(!picked(&q), "scrolled away from the selection");
         q.follow_wifi(&l, Some(around(10)), t);
         assert_eq!(q.top, scrolled, "a state that moves nothing keeps the wheel's window");
-        q.follow_wifi(&l, Some(WifiState { enabled: true, device: None }), t);
+        q.follow_wifi(&l, Some(WifiState { enabled: true, device: None, stale: false }), t);
         assert!(!q.wifi.open, "the device gone: the detail closed");
         assert_eq!(q.top, 0, "back to the top");
     }

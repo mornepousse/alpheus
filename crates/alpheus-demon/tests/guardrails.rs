@@ -1607,6 +1607,7 @@ fn every_quick_command_stays_on_the_allowlist() {
                 SavedWifi { uuid: UUID_SAVED.into(), ssid: b"Atelier-Test".to_vec() },
             ]),
         }),
+        stale: false,
     };
     for enabled in [true, false] {
         let fresh_wifi = || {

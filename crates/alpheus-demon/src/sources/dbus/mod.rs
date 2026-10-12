@@ -709,9 +709,17 @@ fn run_supervised(
                 match outage_of(e) {
                     // Never the Wi-Fi last read on NetworkManager's own outage (final review
                     // A-M5): a detail's lists, stale by the time the session is back; the panel
-                    // hears none until it is. Another domain's outage keeps it (F3 I1).
+                    // hears none until it is. Another domain's outage keeps it (F3 I1), marked
+                    // stale (F4): read before the outage, it may no longer hold by the backoff's
+                    // end, so an attempt never deletes on it; the next session reads it afresh.
                     Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, ..last.clone() }),
-                    Outage::Domain(_) => Some(last.clone()),
+                    Outage::Domain(_) => {
+                        let mut kept = last.clone();
+                        if let Some(w) = kept.wifi.as_mut() {
+                            w.stale = true;
+                        }
+                        Some(kept)
+                    }
                     Outage::Bus => None,
                 }
             }
@@ -1549,7 +1557,7 @@ mod tests {
         let sends = RefCell::new(Vec::new());
         let shown = SystemState {
             network: Some(NetState::Offline),
-            wifi: Some(WifiState { enabled: true, device: None }),
+            wifi: Some(WifiState { enabled: true, device: None, stale: false }),
             wifi_open: 3,
             ..SystemState::default()
         };
@@ -1570,7 +1578,8 @@ mod tests {
         assert_eq!(seen[1], Some(SystemState { wifi: None, ..shown.clone() }), "the rest as it was, the Wi-Fi none");
         drop(seen);
         // F3 I1: another domain's outage (BlueZ, UPower, the power profile) says nothing about
-        // NetworkManager: the Wi-Fi stays, an open detail and its password field with it.
+        // NetworkManager: the Wi-Fi stays, an open detail and its password field with it; marked
+        // stale (F4), read before the outage: never enough for an attempt to delete a profile.
         for domain in [Domain::Bluetooth, Domain::Battery, Domain::Power] {
             sends.borrow_mut().clear();
             run_supervised(
@@ -1586,7 +1595,9 @@ mod tests {
                 clock(Duration::ZERO),
                 |_| {},
             );
-            assert_eq!(sends.borrow()[1], Some(shown.clone()), "{domain:?} down: the Wi-Fi kept");
+            let kept = shown.wifi.clone().map(|w| WifiState { stale: true, ..w });
+            assert_eq!(sends.borrow()[1], Some(SystemState { wifi: kept, ..shown.clone() }), "{domain:?} down: the Wi-Fi kept");
+            assert!(!shown.wifi.as_ref().is_some_and(|w| w.stale), "the first publish fresh");
         }
     }
 

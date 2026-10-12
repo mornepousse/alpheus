@@ -269,6 +269,9 @@ pub struct WifiState {
     pub enabled: bool,
     /// None: no Wi-Fi device, no NetworkManager, or its read failed (the row hides).
     pub device: Option<WifiDevice>,
+    /// Read before an outage of another domain (BlueZ, UPower, the power profile) and resent
+    /// unchanged for its backoff (F4): shown as is, never enough to delete a profile.
+    pub stale: bool,
 }
 
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
