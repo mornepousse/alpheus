@@ -911,23 +911,25 @@ impl Daemon {
         t.lines().find_map(|l| l.strip_prefix("Pss:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
     }
 
-    /// PSS in KB of the daemon's shm pools (memfd mappings). The compositor maps them too, so their
-    /// PSS moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps
-    /// leaves them out (`pss_kb() - shm_pss_kb()`).
-    pub fn shm_pss_kb(&self) -> u64 {
+    /// PSS in KB, the whole daemon's then its shm pools' (memfd mappings), from one pass over
+    /// /proc/<pid>/smaps so the two cannot skew. The compositor maps the pools too, so their PSS
+    /// moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps leaves
+    /// them out (whole − pools), and the pools get a looser one of their own.
+    pub fn pss_and_shm_kb(&self) -> (u64, u64) {
         let t = fs::read_to_string(format!("/proc/{}/smaps", self.pid())).unwrap();
-        let mut shm = false;
-        let mut kb = 0;
+        let (mut shm, mut total, mut pools) = (false, 0, 0);
         for l in t.lines() {
             if let Some(v) = l.strip_prefix("Pss:") {
+                let kb = v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+                total += kb;
                 if shm {
-                    kb += v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+                    pools += kb;
                 }
             } else if l.split_whitespace().next().is_some_and(|f| f.contains('-') && !f.ends_with(':')) {
                 shm = l.contains("/memfd:");
             }
         }
-        kb
+        (total, pools)
     }
 
     /// Number of the daemon's threads.

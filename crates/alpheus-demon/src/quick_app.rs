@@ -335,7 +335,7 @@ impl App {
         }
     }
 
-    /// The panel just opened takes back an attempt still followed (`resumed`): its "connecting…",
+    /// The panel just opened takes back an attempt still followed (`resumed`): its "…" tag,
     /// its timer, the detail when asked for (its rescan), the D-Bus thread's reading kept.
     fn quick_resume(&mut self) {
         let action = match self.popup.as_mut().map(|p| &mut p.body) {

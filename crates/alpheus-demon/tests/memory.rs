@@ -723,9 +723,16 @@ fn away_from_the_minute(window: Duration) {
     let into = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 60;
     if into < 2 {
         std::thread::sleep(Duration::from_secs(2 - into));
-    } else if into + window.as_secs() + 2 >= 60 {
+    } else if !fits_the_minute(window) {
         std::thread::sleep(Duration::from_secs(60 - into + 2));
     }
+}
+
+/// Whether a `window` starting now fits inside one minute, 2 s from each boundary
+/// (`away_from_the_minute`'s rule), without sleeping.
+fn fits_the_minute(window: Duration) -> bool {
+    let into = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 60;
+    into >= 2 && into + window.as_secs() + 2 < 60
 }
 
 #[test]
@@ -1494,18 +1501,18 @@ fn quick_wifi_pss_detail_open_and_closed() {
     fake_stdin_recorder(&sway, "nmcli");
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
-    let idle = d.pss_kb();
-    let idle_own = idle - d.shm_pss_kb();
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_own = idle - idle_shm;
     let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
     toggle();
     assert!(detail_read(&nm, 1), "{:?} {:?}", nm.calls(), d.log());
     std::thread::sleep(Duration::from_secs(1)); // published, configured and painted
-    let open = d.pss_kb();
+    let (open, _) = d.pss_and_shm_kb();
     toggle();
     assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
-    let closed = d.pss_kb();
-    let closed_own = closed - d.shm_pss_kb();
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_own = closed - closed_shm;
     for n in 2..=11 {
         toggle();
         assert!(detail_read(&nm, n), "{:?}", d.log());
@@ -1514,13 +1521,13 @@ fn quick_wifi_pss_detail_open_and_closed() {
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
     }
     std::thread::sleep(TRAY_SETTLE);
-    let cycled = d.pss_kb();
-    let cycled_own = cycled - d.shm_pss_kb();
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_own = cycled - cycled_shm;
     let detail_cost = open.saturating_sub(idle);
     eprintln!(
         "quick Wi-Fi PSS (KB): {idle} at rest, {open} with the detail open on 32 networks (cost {detail_cost}), \
          {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {closed_own} closed, \
-         {cycled_own} cycled"
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled"
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
     assert!(
@@ -1529,9 +1536,10 @@ fn quick_wifi_pss_detail_open_and_closed() {
     );
     // Closed, the first open leaves ≈ 540 KB of the daemon's own (smaps, three release runs,
     // 2026-10-12): the binary's code pages +128 and the font file's +320, touched for the first time
-    // and now resident, the main stack +20, the main heap +68…+76 (the painter's glyph caches, bounded
-    // by MAX_CACHE); the D-Bus thread's arena back to idle's. The shm pools are left out of both
-    // bounds: the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
+    // and now resident, the main stack +20, the main heap +68…+76 (most likely the painter's glyph
+    // caches, bounded by MAX_CACHE; attributed by elimination); the D-Bus thread's arena back to
+    // idle's. The shm pools are left out of these two bounds and get their own, looser one below:
+    // the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
     assert!(
         closed_own <= idle_own + 640,
         "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
@@ -1540,6 +1548,9 @@ fn quick_wifi_pss_detail_open_and_closed() {
         cycled_own <= closed_own + 128,
         "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
     );
+    // The pools alone, looser (F3 m3): a pool or a buffer kept after the close shows here, the
+    // compositor's mapping and unmapping of a buffer stays within it.
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
 
 /// Quick Wi-Fi spec § 7: once the detail closed, no timer, no wake-up (the loop's nor the D-Bus
@@ -1555,11 +1566,15 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
     fake_stdin_recorder(&sway, "nmcli");
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
     const REST: Duration = Duration::from_secs(10);
-    for n in 1..=3 {
-        if n == 3 {
-            // Before the last cycle, never between the close and the window: its sleep would let a
-            // stray one-second timer armed by the close fire before the window (then unseen). The
-            // last cycle and the 300 ms below fit in the 5 s added.
+    // Three cycles at least. From the third, away from the minute before the cycle, never between
+    // the close and the window: that sleep would let a stray one-second timer armed by the close
+    // fire before the window (then unseen). A last cycle overrunning its 5 s on a loaded machine
+    // brings the minute's tick too close: checked again right after the close, without sleeping,
+    // and then one more cycle (F3 m5).
+    let mut n = 0;
+    loop {
+        n += 1;
+        if n >= 3 {
             away_from_the_minute(REST + Duration::from_secs(5));
         }
         assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
@@ -1567,6 +1582,10 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
         std::thread::sleep(PAST_DEBOUNCE);
         assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        if n >= 3 && fits_the_minute(REST + Duration::from_secs(1)) {
+            break;
+        }
+        assert!(n < 6, "the minute's tick always too close to the window");
     }
     // Not the 3 s settle: a stray one-second timer armed by the last close must fall inside the window.
     let closed_at = Instant::now();

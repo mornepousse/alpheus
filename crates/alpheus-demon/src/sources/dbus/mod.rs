@@ -707,9 +707,11 @@ fn run_supervised(
                     log(&format!("source down: {e}"));
                 }
                 match outage_of(e) {
-                    // Never the Wi-Fi last read (final review A-M5): a detail's lists, stale by the
-                    // time the session is back; the panel hears none until it is.
-                    Outage::Domain(_) => Some(SystemState { wifi: None, ..last.clone() }),
+                    // Never the Wi-Fi last read on NetworkManager's own outage (final review
+                    // A-M5): a detail's lists, stale by the time the session is back; the panel
+                    // hears none until it is. Another domain's outage keeps it (F3 I1).
+                    Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, ..last.clone() }),
+                    Outage::Domain(_) => Some(last.clone()),
                     Outage::Bus => None,
                 }
             }
@@ -1565,7 +1567,27 @@ mod tests {
             |_| {},
         );
         let seen = sends.borrow();
-        assert_eq!(seen[1], Some(SystemState { wifi: None, ..shown }), "the rest as it was, the Wi-Fi none");
+        assert_eq!(seen[1], Some(SystemState { wifi: None, ..shown.clone() }), "the rest as it was, the Wi-Fi none");
+        drop(seen);
+        // F3 I1: another domain's outage (BlueZ, UPower, the power profile) says nothing about
+        // NetworkManager: the Wi-Fi stays, an open detail and its password field with it.
+        for domain in [Domain::Bluetooth, Domain::Battery, Domain::Power] {
+            sends.borrow_mut().clear();
+            run_supervised(
+                |publish: &mut dyn FnMut(SystemState) -> bool| {
+                    publish(shown.clone());
+                    Err(tag(io::Error::other("wedged"), Outage::Domain(domain)))
+                },
+                &|v: Option<SystemState>| {
+                    sends.borrow_mut().push(v);
+                    sends.borrow().len() < 2
+                },
+                |_| {},
+                clock(Duration::ZERO),
+                |_| {},
+            );
+            assert_eq!(sends.borrow()[1], Some(shown.clone()), "{domain:?} down: the Wi-Fi kept");
+        }
     }
 
     #[test]

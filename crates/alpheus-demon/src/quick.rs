@@ -647,6 +647,7 @@ impl Quick {
         if repeat && !erasing && !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::CtrlP | Key::CtrlN) {
             return QuickAction::Nothing;
         }
+        self.wifi.focus_pending = false;
         self.fit(live);
         // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
         let cancelled = k != Key::Enter && self.confirm.take().is_some();
@@ -784,6 +785,7 @@ impl Quick {
 
     /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown), spec § 3.
     pub fn press(&mut self, live: &Live, cell: (u16, u16), b: Button, now: Instant) -> QuickAction {
+        self.wifi.focus_pending = false;
         self.fit(live);
         let all = lines(live, self);
         let top = self.top.min(all.len().saturating_sub(self.visible()));
@@ -860,6 +862,7 @@ impl Quick {
         if notches == 0 {
             return QuickAction::Nothing;
         }
+        self.wifi.focus_pending = false;
         self.fit(live);
         let all = lines(live, self);
         let visible = self.visible();
@@ -1002,7 +1005,8 @@ impl Quick {
 
     /// The focus asked at open (decision 12), spent on the first state with a device: the row
     /// selected and the detail opened (its action). A state without one keeps it (final review
-    /// B-M1: NetworkManager not read yet is no reason to give up).
+    /// B-M1: NetworkManager not read yet is no reason to give up); the user's first key, click or
+    /// wheel notch drops it (F3 m2: the panel never jumps under them).
     fn spend_wifi_focus(&mut self) -> Option<QuickAction> {
         (self.wifi.shows() && std::mem::take(&mut self.wifi.focus_pending)).then(|| {
             self.selected = Row::Wifi;
@@ -2017,6 +2021,37 @@ mod tests {
         assert!(none.wifi.open && none.selected == Row::Wifi, "final review B-M1: spent only on a state with a device");
         let mut top = quick(&w, Focus::Top);
         assert_eq!(top.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "the top: no detail");
+    }
+
+    /// F3 m2: the focus asked at open waits for the user only until they act. Their first key,
+    /// click or wheel notch drops it: a device appearing later moves nothing and opens no detail.
+    #[test]
+    fn the_users_first_key_or_click_drops_a_pending_wifi_focus() {
+        let (w, t) = (World::full(), Instant::now());
+        let l = w.live();
+        let no_device = || Some(WifiState { enabled: true, device: None });
+        let mut keyed = quick(&w, Focus::Wifi);
+        keyed.set_wifi(no_device(), t);
+        keyed.key(&l, Key::Down, false, t);
+        let chosen = keyed.selected;
+        assert_eq!(keyed.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "a key: no rescan");
+        assert!(!keyed.wifi.open && keyed.selected == chosen, "a key: the selection stays the user's");
+        let mut clicked = quick(&w, Focus::Wifi);
+        clicked.set_wifi(no_device(), t);
+        clicked.press(&l, (5, 1), Button::Left, t);
+        let chosen = clicked.selected;
+        assert_eq!(clicked.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "a click: no rescan");
+        assert!(!clicked.wifi.open && clicked.selected == chosen, "a click: the selection stays the user's");
+        let mut wheeled = quick(&w, Focus::Wifi);
+        wheeled.set_wifi(no_device(), t);
+        wheeled.scroll(&l, Some((5, 1)), 1, t);
+        wheeled.set_wifi(Some(wifi_state(true, true, false)), t);
+        assert!(!wheeled.wifi.open, "a wheel notch: no detail");
+        let mut untouched = quick(&w, Focus::Wifi);
+        untouched.set_wifi(no_device(), t);
+        untouched.key(&l, Key::Enter, true, t);
+        untouched.set_wifi(Some(wifi_state(true, true, false)), t);
+        assert!(untouched.wifi.open, "an auto-repeat ignored by the panel is no act of the user's");
     }
 
     #[test]

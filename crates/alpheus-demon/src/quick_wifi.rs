@@ -59,7 +59,7 @@ const STILL_ACTIVATING: &str = "still activating after 60 s";
 pub(crate) const NM_GONE: &str = "NetworkManager went away";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
 /// A network row's tags; the widest one sets the room every row keeps for its tag.
-const CONNECTING: &str = "connecting…";
+const CONNECTING: &str = "…";
 const FAILED_TAG: &str = "failed";
 const SAVED_TAG: &str = "saved";
 
@@ -808,7 +808,7 @@ impl Wifi {
         }
     }
 
-    /// The tag after a network's marks: "connecting…" during its attempt, "failed" (warn) for
+    /// The tag after a network's marks: "…" during its attempt (Mae's short tags, 2026-10-12), "failed" (warn) for
     /// FAILED_SHOWN after, else "saved" (dimmed) or nothing.
     fn tag(&self, n: &Network) -> (&'static str, Style) {
         if self.attempt.as_ref().is_some_and(|a| a.ssid == n.ssid) {
@@ -1006,11 +1006,11 @@ mod tests {
             w.draw(&mut g, line, &nets, selected);
             g
         };
-        assert_eq!(row(Line::Network(0), false).text().trim_end(), format!(" ● Maison-Test ▂▄▆█ {LOCK} saved"));
-        assert_eq!(row(Line::Network(1), false).text().trim_end(), format!("   Labo-Test   ▂▄▆_ {LOCK}"));
-        assert_eq!(row(Line::Network(3), false).text().trim_end(), "   Cafe-Libre  ▂▄__", "open: no lock");
+        assert_eq!(row(Line::Network(0), false).text().trim_end(), format!(" ● Maison-Test      ▂▄▆█ {LOCK} saved"));
+        assert_eq!(row(Line::Network(1), false).text().trim_end(), format!("   Labo-Test        ▂▄▆_ {LOCK}"));
+        assert_eq!(row(Line::Network(3), false).text().trim_end(), "   Cafe-Libre       ▂▄__", "open: no lock");
         let g = row(Line::Network(0), false);
-        assert_eq!((&g.styles()[1..2], &g.styles()[22..27]), ("a", "mmmmm"), "● in the accent, saved dimmed");
+        assert_eq!((&g.styles()[1..2], &g.styles()[27..32]), ("a", "mmmmm"), "● in the accent, saved dimmed");
         assert!(row(Line::Network(2), true).styles().chars().all(|c| c == 'S'), "selected: the band across the row");
         assert_eq!(row(Line::WifiHeader, false).text().trim_end(), " ‹ Wi-Fi");
         assert_eq!(row(Line::WifiMore, false).text().trim_end(), "   More…");
@@ -1211,7 +1211,7 @@ mod tests {
         w.password_sent();
         assert!(w.field.is_none() && w.password().is_none(), "closed: its buffer wiped as it drops");
         assert_eq!(w.pick, Pick::Network(b"Bureau-Test".to_vec()));
-        assert!(row_of(&w, "Bureau-Test").text().trim_end().ends_with("connecting…"));
+        assert!(row_of(&w, "Bureau-Test").text().trim_end().ends_with(" …"));
     }
 
     #[test]
@@ -1293,7 +1293,7 @@ mod tests {
         let mut w = open(state());
         pick(&mut w, "Cafe-Libre");
         assert_eq!(w.key(&c, Key::Enter, t), run(&["nmcli", "device", "wifi", "connect", "Cafe-Libre"], "wifi connect (open)"));
-        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with("connecting…"));
+        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with(" …"));
         assert_eq!(w.deadline(), Some(t + CONNECT_TIMEOUT));
         assert_eq!(device_at(&mut w, ACTIVATED, Some("Maison-Test"), t), (QuickAction::Redraw, None), "still on the old one: waiting");
         assert_eq!(device_at(&mut w, 50, Some("Cafe-Libre"), t), (QuickAction::Redraw, None), "activating");
@@ -1303,7 +1303,8 @@ mod tests {
     }
 
     /// Spec § 2's mockup: the bars and the lock sit in one column whatever the tag; the tag's
-    /// room is the widest tag's, `connecting…`.
+    /// room is the widest tag's, `failed` (6 cells; Mae's short tags, 2026-10-12: `…` while
+    /// connecting), so an SSID keeps 16 cells.
     #[test]
     fn the_bars_and_the_lock_sit_in_one_column() {
         let (c, t) = (config(), Instant::now());
@@ -1315,12 +1316,17 @@ mod tests {
             let bars = chars.iter().position(|ch| BARS.contains(ch)).expect("bars");
             (bars, chars[bars + 5])
         };
-        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with(CONNECTING));
+        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with(" …"), "{:?}", row_of(&w, "Cafe-Libre").text());
         let (at, _) = column("Cafe-Libre");
         assert_eq!(column("Labo-Test"), (at, LOCK), "untagged: the same column");
         assert_eq!(column("Maison-Test"), (at, LOCK), "saved: the same column");
         let end = usize::from(crate::quick::WIDTH + 2);
-        assert_eq!(at, end - 1 - (4 + 1 + 1 + 1 + usize::from(text_width(CONNECTING))), "room for the widest tag");
+        assert_eq!(at, end - 1 - (4 + 1 + 1 + 1 + 6), "room for the widest tag, `failed`");
+        let mut long = state();
+        device(&mut long).access_points.as_mut().expect("aps")[0].ssid = b"Sixteen-Cells-Id-and-more".to_vec();
+        let w = open(long);
+        let row = row_of(&w, "Sixteen-Cells-Id-and-more").text();
+        assert!(row.starts_with("   Sixteen-Cells-I… "), "16 cells for an SSID: {row:?}");
     }
 
     #[test]
@@ -1737,7 +1743,7 @@ mod tests {
         let mut w = slow(Some("Cafe-Libre"));
         assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![], None, false), "20 s, still activating: no delete");
         assert_eq!(w.deadline(), Some(t + ACTIVATION_BOUND));
-        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with("connecting…"));
+        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with(" …"));
         assert_eq!(w.due(t + ACTIVATION_BOUND), (vec![], Some("still activating after 60 s"), true), "60 s: ends, its profile kept");
         assert!(w.attempt.is_none());
         let mut w = slow(None);

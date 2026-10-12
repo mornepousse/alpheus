@@ -4106,7 +4106,7 @@ fn quick_wifi_a_new_secured_network_takes_its_password_on_stdin_only_then_fails_
     // The selection off Bureau-Test, so its tag is drawn in its own colour, not the selection's.
     keys(&sway, &["Up"]);
     thread::sleep(Duration::from_millis(300));
-    assert!(!warn_in_the_panel(&sway.screenshot("HEADLESS-1").expect("grim")), "connecting…: nothing in warn yet");
+    assert!(!warn_in_the_panel(&sway.screenshot("HEADLESS-1").expect("grim")), "…, connecting: nothing in warn yet");
     nm.change(NmChange::DeviceState(60));
     thread::sleep(Duration::from_millis(300));
     nm.change(NmChange::AddSaved(UUID_NEW.into(), "Bureau-Test".into()));
