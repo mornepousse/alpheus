@@ -911,6 +911,25 @@ impl Daemon {
         t.lines().find_map(|l| l.strip_prefix("Pss:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
     }
 
+    /// PSS in KB of the daemon's shm pools (memfd mappings). The compositor maps them too, so their
+    /// PSS moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps
+    /// leaves them out (`pss_kb() - shm_pss_kb()`).
+    pub fn shm_pss_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps", self.pid())).unwrap();
+        let mut shm = false;
+        let mut kb = 0;
+        for l in t.lines() {
+            if let Some(v) = l.strip_prefix("Pss:") {
+                if shm {
+                    kb += v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+                }
+            } else if l.split_whitespace().next().is_some_and(|f| f.contains('-') && !f.ends_with(':')) {
+                shm = l.contains("/memfd:");
+            }
+        }
+        kb
+    }
+
     /// Number of the daemon's threads.
     pub fn threads(&self) -> usize {
         fs::read_dir(format!("/proc/{}/task", self.pid())).map(|d| d.count()).unwrap_or(0)

@@ -2047,11 +2047,12 @@ mod tests {
     fn a_wifi_state_moves_the_window_with_the_selection_and_a_closed_detail_goes_back_to_the_top() {
         let (w, t) = (World::full(), Instant::now());
         let l = w.live();
-        // Twenty networks at 50 %, Reseau-Test-00 at `first`: first in the list at 90, last at 10.
+        // Twenty networks at 50 %, Labo-Test (a name short enough to show whole) at `first`:
+        // first in the list at 90, last at 10.
         let around = |first: u8| {
             let aps = (0..20)
                 .map(|n| AccessPoint {
-                    ssid: format!("Reseau-Test-{n:02}").into_bytes(),
+                    ssid: if n == 0 { b"Labo-Test".to_vec() } else { format!("Reseau-Test-{n:02}").into_bytes() },
                     strength: if n == 0 { first } else { 50 },
                     security: Security::Psk,
                 })
@@ -2065,7 +2066,7 @@ mod tests {
         q.key(&l, Key::Enter, false, t);
         q.key(&l, Key::Home, false, t);
         assert_eq!(q.top, 0);
-        let picked = |q: &Quick| texts(&rows(&l, q)).iter().any(|r| r.contains("Reseau-Test-00"));
+        let picked = |q: &Quick| texts(&rows(&l, q)).iter().any(|r| r.contains("Labo-Test"));
         assert!(picked(&q), "first: in view");
         q.follow_wifi(&l, Some(around(10)), t);
         assert!(q.top > 0 && picked(&q), "moved to the end by the state: the window follows it ({})", q.top);

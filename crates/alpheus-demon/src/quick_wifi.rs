@@ -58,6 +58,10 @@ const NO_ANSWER: &str = "no answer in 20 s";
 const STILL_ACTIVATING: &str = "still activating after 60 s";
 pub(crate) const NM_GONE: &str = "NetworkManager went away";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
+/// A network row's tags; the widest one sets the room every row keeps for its tag.
+const CONNECTING: &str = "connecting…";
+const FAILED_TAG: &str = "failed";
+const SAVED_TAG: &str = "saved";
 
 /// 1 to 4 steps of signal: 0–24 %, 25–49 %, 50–74 %, 75–100 % (decision 5).
 pub fn steps(strength: u8) -> usize {
@@ -808,11 +812,11 @@ impl Wifi {
     /// FAILED_SHOWN after, else "saved" (dimmed) or nothing.
     fn tag(&self, n: &Network) -> (&'static str, Style) {
         if self.attempt.as_ref().is_some_and(|a| a.ssid == n.ssid) {
-            ("connecting…", Style::MUTED)
+            (CONNECTING, Style::MUTED)
         } else if self.failed.as_ref().is_some_and(|(s, _)| *s == n.ssid) {
-            ("failed", Style::WARN)
+            (FAILED_TAG, Style::WARN)
         } else if n.saved.is_some() {
-            ("saved", Style::MUTED)
+            (SAVED_TAG, Style::MUTED)
         } else {
             ("", Style::NORMAL)
         }
@@ -843,15 +847,17 @@ impl Wifi {
     }
 }
 
-/// "● HomeNet-5G        ▂▄▆█ 🔒 saved" (quick Wi-Fi spec § 2): ● on the connected one in the accent,
-/// the SSID cut to fit, then the signal, the lock for a secured one, and the tag, right-aligned one
-/// cell from the end. Selected: the band across the whole row.
+/// "● HomeNet-5G  ▂▄▆█ 🔒 saved" (quick Wi-Fi spec § 2): ● on the connected one in the accent,
+/// the SSID cut to fit, then the signal, the lock for a secured one, and the tag. The signal and
+/// the lock sit in one column on every row: the tag's room is the widest tag's, one cell from the
+/// end. Selected: the band across the whole row.
 fn network_row(g: &mut Grid, n: &Network, tag: &str, tag_style: Style, selected: bool) {
     let end = g.width();
     let lock = if n.security.secured() { LOCK } else { ' ' };
     let signal = bars(n.strength);
-    let right = if tag.is_empty() { format!("{signal} {lock}") } else { format!("{signal} {lock} {tag}") };
-    let width = text_width(&right);
+    let tag_room = [CONNECTING, FAILED_TAG, SAVED_TAG].into_iter().map(text_width).max().unwrap_or(0);
+    // "▂▄▆█ 🔒 " then the tag's room.
+    let width = BARS.len() as u16 + 3 + tag_room;
     let label = truncate(&n.label, end.saturating_sub(width + 2).saturating_sub(3));
     let mark = if n.connected { '●' } else { ' ' };
     list::row(
@@ -1000,11 +1006,11 @@ mod tests {
             w.draw(&mut g, line, &nets, selected);
             g
         };
-        assert_eq!(row(Line::Network(0), false).text().trim_end(), format!(" ● Maison-Test{}▂▄▆█ {LOCK} saved", " ".repeat(7)));
-        assert_eq!(row(Line::Network(1), false).text().trim_end(), format!("   Labo-Test{}▂▄▆_ {LOCK}", " ".repeat(15)));
-        assert_eq!(row(Line::Network(3), false).text().trim_end(), format!("   Cafe-Libre{}▂▄__", " ".repeat(14)), "open: no lock");
+        assert_eq!(row(Line::Network(0), false).text().trim_end(), format!(" ● Maison-Test ▂▄▆█ {LOCK} saved"));
+        assert_eq!(row(Line::Network(1), false).text().trim_end(), format!("   Labo-Test   ▂▄▆_ {LOCK}"));
+        assert_eq!(row(Line::Network(3), false).text().trim_end(), "   Cafe-Libre  ▂▄__", "open: no lock");
         let g = row(Line::Network(0), false);
-        assert_eq!((&g.styles()[1..2], &g.styles()[28..33]), ("a", "mmmmm"), "● in the accent, saved dimmed");
+        assert_eq!((&g.styles()[1..2], &g.styles()[22..27]), ("a", "mmmmm"), "● in the accent, saved dimmed");
         assert!(row(Line::Network(2), true).styles().chars().all(|c| c == 'S'), "selected: the band across the row");
         assert_eq!(row(Line::WifiHeader, false).text().trim_end(), " ‹ Wi-Fi");
         assert_eq!(row(Line::WifiMore, false).text().trim_end(), "   More…");
@@ -1294,6 +1300,27 @@ mod tests {
         assert_eq!(device_at(&mut w, ACTIVATED, Some("Cafe-Libre"), t), (QuickAction::Redraw, None));
         assert!(w.attempt.is_none() && w.deadline().is_none(), "activated on that SSID: done");
         assert!(row_of(&w, "Cafe-Libre").text().starts_with(" ● Cafe-Libre"), "● once NetworkManager says so");
+    }
+
+    /// Spec § 2's mockup: the bars and the lock sit in one column whatever the tag; the tag's
+    /// room is the widest tag's, `connecting…`.
+    #[test]
+    fn the_bars_and_the_lock_sit_in_one_column() {
+        let (c, t) = (config(), Instant::now());
+        let mut w = open(state());
+        pick(&mut w, "Cafe-Libre");
+        w.key(&c, Key::Enter, t);
+        let column = |label: &str| {
+            let chars: Vec<char> = row_of(&w, label).text().chars().collect();
+            let bars = chars.iter().position(|ch| BARS.contains(ch)).expect("bars");
+            (bars, chars[bars + 5])
+        };
+        assert!(row_of(&w, "Cafe-Libre").text().trim_end().ends_with(CONNECTING));
+        let (at, _) = column("Cafe-Libre");
+        assert_eq!(column("Labo-Test"), (at, LOCK), "untagged: the same column");
+        assert_eq!(column("Maison-Test"), (at, LOCK), "saved: the same column");
+        let end = usize::from(crate::quick::WIDTH + 2);
+        assert_eq!(at, end - 1 - (4 + 1 + 1 + 1 + usize::from(text_width(CONNECTING))), "room for the widest tag");
     }
 
     #[test]

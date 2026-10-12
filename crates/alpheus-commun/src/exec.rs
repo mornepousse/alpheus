@@ -80,8 +80,8 @@ pub struct Captured {
     pub end: CaptureEnd,
 }
 
-/// The most bytes `spawn_with_input` writes, all parts together: far below a pipe's buffer (64 KiB
-/// on Linux), so the write never waits for the program to read.
+/// The most bytes `spawn_with_input` writes, all parts together: one page (4,096 bytes), which every
+/// pipe holds whatever its size, so the write never waits for the program to read.
 pub const MAX_INPUT: usize = 4096;
 
 pub trait Executor: Send + Sync {
@@ -302,7 +302,7 @@ fn detached_command(prog: &str, args: &[&str], stdin: Stdio) -> Command {
 
 /// `spawn_detached` with a standard input: a pipe, its read end inherited by the grandchild across
 /// the double fork; the parts written once the program is started (the pipe holds them all,
-/// MAX_INPUT being far below its buffer), then the write end dropped: the program's end of file.
+/// MAX_INPUT being one page), then the write end dropped: the program's end of file.
 fn spawn_detached_with_input(prog: &str, args: &[&str], input: &[&[u8]]) -> Result<u32, ExecError> {
     let total: usize = input.iter().map(|p| p.len()).sum();
     if total > MAX_INPUT {
