@@ -69,20 +69,24 @@ pub trait Bus {
     /// AddMatch (`add`) or RemoveMatch of one rule.
     fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()>;
     /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).
-    /// All or nothing when adding: one refused takes back those already added (their own refusals
-    /// ignored), so none is left on the bus that nobody would remove. Removing tries every rule and
-    /// returns the first refusal.
+    /// All or nothing when adding: one refused takes back those already added and itself (a reply
+    /// lost to a timeout may come after the bus took it; final review A-M4), their own refusals
+    /// ignored (MatchRuleNotFound: never taken), so none is left on the bus that nobody would
+    /// remove. Removing tries every rule and returns the first refusal; a rule the bus no longer
+    /// holds (MatchRuleNotFound) is what removing asks, not one.
     fn match_rules(&mut self, rules: &[&str], add: bool) -> io::Result<()> {
         let mut first = None;
         for (i, r) in rules.iter().enumerate() {
             if let Err(e) = self.match_rule(r, add) {
                 if add {
-                    for done in &rules[..i] {
+                    for done in &rules[..=i] {
                         let _ = self.match_rule(done, false);
                     }
                     return Err(e);
                 }
-                first.get_or_insert(e);
+                if e.kind() != io::ErrorKind::NotFound {
+                    first.get_or_insert(e);
+                }
             }
         }
         first.map_or(Ok(()), Err)
@@ -290,6 +294,28 @@ impl Signal {
     }
 }
 
+/// The service a call went to is gone (ServiceUnknown, NameHasNoOwner): an absence (NotFound) like
+/// any other, marked so a reader can tell it from one object gone (UnknownObject).
+#[derive(Debug)]
+struct ServiceGone(String);
+
+impl std::fmt::Display for ServiceGone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ServiceGone {}
+
+pub fn service_gone(text: String) -> io::Error {
+    io::Error::new(io::ErrorKind::NotFound, ServiceGone(text))
+}
+
+/// `e` says the service itself is gone (`service_gone`), not one of its objects.
+pub fn is_service_gone(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|r| r.is::<ServiceGone>())
+}
+
 /// An object gone between two reads (a connection going down): nothing to
 /// read, not an outage. `pub`: its callers are the readers (tasks 11b, 12).
 pub fn optional(r: io::Result<Props>) -> io::Result<Option<Props>> {
@@ -310,6 +336,9 @@ pub struct SystemState {
     pub power: Option<ProfileState>,
     /// The quick panel's Wi-Fi, only while it is open (quick Wi-Fi spec § 5); None otherwise.
     pub wifi: Option<WifiState>,
+    /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
+    /// earlier open (final review B-M1).
+    pub wifi_open: u64,
 }
 
 /// Why a session ended (I2, review): a single domain's read failing, its
@@ -489,8 +518,10 @@ fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: 
     ok
 }
 
-/// A Wi-Fi read's result into `s`: Err only when the bus itself went away, tagged so (every domain
-/// blanked, never the network domain alone).
+/// A Wi-Fi read's result into `s`. Err when the bus itself went away, tagged so (every domain
+/// blanked, never the network domain alone), or when a detail rule could not be removed: the
+/// network domain's outage (final review A-M4), so the session ends and the reconnection drops
+/// every rule, the other modules kept meanwhile.
 fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
     match r {
         Ok(w) => {
@@ -499,7 +530,8 @@ fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Resul
         }
         Err(e) => {
             s.wifi = None;
-            Err(tag(e, Outage::Bus))
+            let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(Domain::Network) };
+            Err(tag(e, outage))
         }
     }
 }
@@ -520,7 +552,9 @@ pub fn session(
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
-    if let Err(e) = wifi_into(reader.rescope(bus, wifi.scope()), &mut s) {
+    let (scope, open) = wifi.snapshot();
+    s.wifi_open = open;
+    if let Err(e) = wifi_into(reader.rescope(bus, scope), &mut s) {
         failed = Some(e);
     }
     if !publish_if_changed(&mut last, &s, publish) {
@@ -546,7 +580,18 @@ pub fn session(
             drained = true;
         }
         if signal.is_poke() {
-            let r = wifi_into(reader.rescope(bus, wifi.scope()), &mut s);
+            // A close and a reopen read as one poke (the scope unchanged) are still a new open:
+            // closed first, so everything is read again; its state tagged with the new open, and so
+            // published even when it reads the same.
+            let (scope, open) = wifi.snapshot();
+            let reopened = open != s.wifi_open && scope != WifiScope::Closed;
+            s.wifi_open = open;
+            let r = if reopened {
+                reader.rescope(bus, WifiScope::Closed).and_then(|_| reader.rescope(bus, scope))
+            } else {
+                reader.rescope(bus, scope)
+            };
+            let r = wifi_into(r, &mut s);
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
@@ -605,10 +650,14 @@ pub fn session(
 /// power profile, no Wi-Fi.
 pub fn messages(s: Option<SystemState>) -> [Msg; 5] {
     match s {
-        Some(s) => {
-            [Msg::Network(s.network), Msg::Bluetooth(s.bluetooth), Msg::Battery(s.battery), Msg::Profile(s.power), Msg::Wifi(s.wifi)]
-        }
-        None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi(None)],
+        Some(s) => [
+            Msg::Network(s.network),
+            Msg::Bluetooth(s.bluetooth),
+            Msg::Battery(s.battery),
+            Msg::Profile(s.power),
+            Msg::Wifi { open: Some(s.wifi_open), state: s.wifi },
+        ],
+        None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi { open: None, state: None }],
     }
 }
 
@@ -658,7 +707,9 @@ fn run_supervised(
                     log(&format!("source down: {e}"));
                 }
                 match outage_of(e) {
-                    Outage::Domain(_) => Some(last.clone()),
+                    // Never the Wi-Fi last read (final review A-M5): a detail's lists, stale by the
+                    // time the session is back; the panel hears none until it is.
+                    Outage::Domain(_) => Some(SystemState { wifi: None, ..last.clone() }),
                     Outage::Bus => None,
                 }
             }
@@ -798,7 +849,8 @@ mod tests {
                 bluetooth: Some(BtState::On { devices: vec![] }),
                 battery: Some(workstation_battery()),
                 power: Some(ProfileState::default()),
-                wifi: None
+                wifi: None,
+                wifi_open: 0,
             }
         );
         assert!(matches!(&seen[1].network, Some(NetState::Online { link: Link::Wifi, .. })), "{:?}", seen[1]);
@@ -1019,6 +1071,78 @@ mod tests {
         assert_eq!(unsafe { libc::poll(&mut p, 1, 0) }, 0, "the word left waiting was drained");
     }
 
+    fn close_and_reopen_the_row(b: &mut FakeBus) {
+        b.tap.set(WifiScope::Closed);
+        b.tap.set(WifiScope::Row);
+    }
+
+    fn close_and_reopen_the_detail(b: &mut FakeBus) {
+        b.tap.set(WifiScope::Closed);
+        b.tap.set(WifiScope::Detail);
+    }
+
+    /// Final review A (coalesced poke): a close and a reopen the thread reads as one poke (the same
+    /// scope before and after) are still a new open: everything read again (the device found again,
+    /// the saved profiles listed again) and published, tagged with the new open.
+    #[test]
+    fn a_close_and_reopen_read_as_one_poke_is_a_new_open() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let steps: [Step; 2] = [(Signal::poke(), open_the_row), (Signal::poke(), close_and_reopen_the_row)];
+        bus.script = VecDeque::from(steps);
+        let (seen, _) = run(&mut bus);
+        assert_eq!(seen.len(), 3, "initial, the row, the reopened row: {seen:?}");
+        assert!(seen[2].wifi.as_ref().is_some_and(|w| w.device.is_some()), "{:?}", seen[2].wifi);
+        assert!(seen[2].wifi_open > seen[1].wifi_open, "tagged with the new open");
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetDevices")).count(), 2, "found again: {:?}", bus.calls);
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let steps: [Step; 2] = [(Signal::poke(), open_the_detail), (Signal::poke(), close_and_reopen_the_detail)];
+        bus.script = VecDeque::from(steps);
+        let (seen, _) = run(&mut bus);
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("ListConnections ")).count(), 2, "listed again: {:?}", bus.calls);
+        assert_eq!(bus.rules.len(), dbusrs_bus::WIFI_RULES.len(), "the rules removed then added again, never doubled");
+    }
+
+    /// Mae's ruling P1: a follower keeps the tap at Detail through the panel's close and reopen, so
+    /// the open never changes and the reader keeps its lists (a reset would read a profile skipped
+    /// before as new).
+    #[test]
+    fn a_tap_that_never_closes_keeps_its_open() {
+        let tap = WifiTap::default();
+        tap.set(WifiScope::Detail);
+        let (_, first) = tap.snapshot();
+        tap.set(WifiScope::Detail);
+        tap.set(WifiScope::Row.max(WifiScope::Detail));
+        assert_eq!(tap.snapshot(), (WifiScope::Detail, first), "never Closed: the same open");
+        tap.set(WifiScope::Closed);
+        tap.set(WifiScope::Row);
+        assert_eq!(tap.snapshot(), (WifiScope::Row, first + 1), "closed then opened: a new open");
+        tap.set(WifiScope::Detail);
+        assert_eq!(tap.snapshot().1, first + 1, "Row to Detail: the same open");
+    }
+
+    fn close_the_detail_a_rule_refused(b: &mut FakeBus) {
+        b.failing_rules.insert((false, dbusrs_bus::WIFI_RULES[0].to_string()));
+        b.tap.set(WifiScope::Row);
+    }
+
+    /// Final review A-M4: a detail rule the bus refuses to remove would wake the thread for nothing
+    /// until the next reconnection: the session ends now (the outage of the network domain alone, the
+    /// other modules kept), and the new connection holds none of them.
+    #[test]
+    fn a_rule_left_on_the_bus_ends_the_session() {
+        let mut bus = FakeBus::workstation();
+        bus.with_wifi();
+        let steps: [Step; 3] =
+            [(Signal::poke(), open_the_detail), (Signal::poke(), close_the_detail_a_rule_refused), (radio_changed(), nothing)];
+        bus.script = VecDeque::from(steps);
+        let (_, r) = run(&mut bus);
+        assert_eq!(outage_of(&r.unwrap_err()), Outage::Domain(Domain::Network));
+        assert_eq!(bus.script.len(), 1, "ended at that poke");
+    }
+
     #[test]
     fn the_poke_is_no_bus_signal() {
         let p = Signal::poke();
@@ -1153,7 +1277,7 @@ mod tests {
     fn messages_for_the_bar() {
         assert_eq!(
             messages(None),
-            [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi(None)],
+            [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi { open: None, state: None }],
             "bus down: \"–\" everywhere"
         );
         let s = SystemState {
@@ -1162,6 +1286,7 @@ mod tests {
             battery: Some(PowerState::default()),
             power: Some(ProfileState::default()),
             wifi: None,
+            wifi_open: 0,
         };
         assert_eq!(
             messages(Some(s)),
@@ -1170,7 +1295,7 @@ mod tests {
                 Msg::Bluetooth(None),
                 Msg::Battery(Some(PowerState::default())),
                 Msg::Profile(Some(ProfileState::default())),
-                Msg::Wifi(None)
+                Msg::Wifi { open: Some(0), state: None }
             ]
         );
     }
@@ -1395,6 +1520,7 @@ mod tests {
             battery: Some(PowerState::default()),
             power: None,
             wifi: None,
+            wifi_open: 0,
         };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {
@@ -1414,6 +1540,34 @@ mod tests {
         assert_eq!(seen[1], seen[0], "the backoff \"down\" value: the same state, not a full blank");
     }
 
+    /// Final review A-M5: the state re-sent for a domain's outage carries no Wi-Fi: the last one
+    /// read may be a detail's whole saved list, stale by the time the session is back.
+    #[test]
+    fn a_domain_outage_resends_no_wifi() {
+        let sends = RefCell::new(Vec::new());
+        let shown = SystemState {
+            network: Some(NetState::Offline),
+            wifi: Some(WifiState { enabled: true, device: None }),
+            wifi_open: 3,
+            ..SystemState::default()
+        };
+        run_supervised(
+            |publish: &mut dyn FnMut(SystemState) -> bool| {
+                publish(shown.clone());
+                Err(tag(io::Error::other("wedged"), Outage::Domain(Domain::Network)))
+            },
+            &|v: Option<SystemState>| {
+                sends.borrow_mut().push(v);
+                sends.borrow().len() < 2
+            },
+            |_| {},
+            clock(Duration::ZERO),
+            |_| {},
+        );
+        let seen = sends.borrow();
+        assert_eq!(seen[1], Some(SystemState { wifi: None, ..shown }), "the rest as it was, the Wi-Fi none");
+    }
+
     #[test]
     fn a_bus_outage_blanks_everything_during_the_backoff() {
         let sends = RefCell::new(Vec::new());
@@ -1423,6 +1577,7 @@ mod tests {
             battery: Some(PowerState::default()),
             power: None,
             wifi: None,
+            wifi_open: 0,
         };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {

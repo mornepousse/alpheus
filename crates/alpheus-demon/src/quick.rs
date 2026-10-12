@@ -1000,10 +1000,11 @@ impl Quick {
         WifiNews { action: self.spend_wifi_focus().unwrap_or(action), failed }
     }
 
-    /// The focus asked at open (decision 12), spent on the first state: with a device, the row
-    /// selected and the detail opened (its action); without, nothing.
+    /// The focus asked at open (decision 12), spent on the first state with a device: the row
+    /// selected and the detail opened (its action). A state without one keeps it (final review
+    /// B-M1: NetworkManager not read yet is no reason to give up).
     fn spend_wifi_focus(&mut self) -> Option<QuickAction> {
-        (std::mem::take(&mut self.wifi.focus_pending) && self.wifi.shows()).then(|| {
+        (self.wifi.shows() && std::mem::take(&mut self.wifi.focus_pending)).then(|| {
             self.selected = Row::Wifi;
             self.open_wifi()
         })
@@ -2011,8 +2012,9 @@ mod tests {
         assert!(!q.wifi.open);
         let mut none = quick(&w, Focus::Wifi);
         assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None }), t).action, QuickAction::Redraw);
+        assert!(!none.wifi.open && none.selected == Row::Volume, "no device: nothing to open");
         none.set_wifi(Some(wifi_state(true, true, false)), t);
-        assert!(!none.wifi.open && none.selected == Row::Volume, "the first state had no device: the focus is spent");
+        assert!(none.wifi.open && none.selected == Row::Wifi, "final review B-M1: spent only on a state with a device");
         let mut top = quick(&w, Focus::Top);
         assert_eq!(top.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "the top: no detail");
     }

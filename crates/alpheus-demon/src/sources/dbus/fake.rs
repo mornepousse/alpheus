@@ -5,7 +5,7 @@
 
 use super::props::{Objects, Prop, Props, busctl};
 use super::wifi::{self, WifiTap};
-use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power};
+use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone};
 use crate::system::SavedWifi;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -77,8 +77,14 @@ pub struct FakeBus {
     pub connections: Option<Vec<String>>,
     /// GetSettings' answers by path, already reduced (None: not a Wi-Fi profile).
     pub settings: BTreeMap<String, Option<SavedWifi>>,
+    /// Paths whose ListConnections or GetSettings finds NetworkManager gone mid-call (ServiceUnknown).
+    pub gone: BTreeSet<String>,
+    /// Paths whose GetSettings NetworkManager refuses (Settings.PermissionDenied: another user's).
+    pub denied: BTreeSet<String>,
     /// (AddMatch?, rule) refused, as a bus at its limits or timing out would (the call recorded).
     pub failing_rules: BTreeSet<(bool, String)>,
+    /// AddMatch rules the bus applies, its reply then lost (a timeout after the bus took it).
+    pub late_rules: BTreeSet<String>,
     /// The match rules the bus holds for this connection (added, not refused, not removed yet).
     pub rules: Vec<String>,
     /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
@@ -100,7 +106,10 @@ impl FakeBus {
             nm_devices: None,
             connections: None,
             settings: BTreeMap::new(),
+            gone: BTreeSet::new(),
+            denied: BTreeSet::new(),
             failing_rules: BTreeSet::new(),
+            late_rules: BTreeSet::new(),
             rules: Vec::new(),
             tap: Arc::default(),
             script: VecDeque::new(),
@@ -210,11 +219,7 @@ impl FakeBus {
     /// A unique name nobody holds any more: NotFound, like a real bus.
     fn reach(&self, destination: &str) -> io::Result<()> {
         assert!(destination.starts_with(':'), "call to the well-known name {destination}: D-Bus activation could start it");
-        if self.owners.values().any(|o| *o == destination) {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::NotFound, format!("ServiceUnknown: {destination}")))
-        }
+        if self.owners.values().any(|o| *o == destination) { Ok(()) } else { Err(service_gone(format!("ServiceUnknown: {destination}"))) }
     }
 }
 
@@ -266,6 +271,9 @@ impl Bus for FakeBus {
     fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>> {
         self.calls.push(format!("ListConnections {destination}"));
         self.reach(destination)?;
+        if self.gone.contains(wifi::SETTINGS_PATH) {
+            return Err(service_gone(format!("ServiceUnknown: {destination}")));
+        }
         if self.failing.contains(wifi::SETTINGS_PATH) {
             return Err(io::Error::other(format!("timeout: {}", wifi::SETTINGS_PATH)));
         }
@@ -275,6 +283,12 @@ impl Bus for FakeBus {
     fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
         self.calls.push(format!("GetSettings {destination} {path}"));
         self.reach(destination)?;
+        if self.gone.contains(path) {
+            return Err(service_gone(format!("ServiceUnknown: {destination}")));
+        }
+        if self.denied.contains(path) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("PermissionDenied: {path}")));
+        }
         if self.failing.contains(path) {
             return Err(io::Error::other(format!("timeout: {path}")));
         }
@@ -288,7 +302,13 @@ impl Bus for FakeBus {
         }
         if add {
             self.rules.push(rule.to_string());
-        } else if let Some(i) = self.rules.iter().position(|r| r == rule) {
+            if self.late_rules.contains(rule) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, format!("NoReply: {rule}")));
+            }
+        } else {
+            // As the bus driver answers a rule it does not hold.
+            let i =
+                self.rules.iter().position(|r| r == rule).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MatchRuleNotFound"))?;
             self.rules.remove(i);
         }
         Ok(())

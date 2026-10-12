@@ -161,13 +161,18 @@ pub const WIFI_RULES: [&str; 5] = [
     "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager/Settings',interface='org.freedesktop.NetworkManager.Settings',member='ConnectionRemoved'",
 ];
 
-/// D-Bus errors meaning "nothing there": the service or the object is gone.
-const ABSENT: [&str; 4] = [
+/// D-Bus errors meaning "nothing there": the service or the object is gone (or a match rule, on
+/// a RemoveMatch).
+const ABSENT: [&str; 5] = [
     "org.freedesktop.DBus.Error.ServiceUnknown",
     "org.freedesktop.DBus.Error.NameHasNoOwner",
     "org.freedesktop.DBus.Error.UnknownObject",
     "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.MatchRuleNotFound",
 ];
+
+/// Of ABSENT, the service itself gone (`super::service_gone`).
+const SERVICE_GONE: [&str; 2] = ["org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.NameHasNoOwner"];
 
 pub fn kind_of(error_name: &str) -> io::ErrorKind {
     if ABSENT.contains(&error_name) { io::ErrorKind::NotFound } else { io::ErrorKind::Other }
@@ -182,12 +187,18 @@ fn unexpected(what: &str) -> io::Error {
 /// (`Disconnected`), or anything else — an outage.
 fn error(e: dbus::Error) -> io::Error {
     let name = e.name().unwrap_or("");
+    let text = format!("{name}: {}", e.message().unwrap_or(""));
+    if SERVICE_GONE.contains(&name) {
+        return super::service_gone(text);
+    }
     let kind = match name {
         "org.freedesktop.DBus.Error.NoReply" | "org.freedesktop.DBus.Error.Timeout" => io::ErrorKind::TimedOut,
         "org.freedesktop.DBus.Error.Disconnected" => io::ErrorKind::UnexpectedEof,
+        // A profile NetworkManager will not show this user (GetSettings): not ours.
+        "org.freedesktop.NetworkManager.Settings.PermissionDenied" => io::ErrorKind::PermissionDenied,
         _ => kind_of(name),
     };
-    io::Error::new(kind, format!("{name}: {}", e.message().unwrap_or("")))
+    io::Error::new(kind, text)
 }
 
 /// A failed call's outcome, `error` reduced further by whether the
@@ -700,6 +711,11 @@ mod tests {
         assert_eq!(kind("org.freedesktop.DBus.Error.Disconnected"), io::ErrorKind::UnexpectedEof);
         assert_eq!(kind("org.freedesktop.DBus.Error.FileNotFound"), io::ErrorKind::Other, "no socket: an outage, not an absence");
         assert_eq!(kind("org.freedesktop.DBus.Error.AccessDenied"), io::ErrorKind::Other);
+        assert_eq!(kind("org.freedesktop.NetworkManager.Settings.PermissionDenied"), io::ErrorKind::PermissionDenied, "not ours");
+        assert_eq!(kind("org.freedesktop.DBus.Error.MatchRuleNotFound"), io::ErrorKind::NotFound, "a rule already gone");
+        let gone = |name: &str| super::super::is_service_gone(&error(dbus::Error::new_custom(name, "text")));
+        assert!(gone("org.freedesktop.DBus.Error.ServiceUnknown") && gone("org.freedesktop.DBus.Error.NameHasNoOwner"), "the service gone");
+        assert!(!gone("org.freedesktop.DBus.Error.UnknownObject") && !gone("org.freedesktop.DBus.Error.UnknownMethod"), "an object gone");
     }
 
     #[test]

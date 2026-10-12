@@ -1402,7 +1402,6 @@ fn quick_pss_idle_open_and_closed() {
         std::thread::sleep(PAST_DEBOUNCE);
         toggle();
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
-        std::thread::sleep(CLOSE_SETTLE);
     }
     std::thread::sleep(TRAY_SETTLE);
     let cycled = d.pss_kb();
@@ -1463,11 +1462,6 @@ fn wifi_bar(backlight_dir: &Path) -> String {
     format!("modules = [\"network\", \"quick\", \"clock\"]\n[osd]\nbacklight_dir = {:?}\n", backlight_dir.display().to_string())
 }
 
-/// Between a close and the next open: the D-Bus thread reads the scope when its poke is handled, so
-/// a Closed and a Detail asked within microseconds read as one unchanged Detail (nothing new is
-/// published; a person's close and reopen are never that close).
-const CLOSE_SETTLE: Duration = Duration::from_millis(200);
-
 /// 40 fictional access points (the detail lists 32), two in three WPA2, one saved.
 fn forty_networks() -> Vec<FakeAp> {
     (1..=40).map(|n| FakeAp::new(&format!("Reseau-Test-{n:02}"), (n * 2) as u8, n % 3 != 0)).collect()
@@ -1516,7 +1510,6 @@ fn quick_wifi_pss_detail_open_and_closed() {
         std::thread::sleep(PAST_DEBOUNCE);
         toggle();
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
-        std::thread::sleep(CLOSE_SETTLE);
     }
     std::thread::sleep(TRAY_SETTLE);
     let cycled = d.pss_kb();
@@ -1552,7 +1545,6 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
         std::thread::sleep(PAST_DEBOUNCE);
         assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
         assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
-        std::thread::sleep(CLOSE_SETTLE);
     }
     std::thread::sleep(Duration::from_millis(300));
     const REST: Duration = Duration::from_secs(10);

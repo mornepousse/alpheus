@@ -1857,7 +1857,11 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
         assert!(body.contains("self.quick_wifi_sync()"), "{f}: the tap follows the panel: {body}");
     }
     let take = function_body(&quick_app, "pub(crate) fn quick_take(");
-    assert!(take.contains("taken_wifi(") && take.contains("follow_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
+    assert!(take.contains("taken_wifi(") && take.contains("panel_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
+    // Final review B-M1: only a state read for the tap's current open reaches the panel or the follower.
+    let panel = function_body(&quick_app, "pub(crate) fn panel_wifi(");
+    assert!(panel.contains("wifi_current(") && panel.contains("follow_wifi("), "{panel}");
+    assert!(take.contains("wifi_current(") && take.contains("snapshot()"), "{take}");
     // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
     // its attempt (the tap and the timer let go then).
     assert!(take.contains("wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");

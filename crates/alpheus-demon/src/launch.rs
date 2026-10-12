@@ -960,6 +960,7 @@ mod tests {
             battery: Some(PowerState::default()),
             power: None,
             wifi: None,
+            wifi_open: 0,
         };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);

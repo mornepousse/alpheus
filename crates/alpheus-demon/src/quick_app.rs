@@ -12,7 +12,7 @@ use crate::config::ModuleId;
 use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
-use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle};
+use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
 use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
@@ -50,13 +50,37 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
     }
 }
 
-/// The Wi-Fi state a bar message carries for the open panel (quick Wi-Fi spec § 5), taken out of it:
-/// the bar never keeps one. None: not a Wi-Fi message.
-pub(crate) fn taken_wifi(m: &mut Msg) -> Option<Option<WifiState>> {
+/// The Wi-Fi state a bar message carries for the open panel (quick Wi-Fi spec § 5), taken out of it
+/// with the open it was read for: the bar never keeps one. None: not a Wi-Fi message.
+pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)> {
     match m {
-        Msg::Wifi(w) => Some(w.take()),
+        Msg::Wifi { open, state } => Some((*open, state.take())),
         _ => None,
     }
+}
+
+/// A Wi-Fi state read for `open` belongs to the tap's current open (`current`, from
+/// `WifiTap::snapshot`); one read for an earlier open (a close's last word, a re-read under the
+/// scope before) does not (final review B-M1). Untagged (the system bus down), or with no tap: it
+/// does.
+pub(crate) fn wifi_current(open: Option<u64>, current: Option<u64>) -> bool {
+    match (open, current) {
+        (Some(open), Some(current)) => open == current,
+        _ => true,
+    }
+}
+
+/// The open panel's part of a Wi-Fi message: `Quick::follow_wifi` on a state of this open, nothing
+/// for an earlier open's (`wifi_current`).
+pub(crate) fn panel_wifi(
+    q: &mut Quick,
+    live: &Live,
+    open: Option<u64>,
+    state: Option<WifiState>,
+    current: Option<u64>,
+    now: Instant,
+) -> Option<WifiNews> {
+    wifi_current(open, current).then(|| q.follow_wifi(live, state, now))
 }
 
 /// Whether a verb arriving at `now` is the key press that opened the panel again (Hyprland
@@ -81,9 +105,10 @@ pub struct WifiFollow {
 
 impl WifiFollow {
     /// The panel closing on `wifi`: its attempt moved out with the state it saw, when it may leave
-    /// a new profile behind; None otherwise (a saved network's attempt goes with the panel).
+    /// a new profile behind and could delete it (the saved list known when it began); None
+    /// otherwise (a saved network's attempt goes with the panel; final review B-M2).
     pub fn leaving(wifi: &mut Wifi) -> Option<WifiFollow> {
-        let attempt = wifi.attempt.take_if(|a| a.creates)?;
+        let attempt = wifi.attempt.take_if(|a| a.creates && a.known.is_some())?;
         Some(WifiFollow { attempt, state: wifi.state.take() })
     }
 
@@ -553,13 +578,17 @@ impl App {
         {
             q.set_sinks(sinks);
         }
-        if let Some(state) = taken_wifi(m) {
+        if let Some((open, state)) = taken_wifi(m) {
             let now = Instant::now();
+            let current = self.wifi_tap.as_ref().map(|t| t.snapshot().1);
             let App { popup, bar, dnd, wifi_follow, .. } = &mut *self;
             let news = match popup.as_mut().map(|p| &mut p.body) {
-                Some(PopupBody::Quick(q)) => Some(q.follow_wifi(&quick::live(bar, *dnd), state, now)),
+                Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, *dnd), open, state, current, now),
                 _ => {
-                    if let Some(outcome) = wifi_follow.as_mut().map(|f| f.set_state(state)) {
+                    // The follower's open is the one the tap still has (it never went Closed).
+                    if wifi_current(open, current)
+                        && let Some(outcome) = wifi_follow.as_mut().map(|f| f.set_state(state))
+                    {
                         self.quick_follow(outcome);
                     }
                     None
@@ -572,7 +601,7 @@ impl App {
                 self.quick_action(news.action);
             }
         }
-        self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi(_))
+        self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. })
     }
 }
 
@@ -608,10 +637,14 @@ mod tests {
     #[test]
     fn a_wifi_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
         let state = WifiState { enabled: true, device: None };
-        let mut m = Msg::Wifi(Some(state.clone()));
-        assert_eq!(taken_wifi(&mut m), Some(Some(state)));
-        assert_eq!(m, Msg::Wifi(None), "emptied");
-        assert_eq!(taken_wifi(&mut Msg::Wifi(None)), Some(None), "NetworkManager gone: the panel hears it too");
+        let mut m = Msg::Wifi { open: Some(2), state: Some(state.clone()) };
+        assert_eq!(taken_wifi(&mut m), Some((Some(2), Some(state))));
+        assert_eq!(m, Msg::Wifi { open: Some(2), state: None }, "emptied");
+        assert_eq!(
+            taken_wifi(&mut Msg::Wifi { open: Some(2), state: None }),
+            Some((Some(2), None)),
+            "NetworkManager gone: the panel hears it too"
+        );
         assert_eq!(taken_wifi(&mut Msg::Profile(None)), None, "only a Wi-Fi message");
     }
 
@@ -674,6 +707,51 @@ mod tests {
         let follow = WifiFollow::leaving(&mut again.wifi).expect("followed");
         assert_eq!(resumed(&mut top, follow), QuickAction::Redraw, "opened on the top: no detail");
         assert!(!top.wifi.open && top.wifi.attempt.is_some());
+    }
+
+    /// Final review B-M1, both orders: a state read for an earlier open (a close's last word, a
+    /// re-read under the scope before) never reaches the panel, so it neither spends the focus nor
+    /// blanks the row; the first state of this open with a device opens the detail. The bus going
+    /// down (untagged) still reaches it.
+    #[test]
+    fn only_a_state_read_for_this_open_reaches_the_panel() {
+        let t = Instant::now();
+        let bar = Bar::new(BarConfig::default());
+        let live = quick::live(&bar, false);
+        let rescan = quick::run(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
+        let current = Some(7);
+        let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
+        assert_eq!(panel_wifi(&mut q, &live, Some(6), None, current, t), None, "the close's None, queued: dropped");
+        assert_eq!(panel_wifi(&mut q, &live, Some(6), Some(wifi_around()), current, t), None, "the open before's: dropped");
+        assert!(q.wifi.focus_pending && q.wifi.state.is_none(), "nothing taken");
+        let news = panel_wifi(&mut q, &live, Some(7), Some(wifi_around()), current, t).expect("this open's");
+        assert_eq!(news.action, rescan, "the detail opened");
+        assert!(q.wifi.open && q.selected == Row::Wifi);
+        let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
+        panel_wifi(&mut q, &live, Some(7), Some(wifi_around()), current, t);
+        assert_eq!(panel_wifi(&mut q, &live, Some(6), None, current, t), None, "delivered after the reopen: dropped");
+        assert!(q.wifi.open && q.wifi.shows(), "never blanked by it");
+        assert!(panel_wifi(&mut q, &live, None, None, current, t).is_some(), "the bus down: the panel hears it");
+        assert!(!q.wifi.shows());
+        let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
+        assert!(panel_wifi(&mut q, &live, Some(3), Some(wifi_around()), None, t).is_some(), "no tap: nothing to tell apart");
+    }
+
+    /// Final review B-M2: an attempt whose saved list was unknown when it began can never clean up,
+    /// so it is not followed after the panel (no rules, reads or timer for nothing).
+    #[test]
+    fn an_attempt_that_cannot_clean_up_is_not_followed() {
+        let t = Instant::now();
+        let mut q = panel_on("Cafe-Libre");
+        if let Some(d) = q.wifi.state.as_mut().and_then(|s| s.device.as_mut()) {
+            d.saved = None;
+        }
+        let QuickAction::Run { .. } = q.wifi.key(&QuickConfig::default(), Key::Enter, t) else { panic!("an open network") };
+        assert!(q.wifi.attempt.as_ref().is_some_and(|a| a.creates && a.known.is_none()), "{:?}", q.wifi.attempt);
+        assert!(WifiFollow::leaving(&mut q.wifi).is_none(), "nothing it could delete: not followed");
+        let mut q = panel_on("Cafe-Libre");
+        q.wifi.key(&QuickConfig::default(), Key::Enter, t);
+        assert!(WifiFollow::leaving(&mut q.wifi).is_some(), "the saved list known: followed");
     }
 
     fn sink(id: u32, label: &str, default: bool) -> Sink {

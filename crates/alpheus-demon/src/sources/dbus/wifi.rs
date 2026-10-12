@@ -7,7 +7,7 @@
 
 use super::dbusrs_bus::WIFI_RULES;
 use super::props::Props;
-use super::{Bus, NM, network, optional};
+use super::{Bus, NM, is_service_gone, network, optional};
 use crate::log::write as log;
 use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
 use std::collections::BTreeMap;
@@ -49,10 +49,13 @@ pub enum WifiChange {
 /// and a socket pair whose first end the thread polls beside the bus's own socket; the loop writes
 /// one byte to the second when the scope changes, never otherwise (no wake-up at rest). Without the
 /// pair (`default()`, the tests' tap) the scope is still kept, and nothing wakes: a session reads it
-/// when it starts and on each `Signal::poke`.
+/// when it starts and on each `Signal::poke`. The tap also counts the panel's opens (Closed to any
+/// other scope): a close and a reopen the thread reads as one poke are still a new open, and a
+/// state read for an earlier open is told apart from the current one's.
 #[derive(Debug, Default)]
 pub struct WifiTap {
-    scope: Mutex<WifiScope>,
+    /// The scope asked, and the opens so far.
+    scope: Mutex<(WifiScope, u64)>,
     wake: Option<(UnixStream, UnixStream)>,
 }
 
@@ -62,20 +65,29 @@ impl WifiTap {
         let (read, write) = UnixStream::pair()?;
         read.set_nonblocking(true)?;
         write.set_nonblocking(true)?;
-        Ok(WifiTap { scope: Mutex::new(WifiScope::Closed), wake: Some((read, write)) })
+        Ok(WifiTap { scope: Mutex::new((WifiScope::Closed, 0)), wake: Some((read, write)) })
     }
 
     pub fn scope(&self) -> WifiScope {
+        self.snapshot().0
+    }
+
+    /// The scope asked and the opens so far, read together.
+    pub fn snapshot(&self) -> (WifiScope, u64) {
         *self.scope.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The loop asks for `scope`: kept, and the thread woken when it changed (a byte already waiting
-    /// is enough: a full socket is not an error). True when it changed.
+    /// is enough: a full socket is not an error); from Closed to another scope, one more open. True
+    /// when it changed.
     pub fn set(&self, scope: WifiScope) -> bool {
         let changed = {
             let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
-            let changed = *s != scope;
-            *s = scope;
+            let changed = s.0 != scope;
+            if s.0 == WifiScope::Closed && scope != WifiScope::Closed {
+                s.1 = s.1.wrapping_add(1);
+            }
+            s.0 = scope;
             changed
         };
         if changed && let Some((_, w)) = &self.wake {
@@ -165,8 +177,10 @@ impl WifiReader {
 
     /// The loop asked for `scope` (a poke). The same scope: read again, nothing added. Leaving the
     /// detail removes its rules and drops its lists; entering it adds the rules and reads both lists
-    /// whole; Closed forgets everything and reads nothing. Err only when the bus itself went away
-    /// (`UnexpectedEof`).
+    /// whole; Closed forgets everything and reads nothing. Err when the bus itself went away
+    /// (`UnexpectedEof`), or a rule could not be removed (final review A-M4: never tried again
+    /// here, it would wake the thread for nothing; the session ends, and its reconnection drops
+    /// every rule).
     pub fn rescope(&mut self, bus: &mut dyn Bus, scope: WifiScope) -> io::Result<Option<WifiState>> {
         if scope == self.scope && scope != WifiScope::Closed {
             return self.reread(bus);
@@ -174,8 +188,7 @@ impl WifiReader {
         let detail = scope == WifiScope::Detail;
         if self.watching && !detail {
             self.watching = false;
-            let r = bus.match_rules(&WIFI_RULES, false);
-            self.soft_unit(r)?;
+            bus.match_rules(&WIFI_RULES, false)?;
         }
         if scope == WifiScope::Closed {
             *self = WifiReader::default();
@@ -194,7 +207,8 @@ impl WifiReader {
     }
 
     /// The state again (a network signal, a list's signal, the machine resuming): None when closed.
-    /// A failed read hides the row (logged once per open); the bus going away is an error.
+    /// A failed read keeps the last state, or hides the row before the first (logged once per open);
+    /// the bus going away is an error.
     pub fn reread(&mut self, bus: &mut dyn Bus) -> io::Result<Option<WifiState>> {
         if self.scope == WifiScope::Closed {
             return Ok(None);
@@ -237,13 +251,16 @@ impl WifiReader {
         }
     }
 
+    /// A failed read (a timeout): the last state again, unchanged (final review A-M3: no device
+    /// reads as NetworkManager gone, and would end a followed attempt for nothing); none before the
+    /// first. NetworkManager really gone reads as none without an error (no owner, no device).
     fn soft(&mut self, r: io::Result<WifiState>) -> io::Result<WifiState> {
         match r {
             Ok(s) => Ok(s),
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Err(e),
             Err(e) => {
                 self.note(&e);
-                Ok(WifiState::default())
+                Ok(self.last.clone().unwrap_or_default())
             }
         }
     }
@@ -387,12 +404,14 @@ impl WifiReader {
 
     /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
     /// through GetSettings (never their secrets). True when every one was read: one that failed
-    /// (not gone, not another kind) is left out of the map, so the next listing reads it again,
-    /// and the list stays unknown until then.
+    /// (not gone, not another kind, not refused to this user) is left out of the map, so the next
+    /// listing reads it again, and the list stays unknown until then. No listing, or NetworkManager
+    /// gone midway, is not a whole list either (final review A-M1): an empty one would let a
+    /// profile saved before be taken for an attempt's.
     fn reconcile_saved(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
         let all = match bus.list_connections(nm) {
             Ok(p) => p,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(e) => return Err(e),
         };
         self.saved_whole = all.len() <= MAX_SAVED;
@@ -405,7 +424,9 @@ impl WifiReader {
                     Ok(s) => {
                         self.saved.insert(p.clone(), s);
                     }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    Err(e) if is_service_gone(&e) => return Ok(false),
+                    // Gone since the listing, or another user's (final review A-M2): not ours.
+                    Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
                         self.saved.insert(p.clone(), None);
                     }
                     Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
@@ -605,6 +626,27 @@ mod tests {
         }
     }
 
+    /// Final review A-M3: a read that fails (a timeout) once the device is known keeps the last
+    /// state, unchanged, so a followed attempt never takes it for NetworkManager gone; NetworkManager
+    /// really gone (no owner) or no Wi-Fi device any more still reads as no device.
+    #[test]
+    fn a_failed_reread_keeps_the_last_state_a_real_absence_does_not() {
+        let mut bus = wifi_bus();
+        let mut r = WifiReader::default();
+        let first = r.rescope(&mut bus, WifiScope::Row).unwrap();
+        assert!(first.as_ref().is_some_and(|s| s.device.is_some()));
+        bus.failing.insert(WIFI_DEVICE.into());
+        assert_eq!(r.reread(&mut bus).unwrap(), first, "a timeout: the last state, no change");
+        bus.failing.clear();
+        bus.owners.remove(NM);
+        assert_eq!(r.reread(&mut bus).unwrap(), Some(WifiState::default()), "no owner: gone");
+        let mut bus = wifi_bus();
+        let mut r = WifiReader::default();
+        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        bus.props_mut(WIFI_DEVICE, DEVICE).0.insert("DeviceType".into(), Prop::Int(1));
+        assert_eq!(r.reread(&mut bus).unwrap().map(|s| s.device), Some(None), "no Wi-Fi device any more: none");
+    }
+
     /// The flag that keeps the `D-Bus Wi-Fi:` line to one per open: raised by a failure, kept for
     /// the rest of the open, lowered on close (the log call itself is not captured here).
     #[test]
@@ -800,6 +842,41 @@ mod tests {
         assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "the bus itself gone: still the session's");
     }
 
+    /// Final review A-M1: NetworkManager gone while the saved profiles are listed or read
+    /// (ServiceUnknown), or ListConnections not there: the list is unknown, never empty, so a
+    /// profile saved before is never taken for an attempt's. One profile gone (UnknownObject) is
+    /// skipped, the list still whole.
+    #[test]
+    fn networkmanager_gone_while_listing_leaves_the_saved_list_unknown() {
+        let mut bus = wifi_bus();
+        bus.gone.insert(SETTINGS_PATH.into());
+        assert_eq!(detail(&mut bus).1.saved, None, "ListConnections: ServiceUnknown");
+        let mut bus = wifi_bus();
+        bus.connections = None;
+        assert_eq!(detail(&mut bus).1.saved, None, "ListConnections: UnknownMethod");
+        let mut bus = wifi_bus();
+        bus.gone.insert("/org/freedesktop/NetworkManager/Settings/3".into());
+        let (mut r, d) = detail(&mut bus);
+        assert_eq!(d.saved, None, "GetSettings: ServiceUnknown");
+        bus.gone.clear();
+        assert_eq!(r.reread(&mut bus).unwrap().unwrap().device.unwrap().saved.map(|s| s.len()), Some(1), "listed again");
+        let mut bus = wifi_bus();
+        bus.settings.remove("/org/freedesktop/NetworkManager/Settings/4");
+        let saved = detail(&mut bus).1.saved.expect("whole");
+        assert_eq!(saved.len(), 1, "the wired one gone (UnknownObject): skipped, the list whole");
+    }
+
+    /// Final review A-M2: a profile NetworkManager will not show this user (PermissionDenied) is
+    /// not ours to delete: skipped, the list still whole, nothing logged.
+    #[test]
+    fn a_profile_refused_to_this_user_is_skipped() {
+        let mut bus = wifi_bus();
+        bus.denied.insert("/org/freedesktop/NetworkManager/Settings/4".into());
+        let (r, d) = detail(&mut bus);
+        assert_eq!(d.saved.map(|s| s.len()), Some(1), "whole, the refused one left out");
+        assert!(!r.logged, "not a failure");
+    }
+
     /// Per rule, how many times the bus holds it for this session.
     fn rules_left(bus: &FakeBus) -> Vec<usize> {
         WIFI_RULES.iter().map(|r| bus.rules.iter().filter(|h| h == r).count()).collect()
@@ -824,16 +901,35 @@ mod tests {
         assert_eq!(rules_left(&bus), [0; 5]);
     }
 
-    /// Fix round 1: one RemoveMatch refused does not keep the others on the bus.
+    /// Fix round 1: one RemoveMatch refused does not keep the others on the bus; final review A-M4:
+    /// the refused one is never tried again here, so the error ends the session (a reconnection
+    /// drops every rule).
     #[test]
     fn every_rule_is_removed_even_after_one_fails() {
         let mut bus = wifi_bus();
         let (mut r, _) = detail(&mut bus);
         bus.failing_rules.insert((false, WIFI_RULES[0].to_string()));
-        r.rescope(&mut bus, WifiScope::Row).unwrap();
+        let e = r.rescope(&mut bus, WifiScope::Row).unwrap_err();
+        assert_ne!(e.kind(), io::ErrorKind::NotFound, "{e}");
         assert_eq!(bus.calls.iter().filter(|c| c.starts_with("RemoveMatch ")).count(), WIFI_RULES.len(), "every rule tried");
         assert_eq!(rules_left(&bus), [1, 0, 0, 0, 0], "only the refused one left");
-        assert!(r.logged);
+    }
+
+    /// Final review A-M4: an AddMatch whose reply was lost may still have been applied, so the
+    /// rollback removes it too; a rule the bus never took answers MatchRuleNotFound, ignored. A
+    /// rule already gone when the detail closes (MatchRuleNotFound) is not a failure either.
+    #[test]
+    fn a_timed_out_rule_is_rolled_back_too() {
+        let mut bus = wifi_bus();
+        bus.late_rules.insert(WIFI_RULES[2].to_string());
+        let (mut r, _) = detail(&mut bus);
+        assert_eq!(rules_left(&bus), [0; 5], "{:?}", bus.calls);
+        r.rescope(&mut bus, WifiScope::Closed).unwrap();
+        let mut bus = wifi_bus();
+        let (mut r, _) = detail(&mut bus);
+        bus.rules.retain(|h| h != WIFI_RULES[1]);
+        assert!(r.rescope(&mut bus, WifiScope::Row).is_ok(), "already gone: what removing asks");
+        assert_eq!(rules_left(&bus), [0; 5]);
     }
 
     /// Fix round 1 (P4): an access point whose re-read fails is left out, like at the first read.
