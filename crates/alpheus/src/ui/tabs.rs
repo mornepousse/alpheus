@@ -132,8 +132,8 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
         }
         Tab::Appearance => {}
         Tab::Displays => {
-            if app.displays.niri {
-                rows.push(Row::Text("Displays: not available under niri yet".into()));
+            if let Some(name) = app.displays.unavailable {
+                rows.push(Row::Text(format!("Displays: not available under {name} yet")));
                 return rows;
             }
             rows.push(Row::Item(0));

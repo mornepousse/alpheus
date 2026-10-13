@@ -10,15 +10,18 @@ use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_demon::quick::{BAR, BAR_START};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
+use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
+use common::sway_client::{TestWindow, con_id};
 use common::{
-    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild, NmChange, Peer,
-    Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin, default_sink_delta,
-    fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder, launcher, process_alive, pw_dump_send, recorded,
-    recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
+    NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
+    default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder, launcher, process_alive,
+    pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype,
+    wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -4385,4 +4388,128 @@ fn a_hung_source_is_killed_and_nothing_stays_awake() {
     sway.hover(640, 400);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(rest_over_5_s(&d), 0, "the loop woke at rest after an open that ran sources");
+}
+
+/// Mango and Sway spec § 6: the Sway fixtures come from THIS isolated headless sway, never Mae's
+/// session. Two outputs; on workspace 1, two windows (a then b, a focused last); on the named
+/// workspace "music", a floating c (urgent) and d moved to the scratchpad. With
+/// ALPHEUS_CAPTURE_SWAY=<directory>, writes the three replies there (once, to make them); always checks
+/// that the live replies give the state the committed fixtures give, ids aside.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn sway_fixtures_match_a_live_headless_sway() {
+    let sway = Sway::start("sway-fixtures", 2);
+    let _a = TestWindow::open(&sway, "fixture-a", "Fixture A");
+    let _b = TestWindow::open(&sway, "fixture-b", "Fixture B");
+    sway.command("workspace music");
+    let _c = TestWindow::open(&sway, "fixture-c", "Fixture C");
+    sway.command("floating enable");
+    let _d = TestWindow::open(&sway, "fixture-d", "Fixture D");
+    sway.command("move scratchpad");
+    sway.command("workspace 1");
+    sway.command("[app_id=fixture-a] focus");
+    sway.command("[app_id=fixture-c] urgent enable");
+    let workspaces = sway.ipc_raw(1, b"");
+    let tree = sway.ipc_raw(4, b"");
+    let refused = sway.ipc_raw(2, b"[\"no-such-event\"]");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    if let Some(dir) = std::env::var_os("ALPHEUS_CAPTURE_SWAY") {
+        let dir = Path::new(&dir);
+        std::fs::write(dir.join("sway-workspaces.json"), &workspaces).unwrap();
+        std::fs::write(dir.join("sway-tree.json"), &tree).unwrap();
+        std::fs::write(dir.join("sway-subscribe-refused.json"), &refused).unwrap();
+    }
+    let read = |name: &str| std::fs::read(fixtures.join(name)).unwrap_or_else(|e| panic!("{name}: {e} (capture first)"));
+    let live = alpheus_demon::compositor::sway::state(&workspaces, &tree).unwrap();
+    let fixture = alpheus_demon::compositor::sway::state(&read("sway-workspaces.json"), &read("sway-tree.json")).unwrap();
+    let shape = |e: &alpheus_demon::compositor::CompositorState| {
+        let tops: Vec<_> = e.toplevels.iter().map(|t| (t.class.clone(), t.title.clone(), t.workspace.clone(), t.focused)).collect();
+        (e.workspaces.clone(), e.window.clone(), tops)
+    };
+    assert_eq!(shape(&live), shape(&fixture), "the committed fixtures still describe what this sway sends");
+    assert!(con_id(&tree, "fixture-a").is_some());
+    let refusal: serde_json::Value = serde_json::from_slice(&refused).unwrap();
+    assert_eq!(refusal.get("success").and_then(|s| s.as_bool()), Some(false), "{refusal}");
+}
+
+/// The bar of the backend tests: workspaces at the left edge, then the title, the clock at the right.
+const BACKEND_BAR: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+
+/// Pixels of the bar's text band — rows 4 to 17, columns [x0, x1) — that differ from the bar's own
+/// background (its pixel at (x1, 1), above any text).
+fn ink(shot: &Ppm, x0: u32, x1: u32) -> usize {
+    let Some(background) = shot.at(x1, 1) else { return 0 };
+    (4..18).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter(|&(x, y)| shot.at(x, y).is_some_and(|p| p != background)).count()
+}
+
+/// Mango and Sway spec § 6: on the isolated headless sway, read as the compositor ($SWAYSOCK of
+/// THIS sway), the bar shows the focused window's title, a click on workspace 1 runs `wm-set
+/// workspace 1 HEADLESS-1` (a fake wm-set), and the title goes with the window.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn under_sway_the_bar_shows_the_workspaces_and_the_title() {
+    let sway = Sway::start("sway-bar", 1);
+    let window = TestWindow::open(&sway, "alpheus-test", "Fixture window");
+    fake_recorder(&sway, "wm-set");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    assert!(d.wait_for("compositor: Sway ($SWAYSOCK)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) > 30), "the window's title is drawn");
+    sway.click(12, 10, "button1"); // column 1: workspace 1's cell
+    assert!(
+        wait_until(|| recorded(&sway, "wm-set").iter().any(|l| l == "wm-set workspace 1 HEADLESS-1")),
+        "{:?} {:?}",
+        recorded(&sway, "wm-set"),
+        d.log()
+    );
+    sway.command("[app_id=alpheus-test] kill");
+    assert!(wait_until(|| window.is_closed()), "sway closed the test window");
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) == 0), "the title went with the window");
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+}
+
+/// Spec § 6: under Sway the launcher lists the window; Enter on it runs `wm-set focus-window
+/// id:<its con_id>` (a fake wm-set).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn under_sway_the_launcher_lists_and_focuses_a_window() {
+    let sway = Sway::start("sway-launcher", 1);
+    let _window = TestWindow::open(&sway, "alpheus-test", "Fixture window");
+    let id = con_id(&sway.ipc_raw(4, b""), "alpheus-test").expect("the window in this sway's tree");
+    fake_recorder(&sway, "wm-set");
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "Fixture", "-k", "Return"]).success());
+    let expected = format!("wm-set focus-window id:{id}");
+    assert!(wait_until(|| recorded(&sway, "wm-set").contains(&expected)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+}
+
+/// Spec § 6: under Mango (a fake socket serving the real captures, outputs renamed after headless
+/// sway's), the two watch lines, the active output's title, a click on tag 1 runs `wm-set
+/// workspace 1 HEADLESS-1`.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn under_mango_the_bar_reads_the_fake_mangos_tags() {
+    let sway = Sway::start("mango-bar", 1);
+    let mango = FakeMango::start(&sway.runtime);
+    fake_recorder(&sway, "wm-set");
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Mango(&mango.socket), ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("compositor: Mango ($MANGO_INSTANCE_SIGNATURE)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(wait_until(|| mango.requests() == ["watch all-clients", "watch all-monitors"]), "{:?}", mango.requests());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) > 30), "Terminal 2, the active output's client");
+    sway.click(12, 10, "button1");
+    assert!(
+        wait_until(|| recorded(&sway, "wm-set").iter().any(|l| l == "wm-set workspace 1 HEADLESS-1")),
+        "{:?} {:?}",
+        recorded(&sway, "wm-set"),
+        d.log()
+    );
+    assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }

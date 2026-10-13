@@ -394,10 +394,14 @@ mod tests {
     }
 
     #[test]
-    fn displays_under_niri_or_loading_or_failed() {
-        let mut a = displays_tab();
-        a.displays.niri = true;
-        assert!(draw(&a, 80, 24).0.join("\n").contains("Displays: not available under niri yet"));
+    fn displays_under_sway_or_niri_or_loading_or_failed() {
+        for name in ["Sway", "niri"] {
+            let mut a = displays_tab();
+            a.displays.unavailable = Some(name);
+            let all = draw(&a, 80, 24).0.join("\n");
+            assert!(all.contains(&format!("Displays: not available under {name} yet")), "{all}");
+            assert!(!all.contains("[ Bureau ]"), "nothing else on the tab");
+        }
         let mut a = displays_tab();
         a.data.displays = Loadable::Failed("wm-set failed (code 1): unknown subcommand: outputs".into());
         let all = draw(&a, 100, 24).0.join("\n");

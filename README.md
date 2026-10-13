@@ -71,6 +71,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, open with a 300-line command source | ≈ +2.4–2.5 MB over closed (≈ +1.9–2.4 MB with no source) | headless sway, 300 synthetic apps, `tests/memory.rs` `launcher_sources_pss_latency_and_rest`, 3 runs |
 | Launcher, a 300-line source's entries | ≈ 15–17 ms after the request (median of 21 opens) | the box shows first: open latency ≈ 1.7–2.2 ms median against 1.6–1.9 ms with no source; 0 wake-ups at rest after; the harness drifts between runs: trust the deltas |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
+| Sway and Mango backends, linked in | +132…+140 KB vs. the delivery before this one | binary 5.83 → 5.97 MiB (+140 KiB stripped); measured `2b137f0` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (the fake Hyprland on both sides): the code linked in, unused |
+| Bar daemon under Sway and under Mango, all modules, 3 outputs — at start | Sway 8.9–9.0 MB, Mango 8.9 MB (the fake Hyprland 8.9–9.0 MB in the same runs; Sway −16…+68 KB, Mango −136…−44 KB against it) | `startup_pss_per_backend`, 3 runs: Sway is the headless sway itself, read through its i3 IPC (two connections on the existing compositor thread), Mango a fake socket serving the real 0.18 captures (two watch connections, one `poll`); 6 threads under each; 0 compositor-thread wake-ups at rest under both (`at_rest_no_wakeups_under_sway_and_mango`; 0 whole-daemon wake-ups in 5 runs of 6; 2 once under Mango, in run 1, the full memory suite, cause not investigated, the compositor thread at 0 throughout) |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -105,7 +107,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 The control center (`alpheus`, TUI) is not resident: it opens on demand
 and exits.
 
-Hyprland and niri. Mouse and keyboard everywhere.
+Hyprland, Sway, Mango and niri. Mouse and keyboard everywhere.
 
 Sleep and screen power-off remain the job of dedicated tools (hypridle,
 swayidle…): alpheus never touches them. On some outputs (DisplayLink in
@@ -140,7 +142,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | **Panels** | | | | | |
 | Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
 | Power menu | ✅ the panel's session buttons (reboot and power off ask first) and the TUI | ✅ | ✅ | ✅ | ❌ |
-| Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
+| Display settings | ✅ TUI (Hyprland; Mango through `wm-set` once nixos-config writes its monitors.conf; a message under Sway and niri) | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | 🚧 Wi-Fi in the quick panel (`More…` opens nmtui for enterprise, hidden networks, VPN, hotspot); Bluetooth next; per-app audio in the TUI (wiremix) | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
@@ -165,13 +167,16 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Screenshots, recording | 💭 | ➖ | ➖ | ❌ | ❌ |
 | Idle and power management | ❌ left to hypridle (DisplayLink safety) | ✅ | ✅ | ✅ | ➖ |
 | Shows on (layer-shell compositors: Hyprland, niri, sway, river, labwc…) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Workspaces and windows read from | Hyprland, niri | 7 compositors | 6 compositors | Hyprland, niri, sway | many (one module each) |
+| Workspaces and windows read from | Hyprland, Sway, Mango, niri | 7 compositors | 6 compositors | Hyprland, niri, sway, Mango | many (one module each) |
+| Sway: workspaces, title, the launcher's windows | ✅ the i3 IPC on `$SWAYSOCK`, read only (GET_WORKSPACES, GET_TREE, SUBSCRIBE to workspace and window events), one re-read per burst | ✅ | ✅ | ✅ | ✅ |
+| Mango: tags, title, the launcher's windows | ✅ Mango's own socket, read only (two `watch` lines), one `poll`: tags per output (active, urgent, occupied; empty ones hidden), the overview, a focus history for the launcher | ✅ | ❌⁴ | ✅ | ✅ |
 | Extensions | script mode, no plugin API | ✅ | ✅ ~100 | ❌ | ➖ |
 
 ¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. ³ waybar + mako +
 swayosd + swaybg, from PSS figures of different days (see the memory note
-above). Other shells' features from their documentation (October 2026);
-memory measured on the author's laptop.
+above). Other shells' features from their documentation or source (October 2026);
+memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
+(October 2026, unverified).
 
 ## What's in the repository
 
@@ -251,7 +256,7 @@ At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
 of memory at start (≈ 8.4–8.5 MB with a tray of 10 items, launcher module off) and ≈ 9.6–9.7 MB under load,
 on three outputs. The
-compositor is only **read** (Hyprland or niri event stream); switching
+compositor is only **read** (Hyprland's or niri's event stream, Sway's i3 IPC, Mango's watch sockets); switching
 workspace goes through a configurable command. Sound comes from
 `pw-dump`, network, battery and Bluetooth from D-Bus (read-only),
 resources from `/proc`. The tray talks to the session bus

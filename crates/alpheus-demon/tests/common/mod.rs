@@ -348,6 +348,20 @@ pub enum PwDump {
     Fifo,
 }
 
+/// Which compositor the daemon reads, through its environment: the tests' fake Hyprland unless a
+/// test says otherwise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Backend<'a> {
+    /// `HYPRLAND_INSTANCE_SIGNATURE` = `SIGNATURE`: the `FakeHyprland` every older test starts.
+    #[default]
+    FakeHyprland,
+    /// `SWAYSOCK` = THIS headless sway's own IPC socket: the sway the bar draws on is the
+    /// compositor it reads.
+    Sway,
+    /// `MANGO_INSTANCE_SIGNATURE` = a `FakeMango`'s socket, in this test's runtime directory.
+    Mango(&'a Path),
+}
+
 pub struct DaemonOptions<'a> {
     /// Written to `$XDG_CONFIG_HOME/alpheus/bar.toml` when given.
     pub bar_toml: Option<&'a str>,
@@ -361,6 +375,8 @@ pub struct DaemonOptions<'a> {
     pub launcher_toml: Option<&'a str>,
     /// Extra .desktop files written to $XDG_DATA_HOME/applications: (file name, content).
     pub desktop_files: &'a [(&'a str, &'a str)],
+    /// The compositor the daemon reads.
+    pub backend: Backend<'a>,
 }
 
 impl Default for DaemonOptions<'_> {
@@ -372,6 +388,7 @@ impl Default for DaemonOptions<'_> {
             session_bus: None,
             launcher_toml: None,
             desktop_files: &[],
+            backend: Backend::FakeHyprland,
         }
     }
 }
@@ -613,7 +630,8 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let path = env::join_paths([bin, coreutils_dir()]).unwrap();
     let no_bus = format!("unix:path={}", sway.runtime.join("no-system-bus").display());
     let no_session_bus = format!("unix:path={}", sway.runtime.join("no-session-bus").display());
-    let mut child = Command::new(daemon_binary())
+    let mut command = Command::new(daemon_binary());
+    command
         .env_clear()
         .env("PATH", path)
         .env("HOME", &sway.runtime)
@@ -623,16 +641,18 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
         .env("XDG_DATA_DIRS", &data_dirs)
         .env("XDG_STATE_HOME", sway.runtime.join("state"))
         .env("WAYLAND_DISPLAY", &sway.wayland)
-        .env("HYPRLAND_INSTANCE_SIGNATURE", SIGNATURE)
         // Never the machine's system bus: a private one, or none at all.
         .env("DBUS_SYSTEM_BUS_ADDRESS", o.system_bus.map(String::from).unwrap_or(no_bus))
         // Never the user's session bus either: a private one, or none (XDG_RUNTIME_DIR is sway's, without a `bus`).
         .env("DBUS_SESSION_BUS_ADDRESS", o.session_bus.map(String::from).unwrap_or(no_session_bus))
-        .env("ALPHEUS_POLICES", env::var_os("ALPHEUS_POLICES").unwrap_or_default())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .env("ALPHEUS_POLICES", env::var_os("ALPHEUS_POLICES").unwrap_or_default());
+    // One compositor variable, never the session's own: the daemon reads this test's compositor only.
+    match o.backend {
+        Backend::FakeHyprland => command.env("HYPRLAND_INSTANCE_SIGNATURE", SIGNATURE),
+        Backend::Sway => command.env("SWAYSOCK", &sway.ipc),
+        Backend::Mango(socket) => command.env("MANGO_INSTANCE_SIGNATURE", socket),
+    };
+    let mut child = command.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
     let j = log.clone();
     let err = child.stderr.take().unwrap();
@@ -1182,6 +1202,12 @@ pub mod mpris;
 
 #[path = "../support/notify.rs"]
 pub mod notify;
+
+#[path = "../support/sway_client.rs"]
+pub mod sway_client;
+
+#[path = "../support/fake_mango.rs"]
+pub mod fake_mango;
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 

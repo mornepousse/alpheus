@@ -1,10 +1,51 @@
 //! What the bar knows about the compositor, whichever it is: workspaces,
-//! windows per workspace, urgency, active window. `hypr` and `niri`
+//! windows per workspace, urgency, active window. `hypr`, `niri`, `mango` and `sway`
 //! translate their compositor into this normalized state; the rest of the
 //! daemon only ever sees this one.
 
 pub mod hypr;
+pub mod mango;
 pub mod niri;
+pub mod sway;
+
+/// Levels of JSON nesting (`{` and `[`) a Sway reply or a Mango line may reach, checked before
+/// serde_json recurses into it. Measured on a 256 KiB thread (the compositor thread's stack) in a
+/// debug build: serde_json overflows at 128 levels of sway's object/`nodes` shape and at about 110
+/// levels of objects with several keys (before its own limit of 128); with 24 KiB of the stack
+/// already used, the latter parse at 95 levels and overflow at 100. A release build refuses 1,000
+/// levels at 128 even on 64 KiB. 90 levels parse in both shapes with that 24 KiB used
+/// (`sway::tests::a_reply_at_max_nesting_parses_on_the_compositor_stack`). They hold about 44
+/// Sway containers (a tree `sway::MAX_DEPTH` deep would need about 130 levels); a real tree nests
+/// a handful, a Mango line 4.
+pub const MAX_NESTING: usize = 90;
+
+/// The text nests past MAX_NESTING, counted outside strings. One pass, no recursion.
+pub(crate) fn too_deep(bytes: &[u8]) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for &b in bytes {
+        if in_string {
+            match b {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_NESTING {
+                    return true;
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompositorState {
@@ -20,9 +61,9 @@ pub struct CompositorState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toplevel {
     /// What the `focus` template's {window} becomes: "address:0x583d9c60da90"
-    /// (Hyprland), "id:12" (niri) — the selectors `wm-set focus-window` takes.
+    /// (Hyprland), "id:12" (niri, Mango, Sway) — the selectors `wm-set focus-window` takes.
     pub selector: String,
-    /// Hyprland class / niri app_id.
+    /// Hyprland class / niri, Mango and Sway app_id (Sway: the X11 class under Xwayland).
     pub class: String,
     pub title: String,
     /// Workspace name as the bar shows it.
@@ -48,7 +89,7 @@ pub struct Workspace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
-    /// Class (Hyprland) or app_id (niri).
+    /// Class (Hyprland) or app_id (niri, Mango, Sway).
     pub class: String,
     pub title: String,
 }
@@ -109,6 +150,20 @@ pub(crate) fn example() -> CompositorState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pre-check counts `{` and `[` outside strings only: brackets in a title, or after an
+    /// escaped quote, are text.
+    #[test]
+    fn nesting_is_counted_outside_strings() {
+        let brackets = "[{".repeat(200);
+        assert!(!too_deep(format!(r#"{{"name":"{brackets}"}}"#).as_bytes()));
+        assert!(!too_deep(format!(r#"{{"name":"q\"{brackets}\\"}}"#).as_bytes()), "an escaped quote stays inside");
+        assert!(too_deep(format!(r#"{{"name":"\\",{brackets}}}"#).as_bytes()), "an escaped backslash ends the string");
+        let levels = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
+        assert!(!too_deep(levels(MAX_NESTING).as_bytes()));
+        assert!(too_deep(levels(MAX_NESTING + 1).as_bytes()));
+        assert!(!too_deep(format!("{}{}", levels(MAX_NESTING), levels(MAX_NESTING)).as_bytes()), "depth, not a count");
+    }
 
     #[test]
     fn workspaces_by_output_and_unknown_output() {

@@ -93,7 +93,7 @@ fn the_source_never_talks_to_the_compositor_or_the_displays_directly() {
     assert!(files.len() > 10);
     for f in files {
         let t = std::fs::read_to_string(&f).unwrap().to_lowercase();
-        for word in ["dpms", "hyprctl", "niri msg", "swaymsg"] {
+        for word in ["dpms", "hyprctl", "niri msg", "swaymsg", "mmsg"] {
             assert!(!t.contains(word), "\"{word}\" in {}", f.display());
         }
     }
