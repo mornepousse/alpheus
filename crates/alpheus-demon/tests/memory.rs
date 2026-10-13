@@ -18,12 +18,13 @@
 mod common;
 
 use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
+use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway, TempDir,
-    UUID_HOME, Workstation, assert_no_spin, fake_source, fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with, volume_delta,
-    write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway,
+    TempDir, UUID_HOME, Workstation, assert_no_spin, fake_source, fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with,
+    volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -485,6 +486,17 @@ fn pss_under_30mb_and_stable() {
     assert!(d.log().iter().all(|l| !l.contains("sound source down")), "pw-dump kept up: {:?}", d.log());
 }
 
+/// Every module, the launcher's included, as a `modules` list: `startup_pss_per_source`'s
+/// "everything" case and `EVERYTHING`, one literal for both.
+macro_rules! every_module {
+    () => {
+        "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\""
+    };
+}
+
+/// Every module, the launcher's included: `startup_pss_per_source`'s "everything" case.
+const EVERYTHING: &str = concat!("modules = [", every_module!(), "]\n");
+
 /// Startup PSS per source, against the firm 15 MB budget: plan 1's modules
 /// alone, then each new source on its own, then everything. Printed for
 /// the task report (step 6): which source costs what.
@@ -500,10 +512,7 @@ fn startup_pss_per_source() {
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
         ("+ launcher", "\"launcher\", \"workspaces\", \"window\", \"clock\""),
-        (
-            "everything",
-            "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"resources\", \"clock\"",
-        ),
+        ("everything", every_module!()),
     ];
     let mut report = Vec::new();
     for (i, (what, modules)) in cases.iter().enumerate() {
@@ -1602,4 +1611,76 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
     assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 10 s: its tap and its bus are quiet");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The bar on `outputs` headless outputs reading this sway itself (`mango` false: $SWAYSOCK) or a
+/// FakeMango in its runtime directory; the system bus `bus`, pw-dump silent.
+fn start_reading(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&str>, mango: bool) -> (Sway, Option<FakeMango>, Daemon) {
+    let sway = Sway::start(name, outputs);
+    let fake = mango.then(|| FakeMango::start(&sway.runtime));
+    let backend = match &fake {
+        Some(m) => Backend::Mango(&m.socket),
+        None => Backend::Sway,
+    };
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml, system_bus: Some(&bus.address), pw_dump: PwDump::Silent, backend, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for(&format!("bar placed on HEADLESS-{outputs}"), DELAY), "{:?}", d.log());
+    (sway, fake, d)
+}
+
+/// Mango and Sway spec § 6: startup PSS, every module, 3 outputs, under each backend — the fake
+/// Hyprland (the reference, as `startup_pss_per_source`), Sway (this headless sway read through
+/// its i3 IPC), Mango (a fake socket serving the real captures). Printed for the README rows.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn startup_pss_per_backend() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("per-backend");
+    let _workstation = Workstation::serve(&bus);
+    let mut report = Vec::new();
+    {
+        let (_sway, _hypr, d) = start("per-backend-hyprland", 3, &bus, None, Some(EVERYTHING), PwDump::Silent);
+        std::thread::sleep(Duration::from_secs(3));
+        report.push(("Hyprland (fake)", d.pss_kb()));
+    }
+    for (what, line, mango) in [("Sway", "compositor: Sway", false), ("Mango (fake socket)", "compositor: Mango", true)] {
+        let (_sway, _mango, d) =
+            start_reading(&format!("per-backend-{}", if mango { "mango" } else { "sway" }), 3, &bus, Some(EVERYTHING), mango);
+        assert!(d.wait_for(line, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
+        report.push((what, d.pss_kb()));
+        assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
+    }
+    eprintln!("startup PSS per backend (KB): {report:?}");
+    for (what, kb) in &report {
+        assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
+    }
+}
+
+/// Mango and Sway spec § 6: at rest under Sway and under Mango, the compositor thread never wakes
+/// (both block without a timeout), the daemon as at rest under the fake Hyprland.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_under_sway_and_mango() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("rest-backends");
+    let _workstation = Workstation::serve(&bus);
+    for (what, mango) in [("Sway", false), ("Mango", true)] {
+        let (_sway, _mango, d) = start_reading(&format!("rest-{}", what.to_lowercase()), 3, &bus, Some(AT_REST), mango);
+        assert!(d.wait_for(&format!("compositor: {what}"), DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(2)); // end of startup
+        let before = d.wakeups();
+        let compositor_before = d.thread_wakeups("compositor").expect("the compositor thread runs");
+        let ticks = d.cpu_ticks();
+        std::thread::sleep(Duration::from_secs(5));
+        assert_no_spin(d.cpu_ticks() - ticks, Duration::from_secs(5), what);
+        let delta = d.wakeups().saturating_sub(before);
+        let compositor = d.thread_wakeups("compositor").unwrap().saturating_sub(compositor_before);
+        eprintln!("wake-ups at rest under {what} (5 s): {delta} in all, compositor thread {compositor}");
+        assert_eq!(compositor, 0, "the {what} source wakes at rest");
+        assert!(delta <= 4, "{delta} wake-ups in 5 s at rest under {what}");
+        assert!(d.log().iter().all(|l| !l.contains("source down")), "every source up: {:?}", d.log());
+    }
 }
