@@ -605,6 +605,11 @@ fn coreutils_dir() -> PathBuf {
     // could activate on the session: assert it, don't just assume it.
     assert!(!dir.join("systemd-run").exists(), "coreutils dir {} also has systemd-run", dir.display());
     assert!(!dir.join("wm-set").exists(), "coreutils dir {} also has wm-set", dir.display());
+    // Nor the session's own commands the power menu runs (power spec § 5): a fake one missing
+    // fails to start, never reaches the real one.
+    for real in ["systemctl", "loginctl"] {
+        assert!(!dir.join(real).exists(), "coreutils dir {} also has {real}", dir.display());
+    }
     dir
 }
 

@@ -8,8 +8,8 @@
 //! absent from the configuration entirely does the free space fall back to
 //! preceding the last module. Narrow screen: modules disappear by priority
 //! (resources, the tray, media, title, then Bluetooth, network, volume,
-//! battery, and last the launcher button); workspaces, the clock and the
-//! notifications bell always stay.
+//! battery, the launcher button, and last the power button); workspaces, the
+//! clock and the notifications bell always stay.
 //!
 //! Groups (shapes spec § 2): consecutive modules of one kind (`group_kind`) make one block, never
 //! across the free space. `flat` and `underline` keep the "│" separators; the block styles put
@@ -28,9 +28,10 @@ use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 /// Order of disappearance when space runs short: the spec's (resources,
 /// media, title), then the system indicators (Q9); the tray goes right
 /// after resources (Mae, tray plan 2 question 1), and the launcher button
-/// last (Mae, 2026-10-05: `Mod+Space` still opens the launcher). Workspaces,
-/// the clock and the bell always stay.
-const REMOVAL: [ModuleId; 9] = [
+/// after the system indicators (Mae, 2026-10-05: `Mod+Space` still opens the
+/// launcher), then the power button, the last of all (power spec § 1).
+/// Workspaces, the clock and the bell always stay.
+const REMOVAL: [ModuleId; 10] = [
     ModuleId::Resources,
     ModuleId::Tray,
     ModuleId::Media,
@@ -40,6 +41,7 @@ const REMOVAL: [ModuleId; 9] = [
     ModuleId::Volume,
     ModuleId::Battery,
     ModuleId::Launcher,
+    ModuleId::Power,
 ];
 /// Minimum title width before it disappears.
 const MIN_TITLE: u16 = 8;
@@ -91,6 +93,7 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
+        ModuleId::Power => GroupKind::Power,
     }
 }
 
@@ -109,7 +112,8 @@ pub const fn module_hue(m: ModuleId) -> Option<Hue> {
         | ModuleId::Notifications
         | ModuleId::Osd
         | ModuleId::Quick
-        | ModuleId::Clock => None,
+        | ModuleId::Clock
+        | ModuleId::Power => None,
     }
 }
 
@@ -244,6 +248,8 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Osd => None,
         // The quick panel is a popup (quick.rs), never a segment.
         ModuleId::Quick => None,
+        // ⏻ alone; none when `[quick]` has no session command (power spec § 1).
+        ModuleId::Power => segments::power(&bar.config.quick),
     }
 }
 
@@ -431,16 +437,16 @@ mod tests {
         let (t, s) = (g.text(), g.styles());
         assert_eq!(g.width(), 100);
         assert!(t.starts_with(" \u{f0349} │  2·  4!····+  5  │ \u{f0239} Web page — Mozilla Firefox "), "launcher button first: {t}");
-        assert!(t.ends_with(" │ Sun 4 Oct 14:05 "), "{t}");
+        assert!(t.ends_with(" │ Sun 4 Oct 14:05 │ \u{23fb} "), "the power button last: {t}");
         assert!(s.starts_with("..mmmAAAAuuuuuuuuummmmmm"), "{s}");
-        assert!(s.ends_with("mmmmmmmmmmmmmGGGGG."), "{s}");
+        assert!(s.ends_with("mmmmmmmmmmmmmGGGGGmmm.."), "{s}");
         insta::assert_snapshot!("hdmi_100", snapshot(&g));
     }
 
     #[test]
     fn title_truncated_then_removed_when_space_is_short() {
         let g = bar().grid("HDMI-A-1", 60);
-        assert!(g.text().contains("Web page — Moz…"), "{}", g.text());
+        assert!(g.text().contains("Web page —…"), "{}", g.text());
         insta::assert_snapshot!("hdmi_60", snapshot(&g));
         let g = bar().grid("HDMI-A-1", 40);
         let t = g.text();
@@ -454,16 +460,19 @@ mod tests {
         for w in [0u16, 1, 5, 12, 39] {
             assert_eq!(bar().grid("HDMI-A-1", w).width(), w);
         }
-        // At 40 columns the title has disappeared (see
+        // At 44 columns the title has disappeared (see
         // title_truncated_then_removed_when_space_is_short), but the
-        // launcher button, workspaces and the clock are all still shown
-        // whole (1 + 16 + 15 cells, 2 separators, 2 margins). At 39 the
-        // button goes too (last of REMOVAL); workspaces and the clock,
-        // never removed, stay whole.
-        let t = bar().grid("HDMI-A-1", 40).text();
-        assert!(t.starts_with(" \u{f0349} │ ") && t.contains(" 4!····+ ") && t.ends_with(" 14:05 "), "{t}");
+        // launcher button, workspaces, the clock and the power button are
+        // all still shown whole (1 + 16 + 15 + 1 cells, 3 separators, 2
+        // margins). At 43 the launcher button goes; at 39 the power button
+        // too (last of REMOVAL); workspaces and the clock, never removed,
+        // stay whole.
+        let t = bar().grid("HDMI-A-1", 44).text();
+        assert!(t.starts_with(" \u{f0349} │ ") && t.contains(" 4!····+ ") && t.ends_with(" 14:05 │ \u{23fb} "), "{t}");
+        let t = bar().grid("HDMI-A-1", 43).text();
+        assert!(!t.contains('\u{f0349}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05 │ \u{23fb} "), "{t}");
         let t = bar().grid("HDMI-A-1", 39).text();
-        assert!(!t.contains('\u{f0349}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05 "), "{t}");
+        assert!(!t.contains('\u{23fb}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05 "), "{t}");
     }
 
     #[test]
@@ -483,10 +492,12 @@ mod tests {
         let clock = Target::Module(ModuleId::Clock);
         let g = bar().grid("HDMI-A-1", 100);
         let t = g.text();
-        let start = t.chars().count() as u16 - " Sun 4 Oct 14:05 ".chars().count() as u16 + 1;
+        let start = t.chars().count() as u16 - " Sun 4 Oct 14:05 │ \u{23fb} ".chars().count() as u16 + 1;
         assert_eq!(g.target_at(start), Some(&clock), "the date's first cell: {t}");
-        assert_eq!(g.target_at(98), Some(&clock), "the time's last cell");
+        assert_eq!(g.target_at(94), Some(&clock), "the time's last cell");
         assert_eq!(g.target_at(start - 1), None, "the space before the date");
+        assert_eq!(g.target_at(95), None, "the separator after it");
+        assert_eq!(g.target_at(98), Some(&Target::Module(ModuleId::Power)), "the power button, its own zone");
         assert_eq!(g.target_at(99), None, "the margin");
         let mut b = bar();
         b.config.clock.calendar = false;
@@ -554,7 +565,7 @@ mod tests {
         assert!(b.grid("eDP-1", 40).text().starts_with(" \u{f0349} │  …  │ …"), "nothing received: \"…\"");
         let mut b = bar();
         b.apply(Msg::Compositor(None));
-        let t = b.grid("eDP-1", 40).text();
+        let t = b.grid("eDP-1", 44).text();
         assert!(t.starts_with(" \u{f0349} │  –  │ –"), "source down: \"–\" ({t})");
         assert!(t.contains("14:05"), "the rest of the bar carries on");
     }
@@ -569,14 +580,39 @@ mod tests {
                 assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "{output} at {w}");
             }
         }
-        let g = b.grid("HDMI-A-1", 40);
-        assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "40 columns: title gone, the button kept");
-        let g = b.grid("HDMI-A-1", 39);
-        assert!(!g.text().contains(crate::segments::LAUNCHER), "39 columns: the button dropped, after every other module: {}", g.text());
-        assert!((0..39).all(|x| g.target_at(x) != Some(&Target::Module(ModuleId::Launcher))), "and its click zone");
+        let g = b.grid("HDMI-A-1", 44);
+        assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "44 columns: title gone, the button kept");
+        let g = b.grid("HDMI-A-1", 43);
+        assert!(!g.text().contains(crate::segments::LAUNCHER), "43 columns: the button dropped, after every module but ⏻: {}", g.text());
+        assert!((0..43).all(|x| g.target_at(x) != Some(&Target::Module(ModuleId::Launcher))), "and its click zone");
         let mut b = bar();
         b.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock];
         assert!(!b.grid("HDMI-A-1", 60).text().contains(crate::segments::LAUNCHER), "removed from bar.toml: gone");
+    }
+
+    /// Power spec § 1: the power button is its own block with no hue, the last module removed, and
+    /// absent when `[quick]`'s four session commands are all empty.
+    #[test]
+    fn the_power_button_is_its_own_block_with_no_hue_removed_last_and_hidden_without_commands() {
+        assert_eq!(group_kind(ModuleId::Power), GroupKind::Power);
+        assert_eq!(module_hue(ModuleId::Power), None, "neutral, like the bell");
+        assert_eq!(REMOVAL.last(), Some(&ModuleId::Power), "after every other removable module");
+        let power = Target::Module(ModuleId::Power);
+        let g = bar().grid("HDMI-A-1", 100);
+        assert!(g.text().ends_with(" │ \u{23fb} "), "{}", g.text());
+        assert_eq!(g.styles().chars().nth(98), Some('.'), "the glyph in the bar's normal ink");
+        let mut b = bar();
+        b.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock, ModuleId::Power];
+        b.module_colors = ModuleColors::Pills;
+        let g = styled(b.clone(), BarStyle::Islands).grid("HDMI-A-1", 60);
+        assert_eq!(g.groups().last().map(|x| (x.kind, x.hue)), Some((GroupKind::Power, None)), "a block of its own, no hue");
+        let q = &mut b.config.quick;
+        (q.lock, q.reboot, q.poweroff) = (vec![], vec![], vec![]);
+        let g = b.grid("HDMI-A-1", 60);
+        assert!(!g.text().contains('\u{23fb}') && g.text().ends_with(" 14:05 "), "all four empty: no button: {}", g.text());
+        assert!(g.zones().iter().all(|z| z.target != power), "nor its zone");
+        b.config.quick.logout = vec!["fake-logout".into()];
+        assert!(b.grid("HDMI-A-1", 60).text().ends_with(" │ \u{23fb} "), "one command is enough");
     }
 
     #[test]
@@ -630,7 +666,7 @@ mod tests {
         let mut b = bar();
         b.apply(Msg::Compositor(Some(e)));
         let t = b.grid("HDMI-A-1", 60).text();
-        assert_eq!(t.matches('│').count(), 2, "launcher, workspaces and clock only: {t}");
+        assert_eq!(t.matches('│').count(), 3, "launcher, workspaces, clock and ⏻ only: {t}");
 
         // With no workspace at all known to the compositor: same thing for
         // the workspaces module.
@@ -642,7 +678,7 @@ mod tests {
         let mut b2 = bar();
         b2.apply(Msg::Compositor(Some(e2)));
         let t2 = b2.grid("HDMI-A-1", 60).text();
-        assert_eq!(t2.matches('│').count(), 2, "launcher, window and clock only: {t2}");
+        assert_eq!(t2.matches('│').count(), 3, "launcher, window, clock and ⏻ only: {t2}");
 
         // While waiting or down, "…" / "–" stay shown for both modules
         // (covered by `waiting_and_down`), never removed.
@@ -814,17 +850,18 @@ mod tests {
         let t = g.text();
         assert!(!t.contains('│'), "{t}");
         assert!(t.starts_with("  \u{f0349}    2·  4!····+  5    \u{f0239} Web page — Mozilla Firefox "), "{t}");
-        assert!(t.ends_with(" Sun 4 Oct 14:05  "), "the clock's pad, then the margin: {t}");
+        assert!(t.ends_with(" Sun 4 Oct 14:05   \u{23fb}  "), "the clock's block, the power button's own, then the margin: {t}");
         assert_eq!(
             g.groups(),
             &[
                 group(GroupKind::Launcher, 1, 4, None),
                 group(GroupKind::Workspaces, 5, 23, None),
                 group(GroupKind::Title, 24, 54, Some(Hue::Purple)),
-                group(GroupKind::Clock, 82, 99, None),
+                group(GroupKind::Clock, 78, 95, None),
+                group(GroupKind::Power, 96, 99, None),
             ]
         );
-        assert_eq!(g.split(), 81, "the title's free space and closing pad end where the right-hand side starts");
+        assert_eq!(g.split(), 77, "the title's free space and closing pad end where the right-hand side starts");
         assert_eq!(g.target_at(2), Some(&Target::Module(ModuleId::Launcher)), "the zones follow the cells");
         assert_eq!(g.target_at(6), Some(&Target::Workspace { reference: "2".into(), output: "HDMI-A-1".into() }));
         insta::assert_snapshot!("blocks_hdmi_100", snapshot(&g));

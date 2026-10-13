@@ -21,7 +21,9 @@ use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
+use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
+use alpheus_demon::session::{self, Session};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
@@ -847,8 +849,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
         // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
         // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
-        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending.
-        ("wayland.rs", "Timer::", 7),
+        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
+        // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending.
+        ("wayland.rs", "Timer::", 8),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -1097,7 +1100,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 32] = [
+const NO_THREAD_NOR_COMMAND: [&str; 34] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1130,6 +1133,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 32] = [
     "sources/mango.rs",
     "compositor/sway.rs",
     "sources/sway.rs",
+    "session.rs",
+    "power.rs",
 ];
 
 #[test]
@@ -1830,7 +1835,7 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "session.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -1944,6 +1949,119 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
+}
+
+/// Power spec § 3, § 5: whatever keys, hovers and presses reach the menu — every pair of keys at
+/// once, then a third past CONFIRM_AFTER; every row pressed twice, at once and past it — it only ever
+/// runs a `[quick]` session entry whose command is set, each one is reached, and reboot or power
+/// off never run without a second activation CONFIRM_AFTER after the first.
+#[test]
+fn every_power_menu_activation_is_a_configured_session() {
+    let keys = [Key::Up, Key::Down, Key::Tab, Key::BackTab, Key::Enter, Key::Char(' '), Key::Escape, Key::Home, Key::Left, Key::Char('x')];
+    let t = Instant::now();
+    let later = t + session::CONFIRM_AFTER;
+    for mask in 0..16u8 {
+        let set = |bit: u8, argv: &str| if mask & bit != 0 { vec![argv.to_string()] } else { Vec::new() };
+        let config = QuickConfig {
+            lock: set(1, "fake-lock"),
+            logout: set(2, "fake-logout"),
+            reboot: set(4, "fake-reboot"),
+            poweroff: set(8, "fake-poweroff"),
+            ..QuickConfig::default()
+        };
+        let Some(fresh) = Power::new(&config) else {
+            assert_eq!(mask, 0, "a command set: a menu");
+            continue;
+        };
+        let mut ran: Vec<Session> = Vec::new();
+        // `before`: the question pending just before a late activation; reboot and power off run only
+        // when it was theirs.
+        let mut record = |a: PowerAction, late: bool, before: Option<(Session, Instant)>| {
+            if let PowerAction::RunAndClose(s) = a {
+                assert!(!s.command(&config).is_empty(), "{s:?} has no command (mask {mask:04b})");
+                assert!(
+                    !s.asks() || (late && matches!(before, Some((q, _)) if q == s)),
+                    "{s:?} ran without a question of its own and a second activation 0.4 s later (mask {mask:04b})"
+                );
+                ran.push(s);
+            }
+        };
+        for k1 in keys {
+            for k2 in keys {
+                let mut p = fresh.clone();
+                record(p.key(k1, false, t), false, None);
+                record(p.key(k2, false, t), false, None);
+                for k3 in keys {
+                    let mut q = p.clone();
+                    let before = q.question;
+                    record(q.key(k3, false, later), true, before);
+                }
+            }
+        }
+        for row in 0..6u16 {
+            let mut p = fresh.clone();
+            record(p.press(row, t), false, None);
+            record(p.press(row, t), false, None);
+            let before = p.question;
+            record(p.press(row, later), true, before);
+            let mut p = fresh.clone();
+            record(p.hover(row), false, None);
+            record(p.key(Key::Enter, false, t), false, None);
+            let before = p.question;
+            record(p.key(Key::Enter, false, later), true, before);
+        }
+        for s in session::configured(&config) {
+            assert!(ran.contains(&s), "{s:?} never reached (mask {mask:04b})");
+        }
+        for s in &ran {
+            let line = s.command(&config).join(" ");
+            assert!(!line.contains("suspend") && !line.contains("hibernate") && !line.to_lowercase().contains("dpms"), "{line}");
+        }
+    }
+}
+
+/// Power spec § 5: no panic in the power menu's production code.
+#[test]
+fn the_power_menu_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["power.rs", "power_app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Power spec § 3, § 4: whatever closes the menu (Escape, an entry run, an outside click, a restyle,
+/// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
+/// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
+/// in a unit test: the wiring is checked in the source.
+#[test]
+fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (popup, power_app) = (src("popup.rs"), src("power_app.rs"));
+    let close = function_body(&popup, "pub fn popup_close(");
+    assert!(close.contains("self.power_closed()"), "popup_close must let the power menu's timer go: {close}");
+    let closed = function_body(&power_app, "pub(crate) fn power_closed(");
+    assert!(closed.contains("power_timer.sync(") && closed.contains("None"), "{closed}");
+    let tick = function_body(&power_app, "pub(crate) fn power_tick(");
+    let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
+    assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
+    let refresh = function_body(&power_app, "fn power_refresh(");
+    assert!(refresh.contains("self.power_timer_sync()"), "the timer follows every repaint: {refresh}");
+    let spawn = function_body(&power_app, "fn power_spawn(");
+    assert!(spawn.contains("s.command(&self.bar.config.quick)") && spawn.contains("spawn_session("), "{spawn}");
+    let session = function_body(&power_app, "pub(crate) fn spawn_session(");
+    assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
+    assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");
+    assert_eq!(power_app.matches("spawn_session(").count(), 2, "defined once, called once: {power_app}");
+    // A held Enter acts once (power spec § 2): the menu's key arm hands the keyboard's own repeat
+    // flag to the model, never a constant.
+    let key = function_body(&popup, "pub(crate) fn popup_key(");
+    let arm = key.split("PopupBody::Power(_) =>").nth(1).and_then(|a| a.split("PopupBody::").next()).unwrap_or_default();
+    assert!(arm.contains("self.key_repeat") && arm.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {arm}");
 }
 
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a

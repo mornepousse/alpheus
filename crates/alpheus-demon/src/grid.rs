@@ -148,6 +148,8 @@ pub enum GroupKind {
     Launcher,
     /// The media module: a block of its own (media spec § 1).
     Media,
+    /// The power button: a block of its own (power spec § 1).
+    Power,
 }
 
 /// One block: cells [start, end) of the bar's grid, its pads included under the block styles;

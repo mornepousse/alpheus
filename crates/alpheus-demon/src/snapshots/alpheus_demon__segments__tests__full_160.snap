@@ -2,5 +2,5 @@
 source: crates/alpheus-demon/src/segments.rs
 expression: "snapshot(&b.grid(\"HDMI-A-1\", 160))"
 ---
- 󰍉 │  2·  4!····+  5  │ 󰈹 Web page — Mozilla Fire… │ 󰕾 ▁▃▅▆▇▇  84% │ 󰈀 󰖂 2 │ 󰂱 CasqueBT 72% │ 󰂋 93% │                 ▁▄▅█  90% 󰍛  6.1G 󰔏 67° │ Sun 4 Oct 14:05 
-..mmmAAAAuuuuuuuuummmmmm..........................mmm..aaaaaa.....mmm.aaaammmaa........mmmmmmmaaaaammmaaaaaaaaaaaaaaaaaaaaa..................mmmmmmmmmmmmmGGGGG.
+ 󰍉 │  2·  4!····+  5  │ 󰈹 Web page — Mozilla … │ 󰕾 ▁▃▅▆▇▇  84% │ 󰈀 󰖂 2 │ 󰂱 CasqueBT 72% │ 󰂋 93% │                 ▁▄▅█  90% 󰍛  6.1G 󰔏 67° │ Sun 4 Oct 14:05 │ ⏻ 
+..mmmAAAAuuuuuuuuummmmmm......................mmm..aaaaaa.....mmm.aaaammmaa........mmmmmmmaaaaammmaaaaaaaaaaaaaaaaaaaaa..................mmmmmmmmmmmmmGGGGGmmm..

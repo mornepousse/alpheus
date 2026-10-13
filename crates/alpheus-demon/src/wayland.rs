@@ -513,6 +513,9 @@ pub struct App {
     /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending; closed, only for
     /// an attempt still followed (`wifi_follow`, Mae's ruling P1).
     pub(crate) quick_timer: DeadlineTimer,
+    /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
+    /// power-off question (3 s) is pending.
+    pub(crate) power_timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
@@ -704,6 +707,7 @@ impl App {
             osd_open: None,
             osd_timer: DeadlineTimer::new(),
             quick_timer: DeadlineTimer::new(),
+            power_timer: DeadlineTimer::new(),
             sound_tap: None,
             wifi_tap: None,
             wifi_follow: None,
@@ -1469,6 +1473,7 @@ impl App {
                 ModulePopup::Media => self.media_toggle(qh, anchor),
                 ModulePopup::Panel => self.panel_toggle(qh, anchor),
                 ModulePopup::Quick => self.quick_toggle(qh, Some(anchor), Focus::of(&target)),
+                ModulePopup::Power => self.power_toggle(qh, anchor),
             }
             return;
         }

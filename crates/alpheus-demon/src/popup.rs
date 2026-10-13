@@ -25,6 +25,8 @@ use crate::log::write as log;
 use crate::media_popup::{self, MediaPopup};
 use crate::painter::{Frame, FrameInk};
 use crate::panel::{self, Panel};
+use crate::power::Power;
+use crate::power_app;
 use crate::quick::{Quick, QuickAction};
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
@@ -222,6 +224,8 @@ pub enum PopupBody {
     Panel(Panel),
     /// The quick settings panel (quick spec), boxed: it is several times the other bodies' size.
     Quick(Box<Quick>),
+    /// The ⏻ power menu (power spec § 2).
+    Power(Power),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -236,6 +240,8 @@ pub enum ModulePopup {
     Panel,
     /// The quick settings panel: the volume, network and Bluetooth modules (quick task 6).
     Quick,
+    /// The ⏻ power menu: the power button (power spec § 1).
+    Power,
 }
 
 impl ModulePopup {
@@ -247,6 +253,7 @@ impl ModulePopup {
             (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
             (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
             (Target::Module(ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth), Button::Left) if quick => Some(ModulePopup::Quick),
+            (Target::Module(ModuleId::Power), Button::Left) => Some(ModulePopup::Power),
             _ => None,
         }
     }
@@ -260,6 +267,7 @@ impl PopupBody {
             PopupBody::Media(_) => Some(ModulePopup::Media),
             PopupBody::Panel(_) => Some(ModulePopup::Panel),
             PopupBody::Quick(_) => Some(ModulePopup::Quick),
+            PopupBody::Power(_) => Some(ModulePopup::Power),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -640,6 +648,7 @@ impl App {
         if quick {
             self.quick_flush();
         }
+        let power = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Power(_)));
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
@@ -652,6 +661,10 @@ impl App {
         if quick {
             // Whatever the reason: the sound thread back to its own scope, the panel's timer gone.
             self.quick_closed();
+        }
+        if power {
+            // Whatever the reason: the question's timer goes with the menu (power spec § 4).
+            self.power_closed();
         }
         if media {
             // Whatever the reason (Escape, outside click, restyle, output gone, replaced): the
@@ -717,6 +730,12 @@ impl App {
                 let (repeat, now) = (self.key_repeat, Instant::now());
                 let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
                 self.quick_action(action);
+            }
+            // ↑ ↓ Tab Shift+Tab, Enter, Space, Escape (power spec § 2); the repeat tells a held key.
+            PopupBody::Power(_) => {
+                let (repeat, now) = (self.key_repeat, Instant::now());
+                let action = self.power_with(|p| p.key(k, repeat, now));
+                self.power_action(action);
             }
             PopupBody::Tooltip(_) => {}
         }
@@ -800,6 +819,12 @@ impl App {
                     _ => QuickAction::Nothing,
                 };
                 self.quick_action(action);
+            }
+            // One entry per row: hovering selects, a left press activates (power spec § 2).
+            PopupBody::Power(_) => {
+                let now = Instant::now();
+                let action = self.power_with(|p| power_app::pointer(p, cell, kind, now));
+                self.power_action(action);
             }
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
@@ -1093,6 +1118,23 @@ mod tests {
             assert_eq!(ModulePopup::of(&t, Button::Right, true), None, "{m:?}");
         }
         assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Battery), Button::Left, true), None, "the battery keeps its click");
+    }
+
+    /// Power spec § 1: a left press on the power button toggles its menu, with or without the quick
+    /// module; the other buttons do nothing; a second press on it only closes the menu.
+    #[test]
+    fn a_left_press_on_the_power_button_toggles_its_menu() {
+        use crate::config::{ModuleId, QuickConfig};
+        use crate::grid::Target;
+        let power = Target::Module(ModuleId::Power);
+        for quick in [false, true] {
+            assert_eq!(ModulePopup::of(&power, Button::Left, quick), Some(ModulePopup::Power), "quick: {quick}");
+            for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                assert_eq!(ModulePopup::of(&power, b, quick), None, "{b:?}");
+            }
+        }
+        let body = PopupBody::Power(Power::new(&QuickConfig::default()).expect("the default entries"));
+        assert_eq!(body.module_popup(), Some(ModulePopup::Power), "a second press on ⏻ only closes it");
     }
 
     fn under(output: &str, start: u16, end: u16) -> Anchor {

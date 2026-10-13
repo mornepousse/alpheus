@@ -14,6 +14,8 @@ use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
 use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
+use crate::session::{self, Activation};
+pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
 use crate::state::{Bar, Feed};
 use crate::system::{ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
 use std::time::{Duration, Instant};
@@ -38,22 +40,14 @@ pub const SESSION_GAP: u16 = 5;
 /// wpctl's targets: the default output, as the bar's own clicks name it, and the default input.
 pub const SINK: &str = crate::actions::SINK;
 pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
-// The mockup's glyphs (spec § 2): Nerd Font Material Design icons, and the power symbol.
+// The mockup's glyphs (spec § 2): Nerd Font Material Design icons; the session row's are
+// session.rs's (shared with the power menu, power spec § 4).
 pub const PROFILE: char = '\u{f0f85}';
 pub const KEEP_AWAKE: char = '\u{f0176}';
 pub const NIGHT_LIGHT: char = '\u{f0594}';
-pub const LOCK: char = '\u{f033e}';
-pub const LOGOUT: char = '\u{f0343}';
-pub const REBOOT: char = '\u{f0709}';
-pub const POWER: char = '\u{23fb}';
 /// Re-reads after a command (spec § 5): the backlight, a configured toggle's state.
 pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
-/// How long "Reboot? ⏎" waits for its second activation (spec § 2).
-pub const CONFIRM: Duration = Duration::from_secs(3);
-/// The second activation counts only this long after the question showed (Mae, 2026-10-11): a
-/// double click or a double Enter never confirms.
-pub const CONFIRM_AFTER: Duration = Duration::from_millis(400);
 /// A slider sends at most one command per window this long (fix S1): a held key, the wheel or
 /// clicks in a row coalesce into the latest level, sent when the window ends.
 pub const COALESCE: Duration = BRIGHTNESS_REREAD;
@@ -163,63 +157,6 @@ impl Toggle {
         match self {
             Toggle::KeepAwake => "keep awake",
             Toggle::NightLight => "night light",
-        }
-    }
-}
-
-/// A session button (spec § 2), left to right.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Session {
-    Lock,
-    Logout,
-    Reboot,
-    Poweroff,
-}
-
-impl Session {
-    pub const ALL: [Session; 4] = [Session::Lock, Session::Logout, Session::Reboot, Session::Poweroff];
-
-    /// Its configured command; empty: the button is not drawn.
-    pub fn command(self, c: &QuickConfig) -> &[String] {
-        match self {
-            Session::Lock => &c.lock,
-            Session::Logout => &c.logout,
-            Session::Reboot => &c.reboot,
-            Session::Poweroff => &c.poweroff,
-        }
-    }
-
-    fn glyph(self) -> char {
-        match self {
-            Session::Lock => LOCK,
-            Session::Logout => LOGOUT,
-            Session::Reboot => REBOOT,
-            Session::Poweroff => POWER,
-        }
-    }
-
-    /// The question while it waits for its second activation: "Reboot? ⏎".
-    fn prompt(self) -> &'static str {
-        match self {
-            Session::Lock => "Lock",
-            Session::Logout => "Log out",
-            Session::Reboot => "Reboot",
-            Session::Poweroff => "Power off",
-        }
-    }
-
-    /// Reboot and power off ask once more first (spec § 2).
-    fn asks(self) -> bool {
-        matches!(self, Session::Reboot | Session::Poweroff)
-    }
-
-    /// In the log.
-    fn word(self) -> &'static str {
-        match self {
-            Session::Lock => "lock",
-            Session::Logout => "log out",
-            Session::Reboot => "reboot",
-            Session::Poweroff => "power off",
         }
     }
 }
@@ -482,7 +419,7 @@ fn present(r: Row, live: &Live, q: &Quick) -> bool {
         Row::Profile => live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
         Row::KeepAwake => !live.config.keep_awake.toggle.is_empty(),
         Row::NightLight => !live.config.night_light.toggle.is_empty(),
-        Row::Session => Session::ALL.iter().any(|s| !s.command(live.config).is_empty()),
+        Row::Session => session::any_configured(live.config),
     }
 }
 
@@ -555,7 +492,7 @@ impl Quick {
 
     /// The session buttons drawn, left to right.
     fn buttons(&self, live: &Live) -> Vec<Session> {
-        Session::ALL.into_iter().filter(|s| !s.command(live.config).is_empty()).collect()
+        session::configured(live.config)
     }
 
     /// Before each use: the detail closed when fewer than two sinks are left, its sink found again
@@ -766,21 +703,12 @@ impl Quick {
         if argv.is_empty() {
             return QuickAction::Nothing;
         }
-        if s.asks() {
-            match self.confirm {
-                // Too soon after the question (Mae): a double activation; the question stays.
-                Some((c, until)) if c == s && now < until && until.saturating_duration_since(now) > CONFIRM - CONFIRM_AFTER => {
-                    return QuickAction::Nothing;
-                }
-                Some((c, until)) if c == s && now < until => {}
-                _ => {
-                    self.confirm = Some((s, now + CONFIRM));
-                    return QuickAction::Redraw;
-                }
-            }
+        match session::activate(&mut self.confirm, s, now) {
+            // Too soon after the question (Mae): a double activation; the question stays.
+            Activation::Wait => QuickAction::Nothing,
+            Activation::Ask => QuickAction::Redraw,
+            Activation::Run => QuickAction::RunAndClose { argv, what: s.word().to_string() },
         }
-        self.confirm = None;
-        QuickAction::RunAndClose { argv, what: s.word().to_string() }
     }
 
     /// A press at `cell` (Boxed coordinates: column 0 the pad, row 0 the first line shown), spec § 3.
@@ -942,8 +870,7 @@ impl Quick {
                 d.toggles[i] = true;
             }
         }
-        if self.confirm.is_some_and(|(_, at)| at <= now) {
-            self.confirm = None;
+        if session::expire(&mut self.confirm, now) {
             d.redraw = true;
         }
         let (run, failed, redraw) = self.wifi.due(now);
@@ -1205,7 +1132,7 @@ pub(crate) fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &st
 fn session_row(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     let end = g.width();
     if let Some((s, _)) = q.confirm {
-        g.write(1, end.saturating_sub(1), &format!("{} {}? ⏎", s.glyph(), s.prompt()), Style::WARN);
+        g.write(1, end.saturating_sub(1), &s.question(), Style::WARN);
         return;
     }
     for (i, s) in q.buttons(live).into_iter().enumerate() {

@@ -4,11 +4,12 @@
 //! is down shows its icon then "–". The whole segment is one click zone,
 //! except the tray's: one zone per icon.
 
-use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, ResourcesConfig, TrayConfig};
+use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourcesConfig, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
+use crate::session::{self, POWER};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
 use crate::tray::Status;
@@ -115,6 +116,12 @@ pub fn gauge_cells(percent: u8) -> usize {
 /// The launcher's button: always shown, one click zone (spec § 2).
 pub(crate) fn launcher() -> Segment {
     module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
+}
+
+/// The power button (power spec § 1): ⏻ alone, one click zone; none when `[quick]`'s lock, logout,
+/// reboot and poweroff are all empty (its menu would have no entry).
+pub(crate) fn power(c: &QuickConfig) -> Option<Segment> {
+    session::any_configured(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
 }
 
 pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
@@ -1076,25 +1083,28 @@ mod tests {
         // The launcher button and its separator (4 cells) leave last of
         // all: every other threshold sits 4 cells further than without it.
         const BUTTON: u16 = 4;
-        assert_eq!(shown(160 + BUTTON), [launcher, window, volume, network, bluetooth, battery, resources]);
-        assert_eq!(shown(120 + BUTTON), [launcher, window, volume, network, bluetooth, battery], "resources leave first");
+        // The power button and its separator (4 cells) leave after it: 4 cells more again.
+        const POWER_CELLS: u16 = 4;
+        assert_eq!(shown(160 + BUTTON + POWER_CELLS), [launcher, window, volume, network, bluetooth, battery, resources]);
+        assert_eq!(shown(120 + BUTTON + POWER_CELLS), [launcher, window, volume, network, bluetooth, battery], "resources leave first");
         // Each width pins one more step of REMOVAL's order; a swap inside it
         // (title/Bluetooth, Bluetooth/network, volume/battery or
         // battery/launcher) turns one of these red (see the "prove it bites"
         // mutations).
-        assert_eq!(shown(90 + BUTTON), [launcher, volume, network, bluetooth, battery], "then the title");
-        assert_eq!(shown(70 + BUTTON), [launcher, volume, network, battery], "then Bluetooth");
-        assert_eq!(shown(60 + BUTTON), [launcher, volume, battery], "then network");
-        assert_eq!(shown(50 + BUTTON), [launcher, battery], "then volume");
-        assert_eq!(shown(40 + BUTTON), [launcher], "then battery");
-        assert_eq!(shown(40), [launcher], "the button still fits whole");
-        assert_eq!(shown(39), Vec::<ModuleId>::new(), "the launcher button last");
-        for w in [160u16, 120, 90, 70, 60, 50, 40].map(|w| w + BUTTON).into_iter().chain([40, 39]) {
+        assert_eq!(shown(90 + BUTTON + POWER_CELLS), [launcher, volume, network, bluetooth, battery], "then the title");
+        assert_eq!(shown(70 + BUTTON + POWER_CELLS), [launcher, volume, network, battery], "then Bluetooth");
+        assert_eq!(shown(60 + BUTTON + POWER_CELLS), [launcher, volume, battery], "then network");
+        assert_eq!(shown(50 + BUTTON + POWER_CELLS), [launcher, battery], "then volume");
+        assert_eq!(shown(40 + BUTTON + POWER_CELLS), [launcher], "then battery");
+        assert_eq!(shown(40 + POWER_CELLS), [launcher], "the button still fits whole");
+        assert_eq!(shown(39 + POWER_CELLS), Vec::<ModuleId>::new(), "the launcher button last but for ⏻");
+        for w in [160u16, 120, 90, 70, 60, 50, 40].map(|w| w + BUTTON + POWER_CELLS).into_iter().chain([40 + POWER_CELLS, 39 + POWER_CELLS])
+        {
             let g = b.grid("HDMI-A-1", w);
             assert_eq!(g.width(), w);
             let t = g.text();
-            assert!(w < 40 || t.starts_with(" \u{f0349} │ "), "launcher button whole and first at {w}: {t}");
-            assert!(t.ends_with(" 14:05 ") && t.contains(" 4!····+ "), "workspaces and clock whole at {w}: {t}");
+            assert!(w < 40 + POWER_CELLS || t.starts_with(" \u{f0349} │ "), "launcher button whole and first at {w}: {t}");
+            assert!(t.ends_with(" 14:05 │ \u{23fb} ") && t.contains(" 4!····+ "), "workspaces, clock and ⏻ whole at {w}: {t}");
         }
         insta::assert_snapshot!("full_160", snapshot(&b.grid("HDMI-A-1", 160)));
         insta::assert_snapshot!("full_120", snapshot(&b.grid("HDMI-A-1", 120)));
@@ -1236,10 +1246,12 @@ mod tests {
         // narrowing title can lose the mark well before the module
         // itself is dropped (seen here too, briefly, just under 150);
         // the widths below are chosen clear of that truncation band.
-        const WIDE: u16 = 160;
-        const NO_RESOURCES: u16 = 130;
-        const NO_TRAY: u16 = 105;
-        const NO_TITLE: u16 = 80;
+        // The power button and its separator: 4 cells more at every step.
+        const POWER_CELLS: u16 = 4;
+        const WIDE: u16 = 160 + POWER_CELLS;
+        const NO_RESOURCES: u16 = 130 + POWER_CELLS;
+        const NO_TRAY: u16 = 105 + POWER_CELLS;
+        const NO_TITLE: u16 = 80 + POWER_CELLS;
         let (window, tray, battery, resources) = (ModuleId::Window, ModuleId::Tray, ModuleId::Battery, ModuleId::Resources);
         let b = full_bar_with_a_tray();
         let marks = [(window, "Web page"), (tray, "\u{f04d3}"), (battery, "\u{f008b}"), (resources, "\u{f035b}")];
@@ -1254,7 +1266,7 @@ mod tests {
         for w in [WIDE, NO_RESOURCES, NO_TRAY, NO_TITLE] {
             let g = b.grid("HDMI-A-1", w);
             assert_eq!(g.width(), w);
-            assert!(g.text().ends_with(" 14:05 "), "the clock whole at {w}: {}", g.text());
+            assert!(g.text().ends_with(" 14:05 │ \u{23fb} "), "the clock and ⏻ whole at {w}: {}", g.text());
         }
     }
 

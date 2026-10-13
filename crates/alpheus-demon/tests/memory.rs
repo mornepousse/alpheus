@@ -18,6 +18,7 @@
 mod common;
 
 use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::theme::presets::preset;
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
@@ -1706,4 +1707,142 @@ fn at_rest_no_wakeups_under_sway_and_mango() {
         assert!(delta <= 4, "{delta} wake-ups in 5 s at rest under {what}");
         assert!(d.log().iter().all(|l| !l.contains("source down")), "every source up: {:?}", d.log());
     }
+}
+
+/// The power menu's bars: the button and the clock, then the clock alone (the baseline).
+const POWER_BAR: &str = "modules = [\"power\", \"clock\"]\n";
+const NO_POWER_BAR: &str = "modules = [\"clock\"]\n";
+/// The power button: cell 1 of the bar.
+const POWER_BUTTON: (u32, u32) = (12, 10);
+/// The menu's third row (Power off, with the default `[quick]`), cell 4: the menu hangs from cell 1
+/// (≈ 8 px), under the 22 px bar, its frame ≈ 4 px at the sides and ≈ 7 px at the top, ≈ 8.4 px
+/// cells, 22 px rows (headless_session.rs's `popup_cell`).
+const POWER_OFF_ROW: (u32, u32) = (8 + 4 + (4 * 84 + 42) / 10, 22 + 7 + 2 * 22 + 11);
+
+/// PSS in KB by kind of mapping from /proc/<pid>/smaps: font files, the binary, the heap, the rest.
+/// Printed for the report (is the module's cost the ⏻ glyph's fallback face?), never asserted.
+fn smaps_breakdown(d: &Daemon) -> String {
+    let t = std::fs::read_to_string(format!("/proc/{}/smaps", d.pid())).unwrap();
+    let (mut fonts, mut binary, mut heap, mut other) = (0u64, 0u64, 0u64, 0u64);
+    let mut kind = 3;
+    for line in t.lines() {
+        if let Some(rest) = line.strip_prefix("Pss:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            match kind {
+                0 => fonts += kb,
+                1 => binary += kb,
+                2 => heap += kb,
+                _ => other += kb,
+            }
+        } else if line.contains('-') && line.split_whitespace().next().is_some_and(|r| r.contains('-') && !r.ends_with(':')) {
+            let l = line.to_lowercase();
+            kind = if [".ttf", ".otf", ".ttc"].iter().any(|e| l.contains(e)) {
+                0
+            } else if l.contains("alpheus-demon") {
+                1
+            } else if l.contains("[heap]") {
+                2
+            } else {
+                3
+            };
+        }
+    }
+    format!("fonts {fonts}, binary {binary}, heap {heap}, other {other}")
+}
+
+/// A click on the power button, then the line it waits for (`n` of them so far).
+fn power_click(sway: &Sway, d: &Daemon, line: &str, n: usize) {
+    sway.click(POWER_BUTTON.0, POWER_BUTTON.1, "button1");
+    assert!(d.wait_for_count(line, n, DELAY), "{line} ×{n}: {:?}", d.log());
+}
+
+/// Waits until the third row (Power off) asks: its text is painted in the theme's warn (the default
+/// catppuccin, dark without a portal), which no other state of the menu uses. Proves the question
+/// was asked, so the rest below measures a menu closed with its question pending.
+fn power_asking(sway: &Sway, d: &Daemon) {
+    let w = preset("catppuccin").unwrap().dark.warn;
+    let warn = [w.0, w.1, w.2];
+    let asking =
+        |s: &common::Ppm| (73..95).flat_map(|y| (14..140).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(warn)).count() > 5;
+    assert!(sway.wait_for_screen("HEADLESS-1", asking), "the question shown in warn: {:?}", d.log());
+}
+
+/// Power spec § 5: PSS without the module, with it at rest, the menu open, closed, and after 20
+/// more open/close cycles; each bound against this run's own baseline.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn power_menu_pss_idle_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("power-cost");
+    let base = {
+        let (_sway, _hypr, d) = start("power-cost-a", 1, &bus, None, Some(NO_POWER_BAR), PwDump::Silent);
+        std::thread::sleep(TRAY_SETTLE);
+        eprintln!("power base smaps (KB): {}", smaps_breakdown(&d));
+        d.pss_kb()
+    };
+    let (sway, _hypr, d) = start("power-cost-b", 1, &bus, None, Some(POWER_BAR), PwDump::Silent);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    eprintln!("power idle smaps (KB): {}", smaps_breakdown(&d));
+    power_click(&sway, &d, "power menu shown", 1);
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    let open = d.pss_kb();
+    power_click(&sway, &d, "popup closed", 1);
+    std::thread::sleep(TRAY_SETTLE);
+    let closed = d.pss_kb();
+    for n in 2..=21 {
+        power_click(&sway, &d, "power menu shown", n);
+        std::thread::sleep(Duration::from_millis(300)); // mapped: a press in the gap lands on no surface
+        power_click(&sway, &d, "popup closed", n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let cycled = d.pss_kb();
+    let (module_cost, menu_cost) = (idle.saturating_sub(base), open.saturating_sub(idle));
+    eprintln!(
+        "power PSS (KB): {base} without the module, {idle} with it at rest (module cost {module_cost}), \
+         {open} open (menu cost {menu_cost}), {closed} closed, {cycled} after 20 more cycles"
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(module_cost <= 384, "the button at rest costs {module_cost} KB: a one-cell segment, nothing resident (192–196 KB measured)");
+    assert!(menu_cost <= 1024, "the open menu costs {menu_cost} KB (its pool, two buffers, the first open's warm-up: ≤ 1 MB)");
+    assert!(closed <= idle + 512, "closed {closed} KB vs {idle} KB: more than the first open's code and font pages");
+    assert!(cycled <= closed + 128, "cycled {cycled} KB vs {closed} KB closed: 20 cycles must keep nothing");
+}
+
+/// Power spec § 5: once the menu closed — the last time with its question pending — no timer, no
+/// wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_power_menu() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("power-rest");
+    let (sway, _hypr, d) = start("power-rest", 1, &bus, None, Some(POWER_BAR), PwDump::Silent);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    for n in 1..=3 {
+        power_click(&sway, &d, "power menu shown", n);
+        std::thread::sleep(Duration::from_millis(300));
+        power_click(&sway, &d, "popup closed", n);
+    }
+    assert_eq!(d.count("popup closed"), 3, "three plain cycles: {:?}", d.log());
+    const REST: Duration = Duration::from_secs(10);
+    // Before the question: its 3 s deadline must fall inside the rest window, never in a wait for the minute.
+    away_from_the_minute(REST + Duration::from_secs(5));
+    power_click(&sway, &d, "power menu shown", 4);
+    std::thread::sleep(Duration::from_millis(300)); // mapped: a press in the gap lands on no surface
+    sway.click(POWER_OFF_ROW.0, POWER_OFF_ROW.1, "button1"); // the question asked, by the mouse alone
+    power_asking(&sway, &d); // a click before the map would dismiss the menu and ask nothing
+    power_click(&sway, &d, "popup closed", 4);
+    assert_eq!(d.count("power menu shown"), 4, "{:?}", d.log());
+    assert_eq!(d.count("popup closed (outside click)"), 4, "the 4th close is the button's own second click: {:?}", d.log());
+    assert_eq!(d.count("popup closed (dismissed)"), 0, "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the power menu");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after the power menu (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's timer went with the menu");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
