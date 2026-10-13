@@ -38,6 +38,7 @@ pub mod pipewire;
 pub mod placement;
 pub mod popup;
 pub mod power;
+pub mod power_app;
 pub mod quick;
 pub mod quick_app;
 pub mod quick_secret;

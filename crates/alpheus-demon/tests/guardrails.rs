@@ -849,8 +849,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
         // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
         // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
-        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending.
-        ("wayland.rs", "Timer::", 7),
+        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
+        // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending.
+        ("wayland.rs", "Timer::", 8),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -2023,13 +2024,44 @@ fn every_power_menu_activation_is_a_configured_session() {
 #[test]
 fn the_power_menu_has_no_panicking_path() {
     let files = source_files();
-    for name in ["power.rs"] {
+    for name in ["power.rs", "power_app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }
+}
+
+/// Power spec § 3, § 4: whatever closes the menu (Escape, an entry run, an outside click, a restyle,
+/// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
+/// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
+/// in a unit test: the wiring is checked in the source.
+#[test]
+fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (popup, power_app) = (src("popup.rs"), src("power_app.rs"));
+    let close = function_body(&popup, "pub fn popup_close(");
+    assert!(close.contains("self.power_closed()"), "popup_close must let the power menu's timer go: {close}");
+    let closed = function_body(&power_app, "pub(crate) fn power_closed(");
+    assert!(closed.contains("power_timer.sync(") && closed.contains("None"), "{closed}");
+    let tick = function_body(&power_app, "pub(crate) fn power_tick(");
+    let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
+    assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
+    let refresh = function_body(&power_app, "fn power_refresh(");
+    assert!(refresh.contains("self.power_timer_sync()"), "the timer follows every repaint: {refresh}");
+    let spawn = function_body(&power_app, "fn power_spawn(");
+    assert!(spawn.contains("s.command(&self.bar.config.quick)") && spawn.contains("spawn_session("), "{spawn}");
+    let session = function_body(&power_app, "pub(crate) fn spawn_session(");
+    assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
+    assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");
+    assert_eq!(power_app.matches("spawn_session(").count(), 2, "defined once, called once: {power_app}");
+    // A held Enter acts once (power spec § 2): the menu's key arm hands the keyboard's own repeat
+    // flag to the model, never a constant.
+    let key = function_body(&popup, "pub(crate) fn popup_key(");
+    let arm = key.split("PopupBody::Power(_) =>").nth(1).and_then(|a| a.split("PopupBody::").next()).unwrap_or_default();
+    assert!(arm.contains("self.key_repeat") && arm.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {arm}");
 }
 
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
