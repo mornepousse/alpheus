@@ -170,6 +170,110 @@ pub struct ProfileState {
     pub offered: Vec<Profile>,
 }
 
+/// What the quick panel's Wi-Fi reading covers (quick Wi-Fi spec § 5): asked by the loop through
+/// `sources::dbus::wifi::WifiTap`, read by the D-Bus thread. Ordered by what is read: `Closed` <
+/// `Row` < `Detail`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum WifiScope {
+    /// The panel is closed: nothing read, nothing followed, nothing kept.
+    #[default]
+    Closed,
+    /// The panel is open: the radio, the Wi-Fi device and the access point it is on.
+    Row,
+    /// The Wi-Fi detail is open, or a connection is under way: every access point and the saved
+    /// profiles too, and their signals followed.
+    Detail,
+}
+
+/// An access point's security, from NetworkManager's NM80211ApFlags and NM80211ApSecurityFlags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Security {
+    /// No key: open, or OWE (opportunistic encryption, no password).
+    Open,
+    /// WPA or WPA2 personal, WPA3 SAE: a password.
+    Psk,
+    /// 802.1X (enterprise): left to `More…`.
+    Enterprise,
+    /// WEP, or anything else secured: left to `More…`.
+    Other,
+}
+
+const AP_PRIVACY: u32 = 0x1;
+const KEY_MGMT_PSK: u32 = 0x100;
+const KEY_MGMT_802_1X: u32 = 0x200;
+const KEY_MGMT_SAE: u32 = 0x400;
+const KEY_MGMT_OWE: u32 = 0x800;
+const KEY_MGMT_OWE_TM: u32 = 0x1000;
+const KEY_MGMT_EAP_SUITE_B_192: u32 = 0x2000;
+
+impl Security {
+    /// `flags`: the access point's Flags; `wpa`, `rsn`: its WpaFlags and RsnFlags. 802.1X first: a
+    /// network offering it beside a password is still one the panel cannot join with a password only.
+    pub fn from_flags(flags: u32, wpa: u32, rsn: u32) -> Security {
+        let keys = wpa | rsn;
+        if keys & (KEY_MGMT_802_1X | KEY_MGMT_EAP_SUITE_B_192) != 0 {
+            Security::Enterprise
+        } else if keys & (KEY_MGMT_PSK | KEY_MGMT_SAE) != 0 {
+            Security::Psk
+        } else if keys & (KEY_MGMT_OWE | KEY_MGMT_OWE_TM) != 0 {
+            Security::Open
+        } else if flags & AP_PRIVACY != 0 {
+            Security::Other
+        } else {
+            Security::Open
+        }
+    }
+
+    /// The detail's lock mark.
+    pub fn secured(self) -> bool {
+        self != Security::Open
+    }
+}
+
+/// A visible access point as the panel uses it (its hardware address is never kept).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessPoint {
+    /// 1 to 32 bytes, as broadcast: not always UTF-8.
+    pub ssid: Vec<u8>,
+    /// Percent.
+    pub strength: u8,
+    pub security: Security,
+}
+
+/// A saved Wi-Fi profile: its uuid and SSID only, never its secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedWifi {
+    pub uuid: String,
+    pub ssid: Vec<u8>,
+}
+
+/// The first Wi-Fi device NetworkManager lists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WifiDevice {
+    /// NMDeviceState: 100 activated, 40 to 90 activating, 120 failed, 30 disconnected…
+    pub state: u32,
+    /// The access point it is on (ActiveAccessPoint); None: "/".
+    pub active: Option<AccessPoint>,
+    /// Its active connection's uuid (`connection down uuid …`).
+    pub active_uuid: Option<String>,
+    /// Some only with the detail open (`WifiScope::Detail`): at most 64 read, hidden ones left out.
+    pub access_points: Option<Vec<AccessPoint>>,
+    /// Some only with the detail open: the saved Wi-Fi profiles, at most 64 connections read.
+    pub saved: Option<Vec<SavedWifi>>,
+}
+
+/// The quick panel's Wi-Fi (quick Wi-Fi spec § 5), only while the panel is open.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WifiState {
+    /// NetworkManager's WirelessEnabled.
+    pub enabled: bool,
+    /// None: no Wi-Fi device, no NetworkManager, or its read failed (the row hides).
+    pub device: Option<WifiDevice>,
+    /// Read before an outage of another domain (BlueZ, UPower, the power profile) and resent
+    /// unchanged for its backoff (F4): shown as is, never enough to delete a profile.
+    pub stale: bool,
+}
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {

@@ -491,7 +491,7 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
-    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound]"] {
+    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound|wifi]"] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
 }
@@ -514,10 +514,13 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
 /// Quick spec § 1: `--quick [sound]` sends its word and exits 0 on Done.
 #[test]
 fn quick_sends_its_word_and_exits_0() {
-    for (i, (args, expected)) in
-        [(&["--quick"][..], Request::Quick(QuickVerb::Top)), (&["--quick", "sound"], Request::Quick(QuickVerb::Sound))]
-            .into_iter()
-            .enumerate()
+    for (i, (args, expected)) in [
+        (&["--quick"][..], Request::Quick(QuickVerb::Top)),
+        (&["--quick", "sound"], Request::Quick(QuickVerb::Sound)),
+        (&["--quick", "wifi"], Request::Quick(QuickVerb::Wifi)),
+    ]
+    .into_iter()
+    .enumerate()
     {
         let (socket, daemon) = answering(&format!("quick-{i}"), Reply::Done);
         assert_eq!(launch(args, &socket, b""), (EXIT_OK, String::new(), String::new()), "{args:?}");
@@ -539,6 +542,20 @@ fn an_old_daemon_refusing_quick_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
     let socket = temp_socket("quick-absent");
     assert_eq!(launch(&["--quick", "sound"], &socket, b"").0, EXIT_UNREACHABLE, "no daemon: 3");
+}
+
+/// Quick Wi-Fi spec § 1: a daemon of delivery 1 knows `quick` but not its `wifi` word: exit 3, as for
+/// any verb an older daemon refuses, one request, no retry.
+#[test]
+fn a_daemon_without_the_wifi_word_exits_3() {
+    let (socket, connections, stop, daemon) =
+        replying_daemon("quick-wifi-old", Reply::Error("malformed request: unknown quick word \"wifi\"".into()));
+    let (code, out, err) = launch(&["--quick", "wifi"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--quick wifi"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
 /// Review Focus: `--dnd toggle` with no daemon exits 3, like every verb (tools-menu falls back on 3).

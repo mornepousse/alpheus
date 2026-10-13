@@ -21,8 +21,9 @@ use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Daemon, DaemonOptions, FakeHyprland, Peer, PrivateBus, PwDump, SIGNATURE, Sway, TempDir, Workstation, assert_no_spin,
-    fake_source, launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway, TempDir,
+    UUID_HOME, Workstation, assert_no_spin, fake_source, fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with, volume_delta,
+    write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -722,9 +723,16 @@ fn away_from_the_minute(window: Duration) {
     let into = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 60;
     if into < 2 {
         std::thread::sleep(Duration::from_secs(2 - into));
-    } else if into + window.as_secs() + 2 >= 60 {
+    } else if !fits_the_minute(window) {
         std::thread::sleep(Duration::from_secs(60 - into + 2));
     }
+}
+
+/// Whether a `window` starting now fits inside one minute, 2 s from each boundary
+/// (`away_from_the_minute`'s rule), without sleeping.
+fn fits_the_minute(window: Duration) -> bool {
+    let into = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 60;
+    into >= 2 && into + window.as_secs() + 2 < 60
 }
 
 #[test]
@@ -1452,5 +1460,146 @@ fn at_rest_no_wakeups_after_the_quick_panel() {
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after the quick panel (10 s): {delta} whole daemon, {main_delta} loop thread");
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The Wi-Fi measurements' bar: the network module and the panel (the D-Bus thread and the Wi-Fi tap
+/// are there either way); `[osd] backlight_dir` a fake directory of the test's own, never /sys.
+fn wifi_bar(backlight_dir: &Path) -> String {
+    format!("modules = [\"network\", \"quick\", \"clock\"]\n[osd]\nbacklight_dir = {:?}\n", backlight_dir.display().to_string())
+}
+
+/// 40 fictional access points (the detail lists 32), two in three WPA2, one saved.
+fn forty_networks() -> Vec<FakeAp> {
+    (1..=40).map(|n| FakeAp::new(&format!("Reseau-Test-{n:02}"), (n * 2) as u8, n % 3 != 0)).collect()
+}
+
+/// Waits until the fake NetworkManager has listed the saved profiles `n` times: the `n`-th open of
+/// the detail is read (they come last).
+fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < DELAY {
+        if nm.calls().iter().filter(|c| c.starts_with("ListConnections ")).count() >= n {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Quick Wi-Fi spec § 7: PSS with the panel at rest, the Wi-Fi detail open on 40 visible access
+/// points (32 listed), closed, and after 10 more cycles. A fake nmcli (never the real one) takes the
+/// rescans.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn quick_wifi_pss_detail_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("wifi-cost");
+    let nm = FakeNetworkManager::serve(&bus, forty_networks(), vec![(UUID_HOME.into(), "Reseau-Test-03".into())]);
+    let backlight = fake_backlight("wifi-cost-backlight");
+    let (sway, _hypr, d) = start("wifi-cost", 1, &bus, None, Some(&wifi_bar(&backlight.0)), PwDump::Fifo);
+    fake_stdin_recorder(&sway, "nmcli");
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_own = idle - idle_shm;
+    let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
+    toggle();
+    assert!(detail_read(&nm, 1), "{:?} {:?}", nm.calls(), d.log());
+    std::thread::sleep(Duration::from_secs(1)); // published, configured and painted
+    let (open, _) = d.pss_and_shm_kb();
+    toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_own = closed - closed_shm;
+    for n in 2..=11 {
+        toggle();
+        assert!(detail_read(&nm, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        toggle();
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_own = cycled - cycled_shm;
+    let detail_cost = open.saturating_sub(idle);
+    eprintln!(
+        "quick Wi-Fi PSS (KB): {idle} at rest, {open} with the detail open on 32 networks (cost {detail_cost}), \
+         {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {closed_own} closed, \
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled"
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(
+        detail_cost <= 1536,
+        "the detail open costs {detail_cost} KB (the panel ≤ 1 MB, 40 access points read on the D-Bus thread, 32 rows): report, never raise"
+    );
+    // Closed, the first open leaves ≈ 540 KB of the daemon's own (smaps, three release runs,
+    // 2026-10-12): the binary's code pages +128 and the font file's +320, touched for the first time
+    // and now resident, the main stack +20, the main heap +68…+76 (most likely the painter's glyph
+    // caches, bounded by MAX_CACHE; attributed by elimination); the D-Bus thread's arena back to
+    // idle's. The shm pools are left out of these two bounds and get their own, looser one below:
+    // the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
+    assert!(
+        closed_own <= idle_own + 640,
+        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+    );
+    assert!(
+        cycled_own <= closed_own + 128,
+        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
+    );
+    // The pools alone, looser (F3 m3): a pool or a buffer kept after the close shows here, the
+    // compositor's mapping and unmapping of a buffer stays within it.
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
+}
+
+/// Quick Wi-Fi spec § 7: once the detail closed, no timer, no wake-up (the loop's nor the D-Bus
+/// thread's), no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_wifi_detail() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("wifi-rest");
+    let nm = FakeNetworkManager::serve(&bus, forty_networks(), vec![(UUID_HOME.into(), "Reseau-Test-03".into())]);
+    let backlight = fake_backlight("wifi-rest-backlight");
+    let (sway, _hypr, d) = start("wifi-rest", 1, &bus, None, Some(&wifi_bar(&backlight.0)), PwDump::Fifo);
+    fake_stdin_recorder(&sway, "nmcli");
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    const REST: Duration = Duration::from_secs(10);
+    // Three cycles at least. From the third, away from the minute before the cycle, never between
+    // the close and the window: that sleep would let a stray one-second timer armed by the close
+    // fire before the window (then unseen). A last cycle overrunning its 5 s on a loaded machine
+    // brings the minute's tick too close: checked again right after the close, without sleeping,
+    // and then one more cycle (F3 m5).
+    let mut n = 0;
+    loop {
+        n += 1;
+        if n >= 3 {
+            away_from_the_minute(REST + Duration::from_secs(5));
+        }
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
+        assert!(detail_read(&nm, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        if n >= 3 && fits_the_minute(REST + Duration::from_secs(1)) {
+            break;
+        }
+        assert!(n < 6, "the minute's tick always too close to the window");
+    }
+    // Not the 3 s settle: a stray one-second timer armed by the last close must fall inside the window.
+    let closed_at = Instant::now();
+    std::thread::sleep(Duration::from_millis(300));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    assert!(closed_at.elapsed() < Duration::from_millis(900), "the window starts within a second of the close");
+    let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread");
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the Wi-Fi detail");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    let dbus_delta = d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(dbus_before);
+    eprintln!("wake-ups at rest after the Wi-Fi detail (10 s): {delta} whole daemon, {main_delta} loop thread, {dbus_delta} D-Bus thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
+    assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 10 s: its tap and its bus are quiet");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }

@@ -55,6 +55,7 @@
 //! logout = []
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
+//! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
 //! ```
 
 use crate::clock;
@@ -456,6 +457,10 @@ pub struct QuickConfig {
     pub logout: Vec<String>,
     pub reboot: Vec<String>,
     pub poweroff: Vec<String>,
+    /// The Wi-Fi detail's `More…` (quick Wi-Fi spec § 4), run as given: enterprise Wi-Fi, hidden
+    /// networks, VPN, hotspot. None: absent from bar.toml, resolved at load time
+    /// (`resolve_wifi_more`); an empty list hides the row.
+    pub wifi_more: Option<Vec<String>>,
 }
 
 impl Default for QuickConfig {
@@ -471,7 +476,16 @@ impl Default for QuickConfig {
             logout: Vec::new(),
             reboot: argv(&["systemctl", "reboot"]),
             poweroff: argv(&["systemctl", "poweroff"]),
+            wifi_more: None,
         }
+    }
+}
+
+/// `[quick] wifi_more` absent from bar.toml: the launcher's terminal (launcher.toml's `terminal`),
+/// then "nmtui" (quick Wi-Fi spec § 4). Given (even empty): kept as is.
+pub fn resolve_wifi_more(q: &mut QuickConfig, terminal: &[String]) {
+    if q.wifi_more.is_none() {
+        q.wifi_more = Some(terminal.iter().cloned().chain(std::iter::once("nmtui".to_string())).collect());
     }
 }
 
@@ -520,13 +534,15 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
     if !(1..=QUICK_STEP_MAX).contains(&q.step) {
         return Err(format!("quick.step {} out of range 1 to {QUICK_STEP_MAX}", q.step));
     }
+    let no_more: &[String] = &[];
     for (key, command) in [
-        ("quick.lock", &q.lock),
-        ("quick.logout", &q.logout),
-        ("quick.reboot", &q.reboot),
-        ("quick.poweroff", &q.poweroff),
-        ("quick.keep_awake.toggle", &q.keep_awake.toggle),
-        ("quick.night_light.toggle", &q.night_light.toggle),
+        ("quick.lock", q.lock.as_slice()),
+        ("quick.logout", q.logout.as_slice()),
+        ("quick.reboot", q.reboot.as_slice()),
+        ("quick.poweroff", q.poweroff.as_slice()),
+        ("quick.keep_awake.toggle", q.keep_awake.toggle.as_slice()),
+        ("quick.night_light.toggle", q.night_light.toggle.as_slice()),
+        ("quick.wifi_more", q.wifi_more.as_deref().unwrap_or(no_more)),
     ] {
         if command.first().is_some_and(|p| p.trim().is_empty()) {
             return Err(format!("{key}: the program is blank"));
@@ -1080,6 +1096,31 @@ mod tests {
         let (c, w) = BarConfig::load(&file("osd", "[osd]\nwidth = 5\n"));
         assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
         assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("osd.width")));
+    }
+
+    /// Quick Wi-Fi spec § 4: `wifi_more` as given; absent, resolved at load time from the launcher's
+    /// terminal; an explicit empty list hides `More…` and is never replaced.
+    #[test]
+    fn wifi_more_is_read_checked_and_resolved() {
+        assert_eq!(QuickConfig::default().wifi_more, None, "absent: resolved at load time");
+        let c = BarConfig::from_text("[quick]\nwifi_more = [\"foot\", \"-e\", \"nmtui\"]\n").unwrap();
+        assert_eq!(c.quick.wifi_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui".into()]));
+        let hidden = BarConfig::from_text("[quick]\nwifi_more = []\n").unwrap();
+        assert_eq!(hidden.quick.wifi_more, Some(vec![]), "an explicit empty list");
+        let mut q = QuickConfig::default();
+        resolve_wifi_more(&mut q, &["alacritty".to_string(), "-e".into()]);
+        assert_eq!(q.wifi_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui".into()]));
+        let mut kept = hidden.quick.clone();
+        resolve_wifi_more(&mut kept, &["foot".to_string()]);
+        assert_eq!(kept.wifi_more, Some(vec![]), "given: never replaced");
+        for (t, want) in [
+            ("[quick]\nwifi_more = [\" \"]", "quick.wifi_more: the program is blank"),
+            ("[quick]\nwifi_more = [\"foot\", \"a\\u0000b\"]", "quick.wifi_more: an argument holds a NUL"),
+        ] {
+            let e = BarConfig::from_text(t).unwrap_err();
+            assert!(e.contains(want), "{t}: {e}");
+        }
+        assert!(BarConfig::from_text("[quick]\nwifi_mor = []").unwrap_err().contains("wifi_mor"), "unknown key refused");
     }
 
     #[test]

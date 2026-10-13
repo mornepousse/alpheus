@@ -12,6 +12,7 @@ pub struct FakeExecutor {
     streams: Mutex<HashMap<String, Result<Vec<u8>, ExecError>>>,
     captures: Mutex<HashMap<String, Result<Captured, ExecError>>>,
     calls: Mutex<Vec<String>>,
+    inputs: Mutex<Vec<(String, Vec<u8>)>>,
     delay: Duration,
 }
 
@@ -38,6 +39,11 @@ impl FakeExecutor {
     /// Command lines received (run, spawn, stream and capture), in order.
     pub fn calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// Each `spawn_with_input`'s line and its input, the parts joined (fake passwords only).
+    pub fn inputs(&self) -> Vec<(String, Vec<u8>)> {
+        self.inputs.lock().unwrap().clone()
     }
 
     /// Programs the output of the stream "prog arg1 arg2" (then its end).
@@ -78,6 +84,17 @@ impl Executor for FakeExecutor {
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
         let l = line(prog, args);
         self.calls.lock().unwrap().push(l.clone());
+        match self.responses.lock().unwrap().get(&l).cloned() {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(e)) => Err(e),
+            None => Err(ExecError::NotFound),
+        }
+    }
+
+    fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
+        let l = line(prog, args);
+        self.calls.lock().unwrap().push(l.clone());
+        self.inputs.lock().unwrap().push((l.clone(), input.concat()));
         match self.responses.lock().unwrap().get(&l).cloned() {
             Some(Ok(_)) => Ok(()),
             Some(Err(e)) => Err(e),
@@ -166,5 +183,20 @@ mod tests {
         assert_eq!(f.capture("slow-menu", &[], l), Err(ExecError::Io("boom".into())));
         assert_eq!(f.capture("other", &[], l), Err(ExecError::NotFound));
         assert_eq!(f.calls(), ["tools-menu --list", "slow-menu", "other"]);
+    }
+
+    #[test]
+    fn spawn_with_input_records_the_line_and_the_input() {
+        let f = FakeExecutor::new();
+        f.ok("nmcli --ask device wifi connect Bureau-Test", "");
+        let args = ["--ask", "device", "wifi", "connect", "Bureau-Test"];
+        assert_eq!(f.spawn_with_input("nmcli", &args, &[b"fake-pass", b"\n"]), Ok(()));
+        assert_eq!(f.spawn_with_input("nmcli", &["x"], &[b"y"]), Err(ExecError::NotFound), "never a real tool");
+        assert_eq!(f.calls(), ["nmcli --ask device wifi connect Bureau-Test", "nmcli x"]);
+        assert_eq!(
+            f.inputs(),
+            [("nmcli --ask device wifi connect Bureau-Test".to_string(), b"fake-pass\n".to_vec()), ("nmcli x".to_string(), b"y".to_vec())]
+        );
+        assert!(f.calls().iter().all(|c| !c.contains("fake-pass")), "the input is not on the line");
     }
 }

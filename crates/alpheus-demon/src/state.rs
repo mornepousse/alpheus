@@ -6,7 +6,7 @@ use crate::compositor::CompositorState;
 use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
-use crate::system::{BtState, NetState, PowerState, ProfileState, Resources, Sample, SoundState};
+use crate::system::{BtState, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
@@ -31,6 +31,13 @@ pub enum Msg {
     Battery(Option<PowerState>),
     /// power-profiles-daemon (quick spec § 5); None: the system bus is down.
     Profile(Option<ProfileState>),
+    /// The quick panel's Wi-Fi (quick Wi-Fi spec § 5), only while the panel is open: moved into it
+    /// (`quick_take`), never kept by the bar. `state` None: the panel closed, or the system bus is
+    /// down. `open`: the panel's open it was read for (`WifiTap::snapshot`); None, the bus down: any.
+    Wifi {
+        open: Option<u64>,
+        state: Option<WifiState>,
+    },
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring (task 11).
     Tray(Vec<TrayIcon>),
@@ -165,6 +172,8 @@ impl Bar {
                 update(&mut self.profile, p);
                 false
             }
+            // The open quick panel's (quick_app.rs takes it first): never kept, no bar redraw.
+            Msg::Wifi { .. } => false,
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => {
                 if self.tray == icons {
@@ -272,6 +281,15 @@ mod tests {
         assert_eq!(b.profile, Feed::Ready(p));
         assert!(!b.apply(Msg::Profile(None)));
         assert_eq!(b.profile, Feed::Down);
+    }
+
+    /// Quick Wi-Fi spec § 5: the Wi-Fi state is the open panel's (quick_take moves it there first);
+    /// the bar keeps nothing and redraws nothing for it.
+    #[test]
+    fn a_wifi_state_is_never_kept_nor_drawn_by_the_bar() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(!b.apply(Msg::Wifi { open: Some(1), state: Some(WifiState { enabled: true, device: None, stale: false }) }));
+        assert!(!b.apply(Msg::Wifi { open: None, state: None }));
     }
 
     /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads

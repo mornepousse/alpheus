@@ -4,9 +4,12 @@
 //! well-known name: on a real bus, that call could start the service.
 
 use super::props::{Objects, Prop, Props, busctl};
-use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power};
+use super::wifi::{self, WifiTap};
+use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone};
+use crate::system::SavedWifi;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
+use std::sync::Arc;
 
 const NM_ROOT: &str = include_str!("../../../tests/fixtures/dbus-nm-root.json");
 const NM_ACTIVE: [(u32, &str); 4] = [
@@ -31,6 +34,12 @@ pub const NM_OWNER: &str = ":1.10";
 pub const UPOWER_OWNER: &str = ":1.11";
 pub const BLUEZ_OWNER: &str = ":1.12";
 pub const POWER_OWNER: &str = ":1.13";
+
+/// Synthesized around the recording (it has no device objects): a wired device, and the Wi-Fi
+/// device of the recorded Wi-Fi connection (ActiveConnection/9).
+pub const WIRED_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/1";
+pub const WIFI_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/5";
+pub const AP: &str = "/org/freedesktop/NetworkManager/AccessPoint";
 
 /// A step of a scripted session: the signal, and what changes on the bus
 /// just before it is received.
@@ -62,6 +71,24 @@ pub struct FakeBus {
     pub disconnecting: BTreeSet<String>,
     pub bluez: Objects,
     pub devices: Vec<String>,
+    /// NetworkManager's GetDevices answer; None: not there (the recording has none): NotFound.
+    pub nm_devices: Option<Vec<String>>,
+    /// ListConnections' answer; None: NotFound.
+    pub connections: Option<Vec<String>>,
+    /// GetSettings' answers by path, already reduced (None: not a Wi-Fi profile).
+    pub settings: BTreeMap<String, Option<SavedWifi>>,
+    /// Paths whose ListConnections or GetSettings finds NetworkManager gone mid-call (ServiceUnknown).
+    pub gone: BTreeSet<String>,
+    /// Paths whose GetSettings NetworkManager refuses (Settings.PermissionDenied: another user's).
+    pub denied: BTreeSet<String>,
+    /// (AddMatch?, rule) refused, as a bus at its limits or timing out would (the call recorded).
+    pub failing_rules: BTreeSet<(bool, String)>,
+    /// AddMatch rules the bus applies, its reply then lost (a timeout after the bus took it).
+    pub late_rules: BTreeSet<String>,
+    /// The match rules the bus holds for this connection (added, not refused, not removed yet).
+    pub rules: Vec<String>,
+    /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
+    pub tap: Arc<WifiTap>,
     pub script: VecDeque<Step>,
     pub calls: Vec<String>,
 }
@@ -76,6 +103,15 @@ impl FakeBus {
             disconnecting: BTreeSet::new(),
             bluez: Objects::new(),
             devices: Vec::new(),
+            nm_devices: None,
+            connections: None,
+            settings: BTreeMap::new(),
+            gone: BTreeSet::new(),
+            denied: BTreeSet::new(),
+            failing_rules: BTreeSet::new(),
+            late_rules: BTreeSet::new(),
+            rules: Vec::new(),
+            tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
         }
@@ -119,6 +155,48 @@ impl FakeBus {
         self.props_mut(power::PATH, power::INTERFACE).0.insert("ActiveProfile".into(), Prop::Str(active.into()));
     }
 
+    /// Synthesized around the recording (fictional networks): a wired device, then the Wi-Fi device
+    /// of the recorded Wi-Fi connection, activated, on AccessPoint/10 ("MON_WIFI_1" as the recording
+    /// names it, 70 %, WPA2), with 11 ("Voisin-Test", 30 %, WPA2), 12 ("Cafe-Libre", 55 %, open) and 13
+    /// (hidden) around. Hardware addresses from the documentation range.
+    pub fn with_wifi(&mut self) {
+        let props = |pairs: Vec<(&str, Prop)>| Props(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
+        self.nm_devices = Some(vec![WIRED_DEVICE.into(), WIFI_DEVICE.into()]);
+        self.props.insert((WIRED_DEVICE.into(), wifi::DEVICE.into()), props(vec![("DeviceType", Prop::Int(1)), ("State", Prop::Int(100))]));
+        let active = Prop::Path("/org/freedesktop/NetworkManager/ActiveConnection/9".into());
+        self.props.insert(
+            (WIFI_DEVICE.into(), wifi::DEVICE.into()),
+            props(vec![("DeviceType", Prop::Int(2)), ("State", Prop::Int(100)), ("ActiveConnection", active)]),
+        );
+        let listed: Vec<String> = (10..=13).map(|n| format!("{AP}/{n}")).collect();
+        self.props.insert(
+            (WIFI_DEVICE.into(), wifi::WIRELESS.into()),
+            props(vec![("ActiveAccessPoint", Prop::Path(format!("{AP}/10"))), ("AccessPoints", Prop::Paths(listed))]),
+        );
+        for (n, ssid, strength, rsn) in
+            [(10, "MON_WIFI_1", 70, 0x188), (11, "Voisin-Test", 30, 0x188), (12, "Cafe-Libre", 55, 0), (13, "", 20, 0x188)]
+        {
+            self.props.insert(
+                (format!("{AP}/{n}"), wifi::ACCESS_POINT.into()),
+                props(vec![
+                    ("Ssid", Prop::Bytes(ssid.as_bytes().to_vec())),
+                    ("Strength", Prop::Int(strength)),
+                    ("Flags", Prop::Int(if rsn == 0 { 0 } else { 1 })),
+                    ("WpaFlags", Prop::Int(0)),
+                    ("RsnFlags", Prop::Int(rsn)),
+                    ("HwAddress", Prop::Str(format!("00:00:5E:00:53:{n:02X}"))),
+                ]),
+            );
+        }
+        // The recorded Wi-Fi connection's profile (Settings/3, its uuid in dbus-nm-active-9.json),
+        // and a wired one.
+        let (home, wired) = ("/org/freedesktop/NetworkManager/Settings/3", "/org/freedesktop/NetworkManager/Settings/4");
+        self.connections = Some(vec![home.into(), wired.into()]);
+        self.settings
+            .insert(home.into(), Some(SavedWifi { uuid: "00000000-0000-0000-0000-000000000009".into(), ssid: b"MON_WIFI_1".to_vec() }));
+        self.settings.insert(wired.into(), None);
+    }
+
     /// Synthesized (nothing was connected during the recording): the
     /// recorded headset connected, its battery at 72 %, and a second
     /// connected device, ClavierBT, with no battery.
@@ -141,11 +219,7 @@ impl FakeBus {
     /// A unique name nobody holds any more: NotFound, like a real bus.
     fn reach(&self, destination: &str) -> io::Result<()> {
         assert!(destination.starts_with(':'), "call to the well-known name {destination}: D-Bus activation could start it");
-        if self.owners.values().any(|o| *o == destination) {
-            Ok(())
-        } else {
-            Err(io::Error::new(io::ErrorKind::NotFound, format!("ServiceUnknown: {destination}")))
-        }
+        if self.owners.values().any(|o| *o == destination) { Ok(()) } else { Err(service_gone(format!("ServiceUnknown: {destination}"))) }
     }
 }
 
@@ -186,6 +260,58 @@ impl Bus for FakeBus {
         self.calls.push(format!("EnumerateDevices {destination}"));
         self.reach(destination)?;
         Ok(self.devices.clone())
+    }
+
+    fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        self.calls.push(format!("GetDevices {destination}"));
+        self.reach(destination)?;
+        self.nm_devices.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: GetDevices"))
+    }
+
+    fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        self.calls.push(format!("ListConnections {destination}"));
+        self.reach(destination)?;
+        if self.gone.contains(wifi::SETTINGS_PATH) {
+            return Err(service_gone(format!("ServiceUnknown: {destination}")));
+        }
+        if self.failing.contains(wifi::SETTINGS_PATH) {
+            return Err(io::Error::other(format!("timeout: {}", wifi::SETTINGS_PATH)));
+        }
+        self.connections.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: ListConnections"))
+    }
+
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
+        self.calls.push(format!("GetSettings {destination} {path}"));
+        self.reach(destination)?;
+        if self.gone.contains(path) {
+            return Err(service_gone(format!("ServiceUnknown: {destination}")));
+        }
+        if self.denied.contains(path) {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("PermissionDenied: {path}")));
+        }
+        if self.failing.contains(path) {
+            return Err(io::Error::other(format!("timeout: {path}")));
+        }
+        self.settings.get(path).cloned().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("UnknownObject: {path}")))
+    }
+
+    fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()> {
+        self.calls.push(format!("{} {rule}", if add { "AddMatch" } else { "RemoveMatch" }));
+        if self.failing_rules.contains(&(add, rule.to_string())) {
+            return Err(io::Error::other(format!("timeout: {rule}")));
+        }
+        if add {
+            self.rules.push(rule.to_string());
+            if self.late_rules.contains(rule) {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, format!("NoReply: {rule}")));
+            }
+        } else {
+            // As the bus driver answers a rule it does not hold.
+            let i =
+                self.rules.iter().position(|r| r == rule).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MatchRuleNotFound"))?;
+            self.rules.remove(i);
+        }
+        Ok(())
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {

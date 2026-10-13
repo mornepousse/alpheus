@@ -56,6 +56,8 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Quick settings, linked in but unused (no `quick` in `modules`) | +64…+196 KB vs. the delivery before this one | binary 5.59 → 5.70 MiB (+108 KiB stripped); measured `d483590` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (its `modules` list has no `quick`): the code linked in, unused |
 | Quick settings, module on, panel closed | 96–108 KB | `quick_pss_idle_open_and_closed`, 3 runs (8.0 MB with it, 1 output): the power profile's state, read once from the system bus (no daemon: one GetNameOwner), and the sound tap; no surface, no timer, no sink list. With `quick` alone in `modules`, the D-Bus source thread may start for that profile (the default modules already run it) |
 | Quick settings panel, open | 444–448 KB, +340–344 KB over idle once closed | same test; the closed figure is the first open's one-time warm-up, not a leak: `/proc/<pid>/smaps` shows the binary's code pages (≈ +320 KB) and the font file's (≈ +64 KB) now resident, the heap and the shm pool back to idle's; 20 more open/close cycles −18…+36 KB over closed; its surface and pool exist only while it shows; 0 loop wake-ups at rest once it closed (`at_rest_no_wakeups_after_the_quick_panel`) |
+| Quick settings' Wi-Fi, linked in (delivery 2) | +176…+372 KB vs. delivery 1 | binary 5.70 → 5.83 MiB (+136 KiB stripped); measured `dbb90b8` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (no `quick` there), nine pairings: code linked in, unused. smaps at startup (one run each): the binary's resident code pages +244…+308 KB and its data +24 KB; heap, fonts and libraries unchanged within noise (the shm pools and anonymous memory move ±110 KB between runs) |
+| Quick settings, Wi-Fi detail open (40 access points, 32 listed) | 898–910 KB over the panel's module at rest, +476…+488 KB once closed | `quick_wifi_pss_detail_open_and_closed`, 3 runs (7.9–8.0 MB at rest, 1 output): the D-Bus thread reads the access points and saved profiles only while the detail is open (five match rules, removed with it; a socket pair wakes it, no thread, no timer). Once closed, smaps (3 runs): the binary's code pages +128 KB and the font file's +320 KB touched by the first open, the main stack +20 KB, the main heap +68…+76 KB (most likely the painter's glyph caches, bounded), the shm pools −56 KB; the D-Bus thread's arena back to idle's. 10 more cycles +36…+72 KB over closed without the shm pools (the main heap creeps +4…+16 KB per 10 cycles after the first 10, within the leak bound); 0 loop and 0 D-Bus-thread wake-ups at rest after (`at_rest_no_wakeups_after_the_wifi_detail`) |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -136,10 +138,10 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
-| Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick`): volume and output, brightness, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
+| Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
 | Power menu | ✅ the panel's session buttons (reboot and power off ask first) and the TUI | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (Hyprland) | ✅ | ➖ | ➖ | ❌ |
-| Network, Bluetooth, per-app audio | ➖ TUI + nmtui, bluetui, wiremix | ✅ | ➖ | ✅ | ❌ |
+| Network, Bluetooth, per-app audio | 🚧 Wi-Fi in the quick panel (`More…` opens nmtui for enterprise, hidden networks, VPN, hotspot); Bluetooth next; per-app audio in the TUI (wiremix) | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
 | **Launcher** | | | | | |
@@ -221,6 +223,8 @@ In the default `flat` style, a line of monospace characters on the theme's bar c
 
 ![The quick settings panel: volume and output, brightness, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons (fictional data, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/quick.png)
 
+![The quick settings' Wi-Fi detail: the connected network, saved ones, one connecting (`…`), signal and lock marks, More… (fictional networks, real font, default theme (catppuccin, dark), zoomed ×2)](docs/images/quick-wifi.png)
+
 Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
@@ -235,7 +239,7 @@ app's menu in a popup, keyboard and mouse),
 server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound]`: the volume with its output devices, the backlight, the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **clock** (a click opens the
+clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi]`: the volume with its output devices, the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **clock** (a click opens the
 month's calendar). Clicking a module opens the matching tab
 of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
@@ -263,7 +267,7 @@ exist only while one shows. One timer is armed for the earliest expiry, and none
 do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
-show, or the `osd` module is off; 3 when the bar is not running). `--quick [sound]` opens or closes the quick panel on the focused output (exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick`); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
+show, or the `osd` module is off; 3 when the bar is not running). `--quick [sound|wifi]` opens or closes the quick panel on the focused output (`wifi`: on the Wi-Fi detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -654,6 +658,7 @@ lock = ["loginctl", "lock-session"]        # session buttons, run as given; [] h
 logout = []
 reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
 poweroff = ["systemctl", "poweroff"]
+wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent: launcher.toml's terminal, then nmtui; [] hides it
 
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]

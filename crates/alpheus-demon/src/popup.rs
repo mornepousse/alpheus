@@ -220,8 +220,8 @@ pub enum PopupBody {
     Media(MediaPopup),
     /// The notifications panel under the bell (the media card, the history, DND, Clear all).
     Panel(Panel),
-    /// The quick settings panel (quick spec).
-    Quick(Quick),
+    /// The quick settings panel (quick spec), boxed: it is several times the other bodies' size.
+    Quick(Box<Quick>),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media

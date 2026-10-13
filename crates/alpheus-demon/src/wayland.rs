@@ -510,11 +510,18 @@ pub struct App {
     /// The pill's hide timer: armed only while it shows.
     pub(crate) osd_timer: DeadlineTimer,
     /// The quick panel's timer (quick task 6): armed only while the panel is open and a re-read
-    /// (150 ms, 300 ms) or the reboot question (3 s) is pending.
+    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending; closed, only for
+    /// an attempt still followed (`wifi_follow`, Mae's ruling P1).
     pub(crate) quick_timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
+    /// Shared with the D-Bus thread (`sources::dbus::wifi::WifiTap`): what the open quick panel
+    /// shows of the Wi-Fi. None without the quick module or the network domain.
+    pub(crate) wifi_tap: Option<Arc<crate::sources::dbus::wifi::WifiTap>>,
+    /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
+    /// Wi-Fi stays read for it until it ends. None at rest.
+    pub(crate) wifi_follow: Option<crate::quick_app::WifiFollow>,
     /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
     /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again (final review).
     pub(crate) quick_verb_opened: Option<Instant>,
@@ -698,6 +705,8 @@ impl App {
             osd_timer: DeadlineTimer::new(),
             quick_timer: DeadlineTimer::new(),
             sound_tap: None,
+            wifi_tap: None,
+            wifi_follow: None,
             quick_verb_opened: None,
             key_repeat: false,
             tooltip_item: None,

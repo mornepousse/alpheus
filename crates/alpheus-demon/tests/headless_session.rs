@@ -15,10 +15,10 @@ use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, N
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
 use common::{
-    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeHyprland, GroupChild, Peer, Ppm, PrivateBus, PwDump, SIGNATURE,
-    SPEAKER_SINK, Sway, TempDir, Workstation, assert_no_spin, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder,
-    fake_source, launcher, process_alive, pw_dump_send, recorded, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file,
-    write_atomically, wtype, wtype_spawn,
+    AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild, NmChange, Peer,
+    Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin, default_sink_delta,
+    fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder, launcher, process_alive, pw_dump_send, recorded,
+    recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -3986,6 +3986,272 @@ fn quick_without_the_module_the_verb_exits_0_and_opens_nothing() {
     assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
     assert!(d.wait_for("quick: asked, but the quick module is not in modules", DELAY), "{:?}", d.log());
     assert_eq!(d.count("quick shown"), 0);
+}
+
+/// The network module and the panel; `More…` a fake; the backlight directory one with no device
+/// (never the real /sys: ledger, delivery 1, P3).
+fn wifi_bar(sway: &Sway) -> String {
+    format!(
+        "modules = [\"network\", \"quick\", \"clock\"]\n[quick]\nwifi_more = [\"fake-more\"]\n[osd]\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    )
+}
+/// A press on the network module: the first one, from cell 1.
+const NETWORK_AT: (u32, u32) = (16, 10);
+
+/// The quick panel's Wi-Fi (catppuccin dark): the network module and the panel; a private system bus
+/// with the fake NetworkManager (fictional: Maison-Test 80 % saved, Bureau-Test 60 % WPA2, Cafe-Libre
+/// 40 % open; nothing connected); a fake `nmcli` recording its argv and its standard input; the
+/// `Fifo` fake pw-dump.
+fn wifi_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let aps = vec![FakeAp::new("Maison-Test", 80, true), FakeAp::new("Bureau-Test", 60, true), FakeAp::new("Cafe-Libre", 40, false)];
+    let nm = FakeNetworkManager::serve(&bus, aps, vec![(UUID_HOME.into(), "Maison-Test".into())]);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    fake_stdin_recorder(&sway, "nmcli");
+    fake_recorder(&sway, "fake-more");
+    let toml = wifi_bar(&sway);
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // the network module drawn
+    (bus, nm, sway, hypr, d)
+}
+
+/// Waits until the fake NetworkManager answered the detail's reads (the saved profiles come last),
+/// then lets the state reach the panel and be painted.
+fn wait_for_the_detail(nm: &FakeNetworkManager) -> bool {
+    let read = wait_until(|| nm.calls().iter().any(|c| c.starts_with("GetSettings ")));
+    thread::sleep(Duration::from_millis(300));
+    read
+}
+
+/// Waits until the fake NetworkManager was asked for the saved profile `n` (from 1).
+fn wait_for_the_profile(nm: &FakeNetworkManager, n: usize) -> bool {
+    let call = format!("GetSettings /org/freedesktop/NetworkManager/Settings/{n}");
+    let read = wait_until(|| nm.calls().contains(&call));
+    thread::sleep(Duration::from_millis(300));
+    read
+}
+
+/// No SSID of the fixture in the daemon's log (decision 9).
+fn no_ssid_logged(d: &Daemon) -> bool {
+    !d.log().iter().any(|l| ["Maison-Test", "Bureau-Test", "Cafe-Libre"].iter().any(|s| l.contains(s)))
+}
+
+/// After the Wi-Fi is no longer followed: an access point's change reaches neither the D-Bus thread
+/// nor the fake (no call), its rules gone.
+fn the_wifi_rules_are_gone(nm: &FakeNetworkManager, d: &Daemon) {
+    thread::sleep(Duration::from_secs(1)); // the close reaches the D-Bus thread: its rules removed
+    let calls = nm.calls().len();
+    let thread_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread");
+    nm.change(NmChange::Strength(2, 70));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(nm.calls().len(), calls, "no call: {:?}", &nm.calls()[calls..]);
+    assert_eq!(d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(thread_before), 0, "the rule gone: asleep");
+}
+
+/// Quick Wi-Fi spec § 1, § 2, § 7: a click on the network module opens the panel on the Wi-Fi detail
+/// (one rescan); Enter on the saved network, first in the list, records `connection up uuid …`; no
+/// SSID reaches the log.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_a_click_on_the_network_opens_the_detail_and_enter_connects_a_saved_network() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-saved");
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_call(&sway, "nmcli", "nmcli device wifi rescan"), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(wait_for_the_detail(&nm), "{:?}", nm.calls());
+    keys(&sway, &["Return"]);
+    let up = format!("nmcli connection up uuid {UUID_HOME}");
+    assert!(wait_for_call(&sway, "nmcli", &up), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(d.wait_for("quick: wifi connect (saved)", DELAY), "{:?}", d.log());
+    assert!(no_ssid_logged(&d), "never an SSID in the log: {:?}", d.log());
+}
+
+/// Any pixel of the panel's first lines in catppuccin dark's warn: the `failed` tag (P8).
+fn warn_in_the_panel(s: &Ppm) -> bool {
+    let warn = rgb(preset("catppuccin").unwrap().dark.warn);
+    quick_panel(s).contains(&warn)
+}
+
+/// Quick Wi-Fi spec § 3, § 7: a new secured network asks for its password; typed and Enter, nmcli
+/// gets `--ask device wifi connect Bureau-Test` and the password on its standard input only. The
+/// fake NetworkManager then activates, makes a profile, fails: `failed` painted (warn, the
+/// selection moved off it first: P8), one log line, and the profile deleted. Closed, nothing stays
+/// awake.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_a_new_secured_network_takes_its_password_on_stdin_only_then_fails_and_is_cleaned_up() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-password");
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(wait_for_the_detail(&nm), "{:?} {:?}", nm.calls(), d.log());
+    keys(&sway, &["Down", "Return"]);
+    assert!(wtype(&sway, &["-s", "300", "fake-pass", "-k", "Return"]).success());
+    let ask = "nmcli --ask device wifi connect Bureau-Test";
+    assert!(wait_for_call(&sway, "nmcli", ask), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(
+        wait_until(|| recorded_stdin(&sway, "nmcli") == b"fake-pass\n"),
+        "the password on stdin, a newline after: {:?}",
+        String::from_utf8_lossy(&recorded_stdin(&sway, "nmcli"))
+    );
+    assert!(recorded(&sway, "nmcli").iter().all(|c| !c.contains("fake-pass")), "never an argument");
+    assert!(d.wait_for("quick: wifi connect (password)", DELAY), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("fake-pass")) && no_ssid_logged(&d), "never in the log: {:?}", d.log());
+    // The selection off Bureau-Test, so its tag is drawn in its own colour, not the selection's.
+    keys(&sway, &["Up"]);
+    thread::sleep(Duration::from_millis(300));
+    assert!(!warn_in_the_panel(&sway.screenshot("HEADLESS-1").expect("grim")), "…, connecting: nothing in warn yet");
+    nm.change(NmChange::DeviceState(60));
+    thread::sleep(Duration::from_millis(300));
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Bureau-Test".into()));
+    assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
+    nm.change(NmChange::DeviceState(120));
+    assert!(d.wait_for("quick: wifi connection failed (the activation failed)", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", warn_in_the_panel), "`failed` painted in warn: {:?}", d.log());
+    let delete = format!("nmcli connection delete uuid {UUID_NEW}");
+    assert!(wait_for_call(&sway, "nmcli", &delete), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    keys(&sway, &["Escape", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // the close settles (wtype's keyboard going, the D-Bus thread's last word)
+    assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
+}
+
+/// Quick Wi-Fi spec § 5: open, an access point's change is followed; closed with no attempt under
+/// way (straight from the detail, a second click on the network module), its rules are gone: the
+/// same change reaches neither the D-Bus thread nor the fake (no call), and nothing wakes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_closed_nothing_follows_the_access_points_and_nothing_wakes() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-rest");
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(wait_for_the_detail(&nm), "{:?} {:?}", nm.calls(), d.log());
+    let reads = |nm: &FakeNetworkManager| nm.calls().iter().filter(|c| c.contains("AccessPoint/2 ")).count();
+    let before = reads(&nm);
+    nm.change(NmChange::Strength(2, 20));
+    assert!(wait_until(|| reads(&nm) > before), "open: followed: {:?}", nm.calls());
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    the_wifi_rules_are_gone(&nm, &d);
+    assert_eq!(rest_over_5_s(&d), 0);
+}
+
+/// Quick Wi-Fi spec § 1: `alpheus-launch --quick wifi` opens the panel on the Wi-Fi detail (its
+/// rescan); the verb again closes it.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_the_verb_opens_the_detail() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-verb");
+    assert_eq!(quick_verb(&sway, &["--quick", "wifi"]), EXIT_OK);
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_call(&sway, "nmcli", "nmcli device wifi rescan"), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(wait_for_the_detail(&nm), "{:?}", nm.calls());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(quick_verb(&sway, &["--quick", "wifi"]), EXIT_OK);
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+}
+
+/// Opens the detail from the network module and presses Enter on Cafe-Libre (open, not saved:
+/// third). When Enter was pressed.
+fn a_new_network_attempt(nm: &FakeNetworkManager, sway: &Sway, d: &Daemon) -> Instant {
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(wait_for_the_detail(nm), "{:?} {:?}", nm.calls(), d.log());
+    keys(sway, &["Down", "Down", "Return"]);
+    assert!(wait_for_call(sway, "nmcli", "nmcli device wifi connect Cafe-Libre"), "{:?} {:?}", recorded(sway, "nmcli"), d.log());
+    let entered = Instant::now();
+    assert!(d.wait_for("quick: wifi connect (open)", DELAY), "{:?}", d.log());
+    entered
+}
+
+/// Closes the panel with Escape (out of the detail, then the rows).
+fn close_the_panel(sway: &Sway, d: &Daemon) {
+    keys(sway, &["Escape", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Mae's ruling P1: the panel closed during an attempt on a new network does not abandon it. The
+/// fake NetworkManager makes its profile (seen while the panel was open), then says nothing more:
+/// at the 20 s timeout (the panel's one timer, still armed for that attempt alone) the failure is
+/// logged once and the profile deleted. Then nothing is read, nothing wakes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_closed_during_a_failing_new_network_attempt_still_deletes_its_profile() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-follow-fail");
+    a_new_network_attempt(&nm, &sway, &d);
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Cafe-Libre".into()));
+    assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
+    close_the_panel(&sway, &d);
+    assert_eq!(d.count("quick: wifi connection failed"), 0, "{:?}", d.log());
+    assert!(d.wait_for("quick: wifi connection failed (no answer in 20 s)", Duration::from_secs(25)), "{:?}", d.log());
+    let delete = format!("nmcli connection delete uuid {UUID_NEW}");
+    assert!(wait_for_call(&sway, "nmcli", &delete), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(d.wait_for("quick: wifi delete the failed profile", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("quick: wifi connection failed"), 1, "logged once: {:?}", d.log());
+    assert!(no_ssid_logged(&d), "{:?}", d.log());
+    the_wifi_rules_are_gone(&nm, &d);
+    assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
+}
+
+/// Mae's ruling P1, fix round 1 (I1): the panel reopened from the network module while an attempt
+/// is followed takes it back and opens the detail at once (its rescan), with no second attempt and
+/// no word to the D-Bus thread (the tap stays on the detail: nothing removed, nothing re-read).
+/// The attempt then times out in the reopened panel: one failure line, one delete.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_a_panel_reopened_during_a_followed_attempt_takes_it_back_on_the_detail() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-resume");
+    a_new_network_attempt(&nm, &sway, &d);
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Cafe-Libre".into()));
+    assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
+    let (calls, woken) = (nm.calls().len(), d.thread_wakeups("D-Bus").expect("the D-Bus thread"));
+    close_the_panel(&sway, &d);
+    thread::sleep(Duration::from_millis(500));
+    sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
+    assert!(d.wait_for_count("quick shown", 2, DELAY), "{:?}", d.log());
+    let rescans = || recorded(&sway, "nmcli").iter().filter(|c| *c == "nmcli device wifi rescan").count();
+    assert!(wait_until(|| rescans() == 2), "the detail opened again: {:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(nm.calls().len(), calls, "nothing read again: {:?}", &nm.calls()[calls..]);
+    assert_eq!(d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(woken), 0, "the tap never changed scope");
+    let connects = || recorded(&sway, "nmcli").iter().filter(|c| c.starts_with("nmcli device wifi connect")).count();
+    assert_eq!(connects(), 1, "no second attempt: {:?}", recorded(&sway, "nmcli"));
+    assert!(d.wait_for("quick: wifi connection failed (no answer in 20 s)", Duration::from_secs(25)), "{:?}", d.log());
+    let delete = format!("nmcli connection delete uuid {UUID_NEW}");
+    assert!(wait_for_call(&sway, "nmcli", &delete), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(d.count("quick: wifi connection failed"), 1, "{:?}", d.log());
+    assert_eq!(recorded(&sway, "nmcli").iter().filter(|c| **c == delete).count(), 1, "one delete");
+    assert_eq!(connects(), 1);
+    assert!(no_ssid_logged(&d), "{:?}", d.log());
+}
+
+/// Mae's ruling P1: the panel closed during an attempt on a new network that succeeds: the follower
+/// hears NetworkManager's word after the close (the profile made, then activated) and ends there,
+/// so nothing is deleted and no failure is logged, even past the 20 s timeout; then nothing is
+/// read, nothing wakes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_wifi_closed_during_a_successful_new_network_attempt_deletes_nothing() {
+    let (_bus, nm, sway, _hypr, d) = wifi_daemon("quick-wifi-follow-ok");
+    let entered = a_new_network_attempt(&nm, &sway, &d);
+    close_the_panel(&sway, &d);
+    nm.change(NmChange::DeviceState(60));
+    thread::sleep(Duration::from_millis(300));
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Cafe-Libre".into()));
+    assert!(wait_for_the_profile(&nm, 2), "closed: the new profile still read: {:?}", nm.calls());
+    nm.change(NmChange::Connect(Some((3, UUID_NEW.into()))));
+    the_wifi_rules_are_gone(&nm, &d);
+    let past = (entered + Duration::from_secs(21)).saturating_duration_since(Instant::now());
+    thread::sleep(past);
+    assert_eq!(d.count("quick: wifi connection failed"), 0, "connected: never a failure: {:?}", d.log());
+    assert!(recorded(&sway, "nmcli").iter().all(|c| !c.contains("delete")), "nothing deleted: {:?}", recorded(&sway, "nmcli"));
+    assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
 }
 
 /// The fake source's lines (fictional, in tools-menu's shape).

@@ -68,27 +68,30 @@ impl OsdVerb {
     }
 }
 
-/// `--quick`'s optional word (quick spec § 1): where the panel opens.
+/// `--quick`'s optional word (quick spec § 1, quick Wi-Fi spec § 1): where the panel opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickVerb {
     /// `--quick`: the first row.
     Top,
     /// `--quick sound`: the volume row.
     Sound,
+    /// `--quick wifi`: the Wi-Fi detail, once the Wi-Fi state is read.
+    Wifi,
 }
 
 impl QuickVerb {
-    pub const ALL: [QuickVerb; 2] = [QuickVerb::Top, QuickVerb::Sound];
+    pub const ALL: [QuickVerb; 3] = [QuickVerb::Top, QuickVerb::Sound, QuickVerb::Wifi];
 
     /// The word after `quick` (wire) and `--quick` (command line); None for the top.
     pub fn word(self) -> Option<&'static str> {
         match self {
             QuickVerb::Top => None,
             QuickVerb::Sound => Some("sound"),
+            QuickVerb::Wifi => Some("wifi"),
         }
     }
 
-    /// A word after `quick`: only "sound".
+    /// A word after `quick`: "sound" or "wifi".
     pub fn parse(s: &str) -> Option<QuickVerb> {
         QuickVerb::ALL.into_iter().find(|v| v.word() == Some(s))
     }
@@ -569,6 +572,7 @@ mod tests {
             Request::Osd(OsdVerb::Brightness),
             Request::Quick(QuickVerb::Top),
             Request::Quick(QuickVerb::Sound),
+            Request::Quick(QuickVerb::Wifi),
         ]
     }
 
@@ -610,6 +614,7 @@ mod tests {
         assert_eq!(encode_request(&Request::Osd(OsdVerb::Brightness)), b"alpheus-launcher/1 osd brightness\n");
         assert_eq!(encode_request(&Request::Quick(QuickVerb::Top)), b"alpheus-launcher/1 quick\n");
         assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
+        assert_eq!(encode_request(&Request::Quick(QuickVerb::Wifi)), b"alpheus-launcher/1 quick wifi\n");
         assert_eq!(
             encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
             b"alpheus-launcher/1 dmenu - 0\n"
@@ -668,6 +673,8 @@ mod tests {
             b"alpheus-launcher/1 quick volume\n",
             b"alpheus-launcher/1 quick sound now\n",
             b"alpheus-launcher/1 quick Sound\n",
+            b"alpheus-launcher/1 quick Wifi\n",
+            b"alpheus-launcher/1 quick wifi now\n",
             b"alpheus-launcher/1 dmenu - 0 indexes\n",
             b"alpheus-launcher/1 dmenu - 0 index index\n",
             b"alpheus-launcher/1 dmenu - 0 visible\n",
@@ -735,7 +742,9 @@ mod tests {
         }
         assert_eq!(QuickVerb::Top.word(), None, "the bare verb");
         assert_eq!(QuickVerb::parse("Sound"), None, "the words are exact");
-        assert_eq!(QuickVerb::parse("network"), None, "deliveries 2 and 3 add their sections");
+        assert_eq!(QuickVerb::parse("wifi"), Some(QuickVerb::Wifi), "quick Wi-Fi spec § 1");
+        assert_eq!(QuickVerb::ALL.len(), 3);
+        assert_eq!(QuickVerb::parse("network"), None, "the Wi-Fi's word is wifi; Bluetooth comes in delivery 3");
     }
 
     #[test]

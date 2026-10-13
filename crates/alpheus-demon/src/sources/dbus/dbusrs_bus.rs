@@ -8,7 +8,9 @@
 //! doesn't read is skipped, never decoded.
 
 use super::props::{Objects, Prop, Props};
-use super::{Bus, Domain, Signal, UPOWER, bluez, upower};
+use super::wifi::{self, WifiTap};
+use super::{Bus, Domain, Signal, UPOWER, bluez, network, upower};
+use crate::system::SavedWifi;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
 use dbus::channel::{BusType, Channel};
@@ -17,6 +19,7 @@ use dbus::strings::{BusName, ErrorName, Interface, Path, Signature};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::RawFd;
+use std::sync::Arc;
 use std::time::Duration;
 
 const DBUS: &str = "org.freedesktop.DBus";
@@ -26,37 +29,57 @@ pub const TIMEOUT: Duration = Duration::from_secs(2);
 /// The most dictionaries kept from an `aa{sv}` (power-profiles-daemon offers three profiles).
 pub const MAX_DICTS: usize = 16;
 
-/// Every method the daemon may call: reads, and the subscription to
-/// signals (`Hello` is libdbus's own, sent once when connecting).
+/// Every method the daemon may call: reads, and the subscription to signals (AddMatch, RemoveMatch
+/// for the Wi-Fi detail's rules); `Hello` is libdbus's own, sent once when connecting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     GetNameOwner,
     AddMatch,
+    RemoveMatch,
     GetAll,
     GetManagedObjects,
     EnumerateDevices,
+    GetDevices,
+    ListConnections,
+    GetSettings,
 }
 
 impl Method {
-    pub const ALL: [Method; 5] =
-        [Method::GetNameOwner, Method::AddMatch, Method::GetAll, Method::GetManagedObjects, Method::EnumerateDevices];
+    pub const ALL: [Method; 9] = [
+        Method::GetNameOwner,
+        Method::AddMatch,
+        Method::RemoveMatch,
+        Method::GetAll,
+        Method::GetManagedObjects,
+        Method::EnumerateDevices,
+        Method::GetDevices,
+        Method::ListConnections,
+        Method::GetSettings,
+    ];
 
     pub fn name(self) -> &'static str {
         match self {
             Method::GetNameOwner => "GetNameOwner",
             Method::AddMatch => "AddMatch",
+            Method::RemoveMatch => "RemoveMatch",
             Method::GetAll => "GetAll",
             Method::GetManagedObjects => "GetManagedObjects",
             Method::EnumerateDevices => "EnumerateDevices",
+            Method::GetDevices => "GetDevices",
+            Method::ListConnections => "ListConnections",
+            Method::GetSettings => "GetSettings",
         }
     }
 
     fn interface(self) -> &'static str {
         match self {
-            Method::GetNameOwner | Method::AddMatch => DBUS,
+            Method::GetNameOwner | Method::AddMatch | Method::RemoveMatch => DBUS,
             Method::GetAll => "org.freedesktop.DBus.Properties",
             Method::GetManagedObjects => "org.freedesktop.DBus.ObjectManager",
             Method::EnumerateDevices => UPOWER,
+            Method::GetDevices => network::INTERFACE,
+            Method::ListConnections => wifi::SETTINGS,
+            Method::GetSettings => wifi::CONNECTION,
         }
     }
 }
@@ -127,13 +150,29 @@ pub const MATCH_RULES: [(Domain, &str); 13] = [
 /// PowerOff… the guardrail already forbids those words in this directory).
 pub const LOGIN1_RULE: &str = "type='signal',sender='org.freedesktop.login1',path='/org/freedesktop/login1',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'";
 
-/// D-Bus errors meaning "nothing there": the service or the object is gone.
-const ABSENT: [&str; 4] = [
+/// The Wi-Fi detail's signals (quick Wi-Fi spec § 5), added when it opens and removed when it
+/// closes, never among a session's own rules: an access point's properties, the device's list of
+/// access points, the saved connections.
+pub const WIFI_RULES: [&str; 5] = [
+    "type='signal',sender='org.freedesktop.NetworkManager',path_namespace='/org/freedesktop/NetworkManager/AccessPoint',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'",
+    "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Device.Wireless',member='AccessPointAdded'",
+    "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Device.Wireless',member='AccessPointRemoved'",
+    "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager/Settings',interface='org.freedesktop.NetworkManager.Settings',member='NewConnection'",
+    "type='signal',sender='org.freedesktop.NetworkManager',path='/org/freedesktop/NetworkManager/Settings',interface='org.freedesktop.NetworkManager.Settings',member='ConnectionRemoved'",
+];
+
+/// D-Bus errors meaning "nothing there": the service or the object is gone (or a match rule, on
+/// a RemoveMatch).
+const ABSENT: [&str; 5] = [
     "org.freedesktop.DBus.Error.ServiceUnknown",
     "org.freedesktop.DBus.Error.NameHasNoOwner",
     "org.freedesktop.DBus.Error.UnknownObject",
     "org.freedesktop.DBus.Error.UnknownMethod",
+    "org.freedesktop.DBus.Error.MatchRuleNotFound",
 ];
+
+/// Of ABSENT, the service itself gone (`super::service_gone`).
+const SERVICE_GONE: [&str; 2] = ["org.freedesktop.DBus.Error.ServiceUnknown", "org.freedesktop.DBus.Error.NameHasNoOwner"];
 
 pub fn kind_of(error_name: &str) -> io::ErrorKind {
     if ABSENT.contains(&error_name) { io::ErrorKind::NotFound } else { io::ErrorKind::Other }
@@ -148,12 +187,18 @@ fn unexpected(what: &str) -> io::Error {
 /// (`Disconnected`), or anything else — an outage.
 fn error(e: dbus::Error) -> io::Error {
     let name = e.name().unwrap_or("");
+    let text = format!("{name}: {}", e.message().unwrap_or(""));
+    if SERVICE_GONE.contains(&name) {
+        return super::service_gone(text);
+    }
     let kind = match name {
         "org.freedesktop.DBus.Error.NoReply" | "org.freedesktop.DBus.Error.Timeout" => io::ErrorKind::TimedOut,
         "org.freedesktop.DBus.Error.Disconnected" => io::ErrorKind::UnexpectedEof,
+        // A profile NetworkManager will not show this user (GetSettings): not ours.
+        "org.freedesktop.NetworkManager.Settings.PermissionDenied" => io::ErrorKind::PermissionDenied,
         _ => kind_of(name),
     };
-    io::Error::new(kind, format!("{name}: {}", e.message().unwrap_or("")))
+    io::Error::new(kind, text)
 }
 
 /// A failed call's outcome, `error` reduced further by whether the
@@ -293,6 +338,29 @@ pub fn paths_reply(m: &Message) -> io::Result<Vec<String>> {
     Ok(v.into_iter().map(path_string).collect())
 }
 
+/// A `GetSettings` reply (`a{sa{sv}}`) as a Wi-Fi profile (`wifi::saved_wifi`): only its
+/// `connection` and `802-11-wireless` settings are decoded, every other setting skipped. This reply
+/// carries no secret (NetworkManager gives them only through GetSecrets, never called).
+pub fn settings_reply(m: &Message) -> io::Result<Option<SavedWifi>> {
+    let mut it = m.iter_init();
+    if sig(&mut it).as_deref() != Some("a{sa{sv}}") {
+        return Err(unexpected("not a{sa{sv}}"));
+    }
+    let (mut connection, mut wireless) = (None, None);
+    if let Some(mut settings) = it.recurse(ArgType::Array) {
+        while let Some(mut entry) = settings.recurse(ArgType::DictEntry) {
+            let name: &str = entry.read().map_err(|e| unexpected(&e.to_string()))?;
+            match name {
+                "connection" => connection = Some(props(&mut entry)?),
+                "802-11-wireless" => wireless = Some(props(&mut entry)?),
+                _ => {}
+            }
+            settings.next();
+        }
+    }
+    Ok(wifi::saved_wifi(connection.as_ref(), wireless.as_ref()))
+}
+
 /// The keys of the `a{sv}` (or `a{sa{sv}}`) at `it`, values skipped.
 fn keys(it: &mut Iter<'_>) -> Vec<String> {
     let mut out = Vec::new();
@@ -373,6 +441,8 @@ pub fn refusal(call: &Message) -> Message {
 
 pub struct DbusRsBus {
     channel: Channel,
+    /// The quick panel's tap, polled beside the bus's socket (`waking`); None: libdbus sleeps alone.
+    wake: Option<Arc<WifiTap>>,
 }
 
 impl DbusRsBus {
@@ -389,10 +459,21 @@ impl DbusRsBus {
         Self::subscribe(channel, domains)
     }
 
+    /// Also wakes on `tap`'s word (quick Wi-Fi spec § 5): `next_signal` then polls the bus's socket
+    /// and the tap's together and returns `Signal::poke()` when the loop asks. A tap without its
+    /// socket pair changes nothing.
+    pub fn waking(mut self, tap: Arc<WifiTap>) -> DbusRsBus {
+        if tap.wake_fd().is_some() {
+            self.channel.set_watch_enabled(true);
+            self.wake = Some(tap);
+        }
+        self
+    }
+
     /// Connecting and `Hello` are blocking (libdbus's own deadlines); then
     /// the match rules, each with `TIMEOUT`.
     fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
-        let bus = DbusRsBus { channel };
+        let bus = DbusRsBus { channel, wake: None };
         for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
             bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(rule))?;
         }
@@ -418,7 +499,10 @@ impl DbusRsBus {
     pub fn socket_fd(&mut self) -> RawFd {
         self.channel.set_watch_enabled(true);
         let fd = self.channel.watch().fd;
-        self.channel.set_watch_enabled(false);
+        // `waking`'s poll needs the watch: left on with a tap.
+        if self.wake.is_none() {
+            self.channel.set_watch_enabled(false);
+        }
         fd
     }
 
@@ -453,12 +537,30 @@ impl Bus for DbusRsBus {
         paths_reply(&self.call(destination, upower::PATH, Method::EnumerateDevices, None)?)
     }
 
+    fn get_devices(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        paths_reply(&self.call(destination, network::PATH, Method::GetDevices, None)?)
+    }
+
+    fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>> {
+        paths_reply(&self.call(destination, wifi::SETTINGS_PATH, Method::ListConnections, None)?)
+    }
+
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
+        settings_reply(&self.call(destination, path, Method::GetSettings, None)?)
+    }
+
+    fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()> {
+        let m = if add { Method::AddMatch } else { Method::RemoveMatch };
+        self.call(DBUS, DBUS_PATH, m, Some(rule)).map(|_| ())
+    }
+
     fn next_signal(&mut self) -> io::Result<Signal> {
+        let closed = || io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed");
         loop {
             while let Some(m) = self.channel.pop_message() {
                 match m.msg_type() {
                     MessageType::Signal if m.interface().is_some_and(|i| &*i == "org.freedesktop.DBus.Local") => {
-                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+                        return Err(closed());
                     }
                     MessageType::Signal => return Ok(signal(&m)),
                     // Refused at once, never left queued (the queue would only grow).
@@ -469,9 +571,35 @@ impl Bus for DbusRsBus {
                     _ => {}
                 }
             }
-            // None: asleep on the socket until the bus sends something.
-            if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "system bus closed"));
+            let Some(wake_fd) = self.wake.as_ref().and_then(|t| t.wake_fd()) else {
+                // None: asleep on the socket until the bus sends something.
+                if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
+                    return Err(closed());
+                }
+                continue;
+            };
+            // Asleep on both sockets: the bus's, and the quick panel's tap (no timeout: nothing
+            // wakes the thread at rest). Then whatever the bus sent is read without waiting
+            // (`read_write(0)`), and a word from the loop comes first.
+            let w = self.channel.watch();
+            let events = libc::POLLIN | if w.write { libc::POLLOUT } else { 0 };
+            let mut fds = [libc::pollfd { fd: w.fd, events, revents: 0 }, libc::pollfd { fd: wake_fd, events: libc::POLLIN, revents: 0 }];
+            // SAFETY: poll(2) reads and fills the two pollfd above, owned here for the whole call.
+            if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(e);
+            }
+            if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
+                return Err(closed());
+            }
+            if fds[1].revents & libc::POLLIN != 0 {
+                if let Some(t) = &self.wake {
+                    t.drain();
+                }
+                return Ok(Signal::poke());
             }
         }
     }
@@ -482,6 +610,7 @@ mod tests {
     use super::*;
     use crate::sources::dbus::busctl_wire::push_reply;
     use crate::sources::dbus::props::busctl;
+    use crate::system::SavedWifi;
 
     /// A message carrying a recorded reply, as the service would send it.
     fn recorded(json: &str) -> Message {
@@ -582,6 +711,11 @@ mod tests {
         assert_eq!(kind("org.freedesktop.DBus.Error.Disconnected"), io::ErrorKind::UnexpectedEof);
         assert_eq!(kind("org.freedesktop.DBus.Error.FileNotFound"), io::ErrorKind::Other, "no socket: an outage, not an absence");
         assert_eq!(kind("org.freedesktop.DBus.Error.AccessDenied"), io::ErrorKind::Other);
+        assert_eq!(kind("org.freedesktop.NetworkManager.Settings.PermissionDenied"), io::ErrorKind::PermissionDenied, "not ours");
+        assert_eq!(kind("org.freedesktop.DBus.Error.MatchRuleNotFound"), io::ErrorKind::NotFound, "a rule already gone");
+        let gone = |name: &str| super::super::is_service_gone(&error(dbus::Error::new_custom(name, "text")));
+        assert!(gone("org.freedesktop.DBus.Error.ServiceUnknown") && gone("org.freedesktop.DBus.Error.NameHasNoOwner"), "the service gone");
+        assert!(!gone("org.freedesktop.DBus.Error.UnknownObject") && !gone("org.freedesktop.DBus.Error.UnknownMethod"), "an object gone");
     }
 
     #[test]
@@ -609,6 +743,29 @@ mod tests {
     fn a_mid_call_disconnect_tagged_no_reply_is_still_unexpected_eof() {
         let e = dbus::Error::new_custom("org.freedesktop.DBus.Error.NoReply", "Connection was disconnected before a reply was received");
         assert_eq!(call_error(e, false).kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    /// Quick Wi-Fi spec § 5: GetSettings' reply keeps the connection's uuid and type and the SSID;
+    /// the security setting (its key management, never a secret here) is never decoded.
+    #[test]
+    fn a_settings_reply_keeps_a_wifi_profiles_uuid_and_ssid_only() {
+        let wifi = r#"{"type":"a{sa{sv}}","data":[{"connection":{"id":{"type":"s","data":"Maison-Test"},"uuid":{"type":"s","data":"11111111-2222-4333-8444-555555555555"},"type":{"type":"s","data":"802-11-wireless"}},"802-11-wireless":{"ssid":{"type":"ay","data":[77,97,105,115,111,110,45,84,101,115,116]},"mode":{"type":"s","data":"infrastructure"}},"802-11-wireless-security":{"key-mgmt":{"type":"s","data":"wpa-psk"}},"ipv4":{"method":{"type":"s","data":"auto"}}}]}"#;
+        assert_eq!(
+            settings_reply(&recorded(wifi)).unwrap(),
+            Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Maison-Test".to_vec() })
+        );
+        let wired = r#"{"type":"a{sa{sv}}","data":[{"connection":{"uuid":{"type":"s","data":"aaaa"},"type":{"type":"s","data":"802-3-ethernet"}}}]}"#;
+        assert_eq!(settings_reply(&recorded(wired)).unwrap(), None);
+        assert!(settings_reply(&recorded(r#"{"type":"a{sv}","data":[{}]}"#)).is_err(), "not a{{sa{{sv}}}}: an error");
+    }
+
+    #[test]
+    fn the_wifi_rules_follow_networkmanager_only() {
+        for rule in WIFI_RULES {
+            assert!(rule.starts_with("type='signal',sender='org.freedesktop.NetworkManager',"), "{rule}");
+        }
+        assert!(WIFI_RULES[0].contains("path_namespace='/org/freedesktop/NetworkManager/AccessPoint'"));
+        assert!(WIFI_RULES.iter().all(|r| !MATCH_RULES.iter().any(|(_, m)| m == r)), "never among the rules of every session");
     }
 
     #[test]

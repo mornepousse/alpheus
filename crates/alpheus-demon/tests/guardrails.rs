@@ -22,7 +22,7 @@ use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
-use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method};
+use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
@@ -841,6 +841,7 @@ fn d_bus_is_confined_to_sources_and_read_only() {
                 "\"ActivateConnection\"",
                 "\"DeactivateConnection\"",
                 "\"Enable\"",
+                "\"GetSecrets\"",
                 "\"Sleep\"",
                 "\"Pair\"",
                 "\"RemoveDevice\"",
@@ -855,7 +856,20 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         }
     }
     let names: Vec<&str> = Method::ALL.iter().map(|m| m.name()).collect();
-    assert_eq!(names, ["GetNameOwner", "AddMatch", "GetAll", "GetManagedObjects", "EnumerateDevices"]);
+    assert_eq!(
+        names,
+        [
+            "GetNameOwner",
+            "AddMatch",
+            "RemoveMatch",
+            "GetAll",
+            "GetManagedObjects",
+            "EnumerateDevices",
+            "GetDevices",
+            "ListConnections",
+            "GetSettings"
+        ]
+    );
     let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/dbusrs_bus.rs").expect("dbusrs_bus.rs").1;
     let prod = production_code(&file);
     assert_eq!(prod.matches("send_with_reply_and_block(").count(), 1, "every call goes through `call`, which takes a `Method`");
@@ -881,8 +895,14 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     }
     assert!(
         MATCH_RULES.iter().all(|(_, r)| !r.contains("AccessPoint")),
-        "the network module is icons only (Q1): no AccessPoint signal is ever read"
+        "the network module is icons only (Q1): the access points' rules are the Wi-Fi detail's (WIFI_RULES), added and removed with it"
     );
+    for rule in WIFI_RULES {
+        assert!(
+            rule.starts_with("type='signal',sender='org.freedesktop.NetworkManager',"),
+            "{rule}: the detail follows NetworkManager only"
+        );
+    }
     assert!(
         MATCH_RULES.iter().filter(|(_, r)| r.contains("PowerProfiles")).all(|(_, r)| r.contains("'net.hadess.PowerProfiles'")),
         "power profiles: its own signals only, never a write (quick spec § 5)"
@@ -1015,7 +1035,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 26] = [
+const NO_THREAD_NOR_COMMAND: [&str; 28] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1042,6 +1062,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 26] = [
     "text.rs",
     "quick.rs",
     "quick_state.rs",
+    "quick_wifi.rs",
+    "quick_secret.rs",
 ];
 
 #[test]
@@ -1335,6 +1357,9 @@ impl Executor for ArgvSpy {
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
         Err(self.record(prog, args))
     }
+    fn spawn_with_input(&self, prog: &str, args: &[&str], _input: &[&[u8]]) -> Result<(), ExecError> {
+        Err(self.record(prog, args))
+    }
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
         Err(self.record(prog, args))
     }
@@ -1475,7 +1500,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -1496,7 +1521,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 2, "quick.rs and quick_state.rs");
+    assert_eq!(checked, 3, "quick.rs, quick_state.rs and quick_wifi.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -1509,6 +1534,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() },
         night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
         logout: vec!["fake-logout".into()],
+        wifi_more: Some(vec!["fake-more".into()]),
         ..QuickConfig::default()
     };
     let sound = SoundState {
@@ -1526,7 +1552,7 @@ fn every_quick_command_stays_on_the_allowlist() {
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
     let mut calls: Vec<String> = Vec::new();
     let mut record = |a: QuickAction| {
-        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } = a {
+        if let QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } | QuickAction::RunSecret { argv, .. } = a {
             calls.push(argv.join(" "));
         }
     };
@@ -1555,6 +1581,87 @@ fn every_quick_command_stays_on_the_allowlist() {
                 record(fresh().scroll(&live, Some((x, y)), steps, t));
             }
         }
+    }
+    // Quick Wi-Fi spec § 5: the Wi-Fi row and its detail, the radio on and off, a network of every
+    // kind; every key on every pick (twice), every press of every cell with every button (twice).
+    const UUID_HOME: &str = "11111111-2222-4333-8444-555555555555";
+    const UUID_SAVED: &str = "33333333-4444-4555-8666-777777777777";
+    let ap = |s: &str, strength: u8, security: Security| AccessPoint { ssid: s.as_bytes().to_vec(), strength, security };
+    let wifi_state = |enabled: bool| WifiState {
+        enabled,
+        device: Some(WifiDevice {
+            state: 100,
+            active: Some(ap("Maison-Test", 80, Security::Psk)),
+            active_uuid: Some(UUID_HOME.into()),
+            access_points: Some(vec![
+                ap("Maison-Test", 80, Security::Psk),
+                ap("Bureau-Test", 60, Security::Psk),
+                ap("Cafe-Libre", 40, Security::Open),
+                ap("Labo-Test", 70, Security::Enterprise),
+                ap("Vieux-Test", 50, Security::Other),
+                ap("-x", 30, Security::Open),
+                ap("Atelier-Test", 20, Security::Open),
+            ]),
+            saved: Some(vec![
+                SavedWifi { uuid: UUID_HOME.into(), ssid: b"Maison-Test".to_vec() },
+                SavedWifi { uuid: UUID_SAVED.into(), ssid: b"Atelier-Test".to_vec() },
+            ]),
+        }),
+        stale: false,
+    };
+    for enabled in [true, false] {
+        let fresh_wifi = || {
+            let mut q = fresh();
+            q.set_wifi(Some(wifi_state(enabled)), t);
+            q.selected = quick::Row::Wifi;
+            q
+        };
+        for k in keys {
+            record(fresh_wifi().key(&live, k, false, t));
+        }
+        let mut opened = fresh_wifi();
+        record(opened.key(&live, Key::Enter, false, t));
+        let picks = opened.wifi.networks().len() + 1;
+        for down in 0..=picks {
+            for k in keys {
+                let mut q = opened.clone();
+                for _ in 0..down {
+                    q.key(&live, Key::Down, false, t);
+                }
+                record(q.key(&live, k, false, t));
+                record(q.key(&live, k, false, later));
+            }
+        }
+        let n = quick::lines(&live, &opened).len() as u16;
+        for y in 0..n {
+            for x in 0..quick::WIDTH + 2 {
+                for b in [Button::Left, Button::Right, Button::Middle] {
+                    let mut q = opened.clone();
+                    record(q.press(&live, (x, y), b, t));
+                    record(q.press(&live, (x, y), b, later));
+                }
+            }
+        }
+        // The password field, then a failure with the profile nmcli made: `--ask`, then the cleanup.
+        const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
+        let mut q = opened.clone();
+        q.wifi.pick = alpheus_demon::quick_wifi::Pick::Network(b"Bureau-Test".to_vec());
+        record(q.key(&live, Key::Enter, false, t));
+        for ch in "fake-pass".chars() {
+            record(q.key(&live, Key::Char(ch), false, t));
+        }
+        record(q.key(&live, Key::Enter, false, t));
+        let mut failing = wifi_state(enabled);
+        if let Some(d) = failing.device.as_mut() {
+            d.saved.get_or_insert_with(Vec::new).push(SavedWifi { uuid: UUID_NEW.into(), ssid: b"Bureau-Test".to_vec() });
+            d.state = 60;
+        }
+        record(q.set_wifi(Some(failing.clone()), t).action);
+        if let Some(d) = failing.device.as_mut() {
+            d.state = 30;
+        }
+        record(q.set_wifi(Some(failing), t).action);
+        record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
     // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
@@ -1593,8 +1700,15 @@ fn every_quick_command_stays_on_the_allowlist() {
             .and_then(|d| d.parse::<u8>().ok())
             .is_some_and(|p| (min..=100).contains(&p))
     };
-    let configured =
-        ["fake-keep-awake", "fake-night --toggle", "fake-logout", "loginctl lock-session", "systemctl reboot", "systemctl poweroff"];
+    let configured = [
+        "fake-keep-awake",
+        "fake-night --toggle",
+        "fake-logout",
+        "loginctl lock-session",
+        "systemctl reboot",
+        "systemctl poweroff",
+        "fake-more",
+    ];
     for c in &calls {
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
@@ -1602,11 +1716,19 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
             ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
+            ["nmcli", "radio", "wifi", "on" | "off"] => true,
+            ["nmcli", "device", "wifi", "rescan"] => true,
+            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED].contains(u),
+            ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
+            ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
+            ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
         assert!(!c.to_lowercase().contains("dpms") && !c.contains("suspend") && !c.contains("hibernate"), "{c}");
     }
+    assert!(!calls.iter().any(|c| c.ends_with(" -x")), "a refused SSID never reaches nmcli: {calls:?}");
+    assert!(!calls.iter().any(|c| c.contains("fake-pass")), "the password is never an argument: {calls:?}");
     for expected in [
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 69%",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 59%",
@@ -1624,6 +1746,15 @@ fn every_quick_command_stays_on_the_allowlist() {
         "loginctl lock-session",
         "systemctl reboot",
         "systemctl poweroff",
+        "nmcli radio wifi off",
+        "nmcli radio wifi on",
+        "nmcli device wifi rescan",
+        "nmcli connection down uuid 11111111-2222-4333-8444-555555555555",
+        "nmcli connection up uuid 33333333-4444-4555-8666-777777777777",
+        "nmcli device wifi connect Cafe-Libre",
+        "nmcli --ask device wifi connect Bureau-Test",
+        "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
+        "fake-more",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
@@ -1633,12 +1764,61 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick Wi-Fi spec § 3: the password goes to nmcli's standard input with a newline, never as an
+/// argument, and its field closes (the buffer wiped) right after; nothing of the panel formats a key
+/// or the secret with Debug; the buffer's only unsafe is its volatile wipe.
+#[test]
+fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let quick_app = src("quick_app.rs");
+    let body = function_body(&quick_app, "fn quick_spawn_secret(");
+    let (input, sent) = (body.find("spawn_with_input("), body.find("password_sent()"));
+    assert!(matches!((input, sent), (Some(i), Some(s)) if i < s), "handed on stdin, then the field closed: {body}");
+    assert!(body.contains("b\"\\n\""), "followed by a newline: {body}");
+    assert!(!body.contains(".spawn("), "never an argument: {body}");
+    for name in ["quick.rs", "quick_wifi.rs", "quick_secret.rs", "quick_app.rs", "popup.rs"] {
+        let prod = src(name);
+        for leak in
+            ["{k:?}", "{key:?}", "secret:?", "password:?", "{field:?}", "{k:#?}", "{key:#?}", "secret:#?", "password:#?", "{field:#?}"]
+        {
+            assert!(!prod.contains(leak), "{leak} in {name}");
+        }
+        // Positional forms: a `{:?}` (or `{:#?}`) whose arguments, on the rest of its line, name a key,
+        // the secret, the password or the field.
+        for form in ["{:?}", "{:#?}"] {
+            for (at, _) in prod.match_indices(form) {
+                let rest = prod[at..].lines().next().unwrap_or("");
+                for word in ["key", "k)", "k,", "secret", "password", "field"] {
+                    assert!(!rest.contains(word), "{word} formatted with Debug in {name}: {rest}");
+                }
+            }
+        }
+    }
+    let secret = src("quick_secret.rs");
+    assert_eq!(secret.matches("unsafe").count(), 1, "one unsafe block: the volatile write");
+    assert!(secret.contains("write_volatile") && secret.contains("compiler_fence"));
+    assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
+}
+
+/// Quick Wi-Fi spec § 6: no panic in the Wi-Fi reader (the D-Bus thread's): bounded, cleaned, never
+/// unwrapped.
+#[test]
+fn the_wifi_reader_has_no_panicking_path() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "sources/dbus/wifi.rs").expect("sources/dbus/wifi.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in sources/dbus/wifi.rs's production code");
     }
 }
 
@@ -1659,7 +1839,43 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
-    assert!(closed.contains(".close()") && closed.contains("quick_timer.sync(") && closed.contains("None"), "{closed}");
+    // Mae's ruling P1: the timer goes with the panel, unless an attempt on a new network is still
+    // followed (then it stays on that attempt's deadline only).
+    assert!(
+        closed.contains(".close()")
+            && closed.contains("quick_timer.sync(")
+            && closed.contains("self.wifi_follow.as_ref().map(WifiFollow::deadline)"),
+        "{closed}"
+    );
+    // Quick Wi-Fi spec § 5 and Mae's ruling P1: the D-Bus thread stops reading the Wi-Fi, unless an
+    // attempt on a new network is still followed.
+    assert!(closed.contains("wifi_closed(") && closed.contains("self.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
+    let wifi_closed = function_body(&quick_app, "pub(crate) fn wifi_closed(");
+    assert!(wifi_closed.contains("WifiScope::Closed"), "closed: no Wi-Fi read any more: {wifi_closed}");
+    // Quick Wi-Fi spec § 5: the D-Bus thread follows what the open panel shows, and nothing once closed.
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
+        let body = function_body(&quick_app, f);
+        assert!(body.contains("self.quick_wifi_sync()"), "{f}: the tap follows the panel: {body}");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_wifi(") && take.contains("panel_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
+    // Final review B-M1: only a state read for the tap's current open reaches the panel or the follower.
+    let panel = function_body(&quick_app, "pub(crate) fn panel_wifi(");
+    assert!(panel.contains("wifi_current(") && panel.contains("follow_wifi("), "{panel}");
+    assert!(take.contains("wifi_current(") && take.contains("snapshot()"), "{take}");
+    // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
+    // its attempt (the tap and the timer let go then).
+    assert!(take.contains("wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
+    assert!(tick.contains("self.wifi_follow") || tick.contains("app.wifi_follow"), "the follower's timeout: {tick}");
+    // A panel reopened while an attempt is followed takes it back: no second attempt.
+    let toggle = function_body(&quick_app, "pub(crate) fn quick_toggle(");
+    let resume = function_body(&quick_app, "fn quick_resume(");
+    assert!(
+        toggle.contains("self.quick_resume()") && resume.contains("resumed(") && resume.contains("self.quick_action("),
+        "{toggle} {resume}"
+    );
+    let follow = function_body(&quick_app, "fn quick_follow(");
+    assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
     let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }

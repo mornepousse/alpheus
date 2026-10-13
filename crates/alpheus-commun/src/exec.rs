@@ -2,7 +2,7 @@
 //! launches a system tool. Tests inject `fake::FakeExecutor`, never the real one.
 
 use std::collections::HashSet;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -80,6 +80,10 @@ pub struct Captured {
     pub end: CaptureEnd,
 }
 
+/// The most bytes `spawn_with_input` writes, all parts together: one page (4,096 bytes), which every
+/// pipe holds whatever its size, so the write never waits for the program to read.
+pub const MAX_INPUT: usize = 4096;
+
 pub trait Executor: Send + Sync {
     /// Launches `prog args…`, waits for it to finish (bounded delay), captures the outputs.
     fn run(&self, prog: &str, args: &[&str]) -> Result<Output, ExecError>;
@@ -91,6 +95,15 @@ pub trait Executor: Send + Sync {
     /// running). No thread lives for as long as the program does, however
     /// long that is.
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError>;
+
+    /// `spawn`, with `input`'s parts written in order to the program's standard input, which is then
+    /// closed: a secret handed to a program this way (the Wi-Fi password, `nmcli --ask`) is never on
+    /// its command line, never through a shell. The parts are written straight from the caller's
+    /// memory, never joined into a copy. More than MAX_INPUT bytes in all: refused before anything
+    /// starts. An `Io` error may also come once the program started (it exited, or closed its
+    /// input, before reading it all): the program was launched, so the caller never runs it again
+    /// for that error.
+    fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError>;
     /// Launches `prog args…` for as long as its output is read: standard
     /// output piped, standard error discarded, its own process group, and
     /// killed (SIGTERM) if the THREAD that launched it ends (prctl
@@ -262,10 +275,19 @@ fn detach() -> std::io::Result<()> {
 /// outlives the daemon, e.g. the lock screen must survive alpheus
 /// restarting).
 fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
+    let mut intermediate = detached_command(prog, args, Stdio::null()).spawn().map_err(io_err)?;
+    let pid = intermediate.id();
+    let _ = intermediate.wait();
+    Ok(pid)
+}
+
+/// `spawn_detached`'s command: standard input as given, output and errors nulled, the intermediate's
+/// own process group, then `detach` in the child (double fork, own session).
+fn detached_command(prog: &str, args: &[&str], stdin: Stdio) -> Command {
     let mut command = Command::new(prog);
     command
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         // The intermediate's own process group (it only lives long enough
@@ -275,9 +297,25 @@ fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
     // SAFETY: `detach` runs in the child between fork and exec and only
     // makes async-signal-safe calls (sigprocmask, fork, setsid, _exit).
     unsafe { command.pre_exec(detach) };
-    let mut intermediate = command.spawn().map_err(io_err)?;
+    command
+}
+
+/// `spawn_detached` with a standard input: a pipe, its read end inherited by the grandchild across
+/// the double fork; the parts written once the program is started (the pipe holds them all,
+/// MAX_INPUT being one page), then the write end dropped: the program's end of file.
+fn spawn_detached_with_input(prog: &str, args: &[&str], input: &[&[u8]]) -> Result<u32, ExecError> {
+    let total: usize = input.iter().map(|p| p.len()).sum();
+    if total > MAX_INPUT {
+        return Err(ExecError::Io(format!("standard input of {total} bytes refused (at most {MAX_INPUT})")));
+    }
+    let mut intermediate = detached_command(prog, args, Stdio::piped()).spawn().map_err(io_err)?;
     let pid = intermediate.id();
+    let written = match intermediate.stdin.take() {
+        Some(mut stdin) => input.iter().try_for_each(|part| stdin.write_all(part)),
+        None => Ok(()),
+    };
     let _ = intermediate.wait();
+    written.map_err(|e| ExecError::Io(e.to_string()))?;
     Ok(pid)
 }
 
@@ -520,6 +558,10 @@ impl Executor for SystemExecutor {
 
     fn spawn(&self, prog: &str, args: &[&str]) -> Result<(), ExecError> {
         spawn_detached(prog, args).map(|_intermediate_pid| ())
+    }
+
+    fn spawn_with_input(&self, prog: &str, args: &[&str], input: &[&[u8]]) -> Result<(), ExecError> {
+        spawn_detached_with_input(prog, args, input).map(|_intermediate_pid| ())
     }
 
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
@@ -785,6 +827,51 @@ mod tests {
     #[test]
     fn spawn_missing_program() {
         assert_eq!(exec().spawn("alpheus-nonexistent-program", &[]), Err(ExecError::NotFound));
+    }
+
+    /// Quick Wi-Fi spec § 3: the parts reach the program's standard input in order, then its end
+    /// (`cat` ends only on it): never an argument.
+    #[test]
+    fn spawn_with_input_writes_the_parts_then_closes_stdin() {
+        let dir = std::env::temp_dir().join(format!("alpheus-input-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (got, done) = (dir.join("got"), dir.join("done"));
+        let script = format!("cat > '{}' && mv '{}' '{}'", got.display(), got.display(), done.display());
+        exec().spawn_with_input("sh", &["-c", &script], &[b"fake-pass", b"\n"]).unwrap();
+        let t = Instant::now();
+        while !done.exists() && t.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(std::fs::read(&done).unwrap(), b"fake-pass\n", "both parts, then the end of file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// More than MAX_INPUT bytes: refused before anything starts; MAX_INPUT itself goes.
+    #[test]
+    fn spawn_with_input_refuses_more_than_max_input_before_starting() {
+        let dir = std::env::temp_dir().join(format!("alpheus-input-max-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("started");
+        let touch = format!("touch '{}'", marker.display());
+        let big = vec![b'x'; MAX_INPUT + 1];
+        assert!(matches!(exec().spawn_with_input("sh", &["-c", &touch], &[&big]), Err(ExecError::Io(_))));
+        let half = vec![b'x'; MAX_INPUT / 2 + 1];
+        assert!(
+            matches!(exec().spawn_with_input("sh", &["-c", &touch], &[&half, &half]), Err(ExecError::Io(_))),
+            "counted over every part"
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "nothing started");
+        let at_max = vec![b'x'; MAX_INPUT];
+        assert_eq!(exec().spawn_with_input("sh", &["-c", "cat > /dev/null"], &[&at_max]), Ok(()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn spawn_with_input_of_a_missing_program_is_not_found() {
+        assert_eq!(exec().spawn_with_input("alpheus-nonexistent-program", &[], &[b"x"]), Err(ExecError::NotFound));
     }
 
     /// Threads of this whole test binary (other tests may have their own,

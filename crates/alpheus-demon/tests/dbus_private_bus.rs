@@ -4,13 +4,14 @@
 
 mod common;
 
-use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
+use alpheus_demon::sources::dbus::dbusrs_bus::{DbusRsBus, WIFI_RULES};
+use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
-use alpheus_demon::system::{BtState, NetState, PowerState, Profile, ProfileState};
-use common::{FakePowerProfiles, Peer, PrivateBus, Workstation, process_alive};
+use alpheus_demon::system::{BtState, NetState, PowerState, Profile, ProfileState, SavedWifi, Security, WifiScope};
+use common::{FakeAp, FakeNetworkManager, FakePowerProfiles, NmChange, Peer, PrivateBus, UUID_HOME, UUID_NEW, Workstation, process_alive};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 #[test]
@@ -101,7 +102,7 @@ fn the_session_on_an_empty_bus_hides_everything() {
     let b = PrivateBus::start("session");
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -121,7 +122,7 @@ fn the_power_profile_is_read_followed_and_hidden_on_a_private_bus() {
     let mut bus = DbusRsBus::at(&b.address, &[Domain::Power]).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &mut |s| tx.send(s.power).is_ok());
+        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &WifiTap::default(), &mut |s| tx.send(s.power).is_ok());
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let all = Profile::ALL.to_vec();
@@ -189,7 +190,7 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
     let _workstation = Workstation::serve(&b);
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -291,4 +292,113 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
     let (next_kind, _) = rx2.recv_timeout(Duration::from_secs(5)).expect("next_signal must also return");
     assert_ne!(next_kind, io::ErrorKind::NotFound, "next_signal after a disconnect must be an outage, not an absence: {next_kind:?}");
+}
+
+/// Quick Wi-Fi spec § 5, § 7: closed, nothing of the Wi-Fi is read; the loop's word wakes the thread
+/// asleep on a quiet bus, which reads the row (past the wired device); the radio is followed; closed
+/// again, the state goes. Over the wire, through the real connection and its poll.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
+    let b = PrivateBus::start("wifi-row");
+    let nm = FakeNetworkManager::serve(&b, vec![FakeAp::new("Maison-Test", 80, true)], vec![(UUID_HOME.into(), "Maison-Test".into())]);
+    nm.change(NmChange::Connect(Some((1, UUID_HOME.into()))));
+    std::thread::sleep(Duration::from_millis(200)); // applied before the session's first read
+    let tap = Arc::new(WifiTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Network]).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let t = tap.clone();
+    std::thread::spawn(move || {
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &mut |s| tx.send(s.wifi).is_ok());
+    });
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
+    assert_eq!(next(), None, "closed: no Wi-Fi read");
+    assert!(!nm.calls().iter().any(|c| c.starts_with("GetDevices")), "{:?}", nm.calls());
+    tap.set(WifiScope::Row);
+    let row = next().expect("open: the row");
+    assert!(row.enabled);
+    let device = row.device.expect("the Wi-Fi device, past the wired one");
+    assert_eq!((device.state, device.active.map(|a| a.ssid)), (100, Some(b"Maison-Test".to_vec())));
+    assert_eq!(device.active_uuid.as_deref(), Some(UUID_HOME));
+    assert_eq!((device.access_points, device.saved), (None, None), "the row reads no list");
+    // The tap's byte was drained: the thread sleeps again, nothing more is asked of NetworkManager.
+    let calls = nm.calls().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(nm.calls().len(), calls, "no re-read at rest: {:?}", &nm.calls()[calls..]);
+    nm.change(NmChange::Radio(false));
+    assert_eq!(next().map(|w| w.enabled), Some(false), "the radio followed");
+    tap.set(WifiScope::Closed);
+    assert_eq!(next(), None, "closed: the state goes");
+}
+
+/// Quick Wi-Fi spec § 5, § 7: the detail reads every access point and the saved profiles; a
+/// strength change and a new profile are followed; back to the row, its rules are gone: the next
+/// change reaches nothing, not even a call. No secret is ever asked.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn the_wifi_detail_is_read_followed_and_let_go_on_a_private_bus() {
+    let b = PrivateBus::start("wifi-detail");
+    let aps = vec![FakeAp::new("Maison-Test", 80, true), FakeAp::new("Bureau-Test", 60, true), FakeAp::new("Cafe-Libre", 40, false)];
+    let nm = FakeNetworkManager::serve(&b, aps, vec![(UUID_HOME.into(), "Maison-Test".into())]);
+    let tap = Arc::new(WifiTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Network]).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let t = tap.clone();
+    std::thread::spawn(move || {
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &mut |s| tx.send(s.wifi).is_ok());
+    });
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
+    let device = |w: Option<alpheus_demon::system::WifiState>| w.and_then(|w| w.device).expect("the Wi-Fi device");
+    assert_eq!(next(), None);
+    tap.set(WifiScope::Detail);
+    let d = device(next());
+    let seen: Vec<(String, u8, Security)> =
+        d.access_points.expect("listed").iter().map(|a| (String::from_utf8_lossy(&a.ssid).into_owned(), a.strength, a.security)).collect();
+    assert_eq!(
+        seen,
+        [("Maison-Test".into(), 80, Security::Psk), ("Bureau-Test".into(), 60, Security::Psk), ("Cafe-Libre".into(), 40, Security::Open)]
+    );
+    assert_eq!(d.saved, Some(vec![SavedWifi { uuid: UUID_HOME.into(), ssid: b"Maison-Test".to_vec() }]));
+    // The detail read, the thread sleeps again: nothing more is asked of NetworkManager at rest.
+    let calls = nm.calls().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(nm.calls().len(), calls, "no re-read at rest: {:?}", &nm.calls()[calls..]);
+    nm.change(NmChange::Strength(2, 20));
+    let d = device(next());
+    assert_eq!(d.access_points.unwrap()[1].strength, 20, "followed");
+    nm.change(NmChange::AddSaved(UUID_NEW.into(), "Bureau-Test".into()));
+    assert_eq!(device(next()).saved.map(|s| s.len()), Some(2), "a new profile followed");
+    let rules = || detail_rules(&b);
+    assert_eq!(rules(), 5, "the detail's five rules on the bus");
+    tap.set(WifiScope::Row);
+    let d = device(next());
+    assert_eq!((d.access_points, d.saved), (None, None));
+    assert_eq!(rules(), 0, "removed with the detail");
+    let before = nm.calls().len();
+    nm.change(NmChange::Strength(2, 70));
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "no publication: the rule is gone");
+    assert_eq!(nm.calls().len(), before, "not even a call: {:?}", &nm.calls()[before..]);
+    assert!(nm.calls().iter().all(|c| !c.contains("Secret")), "never a secret: {:?}", nm.calls());
+}
+
+/// How many of the Wi-Fi detail's rules the bus holds, every connection together (the bus driver's
+/// own Debug.Stats, asked by a peer of the test).
+fn detail_rules(b: &PrivateBus) -> usize {
+    let peer = Peer::connect(b);
+    let m = dbus::Message::new_method_call(
+        "org.freedesktop.DBus",
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus.Debug.Stats",
+        "GetAllMatchRules",
+    )
+    .unwrap();
+    let all: std::collections::HashMap<String, Vec<String>> = peer.call(m).expect("Debug.Stats on the private bus").read1().unwrap();
+    // The driver prints a rule's parts in its own order: compared as sets (no value holds a comma).
+    let parts = |r: &str| {
+        let mut p: Vec<String> = r.split(',').map(String::from).collect();
+        p.sort();
+        p
+    };
+    let wanted: Vec<Vec<String>> = WIFI_RULES.iter().map(|r| parts(r)).collect();
+    all.values().flatten().filter(|r| wanted.contains(&parts(r))).count()
 }

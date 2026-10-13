@@ -734,6 +734,29 @@ pub fn recorded(sway: &Sway, name: &str) -> Vec<String> {
     fs::read_to_string(sway.runtime.join(format!("calls-{name}"))).unwrap_or_default().lines().map(String::from).collect()
 }
 
+/// Like `fake_recorder`, and what it reads on its standard input appended to `<runtime>/stdin-<name>`:
+/// the quick panel's Wi-Fi password (fake passwords only), never on its command line.
+pub fn fake_stdin_recorder(sway: &Sway, name: &str) -> PathBuf {
+    let bin = sway.runtime.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let calls = sway.runtime.join(format!("calls-{name}"));
+    let stdin = sway.runtime.join(format!("stdin-{name}"));
+    let script = format!(
+        "#!/bin/sh\n# Fake {name} of the quick settings tests: records its arguments and its standard input, nothing else.\nprintf '%s\\n' \"{name} $*\" >> '{}'\ncat >> '{}'\n",
+        calls.display(),
+        stdin.display()
+    );
+    let path = bin.join(name);
+    fs::write(&path, script).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+/// What `fake_stdin_recorder`'s `name` read on its standard input, every call's in order.
+pub fn recorded_stdin(sway: &Sway, name: &str) -> Vec<u8> {
+    fs::read(sway.runtime.join(format!("stdin-{name}"))).unwrap_or_default()
+}
+
 /// Where the fake source's `run` records its arguments, in the runtime directory.
 pub const FAKE_RUN_MARKER: &str = "launched-fake-run";
 
@@ -886,6 +909,27 @@ impl Daemon {
     pub fn pss_kb(&self) -> u64 {
         let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
         t.lines().find_map(|l| l.strip_prefix("Pss:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
+    /// PSS in KB, the whole daemon's then its shm pools' (memfd mappings), from one pass over
+    /// /proc/<pid>/smaps so the two cannot skew. The compositor maps the pools too, so their PSS
+    /// moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps leaves
+    /// them out (whole − pools), and the pools get a looser one of their own.
+    pub fn pss_and_shm_kb(&self) -> (u64, u64) {
+        let t = fs::read_to_string(format!("/proc/{}/smaps", self.pid())).unwrap();
+        let (mut shm, mut total, mut pools) = (false, 0, 0);
+        for l in t.lines() {
+            if let Some(v) = l.strip_prefix("Pss:") {
+                let kb = v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+                total += kb;
+                if shm {
+                    pools += kb;
+                }
+            } else if l.split_whitespace().next().is_some_and(|f| f.contains('-') && !f.ends_with(':')) {
+                shm = l.contains("/memfd:");
+            }
+        }
+        (total, pools)
     }
 
     /// Number of the daemon's threads.
@@ -1269,6 +1313,281 @@ fn power_profiles_reply(active: &str) -> String {
         profile("balanced"),
         profile("performance")
     )
+}
+
+/// NetworkManager's well-known name (quick Wi-Fi spec § 5).
+pub const NM_NAME: &str = "org.freedesktop.NetworkManager";
+/// Fictional profiles' uuids: a saved network, and the one a failed attempt makes.
+pub const UUID_HOME: &str = "11111111-2222-4333-8444-555555555555";
+pub const UUID_NEW: &str = "22222222-3333-4444-8555-666666666666";
+pub const NM_WIFI_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/2";
+const NM_PATH: &str = "/org/freedesktop/NetworkManager";
+const NM_ROOT: &str = "org.freedesktop.NetworkManager";
+const NM_WIRED_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/1";
+const NM_ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
+const NM_SETTINGS: &str = "/org/freedesktop/NetworkManager/Settings";
+const NM_DEVICE: &str = "org.freedesktop.NetworkManager.Device";
+const NM_WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
+const NM_ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
+
+/// The access point `n`'s path (from 1, in the order `FakeNetworkManager::serve` was given).
+pub fn nm_ap_path(n: usize) -> String {
+    format!("/org/freedesktop/NetworkManager/AccessPoint/{n}")
+}
+
+fn nm_settings_path(n: usize) -> String {
+    format!("/org/freedesktop/NetworkManager/Settings/{n}")
+}
+
+/// A fictional access point (`psk`: WPA2 personal; else open).
+#[derive(Debug, Clone)]
+pub struct FakeAp {
+    pub ssid: String,
+    pub strength: u8,
+    pub psk: bool,
+}
+
+impl FakeAp {
+    pub fn new(ssid: &str, strength: u8, psk: bool) -> FakeAp {
+        FakeAp { ssid: ssid.into(), strength, psk }
+    }
+}
+
+/// What a test changes on the fake NetworkManager; each emits the signal NetworkManager would.
+pub enum NmChange {
+    /// WirelessEnabled, and the root's PropertiesChanged.
+    Radio(bool),
+    /// The Wi-Fi device's State (NMDeviceState), and the root's PropertiesChanged on
+    /// ActiveConnections, as an activation starting or ending sends.
+    DeviceState(u32),
+    /// The access point `n` (from 1) at `strength`, and its PropertiesChanged.
+    Strength(usize, u8),
+    /// One more access point, and the device's AccessPointAdded.
+    AddAp(FakeAp),
+    /// One more saved Wi-Fi profile (uuid, SSID), and Settings' NewConnection.
+    AddSaved(String, String),
+    /// On access point `n` under the profile `uuid` (State 100), or on none (State 30); the root's
+    /// PropertiesChanged.
+    Connect(Option<(usize, String)>),
+}
+
+struct NmState {
+    radio: bool,
+    device: u32,
+    active: Option<(usize, String)>,
+    aps: Vec<FakeAp>,
+    saved: Vec<(String, String)>,
+}
+
+/// A NetworkManager on a private bus (test code only): owns its name, answers the bar's reads (the
+/// root, GetDevices with a wired device first, the Wi-Fi device, its access points, the active
+/// connection, ListConnections, GetSettings without any secret), records every call, and emits
+/// what a test changes. Dropped: its connection closes.
+pub struct FakeNetworkManager {
+    tx: Option<mpsc::Sender<NmChange>>,
+    thread: Option<thread::JoinHandle<()>>,
+    calls: Arc<Mutex<Vec<String>>>,
+}
+
+impl FakeNetworkManager {
+    pub fn serve(bus: &PrivateBus, aps: Vec<FakeAp>, saved: Vec<(String, String)>) -> FakeNetworkManager {
+        let peer = Peer::connect(bus);
+        peer.own(NM_NAME);
+        let (tx, rx) = mpsc::channel::<NmChange>();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let record = calls.clone();
+        let mut st = NmState { radio: true, device: 30, active: None, aps, saved };
+        let thread = thread::spawn(move || {
+            loop {
+                match rx.try_recv() {
+                    Ok(c) => {
+                        for m in st.change(c) {
+                            let _ = peer.channel.send(m);
+                        }
+                        peer.channel.flush();
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                match peer.channel.blocking_pop_message(Duration::from_millis(20)) {
+                    Ok(Some(call)) if call.msg_type() == dbus::message::MessageType::MethodCall => {
+                        let reply = st.answer(&call, &record);
+                        let _ = peer.channel.send(reply);
+                        peer.channel.flush();
+                    }
+                    Ok(_) => {}
+                    Err(_) => return,
+                }
+            }
+        });
+        FakeNetworkManager { tx: Some(tx), thread: Some(thread), calls }
+    }
+
+    pub fn change(&self, c: NmChange) {
+        if let Some(tx) = &self.tx {
+            tx.send(c).unwrap();
+        }
+    }
+
+    /// Every call received: "GetAll <path> <interface>", or "<member> <path>".
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Drop for FakeNetworkManager {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// An `ao` value inside a property: `{"type":"ao","data":[…]}`.
+fn paths_value(paths: &[String]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|p| format!("\"{p}\"")).collect();
+    format!(r#"{{"type":"ao","data":[{}]}}"#, quoted.join(","))
+}
+
+/// An `ao` reply (one argument): `{"type":"ao","data":[[…]]}`.
+fn paths_json(paths: &[String]) -> String {
+    let quoted: Vec<String> = paths.iter().map(|p| format!("\"{p}\"")).collect();
+    format!(r#"{{"type":"ao","data":[[{}]]}}"#, quoted.join(","))
+}
+
+fn ssid_json(ssid: &str) -> String {
+    let bytes: Vec<String> = ssid.bytes().map(|b| b.to_string()).collect();
+    format!(r#"{{"type":"ay","data":[{}]}}"#, bytes.join(","))
+}
+
+fn nm_signal(path: &str, interface: &str, member: &str, object: &str) -> dbus::Message {
+    let mut m = dbus::Message::new_signal(path, interface, member).unwrap();
+    busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"o","data":["{object}"]}}"#));
+    m
+}
+
+fn nm_changed(path: &str, interface: &str, changed: &str) -> dbus::Message {
+    let mut m = dbus::Message::new_signal(path, "org.freedesktop.DBus.Properties", "PropertiesChanged").unwrap();
+    busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"s","data":["{interface}"]}}"#));
+    busctl_wire::push_reply(&mut m, &format!(r#"{{"type":"a{{sv}}","data":[{{{changed}}}]}}"#));
+    busctl_wire::push_reply(&mut m, r#"{"type":"as","data":[[]]}"#);
+    m
+}
+
+impl NmState {
+    fn active_connections(&self) -> String {
+        let list = if self.active.is_some() { format!("[\"{NM_ACTIVE}\"]") } else { "[]".into() };
+        format!(r#""ActiveConnections":{{"type":"ao","data":{list}}}"#)
+    }
+
+    fn root(&self) -> String {
+        let primary = if self.active.is_some() { NM_ACTIVE } else { "/" };
+        format!(
+            r#"{{"type":"a{{sv}}","data":[{{"WirelessEnabled":{{"type":"b","data":{}}},{},"PrimaryConnection":{{"type":"o","data":"{primary}"}},"Connectivity":{{"type":"u","data":4}}}}]}}"#,
+            self.radio,
+            self.active_connections()
+        )
+    }
+
+    fn ap(&self, n: usize) -> Option<String> {
+        let a = self.aps.get(n.checked_sub(1)?)?;
+        let (flags, rsn) = if a.psk { (1, 0x188) } else { (0, 0) };
+        Some(format!(
+            r#"{{"type":"a{{sv}}","data":[{{"Ssid":{},"Strength":{{"type":"y","data":{}}},"Flags":{{"type":"u","data":{flags}}},"WpaFlags":{{"type":"u","data":0}},"RsnFlags":{{"type":"u","data":{rsn}}},"HwAddress":{{"type":"s","data":"00:00:5E:00:53:{n:02X}"}}}}]}}"#,
+            ssid_json(&a.ssid),
+            a.strength
+        ))
+    }
+
+    fn settings(&self, n: usize) -> Option<String> {
+        let (uuid, ssid) = self.saved.get(n.checked_sub(1)?)?;
+        Some(format!(
+            r#"{{"type":"a{{sa{{sv}}}}","data":[{{"connection":{{"id":{{"type":"s","data":"{ssid}"}},"uuid":{{"type":"s","data":"{uuid}"}},"type":{{"type":"s","data":"802-11-wireless"}}}},"802-11-wireless":{{"ssid":{},"mode":{{"type":"s","data":"infrastructure"}}}},"802-11-wireless-security":{{"key-mgmt":{{"type":"s","data":"wpa-psk"}}}}}}]}}"#,
+            ssid_json(ssid)
+        ))
+    }
+
+    fn answer(&self, call: &dbus::Message, calls: &Mutex<Vec<String>>) -> dbus::Message {
+        let path = call.path().map(|p| p.to_string()).unwrap_or_default();
+        let member = call.member().map(|m| m.to_string()).unwrap_or_default();
+        let interface = call.read1::<&str>().ok().map(String::from).unwrap_or_default();
+        calls.lock().unwrap().push(if member == "GetAll" { format!("GetAll {path} {interface}") } else { format!("{member} {path}") });
+        let index = |prefix: &str| path.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok());
+        let active_ap = self.active.as_ref().map_or("/".to_string(), |(n, _)| nm_ap_path(*n));
+        let json = match (member.as_str(), path.as_str(), interface.as_str()) {
+            ("GetAll", NM_PATH, NM_ROOT) => Some(self.root()),
+            ("GetAll", NM_ACTIVE, _) => self.active.as_ref().map(|(_, uuid)| {
+                format!(
+                    r#"{{"type":"a{{sv}}","data":[{{"Uuid":{{"type":"s","data":"{uuid}"}},"Type":{{"type":"s","data":"802-11-wireless"}},"State":{{"type":"u","data":2}},"Vpn":{{"type":"b","data":false}}}}]}}"#
+                )
+            }),
+            ("GetDevices", NM_PATH, _) => Some(paths_json(&[NM_WIRED_DEVICE.into(), NM_WIFI_DEVICE.into()])),
+            ("GetAll", NM_WIRED_DEVICE, NM_DEVICE) => {
+                Some(r#"{"type":"a{sv}","data":[{"DeviceType":{"type":"u","data":1},"State":{"type":"u","data":30}}]}"#.into())
+            }
+            ("GetAll", NM_WIFI_DEVICE, NM_DEVICE) => {
+                let active = if self.active.is_some() { NM_ACTIVE } else { "/" };
+                Some(format!(
+                    r#"{{"type":"a{{sv}}","data":[{{"DeviceType":{{"type":"u","data":2}},"State":{{"type":"u","data":{}}},"ActiveConnection":{{"type":"o","data":"{active}"}}}}]}}"#,
+                    self.device
+                ))
+            }
+            ("GetAll", NM_WIFI_DEVICE, NM_WIRELESS) => {
+                let listed = paths_value(&(1..=self.aps.len()).map(nm_ap_path).collect::<Vec<_>>());
+                Some(format!(r#"{{"type":"a{{sv}}","data":[{{"ActiveAccessPoint":{{"type":"o","data":"{active_ap}"}},"AccessPoints":{listed}}}]}}"#))
+            }
+            ("GetAll", _, NM_ACCESS_POINT) => index("/org/freedesktop/NetworkManager/AccessPoint/").and_then(|n| self.ap(n)),
+            ("ListConnections", NM_SETTINGS, _) => Some(paths_json(&(1..=self.saved.len()).map(nm_settings_path).collect::<Vec<_>>())),
+            ("GetSettings", _, _) => index("/org/freedesktop/NetworkManager/Settings/").and_then(|n| self.settings(n)),
+            _ => None,
+        };
+        match json {
+            Some(j) => {
+                let mut r = call.method_return();
+                busctl_wire::push_reply(&mut r, &j);
+                r
+            }
+            None => call.error(&"org.freedesktop.DBus.Error.UnknownObject".into(), c"not in the fake NetworkManager"),
+        }
+    }
+
+    fn change(&mut self, c: NmChange) -> Vec<dbus::Message> {
+        match c {
+            NmChange::Radio(on) => {
+                self.radio = on;
+                vec![nm_changed(NM_PATH, NM_ROOT, &format!(r#""WirelessEnabled":{{"type":"b","data":{on}}}"#))]
+            }
+            NmChange::DeviceState(s) => {
+                self.device = s;
+                vec![nm_changed(NM_PATH, NM_ROOT, &self.active_connections())]
+            }
+            NmChange::Strength(n, s) => {
+                if let Some(a) = n.checked_sub(1).and_then(|i| self.aps.get_mut(i)) {
+                    a.strength = s;
+                }
+                vec![nm_changed(&nm_ap_path(n), NM_ACCESS_POINT, &format!(r#""Strength":{{"type":"y","data":{s}}}"#))]
+            }
+            NmChange::AddAp(a) => {
+                self.aps.push(a);
+                vec![nm_signal(NM_WIFI_DEVICE, NM_WIRELESS, "AccessPointAdded", &nm_ap_path(self.aps.len()))]
+            }
+            NmChange::AddSaved(uuid, ssid) => {
+                self.saved.push((uuid, ssid));
+                vec![nm_signal(
+                    NM_SETTINGS,
+                    "org.freedesktop.NetworkManager.Settings",
+                    "NewConnection",
+                    &nm_settings_path(self.saved.len()),
+                )]
+            }
+            NmChange::Connect(to) => {
+                self.device = if to.is_some() { 100 } else { 30 };
+                self.active = to;
+                vec![nm_changed(NM_PATH, NM_ROOT, &self.active_connections())]
+            }
+        }
+    }
 }
 
 /// A binary PPM (P6, maxval 255), as grim writes it.
