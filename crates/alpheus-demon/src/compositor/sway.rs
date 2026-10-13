@@ -4,7 +4,7 @@
 //! recursion (bounded depth) along each container's `focus` array, most recent first. The
 //! scratchpad (`__i3` output, `__i3_scratch` workspace) is skipped.
 
-use super::{CompositorState, Toplevel, Window, Workspace};
+use super::{CompositorState, MAX_NESTING, Toplevel, Window, Workspace, too_deep};
 use crate::text::clean;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -15,44 +15,6 @@ pub const MAX_WINDOWS: usize = 512;
 pub const MAX_DEPTH: usize = 64;
 const SCRATCHPAD: &str = "__i3_scratch";
 const SCRATCH_OUTPUT: &str = "__i3";
-
-/// Levels of JSON nesting (`{` and `[`) a reply may reach, checked before serde_json recurses
-/// into it. Measured on a 256 KiB thread (the compositor thread's stack) in a debug build:
-/// serde_json overflows at 128 levels of sway's object/`nodes` shape and at about 110 levels of
-/// objects with several keys (before its own limit of 128); with 24 KiB of the stack already
-/// used, the latter parse at 95 levels and overflow at 100. A release build refuses 1,000 levels
-/// at 128 even on 64 KiB. 90 levels parse in both shapes with that 24 KiB used
-/// (`a_reply_at_max_nesting_parses_on_the_compositor_stack`). They hold about 44 containers (a
-/// tree MAX_DEPTH deep would need about 130 levels); a real tree nests a handful.
-pub const MAX_NESTING: usize = 90;
-
-/// The reply nests past MAX_NESTING, counted outside strings. One pass, no recursion.
-fn too_deep(bytes: &[u8]) -> bool {
-    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
-    for &b in bytes {
-        if in_string {
-            match b {
-                _ if escaped => escaped = false,
-                b'\\' => escaped = true,
-                b'"' => in_string = false,
-                _ => {}
-            }
-            continue;
-        }
-        match b {
-            b'"' => in_string = true,
-            b'{' | b'[' => {
-                depth += 1;
-                if depth > MAX_NESTING {
-                    return true;
-                }
-            }
-            b'}' | b']' => depth = depth.saturating_sub(1),
-            _ => {}
-        }
-    }
-    false
-}
 
 /// Lossy: a badly encoded title must not make the whole state unreadable. A reply nested past
 /// MAX_NESTING is unreadable, refused before serde_json recurses into it. The error names
@@ -406,20 +368,6 @@ mod tests {
         let (objects, sway) = h.join().expect("no stack overflow at MAX_NESTING on a 256 KiB stack");
         assert_eq!(objects, Ok(0), "read, not refused");
         assert_eq!(sway, Ok(Some("deep".to_string())), "read, not refused");
-    }
-
-    /// The pre-check counts `{` and `[` outside strings only: brackets in a title, or after an
-    /// escaped quote, are text.
-    #[test]
-    fn nesting_is_counted_outside_strings() {
-        let brackets = "[{".repeat(200);
-        assert!(!too_deep(format!(r#"{{"name":"{brackets}"}}"#).as_bytes()));
-        assert!(!too_deep(format!(r#"{{"name":"q\"{brackets}\\"}}"#).as_bytes()), "an escaped quote stays inside");
-        assert!(too_deep(format!(r#"{{"name":"\\",{brackets}}}"#).as_bytes()), "an escaped backslash ends the string");
-        let levels = |n: usize| format!("{}{}", "[".repeat(n), "]".repeat(n));
-        assert!(!too_deep(levels(MAX_NESTING).as_bytes()));
-        assert!(too_deep(levels(MAX_NESTING + 1).as_bytes()));
-        assert!(!too_deep(format!("{}{}", levels(MAX_NESTING), levels(MAX_NESTING)).as_bytes()), "depth, not a count");
     }
 
     /// root → output → workspace → splits → one window at `depth` (the root at 0), as a Value: a

@@ -133,8 +133,14 @@ fn compositor_requests_are_read_only() {
     assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), 0]);
 }
 
+/// Every other way to write on a socket, refused in the Mango and Sway sources: their one
+/// `write_all(` is the only write.
+const OTHER_WRITES: [&str; 8] =
+    [".write(", "libc::write", "libc::send", "send_to(", "write_vectored(", "write!(", "writeln!(", "write_fmt("];
+
 /// Mango and Sway spec § 5: the Mango source writes one thing, its request line (`request_line`,
-/// built from `REQUESTS` only), and every request is a watch: no dispatch, no other verb.
+/// built from `REQUESTS` only), and every request is a watch: no dispatch, no other verb. No
+/// other way to write on a socket (`OTHER_WRITES`) is used.
 #[test]
 fn mango_writes_only_its_request_lines() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/mango.rs")).unwrap();
@@ -143,11 +149,14 @@ fn mango_writes_only_its_request_lines() {
     assert!(prod.contains("socket.write_all(request_line(watch).as_bytes())"), "and it writes a request line");
     assert!(mango::REQUESTS.iter().all(|r| r.starts_with("watch ")), "{:?}", mango::REQUESTS);
     assert!(!prod.to_lowercase().contains("dispatch"), "no dispatch verb in the Mango source");
+    for never in OTHER_WRITES {
+        assert!(!prod.contains(never), "{never} in the Mango source");
+    }
 }
 
 /// Mango and Sway spec § 3: the Sway source writes one thing, a `Message`'s frame; adding a
 /// message type must update this exhaustive match (and so this review). No other way to write on
-/// a socket (`.write(`, `libc::write`, `libc::send`) is used.
+/// a socket (`OTHER_WRITES`) is used.
 #[test]
 fn sway_writes_only_its_three_messages() {
     fn name(m: sway::Message) -> &'static str {
@@ -162,7 +171,7 @@ fn sway_writes_only_its_three_messages() {
     let prod = production_code(&text);
     assert_eq!(prod.matches("write_all(").count(), 1, "one write in the Sway source");
     assert!(prod.contains("s.write_all(&frame(m))"), "and it writes a Message's frame");
-    for never in [".write(", "libc::write", "libc::send", "send_to(", "write_vectored("] {
+    for never in OTHER_WRITES {
         assert!(!prod.contains(never), "{never} in the Sway source");
     }
 }

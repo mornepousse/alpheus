@@ -4,7 +4,7 @@
 //! be null); `last_open_surface` (layer surfaces, the bar's own included) is never read. Mango
 //! gives no focus history: the model keeps one (`mru`).
 
-use super::{CompositorState, Toplevel, Window, Workspace};
+use super::{CompositorState, MAX_NESTING, Toplevel, Window, Workspace, too_deep};
 use crate::text::clean;
 use serde::Deserialize;
 use serde_json::Value;
@@ -103,6 +103,11 @@ impl Model {
     /// the list its watch sends is an error: the source ends the session on it (spec § 2), and the
     /// model keeps what it had.
     pub fn apply(&mut self, watch: Watch, line: &str) -> Result<(), String> {
+        // Refused before serde_json recurses into it: deep nesting would overflow the compositor
+        // thread's stack in a debug build.
+        if too_deep(line.as_bytes()) {
+            return Err(format!("unreadable mango line: nested past {MAX_NESTING} levels"));
+        }
         let l: Line = serde_json::from_str(line)
             .map_err(|e| format!("unreadable mango line: {:?} at line {} column {}", e.classify(), e.line(), e.column()))?;
         if let Some(e) = l.error {
@@ -155,6 +160,8 @@ impl Model {
             let mut tags: Vec<&Tag> = m.tags.iter().filter(|t| (1..=last).contains(&t.index)).collect();
             tags.sort_by_key(|t| t.index);
             tags.dedup_by_key(|t| t.index);
+            let lowest = tags.first().map(|t| t.index);
+            let before = workspaces.len();
             for t in tags {
                 let visible = t.is_active && !overview;
                 // Waybar's hide-empty: Mango always exposes all its tags.
@@ -169,6 +176,20 @@ impl Model {
                     urgent: t.is_urgent,
                     visible,
                     focused: visible && m.active,
+                });
+            }
+            // An output left with no tag (the overview on an empty screen) keeps its lowest one,
+            // not visible and empty: otherwise its bar would fall back to every output's tags
+            // (`workspaces_of`) and a click would act on another output.
+            if let Some(index) = lowest.filter(|_| workspaces.len() == before) {
+                workspaces.push(Workspace {
+                    name: index.to_string(),
+                    reference: index.to_string(),
+                    output: output.clone(),
+                    windows: 0,
+                    urgent: false,
+                    visible: false,
+                    focused: false,
                 });
             }
         }
@@ -293,6 +314,45 @@ mod tests {
         assert_eq!(summary(&model(&none, CLIENTS).state()), expected, "absent: empty");
     }
 
+    /// Spec § 2 (amended at the final review): in the overview, an output with no window and
+    /// nothing urgent keeps its lowest tag as a placeholder (not visible, empty), so its bar never
+    /// falls back to the other output's tags (`workspaces_of`), where a click would act there.
+    #[test]
+    fn an_empty_output_in_the_overview_keeps_one_tag_of_its_own() {
+        let first = OVERVIEW.trim().strip_prefix(r#"{"monitors":["#).and_then(|s| s.strip_suffix("]}")).unwrap();
+        let tag = |i: u32| format!(r#"{{"index":{i},"is_active":{},"is_urgent":false,"client_count":0}}"#, i == 2);
+        let tags = (0..=3).map(tag).collect::<Vec<_>>().join(",");
+        let second = format!(r#"{{"name":"eDP-1","active":false,"tag_num":3,"tags":[{tags}],"active_tags":[0],"active_client":null}}"#);
+        let e = model(&format!(r#"{{"monitors":[{first},{second}]}}"#), CLIENTS).state();
+        assert_eq!(
+            summary(&e),
+            [
+                w("1", "HDMI-A-1", 2, false, false, false),
+                w("2", "HDMI-A-1", 1, false, false, false),
+                w("1", "eDP-1", 0, false, false, false)
+            ]
+        );
+        let names = |o: &str| e.workspaces_of(o).iter().map(|w| (w.name.clone(), w.output.clone())).collect::<Vec<_>>();
+        assert_eq!(names("eDP-1"), [("1".to_string(), "eDP-1".to_string())], "its own tag only");
+        assert_eq!(names("HDMI-A-1").len(), 2);
+    }
+
+    /// Spec § 2: several active tags on the focused output are all visible and all focused.
+    #[test]
+    fn several_active_tags_on_the_focused_output_are_all_focused() {
+        let focused = MULTI
+            .replace("\"name\":\"HDMI-A-1\",\"active\":false", "\"name\":\"HDMI-A-1\",\"active\":true")
+            .replace("\"name\":\"eDP-1\",\"active\":true", "\"name\":\"eDP-1\",\"active\":false");
+        assert_ne!(focused, MULTI);
+        let e = model(&focused, CLIENTS).state();
+        assert_eq!(
+            summary(&e),
+            [w("1", "HDMI-A-1", 1, false, true, true), w("2", "HDMI-A-1", 0, false, true, true), w("3", "eDP-1", 1, false, true, false)]
+        );
+        assert_eq!(e.focused_output(), Some("HDMI-A-1"));
+        assert_eq!(e.window.unwrap().title, "Notes");
+    }
+
     /// Spec § 2: the window is the active client of the output with `active: true`, or none.
     #[test]
     fn the_title_is_the_focused_outputs_active_client() {
@@ -400,6 +460,27 @@ mod tests {
         assert!(m.apply(Watch::Monitors, &long).unwrap_err().len() < 400, "the refusal's text is capped");
     }
 
+    /// A line nested past MAX_NESTING is unreadable, refused before serde_json recurses into it (a
+    /// debug daemon would overflow the compositor thread's 256 KiB stack); one at the bound is read.
+    #[test]
+    fn a_line_nested_past_max_nesting_is_refused_before_parsing() {
+        let nested = |n: usize| format!(r#"{{"clients":[],"x":{}0{}}}"#, "[".repeat(n - 1), "]".repeat(n - 1));
+        let h = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let mut m = Model::default();
+                let at = m.apply(Watch::Clients, &nested(MAX_NESTING));
+                let past = m.apply(Watch::Clients, &nested(MAX_NESTING + 1));
+                let far = m.apply(Watch::Monitors, &nested(1000).replace("clients", "monitors"));
+                (at, past, far)
+            })
+            .unwrap();
+        let (at, past, far) = h.join().expect("no stack overflow on a 256 KiB stack");
+        assert_eq!(at, Ok(()), "read at MAX_NESTING");
+        assert_eq!(past.unwrap_err(), "unreadable mango line: nested past 90 levels");
+        assert_eq!(far.unwrap_err(), "unreadable mango line: nested past 90 levels");
+    }
+
     #[test]
     fn ready_only_once_both_snapshots_arrived() {
         let mut m = Model::default();
@@ -437,8 +518,8 @@ mod tests {
         let two_tags = MONITORS.replace("\"tag_num\": 10", "\"tag_num\": 2");
         assert_eq!(
             summary(&model(&two_tags, CLIENTS).state()),
-            [w("1", "HDMI-A-1", 2, false, true, true)],
-            "tag 3 is past eDP-1's tag_num"
+            [w("1", "HDMI-A-1", 2, false, true, true), w("1", "eDP-1", 0, false, false, false)],
+            "tag 3 is past eDP-1's tag_num: eDP-1 keeps only its placeholder"
         );
     }
 }

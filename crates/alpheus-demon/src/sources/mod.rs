@@ -89,7 +89,7 @@ pub(crate) fn mango_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<Pat
 }
 
 /// The socket a Mango session opens: `$MANGO_INSTANCE_SIGNATURE` read again (spec § 2, the path
-/// embeds Mango's pid), or the detected path if the variable is gone or unusable (decision 3).
+/// embeds Mango's pid), or the detected path if the variable is gone or unusable.
 fn mango_path(var: impl Fn(&str) -> Option<OsString>, detected: &Path) -> PathBuf {
     mango_socket(var).unwrap_or_else(|| detected.to_path_buf())
 }
@@ -683,7 +683,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
-    /// Spec § 2 (decision 3): the Mango path is read again at each session; gone, the detected one.
+    /// Spec § 2: the Mango path is read again at each session; gone, the detected one.
     #[test]
     fn the_mango_path_is_read_again_at_each_session() {
         let detected = Path::new("/run/user/1000/mango-1.sock");

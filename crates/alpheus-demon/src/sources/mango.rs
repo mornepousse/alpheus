@@ -114,7 +114,7 @@ pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) 
             }
         }
         // Nothing before both first snapshots (no half-read state); then only a state that
-        // changed (decision 8): Mango rewrites every client's geometry on a move.
+        // changed (spec § 2): Mango rewrites every client's geometry on a move.
         if !model.ready() {
             continue;
         }
@@ -177,10 +177,11 @@ pub(crate) mod fake {
                         "watch all-clients\n" => first[1].clone(),
                         _ => Some("{\"error\":\"unknown command\"}\n".to_string()),
                     };
+                    // Recorded before the reply: once the state is read, the request is there.
+                    r.lock().unwrap().push(line.clone());
                     if let Some(reply) = reply {
                         let _ = c.write_all(reply.as_bytes());
                     }
-                    r.lock().unwrap().push(line.clone());
                     s.lock().unwrap().push((line.trim_end().to_string(), c));
                 }
             });
@@ -232,17 +233,33 @@ mod tests {
     use super::fake::{CLIENTS, FakeMango, MONITORS};
     use super::*;
     use std::sync::mpsc;
-    use std::thread::JoinHandle;
     use std::time::Duration;
 
     const DELAY: Duration = Duration::from_secs(5);
     const QUIET: Duration = Duration::from_millis(300);
     const ERROR: &str = include_str!("../../tests/fixtures/mango-error.json");
 
-    fn run(f: &FakeMango) -> (mpsc::Receiver<CompositorState>, JoinHandle<io::Result<()>>) {
+    /// The states published and, apart, the session's own result. The session reports through a
+    /// channel: a mutant that never ends it fails on a timeout instead of hanging the run on a
+    /// `join`.
+    fn run(f: &FakeMango) -> (mpsc::Receiver<CompositorState>, Ended) {
         let (tx, rx) = mpsc::channel();
+        let (done, result) = mpsc::channel();
         let socket = f.socket.clone();
-        (rx, std::thread::spawn(move || session(&socket, &mut |e| tx.send(e).is_ok())))
+        std::thread::spawn(move || {
+            let r = session(&socket, &mut |e| tx.send(e).is_ok());
+            let _ = done.send(r);
+        });
+        (rx, Ended(result))
+    }
+
+    struct Ended(mpsc::Receiver<io::Result<()>>);
+
+    impl Ended {
+        /// The session's error, within DELAY.
+        fn error(&self) -> io::Error {
+            self.0.recv_timeout(DELAY).expect("the session did not end").unwrap_err()
+        }
     }
 
     fn line(text: &str) -> Vec<u8> {
@@ -273,7 +290,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(DELAY).unwrap().toplevels.len(), 4);
     }
 
-    /// Review Focus 1 (decision 8): Mango rewrites every client's geometry on a move; nothing the
+    /// Review Focus 1 (spec § 2): Mango rewrites every client's geometry on a move; nothing the
     /// bar shows changed, nothing is published.
     #[test]
     fn a_new_snapshot_is_published_only_when_the_state_changes() {
@@ -318,7 +335,7 @@ mod tests {
             let (rx, h) = run(&f);
             rx.recv_timeout(DELAY).unwrap();
             f.close(request);
-            assert_eq!(h.join().unwrap().unwrap_err().kind(), io::ErrorKind::UnexpectedEof, "{request}");
+            assert_eq!(h.error().kind(), io::ErrorKind::UnexpectedEof, "{request}");
         }
     }
 
@@ -326,7 +343,7 @@ mod tests {
     fn an_error_reply_ends_the_session() {
         let f = FakeMango::start("error", Some(ERROR), Some(CLIENTS));
         let (rx, h) = run(&f);
-        let e = h.join().unwrap().unwrap_err();
+        let e = h.error();
         assert!(e.to_string().contains("mango refused"), "{e}");
         assert!(rx.try_recv().is_err(), "nothing published");
     }
@@ -335,10 +352,10 @@ mod tests {
     fn a_line_that_is_not_json_ends_the_session() {
         let f = FakeMango::start("garbage", Some(MONITORS), Some("Failed to connect"));
         let (_rx, h) = run(&f);
-        assert!(h.join().unwrap().unwrap_err().to_string().contains("unreadable mango line"));
+        assert!(h.error().to_string().contains("unreadable mango line"));
     }
 
-    /// Spec § 2 (decision 19): a line of exactly 1 MiB is read; one byte more ends the session.
+    /// Spec § 2: a line of exactly 1 MiB is read; one byte more ends the session.
     #[test]
     fn a_line_over_1_mib_ends_the_session() {
         let f = FakeMango::start("long", Some(MONITORS), Some(CLIENTS));
@@ -351,7 +368,7 @@ mod tests {
         let e = rx.recv_timeout(DELAY).unwrap();
         assert!(e.toplevels.is_empty(), "the 1 MiB line was read");
         f.push("watch all-clients", &vec![b' '; MAX_LINE + 1]);
-        let err = h.join().unwrap().unwrap_err();
+        let err = h.error();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
         assert!(err.to_string().contains("over 1 MiB"), "{err}");
     }

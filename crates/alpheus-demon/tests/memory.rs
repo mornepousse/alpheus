@@ -1630,6 +1630,16 @@ fn start_reading(name: &str, outputs: u32, bus: &PrivateBus, bar_toml: Option<&s
     (sway, fake, d)
 }
 
+/// Waits until the daemon has sent the fake Mango both watch lines (5 s at most): a figure taken
+/// before would measure a daemon not reading it yet.
+fn wait_until_read(fake: &FakeMango, d: &Daemon) {
+    let t = Instant::now();
+    while fake.requests() != ["watch all-clients", "watch all-monitors"] {
+        assert!(t.elapsed() < DELAY, "the daemon never read the fake Mango: {:?} {:?}", fake.requests(), d.log());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Mango and Sway spec § 6: startup PSS, every module, 3 outputs, under each backend — the fake
 /// Hyprland (the reference, as `startup_pss_per_source`), Sway (this headless sway read through
 /// its i3 IPC), Mango (a fake socket serving the real captures). Printed for the README rows.
@@ -1650,12 +1660,8 @@ fn startup_pss_per_backend() {
             start_reading(&format!("per-backend-{}", if mango { "mango" } else { "sway" }), 3, &bus, Some(EVERYTHING), mango);
         assert!(d.wait_for(line, DELAY), "{:?}", d.log());
         if let Some(fake) = &fake {
-            // The figure is the daemon reading the fake: both watch lines received.
-            let t = Instant::now();
-            while fake.requests() != ["watch all-clients", "watch all-monitors"] {
-                assert!(t.elapsed() < DELAY, "the daemon never read the fake Mango: {:?} {:?}", fake.requests(), d.log());
-                std::thread::sleep(Duration::from_millis(50));
-            }
+            // The figure is the daemon reading the fake.
+            wait_until_read(fake, &d);
         }
         std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
         report.push((what, d.pss_kb(), d.threads()));
@@ -1681,8 +1687,12 @@ fn at_rest_no_wakeups_under_sway_and_mango() {
     let bus = PrivateBus::start("rest-backends");
     let _workstation = Workstation::serve(&bus);
     for (what, mango) in [("Sway", false), ("Mango", true)] {
-        let (_sway, _mango, d) = start_reading(&format!("rest-{}", what.to_lowercase()), 3, &bus, Some(AT_REST), mango);
+        let (_sway, fake, d) = start_reading(&format!("rest-{}", what.to_lowercase()), 3, &bus, Some(AT_REST), mango);
         assert!(d.wait_for(&format!("compositor: {what}"), DELAY), "{:?}", d.log());
+        if let Some(fake) = &fake {
+            // At rest means reading the fake: both watches open before the window.
+            wait_until_read(fake, &d);
+        }
         std::thread::sleep(Duration::from_secs(2)); // end of startup
         let before = d.wakeups();
         let compositor_before = d.thread_wakeups("compositor").expect("the compositor thread runs");

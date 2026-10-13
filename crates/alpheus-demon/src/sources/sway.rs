@@ -19,6 +19,9 @@ pub const MAX_REPLY: usize = 4 << 20;
 pub const SUBSCRIPTION: &str = "[\"workspace\",\"window\"]";
 /// The requests' connection only (spec § 3); the event connection has none.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Events drained in one go before the state is read again: an endless stream of events still
+/// refreshes the bar.
+const MAX_BURST: usize = 256;
 
 /// Every message the daemon ever sends to sway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,8 +147,10 @@ pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) 
     loop {
         // Blocks with no timeout: no wake-up at rest. The event's content is not read: any event means "read again".
         read_frame(&mut events)?;
-        while !events.buffer().is_empty() || readable_now(events.get_ref())? {
+        let mut drained = 1;
+        while drained < MAX_BURST && (!events.buffer().is_empty() || readable_now(events.get_ref())?) {
             read_frame(&mut events)?;
+            drained += 1;
         }
         let now = snapshot(&mut requests)?;
         if now != last {
@@ -365,19 +370,37 @@ mod tests {
     }
 
     /// Spec § 3: after an event, the events already readable are drained without blocking, then
-    /// both requests are read once: a burst costs one re-read.
+    /// both requests are read once: a burst costs one re-read. 200 events of 64 bytes overflow
+    /// the reader's 8 KiB buffer, the 128th ending exactly at its end: the buffer is then empty,
+    /// and the rest is found by the zero-timeout poll alone.
     #[test]
     fn a_burst_of_events_costs_one_reread() {
         let f = FakeSway::start("burst", Script::default());
         let r = run(&f);
         r.states.recv_timeout(DELAY).unwrap();
-        f.push(&window_event().repeat(20));
+        let event = reply(0x8000_0003, br#"{"change":"title","container":{"id":4},"pad":"xx"}"#);
+        assert_eq!(event.len(), 64, "8 KiB holds 128 whole events");
+        f.push(&event.repeat(200));
         assert_eq!(reads(&f, 4), [1, 4, 1, 4]);
         std::thread::sleep(QUIET);
-        assert_eq!(reads(&f, 4).len(), 4, "20 events, one re-read");
+        assert_eq!(reads(&f, 4).len(), 4, "200 events, one re-read");
         f.push(&window_event());
         assert_eq!(reads(&f, 6), [1, 4, 1, 4, 1, 4], "a later event: one more");
         assert!(r.states.recv_timeout(QUIET).is_err(), "the same state: not published again (spec § 3)");
+    }
+
+    /// A burst is drained MAX_BURST events at a time, then read again: an endless stream of events
+    /// still refreshes the bar. 600 events: 256, 256 and 88, three re-reads.
+    #[test]
+    fn a_long_burst_is_read_again_every_max_burst_events() {
+        let f = FakeSway::start("long-burst", Script::default());
+        let r = run(&f);
+        r.states.recv_timeout(DELAY).unwrap();
+        assert_eq!(MAX_BURST, 256);
+        f.push(&window_event().repeat(600));
+        assert_eq!(reads(&f, 8), [1, 4, 1, 4, 1, 4, 1, 4]);
+        std::thread::sleep(QUIET);
+        assert_eq!(reads(&f, 8).len(), 8, "600 events, three re-reads");
     }
 
     #[test]
@@ -439,12 +462,12 @@ mod tests {
     /// unreadable, before serde_json recurses.
     #[test]
     fn a_deep_reply_is_bounded_on_the_compositor_stack() {
-        let f = FakeSway::start("deep", Script { tree: nested(crate::compositor::sway::MAX_NESTING), ..Script::default() });
+        let f = FakeSway::start("deep", Script { tree: nested(crate::compositor::MAX_NESTING), ..Script::default() });
         let r = Run::start(&f, Some(256 * 1024));
         let e = r.states.recv_timeout(DELAY).expect("a tree at MAX_NESTING is read");
         assert!(e.toplevels.is_empty());
 
-        let f = FakeSway::start("deeper", Script { tree: nested(crate::compositor::sway::MAX_NESTING + 1), ..Script::default() });
+        let f = FakeSway::start("deeper", Script { tree: nested(crate::compositor::MAX_NESTING + 1), ..Script::default() });
         let r = Run::start(&f, Some(256 * 1024));
         let e = r.ended();
         assert!(e.to_string().contains("unreadable sway tree"), "{e}");
