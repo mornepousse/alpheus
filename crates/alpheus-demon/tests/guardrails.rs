@@ -1097,7 +1097,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 32] = [
+const NO_THREAD_NOR_COMMAND: [&str; 33] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1130,6 +1130,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 32] = [
     "sources/mango.rs",
     "compositor/sway.rs",
     "sources/sway.rs",
+    "session.rs",
 ];
 
 #[test]
@@ -1830,7 +1831,7 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "session.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

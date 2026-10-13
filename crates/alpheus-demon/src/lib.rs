@@ -44,6 +44,7 @@ pub mod quick_state;
 pub mod quick_wifi;
 pub mod retired;
 pub mod segments;
+pub mod session;
 pub mod sources;
 pub mod state;
 pub mod state_file;
