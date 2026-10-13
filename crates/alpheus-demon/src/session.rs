@@ -95,6 +95,12 @@ pub fn configured(c: &QuickConfig) -> Vec<Session> {
     Session::ALL.into_iter().filter(|s| !s.command(c).is_empty()).collect()
 }
 
+/// Whether any entry has a command: `!configured(c).is_empty()` without building the list (the bar
+/// asks at every layout).
+pub fn any_configured(c: &QuickConfig) -> bool {
+    Session::ALL.iter().any(|s| !s.command(c).is_empty())
+}
+
 /// What an activation of an entry does (power spec § 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Activation {
@@ -162,6 +168,10 @@ mod tests {
         for mask in 0..16u8 {
             let want: Vec<Session> = Session::ALL.into_iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| s).collect();
             assert_eq!(configured(&config(mask)), want, "mask {mask:04b}");
+        }
+        for mask in 0..16u8 {
+            assert_eq!(any_configured(&config(mask)), mask != 0, "mask {mask:04b}");
+            assert_eq!(any_configured(&config(mask)), !configured(&config(mask)).is_empty(), "same answer as the list");
         }
         assert_eq!(Session::Poweroff.question(), format!("{POWER} Power off? ⏎"));
         assert_eq!(Session::Reboot.question(), format!("{REBOOT} Reboot? ⏎"));

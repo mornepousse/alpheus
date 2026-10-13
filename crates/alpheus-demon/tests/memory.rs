@@ -18,6 +18,7 @@
 mod common;
 
 use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::theme::presets::preset;
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
@@ -1755,6 +1756,17 @@ fn power_click(sway: &Sway, d: &Daemon, line: &str, n: usize) {
     assert!(d.wait_for_count(line, n, DELAY), "{line} ×{n}: {:?}", d.log());
 }
 
+/// Waits until the third row (Power off) asks: its text is painted in the theme's warn (the default
+/// catppuccin, dark without a portal), which no other state of the menu uses. Proves the question
+/// was asked, so the rest below measures a menu closed with its question pending.
+fn power_asking(sway: &Sway, d: &Daemon) {
+    let w = preset("catppuccin").unwrap().dark.warn;
+    let warn = [w.0, w.1, w.2];
+    let asking =
+        |s: &common::Ppm| (73..95).flat_map(|y| (14..140).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(warn)).count() > 5;
+    assert!(sway.wait_for_screen("HEADLESS-1", asking), "the question shown in warn: {:?}", d.log());
+}
+
 /// Power spec § 5: PSS without the module, with it at rest, the menu open, closed, and after 20
 /// more open/close cycles; each bound against this run's own baseline.
 #[test]
@@ -1812,14 +1824,18 @@ fn at_rest_no_wakeups_after_the_power_menu() {
         std::thread::sleep(Duration::from_millis(300));
         power_click(&sway, &d, "popup closed", n);
     }
+    assert_eq!(d.count("popup closed"), 3, "three plain cycles: {:?}", d.log());
     const REST: Duration = Duration::from_secs(10);
     // Before the question: its 3 s deadline must fall inside the rest window, never in a wait for the minute.
     away_from_the_minute(REST + Duration::from_secs(5));
     power_click(&sway, &d, "power menu shown", 4);
     std::thread::sleep(Duration::from_millis(300)); // mapped: a press in the gap lands on no surface
     sway.click(POWER_OFF_ROW.0, POWER_OFF_ROW.1, "button1"); // the question asked, by the mouse alone
-    std::thread::sleep(Duration::from_millis(200));
+    power_asking(&sway, &d); // a click before the map would dismiss the menu and ask nothing
     power_click(&sway, &d, "popup closed", 4);
+    assert_eq!(d.count("power menu shown"), 4, "{:?}", d.log());
+    assert_eq!(d.count("popup closed (outside click)"), 4, "the 4th close is the button's own second click: {:?}", d.log());
+    assert_eq!(d.count("popup closed (dismissed)"), 0, "{:?}", d.log());
     std::thread::sleep(Duration::from_millis(300));
     let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
     std::thread::sleep(REST);

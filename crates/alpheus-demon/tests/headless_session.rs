@@ -4544,6 +4544,14 @@ fn power_drawn(sway: &Sway, d: &Daemon) {
     assert!(sway.wait_for_screen("HEADLESS-1", filled), "the power menu drawn: {:?}", d.log());
 }
 
+/// Waits until the third row (Power off) asks: its text is painted in the theme's warn, which no
+/// other state of the menu uses. Proves the question was asked before a key that must cancel it.
+fn power_asking(sway: &Sway, d: &Daemon) {
+    let warn = rgb(preset("catppuccin").unwrap().dark.warn);
+    let asking = |s: &Ppm| (73..95).flat_map(|y| (14..140).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(warn)).count() > 5;
+    assert!(sway.wait_for_screen("HEADLESS-1", asking), "the question shown in warn: {:?}", d.log());
+}
+
 /// The power menu opened by a click on ⏻, and drawn (a key or click before the map is lost).
 fn power_open(sway: &Sway, d: &Daemon, n: usize) {
     sway.click(POWER_AT.0, POWER_AT.1, "button1");
@@ -4577,14 +4585,14 @@ fn power_a_click_on_a_row_runs_it() {
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
 }
 
-/// Power spec § 2, § 5: ↑ selects Power off (the last entry); Enter asks; a second Enter 0.5 s later
-/// runs it through the fake systemctl.
+/// Power spec § 2, § 5: ↑ selects Power off (the last entry); Enter asks; a second Enter 0.8 s later
+/// runs it (a margin of 0.4 s to the 0.4 s rule, which a loaded machine eats) through the fake systemctl.
 #[test]
 #[ignore = "headless sway, grim and wtype (nix develop)"]
 fn power_off_asks_then_a_second_enter_after_half_a_second_runs_it() {
     let (sway, _hypr, d) = power_daemon("power-off");
     power_open(&sway, &d, 1);
-    assert!(wtype(&sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "500", "-k", "Return"]).success());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "800", "-k", "Return"]).success());
     assert!(wait_for_call(&sway, "systemctl", "systemctl poweroff"), "{:?} {:?}", recorded(&sway, "systemctl"), d.log());
     assert!(d.wait_for("power: power off", DELAY), "{:?}", d.log());
     assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
@@ -4613,7 +4621,9 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     let (sway, _hypr, d) = power_daemon("power-escape");
     power_open(&sway, &d, 1);
     away_from_the_minute(); // the 4 s window below must hold no minute turn (seconds 2 to 50 now)
-    keys(&sway, &["Up", "Return", "Escape"]);
+    keys(&sway, &["Up", "Return"]);
+    power_asking(&sway, &d);
+    keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_secs(1)); // wtype's virtual keyboard going settles (one late wake-up)

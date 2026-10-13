@@ -419,7 +419,7 @@ fn present(r: Row, live: &Live, q: &Quick) -> bool {
         Row::Profile => live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
         Row::KeepAwake => !live.config.keep_awake.toggle.is_empty(),
         Row::NightLight => !live.config.night_light.toggle.is_empty(),
-        Row::Session => !session::configured(live.config).is_empty(),
+        Row::Session => session::any_configured(live.config),
     }
 }
 

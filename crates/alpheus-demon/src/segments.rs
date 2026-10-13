@@ -121,7 +121,7 @@ pub(crate) fn launcher() -> Segment {
 /// The power button (power spec § 1): ⏻ alone, one click zone; none when `[quick]`'s lock, logout,
 /// reboot and poweroff are all empty (its menu would have no entry).
 pub(crate) fn power(c: &QuickConfig) -> Option<Segment> {
-    (!session::configured(c).is_empty()).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
+    session::any_configured(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
 }
 
 pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
