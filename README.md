@@ -73,6 +73,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Sway and Mango backends, linked in | +132…+140 KB vs. the delivery before this one | binary 5.83 → 5.97 MiB (+140 KiB stripped); measured `2b137f0` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (the fake Hyprland on both sides): the code linked in, unused |
 | Bar daemon under Sway and under Mango, all modules, 3 outputs — at start | Sway 8.9–9.0 MB, Mango 8.9 MB (the fake Hyprland 8.9–9.0 MB in the same runs; Sway −16…+68 KB, Mango −136…−44 KB against it) | `startup_pss_per_backend`, 3 runs: Sway is the headless sway itself, read through its i3 IPC (two connections on the existing compositor thread), Mango a fake socket serving the real 0.18 captures (two watch connections, one `poll`); 6 threads under each; 0 compositor-thread wake-ups at rest under both (`at_rest_no_wakeups_under_sway_and_mango`; 0 whole-daemon wake-ups in 5 runs of 6; 2 once under Mango, in run 1, the full memory suite, cause not investigated, the compositor thread at 0 throughout) |
+| Power button, linked in but unused (no `power` in `modules`) | within noise (−8…+336 KB) vs. the delivery before this one | binary 5.97 → 5.97 MiB (+8 KiB stripped); measured `242c686` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (no `power` there): the code linked in, unused |
+| Power button, menu closed | 184–192 KB | `power_menu_pss_idle_open_and_closed`, 3 runs (7.4 MB with it, 1 output): a one-cell segment; no surface, no timer; of those, ≈ +128 KB are new pages of the same Nerd Font file already mapped (⏻ U+23FB is in it, no other face is loaded; the kernel's fault-around adds to it) and ≈ +64 KB the module's code pages: file-backed, clean, paid once |
+| Power menu, open | 432 KB, +280 KB over idle once closed | same test; the closed figure is the first open's code and font pages; 20 more open/close cycles +12 KB over closed; its surface and pool exist only while it shows, its timer only while reboot or power off asks; 0 loop wake-ups at rest once it closed, a pending question included (`at_rest_no_wakeups_after_the_power_menu`) |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -141,7 +144,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
 | Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
-| Power menu | ✅ the panel's session buttons (reboot and power off ask first) and the TUI | ✅ | ✅ | ✅ | ❌ |
+| Power menu | ✅ a ⏻ button at the bar's end: Lock, Log out, Reboot, Power off with the quick panel's commands (reboot and power off ask first; a double click never confirms); the panel's session buttons and the TUI too | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (Hyprland; Mango through `wm-set` once nixos-config writes its monitors.conf; a message under Sway and niri) | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | 🚧 Wi-Fi in the quick panel (`More…` opens nmtui for enterprise, hidden networks, VPN, hotspot); Bluetooth next; per-app audio in the TUI (wiremix) | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
@@ -245,7 +248,7 @@ server holds the name; a left click opens the panel — the player, the last 50 
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
 clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi]`: the volume with its output devices, the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **clock** (a click opens the
-month's calendar). Clicking a module opens the matching tab
+month's calendar), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
 of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
@@ -615,7 +618,7 @@ back to default values with a warning, never a crash.
 ```toml
 # bar.toml — default values
 modules = ["launcher", "workspaces", "window", "media", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "clock"]
+           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "clock", "power"]
 height = 22
 
 [font]
@@ -659,7 +662,7 @@ backlight_dir = "/sys/class/backlight"   # read only: on `alpheus-launch --osd b
 step = 5                                   # % per ←/→ or wheel notch on a slider (1 to 25)
 keep_awake = { toggle = [], state = "" }   # toggle: a command, run as given; [] hides the row
 night_light = { toggle = [], state = "" }  # state: "", "file:<path>" (on while it exists) or "process:<name>" (on while it runs)
-lock = ["loginctl", "lock-session"]        # session buttons, run as given; [] hides one
+lock = ["loginctl", "lock-session"]        # session buttons and the ⏻ menu's entries, run as given; [] hides one
 logout = []
 reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
 poweroff = ["systemctl", "poweroff"]
