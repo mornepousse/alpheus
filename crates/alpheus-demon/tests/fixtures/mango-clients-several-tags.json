@@ -1,0 +1,1 @@
+{"clients":[{"id":9,"title":"Sticky note","appid":"org.example.Notes","monitor":"eDP-1","tags":[4,1,6],"is_focused":false},{"id":10,"title":"Everywhere","appid":"org.example.Clock","monitor":"eDP-1","tags":[],"is_focused":false},{"id":11,"title":"Plain","appid":"org.example.Plain","tags":[1]},{"title":"No id","appid":"org.example.Ghost","tags":[1],"is_focused":false}]}

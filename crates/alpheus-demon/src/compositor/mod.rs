@@ -1,9 +1,10 @@
 //! What the bar knows about the compositor, whichever it is: workspaces,
-//! windows per workspace, urgency, active window. `hypr` and `niri`
+//! windows per workspace, urgency, active window. `hypr`, `niri` and `mango`
 //! translate their compositor into this normalized state; the rest of the
 //! daemon only ever sees this one.
 
 pub mod hypr;
+pub mod mango;
 pub mod niri;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -20,9 +21,9 @@ pub struct CompositorState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toplevel {
     /// What the `focus` template's {window} becomes: "address:0x583d9c60da90"
-    /// (Hyprland), "id:12" (niri) — the selectors `wm-set focus-window` takes.
+    /// (Hyprland), "id:12" (niri, Mango, Sway) — the selectors `wm-set focus-window` takes.
     pub selector: String,
-    /// Hyprland class / niri app_id.
+    /// Hyprland class / niri, Mango and Sway app_id (Sway: the X11 class under Xwayland).
     pub class: String,
     pub title: String,
     /// Workspace name as the bar shows it.
@@ -48,7 +49,7 @@ pub struct Workspace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Window {
-    /// Class (Hyprland) or app_id (niri).
+    /// Class (Hyprland) or app_id (niri, Mango, Sway).
     pub class: String,
     pub title: String,
 }
