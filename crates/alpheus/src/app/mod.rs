@@ -273,6 +273,22 @@ impl App {
         app
     }
 
+    /// Under Sway or niri (`name`) the Displays tab calls nothing: a read of the displays already
+    /// queued (opening on that tab) is dropped too.
+    pub fn set_displays_unavailable(&mut self, name: Option<&'static str>) {
+        self.displays.unavailable = name;
+        if name.is_none() {
+            return;
+        }
+        for r in &mut self.requests {
+            if let Request::Refresh(ds) = r {
+                ds.retain(|d| *d != Domain::Displays);
+            }
+        }
+        self.requests.retain(|r| !matches!(r, Request::Refresh(ds) if ds.is_empty()));
+        self.last_read.remove(&Domain::Displays);
+    }
+
     /// Requests to forward to the worker (empties the box).
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
