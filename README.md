@@ -72,7 +72,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, a 300-line source's entries | ≈ 15–17 ms after the request (median of 21 opens) | the box shows first: open latency ≈ 1.7–2.2 ms median against 1.6–1.9 ms with no source; 0 wake-ups at rest after; the harness drifts between runs: trust the deltas |
 | Control center (TUI) while open | ≈ 2 MB + its terminal | 0 at rest (not resident); the terminal dominates: alacritty ≈ 93 MB |
 | Sway and Mango backends, linked in | +132…+140 KB vs. the delivery before this one | binary 5.83 → 5.97 MiB (+140 KiB stripped); measured `2b137f0` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (the fake Hyprland on both sides): the code linked in, unused |
-| Bar daemon under Sway and under Mango, all modules, 3 outputs — at start | Sway 9.1–9.2 MB, Mango 9.1 MB (the fake Hyprland 9.2 MB in the same runs; Sway −16…+68 KB, Mango −136…−44 KB against it) | `startup_pss_per_backend`, 3 runs: Sway is the headless sway itself, read through its i3 IPC (two connections on the existing compositor thread), Mango a fake socket serving the real 0.18 captures (two watch connections, one `poll`); 6 threads under each; 0 compositor-thread wake-ups at rest under both (`at_rest_no_wakeups_under_sway_and_mango`; 0 whole-daemon wake-ups in 5 runs of 6, 2 once under Mango) |
+| Bar daemon under Sway and under Mango, all modules, 3 outputs — at start | Sway 8.9–9.0 MB, Mango 8.9 MB (the fake Hyprland 8.9–9.0 MB in the same runs; Sway −16…+68 KB, Mango −136…−44 KB against it) | `startup_pss_per_backend`, 3 runs: Sway is the headless sway itself, read through its i3 IPC (two connections on the existing compositor thread), Mango a fake socket serving the real 0.18 captures (two watch connections, one `poll`); 6 threads under each; 0 compositor-thread wake-ups at rest under both (`at_rest_no_wakeups_under_sway_and_mango`; 0 whole-daemon wake-ups in 5 runs of 6; 2 once under Mango, in run 1, the full memory suite, cause not investigated, the compositor thread at 0 throughout) |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -174,7 +174,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 
 ¹ waybar + mako + swayosd + fuzzel. ² ashell + swaync. ³ waybar + mako +
 swayosd + swaybg, from PSS figures of different days (see the memory note
-above). Other shells' features from their documentation (October 2026);
+above). Other shells' features from their documentation or source (October 2026);
 memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
 (October 2026, unverified).
 
