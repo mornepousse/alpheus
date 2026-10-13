@@ -1,11 +1,12 @@
 //! What the bar knows about the compositor, whichever it is: workspaces,
-//! windows per workspace, urgency, active window. `hypr`, `niri` and `mango`
+//! windows per workspace, urgency, active window. `hypr`, `niri`, `mango` and `sway`
 //! translate their compositor into this normalized state; the rest of the
 //! daemon only ever sees this one.
 
 pub mod hypr;
 pub mod mango;
 pub mod niri;
+pub mod sway;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CompositorState {

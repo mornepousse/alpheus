@@ -1183,6 +1183,9 @@ pub mod mpris;
 #[path = "../support/notify.rs"]
 pub mod notify;
 
+#[path = "../support/sway_client.rs"]
+pub mod sway_client;
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// The workstation recorded on 2026-10-04 (tests/fixtures/dbus-*.json,

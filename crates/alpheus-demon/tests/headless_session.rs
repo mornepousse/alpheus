@@ -14,6 +14,7 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
 use common::portal::FakePortal;
 use common::sni::{Entry, FakeItem, FakeMenu, Spec, Value};
+use common::sway_client::{TestWindow, con_id};
 use common::{
     AG06_SINK, AG06_SOURCE, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild, NmChange, Peer,
     Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin, default_sink_delta,
@@ -4385,4 +4386,46 @@ fn a_hung_source_is_killed_and_nothing_stays_awake() {
     sway.hover(640, 400);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(rest_over_5_s(&d), 0, "the loop woke at rest after an open that ran sources");
+}
+
+/// Mango and Sway spec § 6: the Sway fixtures come from THIS isolated headless sway, never Mae's
+/// session. Two outputs; on workspace 1, two windows (a then b, a focused last); on the named
+/// workspace "music", a floating c (urgent) and d moved to the scratchpad. With
+/// ALPHEUS_CAPTURE_SWAY=<directory>, writes the three replies there (once, to make them); always checks
+/// that the live replies give the state the committed fixtures give, ids aside.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn sway_fixtures_match_a_live_headless_sway() {
+    let sway = Sway::start("sway-fixtures", 2);
+    let _a = TestWindow::open(&sway, "fixture-a", "Fixture A");
+    let _b = TestWindow::open(&sway, "fixture-b", "Fixture B");
+    sway.command("workspace music");
+    let _c = TestWindow::open(&sway, "fixture-c", "Fixture C");
+    sway.command("floating enable");
+    let _d = TestWindow::open(&sway, "fixture-d", "Fixture D");
+    sway.command("move scratchpad");
+    sway.command("workspace 1");
+    sway.command("[app_id=fixture-a] focus");
+    sway.command("[app_id=fixture-c] urgent enable");
+    let workspaces = sway.ipc_raw(1, b"");
+    let tree = sway.ipc_raw(4, b"");
+    let refused = sway.ipc_raw(2, b"[\"no-such-event\"]");
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    if let Some(dir) = std::env::var_os("ALPHEUS_CAPTURE_SWAY") {
+        let dir = Path::new(&dir);
+        std::fs::write(dir.join("sway-workspaces.json"), &workspaces).unwrap();
+        std::fs::write(dir.join("sway-tree.json"), &tree).unwrap();
+        std::fs::write(dir.join("sway-subscribe-refused.json"), &refused).unwrap();
+    }
+    let read = |name: &str| std::fs::read(fixtures.join(name)).unwrap_or_else(|e| panic!("{name}: {e} (capture first)"));
+    let live = alpheus_demon::compositor::sway::state(&workspaces, &tree).unwrap();
+    let fixture = alpheus_demon::compositor::sway::state(&read("sway-workspaces.json"), &read("sway-tree.json")).unwrap();
+    let shape = |e: &alpheus_demon::compositor::CompositorState| {
+        let tops: Vec<_> = e.toplevels.iter().map(|t| (t.class.clone(), t.title.clone(), t.workspace.clone(), t.focused)).collect();
+        (e.workspaces.clone(), e.window.clone(), tops)
+    };
+    assert_eq!(shape(&live), shape(&fixture), "the committed fixtures still describe what this sway sends");
+    assert!(con_id(&tree, "fixture-a").is_some());
+    let refusal: serde_json::Value = serde_json::from_slice(&refused).unwrap();
+    assert_eq!(refusal.get("success").and_then(|s| s.as_bool()), Some(false), "{refusal}");
 }
