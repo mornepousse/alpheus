@@ -4513,3 +4513,119 @@ fn under_mango_the_bar_reads_the_fake_mangos_tags() {
     );
     assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
 }
+
+/// The power button: the bar's only module, so cell 1 (≈ 8 to 16 px).
+const POWER_AT: (u32, u32) = (12, 10);
+
+/// The power menu's bar (catppuccin dark): the button alone, fake `loginctl` and `systemctl`
+/// recording their calls first on the daemon's PATH (the rest of it is coreutils only, checked to
+/// hold neither: never the real ones), the default `[quick]` (lock, reboot, power off).
+fn power_daemon(name: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    for program in ["loginctl", "systemctl"] {
+        fake_recorder(&sway, program);
+    }
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("modules = [\"power\"]\n"), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    (sway, hypr, d)
+}
+
+/// Waits until the power menu is on screen: its popup background (catppuccin dark) fills a good
+/// part of the area under the button. "power menu shown" is logged when the popup is asked for,
+/// before the configure and the first buffer; a key or click in that gap is lost.
+fn power_drawn(sway: &Sway, d: &Daemon) {
+    let bg = rgb(preset("catppuccin").unwrap().dark.popup_bg);
+    let filled = |s: &Ppm| (29..60).flat_map(|y| (14..60).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(bg)).count() > 300;
+    assert!(sway.wait_for_screen("HEADLESS-1", filled), "the power menu drawn: {:?}", d.log());
+}
+
+/// The power menu opened by a click on ⏻, and drawn (a key or click before the map is lost).
+fn power_open(sway: &Sway, d: &Daemon, n: usize) {
+    sway.click(POWER_AT.0, POWER_AT.1, "button1");
+    assert!(d.wait_for_count("power menu shown (lock reboot poweroff)", n, DELAY), "{:?}", d.log());
+    power_drawn(sway, d);
+}
+
+/// Power spec § 2, § 5: a click on ⏻ opens the menu (logout is empty by default); ↓ selects Lock
+/// and Enter runs it through the fake loginctl; the menu closes.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_a_click_opens_the_menu_and_down_enter_locks() {
+    let (sway, _hypr, d) = power_daemon("power-lock");
+    power_open(&sway, &d, 1);
+    keys(&sway, &["Down", "Return"]);
+    assert!(wait_for_call(&sway, "loginctl", "loginctl lock-session"), "{:?} {:?}", recorded(&sway, "loginctl"), d.log());
+    assert!(d.wait_for("power: lock", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "systemctl").is_empty(), "nothing else ran");
+}
+
+/// Power spec § 2: hovering selects and a left press activates: a click on the first row locks.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_a_click_on_a_row_runs_it() {
+    let (sway, _hypr, d) = power_daemon("power-press");
+    power_open(&sway, &d, 1);
+    let (x, y) = popup_cell(0, 4, 0);
+    sway.click(x, y, "button1");
+    assert!(wait_for_call(&sway, "loginctl", "loginctl lock-session"), "{:?} {:?}", recorded(&sway, "loginctl"), d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+}
+
+/// Power spec § 2, § 5: ↑ selects Power off (the last entry); Enter asks; a second Enter 0.5 s later
+/// runs it through the fake systemctl.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_off_asks_then_a_second_enter_after_half_a_second_runs_it() {
+    let (sway, _hypr, d) = power_daemon("power-off");
+    power_open(&sway, &d, 1);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "500", "-k", "Return"]).success());
+    assert!(wait_for_call(&sway, "systemctl", "systemctl poweroff"), "{:?} {:?}", recorded(&sway, "systemctl"), d.log());
+    assert!(d.wait_for("power: power off", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+}
+
+/// Power spec § 2, § 5 (Mae's ruling): two Enters 0.1 s apart never confirm. Nothing runs, the menu
+/// stays open with its question; a third Enter, past 0.4 s and inside 3 s, runs it.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_two_enters_a_tenth_of_a_second_apart_run_nothing() {
+    let (sway, _hypr, d) = power_daemon("power-double");
+    power_open(&sway, &d, 1);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Up", "-s", "100", "-k", "Return", "-s", "100", "-k", "Return"]).success());
+    thread::sleep(Duration::from_secs(1));
+    assert!(recorded(&sway, "systemctl").is_empty(), "a double Enter never confirms: {:?}", d.log());
+    assert_eq!(d.count("popup closed"), 0, "still open, still asking: {:?}", d.log());
+    keys(&sway, &["Return"]); // ≈ 1.4 s after the question: it counts
+    assert!(wait_for_call(&sway, "systemctl", "systemctl poweroff"), "{:?} {:?}", recorded(&sway, "systemctl"), d.log());
+}
+
+/// Power spec § 2, § 5: Escape closes the menu while the question is pending; nothing runs and
+/// nothing wakes (the question's 3 s timer went with the menu); a second click on ⏻ closes it too.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
+    let (sway, _hypr, d) = power_daemon("power-escape");
+    power_open(&sway, &d, 1);
+    away_from_the_minute(); // the 4 s window below must hold no minute turn (seconds 2 to 50 now)
+    keys(&sway, &["Up", "Return", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // wtype's virtual keyboard going settles (one late wake-up)
+    // The question was asked < 1 s ago: its 3 s deadline falls inside this window if its timer stayed.
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(4));
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(4), "the loop thread");
+    assert_eq!(d.main_thread_wakeups().saturating_sub(before), 0, "the question's timer went with the menu: {:?}", d.log());
+    assert!(recorded(&sway, "systemctl").is_empty(), "Escape runs nothing");
+    power_open(&sway, &d, 2);
+    sway.click(POWER_AT.0, POWER_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "a second click on ⏻ closes it: {:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
+}
