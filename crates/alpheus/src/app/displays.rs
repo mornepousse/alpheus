@@ -40,8 +40,9 @@ pub struct DisplaysTab {
     /// outputs may be those of a rejected trial, so nothing is planned on
     /// top of them.
     pub awaiting_read: bool,
-    /// niri session: the tab calls nothing.
-    pub niri: bool,
+    /// The compositor's name when the tab calls nothing there (Sway, niri: `wm-set outputs`
+    /// refuses); None: through `wm-set`.
+    pub unavailable: Option<&'static str>,
 }
 
 /// A trial in progress: applied (or being applied), not kept yet.
@@ -488,7 +489,7 @@ impl App {
     // ── Profiles and list ────────────────────────────────────────────
 
     pub(crate) fn apply_display_profile(&mut self, name: &str, now: Instant) {
-        if self.displays.niri || self.displays_busy(now) {
+        if self.displays.unavailable.is_some() || self.displays_busy(now) {
             return;
         }
         let Some(outs) = self.data.displays.ready() else {
@@ -514,7 +515,7 @@ impl App {
 
     /// Space on an output: enable it, or disable it (never the last one).
     pub(crate) fn toggle_output(&mut self, name: &str, now: Instant) {
-        if self.displays.niri || self.displays_busy(now) {
+        if self.displays.unavailable.is_some() || self.displays_busy(now) {
             return;
         }
         let outs = self.outputs().to_vec();
@@ -1017,22 +1018,26 @@ mod tests {
         );
     }
 
+    /// Under Sway, as under niri, the tab calls nothing (no read, no trial, no profile), so
+    /// `wm-set` is never run (`wm-set outputs` refuses there).
     #[test]
-    fn under_niri_the_tab_calls_nothing() {
-        let mut a = ready_app();
-        a.displays.niri = true;
-        a.go_tab(Tab::Displays, Instant::now());
-        assert!(a.take_requests().is_empty());
-        assert!(a.items().is_empty());
-        a.on_tick(Instant::now() + Duration::from_secs(30));
-        assert!(a.take_requests().is_empty(), "not even on tick");
-        assert!(!a.palette_matches().iter().any(|(l, _)| l.starts_with("Display profile")));
-        a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
-        assert_eq!(a.displays.queued_profile, None);
-        a.take_requests();
-        a.toggle_output("HDMI-A-1", Instant::now());
-        assert!(a.take_requests().is_empty(), "not even toggling an output");
-        assert_eq!(a.displays.trial, None);
+    fn under_sway_or_niri_the_tab_calls_nothing() {
+        for name in ["Sway", "niri"] {
+            let mut a = ready_app();
+            a.displays.unavailable = Some(name);
+            a.go_tab(Tab::Displays, Instant::now());
+            assert!(a.take_requests().is_empty(), "{name}");
+            assert!(a.items().is_empty(), "{name}");
+            a.on_tick(Instant::now() + Duration::from_secs(30));
+            assert!(a.take_requests().is_empty(), "{name}: not even on tick");
+            assert!(!a.palette_matches().iter().any(|(l, _)| l.starts_with("Display profile")), "{name}");
+            a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
+            assert_eq!(a.displays.queued_profile, None, "{name}");
+            a.take_requests();
+            a.toggle_output("HDMI-A-1", Instant::now());
+            assert!(a.take_requests().is_empty(), "{name}: not even toggling an output");
+            assert_eq!(a.displays.trial, None, "{name}");
+        }
     }
 
     #[test]

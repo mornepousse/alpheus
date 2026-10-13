@@ -110,11 +110,44 @@ fn spawn_guard(exec: Arc<SystemExecutor>, undo: UndoSlot, displays: Arc<dyn Disp
     });
 }
 
-/// Is this a niri session? (Based on `NIRI_SOCKET`; a Hyprland session,
-/// signaled by `HYPRLAND_INSTANCE_SIGNATURE`, wins over a niri socket left
-/// over in the environment.)
-fn niri_active(socket: Option<OsString>, hyprland: Option<OsString>) -> bool {
-    socket.is_some() && hyprland.is_none()
+/// The session's compositor, in the daemon's order (nixos-config's `compositor()`, niri last):
+/// SWAYSOCK, HYPRLAND_INSTANCE_SIGNATURE, MANGO_INSTANCE_SIGNATURE, NIRI_SOCKET. An empty
+/// variable counts as unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Session {
+    Sway,
+    Hyprland,
+    Mango,
+    Niri,
+    Unknown,
+}
+
+pub(crate) fn session(var: impl Fn(&str) -> Option<OsString>) -> Session {
+    let set = |k: &str| var(k).is_some_and(|v| !v.is_empty());
+    if set("SWAYSOCK") {
+        Session::Sway
+    } else if set("HYPRLAND_INSTANCE_SIGNATURE") {
+        Session::Hyprland
+    } else if set("MANGO_INSTANCE_SIGNATURE") {
+        Session::Mango
+    } else if set("NIRI_SOCKET") {
+        Session::Niri
+    } else {
+        Session::Unknown
+    }
+}
+
+impl Session {
+    /// The name the Displays tab shows where it calls nothing (`wm-set outputs` refuses there):
+    /// Sway and niri. Hyprland, Mango (nixos-config's `wm-set` writes its monitors.conf) and an
+    /// unknown compositor go through `wm-set`, as before.
+    pub(crate) fn displays_unavailable(self) -> Option<&'static str> {
+        match self {
+            Session::Sway => Some("Sway"),
+            Session::Niri => Some("niri"),
+            Session::Hyprland | Session::Mango | Session::Unknown => None,
+        }
+    }
 }
 
 /// Should the loop stop? ("q" or a stop signal received.)
@@ -203,8 +236,8 @@ impl Drop for Cleanup {
 pub fn run(options: Options) -> io::Result<()> {
     install_signals()?;
     let mut app = build_app(&config_dir(), options.tab, Instant::now());
-    // Under niri, the Displays tab calls nothing (not supported yet).
-    app.displays.niri = niri_active(std::env::var_os("NIRI_SOCKET"), std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE"));
+    // Under Sway and niri, the Displays tab calls nothing (`wm-set outputs` refuses there).
+    app.displays.unavailable = session(|k| std::env::var_os(k)).displays_unavailable();
     let exec = Arc::new(SystemExecutor::new(TOOL_TIMEOUT));
     let (tx, rx) = worker::spawn(Backends::system(exec.clone(), runtime_dir()));
     // Separate executor to undo a display trial on close: the worker
@@ -397,13 +430,34 @@ mod tests {
         assert_eq!(String::from_utf8(err).unwrap(), "alpheus: displays: incomplete rollback: DVI-I-1 (wm-set not found)\n");
     }
 
+    fn vars(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        move |k| pairs.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
+    }
+
+    /// The daemon's order; an empty variable counts as unset. Sway and niri: the Displays tab
+    /// calls nothing; Hyprland, Mango and an unknown compositor use wm-set.
     #[test]
-    fn niri_detected_by_its_socket() {
-        assert!(niri_active(Some("/run/user/1000/niri.sock".into()), None));
-        assert!(!niri_active(None, None));
-        // niri socket left over in a Hyprland session's environment.
-        assert!(!niri_active(Some("/run/user/1000/niri.sock".into()), Some("abc_123".into())));
-        assert!(!niri_active(None, Some("abc_123".into())));
+    fn the_session_is_detected_in_the_daemons_order() {
+        let all: &'static [(&str, &str)] = &[
+            ("SWAYSOCK", "/run/user/1000/sway-ipc.1000.42.sock"),
+            ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
+            ("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-42.sock"),
+            ("NIRI_SOCKET", "/run/user/1000/niri.sock"),
+        ];
+        assert_eq!(session(vars(all)), Session::Sway);
+        assert_eq!(session(vars(&all[1..])), Session::Hyprland);
+        assert_eq!(session(vars(&all[2..])), Session::Mango);
+        assert_eq!(session(vars(&all[3..])), Session::Niri);
+        assert_eq!(session(vars(&[])), Session::Unknown);
+        assert_eq!(session(vars(&[("SWAYSOCK", ""), ("NIRI_SOCKET", "/run/user/1000/niri.sock")])), Session::Niri, "empty: unset");
+        assert_eq!(
+            session(vars(&[("NIRI_SOCKET", "/run/user/1000/niri.sock"), ("HYPRLAND_INSTANCE_SIGNATURE", "abc_123")])),
+            Session::Hyprland,
+            "a niri socket left over in a Hyprland session's environment"
+        );
+        let unavailable =
+            [Session::Sway, Session::Hyprland, Session::Mango, Session::Niri, Session::Unknown].map(Session::displays_unavailable);
+        assert_eq!(unavailable, [Some("Sway"), None, None, Some("niri"), None]);
     }
 
     #[test]
