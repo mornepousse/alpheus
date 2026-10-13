@@ -908,6 +908,15 @@ mod tests {
         );
     }
 
+    /// Power spec § 1: the power button reads nothing: no source, no thread.
+    #[test]
+    fn the_power_module_wants_no_source() {
+        assert_eq!(
+            wanted(&[ModuleId::Power]),
+            Wanted { sound: false, dbus: vec![], resources: false, tray: false, media: false, notifications: false }
+        );
+    }
+
     #[test]
     fn wanted_tray_only_with_the_module() {
         assert!(wanted(&[ModuleId::Tray]).tray);

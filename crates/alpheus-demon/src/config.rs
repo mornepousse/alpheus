@@ -51,7 +51,7 @@
 //! step = 5                                                  # % per ←/→ or wheel notch on a slider, 1 to 25
 //! keep_awake = { toggle = [], state = "" }                  # toggle: argv, run as given; [] hides the row
 //! night_light = { toggle = [], state = "" }                 # state: "" (unknown), "file:<path>" (on while it exists), "process:<name>" (on while it runs)
-//! lock = ["loginctl", "lock-session"]                       # session buttons, run as given; [] hides one
+//! lock = ["loginctl", "lock-session"]                       # session buttons and the ⏻ menu's entries, run as given; [] hides one
 //! logout = []
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
@@ -89,10 +89,13 @@ pub enum ModuleId {
     /// Bluetooth module, or `alpheus-launch --quick`. No segment in the bar.
     Quick,
     Clock,
+    /// The power button (power spec § 1): ⏻ at the bar's end, a left click opens its menu with
+    /// `[quick]`'s lock, logout, reboot and poweroff. No segment when all four are empty.
+    Power,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 14] = [
+    pub const ALL: [ModuleId; 15] = [
         ModuleId::Launcher,
         ModuleId::Workspaces,
         ModuleId::Window,
@@ -107,6 +110,7 @@ impl ModuleId {
         ModuleId::Osd,
         ModuleId::Quick,
         ModuleId::Clock,
+        ModuleId::Power,
     ];
 
     /// Name in bar.toml.
@@ -126,6 +130,7 @@ impl ModuleId {
             ModuleId::Osd => "osd",
             ModuleId::Quick => "quick",
             ModuleId::Clock => "clock",
+            ModuleId::Power => "power",
         }
     }
 }
@@ -758,7 +763,7 @@ mod tests {
         let (c, w) = BarConfig::load(Path::new("/nonexistent/bar.toml"));
         assert_eq!((c, w), (BarConfig::default(), None));
         let d = BarConfig::default();
-        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Launcher), Some(&ModuleId::Clock)));
+        assert_eq!((d.modules.first(), d.modules.last()), (Some(&ModuleId::Launcher), Some(&ModuleId::Power)));
         assert_eq!((d.height, d.font.size, d.font.fallback.as_slice()), (22, 14.0, ["DejaVu Sans Mono".to_string()].as_slice()));
         assert_eq!(d.workspaces.command, ["wm-set", "workspace", "{workspace}", "{output}"]);
     }
@@ -775,6 +780,18 @@ mod tests {
             let parsed = BarConfig::from_text(&format!("modules = [\"{}\"]", m.name())).unwrap();
             assert_eq!(parsed.modules, vec![m], "name() is the bar.toml name of {m:?}");
         }
+    }
+
+    /// Power spec § 1: `power` parses, is the last of `ALL`, and the default order ends with the
+    /// clock then the power button.
+    #[test]
+    fn the_power_module_parses_and_ends_the_default_order() {
+        assert_eq!(ModuleId::Power.name(), "power");
+        assert_eq!(ModuleId::ALL.last(), Some(&ModuleId::Power));
+        let c = BarConfig::from_text("modules = [\"clock\", \"power\"]").unwrap();
+        assert_eq!(c.modules, vec![ModuleId::Clock, ModuleId::Power]);
+        let d = BarConfig::default();
+        assert_eq!(d.modules[d.modules.len() - 2..], [ModuleId::Clock, ModuleId::Power]);
     }
 
     #[test]
@@ -1054,7 +1071,7 @@ mod tests {
             }
         );
         assert!(d.modules.contains(&ModuleId::Osd), "on by default");
-        assert_eq!(d.modules.last(), Some(&ModuleId::Clock), "the clock stays last");
+        assert_eq!(d.modules[d.modules.len() - 2..], [ModuleId::Clock, ModuleId::Power], "the clock, then the power button, last");
         assert_eq!(ModuleId::Osd.name(), "osd");
         let c = BarConfig::from_text(
             "[osd]\ntimeout_ms = 2000\nwidth = 40\nmargin = 0\nbacklight = \"intel_backlight\"\nbacklight_dir = \"/tmp/fake\"\n",
@@ -1127,7 +1144,7 @@ mod tests {
     fn quick_defaults_and_settings() {
         let d = BarConfig::default();
         assert!(d.modules.contains(&ModuleId::Quick), "on by default");
-        assert_eq!(d.modules.last(), Some(&ModuleId::Clock), "the clock stays last");
+        assert_eq!(d.modules[d.modules.len() - 2..], [ModuleId::Clock, ModuleId::Power], "the clock, then the power button, last");
         assert_eq!(ModuleId::Quick.name(), "quick");
         let q = &d.quick;
         assert_eq!(q.step, 5);
