@@ -1,7 +1,8 @@
 //! Compositor event sources: READ-ONLY connection, publishing of the
 //! normalized state, backoff with growing delay when the source goes down
 //! (1 s, 2 s, 4 s… 30 s at most; back to 1 s after a success). While down,
-//! the bar shows "–".
+//! the bar shows "–". The compositor is detected once at start (`detect`), in nixos-config's
+//! order, with niri last.
 
 pub mod dbus;
 pub mod hypr;
@@ -34,21 +35,67 @@ pub(crate) fn panic_text(p: &(dyn std::any::Any + Send)) -> String {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Compositor {
+    Sway { socket: PathBuf },
     Hyprland { directory: PathBuf },
+    Mango { socket: PathBuf },
     Niri { socket: PathBuf },
 }
 
-/// Same rule as nixos-config's `compositor()` (home/scripts/lib.sh):
-/// NIRI_SOCKET first, then HYPRLAND_INSTANCE_SIGNATURE.
+impl Compositor {
+    /// Its name and the variable that named it, for the start line (`describe`).
+    pub fn name(&self) -> (&'static str, &'static str) {
+        match self {
+            Compositor::Sway { .. } => ("Sway", "SWAYSOCK"),
+            Compositor::Hyprland { .. } => ("Hyprland", "HYPRLAND_INSTANCE_SIGNATURE"),
+            Compositor::Mango { .. } => ("Mango", "MANGO_INSTANCE_SIGNATURE"),
+            Compositor::Niri { .. } => ("niri", "NIRI_SOCKET"),
+        }
+    }
+}
+
+/// The four variables, in detection order (Mango and Sway spec § 1).
+pub const VARIABLES: [&str; 4] = ["SWAYSOCK", "HYPRLAND_INSTANCE_SIGNATURE", "MANGO_INSTANCE_SIGNATURE", "NIRI_SOCKET"];
+
+/// Same rule as nixos-config's `compositor()` (home/scripts/lib.sh), with niri last: SWAYSOCK,
+/// then HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET. An empty
+/// variable counts as unset; the first one set decides, and an unusable value gives no compositor
+/// rather than the next variable's (a nested session inherits several of them).
 pub fn detect(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositor> {
     let non_empty = |k: &str| var(k).filter(|v| !v.is_empty());
-    if let Some(s) = non_empty("NIRI_SOCKET") {
-        return Some(Compositor::Niri { socket: s.into() });
+    if let Some(socket) = non_empty("SWAYSOCK") {
+        return Some(Compositor::Sway { socket: socket.into() });
     }
-    // The signature is a directory name: "/" or ".." would escape it.
-    let sig = non_empty("HYPRLAND_INSTANCE_SIGNATURE").filter(|s| s != ".." && !s.as_encoded_bytes().contains(&b'/'))?;
-    let runtime = non_empty("XDG_RUNTIME_DIR")?;
-    Some(Compositor::Hyprland { directory: PathBuf::from(runtime).join("hypr").join(sig) })
+    if let Some(sig) = non_empty("HYPRLAND_INSTANCE_SIGNATURE") {
+        // The signature is a directory name: "/" or ".." would escape it.
+        if sig == ".." || sig.as_encoded_bytes().contains(&b'/') {
+            return None;
+        }
+        let runtime = non_empty("XDG_RUNTIME_DIR")?;
+        return Some(Compositor::Hyprland { directory: PathBuf::from(runtime).join("hypr").join(sig) });
+    }
+    if non_empty("MANGO_INSTANCE_SIGNATURE").is_some() {
+        return mango_socket(&var).map(|socket| Compositor::Mango { socket });
+    }
+    non_empty("NIRI_SOCKET").map(|socket| Compositor::Niri { socket: socket.into() })
+}
+
+/// `$MANGO_INSTANCE_SIGNATURE` is the socket's own path (`/run/user/1000/mango-<pid>.sock`),
+/// absolute only. Read at detection, and again at each session start (spec § 2: the path embeds
+/// the compositor's pid).
+pub(crate) fn mango_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    var("MANGO_INSTANCE_SIGNATURE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// The start line: the backend and its variable, or the four variables when none is set. Never
+/// the path (it holds a pid, and nothing in the log needs it).
+pub fn describe(c: Option<&Compositor>) -> String {
+    match c {
+        Some(c) => {
+            let (name, variable) = c.name();
+            format!("compositor: {name} (${variable})")
+        }
+        None => format!("no compositor detected ({} unset or empty): the bar shows \"–\"", VARIABLES.join(", ")),
+    }
 }
 
 pub const MAX_DELAY: Duration = Duration::from_secs(30);
@@ -206,17 +253,22 @@ pub fn spawn_source<T: Send + 'static>(
         .map(|_| ())
 }
 
-/// Starts the compositor source. No compositor recognized: "–" once, with
-/// no backoff (nothing will change in this session).
+/// Starts the compositor source, after one line naming it. No compositor recognized: "–" once,
+/// with no backoff (nothing will change in this session).
 pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bool + Send + 'static) {
+    log(&describe(c.as_ref()));
     let r = match c {
         None => {
-            log("neither niri nor Hyprland detected (NIRI_SOCKET, HYPRLAND_INSTANCE_SIGNATURE)");
             send(None);
             return;
         }
         Some(Compositor::Hyprland { directory }) => spawn_source("compositor", move |p| hypr::session(&directory, p), send),
         Some(Compositor::Niri { socket }) => spawn_source("compositor", move |p| niri::session(&socket, p), send),
+        // Their sources do not exist yet: the bar shows "–".
+        Some(Compositor::Sway { .. } | Compositor::Mango { .. }) => {
+            send(None);
+            return;
+        }
     };
     if let Err(e) = r {
         log(&format!("compositor thread: {e}"));
@@ -233,22 +285,82 @@ mod tests {
         move |k| pairs.iter().find(|(c, _)| *c == k).map(|(_, v)| OsString::from(v))
     }
 
+    /// Mango and Sway spec § 1: nixos-config's `compositor()` order, with niri last: SWAYSOCK, then
+    /// HYPRLAND_INSTANCE_SIGNATURE, then MANGO_INSTANCE_SIGNATURE, then NIRI_SOCKET; an empty
+    /// variable counts as unset; the first one set decides, even when its value is unusable.
     #[test]
-    fn niri_detected_first() {
+    fn detection_follows_nixos_configs_order() {
+        let sway = Compositor::Sway { socket: "/run/user/1000/sway-ipc.1000.42.sock".into() };
+        let hyprland = Compositor::Hyprland { directory: "/run/user/1000/hypr/abc".into() };
+        let mango = Compositor::Mango { socket: "/run/user/1000/mango-42.sock".into() };
+        let niri = Compositor::Niri { socket: "/run/niri.sock".into() };
+        let all: &'static [(&str, &str)] = &[
+            ("SWAYSOCK", "/run/user/1000/sway-ipc.1000.42.sock"),
+            ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
+            ("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-42.sock"),
+            ("NIRI_SOCKET", "/run/niri.sock"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ];
+        assert_eq!(detect(env(all)), Some(sway), "a nested Sway inherits the others: Sway wins");
+        assert_eq!(detect(env(&all[1..])), Some(hyprland), "then Hyprland");
+        assert_eq!(detect(env(&all[2..])), Some(mango.clone()), "then Mango");
+        assert_eq!(detect(env(&all[3..4])), Some(niri), "then niri");
         assert_eq!(
             detect(env(&[
-                ("NIRI_SOCKET", "/run/niri.sock"),
-                ("HYPRLAND_INSTANCE_SIGNATURE", "abc"),
-                ("XDG_RUNTIME_DIR", "/run/user/1000")
+                ("SWAYSOCK", ""),
+                ("HYPRLAND_INSTANCE_SIGNATURE", ""),
+                ("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-42.sock")
             ])),
-            Some(Compositor::Niri { socket: "/run/niri.sock".into() })
+            Some(mango),
+            "an empty variable counts as unset"
+        );
+        assert_eq!(detect(env(&[])), None);
+        assert_eq!(
+            detect(env(&[("SWAYSOCK", ""), ("HYPRLAND_INSTANCE_SIGNATURE", ""), ("MANGO_INSTANCE_SIGNATURE", ""), ("NIRI_SOCKET", "")])),
+            None
         );
         assert_eq!(
-            detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("XDG_RUNTIME_DIR", "/run/user/1000")])),
-            Some(Compositor::Hyprland { directory: "/run/user/1000/hypr/abc".into() })
+            detect(env(&[("MANGO_INSTANCE_SIGNATURE", "mango-42.sock"), ("NIRI_SOCKET", "/run/niri.sock")])),
+            None,
+            "a relative Mango path: no compositor, never the next variable's"
         );
-        assert_eq!(detect(env(&[("NIRI_SOCKET", ""), ("HYPRLAND_INSTANCE_SIGNATURE", "")])), None);
-        assert_eq!(detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc")])), None, "no XDG_RUNTIME_DIR");
+        assert_eq!(
+            detect(env(&[("HYPRLAND_INSTANCE_SIGNATURE", "abc"), ("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-42.sock")])),
+            None,
+            "Hyprland without XDG_RUNTIME_DIR: no compositor, not Mango"
+        );
+    }
+
+    #[test]
+    fn mango_socket_is_the_variable_itself_absolute_only() {
+        assert_eq!(
+            mango_socket(env(&[("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-42.sock")])),
+            Some("/run/user/1000/mango-42.sock".into())
+        );
+        assert_eq!(mango_socket(env(&[("MANGO_INSTANCE_SIGNATURE", "")])), None);
+        assert_eq!(mango_socket(env(&[("MANGO_INSTANCE_SIGNATURE", "run/mango.sock")])), None);
+        assert_eq!(mango_socket(env(&[])), None);
+    }
+
+    /// Spec § 1: with none of them, one line naming all four; otherwise one line naming the backend
+    /// and its variable, never the path.
+    #[test]
+    fn the_start_line_names_the_backend_or_the_four_variables() {
+        assert_eq!(
+            describe(None),
+            "no compositor detected (SWAYSOCK, HYPRLAND_INSTANCE_SIGNATURE, MANGO_INSTANCE_SIGNATURE, NIRI_SOCKET unset or empty): \
+             the bar shows \"–\""
+        );
+        let cases = [
+            (Compositor::Sway { socket: "/x/sway.sock".into() }, "compositor: Sway ($SWAYSOCK)"),
+            (Compositor::Hyprland { directory: "/x/hypr/abc".into() }, "compositor: Hyprland ($HYPRLAND_INSTANCE_SIGNATURE)"),
+            (Compositor::Mango { socket: "/x/mango.sock".into() }, "compositor: Mango ($MANGO_INSTANCE_SIGNATURE)"),
+            (Compositor::Niri { socket: "/x/niri.sock".into() }, "compositor: niri ($NIRI_SOCKET)"),
+        ];
+        for (c, line) in cases {
+            assert_eq!(describe(Some(&c)), line);
+            assert!(!describe(Some(&c)).contains("/x/"), "never the path");
+        }
     }
 
     #[test]
