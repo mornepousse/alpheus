@@ -6,6 +6,7 @@
 
 pub mod dbus;
 pub mod hypr;
+pub mod mango;
 pub mod niri;
 pub mod resources;
 pub mod sound;
@@ -16,7 +17,7 @@ use std::ffi::OsString;
 use std::io;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// Readable message of a caught panic (`catch_unwind`): `panic!("…")` and
@@ -84,6 +85,12 @@ pub fn detect(var: impl Fn(&str) -> Option<OsString>) -> Option<Compositor> {
 /// the compositor's pid).
 pub(crate) fn mango_socket(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
     var("MANGO_INSTANCE_SIGNATURE").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// The socket a Mango session opens: `$MANGO_INSTANCE_SIGNATURE` read again (spec § 2, the path
+/// embeds Mango's pid), or the detected path if the variable is gone or unusable (decision 3).
+fn mango_path(var: impl Fn(&str) -> Option<OsString>, detected: &Path) -> PathBuf {
+    mango_socket(var).unwrap_or_else(|| detected.to_path_buf())
 }
 
 /// The start line: the backend and its variable, or the four variables when none is set. Never
@@ -264,8 +271,11 @@ pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bo
         }
         Some(Compositor::Hyprland { directory }) => spawn_source("compositor", move |p| hypr::session(&directory, p), send),
         Some(Compositor::Niri { socket }) => spawn_source("compositor", move |p| niri::session(&socket, p), send),
-        // Their sources do not exist yet: the bar shows "–".
-        Some(Compositor::Sway { .. } | Compositor::Mango { .. }) => {
+        Some(Compositor::Mango { socket }) => {
+            spawn_source("compositor", move |p| mango::session(&mango_path(|k| std::env::var_os(k), &socket), p), send)
+        }
+        // Its source does not exist yet: the bar shows "–".
+        Some(Compositor::Sway { .. }) => {
             send(None);
             return;
         }
@@ -628,6 +638,52 @@ mod tests {
         assert_eq!(delays, [1, 2, 4, 8, 16]);
         assert_eq!(log.len(), 1, "{log:?}");
         let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Review Focus 4: a Mango that serves both snapshots then closes, round after round (a
+    /// compositor restarting): the delay still grows, a single log line, no spin.
+    #[test]
+    fn mango_flapper_backs_off() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let directory = std::env::temp_dir().join(format!("alpheus-mango-flapper-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("mango.sock");
+        let l = UnixListener::bind(&path).unwrap();
+        // Both watches are answered before either is dropped (after a short pause so the session
+        // reads both replies first): a round that ends on the first close would publish nothing.
+        std::thread::spawn(move || {
+            loop {
+                let Ok((first, _)) = l.accept() else { return };
+                let Ok((second, _)) = l.accept() else { return };
+                for c in [&first, &second] {
+                    let mut request = String::new();
+                    let _ = BufReader::new(c).read_line(&mut request);
+                    let reply = if request.contains("monitors") { mango::fake::MONITORS } else { mango::fake::CLIENTS };
+                    let _ = (&*c).write_all(format!("{}\n", reply.trim_end()).as_bytes());
+                }
+                std::thread::sleep(Duration::from_millis(50));
+                // Both dropped here: Mango gone.
+            }
+        });
+        let (delays, log, published) = flapping(|p| mango::session(&path, p), Duration::ZERO);
+        assert!(published >= 1, "the state was served at least once");
+        assert_eq!(delays, [1, 2, 4, 8, 16]);
+        assert_eq!(log.len(), 1, "{log:?}");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// Spec § 2 (decision 3): the Mango path is read again at each session; gone, the detected one.
+    #[test]
+    fn the_mango_path_is_read_again_at_each_session() {
+        let detected = Path::new("/run/user/1000/mango-1.sock");
+        assert_eq!(
+            mango_path(env(&[("MANGO_INSTANCE_SIGNATURE", "/run/user/1000/mango-2.sock")]), detected),
+            Path::new("/run/user/1000/mango-2.sock")
+        );
+        assert_eq!(mango_path(env(&[]), detected), detected);
+        assert_eq!(mango_path(env(&[("MANGO_INSTANCE_SIGNATURE", "relative.sock")]), detected), detected);
     }
 
     #[test]

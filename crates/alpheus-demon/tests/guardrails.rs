@@ -23,7 +23,7 @@ use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
-use alpheus_demon::sources::{hypr::Request, niri::REQUEST};
+use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
 use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
@@ -127,6 +127,19 @@ fn compositor_requests_are_read_only() {
     let texts: Vec<&str> = Request::ALL.iter().map(|r| r.text()).collect();
     assert_eq!(texts, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
     assert_eq!(REQUEST, "\"EventStream\"");
+    assert_eq!(mango::REQUESTS, ["watch all-monitors", "watch all-clients"]);
+}
+
+/// Mango and Sway spec § 5: the Mango source writes one thing, its request line (`request_line`,
+/// built from `REQUESTS` only), and every request is a watch: no dispatch, no other verb.
+#[test]
+fn mango_writes_only_its_request_lines() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/mango.rs")).unwrap();
+    let prod = production_code(&text);
+    assert_eq!(prod.matches("write_all(").count(), 1, "one write in the Mango source");
+    assert!(prod.contains("socket.write_all(request_line(watch).as_bytes())"), "and it writes a request line");
+    assert!(mango::REQUESTS.iter().all(|r| r.starts_with("watch ")), "{:?}", mango::REQUESTS);
+    assert!(!prod.to_lowercase().contains("dispatch"), "no dispatch verb in the Mango source");
 }
 
 fn source_files() -> Vec<(PathBuf, String)> {
@@ -186,8 +199,9 @@ fn connection_allowed_anywhere_in_sources_not_just_hypr_and_niri() {
 /// lowercased): ways to write to the compositor. `keyword` stays a bare word
 /// (Hyprland's request socket takes `keyword general:gaps_in 0` as one
 /// string, not only `hyprctl`'s argv), and the `.desktop` key `Keywords`
-/// (read by the launcher) is erased before the search instead.
-const FORBIDDEN_WORDS: [&str; 6] = ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch"];
+/// (read by the launcher) is erased before the search instead. `mmsg`: Mango's
+/// command-line client (its watch and dispatch verbs), never run, never named.
+const FORBIDDEN_WORDS: [&str; 7] = ["dpms", "hyprctl", "niri msg", "swaymsg", "keyword", "\"dispatch", "mmsg"];
 
 /// First forbidden word found in `text`, compared lowercased, `keywords` erased.
 fn forbidden_word(text: &str) -> Option<&'static str> {
@@ -204,6 +218,7 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
     assert_eq!(forbidden_word(r#"exec.spawn("wm", &["Keyword", "general:gaps_in", "0"])"#), Some("keyword"), "case does not hide it");
     assert_eq!(forbidden_word("keywords; keyword x"), Some("keyword"), "a Keywords nearby does not hide it");
     assert_eq!(forbidden_word("set DPMS off"), Some("dpms"));
+    assert_eq!(forbidden_word("mmsg dispatch view,2"), Some("mmsg"));
 }
 
 #[test]
@@ -1035,7 +1050,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 29] = [
+const NO_THREAD_NOR_COMMAND: [&str; 30] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1065,6 +1080,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 29] = [
     "quick_wifi.rs",
     "quick_secret.rs",
     "compositor/mango.rs",
+    "sources/mango.rs",
 ];
 
 #[test]
