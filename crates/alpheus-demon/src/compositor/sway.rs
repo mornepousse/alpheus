@@ -16,11 +16,15 @@ pub const MAX_DEPTH: usize = 64;
 const SCRATCHPAD: &str = "__i3_scratch";
 const SCRATCH_OUTPUT: &str = "__i3";
 
-/// Levels of JSON nesting (`{` and `[`) a reply may reach: a tree MAX_DEPTH containers deep
-/// would need about twice MAX_DEPTH, more than serde_json's own limit of 128, whose recursion
-/// overflows the compositor thread's 256 KiB stack in a debug build. 120 levels hold about 59
-/// containers; a real tree nests a handful.
-pub const MAX_NESTING: usize = 120;
+/// Levels of JSON nesting (`{` and `[`) a reply may reach, checked before serde_json recurses
+/// into it. Measured on a 256 KiB thread (the compositor thread's stack) in a debug build:
+/// serde_json overflows at 128 levels of sway's object/`nodes` shape and at about 110 levels of
+/// objects with several keys (before its own limit of 128); with 24 KiB of the stack already
+/// used, the latter parse at 95 levels and overflow at 100. A release build refuses 1,000 levels
+/// at 128 even on 64 KiB. 90 levels parse in both shapes with that 24 KiB used
+/// (`a_reply_at_max_nesting_parses_on_the_compositor_stack`). They hold about 44 containers (a
+/// tree MAX_DEPTH deep would need about 130 levels); a real tree nests a handful.
+pub const MAX_NESTING: usize = 90;
 
 /// The reply nests past MAX_NESTING, counted outside strings. One pass, no recursion.
 fn too_deep(bytes: &[u8]) -> bool {
@@ -348,7 +352,7 @@ mod tests {
     }
 
     /// Review Focus 2 (spec § 3): parsed on a thread with the compositor thread's 256 KiB stack:
-    /// 58 containers deep (118 levels of JSON) still finds its window; 70 deep is past
+    /// 43 containers deep (88 levels of JSON) still finds its window; 70 deep is past
     /// MAX_NESTING, refused before serde_json recurses (in a debug build its recursion to its own
     /// 128-level limit overflows 256 KiB); never a stack overflow.
     #[test]
@@ -357,7 +361,7 @@ mod tests {
         let h = std::thread::Builder::new()
             .stack_size(256 * 1024)
             .spawn(move || {
-                let found = state(ws, chain(58).as_bytes()).map(|e| e.window.map(|w| w.title));
+                let found = state(ws, chain(43).as_bytes()).map(|e| e.window.map(|w| w.title));
                 let refused = state(ws, chain(70).as_bytes()).err();
                 let pathological = state(ws, chain(1000).as_bytes()).err();
                 (found, refused, pathological)
@@ -365,8 +369,43 @@ mod tests {
             .unwrap();
         let (found, refused, pathological) = h.join().expect("no stack overflow on a 256 KiB stack");
         assert_eq!(found, Ok(Some("deep".to_string())));
-        assert_eq!(refused.as_deref(), Some("unreadable sway tree: nested past 120 levels"));
-        assert_eq!(pathological.as_deref(), Some("unreadable sway tree: nested past 120 levels"));
+        assert_eq!(refused.as_deref(), Some("unreadable sway tree: nested past 90 levels"));
+        assert_eq!(pathological.as_deref(), Some("unreadable sway tree: nested past 90 levels"));
+    }
+
+    /// Uses at least `kib` KiB of stack, then runs `f`: the frames above `state` on the
+    /// compositor thread (the source's session and its supervisor), modelled with margin.
+    fn with_reserve<R>(kib: usize, f: &dyn Fn() -> R) -> R {
+        let buf = [0u8; 1024];
+        std::hint::black_box(&buf);
+        if kib == 0 { f() } else { with_reserve(kib - 1, f) }
+    }
+
+    /// Review Focus 2 at the bound itself: replies nested exactly MAX_NESTING levels, in the
+    /// shapes that cost serde_json the most stack per level (objects of several keys, and sway's
+    /// own object/`nodes` alternation), parsed and dropped on a 256 KiB thread after a 24 KiB
+    /// reserve, in a debug build too. A limit too high for this stack aborts here.
+    #[test]
+    fn a_reply_at_max_nesting_parses_on_the_compositor_stack() {
+        let mut objects = String::from("0");
+        for _ in 0..MAX_NESTING {
+            objects = format!(r#"{{"p0":0,"p1":"x","p2":null,"z":{objects}}}"#);
+        }
+        let sway = chain((MAX_NESTING - 2) / 2);
+        let ws = br#"[{"num":1,"name":"1","output":"HEADLESS-1","visible":true,"focused":true}]"#;
+        let h = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                with_reserve(24, &|| {
+                    let objects = state(ws, objects.as_bytes()).map(|e| e.toplevels.len());
+                    let sway = state(ws, sway.as_bytes()).map(|e| e.window.map(|w| w.title));
+                    (objects, sway)
+                })
+            })
+            .unwrap();
+        let (objects, sway) = h.join().expect("no stack overflow at MAX_NESTING on a 256 KiB stack");
+        assert_eq!(objects, Ok(0), "read, not refused");
+        assert_eq!(sway, Ok(Some("deep".to_string())), "read, not refused");
     }
 
     /// The pre-check counts `{` and `[` outside strings only: brackets in a title, or after an
