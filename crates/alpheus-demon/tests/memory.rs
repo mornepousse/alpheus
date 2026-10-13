@@ -1643,19 +1643,32 @@ fn startup_pss_per_backend() {
     {
         let (_sway, _hypr, d) = start("per-backend-hyprland", 3, &bus, None, Some(EVERYTHING), PwDump::Silent);
         std::thread::sleep(Duration::from_secs(3));
-        report.push(("Hyprland (fake)", d.pss_kb()));
+        report.push(("Hyprland (fake)", d.pss_kb(), d.threads()));
     }
     for (what, line, mango) in [("Sway", "compositor: Sway", false), ("Mango (fake socket)", "compositor: Mango", true)] {
-        let (_sway, _mango, d) =
+        let (_sway, fake, d) =
             start_reading(&format!("per-backend-{}", if mango { "mango" } else { "sway" }), 3, &bus, Some(EVERYTHING), mango);
         assert!(d.wait_for(line, DELAY), "{:?}", d.log());
+        if let Some(fake) = &fake {
+            // The figure is the daemon reading the fake: both watch lines received.
+            let t = Instant::now();
+            while fake.requests() != ["watch all-clients", "watch all-monitors"] {
+                assert!(t.elapsed() < DELAY, "the daemon never read the fake Mango: {:?} {:?}", fake.requests(), d.log());
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         std::thread::sleep(Duration::from_secs(3)); // as in startup_pss_per_source
-        report.push((what, d.pss_kb()));
+        report.push((what, d.pss_kb(), d.threads()));
         assert!(d.log().iter().all(|l| !l.contains("compositor source down")), "{:?}", d.log());
     }
-    eprintln!("startup PSS per backend (KB): {report:?}");
-    for (what, kb) in &report {
+    eprintln!("startup PSS (KB) and threads per backend: {report:?}");
+    let (_, hyprland_kb, hyprland_threads) = report[0];
+    for (what, kb, threads) in &report {
         assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
+        // Measured back to back: a backend costs at most 512 KB over the fake Hyprland's source.
+        assert!(*kb <= hyprland_kb + 512, "{what}: {kb} KB > {hyprland_kb} + 512 KB (the fake Hyprland): {report:?}");
+        // No new thread: the backend runs on the existing `compositor` thread.
+        assert_eq!(*threads, hyprland_threads, "{what}: threads differ from the fake Hyprland's: {report:?}");
     }
 }
 
