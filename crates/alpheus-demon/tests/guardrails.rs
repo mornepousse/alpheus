@@ -23,7 +23,7 @@ use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
-use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST};
+use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
 use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
@@ -128,6 +128,9 @@ fn compositor_requests_are_read_only() {
     assert_eq!(texts, ["j/monitors", "j/workspaces", "j/clients", "j/activewindow"]);
     assert_eq!(REQUEST, "\"EventStream\"");
     assert_eq!(mango::REQUESTS, ["watch all-monitors", "watch all-clients"]);
+    assert_eq!(sway::Message::ALL.map(|m| m.code()), [1, 2, 4], "GET_WORKSPACES, SUBSCRIBE, GET_TREE: never RUN_COMMAND (0)");
+    assert_eq!(sway::SUBSCRIPTION, "[\"workspace\",\"window\"]");
+    assert_eq!(sway::Message::ALL.map(|m| m.payload().len()), [0, sway::SUBSCRIPTION.len(), 0]);
 }
 
 /// Mango and Sway spec § 5: the Mango source writes one thing, its request line (`request_line`,
@@ -140,6 +143,41 @@ fn mango_writes_only_its_request_lines() {
     assert!(prod.contains("socket.write_all(request_line(watch).as_bytes())"), "and it writes a request line");
     assert!(mango::REQUESTS.iter().all(|r| r.starts_with("watch ")), "{:?}", mango::REQUESTS);
     assert!(!prod.to_lowercase().contains("dispatch"), "no dispatch verb in the Mango source");
+}
+
+/// Mango and Sway spec § 3: the Sway source writes one thing, a `Message`'s frame; adding a
+/// message type must update this exhaustive match (and so this review). No other way to write on
+/// a socket (`.write(`, `libc::write`, `libc::send`) is used.
+#[test]
+fn sway_writes_only_its_three_messages() {
+    fn name(m: sway::Message) -> &'static str {
+        match m {
+            sway::Message::GetWorkspaces => "GET_WORKSPACES",
+            sway::Message::Subscribe => "SUBSCRIBE",
+            sway::Message::GetTree => "GET_TREE",
+        }
+    }
+    assert_eq!(sway::Message::ALL.map(name), ["GET_WORKSPACES", "SUBSCRIBE", "GET_TREE"]);
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/sources/sway.rs")).unwrap();
+    let prod = production_code(&text);
+    assert_eq!(prod.matches("write_all(").count(), 1, "one write in the Sway source");
+    assert!(prod.contains("s.write_all(&frame(m))"), "and it writes a Message's frame");
+    for never in [".write(", "libc::write", "libc::send", "send_to(", "write_vectored("] {
+        assert!(!prod.contains(never), "{never} in the Sway source");
+    }
+}
+
+/// The four files of the two backends parse what a compositor sends: no path in them may panic
+/// (Mango and Sway spec § 5). Production code only.
+#[test]
+fn the_mango_and_sway_backends_have_no_panicking_path() {
+    for file in ["compositor/mango.rs", "compositor/sway.rs", "sources/mango.rs", "sources/sway.rs"] {
+        let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(file)).unwrap();
+        let prod = production_code(&text);
+        for never in [".unwrap()", ".expect(", "panic!(", "unreachable!(", "[0]", "[1]", "[i]", "[..n]"] {
+            assert!(!prod.contains(never), "{never} in {file}");
+        }
+    }
 }
 
 fn source_files() -> Vec<(PathBuf, String)> {
@@ -1050,7 +1088,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 31] = [
+const NO_THREAD_NOR_COMMAND: [&str; 32] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1082,6 +1120,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 31] = [
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
+    "sources/sway.rs",
 ];
 
 #[test]

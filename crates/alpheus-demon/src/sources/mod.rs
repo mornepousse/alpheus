@@ -10,6 +10,7 @@ pub mod mango;
 pub mod niri;
 pub mod resources;
 pub mod sound;
+pub mod sway;
 
 use crate::compositor::CompositorState;
 use crate::log::write as log;
@@ -274,11 +275,7 @@ pub fn start(c: Option<Compositor>, send: impl Fn(Option<CompositorState>) -> bo
         Some(Compositor::Mango { socket }) => {
             spawn_source("compositor", move |p| mango::session(&mango_path(|k| std::env::var_os(k), &socket), p), send)
         }
-        // Its source does not exist yet: the bar shows "–".
-        Some(Compositor::Sway { .. }) => {
-            send(None);
-            return;
-        }
+        Some(Compositor::Sway { socket }) => spawn_source("compositor", move |p| sway::session(&socket, p), send),
     };
     if let Err(e) = r {
         log(&format!("compositor thread: {e}"));
@@ -608,6 +605,18 @@ mod tests {
         let f = hypr::fake::FakeHyprland::start_with("flapper", hypr::fake::CLIENTS.as_bytes(), true);
         let d = f.directory.clone();
         let (delays, log, published) = flapping(|p| hypr::session(&d, p), Duration::ZERO);
+        assert_eq!(published, 6, "the initial state served every round");
+        assert_eq!(delays, [1, 2, 4, 8, 16]);
+        assert_eq!(log.len(), 1, "{log:?}");
+    }
+
+    /// A sway that subscribes, answers, then closes, round after round (spec § 3): the delay
+    /// still grows and one line is logged.
+    #[test]
+    fn sway_flapper_backs_off() {
+        let f = sway::fake::FakeSway::start("flapper", sway::fake::Script { flapper: true, ..Default::default() });
+        let socket = f.socket.clone();
+        let (delays, log, published) = flapping(|p| sway::session(&socket, p), Duration::ZERO);
         assert_eq!(published, 6, "the initial state served every round");
         assert_eq!(delays, [1, 2, 4, 8, 16]);
         assert_eq!(log.len(), 1, "{log:?}");
