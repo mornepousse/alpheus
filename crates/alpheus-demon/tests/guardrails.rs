@@ -2123,12 +2123,22 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
     assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync("), "{sync}");
     assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
+    // Each message: a change follows `privacy_changed`; anything else still re-syncs the timer, since
+    // an indicator going off changes nothing shown yet, only the deadline (without it, the glyph
+    // stays lit until the next message: Task 6's stuck-lit bug).
+    let feed = function_body(&app, "pub(crate) fn privacy_feed(");
+    let (at, changed, other, synced) = (
+        feed.find("self.bar.privacy_at(m, Instant::now())"),
+        feed.find("self.privacy_changed()"),
+        feed.find("else"),
+        feed.find("self.privacy_timer_sync()"),
+    );
+    assert!(
+        matches!((at, changed, other, synced), (Some(a), Some(c), Some(e), Some(s)) if a < c && c < e && e < s),
+        "privacy_at, privacy_changed, else privacy_timer_sync: {feed}"
+    );
     // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
     let launch = src("launch.rs");
-    let (feed, changed, kept) = (
-        launch.find("state.bar.privacy_at(&m, Instant::now())"),
-        launch.find("state.privacy_changed()"),
-        launch.find("on_message(state, m,"),
-    );
-    assert!(matches!((feed, changed, kept), (Some(f), Some(c), Some(k)) if f < c && c < k), "privacy_at, privacy_changed, then on_message");
+    let (fed, kept) = (launch.find("state.privacy_feed(&m)"), launch.find("on_message(state, m,"));
+    assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }

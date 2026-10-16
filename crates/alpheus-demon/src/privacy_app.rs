@@ -5,6 +5,7 @@
 
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
+use crate::state::Msg;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
@@ -46,6 +47,17 @@ impl App {
         if self.popup_open(qh, anchor, PopupBody::Privacy, columns, height, Input::Grab) {
             self.popup_paint(rows);
             log("privacy popup shown");
+        }
+    }
+
+    /// A sound or compositor message, read before the bar keeps it (privacy spec § 4): a change
+    /// redraws the bar and follows the popup and the off-delay's timer. An indicator going off
+    /// changes nothing shown yet, only the deadline: the timer follows it all the same.
+    pub(crate) fn privacy_feed(&mut self, m: &Msg) {
+        if self.bar.privacy_at(m, Instant::now()) {
+            self.privacy_changed();
+        } else {
+            self.privacy_timer_sync();
         }
     }
 
