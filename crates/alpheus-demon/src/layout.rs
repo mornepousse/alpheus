@@ -679,6 +679,7 @@ mod tests {
             workspaces: Vec::new(),
             window: Some(Window { class: "firefox".into(), title: "Page".into() }),
             toplevels: Vec::new(),
+            ..Default::default()
         };
         let mut b2 = bar();
         b2.apply(Msg::Compositor(Some(e2)));

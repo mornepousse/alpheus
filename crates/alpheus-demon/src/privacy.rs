@@ -2,8 +2,9 @@
 //! keeps for them, and the rules that turn it into "which apps hold the microphone, the camera,
 //! the screen". Nothing here reads a file, starts a thread or runs a command.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // Material Design glyphs of the Nerd Font (md-microphone, md-camera, md-monitor_screenshot).
 pub const MIC: char = '\u{f036c}';
@@ -173,6 +174,169 @@ pub fn capture(nodes: &HashMap<u32, GraphNode>, links: &HashMap<u32, GraphLink>)
     out
 }
 
+/// The bar's merge of what PipeWire and the compositor say (spec §§ 3 and 4): the ignore list,
+/// the compositor's release hold, the off-delay, and the default source's mute. Time is passed in,
+/// never read.
+#[derive(Debug, Clone)]
+pub struct Privacy {
+    ignore: Vec<String>,
+    /// PipeWire's last capture, the ignored names already removed.
+    pw: Capture,
+    mic_muted: bool,
+    /// The compositor says a screen is being cast.
+    casting: bool,
+    /// After a release: the instant it counts, when the hold ends.
+    release_at: Option<Instant>,
+    shown: Capture,
+    /// Per indicator (mic, camera, screen): when it goes off, once it is no longer live.
+    off_at: [Option<Instant>; 3],
+}
+
+impl Privacy {
+    pub fn new(ignore: Vec<String>) -> Privacy {
+        Privacy {
+            ignore,
+            pw: Capture::default(),
+            mic_muted: false,
+            casting: false,
+            release_at: None,
+            shown: Capture::default(),
+            off_at: [None; 3],
+        }
+    }
+
+    /// PipeWire's capture (`None`: the sound source is down, counted as nothing captured) and the
+    /// default source's mute. True when what is shown changed.
+    pub fn set_sound(&mut self, capture: Option<&Capture>, mic_muted: bool, now: Instant) -> bool {
+        self.expire_cast(now);
+        let pw = match (capture, self.ignore.is_empty()) {
+            (Some(c), true) => c.clone(),
+            (Some(c), false) => c.without(&self.ignore),
+            (None, _) => Capture::default(),
+        };
+        let muted_flipped = self.mic_muted != mic_muted;
+        if pw == self.pw && !muted_flipped {
+            return false;
+        }
+        self.pw = pw;
+        self.mic_muted = mic_muted;
+        self.settle(now) || muted_flipped
+    }
+
+    /// The compositor's casting, and how long its release still counts. True when what is shown
+    /// changed.
+    pub fn set_casting(&mut self, casting: bool, hold: Duration, now: Instant) -> bool {
+        self.expire_cast(now);
+        let mut changed = false;
+        if casting {
+            if !self.casting || self.release_at.is_some() {
+                self.casting = true;
+                self.release_at = None;
+                changed |= self.settle(now);
+            }
+        } else if self.casting {
+            self.casting = false;
+            self.release_at = Some(now + hold);
+            self.expire_cast(now);
+            changed |= self.settle(now);
+        }
+        changed
+    }
+
+    /// The earliest instant `due` has something to apply.
+    pub fn deadline(&self) -> Option<Instant> {
+        let release = self.release_at.filter(|_| self.shown.screen.active() && !self.pw.screen.active()).map(|r| r + OFF_DELAY);
+        self.off_at.iter().flatten().copied().chain(release).min()
+    }
+
+    /// Applies the offs that are due at `now`. True when what is shown changed.
+    pub fn due(&mut self, now: Instant) -> bool {
+        self.expire_cast(now);
+        let mut changed = false;
+        for i in 0..3 {
+            if self.off_at[i].is_some_and(|t| t <= now) {
+                self.off_at[i] = None;
+                let live = self.live(i).into_owned();
+                if *self.slot(i) != live {
+                    *self.slot_mut(i) = live;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
+    pub fn shown(&self) -> &Capture {
+        &self.shown
+    }
+
+    pub fn mic_muted(&self) -> bool {
+        self.mic_muted
+    }
+
+    /// A compositor release whose hold has ended stops counting: the screen, if PipeWire does not
+    /// hold it, goes off one delay after the release itself (only a pending off is set).
+    fn expire_cast(&mut self, now: Instant) {
+        if let Some(r) = self.release_at.filter(|r| *r <= now) {
+            self.release_at = None;
+            if !self.pw.screen.active() && self.shown.screen.active() {
+                self.off_at[2].get_or_insert(r + OFF_DELAY);
+            }
+        }
+    }
+
+    /// What indicator `i` is right now, before the delay.
+    fn live(&self, i: usize) -> Cow<'_, Indicator> {
+        let pw = match i {
+            0 => &self.pw.mic,
+            1 => &self.pw.camera,
+            _ => &self.pw.screen,
+        };
+        if i == 2 && !pw.active() && (self.casting || self.release_at.is_some()) {
+            Cow::Owned(Indicator { names: Vec::new(), unnamed: true })
+        } else {
+            Cow::Borrowed(pw)
+        }
+    }
+
+    fn slot(&self, i: usize) -> &Indicator {
+        match i {
+            0 => &self.shown.mic,
+            1 => &self.shown.camera,
+            _ => &self.shown.screen,
+        }
+    }
+
+    fn slot_mut(&mut self, i: usize) -> &mut Indicator {
+        match i {
+            0 => &mut self.shown.mic,
+            1 => &mut self.shown.camera,
+            _ => &mut self.shown.screen,
+        }
+    }
+
+    /// An indicator live is shown at once; one shown and no longer live goes off one delay from
+    /// now, unless a pending off already counts.
+    fn settle(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        for i in 0..3 {
+            let live = self.live(i);
+            let (active, differs) = (live.active(), *self.slot(i) != *live);
+            let update = (active && differs).then(|| live.into_owned());
+            if active {
+                self.off_at[i] = None;
+                if let Some(live) = update {
+                    *self.slot_mut(i) = live;
+                    changed = true;
+                }
+            } else if self.slot(i).active() {
+                self.off_at[i].get_or_insert(now + OFF_DELAY);
+            }
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +477,150 @@ mod tests {
         for no in ["Audio/Sink", "Stream/Output/Audio", "Midi/Bridge"] {
             assert!(!kept(no), "{no}");
         }
+    }
+
+    fn mic_of(names: &[&str]) -> Capture {
+        Capture { mic: one(names, false), ..Capture::default() }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    #[test]
+    fn lighting_up_is_immediate_and_going_off_waits_the_delay() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        assert!(p.set_sound(Some(&mic_of(&["firefox"])), false, t0));
+        assert!(p.shown().mic.active());
+        assert_eq!(p.deadline(), None);
+        let t1 = t0 + Duration::from_secs(1);
+        assert!(!p.set_sound(Some(&Capture::default()), false, t1), "still shown");
+        assert!(p.shown().mic.active());
+        assert_eq!(p.deadline(), Some(t1 + OFF_DELAY));
+        assert!(!p.due(t1 + ms(400)));
+        assert!(p.shown().mic.active());
+        assert!(p.due(t1 + OFF_DELAY));
+        assert!(p.shown().is_empty());
+        assert_eq!(p.deadline(), None);
+    }
+
+    #[test]
+    fn a_later_setter_never_pushes_the_deadline_back() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_sound(Some(&mic_of(&["firefox"])), false, t0);
+        p.set_sound(Some(&Capture::default()), false, t0 + ms(100));
+        p.set_sound(Some(&Capture::default()), true, t0 + ms(300)); // a mute flip settles again
+        p.set_casting(true, Duration::ZERO, t0 + ms(350));
+        p.set_casting(false, Duration::ZERO, t0 + ms(360));
+        p.set_sound(Some(&Capture::default()), false, t0 + ms(400));
+        assert_eq!(p.deadline(), Some(t0 + ms(100) + OFF_DELAY));
+    }
+
+    #[test]
+    fn coming_back_within_the_delay_never_blinks() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_sound(Some(&mic_of(&["firefox"])), false, t0);
+        p.set_sound(Some(&Capture::default()), false, t0 + ms(100));
+        assert!(!p.shown().is_empty());
+        p.set_sound(Some(&mic_of(&["firefox"])), false, t0 + ms(400));
+        assert!(!p.shown().is_empty());
+        assert_eq!(p.deadline(), None, "the pending off is cleared");
+        assert!(!p.due(t0 + Duration::from_secs(5)));
+        assert!(p.shown().mic.active());
+    }
+
+    #[test]
+    fn hyprland_releases_count_after_the_hold() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        assert!(p.set_casting(true, CAST_HOLD, t0));
+        assert!(p.shown().screen.unnamed && p.shown().screen.names.is_empty());
+        assert_eq!(p.deadline(), None);
+        let r = t0 + ms(500);
+        assert!(!p.set_casting(false, CAST_HOLD, r));
+        assert!(p.shown().screen.active());
+        assert_eq!(p.deadline(), Some(r + CAST_HOLD + OFF_DELAY));
+        assert!(!p.due(r + CAST_HOLD + ms(200)), "the hold ended 200 ms ago: the delay counts from the release");
+        assert!(p.shown().screen.active());
+        assert_eq!(p.deadline(), Some(r + CAST_HOLD + OFF_DELAY));
+        assert!(!p.due(r + CAST_HOLD + OFF_DELAY - ms(1)));
+        assert!(p.due(r + CAST_HOLD + OFF_DELAY));
+        assert!(p.shown().is_empty());
+        assert_eq!(p.deadline(), None);
+    }
+
+    #[test]
+    fn a_cast_coming_back_during_the_hold_never_blinks() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_casting(true, CAST_HOLD, t0);
+        p.set_casting(false, CAST_HOLD, t0 + ms(100));
+        p.set_casting(true, CAST_HOLD, t0 + ms(600));
+        assert_eq!(p.deadline(), None);
+        assert!(!p.due(t0 + Duration::from_secs(9)));
+        assert!(p.shown().screen.active());
+    }
+
+    #[test]
+    fn a_zero_hold_goes_off_at_release_plus_the_delay() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_casting(true, Duration::ZERO, t0);
+        p.set_casting(false, Duration::ZERO, t0 + ms(200));
+        assert_eq!(p.deadline(), Some(t0 + ms(200) + OFF_DELAY));
+        assert!(p.due(t0 + ms(200) + OFF_DELAY));
+        assert!(p.shown().is_empty());
+    }
+
+    #[test]
+    fn the_screen_merges_pipewire_and_the_compositor() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        let named = Capture { screen: one(&["firefox"], false), ..Capture::default() };
+        p.set_sound(Some(&named), false, t0);
+        p.set_casting(true, CAST_HOLD, t0);
+        assert_eq!(p.shown().screen, one(&["firefox"], false));
+        let mut q = Privacy::new(Vec::new());
+        q.set_casting(true, CAST_HOLD, t0);
+        assert_eq!(q.shown().screen, one(&[], true));
+        // PipeWire's names appear when its graph catches up with the compositor.
+        q.set_sound(Some(&named), false, t0 + ms(100));
+        assert_eq!(q.shown().screen, one(&["firefox"], false));
+    }
+
+    #[test]
+    fn ignore_applies_before_the_delay() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(vec!["obs".into()]);
+        assert!(!p.set_sound(Some(&mic_of(&["obs"])), false, t0));
+        assert!(p.shown().is_empty());
+        assert_eq!(p.deadline(), None);
+    }
+
+    #[test]
+    fn the_microphone_dims_with_the_default_source_mute() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        assert!(!p.mic_muted());
+        assert!(p.set_sound(Some(&mic_of(&["firefox"])), true, t0));
+        assert!(p.mic_muted());
+        assert!(p.set_sound(Some(&mic_of(&["firefox"])), false, t0 + ms(10)), "the mute alone changes it");
+        assert!(!p.mic_muted());
+        assert!(!p.set_sound(Some(&mic_of(&["firefox"])), false, t0 + ms(20)), "nothing changed");
+    }
+
+    #[test]
+    fn none_means_down() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_sound(Some(&mic_of(&["firefox"])), false, t0);
+        assert!(!p.set_sound(None, false, t0 + ms(100)));
+        assert!(p.shown().mic.active());
+        assert_eq!(p.deadline(), Some(t0 + ms(100) + OFF_DELAY));
+        assert!(p.due(t0 + ms(100) + OFF_DELAY));
+        assert!(p.shown().is_empty());
     }
 }

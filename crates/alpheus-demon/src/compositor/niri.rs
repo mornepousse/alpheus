@@ -9,7 +9,12 @@
 use super::{CompositorState, Toplevel, Window, Workspace};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+#[cfg(test)]
+use std::time::Duration;
+
+/// Casts kept (privacy spec § 3); a new id past it is ignored.
+const MAX_CASTS: usize = 64;
 
 #[derive(Debug, Clone, Deserialize)]
 struct WorkspaceN {
@@ -49,6 +54,8 @@ pub struct Model {
     /// Ids of the windows that had focus, most recent first (the launcher
     /// lists the previous window first); only ids still in `windows`.
     recent: Vec<u64>,
+    /// `stream_id → is_active` of the casts niri reports; casting is any active one.
+    casts: HashMap<u64, bool>,
 }
 
 fn field_u64(body: &Value, key: &str) -> Result<u64, String> {
@@ -141,8 +148,42 @@ impl Model {
                 }
                 Ok(true)
             }
+            "CastsChanged" => {
+                let Some(list) = body.get("casts").and_then(Value::as_array) else { return Ok(false) };
+                let before = self.casting();
+                self.casts.clear();
+                for c in list {
+                    let Some(id) = c.get("stream_id").and_then(Value::as_u64) else { continue };
+                    if self.casts.len() < MAX_CASTS {
+                        self.casts.insert(id, c.get("is_active").and_then(Value::as_bool).unwrap_or(false));
+                    }
+                }
+                Ok(self.casting() != before)
+            }
+            "CastStartedOrChanged" => {
+                let Some(cast) = body.get("cast") else { return Ok(false) };
+                let Some(id) = cast.get("stream_id").and_then(Value::as_u64) else { return Ok(false) };
+                let active = cast.get("is_active").and_then(Value::as_bool).unwrap_or(false);
+                let before = self.casting();
+                if let Some(a) = self.casts.get_mut(&id) {
+                    *a = active;
+                } else if self.casts.len() < MAX_CASTS {
+                    self.casts.insert(id, active);
+                }
+                Ok(self.casting() != before)
+            }
+            "CastStopped" => {
+                let Some(id) = body.get("stream_id").and_then(Value::as_u64) else { return Ok(false) };
+                let before = self.casting();
+                self.casts.remove(&id);
+                Ok(self.casting() != before)
+            }
             _ => Ok(false),
         }
+    }
+
+    fn casting(&self) -> bool {
+        self.casts.values().any(|a| *a)
     }
 
     /// `id` now has focus: first of `recent` (an unknown id is not kept).
@@ -208,13 +249,57 @@ impl Model {
             let most_recent = toplevels.remove(0);
             toplevels.push(most_recent);
         }
-        CompositorState { workspaces, window, toplevels }
+        CompositorState { workspaces, window, toplevels, casting: self.casting(), cast_hold: std::time::Duration::ZERO }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn casts_follow_the_event_stream() {
+        let mut m = Model::default();
+        let casting = |m: &Model| m.state().casting;
+        assert!(!casting(&m));
+        let l = r#"{"CastsChanged":{"casts":[{"stream_id":5,"is_active":true,"kind":"PipeWire","target":{"Nothing":{}}}]}}"#;
+        assert_eq!(m.apply_line(l), Ok(true));
+        assert!(casting(&m));
+        assert_eq!(m.state().cast_hold, Duration::ZERO);
+        assert_eq!(m.apply_line(r#"{"CastStartedOrChanged":{"cast":{"stream_id":5,"is_active":false}}}"#), Ok(true));
+        assert!(!casting(&m));
+        assert_eq!(m.apply_line(r#"{"CastStartedOrChanged":{"cast":{"stream_id":6}}}"#), Ok(false), "no is_active: not active, no flip");
+        assert_eq!(m.apply_line(r#"{"CastStartedOrChanged":{"cast":{"stream_id":6,"is_active":true}}}"#), Ok(true));
+        assert!(casting(&m));
+        assert_eq!(m.apply_line(r#"{"CastStopped":{"stream_id":6}}"#), Ok(true));
+        assert!(!casting(&m));
+        assert_eq!(m.apply_line(r#"{"CastStopped":{"stream_id":5}}"#), Ok(false), "no flip");
+        assert!(m.casts.is_empty());
+        // Malformed bodies change nothing.
+        assert_eq!(m.apply_line(r#"{"CastStartedOrChanged":{"cast":7}}"#), Ok(false));
+        assert_eq!(m.apply_line(r#"{"CastStartedOrChanged":{}}"#), Ok(false));
+        assert_eq!(m.apply_line(r#"{"CastsChanged":{"casts":"x"}}"#), Ok(false));
+        assert_eq!(m.apply_line(r#"{"CastStopped":{}}"#), Ok(false));
+        assert!(m.casts.is_empty() && !casting(&m));
+    }
+
+    #[test]
+    fn the_cast_map_is_bounded() {
+        let mut m = Model::default();
+        for id in 0..100u64 {
+            m.apply_line(&format!(r#"{{"CastStartedOrChanged":{{"cast":{{"stream_id":{id},"is_active":false}}}}}}"#)).unwrap();
+        }
+        assert_eq!(m.casts.len(), MAX_CASTS);
+        let many: Vec<String> = (0..100).map(|id| format!(r#"{{"stream_id":{id},"is_active":false}}"#)).collect();
+        m.apply_line(&format!(r#"{{"CastsChanged":{{"casts":[{}]}}}}"#, many.join(","))).unwrap();
+        assert_eq!(m.casts.len(), MAX_CASTS);
+        assert_eq!(
+            m.apply_line(r#"{"CastStartedOrChanged":{"cast":{"stream_id":3,"is_active":true}}}"#),
+            Ok(true),
+            "a known id still updates"
+        );
+        assert!(m.state().casting);
+    }
 
     const STREAM: &str = include_str!("../../tests/fixtures/niri-evenements.jsonl");
 

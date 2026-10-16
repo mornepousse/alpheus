@@ -3,6 +3,8 @@
 //! translate their compositor into this normalized state; the rest of the
 //! daemon only ever sees this one.
 
+use std::time::Duration;
+
 pub mod hypr;
 pub mod mango;
 pub mod niri;
@@ -55,6 +57,11 @@ pub struct CompositorState {
     /// Mapped windows; the focused one LAST (the first is the previously
     /// focused one, alt-tab style). Read by the launcher's window list.
     pub toplevels: Vec<Toplevel>,
+    /// The compositor says a screen is being cast (privacy spec § 3). Never names the app.
+    pub casting: bool,
+    /// How long a release of `casting` still counts as casting: Hyprland's `0` comes about
+    /// 500 ms after the last frame and a screenshot blips, niri's events are exact (zero).
+    pub cast_hold: Duration,
 }
 
 /// One mapped window, as the launcher lists it.
@@ -144,6 +151,7 @@ pub(crate) fn example() -> CompositorState {
             t("address:0x5a00000000a2", "org.gnome.Nautilus", "Documents", "4", false),
             t("address:0x5a00000000a3", "firefox", "Web page — Mozilla Firefox", "2", true),
         ],
+        ..Default::default()
     }
 }
 

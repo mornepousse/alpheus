@@ -142,7 +142,7 @@ pub fn state(workspaces: &[u8], tree: &[u8]) -> Result<CompositorState, String> 
             focused: w.focused,
         })
         .collect();
-    Ok(CompositorState { workspaces, window, toplevels })
+    Ok(CompositorState { workspaces, window, toplevels, ..Default::default() })
 }
 
 #[cfg(test)]

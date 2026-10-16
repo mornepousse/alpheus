@@ -5,6 +5,7 @@
 //! urgency from `urgent>>` events alone.
 
 use super::{CompositorState, Toplevel, Window, Workspace};
+use crate::privacy::CAST_HOLD;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +25,8 @@ pub enum Event {
     Urgent(String),
     /// `closewindow>>address` (also structure).
     Closed(String),
+    /// `screencast>>1,…` / `screencastv2>>0,…`: a screen cast started or stopped (privacy spec § 3).
+    Screencast(bool),
     Ignore,
 }
 
@@ -83,6 +86,11 @@ pub fn parse_line(line: &str) -> Event {
         },
         "urgent" => Event::Urgent(address(data)),
         "closewindow" => Event::Closed(address(data)),
+        "screencast" | "screencastv2" => match data.split(',').next() {
+            Some("1") => Event::Screencast(true),
+            Some("0") => Event::Screencast(false),
+            _ => Event::Ignore,
+        },
         n if STRUCTURE.contains(&n) => Event::Structure,
         _ => Event::Ignore,
     }
@@ -239,6 +247,7 @@ pub struct Model {
     urgent: BTreeSet<String>,
     active: Option<String>,
     window: Option<Window>,
+    casting: bool,
 }
 
 impl Model {
@@ -314,6 +323,14 @@ impl Model {
                     Effect::Nothing
                 }
             }
+            Event::Screencast(on) => {
+                if self.casting == *on {
+                    Effect::Nothing
+                } else {
+                    self.casting = *on;
+                    Effect::Changed
+                }
+            }
             Event::Ignore => Effect::Nothing,
         }
     }
@@ -352,13 +369,31 @@ impl Model {
             let most_recent = toplevels.remove(0);
             toplevels.push(most_recent);
         }
-        CompositorState { workspaces, window: self.window.clone(), toplevels }
+        CompositorState { workspaces, window: self.window.clone(), toplevels, casting: self.casting, cast_hold: CAST_HOLD }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screencast_events_set_casting() {
+        assert_eq!(parse_line("screencast>>1,monitor"), Event::Screencast(true));
+        assert_eq!(parse_line("screencastv2>>0,window,0xabc"), Event::Screencast(false));
+        assert_eq!(parse_line("screencast>>x"), Event::Ignore);
+        assert_eq!(parse_line("screencast>>"), Event::Ignore);
+        assert_eq!(parse_line("screencastv2>>2,monitor,eDP-1"), Event::Ignore);
+        let mut m = Model::default();
+        assert_eq!(m.apply(&Event::Screencast(true)), Effect::Changed);
+        let s = m.state();
+        assert!(s.casting);
+        assert_eq!(s.cast_hold, crate::privacy::CAST_HOLD);
+        assert_eq!(m.apply(&Event::Screencast(true)), Effect::Nothing, "v1 then v2: one flip");
+        assert_eq!(m.apply(&Event::Screencast(false)), Effect::Changed);
+        assert!(!m.state().casting);
+        assert_eq!(m.apply(&Event::Screencast(false)), Effect::Nothing);
+    }
 
     const MONITORS: &str = include_str!("../../tests/fixtures/hypr-monitors.json");
     const WORKSPACES: &str = include_str!("../../tests/fixtures/hypr-workspaces.json");
