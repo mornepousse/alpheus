@@ -75,6 +75,8 @@ pub enum ModuleId {
     Workspaces,
     Window,
     Media,
+    /// The privacy indicators (privacy spec § 1): who holds the microphone, the camera or the screen.
+    Privacy,
     Volume,
     Network,
     Bluetooth,
@@ -95,11 +97,12 @@ pub enum ModuleId {
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 15] = [
+    pub const ALL: [ModuleId; 16] = [
         ModuleId::Launcher,
         ModuleId::Workspaces,
         ModuleId::Window,
         ModuleId::Media,
+        ModuleId::Privacy,
         ModuleId::Volume,
         ModuleId::Network,
         ModuleId::Bluetooth,
@@ -120,6 +123,7 @@ impl ModuleId {
             ModuleId::Workspaces => "workspaces",
             ModuleId::Window => "window",
             ModuleId::Media => "media",
+            ModuleId::Privacy => "privacy",
             ModuleId::Volume => "volume",
             ModuleId::Network => "network",
             ModuleId::Bluetooth => "bluetooth",

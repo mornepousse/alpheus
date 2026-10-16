@@ -5,6 +5,8 @@
 //! sink's and source's volume and label, and the default sink's and source's
 //! names.
 
+use crate::log::write as log;
+use crate::privacy::{self, GraphLink, GraphNode};
 use crate::system::{DeviceName, Sink, SoundState, Volume};
 use crate::text::clean;
 use serde::Deserialize;
@@ -34,6 +36,15 @@ pub struct Info {
     pub props: NodeProps,
     #[serde(default, deserialize_with = "null_as_default")]
     pub params: Params,
+    /// A node's (`running`) or a link's (`active`) state; any other value, or a type that is not
+    /// text, reads as neither (privacy spec § 2).
+    #[serde(default, deserialize_with = "lenient_text")]
+    pub state: Option<String>,
+    /// A link's ends.
+    #[serde(rename = "output-node-id", default, deserialize_with = "lenient_u32")]
+    pub output_node: Option<u32>,
+    #[serde(rename = "input-node-id", default, deserialize_with = "lenient_u32")]
+    pub input_node: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -46,6 +57,25 @@ pub struct NodeProps {
     pub description: Option<String>,
     #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
     pub nick: Option<String>,
+    // What the privacy rules read (spec § 2); parsed always, kept only with the module.
+    #[serde(rename = "media.role", default, deserialize_with = "lenient_text")]
+    pub media_role: Option<String>,
+    #[serde(rename = "device.api", default, deserialize_with = "lenient_text")]
+    pub device_api: Option<String>,
+    #[serde(rename = "application.name", default, deserialize_with = "lenient_text")]
+    pub application_name: Option<String>,
+    #[serde(rename = "application.process.binary", default, deserialize_with = "lenient_text")]
+    pub process_binary: Option<String>,
+    #[serde(rename = "pipewire.access.portal.app_id", default, deserialize_with = "lenient_text")]
+    pub portal_app_id: Option<String>,
+    #[serde(rename = "stream.monitor", default, deserialize_with = "lenient_text")]
+    pub stream_monitor: Option<String>,
+    #[serde(rename = "stream.capture.sink", default, deserialize_with = "lenient_text")]
+    pub capture_sink: Option<String>,
+    #[serde(rename = "node.passive", default, deserialize_with = "lenient_text")]
+    pub passive: Option<String>,
+    #[serde(rename = "node.link-group", default, deserialize_with = "lenient_text")]
+    pub link_group: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -168,6 +198,32 @@ fn drawable(s: &str) -> String {
     t
 }
 
+/// A boolean property as pw-dump prints it: `true` or `"true"`.
+fn flag(v: &Option<String>) -> bool {
+    v.as_deref() == Some("true")
+}
+
+/// A node as the privacy rules need it (spec § 2); `running` is the node's own state.
+fn graph_node(class: &str, running: bool, p: &NodeProps) -> GraphNode {
+    let camera_device = matches!(p.device_api.as_deref(), Some("v4l2" | "libcamera")) || p.media_role.as_deref() == Some("Camera");
+    // The app: the first non-empty name, as a person reads it.
+    let app = [&p.portal_app_id, &p.application_name, &p.process_binary, &p.node_name]
+        .into_iter()
+        .flatten()
+        .map(|s| drawable(s))
+        .find(|s| !s.is_empty());
+    GraphNode {
+        class: class.to_string(),
+        running,
+        monitor: flag(&p.stream_monitor),
+        capture_sink: flag(&p.capture_sink),
+        link_group: p.link_group.is_some(),
+        passive: flag(&p.passive),
+        camera_device,
+        app,
+    }
+}
+
 /// What a person reads: the description, else the nick (blank text is absent); None: neither.
 fn label_of(p: &NodeProps) -> Option<String> {
     [p.description.as_deref(), p.nick.as_deref()].into_iter().flatten().map(drawable).find(|s| !s.is_empty())
@@ -237,13 +293,26 @@ pub struct Model {
     default_meta: Option<u32>,
     default_sink: Option<Named>,
     default_source: Option<Named>,
+    /// With the `privacy` module (spec § 8): the capture graph, bounded, and whether its bound was
+    /// told (nodes, links) in this model's life. Empty and untouched otherwise.
+    privacy: bool,
+    graph: HashMap<u32, GraphNode>,
+    links: HashMap<u32, GraphLink>,
+    bound_told: [bool; 2],
 }
 
 impl Model {
+    /// A model that keeps the capture graph too when `privacy` is on (privacy spec § 8).
+    pub fn new(privacy: bool) -> Model {
+        Model { privacy, ..Model::default() }
+    }
+
     pub fn apply(&mut self, batch: Vec<Object>) {
         for o in batch {
             if o.kind.is_none() {
                 self.remove(o.id);
+                self.graph.remove(&o.id);
+                self.links.remove(&o.id);
                 if self.default_meta == Some(o.id) {
                     self.default_meta = None;
                     self.default_sink = None;
@@ -264,6 +333,9 @@ impl Model {
                 continue;
             }
             let Some(info) = o.info else { continue };
+            if self.privacy {
+                self.track(o.id, o.kind.as_deref(), &info);
+            }
             let Some(kind) = kind_of(info.props.media_class.as_deref()) else {
                 self.remove(o.id);
                 continue;
@@ -276,6 +348,61 @@ impl Model {
             let label = label.unwrap_or_else(|| drawable(&name));
             self.nodes.insert(o.id, Node { kind, name, label, volume });
         }
+    }
+
+    /// Keeps what the privacy rules read of one object (spec § 2): a link, or a node of a class
+    /// they use. A node re-dumped without its props (only its state moved) keeps the last props.
+    fn track(&mut self, id: u32, kind: Option<&str>, info: &Info) {
+        if kind == Some("PipeWire:Interface:Link") {
+            let last = self.links.get(&id).copied();
+            let (Some(output), Some(input)) = (info.output_node.or(last.map(|l| l.output)), info.input_node.or(last.map(|l| l.input)))
+            else {
+                return;
+            };
+            let active = info.state.as_deref().map(|s| s == "active").or(last.map(|l| l.active)).unwrap_or(false);
+            if last.is_none() && self.links.len() >= privacy::MAX_LINKS {
+                self.bound(true);
+                return;
+            }
+            self.links.insert(id, GraphLink { output, input, active });
+            return;
+        }
+        let running = info.state.as_deref() == Some("running");
+        let node = match info.props.media_class.as_deref() {
+            Some(class) if privacy::kept(class) => graph_node(class, running, &info.props),
+            Some(_) => {
+                self.graph.remove(&id);
+                return;
+            }
+            // No props: a state-only re-dump of a node known already.
+            None => {
+                if let Some(n) = self.graph.get_mut(&id) {
+                    n.running = running;
+                }
+                return;
+            }
+        };
+        if !self.graph.contains_key(&id) && self.graph.len() >= privacy::MAX_NODES {
+            self.bound(false);
+            return;
+        }
+        self.graph.insert(id, node);
+    }
+
+    /// Past a bound: the log line, once per kind in this model's life.
+    fn bound(&mut self, links: bool) {
+        if let Some(line) = self.bound_line(links) {
+            log(line);
+        }
+    }
+
+    /// The line to log for a bound reached, the first time only.
+    fn bound_line(&mut self, links: bool) -> Option<&'static str> {
+        let told = &mut self.bound_told[usize::from(links)];
+        if std::mem::replace(told, true) {
+            return None;
+        }
+        Some(if links { "privacy: graph bounded (links over 4096)" } else { "privacy: graph bounded (nodes over 1024)" })
     }
 
     /// A node removed (or no longer a sink or a source): a default it was is gone.
@@ -325,6 +452,11 @@ impl Model {
         if sink != s.sink {
             return false;
         }
+        // The microphone's mute (the dim indicator) and the capture reach the bar under every
+        // scope (privacy spec § 8).
+        if self.privacy && (self.seen(Kind::Source).0.map(|v| v.muted) != s.source.map(|v| v.muted) || s.capture != Some(self.held())) {
+            return false;
+        }
         if scope == Scope::Bar {
             return true;
         }
@@ -338,7 +470,18 @@ impl Model {
     pub fn state(&self) -> SoundState {
         let named = |(node, label): (&str, &str)| DeviceName { node: node.to_string(), label: label.to_string() };
         let ((sink, sink_name), (source, source_name)) = (self.seen(Kind::Sink), self.seen(Kind::Source));
-        SoundState { sink, source, sink_name: sink_name.map(named), source_name: source_name.map(named), sinks: None }
+        SoundState {
+            sink,
+            source,
+            sink_name: sink_name.map(named),
+            source_name: source_name.map(named),
+            sinks: None,
+            capture: self.privacy.then(|| self.held()),
+        }
+    }
+
+    fn held(&self) -> privacy::Capture {
+        privacy::capture(&self.graph, &self.links)
     }
 
     /// Every sink, by label (case-insensitive) then id, the first MAX_SINKS; the default marked
@@ -365,6 +508,12 @@ impl Model {
     pub fn nodes(&self) -> usize {
         self.nodes.len()
     }
+
+    /// Nodes and links kept for privacy (tests).
+    #[cfg(test)]
+    fn kept(&self) -> (usize, usize) {
+        (self.graph.len(), self.links.len())
+    }
 }
 
 /// What the sound thread shares with the loop (quick spec § 5): its pw-dump model, so an opening
@@ -377,12 +526,19 @@ pub struct SoundTap(Mutex<Tapped>);
 #[derive(Debug, Default)]
 struct Tapped {
     model: Model,
+    /// The `privacy` module is on: every model this tap builds keeps the capture graph.
+    privacy: bool,
     panel: bool,
     /// The last state published: what a batch is compared with.
     last: Option<SoundState>,
 }
 
 impl SoundTap {
+    /// A tap whose model keeps the capture graph when `privacy` is on.
+    pub fn new(privacy: bool) -> SoundTap {
+        SoundTap(Mutex::new(Tapped { model: Model::new(privacy), privacy, ..Tapped::default() }))
+    }
+
     fn lock(&self) -> MutexGuard<'_, Tapped> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -424,7 +580,7 @@ struct Forget<'a>(&'a SoundTap);
 impl Drop for Forget<'_> {
     fn drop(&mut self) {
         let mut t = self.0.lock();
-        t.model = Model::default();
+        t.model = Model::new(t.privacy);
         t.last = None;
     }
 }
@@ -443,7 +599,7 @@ pub fn follow(output: impl Read, scope: Scope, publish: &mut dyn FnMut(SoundStat
 pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
     {
         let mut t = tap.lock();
-        t.model = Model::default();
+        t.model = Model::new(t.privacy);
         t.last = None;
     }
     let _forget = Forget(tap);
@@ -451,7 +607,7 @@ pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &m
         let batch = batch.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("pw-dump: {e}")))?;
         let state = {
             let mut t = tap.lock();
-            let Tapped { model, panel, last } = &mut *t;
+            let Tapped { model, panel, last, .. } = &mut *t;
             model.apply(batch);
             let scope = if *panel { Scope::Panel } else { base };
             if last.as_ref().is_some_and(|l| model.matches(l, scope)) {
@@ -517,6 +673,7 @@ mod tests {
                 sink_name: name(AG06_OUT, "AG06/AG03 Analog Stereo"),
                 source_name: name(AG06_IN, "AG06/AG03 Analog Stereo"),
                 sinks: None,
+                capture: None,
             }]
         );
     }
@@ -978,5 +1135,263 @@ mod tests {
         let seen = run_tapped(&format!("{INITIAL}{DELTAS}"), Scope::Osd, &tap);
         assert!(!seen.is_empty() && seen.iter().all(|s| s.sinks.is_some()), "{seen:?}");
         assert_eq!(seen[0].sinks.as_ref().map(Vec::len), Some(3));
+    }
+
+    fn published_with_privacy(text: &str, scope: Scope) -> (Vec<SoundState>, io::ErrorKind) {
+        let tap = SoundTap::new(true);
+        let mut seen = Vec::new();
+        let e = follow_tapped(text.as_bytes(), scope, &tap, &mut |s| {
+            seen.push(s);
+            true
+        })
+        .unwrap_err();
+        (seen, e.kind())
+    }
+
+    const SOURCE: &str = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"state":"idle","props":{"media.class":"Audio/Source","node.name":"alsa_input.test"}}}]"#;
+
+    fn stream(id: u32, state: &str) -> String {
+        format!(
+            r#"[{{"id":{id},"type":"PipeWire:Interface:Node","info":{{"state":"{state}","props":{{"media.class":"Stream/Input/Audio","node.name":"firefox","application.name":"firefox"}}}}}}]"#
+        )
+    }
+
+    fn link(id: u32, from: u32, to: u32, state: &str) -> String {
+        format!(
+            r#"[{{"id":{id},"type":"PipeWire:Interface:Link","info":{{"output-node-id":{from},"input-node-id":{to},"state":"{state}"}}}}]"#
+        )
+    }
+
+    fn mic(s: &SoundState) -> Option<(Vec<&str>, bool)> {
+        s.capture.as_ref().map(|c| (c.mic.names.iter().map(String::as_str).collect(), c.mic.unnamed))
+    }
+
+    #[test]
+    fn privacy_off_keeps_nothing_more() {
+        let batch = format!(
+            "{}{}{}{}",
+            SOURCE,
+            stream(200, "running"),
+            r#"[{"id":201,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Video/Source","node.name":"v4l2_input.test"}}}]"#,
+            link(300, 123, 200, "active")
+        );
+        let mut m = Model::default();
+        m.apply(serde_json::Deserializer::from_str(&batch).into_iter::<Vec<Object>>().flatten().flatten().collect());
+        assert_eq!(m.nodes(), 1, "the source only, as today");
+        assert_eq!(m.kept(), (0, 0), "no graph, no links");
+        let (seen, _) = published_for(&batch, Scope::Osd);
+        assert!(seen.iter().all(|s| s.capture.is_none()), "nothing published");
+    }
+
+    #[test]
+    fn a_recording_stream_is_published_as_a_capture() {
+        let text = format!(
+            "{}{}{}{}{}",
+            SOURCE,
+            stream(200, "running"),
+            link(300, 123, 200, "active"),
+            r#"[{"id":300,"info":null}]"#,
+            stream(200, "idle")
+        );
+        let (seen, _) = published_with_privacy(&text, Scope::Bar);
+        assert!(seen.iter().all(|s| s.capture.is_some()), "Some exactly when privacy is on");
+        let mics: Vec<_> = seen.iter().map(mic).collect();
+        let off = Some((vec![], false));
+        let on = Some((vec!["firefox"], false));
+        // Source alone; the running stream (no link yet: no holder); the link; its removal while the
+        // stream still runs (no holder); the stream going idle changes nothing more.
+        assert_eq!(mics, [off.clone(), on.clone(), off.clone()], "{mics:?}");
+    }
+
+    #[test]
+    fn the_link_removal_and_the_idle_stream_each_switch_it_off() {
+        let lit = format!("{}{}{}", SOURCE, stream(200, "idle"), link(300, 123, 200, "active"));
+        let (seen, _) = published_with_privacy(&lit, Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "an active link lights it");
+        let removed = format!("{lit}{}", r#"[{"id":300,"info":null}]"#);
+        let (seen, _) = published_with_privacy(&removed, Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec![], false)), "the link gone, the stream idle: off");
+    }
+
+    #[test]
+    fn the_source_mute_and_the_capture_publish_under_every_scope() {
+        let muted = r#"[{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.test"},"params":{"Props":[{"channelVolumes":[1.0],"mute":true}]}}}]"#;
+        let unmuted = muted.replace("true", "false");
+        let meta = r#"[{"id":40,"type":"PipeWire:Interface:Metadata","props":{"metadata.name":"default"},"metadata":[{"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"alsa_input.test"}}]}]"#;
+        let text = format!("{meta}{unmuted}{muted}");
+        let (with, _) = published_with_privacy(&text, Scope::Bar);
+        assert_eq!(
+            with.iter().map(|s| s.source).collect::<Vec<_>>(),
+            [None, vol(100, false), vol(100, true)],
+            "the mute flip reaches the bar"
+        );
+        let (without, _) = published_for(&text, Scope::Bar);
+        assert_eq!(without.len(), 1, "without privacy the Bar scope publishes the first batch only: {without:?}");
+        assert!(without[0].source.is_none());
+    }
+
+    #[test]
+    fn a_capture_change_alone_publishes() {
+        let text = format!("{}{}{}{}", SOURCE, stream(200, "idle"), link(300, 123, 200, "active"), link(300, 123, 200, "paused"));
+        let (seen, _) = published_with_privacy(&text, Scope::Bar);
+        assert!(seen.len() >= 2, "no sink, no mute change: only the capture moves it ({})", seen.len());
+        assert_eq!(mic(&seen[seen.len() - 1]), Some((vec![], false)));
+    }
+
+    #[test]
+    fn a_link_before_its_nodes_and_a_state_only_redump() {
+        // One batch, the link first.
+        let one = r#"[{"id":300,"type":"PipeWire:Interface:Link","info":{"output-node-id":123,"input-node-id":200,"state":"active"}},{"id":200,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}},{"id":123,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Audio/Source","node.name":"alsa_input.test"}}}]"#.to_string();
+        let (seen, _) = published_with_privacy(&one, Scope::Bar);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(mic(&seen[0]), Some((vec!["firefox"], false)), "lit after the one batch");
+        // The consumer re-dumped idle, no props: its app name stays, the link goes quiet.
+        let redump = r#"[{"id":200,"type":"PipeWire:Interface:Node","info":{"state":"idle"}}]"#;
+        let linkidle = link(300, 123, 200, "idle");
+        let (seen, _) = published_with_privacy(&format!("{one}{redump}{linkidle}"), Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec![], false)), "off");
+        // Running again, still no props: the name is kept (not unnamed).
+        let again = r#"[{"id":200,"type":"PipeWire:Interface:Node","info":{"state":"running"}}]"#;
+        let (seen, _) = published_with_privacy(&format!("{one}{redump}{linkidle}{again}"), Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "the last props kept");
+        // A link re-dumped with its state only keeps its ends.
+        let state_only = r#"[{"id":300,"type":"PipeWire:Interface:Link","info":{"state":"active"}}]"#;
+        let (seen, _) = published_with_privacy(&format!("{one}{redump}{linkidle}{state_only}"), Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "ends kept: active again");
+    }
+
+    #[test]
+    fn lenient_props_and_states() {
+        let node = |id: u32, extra: &str| {
+            format!(
+                r#"[{{"id":{id},"type":"PipeWire:Interface:Node","info":{{"state":"running","props":{{"media.class":"Stream/Input/Audio"{extra}}}}}}}]"#
+            )
+        };
+        let l = |id: u32, to: u32| link(id, 123, to, "active");
+        let text = format!(
+            "{SOURCE}{}{}{}{}{}{}{}{}",
+            node(200, r#","stream.monitor":true"#),
+            l(300, 200),
+            node(201, r#","stream.monitor":"true""#),
+            l(301, 201),
+            node(202, r#","node.passive":"true""#),
+            l(302, 202),
+            node(203, r#","application.name":42"#),
+            l(303, 203),
+        );
+        let (seen, _) = published_with_privacy(&text, Scope::Bar);
+        assert_eq!(
+            mic(seen.last().unwrap()),
+            Some((vec!["42"], false)),
+            "monitor and passive streams never light it; a numeric name reads"
+        );
+        let odd = format!(
+            "{SOURCE}{}{}",
+            r#"[{"id":204,"type":"PipeWire:Interface:Node","info":{"state":7,"props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#,
+            r#"[{"id":301,"type":"PipeWire:Interface:Link","info":{"output-node-id":123,"input-node-id":204,"state":5}}]"#
+        );
+        let (seen, end) = published_with_privacy(&odd, Scope::Bar);
+        assert_eq!(end, io::ErrorKind::UnexpectedEof, "no batch failed");
+        assert_eq!(mic(seen.last().unwrap()), Some((vec![], false)), "an odd state reads as not running");
+        let unknown = format!("{SOURCE}{}{}", stream(205, "weird"), link(302, 123, 205, "weird"));
+        let (seen, _) = published_with_privacy(&unknown, Scope::Bar);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec![], false)), "an unknown state reads as not running");
+    }
+
+    #[test]
+    fn the_app_is_the_first_non_empty_name() {
+        let node = |extra: &str| {
+            format!(
+                r#"[{{"id":200,"type":"PipeWire:Interface:Node","info":{{"state":"running","props":{{"media.class":"Stream/Input/Audio","node.name":"node-name"{extra}}}}}}}]"#
+            )
+        };
+        let app = |extra: &str| {
+            let (seen, _) = published_with_privacy(&format!("{SOURCE}{}{}", node(extra), link(300, 123, 200, "active")), Scope::Bar);
+            mic(seen.last().unwrap()).map(|(n, _)| n.join(",")).unwrap_or_default()
+        };
+        assert_eq!(
+            app(r#","pipewire.access.portal.app_id":"org.test.App","application.name":"a","application.process.binary":"b""#),
+            "org.test.App"
+        );
+        assert_eq!(app(r#","pipewire.access.portal.app_id":"  ","application.name":"a","application.process.binary":"b""#), "a");
+        assert_eq!(app(r#","application.process.binary":"b""#), "b");
+        assert_eq!(app(""), "node-name");
+    }
+
+    #[test]
+    fn a_camera_device_is_by_api_or_role() {
+        let cam = |extra: &str| {
+            format!(
+                r#"[{{"id":201,"type":"PipeWire:Interface:Node","info":{{"state":"running","props":{{"media.class":"Video/Source","node.name":"v4l2_input.test"{extra}}}}}}}]"#
+            )
+        };
+        let screen = |extra: &str| {
+            let (seen, _) = published_with_privacy(&cam(extra), Scope::Bar);
+            let c = seen.last().unwrap().capture.clone().unwrap();
+            (c.camera.unnamed, c.screen.unnamed)
+        };
+        assert_eq!(screen(r#","device.api":"v4l2""#), (true, false));
+        assert_eq!(screen(r#","device.api":"libcamera""#), (true, false));
+        assert_eq!(screen(r#","media.role":"Camera""#), (true, false));
+        assert_eq!(screen(""), (false, true), "a video source that is no device: the screen");
+    }
+
+    #[test]
+    fn the_graph_is_bounded() {
+        let mut nodes = String::from("[");
+        for i in 0..1100u32 {
+            if i > 0 {
+                nodes.push(',');
+            }
+            nodes.push_str(&format!(
+                r#"{{"id":{},"type":"PipeWire:Interface:Node","info":{{"props":{{"media.class":"Stream/Input/Audio"}}}}}}"#,
+                1000 + i
+            ));
+        }
+        nodes.push(']');
+        let mut m = Model::new(true);
+        m.apply(serde_json::from_str(&nodes).unwrap());
+        assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
+        assert_eq!(m.bound_line(false), None, "already told once for this model");
+        let mut links = String::from("[");
+        for i in 0..4200u32 {
+            if i > 0 {
+                links.push(',');
+            }
+            links.push_str(&format!(
+                r#"{{"id":{},"type":"PipeWire:Interface:Link","info":{{"output-node-id":1,"input-node-id":2,"state":"idle"}}}}"#,
+                10_000 + i
+            ));
+        }
+        links.push(']');
+        m.apply(serde_json::from_str(&links).unwrap());
+        assert_eq!(m.kept().1, crate::privacy::MAX_LINKS);
+        assert_eq!(m.bound_line(true), None, "once");
+        // An id already kept is still updated at the bound.
+        m.apply(serde_json::from_str(r#"[{"id":1000,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#).unwrap());
+        assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
+        // A removal frees a place.
+        m.apply(serde_json::from_str(r#"[{"id":1000,"info":null}]"#).unwrap());
+        assert_eq!(m.kept().0, crate::privacy::MAX_NODES - 1);
+    }
+
+    #[test]
+    fn the_bound_is_told_once_per_model() {
+        let mut m = Model::new(true);
+        assert_eq!(m.bound_line(false), Some("privacy: graph bounded (nodes over 1024)"));
+        assert_eq!(m.bound_line(false), None);
+        assert_eq!(m.bound_line(true), Some("privacy: graph bounded (links over 4096)"));
+        assert_eq!(m.bound_line(true), None);
+    }
+
+    #[test]
+    fn a_new_stream_starts_a_new_graph_and_forgets_it_at_the_end() {
+        let tap = SoundTap::new(true);
+        let text = format!("{SOURCE}{}{}", stream(200, "running"), link(300, 123, 200, "active"));
+        let _ = run_tapped(&text, Scope::Bar, &tap);
+        assert_eq!(tap.open().capture, Some(crate::privacy::Capture::default()), "the dead stream's graph went; privacy stays on");
+        tap.close();
+        let seen = run_tapped(&text, Scope::Bar, &tap);
+        assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "and a second stream builds it again");
     }
 }

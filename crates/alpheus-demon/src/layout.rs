@@ -89,7 +89,9 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
         | ModuleId::Battery
         | ModuleId::Notifications
         | ModuleId::Osd
-        | ModuleId::Quick => GroupKind::Status,
+        | ModuleId::Quick
+        // Placeholder until the module has its own block (privacy spec § 1).
+        | ModuleId::Privacy => GroupKind::Status,
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
@@ -112,6 +114,7 @@ pub const fn module_hue(m: ModuleId) -> Option<Hue> {
         | ModuleId::Notifications
         | ModuleId::Osd
         | ModuleId::Quick
+        | ModuleId::Privacy
         | ModuleId::Clock
         | ModuleId::Power => None,
     }
@@ -248,6 +251,8 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Osd => None,
         // The quick panel is a popup (quick.rs), never a segment.
         ModuleId::Quick => None,
+        // Placeholder: no segment yet (privacy spec § 1).
+        ModuleId::Privacy => None,
         // ⏻ alone; none when `[quick]` has no session command (power spec § 1).
         ModuleId::Power => segments::power(&bar.config.quick),
     }

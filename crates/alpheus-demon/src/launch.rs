@@ -231,7 +231,7 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         v
     });
     Wanted {
-        sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick),
+        sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick) || has(ModuleId::Privacy),
         dbus,
         resources: has(ModuleId::Resources),
         tray: has(ModuleId::Tray),
@@ -649,6 +649,7 @@ pub fn run() -> i32 {
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
     let want = wanted(&config.modules);
     let scope = sound_scope(&config.modules);
+    let privacy = config.modules.contains(&ModuleId::Privacy);
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
@@ -764,7 +765,7 @@ pub fn run() -> i32 {
     if want.sound {
         let tx = tx.clone();
         // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
-        let tap = Arc::new(crate::pipewire::SoundTap::default());
+        let tap = Arc::new(crate::pipewire::SoundTap::new(privacy));
         state.sound_tap = Some(tap.clone());
         sources::sound::start(exec.clone(), scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
@@ -859,6 +860,21 @@ mod tests {
         assert!(connect.contains("no session bus"), "{connect:?}");
         assert!(!watch.contains("no session bus"), "the bus did connect: {watch:?}");
         assert!(watch.contains("fd"), "names the step that failed: {watch:?}");
+    }
+
+    #[test]
+    fn privacy_alone_starts_the_sound_source() {
+        assert!(wanted(&[ModuleId::Privacy]).sound);
+        assert_eq!(
+            wanted(&[ModuleId::Privacy]),
+            Wanted { sound: true, dbus: vec![], resources: false, tray: false, media: false, notifications: false },
+            "the capture graph needs pw-dump and nothing else"
+        );
+        let without: Vec<ModuleId> = ModuleId::ALL
+            .into_iter()
+            .filter(|m| !matches!(m, ModuleId::Privacy | ModuleId::Volume | ModuleId::Osd | ModuleId::Quick))
+            .collect();
+        assert!(!wanted(&without).sound, "every other module: no pw-dump");
     }
 
     #[test]
