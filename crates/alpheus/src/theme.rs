@@ -83,15 +83,13 @@ impl Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alpheus_commun::temp_path::TempPath;
     use alpheus_commun::theme::mode_file::mode_path;
     use alpheus_commun::theme::presets::preset;
-    use std::path::PathBuf;
 
     /// A fresh config directory holding `files`.
-    fn dir(name: &str, files: &[(&str, &str)]) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-tui-theme-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn dir(name: &str, files: &[(&str, &str)]) -> TempPath {
+        let d = TempPath::dir(&format!("tui-theme-{name}"));
         for (f, text) in files {
             std::fs::write(d.join(f), text).unwrap();
         }
@@ -99,10 +97,8 @@ mod tests {
     }
 
     /// A fresh runtime directory (as $XDG_RUNTIME_DIR) whose mode file holds `text`; None: no file.
-    fn runtime(name: &str, text: Option<&str>) -> PathBuf {
-        let r = std::env::temp_dir().join(format!("alpheus-{}-tui-run-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&r);
-        std::fs::create_dir_all(&r).unwrap();
+    fn runtime(name: &str, text: Option<&str>) -> TempPath {
+        let r = TempPath::dir(&format!("tui-run-{name}"));
         if let Some(t) = text {
             let p = mode_path(&r);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();

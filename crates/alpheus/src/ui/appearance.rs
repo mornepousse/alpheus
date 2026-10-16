@@ -511,27 +511,27 @@ mod tests {
 
     #[test]
     fn dark_preset_under_the_cursor() {
-        let (mut a, _) = open("snap-dark", &[("theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\n")]);
+        let (mut a, _dir) = open("snap-dark", &[("theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\n")]);
         goto(&mut a, "tokyo-night");
         insta::assert_snapshot!("appearance_dark", draw(&a, 100, 24).0.join("\n"));
     }
 
     #[test]
     fn light_mode_and_the_focus_on_the_mode_row() {
-        let (mut a, _) = open("snap-light", &[("theme.toml", "theme = \"gruvbox\"\nmode = \"light\"\n")]);
+        let (mut a, _dir) = open("snap-light", &[("theme.toml", "theme = \"gruvbox\"\nmode = \"light\"\n")]);
         a.on_key_action(Action::NextTab);
         insta::assert_snapshot!("appearance_light", draw(&a, 100, 24).0.join("\n"));
     }
 
     #[test]
     fn the_wallpaper_entry_with_a_fixture_colors_toml() {
-        let (a, _) = open("snap-wall", &[("colors.toml", WALL)]);
+        let (a, _dir) = open("snap-wall", &[("colors.toml", WALL)]);
         insta::assert_snapshot!("appearance_wallpaper", draw(&a, 100, 24).0.join("\n"));
     }
 
     #[test]
     fn dark_only_tags_and_the_light_mode_fallback() {
-        let (mut a, _) = open("snap-nord", &[("theme.toml", "theme = \"nord\"\nmode = \"light\"\n")]);
+        let (mut a, _dir) = open("snap-nord", &[("theme.toml", "theme = \"nord\"\nmode = \"light\"\n")]);
         a.on_key_action(Action::Down);
         insta::assert_snapshot!("appearance_dark_only", draw(&a, 100, 24).0.join("\n"));
         let rows = draw(&a, 100, 24).0;
@@ -541,7 +541,7 @@ mod tests {
 
     #[test]
     fn the_preview_wears_the_roles_of_the_theme_under_the_cursor() {
-        let (mut a, _) = open("colors", &[("theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\n")]);
+        let (mut a, _dir) = open("colors", &[("theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\n")]);
         goto(&mut a, "tokyo-night");
         let p = preset("tokyo-night").unwrap().dark;
         let b = buffer(&a);
@@ -566,7 +566,7 @@ mod tests {
     /// The mini bar's modules under each setting, on the previewed theme's hues.
     #[test]
     fn the_mini_bar_tints_its_modules_by_the_selected_module_colours() {
-        let (mut a, _) = open("preview-colors", &[("theme.toml", "theme = \"tokyo-night\"\nmode = \"dark\"\n")]);
+        let (mut a, _dir) = open("preview-colors", &[("theme.toml", "theme = \"tokyo-night\"\nmode = \"dark\"\n")]);
         let p = preset("tokyo-night").unwrap().dark;
         let (fg, bar) = (rgb(p.fg), rgb(p.bar_bg));
         let mut seen = Vec::new();
@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn the_module_colours_row_is_drawn_with_its_four_values_and_regions() {
-        let (a, _) = open("colors-row", &[("theme.toml", "module_colors = \"full\"\n")]);
+        let (a, _dir) = open("colors-row", &[("theme.toml", "module_colors = \"full\"\n")]);
         let (rows, hits) = draw(&a, 100, 24);
         let row = rows.iter().find(|r| r.contains("Module colours")).expect("the row");
         assert!(row.contains("None") && row.contains("Icons") && row.contains("Full") && row.contains("Pills"), "{row:?}");
@@ -614,7 +614,7 @@ mod tests {
 
     #[test]
     fn the_footer_names_the_next_stop_of_the_tab_key() {
-        let (mut a, _) = open("footer", &[]);
+        let (mut a, _dir) = open("footer", &[]);
         let last = |a: &crate::app::App| draw(a, 100, 24).0[23].clone();
         assert!(last(&a).contains("Tab Mode"), "{:?}", last(&a));
         a.on_key_action(Action::NextTab);
@@ -627,7 +627,7 @@ mod tests {
 
     #[test]
     fn the_header_names_the_theme_and_the_mode() {
-        let (mut a, _) = open("header", &[("theme.toml", "mode = \"light\"\n")]);
+        let (mut a, _dir) = open("header", &[("theme.toml", "mode = \"light\"\n")]);
         assert!(draw(&a, 100, 24).0[2].contains("Preview — Catppuccin, light"));
         a.on_key_action(Action::Down);
         assert!(draw(&a, 100, 24).0[2].contains("Preview — Gruvbox, light"));
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn the_regions_and_the_tab_title() {
-        let (a, _) = open("hits", &[]);
+        let (a, _dir) = open("hits", &[]);
         let (rows, hits) = draw(&a, 100, 24);
         assert!(rows[0].contains(" 7 Theme "), "{:?}", rows[0]);
         assert!(hits.find(Target::Tab(Tab::Appearance)).is_some());
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn small_windows_never_panic_and_a_narrow_one_drops_the_preview() {
-        let (a, _) = open("small", &[]);
+        let (a, _dir) = open("small", &[]);
         for (w, h) in [(30, 8), (40, 12), (60, 14), (80, 24), (31, 9)] {
             draw(&a, w, h);
         }
@@ -659,7 +659,7 @@ mod tests {
 
     #[test]
     fn short_terminals_scroll_the_list_and_never_expose_a_hidden_hit() {
-        let (mut a, _) = open("short", &[]);
+        let (mut a, _dir) = open("short", &[]);
         for h in 8..=20u16 {
             let body = Rect::new(1, 2, 98, h - 4);
             for cursor in 0..a.appearance.entries.len() {
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn the_style_row_is_drawn_under_the_colours_with_six_values_and_regions() {
-        let (a, _) = open("style-row", &[("theme.toml", "style = \"powerline\"\n")]);
+        let (a, _dir) = open("style-row", &[("theme.toml", "style = \"powerline\"\n")]);
         let (rows, hits) = draw(&a, 100, 24);
         let row = rows.iter().find(|r| r.starts_with(" Style")).expect("the row");
         for label in ["Flat", "Islands", "Powerline", "Floating", "Underline", "Translucent"] {
@@ -743,7 +743,7 @@ mod tests {
     /// transparent cell is told apart from the bar's.
     fn styled(name: &str, style: &str, colors: &str) -> crate::app::App {
         let toml = format!("theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"{style}\"\nmodule_colors = \"{colors}\"\n");
-        let (mut a, _) = open(name, &[("theme.toml", toml.as_str())]);
+        let (mut a, _dir) = open(name, &[("theme.toml", toml.as_str())]);
         goto(&mut a, "tokyo-night");
         a
     }

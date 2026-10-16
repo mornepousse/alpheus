@@ -60,12 +60,10 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::temp_path::TempPath;
 
-    fn file(name: &str, content: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-cfg-{name}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("config.toml");
+    fn file(name: &str, content: &str) -> TempPath {
+        let p = TempPath::dir(&format!("cfg-{name}")).below("config.toml");
         std::fs::write(&p, content).unwrap();
         p
     }

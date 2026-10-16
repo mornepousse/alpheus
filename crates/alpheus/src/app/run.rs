@@ -532,9 +532,7 @@ mod tests {
 
     #[test]
     fn display_profiles_loaded_at_startup() {
-        let dir = std::env::temp_dir().join(format!("alpheus-{}-run-displays", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = alpheus_commun::temp_path::TempPath::dir("run-displays");
         let a = build_app(&dir, Tab::Home, None, Instant::now());
         assert!(a.displays.profiles.is_empty());
         assert_eq!(a.status.warning, None, "missing file: no message");
