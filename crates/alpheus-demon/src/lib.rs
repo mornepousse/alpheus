@@ -40,6 +40,7 @@ pub mod popup;
 pub mod power;
 pub mod power_app;
 pub mod privacy;
+pub mod privacy_app;
 pub mod quick;
 pub mod quick_app;
 pub mod quick_secret;

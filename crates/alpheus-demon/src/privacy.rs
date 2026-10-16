@@ -2,6 +2,8 @@
 //! keeps for them, and the rules that turn it into "which apps hold the microphone, the camera,
 //! the screen". Nothing here reads a file, starts a thread or runs a command.
 
+use crate::grid::{Grid, Hue, Style, text_width};
+use crate::list::{self, Boxed};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -19,6 +21,8 @@ pub const MAX_NAMES: usize = 8;
 /// Graph bounds (spec § 8): the model keeps no more.
 pub const MAX_NODES: usize = 1024;
 pub const MAX_LINKS: usize = 4096;
+/// The popup's width in cells at most (privacy spec § 5); a longer name is cut.
+pub const POPUP_WIDTH: u16 = 32;
 
 /// One indicator: the apps holding the device, and whether a holder has no name.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -272,6 +276,48 @@ impl Privacy {
 
     pub fn mic_muted(&self) -> bool {
         self.mic_muted
+    }
+
+    /// The popup (privacy spec § 5), drawn inside `list::boxed`'s ring as the power menu is: one
+    /// heading per shown indicator in the module's order, its glyph in its hue (the microphone dim
+    /// while the default source is muted, as in the bar), then each app indented 4 cells, or
+    /// `(unnamed)`. As wide as the longest row and a blank cell on each side, at most
+    /// `POPUP_WIDTH`. Nothing on it is selectable.
+    pub fn render(&self) -> Boxed {
+        let mic = if self.mic_muted { Style::MUTED } else { Style::hue(Hue::Orange) };
+        let mut lines: Vec<(Option<(char, Style)>, String)> = Vec::new();
+        for (i, (glyph, style, word)) in
+            [(MIC, mic, "Microphone"), (CAMERA, Style::hue(Hue::Green), "Camera"), (SCREEN, Style::hue(Hue::Red), "Screen")]
+                .into_iter()
+                .enumerate()
+        {
+            let shown = self.slot(i);
+            if !shown.active() {
+                continue;
+            }
+            lines.push((Some((glyph, style)), format!(" {word}")));
+            for name in &shown.names {
+                lines.push((None, format!("    {name}")));
+            }
+            if shown.names.is_empty() {
+                lines.push((None, "    (unnamed)".into()));
+            }
+        }
+        let width = |(g, t): &(Option<(char, Style)>, String)| text_width(t) + g.map_or(0, |(c, _)| text_width(&c.to_string()));
+        let longest = lines.iter().map(width).max().unwrap_or(0);
+        let columns = longest.saturating_add(2).min(POPUP_WIDTH) + 2;
+        let mut out = vec![Grid::empty(columns)];
+        for (glyph, text) in &lines {
+            let mut g = Grid::empty(columns);
+            let mut x = 2;
+            if let Some((c, style)) = glyph {
+                x = g.write(x, columns - 1, &c.to_string(), *style);
+            }
+            g.write(x, columns - 1, text, Style::NORMAL);
+            out.push(g);
+        }
+        out.push(Grid::empty(columns));
+        list::boxed(&out, &[], None)
     }
 
     /// A compositor release whose hold has ended stops counting: the screen, if PipeWire does not
@@ -610,6 +656,32 @@ mod tests {
         assert!(p.set_sound(Some(&mic_of(&["firefox"])), false, t0 + ms(10)), "the mute alone changes it");
         assert!(!p.mic_muted());
         assert!(!p.set_sound(Some(&mic_of(&["firefox"])), false, t0 + ms(20)), "nothing changed");
+    }
+
+    /// Privacy spec § 5: one heading per active indicator in the module's order, its glyph in its
+    /// hue, then one row per app indented 4 cells, or `(unnamed)`; the box as wide as the longest
+    /// row and a blank cell on each side, at most `POPUP_WIDTH`.
+    #[test]
+    fn the_popup_lists_each_indicator_and_its_apps() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_sound(Some(&mic_of(&["firefox"])), false, t0);
+        p.set_casting(true, CAST_HOLD, t0);
+        let b = p.render();
+        let want = [format!("{MIC} Microphone"), "    firefox".into(), format!("{SCREEN} Screen"), "    (unnamed)".into()];
+        let texts: Vec<String> = b.rows.iter().map(|g| g.text().trim_end().to_string()).collect();
+        assert_eq!(texts, want.iter().map(|r| format!(" {r}")).collect::<Vec<_>>());
+        let longest = want.iter().map(|r| crate::grid::text_width(r)).max().unwrap_or(0);
+        assert_eq!(b.cells(), (longest + 2, 4));
+        let (mic, screen) = (b.rows[0].styles(), b.rows[2].styles());
+        assert!(mic.starts_with(".o.") && screen.starts_with(".r."), "glyphs in their hues: {mic} {screen}");
+        assert!(b.rows[1].styles().chars().all(|c| c == '.'), "names in the normal style");
+
+        let long = "n".repeat(60);
+        p.set_sound(Some(&mic_of(&[long.as_str()])), false, t0);
+        assert_eq!(p.render().cells().0, POPUP_WIDTH, "capped");
+        p.set_sound(Some(&mic_of(&["firefox"])), true, t0);
+        assert!(p.render().rows[0].styles().starts_with(".m."), "a muted microphone dims, as in the bar");
     }
 
     #[test]

@@ -40,7 +40,7 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 static STOP: AtomicBool = AtomicBool::new(false);
 static FINISHED: AtomicBool = AtomicBool::new(false);
@@ -696,6 +696,11 @@ pub fn run() -> i32 {
             // with the last one; the bar then keeps it.
             if let Msg::Sound(s) = &m {
                 state.osd_sound(s.as_ref());
+            }
+            // The privacy indicators read sound and compositor messages first (privacy spec § 4):
+            // a change redraws the bar and follows the popup and the off-delay's timer.
+            if state.bar.privacy_at(&m, Instant::now()) {
+                state.privacy_changed();
             }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);

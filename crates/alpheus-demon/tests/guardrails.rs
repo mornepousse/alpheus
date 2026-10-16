@@ -22,6 +22,7 @@ use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
 use alpheus_demon::notify::NotifyView;
 use alpheus_demon::power::{Power, PowerAction};
+use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
@@ -82,6 +83,9 @@ fn full_bar() -> Bar {
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
     b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
     b.apply(Msg::Notifications(NotifyView { unread: 2, dnd: false, serving: true }));
+    // A shown microphone, so the privacy module has a zone (privacy spec § 6).
+    let mic = Capture { mic: Indicator { names: vec!["firefox".into()], unnamed: false }, ..Capture::default() };
+    b.privacy_at(&Msg::Sound(Some(SoundState { capture: Some(mic), ..SoundState::default() })), Instant::now());
     b
 }
 
@@ -116,6 +120,7 @@ fn every_click_on_a_full_bar_stays_on_the_allowlist() {
         "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
         "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-",
+        "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
     ];
     for c in &calls {
         assert!(c.starts_with("wm-set workspace ") || fixed.contains(&c.as_str()), "command outside the allowlist: {c}");
@@ -852,8 +857,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
         // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
         // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
-        // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending.
-        ("wayland.rs", "Timer::", 8),
+        // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
+        // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
+        // pending off.
+        ("wayland.rs", "Timer::", 9),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
@@ -1102,7 +1109,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 34] = [
+const NO_THREAD_NOR_COMMAND: [&str; 35] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1137,6 +1144,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 34] = [
     "sources/sway.rs",
     "session.rs",
     "power.rs",
+    "privacy.rs",
 ];
 
 #[test]
@@ -2078,4 +2086,49 @@ fn the_keyboards_own_repeat_is_told_from_a_press() {
         let event = body.find("key_event(");
         assert!(matches!((raised, event, lowered), (Some(r), Some(e), Some(l)) if r < e && e < l), "{f}: {body}");
     }
+}
+
+/// Privacy spec § 8: no panic in the privacy module's production code, nor in the sound model's
+/// privacy functions.
+#[test]
+fn the_privacy_module_has_no_panicking_path() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let pipewire = src("pipewire.rs");
+    let mut texts = vec![src("privacy.rs"), src("privacy_app.rs")];
+    for f in ["fn flag(", "fn graph_node(", "pub fn apply_privacy(", "fn track(", "fn bound(", "fn bound_line(", "fn held("] {
+        texts.push(function_body(&pipewire, f).to_string());
+    }
+    for (i, text) in texts.iter().enumerate() {
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!text.contains(p), "{p} in privacy code #{i}");
+        }
+    }
+}
+
+/// Privacy spec § 4: the off-delay's timer is the bar's, not the popup's. It follows
+/// `Privacy::deadline` after every change, popup open or not (so `popup_close` never lets it go),
+/// and the tick forgets its dropped source before applying what is due.
+#[test]
+fn the_privacy_timer_is_bar_level_and_fired_before_due() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (app, popup) = (src("privacy_app.rs"), src("popup.rs"));
+    let tick = function_body(&app, "pub(crate) fn privacy_tick(");
+    let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
+    assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
+    let changed = function_body(&app, "pub(crate) fn privacy_changed(");
+    assert!(changed.contains("self.privacy_timer_sync()"), "the timer follows every change: {changed}");
+    assert!(changed.contains("self.dirty = true"), "the bar's redraw flag, drawn after the pass: {changed}");
+    let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
+    assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync("), "{sync}");
+    assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
+    // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
+    let launch = src("launch.rs");
+    let (feed, changed, kept) = (
+        launch.find("state.bar.privacy_at(&m, Instant::now())"),
+        launch.find("state.privacy_changed()"),
+        launch.find("on_message(state, m,"),
+    );
+    assert!(matches!((feed, changed, kept), (Some(f), Some(c), Some(k)) if f < c && c < k), "privacy_at, privacy_changed, then on_message");
 }

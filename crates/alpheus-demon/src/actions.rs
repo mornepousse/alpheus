@@ -108,6 +108,8 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
         (ModuleId::Resources, Button::Left) => Some(bar.config.actions.resources.clone()),
+        // The default source's mute, the quick panel's microphone command (privacy spec § 6).
+        (ModuleId::Privacy, Button::Middle) => Some(wpctl(&["set-mute", crate::quick::SOURCE, "toggle"])),
         (m, Button::Left) => open_tab(bar, m),
         _ => None,
     }
@@ -494,6 +496,21 @@ mod tests {
             argv(&["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", "5%-"])
         );
         assert_eq!(command(&b, "HDMI-A-1", &v, Button::Middle), None);
+    }
+
+    /// Privacy spec § 6: the middle click toggles the default source's mute, the quick panel's
+    /// command; the left click is the popup's (no command), the other buttons nothing.
+    #[test]
+    fn a_middle_click_on_privacy_toggles_the_source_mute() {
+        for b in [full(), without_quick(full())] {
+            assert_eq!(
+                module_command(&b, ModuleId::Privacy, Button::Middle),
+                argv(&["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"])
+            );
+            for bt in [Button::Left, Button::Right, Button::WheelUp, Button::WheelDown] {
+                assert_eq!(module_command(&b, ModuleId::Privacy, bt), None, "{bt:?}");
+            }
+        }
     }
 
     #[test]

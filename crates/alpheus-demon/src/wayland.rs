@@ -516,6 +516,9 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
+    /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
+    /// indicator is pending off, popup open or not.
+    pub(crate) privacy_timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
@@ -708,6 +711,7 @@ impl App {
             osd_timer: DeadlineTimer::new(),
             quick_timer: DeadlineTimer::new(),
             power_timer: DeadlineTimer::new(),
+            privacy_timer: DeadlineTimer::new(),
             sound_tap: None,
             wifi_tap: None,
             wifi_follow: None,
@@ -1474,6 +1478,7 @@ impl App {
                 ModulePopup::Panel => self.panel_toggle(qh, anchor),
                 ModulePopup::Quick => self.quick_toggle(qh, Some(anchor), Focus::of(&target)),
                 ModulePopup::Power => self.power_toggle(qh, anchor),
+                ModulePopup::Privacy => self.privacy_toggle(qh, anchor),
             }
             return;
         }
