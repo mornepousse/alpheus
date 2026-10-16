@@ -1239,19 +1239,25 @@ mod tests {
 
     #[test]
     fn privacy_off_keeps_nothing_more() {
-        let batch = format!(
-            "{}{}{}{}",
-            SOURCE,
-            stream(200, "running"),
-            r#"[{"id":201,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Video/Source","node.name":"v4l2_input.test"}}}]"#,
-            link(300, 123, 200, "active")
-        );
+        let camera = r#"[{"id":201,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Video/Source","node.name":"v4l2_input.test"}}}]"#;
+        let batch = format!("{}{}{}{}", SOURCE, stream(200, "running"), camera, link(300, 123, 200, "active"));
         let mut m = Model::default();
         m.apply(serde_json::Deserializer::from_str(&batch).into_iter::<Vec<Object>>().flatten().flatten().collect());
         assert_eq!(m.nodes(), 1, "the source only, as today");
         assert_eq!(m.kept(), (0, 0), "no graph, no links");
         let (seen, _) = published_for(&batch, Scope::Osd);
         assert!(seen.iter().all(|s| s.capture.is_none()), "nothing published");
+        // Through the stream, with privacy off: the dispatch parses the lean `Object` and keeps no
+        // graph (the default sink comes last, so its publication follows the stream, link and camera).
+        let late = format!("{}{}{}{}{}", SOURCE, stream(200, "running"), camera, link(300, 123, 200, "active"), INITIAL);
+        let tap = SoundTap::default();
+        let mut kept = Vec::new();
+        let _ = follow_tapped(late.as_bytes(), Scope::Osd, &tap, &mut |_| {
+            kept.push(tap.lock().model.kept());
+            true
+        });
+        assert!(kept.len() >= 2, "published again after the link: {kept:?}");
+        assert!(kept.iter().all(|k| *k == (0, 0)), "no graph, no links: {kept:?}");
     }
 
     #[test]
