@@ -34,6 +34,8 @@
 //! [media]
 //! title_max = 30                                            # cells of the title in the bar, 8 to 80
 //! ignore = ["kdeconnect"]                                   # players never shown: substrings of their bus name (playerctld always is)
+//! [privacy]                                                 # the microphone, camera and screen indicators (with "privacy" in modules)
+//! ignore = []                                               # apps never shown: names compared whole, case-insensitively
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
 //! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
@@ -360,6 +362,14 @@ impl Default for MediaConfig {
     }
 }
 
+/// `[privacy]` (privacy spec § 7): the apps never shown.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct PrivacyConfig {
+    /// App names left out of the indicators, compared whole and case-insensitively.
+    pub ignore: Vec<String>,
+}
+
 /// The bounds of `[notifications]`.
 pub const NOTIFY_TIMEOUT_LIMIT: u32 = 600;
 pub const NOTIFY_VISIBLE_MAX: u8 = 8;
@@ -585,6 +595,7 @@ pub struct BarConfig {
     pub battery: BatteryConfig,
     pub tray: TrayConfig,
     pub media: MediaConfig,
+    pub privacy: PrivacyConfig,
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
@@ -603,6 +614,7 @@ impl Default for BarConfig {
             battery: BatteryConfig::default(),
             tray: TrayConfig::default(),
             media: MediaConfig::default(),
+            privacy: PrivacyConfig::default(),
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
@@ -637,6 +649,8 @@ struct Raw {
     tray: TrayConfig,
     #[serde(default)]
     media: MediaConfig,
+    #[serde(default)]
+    privacy: PrivacyConfig,
     #[serde(default)]
     notifications: NotificationsConfig,
     #[serde(default)]
@@ -742,6 +756,7 @@ impl BarConfig {
             battery: b.battery,
             tray,
             media: b.media,
+            privacy: b.privacy,
             notifications: b.notifications,
             osd: b.osd,
             quick: b.quick,
@@ -992,6 +1007,35 @@ mod tests {
         let (c, w) = BarConfig::load(&file("media", "[media]\ntitle_max = 5\n"));
         assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
         assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("media.title_max")));
+    }
+
+    #[test]
+    fn the_privacy_module_sits_after_media_and_parses() {
+        let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+        assert_eq!(ModuleId::ALL.len(), 16);
+        assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
+        assert_eq!(ModuleId::Privacy.name(), "privacy");
+        assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
+        let c = BarConfig::from_text("modules = [\"privacy\", \"clock\"]").unwrap();
+        assert_eq!(c.modules, vec![ModuleId::Privacy, ModuleId::Clock]);
+    }
+
+    #[test]
+    fn privacy_defaults_and_settings() {
+        assert_eq!(BarConfig::default().privacy, PrivacyConfig { ignore: Vec::new() });
+        assert_eq!(BarConfig::from_text("height = 22").unwrap().privacy, PrivacyConfig::default(), "absent: defaults");
+        let c = BarConfig::from_text("[privacy]\nignore = [\"obs\"]\n").unwrap();
+        assert_eq!(c.privacy.ignore, vec!["obs".to_string()]);
+    }
+
+    #[test]
+    fn privacy_refused_with_reason() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("[privacy]\nother = 1").contains("other"), "unknown key refused");
+        assert!(BarConfig::from_text("[privacy]\nignore = \"obs\"").is_err(), "a list, not a string");
+        let (c, w) = BarConfig::load(&file("privacy", "[privacy]\nother = 1\n"));
+        assert_eq!(c, BarConfig::default(), "defaults, as for any invalid bar.toml");
+        assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("other")));
     }
 
     #[test]
