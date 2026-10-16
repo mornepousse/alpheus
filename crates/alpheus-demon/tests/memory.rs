@@ -24,8 +24,8 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway,
-    TempDir, UUID_HOME, Workstation, assert_no_spin, fake_source, fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with,
-    volume_delta, write_atomically, wtype, wtype_spawn,
+    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_source, fake_stdin_recorder, launcher, pw_dump_send,
+    start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -514,6 +514,7 @@ fn startup_pss_per_source() {
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
         ("+ launcher", "\"launcher\", \"workspaces\", \"window\", \"clock\""),
         ("everything", every_module!()),
+        ("+ privacy", concat!(every_module!(), ", \"privacy\"")),
     ];
     let mut report = Vec::new();
     for (i, (what, modules)) in cases.iter().enumerate() {
@@ -526,6 +527,10 @@ fn startup_pss_per_source() {
     for (what, kb) in &report {
         assert!(*kb < STARTUP_MAX_KB, "{what}: {kb} KB >= 15 MB — report to Mae with these figures, never raise: {report:?}");
     }
+    // Privacy spec § 8: with nothing captured, the module keeps a small graph and draws nothing.
+    let kb = |w: &str| report.iter().find(|(what, _)| *what == w).map(|(_, kb)| *kb).unwrap();
+    let (everything, privacy) = (kb("everything"), kb("+ privacy"));
+    assert!(privacy <= everything + 256, "+ privacy {privacy} KB vs everything {everything} KB: more than 256 KB at rest");
 }
 
 /// DejaVu Sans Mono (the default `[font] fallback`): printed for the task
@@ -1845,4 +1850,76 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     eprintln!("wake-ups at rest after the power menu (10 s): {delta} whole daemon, {main_delta} loop thread");
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's timer went with the menu");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The privacy measurements' bar: the sound source (privacy reads its graph), the indicators, the
+/// clock. No resources: they tick by design.
+const PRIVACY_BAR: &str = "modules = [\"workspaces\", \"window\", \"volume\", \"privacy\", \"clock\"]\n";
+
+/// The microphone glyph in catppuccin's orange (dark without a portal; the default `module_colors`
+/// paints nothing else in it on this bar), anywhere on the bar's 22 px.
+fn mic_shown(s: &common::Ppm) -> bool {
+    let o = preset("catppuccin").unwrap().dark.hues.orange;
+    (0..22).any(|y| (0..s.width).any(|x| s.at(x, y) == Some([o.0, o.1, o.2])))
+}
+
+/// One capture on the screen, then gone (its 0.5 s off-delay included). `n`: node and link ids apart.
+fn capture_cycle(sway: &Sway, d: &Daemon, n: u32) {
+    pw_dump_send(&sway.runtime, &capture_delta(200 + n, "firefox", "running", 300 + n, true));
+    assert!(sway.wait_for_screen("HEADLESS-1", mic_shown), "capture {n} never shown: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &capture_gone(200 + n, 300 + n));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !mic_shown(s)), "capture {n} never gone: {:?}", d.log());
+}
+
+/// Privacy spec § 9: PSS idle, a capture shown, ended, then after 20 more capture cycles; each
+/// bound against this run's own baseline.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn privacy_pss_with_a_capture_and_after() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("privacy-cost");
+    let (sway, _hypr, d) = start("privacy-cost", 1, &bus, None, Some(PRIVACY_BAR), PwDump::Fifo);
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    pw_dump_send(&sway.runtime, &capture_delta(200, "firefox", "running", 300, true));
+    assert!(sway.wait_for_screen("HEADLESS-1", mic_shown), "never shown: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // painted
+    let shown = d.pss_kb();
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !mic_shown(s)), "never gone: {:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let ended = d.pss_kb();
+    for n in 1..=20 {
+        capture_cycle(&sway, &d, n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let cycled = d.pss_kb();
+    eprintln!("privacy PSS (KB): {idle} idle, {shown} with a capture shown, {ended} once ended, {cycled} after 20 more cycles");
+    eprintln!("privacy smaps after the cycles (KB): {}", smaps_breakdown(&d));
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown <= idle + 512, "shown {shown} KB vs idle {idle} KB: one glyph, a node and a link");
+    assert!(ended <= shown + 64, "ended {ended} KB vs shown {shown} KB: the capture must leave nothing");
+    assert!(cycled <= ended + 128, "cycled {cycled} KB vs ended {ended} KB: 20 captures must keep nothing");
+}
+
+/// Privacy spec § 4, § 8: once a capture ended and its glyph went, no timer, no wake-up, no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_capture() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("privacy-rest");
+    let (sway, _hypr, d) = start("privacy-rest", 1, &bus, None, Some(PRIVACY_BAR), PwDump::Fifo);
+    std::thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST + Duration::from_secs(3));
+    capture_cycle(&sway, &d, 0);
+    std::thread::sleep(Duration::from_millis(300));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a capture");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after a capture (5 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s: the off-delay's timer must be gone");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s");
 }
