@@ -385,16 +385,16 @@ pub(crate) mod tests {
     use super::super::action::Tab;
     use super::super::testing::*;
     use super::*;
+    use alpheus_commun::temp_path::TempPath;
     use alpheus_commun::theme::Rgb;
     use alpheus_commun::theme::presets::preset;
     use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
     use ratatui::style::Color;
 
     /// A fresh config directory holding `files`, and an App opened on the Appearance tab with it.
-    pub fn open(name: &str, files: &[(&str, &str)]) -> (App, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("alpheus-{}-app-appearance-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// The directory goes when the returned guard drops: bind it (`_dir`), never `_`.
+    pub fn open(name: &str, files: &[(&str, &str)]) -> (App, TempPath) {
+        let dir = TempPath::dir(&format!("app-appearance-{name}"));
         for (f, text) in files {
             std::fs::write(dir.join(f), text).unwrap();
         }
@@ -420,20 +420,20 @@ pub(crate) mod tests {
     fn nothing_is_computed_until_the_tab_is_shown() {
         let a = ready_app();
         assert!(a.appearance.entries.is_empty() && a.appearance.preview.is_none());
-        let (a, _) = open("lazy", &[]);
+        let (a, _dir) = open("lazy", &[]);
         assert_eq!(a.appearance.entries.len(), 10);
         assert!(a.appearance.preview.is_some());
     }
 
     #[test]
     fn it_opens_on_the_theme_in_effect() {
-        let (a, _) = open("effect", &[("theme.toml", "theme = \"tokyo-night\"\nmode = \"light\"\n")]);
+        let (a, _dir) = open("effect", &[("theme.toml", "theme = \"tokyo-night\"\nmode = \"light\"\n")]);
         let ap = &a.appearance;
         assert_eq!((ap.cursor, ap.applied, ap.mode, ap.applied_mode), (3, Some(3), ModeSetting::Light, ModeSetting::Light));
         assert_eq!(ap.preview, Some(preset("tokyo-night").unwrap().light.unwrap()), "light variant for a fixed light mode");
-        let (a, _) = open("default", &[]);
+        let (a, _dir) = open("default", &[]);
         assert_eq!((a.appearance.cursor, a.appearance.applied), (1, Some(1)), "no file: catppuccin");
-        let (a, _) = open(
+        let (a, _dir) = open(
             "wall",
             &[(
                 "colors.toml",
@@ -446,8 +446,7 @@ pub(crate) mod tests {
 
     #[test]
     fn auto_previews_the_mode_the_daemon_publishes() {
-        let dir = std::env::temp_dir().join(format!("alpheus-{}-app-appearance-run", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = TempPath::dir("app-appearance-run");
         std::fs::create_dir_all(dir.join("alpheus")).unwrap();
         std::fs::write(dir.join("alpheus/mode"), "light\n").unwrap();
         let mut a = ready_app();
@@ -465,7 +464,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_preset_without_a_light_variant_previews_its_dark_half() {
-        let (mut a, _) = open("nord", &[("theme.toml", "mode = \"light\"\n")]);
+        let (mut a, _dir) = open("nord", &[("theme.toml", "mode = \"light\"\n")]);
         act(&mut a, Action::End);
         assert_eq!(a.appearance.cursor_entry().unwrap().label, "Dracula");
         assert_eq!(a.appearance.preview, Some(preset("dracula").unwrap().dark));
@@ -489,7 +488,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_cursor_is_bounded_and_page_keys_jump() {
-        let (mut a, _) = open("bounds", &[]);
+        let (mut a, _dir) = open("bounds", &[]);
         act(&mut a, Action::Home);
         act(&mut a, Action::Up);
         assert_eq!(a.appearance.cursor, 0);
@@ -535,7 +534,7 @@ pub(crate) mod tests {
 
     #[test]
     fn tab_walks_the_list_the_mode_the_colours_the_style_rows_and_back() {
-        let (mut a, _) = open("tab4", &[]);
+        let (mut a, _dir) = open("tab4", &[]);
         let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus, a.appearance.style_focus);
         assert_eq!(at(&a), (false, false, false));
         act(&mut a, Action::NextTab);
@@ -704,7 +703,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_missing_wallpaper_file_is_said_on_the_preview() {
-        let (mut a, _) = open("nowall", &[("theme.toml", "theme = \"wallpaper\"\nmode = \"dark\"\n")]);
+        let (mut a, _dir) = open("nowall", &[("theme.toml", "theme = \"wallpaper\"\nmode = \"dark\"\n")]);
         assert_eq!(a.appearance.cursor, 0);
         assert!(a.appearance.preview_note.is_some(), "{:?}", a.appearance.preview_note);
         act(&mut a, Action::Down);
@@ -713,7 +712,7 @@ pub(crate) mod tests {
 
     #[test]
     fn other_keys_fall_through_to_the_generic_handling() {
-        let (mut a, _) = open("fall", &[]);
+        let (mut a, _dir) = open("fall", &[]);
         assert!(!a.appearance_action(Action::Back, Instant::now()));
         assert!(!a.appearance_action(Action::GoTab(Tab::Home), Instant::now()));
         assert!(a.appearance_action(Action::Left, Instant::now()), "swallowed in the list, nothing else");
@@ -721,7 +720,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_color_helper_matches_roles() {
-        let (a, _) = open("color", &[]);
+        let (a, _dir) = open("color", &[]);
         assert_eq!(a.theme.bg, rgb(a.appearance.preview.unwrap().bar_bg));
     }
 
@@ -768,12 +767,12 @@ pub(crate) mod tests {
     #[test]
     fn the_preview_includes_the_users_colour_overrides() {
         let t = "theme = \"nord\"\nmode = \"dark\"\n[colors]\nfg = \"#123456\"\n";
-        let (mut a, _) = open("overrides", &[("theme.toml", t)]);
+        let (mut a, _dir) = open("overrides", &[("theme.toml", t)]);
         assert_eq!(a.appearance.preview.unwrap().fg, Rgb(0x12, 0x34, 0x56));
         act(&mut a, Action::Down); // Dracula
         assert_eq!(a.appearance.preview.unwrap().fg, Rgb(0x12, 0x34, 0x56), "on every theme");
         assert_eq!(a.appearance.preview.unwrap().bar_bg, preset("dracula").unwrap().dark.bar_bg, "only fg is overridden");
-        let (a, _) = open("no-overrides", &[("theme.toml", "theme = \"nord\"\n")]);
+        let (a, _dir) = open("no-overrides", &[("theme.toml", "theme = \"nord\"\n")]);
         assert_eq!(a.appearance.preview, Some(preset("nord").unwrap().dark));
     }
 

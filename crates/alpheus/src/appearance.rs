@@ -161,15 +161,14 @@ mod tests {
         assert_eq!(dark_only, ["Nord", "Dracula"]);
     }
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-appearance-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn scratch(name: &str) -> alpheus_commun::temp_path::TempPath {
+        alpheus_commun::temp_path::TempPath::new(&format!("appearance-{name}"))
     }
 
     #[test]
     fn writing_creates_the_directory_and_leaves_no_temporary_file() {
-        let dir = scratch("create").join("not").join("yet");
+        let tmp = scratch("create");
+        let dir = tmp.join("not").join("yet");
         write_settings(&dir, Some("nord"), Some("dark"), None, None).unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmode = \"dark\"\n");
         let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();

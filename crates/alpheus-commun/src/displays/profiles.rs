@@ -306,12 +306,10 @@ mod tests {
     use super::*;
     use crate::displays::Step;
     use crate::displays::testing::*;
-    use std::path::PathBuf;
+    use crate::temp_path::TempPath;
 
-    fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-displays-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d
+    fn dir(name: &str) -> TempPath {
+        TempPath::new(&format!("displays-{name}"))
     }
 
     const OFFICE: &str = r#"
@@ -340,10 +338,10 @@ scale = 1.25
 placement = { x = 0, y = 0 }
 "#;
 
-    fn write(name: &str, content: &str) -> PathBuf {
+    fn write(name: &str, content: &str) -> TempPath {
         let d = dir(name);
         std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("displays.toml");
+        let p = d.below("displays.toml");
         std::fs::write(&p, content).unwrap();
         p
     }
@@ -414,7 +412,7 @@ placement = { x = 0, y = 0 }
 
     #[test]
     fn write_then_reread() {
-        let path = dir("write").join("subdir").join("displays.toml");
+        let path = dir("write").below("subdir").below("displays.toml");
         let (profiles, _) = load(&write("source", OFFICE));
         save(&path, &profiles).unwrap();
         let (reread, w) = load(&path);

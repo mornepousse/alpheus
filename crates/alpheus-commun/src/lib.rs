@@ -10,4 +10,6 @@ pub mod exec;
 pub mod launcher_ipc;
 pub mod paths;
 pub mod shutdown;
+#[cfg(any(test, feature = "testing"))]
+pub mod temp_path;
 pub mod theme;

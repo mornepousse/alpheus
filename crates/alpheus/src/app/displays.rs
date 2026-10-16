@@ -1654,10 +1654,8 @@ mod tests {
 
     // ── Save current ─────────────────────────────────────────────────
 
-    fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-app-displays-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        d.join("displays.toml")
+    fn tmp(name: &str) -> alpheus_commun::temp_path::TempPath {
+        alpheus_commun::temp_path::TempPath::new(&format!("app-displays-{name}")).below("displays.toml")
     }
 
     #[test]
@@ -1680,7 +1678,8 @@ mod tests {
     #[test]
     fn replace_after_confirmation() {
         let mut a = displays_tab();
-        a.displays.profiles_path = Some(tmp("replace"));
+        let path = tmp("replace");
+        a.displays.profiles_path = Some(path.clone());
         let before = a.displays.profiles.clone();
         a.overlay = Overlay::SaveProfile(SaveDialog { name: "Bureau".into(), ..SaveDialog::default() });
         a.save_enter(Instant::now());

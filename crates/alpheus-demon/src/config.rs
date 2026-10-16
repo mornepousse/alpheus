@@ -748,12 +748,10 @@ impl BarConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use alpheus_commun::temp_path::TempPath;
 
-    fn file(name: &str, content: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("alpheus-{}-bar-{name}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        let p = d.join("bar.toml");
+    fn file(name: &str, content: &str) -> TempPath {
+        let p = TempPath::dir(&format!("bar-{name}")).below("bar.toml");
         std::fs::write(&p, content).unwrap();
         p
     }
