@@ -698,9 +698,12 @@ pub fn run() -> i32 {
                 state.osd_sound(s.as_ref());
             }
             // The privacy indicators read sound and compositor messages first (privacy spec § 4):
-            // a change redraws the bar and follows the popup and the off-delay's timer.
+            // a change redraws the bar and follows the popup and the off-delay's timer. An
+            // indicator going off changes nothing shown yet, only the deadline: the timer follows it.
             if state.bar.privacy_at(&m, Instant::now()) {
                 state.privacy_changed();
+            } else {
+                state.privacy_timer_sync();
             }
             note_compositor_message(state, &m);
             on_message(state, m, || LocalTime::now().0);
