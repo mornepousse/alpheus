@@ -76,6 +76,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Power button, linked in but unused (no `power` in `modules`) | −8…+84 KB over six pairings; one run read +288…+336 KB on all three of its pairings (its resources step moved too; a boot shift believed, not proven) vs. the delivery before this one | binary 5.97 → 5.97 MiB (+8 KiB stripped); measured `242c686` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (no `power` there): the code linked in, unused |
 | Power button, menu closed | 184–192 KB | `power_menu_pss_idle_open_and_closed`, 3 runs (7.4 MB with it, 1 output): a one-cell segment; no surface, no timer; of those, ≈ +128 KB are new pages of the same Nerd Font file already mapped (⏻ U+23FB is in it, no other face is loaded; the kernel's fault-around adds to it) and ≈ +64 KB the module's code pages: file-backed, clean, paid once |
 | Power menu, open | 432 KB, +280 KB over idle once closed | same test; the closed figure is the first open's code and font pages; 20 more open/close cycles +12 KB over closed; its surface and pool exist only while it shows, its timer only while reboot or power off asks; 0 loop wake-ups at rest once it closed, a pending question included (`at_rest_no_wakeups_after_the_power_menu`) |
+| Privacy indicators, linked in but off (no `privacy` in `modules`) | +344…+440 KB at start vs. the delivery before this one (the `everything` case, six pairings; the `plan 1` case shifts +200…+320 KB too, one run +890) | binary 5.97 → 6.05 MiB (+76 KiB stripped); measured `457cf5d` vs this delivery, release, back to back, 6 runs each, separate target directories, harness `startup_pss_per_source` (8.36–8.45 MB before, 8.78–8.89 MB after, 3 outputs); larger than earlier deliveries' one-time costs and cause not isolated (the binary grew only 76 KiB; the harness drifts ±300 KB between boots, but not in one direction across six pairings) |
+| Privacy indicators, module on at start | −88…+120 KB over the same bar without it (8.79–8.90 MB) | same test, 6 runs; the fake `pw-dump` serves a full-size initial graph (the sound fixture's dump), so this is the "large graph" figure: the capture model keeps only the nodes and links that matter (≤ 1,024 nodes, 4,096 links) |
+| Privacy indicators, a capture shown | −60…+26 KB, −50…−28 KB once it ended | `privacy_pss_with_a_capture_and_after`, 3 runs (8.0–8.1 MB idle, 1 output); no surface unless the popup opens; 20 more capture cycles +16…+30 KB; 0 loop wake-ups at rest after a capture and 0 for the whole daemon (`at_rest_no_wakeups_after_a_capture`): the 0.5 s off-delay timer is armed only while an indicator is going off |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -140,7 +143,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Media (MPRIS) | ✅ `▶ Title` in the bar, middle click play/pause, wheel next/previous; a popup with time, progress, ⏮ ⏯ ⏭ and the player choice | ✅ | ✅ | ✅ | ✅ |
 | Notification counter, do-not-disturb | ✅ a neutral bell with the unread count, crossed under do-not-disturb (middle click, or `alpheus-launch --dnd on\|off\|toggle`) | ✅ | ✅ | ➖ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
-| Privacy indicators (mic, camera, screen share) | 💭 | ✅ | ➖ | ✅ | ✅ |
+| Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; a camera opened directly (outside PipeWire) is not shown yet | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
 | Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
@@ -237,6 +240,7 @@ Shipped: **launcher** (an icon that opens it, first module by default),
 **workspaces** (one dot per window, empty workspace dimmed, the active one
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
+**privacy** (nothing while nothing is captured; then one glyph per capture in an own block: `󰍬` microphone in orange, `󰄀` camera in green, `󰍹` screen in red, whatever `module_colors` says; the microphone glyph is dim while the default source is muted. Read from PipeWire's graph by the `pw-dump` child the sound module already runs, so a meter (pavucontrol, cava), a filter chain or a loopback never lights it, and an app muting itself in its own call still does; a screen cast announced by niri or Hyprland lights the screen too. A glyph goes 0.5 s after its capture ends, never blinking on a renegotiation. A left click opens a popup listing the apps by name (`(unnamed)` when only the compositor knows); a middle click mutes or unmutes the default microphone. **Not seen:** a camera opened directly (`/dev/video*` outside PipeWire), and wf-recorder under Sway and Mango, which announce nothing; a cast running before the daemon started shows only through PipeWire),
 **volume** (gauge, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
 battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU graph,
@@ -617,7 +621,7 @@ back to default values with a warning, never a crash.
 
 ```toml
 # bar.toml — default values
-modules = ["launcher", "workspaces", "window", "media", "volume", "network",
+modules = ["launcher", "workspaces", "window", "media", "privacy", "volume", "network",
            "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "clock", "power"]
 height = 22
 
@@ -642,6 +646,9 @@ tooltips = true     # the item's name after ½ s of hovering
 [media]
 title_max = 30            # cells of the title in the bar (8 to 80)
 ignore = ["kdeconnect"]   # bus-name substrings never queried; playerctld is always ignored
+
+[privacy]
+ignore = []               # app names (whole name, any case) never shown; an indicator left with no name and nothing unnamed goes off
 
 [notifications]
 timeout = 5          # seconds, when the app leaves it to the server
