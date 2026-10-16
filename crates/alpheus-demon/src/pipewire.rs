@@ -36,6 +36,42 @@ pub struct Info {
     pub props: NodeProps,
     #[serde(default, deserialize_with = "null_as_default")]
     pub params: Params,
+}
+
+#[derive(Deserialize, Default)]
+pub struct NodeProps {
+    #[serde(rename = "media.class", default, deserialize_with = "lenient_text")]
+    pub media_class: Option<String>,
+    #[serde(rename = "node.name", default, deserialize_with = "lenient_text")]
+    pub node_name: Option<String>,
+    #[serde(rename = "node.description", default, deserialize_with = "lenient_text")]
+    pub description: Option<String>,
+    #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
+    pub nick: Option<String>,
+}
+
+/// `Object`'s twin for a model built for privacy (privacy spec § 8): the same fields plus what the
+/// capture rules read. Only `follow_tapped` with the tap's privacy flag deserializes it; without
+/// the module the lean `Object` is parsed and nothing more.
+#[derive(Deserialize)]
+pub struct PrivacyObject {
+    pub id: u32,
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub info: Option<PrivacyInfo>,
+    #[serde(default)]
+    pub props: Option<MetaProps>,
+    #[serde(default)]
+    pub metadata: Option<Vec<MetaEntry>>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct PrivacyInfo {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub props: PrivacyProps,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub params: Params,
     /// A node's (`running`) or a link's (`active`) state; any other value, or a type that is not
     /// text, reads as neither (privacy spec § 2).
     #[serde(default, deserialize_with = "lenient_text")]
@@ -47,8 +83,9 @@ pub struct Info {
     pub input_node: Option<u32>,
 }
 
+/// `NodeProps` and what the privacy rules read (spec § 2).
 #[derive(Deserialize, Default)]
-pub struct NodeProps {
+pub struct PrivacyProps {
     #[serde(rename = "media.class", default, deserialize_with = "lenient_text")]
     pub media_class: Option<String>,
     #[serde(rename = "node.name", default, deserialize_with = "lenient_text")]
@@ -204,7 +241,7 @@ fn flag(v: &Option<String>) -> bool {
 }
 
 /// A node as the privacy rules need it (spec § 2); `running` is the node's own state.
-fn graph_node(class: &str, running: bool, p: &NodeProps) -> GraphNode {
+fn graph_node(class: &str, running: bool, p: &PrivacyProps) -> GraphNode {
     let camera_device = matches!(p.device_api.as_deref(), Some("v4l2" | "libcamera")) || p.media_role.as_deref() == Some("Camera");
     // The app: the first non-empty name, as a person reads it.
     let app = [&p.portal_app_id, &p.application_name, &p.process_binary, &p.node_name]
@@ -309,50 +346,67 @@ impl Model {
 
     pub fn apply(&mut self, batch: Vec<Object>) {
         for o in batch {
-            if o.kind.is_none() {
-                self.remove(o.id);
-                self.graph.remove(&o.id);
-                self.links.remove(&o.id);
-                if self.default_meta == Some(o.id) {
-                    self.default_meta = None;
-                    self.default_sink = None;
-                    self.default_source = None;
-                }
-                continue;
-            }
-            let is_default_meta = o.props.as_ref().and_then(|p| p.name.as_deref()) == Some("default") || self.default_meta == Some(o.id);
-            if is_default_meta {
-                self.default_meta = Some(o.id);
-                let entries = o.metadata.as_deref().unwrap_or_default();
-                if let Some(v) = default_of(entries, "default.audio.sink") {
-                    rename(&mut self.default_sink, v);
-                }
-                if let Some(v) = default_of(entries, "default.audio.source") {
-                    rename(&mut self.default_source, v);
-                }
-                continue;
-            }
-            let Some(info) = o.info else { continue };
-            if self.privacy {
-                self.track(o.id, o.kind.as_deref(), &info);
-            }
-            let Some(kind) = kind_of(info.props.media_class.as_deref()) else {
-                self.remove(o.id);
-                continue;
-            };
-            let known = self.nodes.get(&o.id);
-            // A re-dump without params keeps the last known volume; one without a label, the label.
-            let volume = info.params.props.iter().find_map(to_volume).or(known.and_then(|n| n.volume));
-            let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone()));
-            let name = info.props.node_name.unwrap_or_default();
-            let label = label.unwrap_or_else(|| drawable(&name));
-            self.nodes.insert(o.id, Node { kind, name, label, volume });
+            self.apply_one(o);
         }
+    }
+
+    /// `apply` for a model built for privacy: the capture graph first (spec § 2), then the same
+    /// sinks, sources and defaults as `apply`.
+    pub fn apply_privacy(&mut self, batch: Vec<PrivacyObject>) {
+        for o in batch {
+            let PrivacyObject { id, kind, info, props, metadata } = o;
+            let info = info.map(|i| {
+                if kind.is_some() {
+                    self.track(id, kind.as_deref(), &i);
+                }
+                let PrivacyProps { media_class, node_name, description, nick, .. } = i.props;
+                Info { props: NodeProps { media_class, node_name, description, nick }, params: i.params }
+            });
+            self.apply_one(Object { id, kind, info, props, metadata });
+        }
+    }
+
+    fn apply_one(&mut self, o: Object) {
+        if o.kind.is_none() {
+            self.remove(o.id);
+            self.graph.remove(&o.id);
+            self.links.remove(&o.id);
+            if self.default_meta == Some(o.id) {
+                self.default_meta = None;
+                self.default_sink = None;
+                self.default_source = None;
+            }
+            return;
+        }
+        let is_default_meta = o.props.as_ref().and_then(|p| p.name.as_deref()) == Some("default") || self.default_meta == Some(o.id);
+        if is_default_meta {
+            self.default_meta = Some(o.id);
+            let entries = o.metadata.as_deref().unwrap_or_default();
+            if let Some(v) = default_of(entries, "default.audio.sink") {
+                rename(&mut self.default_sink, v);
+            }
+            if let Some(v) = default_of(entries, "default.audio.source") {
+                rename(&mut self.default_source, v);
+            }
+            return;
+        }
+        let Some(info) = o.info else { return };
+        let Some(kind) = kind_of(info.props.media_class.as_deref()) else {
+            self.remove(o.id);
+            return;
+        };
+        let known = self.nodes.get(&o.id);
+        // A re-dump without params keeps the last known volume; one without a label, the label.
+        let volume = info.params.props.iter().find_map(to_volume).or(known.and_then(|n| n.volume));
+        let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone()));
+        let name = info.props.node_name.unwrap_or_default();
+        let label = label.unwrap_or_else(|| drawable(&name));
+        self.nodes.insert(o.id, Node { kind, name, label, volume });
     }
 
     /// Keeps what the privacy rules read of one object (spec § 2): a link, or a node of a class
     /// they use. A node re-dumped without its props (only its state moved) keeps the last props.
-    fn track(&mut self, id: u32, kind: Option<&str>, info: &Info) {
+    fn track(&mut self, id: u32, kind: Option<&str>, info: &PrivacyInfo) {
         if kind == Some("PipeWire:Interface:Link") {
             let last = self.links.get(&id).copied();
             let (Some(output), Some(input)) = (info.output_node.or(last.map(|l| l.output)), info.input_node.or(last.map(|l| l.input)))
@@ -367,7 +421,8 @@ impl Model {
             self.links.insert(id, GraphLink { output, input, active });
             return;
         }
-        let running = info.state.as_deref() == Some("running");
+        // A node re-dumped with no state keeps the last one, as a link does.
+        let running = info.state.as_deref().map(|s| s == "running").or_else(|| self.graph.get(&id).map(|n| n.running)).unwrap_or(false);
         let node = match info.props.media_class.as_deref() {
             Some(class) if privacy::kept(class) => graph_node(class, running, &info.props),
             Some(_) => {
@@ -597,18 +652,34 @@ pub fn follow(output: impl Read, scope: Scope, publish: &mut dyn FnMut(SoundStat
 /// panel is open). A new stream starts from a new model and keeps the panel's flag; the model goes
 /// when the stream does (`Forget`).
 pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &mut dyn FnMut(SoundState) -> bool) -> io::Result<()> {
-    {
+    let privacy = {
         let mut t = tap.lock();
         t.model = Model::new(t.privacy);
         t.last = None;
-    }
+        t.privacy
+    };
     let _forget = Forget(tap);
-    for batch in serde_json::Deserializer::from_reader(io::BufReader::new(output)).into_iter::<Vec<Object>>() {
+    // Without the module the lean `Object` is parsed: nothing more (privacy spec § 8).
+    if privacy {
+        follow_batches::<PrivacyObject>(output, base, tap, publish, Model::apply_privacy)
+    } else {
+        follow_batches::<Object>(output, base, tap, publish, Model::apply)
+    }
+}
+
+fn follow_batches<T: serde::de::DeserializeOwned>(
+    output: impl Read,
+    base: Scope,
+    tap: &SoundTap,
+    publish: &mut dyn FnMut(SoundState) -> bool,
+    apply: fn(&mut Model, Vec<T>),
+) -> io::Result<()> {
+    for batch in serde_json::Deserializer::from_reader(io::BufReader::new(output)).into_iter::<Vec<T>>() {
         let batch = batch.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("pw-dump: {e}")))?;
         let state = {
             let mut t = tap.lock();
             let Tapped { model, panel, last, .. } = &mut *t;
-            model.apply(batch);
+            apply(model, batch);
             let scope = if *panel { Scope::Panel } else { base };
             if last.as_ref().is_some_and(|l| model.matches(l, scope)) {
                 continue;
@@ -1350,7 +1421,7 @@ mod tests {
         }
         nodes.push(']');
         let mut m = Model::new(true);
-        m.apply(serde_json::from_str(&nodes).unwrap());
+        m.apply_privacy(serde_json::from_str(&nodes).unwrap());
         assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
         assert_eq!(m.bound_line(false), None, "already told once for this model");
         let mut links = String::from("[");
@@ -1364,15 +1435,36 @@ mod tests {
             ));
         }
         links.push(']');
-        m.apply(serde_json::from_str(&links).unwrap());
+        m.apply_privacy(serde_json::from_str(&links).unwrap());
         assert_eq!(m.kept().1, crate::privacy::MAX_LINKS);
         assert_eq!(m.bound_line(true), None, "once");
         // An id already kept is still updated at the bound.
-        m.apply(serde_json::from_str(r#"[{"id":1000,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#).unwrap());
+        m.apply_privacy(serde_json::from_str(r#"[{"id":1000,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#).unwrap());
         assert_eq!(m.kept().0, crate::privacy::MAX_NODES);
         // A removal frees a place.
-        m.apply(serde_json::from_str(r#"[{"id":1000,"info":null}]"#).unwrap());
+        m.apply_privacy(serde_json::from_str(r#"[{"id":1000,"info":null}]"#).unwrap());
         assert_eq!(m.kept().0, crate::privacy::MAX_NODES - 1);
+    }
+
+    #[test]
+    fn without_privacy_the_lean_objects_are_parsed() {
+        // Privacy spec § 8: nothing more is parsed without the module. The lean types hold only
+        // what the sinks and sources need; the privacy twin carries the rest.
+        let opt = size_of::<Option<String>>();
+        assert_eq!(size_of::<NodeProps>(), 4 * opt, "media.class, node.name, description, nick");
+        assert_eq!(size_of::<Info>(), size_of::<NodeProps>() + size_of::<Params>(), "props and params: no state, no link ends");
+        assert!(size_of::<PrivacyProps>() > size_of::<NodeProps>() && size_of::<PrivacyInfo>() > size_of::<Info>());
+    }
+
+    #[test]
+    fn a_node_redumped_without_a_state_keeps_the_last_one() {
+        // The link is idle: only the running stream holds the microphone.
+        let text = format!("{SOURCE}{}{}", stream(200, "running"), link(300, 123, 200, "idle"));
+        let nostate = r#"[{"id":200,"type":"PipeWire:Interface:Node","info":{"props":{"media.class":"Stream/Input/Audio","application.name":"firefox"}}}]"#;
+        let (seen, _) = published_with_privacy(&format!("{text}{nostate}"), Scope::Bar);
+        assert_eq!(mic(&seen[1]), Some((vec!["firefox"], false)), "lit before the re-dump");
+        assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "no state: still running");
+        assert_eq!(seen.len(), 2, "the re-dump changed nothing");
     }
 
     #[test]
