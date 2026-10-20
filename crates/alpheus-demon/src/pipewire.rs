@@ -223,7 +223,7 @@ fn kind_of(class: Option<&str>) -> Option<Kind> {
 /// Text the OSD draws: control and invisible formatting characters removed (`text::clean`: a
 /// device name posing as another), trimmed, capped at LABEL_MAX bytes on a character boundary.
 /// One allocation: `clean`'s, cut in place.
-fn drawable(s: &str) -> String {
+pub(crate) fn drawable(s: &str) -> String {
     let mut t = clean(s);
     let lead = t.len() - t.trim_start().len();
     t.drain(..lead);

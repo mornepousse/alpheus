@@ -38,7 +38,7 @@ impl Indicator {
     }
 
     /// Adds one holder: its name in sorted place (once), or the unnamed flag.
-    fn hold(&mut self, app: Option<&str>) {
+    pub(crate) fn hold(&mut self, app: Option<&str>) {
         let Some(app) = app else {
             self.unnamed = true;
             return;

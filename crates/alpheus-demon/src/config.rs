@@ -36,6 +36,8 @@
 //! ignore = ["kdeconnect"]                                   # players never shown: substrings of their bus name (playerctld always is)
 //! [privacy]                                                 # the microphone, camera and screen indicators (with "privacy" in modules)
 //! ignore = []                                               # apps never shown: names compared whole, case-insensitively
+//! dev_dir = "/dev"                                          # where video devices are listed (watched, never opened)
+//! proc_dir = "/proc"                                        # where processes are listed (a camera opened outside PipeWire)
 //! [notifications]                                           # the bubbles and the bell (with "notifications" in modules)
 //! timeout = 5                                               # seconds a bubble stays when the app leaves it to us
 //! timeout_min = 2                                           # an app's own timeout is clamped to timeout_min..timeout_max
@@ -363,11 +365,21 @@ impl Default for MediaConfig {
 }
 
 /// `[privacy]` (privacy spec § 7): the apps never shown.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PrivacyConfig {
     /// App names left out of the indicators, compared whole and case-insensitively.
     pub ignore: Vec<String>,
+    /// Where video devices are listed (watched, never opened).
+    pub dev_dir: PathBuf,
+    /// Where processes are listed (their `comm` and open files are read).
+    pub proc_dir: PathBuf,
+}
+
+impl Default for PrivacyConfig {
+    fn default() -> Self {
+        PrivacyConfig { ignore: Vec::new(), dev_dir: PathBuf::from("/dev"), proc_dir: PathBuf::from("/proc") }
+    }
 }
 
 /// The bounds of `[notifications]`.
@@ -743,6 +755,12 @@ impl BarConfig {
         if !o.backlight_dir.is_absolute() {
             return Err("osd.backlight_dir must be an absolute path".into());
         }
+        if !b.privacy.dev_dir.is_absolute() {
+            return Err("privacy.dev_dir must be an absolute path".into());
+        }
+        if !b.privacy.proc_dir.is_absolute() {
+            return Err("privacy.proc_dir must be an absolute path".into());
+        }
         check_quick(&b.quick)?;
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
@@ -1022,10 +1040,28 @@ mod tests {
 
     #[test]
     fn privacy_defaults_and_settings() {
-        assert_eq!(BarConfig::default().privacy, PrivacyConfig { ignore: Vec::new() });
+        assert_eq!(BarConfig::default().privacy, PrivacyConfig::default());
+        assert_eq!(BarConfig::default().privacy.dev_dir, PathBuf::from("/dev"));
+        assert_eq!(BarConfig::default().privacy.proc_dir, PathBuf::from("/proc"));
         assert_eq!(BarConfig::from_text("height = 22").unwrap().privacy, PrivacyConfig::default(), "absent: defaults");
         let c = BarConfig::from_text("[privacy]\nignore = [\"obs\"]\n").unwrap();
         assert_eq!(c.privacy.ignore, vec!["obs".to_string()]);
+    }
+
+    #[test]
+    fn privacy_roots_default_and_parse() {
+        let c = BarConfig::from_text("[privacy]\ndev_dir = \"/tmp/x\"\nproc_dir = \"/tmp/y\"\n").unwrap();
+        assert_eq!(c.privacy.dev_dir, PathBuf::from("/tmp/x"));
+        assert_eq!(c.privacy.proc_dir, PathBuf::from("/tmp/y"));
+        let c = BarConfig::from_text("[privacy]\nignore = [\"obs\"]\n").unwrap();
+        assert_eq!((c.privacy.dev_dir, c.privacy.proc_dir), (PathBuf::from("/dev"), PathBuf::from("/proc")));
+    }
+
+    #[test]
+    fn privacy_roots_must_be_absolute() {
+        let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+        assert!(err("[privacy]\ndev_dir = \"dev\"").contains("privacy.dev_dir must be an absolute path"));
+        assert!(err("[privacy]\nproc_dir = \"proc\"").contains("privacy.proc_dir must be an absolute path"));
     }
 
     #[test]
