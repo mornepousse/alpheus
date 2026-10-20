@@ -632,8 +632,19 @@ fn coreutils_dir() -> PathBuf {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    if let Some(text) = o.bar_toml {
-        fs::write(config.join("alpheus/bar.toml"), text).unwrap();
+    // The privacy module's camera watch lists devices and processes where `[privacy]` says: empty
+    // directories here, never the machine's /dev and /proc, unless the test sets its own table.
+    let (dev, proc) = (sway.runtime.join("privacy-dev"), sway.runtime.join("privacy-proc"));
+    fs::create_dir_all(&dev).unwrap();
+    fs::create_dir_all(&proc).unwrap();
+    let text = o.bar_toml.unwrap_or("");
+    if o.bar_toml.is_some() || !text.contains("[privacy]") {
+        let privacy = if text.contains("[privacy]") {
+            String::new()
+        } else {
+            format!("\n[privacy]\ndev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display())
+        };
+        fs::write(config.join("alpheus/bar.toml"), format!("{text}{privacy}")).unwrap();
     }
     if let Some(text) = o.launcher_toml {
         fs::write(config.join("alpheus/launcher.toml"), text).unwrap();

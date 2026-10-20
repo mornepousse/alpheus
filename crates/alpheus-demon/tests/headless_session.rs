@@ -4749,12 +4749,12 @@ fn firefox_records(sway: &Sway, d: &Daemon) -> u32 {
 /// (`    firefox`, privacy spec § 5), before the popup's right frame. "privacy popup shown" is logged before the
 /// configure and the first buffer: a key or click in that gap is lost.
 fn wait_for_the_privacy_popup(sway: &Sway, d: &Daemon) {
-    wait_for_the_privacy_popup_in(sway, d, privacy_orange());
+    wait_for_the_privacy_popup_in(sway, d, privacy_orange(), 45..=70);
 }
 
 /// `wait_for_the_privacy_popup` for a heading in `orange`'s place: the camera's green. Its holder's
 /// name, `fakecam`, is 7 cells as `firefox` is.
-fn wait_for_the_privacy_popup_in(sway: &Sway, d: &Daemon, heading_hue: [u8; 3]) {
+fn wait_for_the_privacy_popup_in(sway: &Sway, d: &Daemon, heading_hue: [u8; 3], name_width: std::ops::RangeInclusive<u32>) {
     let (orange, bg) = (heading_hue, popup_bg("catppuccin"));
     let drawn = |s: &Ppm| {
         let heading: Vec<(u32, u32)> = (BAR_HEIGHT + 2..s.height.min(120))
@@ -4777,7 +4777,7 @@ fn wait_for_the_privacy_popup_in(sway: &Sway, d: &Daemon, heading_hue: [u8; 3]) 
             return false;
         };
         // 4 cells in (≈ 34 px; the scan stops short of the narrowest popup's right frame, the camera's), 7 cells wide (≈ 59 px), a few px of glyph bearing either way.
-        (24..=44).contains(&(from - left)) && (45..=70).contains(&(to - from))
+        (24..=44).contains(&(from - left)) && name_width.contains(&(to - from))
     };
     assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the popup with its holder drawn: {:?}", d.log());
 }
@@ -4975,6 +4975,20 @@ fn privacy_a_camera_blip_lights_nothing() {
         let shot = sway.screenshot("HEADLESS-1").expect("grim");
         assert_eq!(on_the_bar(&shot, privacy_green()), None, "a blip lights nothing: {:?}", d.log());
     }
+    // The watch was alive all along: a real holder, then a trigger, lights it.
+    cam.hold();
+    cam.trigger();
+    wait_for_the_glyph(&sway, &d, privacy_green());
+}
+
+/// The harness points every daemon's camera watch at empty directories: a default test daemon
+/// watches no device (never the machine's /dev), and the camera glyph stays dark.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_default_test_daemon_watches_no_real_device() {
+    let (sway, _hypr, d) = privacy_daemon_with("privacy-guard", "", "", &[privacy_orange(), privacy_red(), privacy_green()]);
+    assert!(d.wait_for("privacy: watching 0 video device(s)", DELAY), "{:?}", d.log());
+    drop(sway);
 }
 
 /// Privacy delivery 2 spec § 5: the popup names a direct holder under the camera heading.
@@ -4987,6 +5001,8 @@ fn privacy_the_popup_names_a_direct_camera() {
     let x = wait_for_the_glyph(&sway, &d, privacy_green());
     sway.click(x, MIDDLE, "button1");
     assert!(d.wait_for("privacy popup shown", DELAY), "{:?}", d.log());
+    // `fakecam` measures 57 px; `(unnamed)`, 9 cells, 63.
+    wait_for_the_privacy_popup_in(&sway, &d, privacy_green(), 52..=60);
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
