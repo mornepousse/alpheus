@@ -519,6 +519,15 @@ pub struct App {
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
+    /// The camera devices' inotify watch (privacy delivery 2); None without `privacy` or when
+    /// `dev_dir` cannot be watched.
+    pub(crate) camera_watch: Option<crate::camera_dev::CameraWatch>,
+    /// The (`dev_dir`, `proc_dir`) the camera scan reads; set with the watch.
+    pub(crate) camera_roots: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    /// The camera scan's debounce: armed only for `SCAN_DEBOUNCE` after a device event.
+    pub(crate) camera_timer: DeadlineTimer,
+    /// The process-scan bound was logged (once per daemon).
+    pub(crate) camera_bound_logged: bool,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
     /// asks for them while open. None without a sound source.
     pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
@@ -712,6 +721,10 @@ impl App {
             quick_timer: DeadlineTimer::new(),
             power_timer: DeadlineTimer::new(),
             privacy_timer: DeadlineTimer::new(),
+            camera_watch: None,
+            camera_roots: None,
+            camera_timer: DeadlineTimer::new(),
+            camera_bound_logged: false,
             sound_tap: None,
             wifi_tap: None,
             wifi_follow: None,
