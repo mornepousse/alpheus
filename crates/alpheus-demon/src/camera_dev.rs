@@ -3,12 +3,16 @@
 //! `dev_dir`), and `classify` turns one inotify record into what the glue should do with it. Events
 //! are triggers, never counts: the state shown comes from a scan alone.
 
+use crate::log::write as log;
 use crate::pipewire::drawable;
 use crate::privacy::Indicator;
-use crate::watch::Event;
+use crate::watch::{Event, Events, add_watch};
+use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// A trigger is followed by one scan this long after the last one (an open and its close, a burst).
@@ -115,12 +119,12 @@ pub enum Record {
 }
 
 /// An open or a close on a watched node.
-// Read by `classify`, which camera_app (the next task) calls.
-#[allow(dead_code)]
 const NODE_MASK: u32 = libc::IN_OPEN | libc::IN_CLOSE_WRITE | libc::IN_CLOSE_NOWRITE;
 
+/// On `dev_dir`: names appearing, going, or changing their attributes (udev giving a node its group).
+const DIR_MASK: u32 = libc::IN_CREATE | libc::IN_DELETE | libc::IN_ATTRIB | libc::IN_ONLYDIR;
+
 /// The meaning of one record, `dev_wd` being the watch on `dev_dir` itself.
-#[allow(dead_code)]
 pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
     if ev.mask & libc::IN_Q_OVERFLOW != 0 {
         return Record::Trigger;
@@ -138,6 +142,119 @@ pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
         Record::Gone(name())
     } else {
         Record::Ignored
+    }
+}
+
+/// The inotify instance on `dev_dir` and on each of its `video*` nodes: an open or a close of a node
+/// is a trigger, never a count. Nothing under `dev_dir` is ever opened, only watched.
+pub struct CameraWatch {
+    fd: OwnedFd,
+    dev_dir: PathBuf,
+    dev_wd: i32,
+    /// Watch descriptor of a node to its name; one entry per distinct watched node.
+    nodes: HashMap<i32, String>,
+    /// Names whose watch was refused (root-only until udev gives the node its group): retried on
+    /// their next `IN_ATTRIB` or `IN_CREATE`, forgotten on `IN_DELETE`.
+    pending: HashSet<String>,
+    limit_logged: bool,
+}
+
+impl CameraWatch {
+    /// Watches `dev_dir`, then every `video*` node in it. Err: why `dev_dir` cannot be watched.
+    pub fn start(dev_dir: &Path) -> Result<CameraWatch, String> {
+        // SAFETY: inotify_init1 only takes flags; it returns a new descriptor or -1.
+        let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        if raw < 0 {
+            return Err(format!("inotify unavailable ({})", io::Error::last_os_error()));
+        }
+        // SAFETY: `raw` was just returned by inotify_init1 and belongs to nothing else.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let dev_wd = add_watch(&fd, dev_dir, DIR_MASK).map_err(|e| format!("cannot watch {} ({e})", dev_dir.display()))?;
+        let mut w =
+            CameraWatch { fd, dev_dir: dev_dir.to_path_buf(), dev_wd, nodes: HashMap::new(), pending: HashSet::new(), limit_logged: false };
+        let entries = fs::read_dir(dev_dir).map_err(|e| format!("cannot list {} ({e})", dev_dir.display()))?;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(name) = name.to_str().filter(|n| is_video(n.as_bytes())) {
+                w.watch_node(name);
+            }
+        }
+        Ok(w)
+    }
+
+    /// A duplicate of the inotify fd for the event loop (the same instance).
+    pub fn watch_fd(&self) -> io::Result<OwnedFd> {
+        self.fd.try_clone()
+    }
+
+    /// Distinct video nodes watched.
+    pub fn watched(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Reads every queued record (until EAGAIN); true when any asks for a scan.
+    pub fn drain(&mut self) -> bool {
+        let mut trigger = false;
+        let mut buf = [0u8; 4096];
+        loop {
+            // SAFETY: read(2) writes at most `buf.len()` bytes into a buffer this function owns.
+            let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+            // -1: EAGAIN (drained) or an error; 0 never comes from inotify. Either way, done.
+            let Ok(n) = usize::try_from(n) else { break };
+            if n == 0 {
+                break;
+            }
+            for ev in Events(buf.get(..n).unwrap_or_default()) {
+                match classify(&ev, self.dev_wd) {
+                    Record::Trigger => trigger = true,
+                    Record::Appeared(name) => {
+                        self.watch_node(&name);
+                        trigger = true;
+                    }
+                    Record::Gone(name) => {
+                        self.forget(&name);
+                        trigger = true;
+                    }
+                    Record::Ignored => {}
+                }
+            }
+        }
+        trigger
+    }
+
+    /// Adds the node watch. The kernel returns the same descriptor for the same inode, so a node
+    /// already watched is not counted twice; a refusal goes to `pending`.
+    fn watch_node(&mut self, name: &str) {
+        match add_watch(&self.fd, &self.dev_dir.join(name), NODE_MASK) {
+            Ok(wd) => {
+                self.pending.remove(name);
+                if self.nodes.contains_key(&wd) {
+                    self.nodes.insert(wd, name.to_string());
+                } else if self.nodes.len() >= MAX_DEVICE_WATCHES {
+                    // SAFETY: removes the watch just added on this instance.
+                    unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), wd) };
+                    if !self.limit_logged {
+                        self.limit_logged = true;
+                        log(&format!("privacy: device watch limit reached ({MAX_DEVICE_WATCHES})"));
+                    }
+                } else {
+                    self.nodes.insert(wd, name.to_string());
+                }
+            }
+            Err(e) => {
+                let refused = matches!(e.raw_os_error(), Some(libc::EACCES | libc::EPERM));
+                // A name already pending was reported (or is an expected refusal) the first time.
+                if self.pending.insert(name.to_string()) && !refused {
+                    log(&format!("privacy: camera devices not watched ({e})"));
+                }
+            }
+        }
+    }
+
+    /// The name went: its watch is dropped by the kernel (IN_IGNORED, then ignored by `classify`).
+    fn forget(&mut self, name: &str) {
+        self.pending.remove(name);
+        self.nodes.retain(|_, n| n != name);
     }
 }
 
@@ -286,5 +403,106 @@ mod tests {
         assert_eq!(c(ev(NODE, libc::IN_IGNORED, b"")), Record::Ignored);
         assert_eq!(c(ev(DEV, libc::IN_IGNORED, b"")), Record::Ignored);
         assert!(is_video(b"video0") && is_video(b"video") && !is_video(b"vid") && !is_video(b"xvideo0"));
+    }
+
+    // ---- CameraWatch ----
+
+    fn dev(name: &str, nodes: &[&str]) -> TempPath {
+        let t = TempPath::dir(&format!("cw-{name}"));
+        for n in nodes {
+            fs::write(t.join(n), "").unwrap();
+        }
+        t
+    }
+
+    #[test]
+    fn an_open_and_a_close_trigger() {
+        let t = dev("open", &["video0"]);
+        let mut w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), 1);
+        drop(fs::File::open(t.join("video0")).unwrap());
+        assert!(w.drain());
+        assert!(!w.drain());
+    }
+
+    #[test]
+    fn a_node_appearing_is_watched_then_triggers() {
+        let t = dev("appear", &[]);
+        let mut w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), 0);
+        fs::write(t.join("video1"), "").unwrap();
+        assert!(w.drain());
+        assert_eq!(w.watched(), 1);
+        drop(fs::File::open(t.join("video1")).unwrap());
+        assert!(w.drain());
+    }
+
+    #[test]
+    fn a_refused_node_is_retried_on_its_attrib() {
+        use std::os::unix::fs::PermissionsExt;
+        if euid() == 0 {
+            eprintln!("skipped: root can watch a mode 000 node");
+            return;
+        }
+        let t = dev("refused", &[]);
+        fs::write(t.join("video2"), "").unwrap();
+        fs::set_permissions(t.join("video2"), fs::Permissions::from_mode(0o000)).unwrap();
+        let mut w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), 0);
+        fs::set_permissions(t.join("video2"), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(w.drain());
+        assert_eq!(w.watched(), 1);
+        drop(fs::File::open(t.join("video2")).unwrap());
+        assert!(w.drain(), "a later open triggers");
+    }
+
+    #[test]
+    fn a_node_touched_again_is_not_counted_twice() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = dev("twice", &["video0"]);
+        let mut w = CameraWatch::start(&t).unwrap();
+        fs::set_permissions(t.join("video0"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(w.drain());
+        assert_eq!(w.watched(), 1);
+    }
+
+    #[test]
+    fn a_deleted_node_is_forgotten() {
+        let t = dev("gone", &["video0"]);
+        let mut w = CameraWatch::start(&t).unwrap();
+        fs::remove_file(t.join("video0")).unwrap();
+        assert!(w.drain());
+        assert_eq!(w.watched(), 0);
+        assert!(!w.drain(), "its IN_IGNORED is not a trigger");
+    }
+
+    #[test]
+    fn other_names_never_trigger() {
+        let t = dev("other", &["video0"]);
+        let mut w = CameraWatch::start(&t).unwrap();
+        fs::write(t.join("snd0"), "").unwrap();
+        assert!(!w.drain());
+    }
+
+    #[test]
+    fn the_watch_limit_holds() {
+        let names: Vec<String> = (0..65).map(|i| format!("video{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let t = dev("limit", &refs);
+        let mut w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), MAX_DEVICE_WATCHES);
+        // An attrib on an unwatched one past the limit changes nothing.
+        for n in &names {
+            let _ = fs::set_permissions(t.join(n), <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600));
+        }
+        w.drain();
+        assert_eq!(w.watched(), MAX_DEVICE_WATCHES);
+    }
+
+    #[test]
+    fn a_missing_dev_dir_is_an_error() {
+        let t = dev("missing", &[]);
+        let err = CameraWatch::start(&t.join("nope")).err().unwrap();
+        assert!(err.contains("nope"), "{err}");
     }
 }

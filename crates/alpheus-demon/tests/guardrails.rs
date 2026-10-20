@@ -1468,15 +1468,16 @@ fn the_theme_watch_only_reads_the_config_directory() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
-        if name == "watch.rs" {
-            found = true;
+        // camera_dev.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
+        if name == "watch.rs" || name == "camera_dev.rs" {
+            found |= name == "watch.rs";
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
             {
-                assert!(!prod.contains(never), "{never} in watch.rs: the config directory is read-only to the daemon");
+                assert!(!prod.contains(never), "{never} in {name}: the config directory is read-only to the daemon");
             }
         } else {
-            assert!(!prod.contains("inotify_"), "inotify outside watch.rs: {name}");
+            assert!(!prod.contains("inotify_"), "inotify outside watch.rs and camera_dev.rs: {name}");
         }
     }
     assert!(found, "watch.rs not found");
