@@ -859,13 +859,17 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
         // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
         // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
-        // pending off.
-        ("wayland.rs", "Timer::", 9),
+        // pending off; the camera scan's debounce (privacy delivery 2), armed only for 300 ms after
+        // a device open, close, creation or removal.
+        ("wayland.rs", "Timer::", 10),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
         // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
         ("watch.rs", "Generic::new", 1),
+        // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
+        // creation or removal of a video device; `drain` reads it to EAGAIN.
+        ("camera_app.rs", "Generic::new", 1),
         // The bar's own session link (themes task 6, media task 5): only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
         // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
@@ -1109,7 +1113,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 35] = [
+const NO_THREAD_NOR_COMMAND: [&str; 37] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1145,6 +1149,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 35] = [
     "session.rs",
     "power.rs",
     "privacy.rs",
+    "camera_dev.rs",
+    "camera_app.rs",
 ];
 
 #[test]
@@ -1460,23 +1466,25 @@ fn the_daemon_paints_with_roles_never_the_legacy_palette() {
     assert!(files.len() > 20, "the daemon's sources were not found");
 }
 
-/// Themes task 5: the config directory is only watched, never written by the daemon; inotify lives
-/// in watch.rs alone.
+/// Themes task 5, privacy delivery 2: the config directory and the video devices are only watched,
+/// never written by the daemon; inotify lives in watch.rs (the theme) and camera_dev.rs (the
+/// cameras) alone.
 #[test]
-fn the_theme_watch_only_reads_the_config_directory() {
+fn the_theme_and_camera_watches_only_read() {
     let mut found = false;
     for (p, t) in source_files() {
         let name = relative_path(&p);
         let prod = production_code(&t);
-        if name == "watch.rs" {
-            found = true;
+        // camera_dev.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
+        if name == "watch.rs" || name == "camera_dev.rs" {
+            found |= name == "watch.rs";
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
             {
-                assert!(!prod.contains(never), "{never} in watch.rs: the config directory is read-only to the daemon");
+                assert!(!prod.contains(never), "{never} in {name}: the config directory and the video devices are read-only to the daemon");
             }
         } else {
-            assert!(!prod.contains("inotify_"), "inotify outside watch.rs: {name}");
+            assert!(!prod.contains("inotify_"), "inotify outside watch.rs and camera_dev.rs: {name}");
         }
     }
     assert!(found, "watch.rs not found");
@@ -2141,4 +2149,76 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let launch = src("launch.rs");
     let (fed, kept) = (launch.find("state.privacy_feed(&m)"), launch.find("on_message(state, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
+}
+
+fn camera_sources() -> Vec<(&'static str, String)> {
+    let files = source_files();
+    ["camera_dev.rs", "camera_app.rs"]
+        .into_iter()
+        .map(|name| (name, production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1)))
+        .collect()
+}
+
+/// Privacy delivery 2: no panic in the camera watch's production code.
+#[test]
+fn the_camera_watch_has_no_panicking_path() {
+    for (name, production) in camera_sources() {
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Privacy delivery 2: nothing under /dev is ever opened or read; the one `read_to_string` is a
+/// process's `comm`.
+#[test]
+fn the_camera_watch_opens_nothing_under_dev() {
+    let sources = camera_sources();
+    let dev = &sources[0];
+    assert_eq!(dev.0, "camera_dev.rs");
+    for never in ["File::open", "OpenOptions", "fs::read("] {
+        assert!(!dev.1.contains(never), "{never} in camera_dev.rs's production code");
+    }
+    let mut reads = 0;
+    for line in dev.1.lines().filter(|l| l.contains("read_to_string")) {
+        reads += 1;
+        assert!(line.contains("comm"), "read_to_string outside the comm path: {line}");
+    }
+    assert!(reads > 0, "the comm read was not found: the check is hollow");
+}
+
+/// Privacy delivery 2 (review focus 4): the debounce's timer is forgotten first, and a scan that
+/// changes nothing still syncs the off-delay's timer (a pending off arms it).
+#[test]
+fn the_camera_tick_fires_before_scanning() {
+    let sources = camera_sources();
+    let app = &sources[1].1;
+    let tick = function_body(app, "pub(crate) fn camera_tick(");
+    let (fired, scan) = (tick.find(".fired()"), tick.find("camera_scan"));
+    assert!(matches!((fired, scan), (Some(f), Some(s)) if f < s), "the dropped source forgotten first: {tick}");
+}
+
+#[test]
+fn the_camera_scan_syncs_the_off_delay() {
+    let sources = camera_sources();
+    let scan = function_body(&sources[1].1, "fn camera_scan(");
+    assert!(scan.contains("privacy_timer_sync()"), "an unchanged scan must still sync the off-delay: {scan}");
+}
+
+/// Privacy delivery 2: a log line never names a process or a pid.
+#[test]
+fn the_camera_logs_name_no_process() {
+    let mut logs = 0;
+    for (name, production) in camera_sources() {
+        for line in production.lines().filter(|l| l.contains("log(")) {
+            logs += 1;
+            assert!(!line.contains("process::id"), "{name}: a log line carries a pid: {line}");
+            for word in ["comm", "name", "names", "pid"] {
+                let braced = format!("{{{word}}}");
+                let tokens = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!line.contains(&braced) && !tokens, "{name}: a log line names `{word}`: {line}");
+            }
+        }
+    }
+    assert!(logs >= 3, "the log lines were not found: the check is hollow");
 }

@@ -216,7 +216,7 @@ fn arm(fd: &OwnedFd, dir: &Path) -> Result<On, String> {
     }
 }
 
-fn add_watch(fd: &OwnedFd, path: &Path, mask: u32) -> io::Result<i32> {
+pub(crate) fn add_watch(fd: &OwnedFd, path: &Path, mask: u32) -> io::Result<i32> {
     let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: a NUL-terminated path that lives through the call, and this instance's own fd.
     let wd = unsafe { libc::inotify_add_watch(fd.as_raw_fd(), c.as_ptr(), mask) };

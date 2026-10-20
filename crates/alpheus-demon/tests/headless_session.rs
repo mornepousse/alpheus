@@ -4654,18 +4654,24 @@ const BAR_HEIGHT: u32 = 22;
 /// middle click. `modules`: a `modules = […]` line, or "" for the default ones. Returned once the
 /// bar is placed and pw-dump's initial state is read, with no glyph drawn yet.
 fn privacy_daemon(name: &str, modules: &str) -> (Sway, FakeHyprland, Daemon) {
+    privacy_daemon_with(name, modules, "", &[privacy_orange(), privacy_red()])
+}
+
+/// `privacy_daemon` with `extra` appended to bar.toml (a `[privacy]` section pointing at fake
+/// roots) and `quiet` the hues that must be absent from the bar once it is up.
+fn privacy_daemon_with(name: &str, modules: &str, extra: &str, quiet: &[[u8; 3]]) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
     fake_recorder(&sway, "wpctl");
-    let toml = format!("{modules}[resources]\nsensor = \"alpheus-it-no-sensor\"\n");
+    let toml = format!("{modules}[resources]\nsensor = \"alpheus-it-no-sensor\"\n{extra}");
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read, the bar drawn
     let shot = sway.screenshot("HEADLESS-1").expect("grim");
-    for hue in [privacy_orange(), privacy_red()] {
+    for &hue in quiet {
         assert_eq!(on_the_bar(&shot, hue), None, "no glyph at rest, nothing else in {hue:?}: {:?}", d.log());
     }
     (sway, hypr, d)
@@ -4676,6 +4682,10 @@ const PRIVACY_REST_BAR: &str = "modules = [\"workspaces\", \"window\", \"privacy
 
 fn privacy_orange() -> [u8; 3] {
     rgb(preset("catppuccin").unwrap().dark.hues.orange)
+}
+
+fn privacy_green() -> [u8; 3] {
+    rgb(preset("catppuccin").unwrap().dark.hues.green)
 }
 
 fn privacy_red() -> [u8; 3] {
@@ -4739,7 +4749,13 @@ fn firefox_records(sway: &Sway, d: &Daemon) -> u32 {
 /// (`    firefox`, privacy spec § 5), before the popup's right frame. "privacy popup shown" is logged before the
 /// configure and the first buffer: a key or click in that gap is lost.
 fn wait_for_the_privacy_popup(sway: &Sway, d: &Daemon) {
-    let (orange, bg) = (privacy_orange(), popup_bg("catppuccin"));
+    wait_for_the_privacy_popup_in(sway, d, privacy_orange(), 45..=70);
+}
+
+/// `wait_for_the_privacy_popup` for a heading in `orange`'s place: the camera's green. Its holder's
+/// name, `fakecam`, is 7 cells as `firefox` is.
+fn wait_for_the_privacy_popup_in(sway: &Sway, d: &Daemon, heading_hue: [u8; 3], name_width: std::ops::RangeInclusive<u32>) {
+    let (orange, bg) = (heading_hue, popup_bg("catppuccin"));
     let drawn = |s: &Ppm| {
         let heading: Vec<(u32, u32)> = (BAR_HEIGHT + 2..s.height.min(120))
             .flat_map(|y| (0..s.width).map(move |x| (x, y)))
@@ -4753,17 +4769,17 @@ fn wait_for_the_privacy_popup(sway: &Sway, d: &Daemon) {
         // The name's row: 22 px under the heading's, on the popup's background.
         let middle = (top + bottom) / 2 + 22;
         let ink: Vec<u32> = (middle - 8..middle + 8)
-            .flat_map(|y| (left..left + 110).map(move |x| (x, y)))
+            .flat_map(|y| (left..left + 100).map(move |x| (x, y)))
             .filter(|&(x, y)| s.at(x, y).is_some_and(|c| c != bg))
             .map(|(x, _)| x)
             .collect();
         let (Some(from), Some(to)) = (ink.iter().min(), ink.iter().max()) else {
             return false;
         };
-        // 4 cells in (≈ 34 px), 7 cells wide (≈ 59 px), a few px of glyph bearing either way.
-        (24..=44).contains(&(from - left)) && (45..=70).contains(&(to - from))
+        // 4 cells in (≈ 34 px; the scan stops short of the narrowest popup's right frame, the camera's), 7 cells wide (≈ 59 px), a few px of glyph bearing either way.
+        (24..=44).contains(&(from - left)) && name_width.contains(&(to - from))
     };
-    assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the popup with firefox drawn: {:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the popup with its holder drawn: {:?}", d.log());
 }
 
 /// Privacy spec § 2, § 4: a recording stream lights the microphone in orange; its removal hides
@@ -4865,4 +4881,128 @@ fn privacy_at_rest_no_wakeups_after_a_capture() {
     assert!(glyph_gone_after(&sway, privacy_orange(), Instant::now()).is_some(), "{:?}", d.log());
     let rest = rest_over_5_s(&d);
     assert_eq!(rest, 0, "nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
+}
+
+// ---- The camera opened outside PipeWire (privacy delivery 2). Fake `/dev` and `/proc` trees in a
+// temporary directory, handed to the daemon through `[privacy] dev_dir` and `proc_dir`. ----
+
+/// A fake `dev/video0` (a plain file) and a fake `proc`, both below one guard.
+struct FakeCam {
+    root: alpheus_commun::temp_path::TempPath,
+}
+
+impl FakeCam {
+    fn new(name: &str) -> FakeCam {
+        let root = alpheus_commun::temp_path::TempPath::dir(name);
+        std::fs::create_dir_all(root.join("dev")).unwrap();
+        std::fs::create_dir_all(root.join("proc")).unwrap();
+        std::fs::write(root.join("dev/video0"), "").unwrap();
+        FakeCam { root }
+    }
+
+    /// The `[privacy]` section that points the daemon at the fake trees.
+    fn toml(&self) -> String {
+        format!("[privacy]\ndev_dir = \"{}\"\nproc_dir = \"{}\"\n", self.root.join("dev").display(), self.root.join("proc").display())
+    }
+
+    /// Process 4242, `fakecam`, holds `video0` on its descriptor 3. No event: see `trigger`.
+    fn hold(&self) {
+        let fd = self.root.join("proc/4242/fd");
+        std::fs::create_dir_all(&fd).unwrap();
+        std::fs::write(self.root.join("proc/4242/comm"), "fakecam\n").unwrap();
+        std::os::unix::fs::symlink(self.root.join("dev/video0"), fd.join("3")).unwrap();
+    }
+
+    fn release(&self) {
+        std::fs::remove_dir_all(self.root.join("proc/4242")).unwrap();
+    }
+
+    /// An open and a close of the node: what the daemon's watch sees of any holder change.
+    fn trigger(&self) {
+        drop(std::fs::File::open(self.root.join("dev/video0")).unwrap());
+    }
+}
+
+/// The camera tests' daemon: only the modules the glyph needs (no other green on the bar), the fake
+/// trees, and, once up, no orange nor red; no green either unless `held`.
+fn privacy_camera_daemon(name: &str, cam: &FakeCam, held: bool) -> (Sway, FakeHyprland, Daemon) {
+    let quiet: &[[u8; 3]] = if held { &[privacy_orange(), privacy_red()] } else { &[privacy_orange(), privacy_red(), privacy_green()] };
+    let out = privacy_daemon_with(name, PRIVACY_REST_BAR, &cam.toml(), quiet);
+    assert!(out.2.wait_for("privacy: watching 1 video device(s)", DELAY), "{:?}", out.2.log());
+    out
+}
+
+/// Privacy delivery 2 spec § 1-2: a holder plus one open and close lights the camera in green
+/// within a second; once it is gone and a trigger follows, the glyph goes within 1.5 s (the 300 ms
+/// debounce, the 0.5 s off-delay).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_camera_opened_directly_shows_then_goes() {
+    let cam = FakeCam::new("privacy-direct");
+    let (sway, _hypr, d) = privacy_camera_daemon("privacy-direct", &cam, false);
+    cam.hold();
+    let sent = Instant::now();
+    cam.trigger();
+    wait_for_the_glyph(&sway, &d, privacy_green());
+    assert!(sent.elapsed() <= Duration::from_secs(1), "shown within 1 s: {:?} {:?}", sent.elapsed(), d.log());
+    cam.release();
+    let sent = Instant::now();
+    cam.trigger();
+    let gone = glyph_gone_after(&sway, privacy_green(), sent);
+    assert!(gone.is_some_and(|t| t <= Duration::from_millis(1500)), "gone within 1.5 s: {gone:?} {:?}", d.log());
+}
+
+/// Review Focus 2: a camera held before the daemon starts lights at once, with no event.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_camera_held_before_start_shows() {
+    let cam = FakeCam::new("privacy-held");
+    cam.hold();
+    let (sway, _hypr, d) = privacy_camera_daemon("privacy-held", &cam, true);
+    wait_for_the_glyph(&sway, &d, privacy_green());
+}
+
+/// Review Focus 4: an open and close with nobody holding the node lights nothing, whatever the scan
+/// timing (after the 300 ms debounce, and past it).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_camera_blip_lights_nothing() {
+    let cam = FakeCam::new("privacy-blip");
+    let (sway, _hypr, d) = privacy_camera_daemon("privacy-blip", &cam, false);
+    cam.trigger();
+    for ms in [400, 400] {
+        thread::sleep(Duration::from_millis(ms));
+        let shot = sway.screenshot("HEADLESS-1").expect("grim");
+        assert_eq!(on_the_bar(&shot, privacy_green()), None, "a blip lights nothing: {:?}", d.log());
+    }
+    // The watch was alive all along: a real holder, then a trigger, lights it.
+    cam.hold();
+    cam.trigger();
+    wait_for_the_glyph(&sway, &d, privacy_green());
+}
+
+/// The harness points every daemon's camera watch at empty directories: a default test daemon
+/// watches no device (never the machine's /dev), and the camera glyph stays dark.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_default_test_daemon_watches_no_real_device() {
+    let (sway, _hypr, d) = privacy_daemon_with("privacy-guard", "", "", &[privacy_orange(), privacy_red(), privacy_green()]);
+    assert!(d.wait_for("privacy: watching 0 video device(s)", DELAY), "{:?}", d.log());
+    drop(sway);
+}
+
+/// Privacy delivery 2 spec § 5: the popup names a direct holder under the camera heading.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn privacy_the_popup_names_a_direct_camera() {
+    let cam = FakeCam::new("privacy-popup");
+    cam.hold();
+    let (sway, _hypr, d) = privacy_camera_daemon("privacy-popup", &cam, true);
+    let x = wait_for_the_glyph(&sway, &d, privacy_green());
+    sway.click(x, MIDDLE, "button1");
+    assert!(d.wait_for("privacy popup shown", DELAY), "{:?}", d.log());
+    // `fakecam` measures 57 px; `(unnamed)`, 9 cells, 63.
+    wait_for_the_privacy_popup_in(&sway, &d, privacy_green(), 52..=60);
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }

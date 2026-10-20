@@ -240,6 +240,12 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
     }
 }
 
+/// Whether the camera devices are watched: only with the `privacy` module (no inotify instance,
+/// no timer and no scan otherwise).
+pub fn camera_wanted(modules: &[ModuleId]) -> bool {
+    modules.contains(&ModuleId::Privacy)
+}
+
 /// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
 /// microphone or a label change wakes nothing).
 pub fn sound_scope(modules: &[ModuleId]) -> Scope {
@@ -649,7 +655,8 @@ pub fn run() -> i32 {
     let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
     let want = wanted(&config.modules);
     let scope = sound_scope(&config.modules);
-    let privacy = config.modules.contains(&ModuleId::Privacy);
+    let privacy = camera_wanted(&config.modules);
+    let camera_roots = (config.privacy.dev_dir.clone(), config.privacy.proc_dir.clone());
     let resources_config = config.resources.clone();
     // `run` (blocking) is refused: see nonblocking.rs.
     let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
@@ -737,6 +744,10 @@ pub fn run() -> i32 {
 
     // Hot reload of the theme: one inotify fd, no thread, no timer (themes task 5).
     crate::watch::start(&mut state, &handle);
+    // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
+    if privacy {
+        crate::camera_app::start(&mut state, &handle, &camera_roots.0, &camera_roots.1);
+    }
     if want.tray {
         start_tray(&mut state, &handle);
     }
@@ -862,6 +873,17 @@ mod tests {
         assert!(connect.contains("no session bus"), "{connect:?}");
         assert!(!watch.contains("no session bus"), "the bus did connect: {watch:?}");
         assert!(watch.contains("fd"), "names the step that failed: {watch:?}");
+    }
+
+    /// Privacy delivery 2: the camera watch (an inotify instance, a scan) exists only with `privacy`.
+    #[test]
+    fn the_camera_watch_starts_only_with_privacy() {
+        assert!(camera_wanted(&[ModuleId::Privacy]));
+        assert!(camera_wanted(&[ModuleId::Clock, ModuleId::Privacy]));
+        assert!(!camera_wanted(&[ModuleId::Clock, ModuleId::Volume]));
+        assert!(!camera_wanted(&[]));
+        let without: Vec<ModuleId> = ModuleId::ALL.into_iter().filter(|m| *m != ModuleId::Privacy).collect();
+        assert!(!camera_wanted(&without));
     }
 
     #[test]

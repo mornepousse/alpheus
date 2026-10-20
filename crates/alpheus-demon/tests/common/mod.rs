@@ -632,7 +632,27 @@ fn coreutils_dir() -> PathBuf {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    if let Some(text) = o.bar_toml {
+    // The privacy module's camera watch lists devices and processes where `[privacy]` says: empty
+    // directories here, never the machine's /dev and /proc, unless the test sets its own table.
+    let (dev, proc) = (sway.runtime.join("privacy-dev"), sway.runtime.join("privacy-proc"));
+    fs::create_dir_all(&dev).unwrap();
+    fs::create_dir_all(&proc).unwrap();
+    let text = o.bar_toml.unwrap_or("");
+    if o.bar_toml.is_some() || !text.contains("dev_dir") {
+        let roots = format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display());
+        let text = if text.contains("dev_dir") {
+            text.to_string()
+        } else if let Some(at) = text.find("[privacy]") {
+            // TOML forbids a second `[privacy]` header: the roots go right under the existing one.
+            let (head, rest) = match text[at..].find('\n') {
+                Some(n) => text.split_at(at + n + 1),
+                None => (text, ""),
+            };
+            let nl = if head.ends_with('\n') { "" } else { "\n" };
+            format!("{head}{nl}{roots}{rest}")
+        } else {
+            format!("{text}\n[privacy]\n{roots}")
+        };
         fs::write(config.join("alpheus/bar.toml"), text).unwrap();
     }
     if let Some(text) = o.launcher_toml {

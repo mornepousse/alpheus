@@ -10,6 +10,8 @@ pub mod backlight;
 pub mod bubbles;
 pub mod bubbles_surface;
 pub mod calendar;
+pub mod camera_app;
+pub mod camera_dev;
 pub mod clock;
 pub mod compositor;
 pub mod config;
