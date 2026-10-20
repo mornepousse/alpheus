@@ -1923,3 +1923,148 @@ fn at_rest_no_wakeups_after_a_capture() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s: the off-delay's timer must be gone");
     assert!(delta <= 4, "{delta} wake-ups in 5 s");
 }
+
+/// A fake `dev/video0` and `proc` for the camera measurements (a fake holder is process 4242), below
+/// one guard that removes them.
+struct FakeCam(alpheus_commun::temp_path::TempPath);
+
+impl FakeCam {
+    fn new(name: &str) -> FakeCam {
+        let root = alpheus_commun::temp_path::TempPath::dir(name);
+        std::fs::create_dir_all(root.join("dev")).unwrap();
+        std::fs::create_dir_all(root.join("proc")).unwrap();
+        std::fs::write(root.join("dev/video0"), "").unwrap();
+        FakeCam(root)
+    }
+
+    fn bar(&self) -> String {
+        format!(
+            "{PRIVACY_BAR}[privacy]\ndev_dir = \"{}\"\nproc_dir = \"{}\"\n",
+            self.0.join("dev").display(),
+            self.0.join("proc").display()
+        )
+    }
+
+    /// The holder appears or goes, then the node is opened and closed: the watch's trigger.
+    fn hold(&self, held: bool) {
+        let dir = self.0.join("proc/4242");
+        if held {
+            std::fs::create_dir_all(dir.join("fd")).unwrap();
+            std::fs::write(dir.join("comm"), "fakecam\n").unwrap();
+            std::os::unix::fs::symlink(self.0.join("dev/video0"), dir.join("fd/3")).unwrap();
+        } else {
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+        drop(std::fs::File::open(self.0.join("dev/video0")).unwrap());
+    }
+}
+
+/// The camera glyph in catppuccin's green, anywhere on the bar's 22 px (this bar paints no other).
+fn camera_shown(s: &common::Ppm) -> bool {
+    let g = preset("catppuccin").unwrap().dark.hues.green;
+    (0..22).any(|y| (0..s.width).any(|x| s.at(x, y) == Some([g.0, g.1, g.2])))
+}
+
+/// One holder on the screen, then gone (the debounce and the 0.5 s off-delay included).
+fn camera_cycle(sway: &Sway, d: &Daemon, cam: &FakeCam, n: u32) {
+    cam.hold(true);
+    assert!(sway.wait_for_screen("HEADLESS-1", camera_shown), "camera {n} never shown: {:?}", d.log());
+    cam.hold(false);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !camera_shown(s)), "camera {n} never gone: {:?}", d.log());
+}
+
+/// Privacy delivery 2 spec § 5: PSS idle (the watch on, no camera), with a fake holder shown, once
+/// gone, and after 20 more cycles; then no wake-up at rest after the holder went.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn privacy_camera_pss_and_rest() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("camera-cost");
+    let cam = FakeCam::new("camera-cost");
+    let (sway, _hypr, d) = start("camera-cost", 1, &bus, None, Some(&cam.bar()), PwDump::Fifo);
+    assert!(d.wait_for("privacy: watching 1 video device(s)", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    cam.hold(true);
+    assert!(sway.wait_for_screen("HEADLESS-1", camera_shown), "never shown: {:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1)); // painted
+    let shown = d.pss_kb();
+    cam.hold(false);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| !camera_shown(s)), "never gone: {:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let ended = d.pss_kb();
+    for n in 1..=20 {
+        camera_cycle(&sway, &d, &cam, n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let cycled = d.pss_kb();
+    eprintln!("camera PSS (KB): {idle} idle, {shown} with a holder shown, {ended} once gone, {cycled} after 20 more cycles");
+    assert!(shown < STARTUP_MAX_KB, "{shown} KB >= 15 MB — report to Mae, never raise");
+    assert!(shown <= idle + 512, "shown {shown} KB vs idle {idle} KB: one glyph and a scan");
+    assert!(ended <= shown + 64, "ended {ended} KB vs shown {shown} KB: the holder must leave nothing");
+    assert!(cycled <= ended + 128, "cycled {cycled} KB vs ended {ended} KB: 20 holders must keep nothing");
+    // The loop at rest after the holder went: the scan timer and the off-delay's are gone.
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST + Duration::from_secs(3));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a camera");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after a camera (5 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s: the scan's and the off-delay's timers must be gone");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s");
+}
+
+/// A fake `/proc` of `pids` processes with `fds` descriptors each, the holder of `video0` in
+/// `dev` being pid 1000 + `pids` / 2 on its last descriptor. Returns the proc directory.
+fn fake_proc(root: &Path, dev: &Path, pids: u32, fds: u32) -> std::path::PathBuf {
+    let proc = root.join(format!("proc-{pids}x{fds}"));
+    for pid in 1000..1000 + pids {
+        let (fd_dir, comm) = (proc.join(pid.to_string()).join("fd"), proc.join(pid.to_string()).join("comm"));
+        std::fs::create_dir_all(&fd_dir).unwrap();
+        std::fs::write(comm, "worker\n").unwrap();
+        for fd in 0..fds {
+            let target = if pid == 1000 + pids / 2 && fd == fds - 1 { dev.join("video0") } else { root.join(format!("other{fd}")) };
+            std::os::unix::fs::symlink(target, fd_dir.join(fd.to_string())).unwrap();
+        }
+    }
+    proc
+}
+
+/// The median and the maximum of 21 scans of `proc`, each finding the one holder.
+fn scan_times(proc: &Path, dev: &Path) -> (Duration, Duration) {
+    // SAFETY: geteuid(2) cannot fail.
+    let uid = unsafe { libc::geteuid() };
+    let mut times: Vec<Duration> = (0..21)
+        .map(|_| {
+            let t = Instant::now();
+            let scan = alpheus_demon::camera_dev::scan(proc, dev, uid, std::process::id());
+            let took = t.elapsed();
+            assert_eq!(scan.camera.names, ["worker"], "the one holder, found");
+            assert!(!scan.bounded);
+            took
+        })
+        .collect();
+    times.sort();
+    (times[10], times[20])
+}
+
+/// Privacy delivery 2 spec § 2: one scan of 120 processes with 30 descriptors each (one holder; the
+/// daemon scans only its own uid, 93 processes and 2,726 descriptors measured on the workstation)
+/// costs at most 10 ms, the median of 21. The scan stays on the event loop. A 500 x 20 tree is timed
+/// for the record (the worst case seen), asserted nothing.
+#[test]
+#[ignore = "release build only (nix develop)"]
+fn camera_scan_duration() {
+    require_release(cfg!(debug_assertions));
+    let root = alpheus_commun::temp_path::TempPath::dir("camera-scan");
+    let dev = root.join("dev");
+    std::fs::create_dir_all(&dev).unwrap();
+    std::fs::write(dev.join("video0"), "").unwrap();
+    let (median, max) = scan_times(&fake_proc(&root, &dev, 120, 30), &dev);
+    eprintln!("camera scan of 120 processes x 30 descriptors: median {median:?}, max {max:?}");
+    let (wide_median, wide_max) = scan_times(&fake_proc(&root, &dev, 500, 20), &dev);
+    eprintln!("camera scan of 500 processes x 20 descriptors (not asserted): median {wide_median:?}, max {wide_max:?}");
+    assert!(median <= Duration::from_millis(10), "median {median:?} > 10 ms: report to the controller");
+}
