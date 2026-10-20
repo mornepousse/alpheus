@@ -50,6 +50,31 @@ impl Indicator {
             }
         }
     }
+
+    /// The union of both: names through `hold` (sorted, once, capped), `unnamed` OR'ed.
+    pub fn merged(&self, other: &Indicator) -> Indicator {
+        let mut m = self.clone();
+
+        m.unnamed |= other.unnamed;
+        for n in &other.names {
+            m.hold(Some(n));
+        }
+        m
+    }
+
+    /// The same without the ignored names, compared case-insensitively.
+    fn without(&self, ignore: &[String]) -> Indicator {
+        let names = self
+            .names
+            .iter()
+            .filter(|n| {
+                let n = n.to_lowercase();
+                !ignore.iter().any(|g| g.to_lowercase() == n)
+            })
+            .cloned()
+            .collect();
+        Indicator { names, unnamed: self.unnamed }
+    }
 }
 
 /// What is captured right now, as the graph says.
@@ -67,19 +92,7 @@ impl Capture {
 
     /// The same capture without the ignored app names, compared case-insensitively (spec § 7).
     pub fn without(&self, ignore: &[String]) -> Capture {
-        let strip = |i: &Indicator| Indicator {
-            names: i
-                .names
-                .iter()
-                .filter(|n| {
-                    let n = n.to_lowercase();
-                    !ignore.iter().any(|g| g.to_lowercase() == n)
-                })
-                .cloned()
-                .collect(),
-            unnamed: i.unnamed,
-        };
-        Capture { mic: strip(&self.mic), camera: strip(&self.camera), screen: strip(&self.screen) }
+        Capture { mic: self.mic.without(ignore), camera: self.camera.without(ignore), screen: self.screen.without(ignore) }
     }
 }
 
@@ -187,6 +200,8 @@ pub struct Privacy {
     /// PipeWire's last capture, the ignored names already removed.
     pw: Capture,
     mic_muted: bool,
+    /// The holders of the video devices, the ignored names already removed (privacy delivery 2).
+    devices: Indicator,
     /// The compositor says a screen is being cast.
     casting: bool,
     /// After a release: the instant it counts, when the hold ends.
@@ -201,6 +216,7 @@ impl Privacy {
         Privacy {
             ignore,
             pw: Capture::default(),
+            devices: Indicator::default(),
             mic_muted: false,
             casting: false,
             release_at: None,
@@ -225,6 +241,18 @@ impl Privacy {
         self.pw = pw;
         self.mic_muted = mic_muted;
         self.settle(now) || muted_flipped
+    }
+
+    /// The holders of the video devices, as a scan found them. True when what is shown changed.
+    pub fn set_devices(&mut self, camera: Indicator, now: Instant) -> bool {
+        self.expire_cast(now);
+        let devices = camera.without(&self.ignore);
+
+        if devices == self.devices {
+            return false;
+        }
+        self.devices = devices;
+        self.settle(now)
     }
 
     /// The compositor's casting, and how long its release still counts. True when what is shown
@@ -340,6 +368,8 @@ impl Privacy {
         };
         if i == 2 && !pw.active() && (self.casting || self.release_at.is_some()) {
             Cow::Owned(Indicator { names: Vec::new(), unnamed: true })
+        } else if i == 1 && self.devices.active() {
+            Cow::Owned(pw.merged(&self.devices))
         } else {
             Cow::Borrowed(pw)
         }
@@ -694,5 +724,63 @@ mod tests {
         assert_eq!(p.deadline(), Some(t0 + ms(100) + OFF_DELAY));
         assert!(p.due(t0 + ms(100) + OFF_DELAY));
         assert!(p.shown().is_empty());
+    }
+
+    #[test]
+    fn a_device_holder_lights_the_camera_at_once() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        assert!(p.set_devices(one(&["fakecam"], false), t0));
+        assert_eq!(p.shown().camera.names, ["fakecam"]);
+        assert_eq!(p.deadline(), None);
+    }
+
+    #[test]
+    fn device_and_pipewire_names_merge_once() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        let pw = Capture { camera: one(&["recorder"], false), ..Capture::default() };
+        p.set_sound(Some(&pw), false, t0);
+        assert!(p.set_devices(one(&["fakecam", "recorder"], false), t0));
+        assert_eq!(p.shown().camera.names, ["fakecam", "recorder"]);
+    }
+
+    #[test]
+    fn a_device_holder_goes_through_the_off_delay() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_devices(one(&["fakecam"], false), t0);
+        assert!(!p.set_devices(Indicator::default(), t0));
+        assert_eq!(p.deadline(), Some(t0 + OFF_DELAY));
+        assert!(!p.due(t0 + ms(499)));
+        assert!(p.due(t0 + OFF_DELAY));
+        assert!(!p.shown().camera.active());
+    }
+
+    #[test]
+    fn ignore_drops_a_device_holder() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(vec!["FakeCam".into()]);
+        assert!(!p.set_devices(one(&["fakecam"], false), t0));
+        assert!(p.shown().is_empty());
+    }
+
+    #[test]
+    fn a_device_back_within_the_delay_never_blinks() {
+        let t0 = Instant::now();
+        let mut p = Privacy::new(Vec::new());
+        p.set_devices(one(&["fakecam"], false), t0);
+        p.set_devices(Indicator::default(), t0);
+        p.set_devices(one(&["fakecam"], false), t0 + ms(200));
+        assert_eq!(p.deadline(), None);
+        assert!(p.shown().camera.active());
+    }
+    #[test]
+    fn merged_ors_unnamed_and_caps_the_names() {
+        assert!(one(&["a"], false).merged(&one(&[], true)).unnamed);
+        assert!(one(&[], true).merged(&one(&["a"], false)).unnamed);
+        let many: Vec<String> = (0..12).map(|n| format!("app{n:02}")).collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(one(&many[..6], false).merged(&one(&many[6..], false)).names.len(), MAX_NAMES);
     }
 }
