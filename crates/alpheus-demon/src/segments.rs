@@ -9,6 +9,7 @@ use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
+use crate::privacy::{CAMERA, MIC, Privacy, SCREEN};
 use crate::session::{self, POWER};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
@@ -122,6 +123,31 @@ pub(crate) fn launcher() -> Segment {
 /// reboot and poweroff are all empty (its menu would have no entry).
 pub(crate) fn power(c: &QuickConfig) -> Option<Segment> {
     session::any_configured(c).then(|| module_segment(ModuleId::Power, vec![piece(POWER.to_string(), Style::NORMAL)]))
+}
+
+/// The privacy indicators (privacy spec § 1): a glyph per held device, joined by one space, each in
+/// its own hue (orange, green, red) whatever `module_colors` says; the microphone dim while the
+/// default source is muted. None when nothing is shown. One click zone, no block hue.
+pub(crate) fn privacy(p: &Privacy) -> Option<Segment> {
+    let shown = p.shown();
+    let mic = if p.mic_muted() { Style::MUTED } else { Style::hue(Hue::Orange) };
+    let mut pieces: Vec<Piece> = Vec::new();
+    for (on, glyph, style) in [
+        (shown.mic.active(), MIC, mic),
+        (shown.camera.active(), CAMERA, Style::hue(Hue::Green)),
+        (shown.screen.active(), SCREEN, Style::hue(Hue::Red)),
+    ] {
+        if on {
+            let sep = if pieces.is_empty() { "" } else { " " };
+            pieces.push(piece(format!("{sep}{glyph}"), style));
+        }
+    }
+    if pieces.is_empty() {
+        return None;
+    }
+    let mut segment = module_segment(ModuleId::Privacy, pieces);
+    segment.withhold_hue = true;
+    Some(segment)
 }
 
 pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
@@ -448,6 +474,7 @@ mod tests {
     use crate::grid::Grid;
     use crate::layout::lay_out;
     use crate::notify::NotifyView;
+    use crate::privacy::{Capture, Indicator};
     use crate::state::{Bar, Msg};
     use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
     use crate::tray::ItemKey;
@@ -663,6 +690,52 @@ mod tests {
             let flags = |playing| super::media(Some(&song(playing, "Song")), mc).unwrap().withhold_hue;
             assert_eq!((flags(true), flags(false)), (false, true), "only a paused block withholds its hue ({mc:?})");
         }
+    }
+
+    fn shown(mic: bool, camera: bool, screen: bool) -> Privacy {
+        let held = |on: bool| Indicator { names: Vec::new(), unnamed: on };
+        let mut p = Privacy::new(Vec::new());
+        p.set_sound(Some(&Capture { mic: held(mic), camera: held(camera), screen: held(screen) }), false, std::time::Instant::now());
+        p
+    }
+
+    /// Privacy spec § 1: each active glyph in its fixed hue, whatever `module_colors` says.
+    #[test]
+    fn the_privacy_segment_shows_each_active_glyph_in_its_hue() {
+        for mc in [ModuleColors::None, ICONS, FULL, ModuleColors::Pills] {
+            let s = super::privacy(&shown(true, true, true)).unwrap();
+            assert_eq!(draw(&s), ("\u{f036c} \u{f0100} \u{f0379}".into(), "oggrr".into()), "{mc:?}");
+            assert_eq!((s.module, &s.target, s.withhold_hue), (ModuleId::Privacy, &Some(Target::Module(ModuleId::Privacy)), true));
+        }
+        assert_eq!(
+            draw(&super::privacy(&shown(false, true, false)).unwrap()),
+            ("\u{f0100}".into(), "g".into()),
+            "the camera alone, no join"
+        );
+        assert_eq!(draw(&super::privacy(&shown(false, false, true)).unwrap()), ("\u{f0379}".into(), "r".into()));
+        assert_eq!(draw(&super::privacy(&shown(true, false, true)).unwrap()), ("\u{f036c} \u{f0379}".into(), "orr".into()));
+    }
+
+    #[test]
+    fn the_muted_microphone_is_dim_and_only_it() {
+        let mut p = shown(true, true, false);
+        p.set_sound(
+            Some(&Capture {
+                mic: Indicator { names: Vec::new(), unnamed: true },
+                camera: Indicator { names: Vec::new(), unnamed: true },
+                screen: Indicator::default(),
+            }),
+            true,
+            std::time::Instant::now(),
+        );
+        assert!(p.mic_muted());
+        assert_eq!(draw(&super::privacy(&p).unwrap()), ("\u{f036c} \u{f0100}".into(), "mgg".into()));
+    }
+
+    #[test]
+    fn the_privacy_segment_is_hidden_when_nothing_is_shown() {
+        assert!(super::privacy(&Privacy::new(Vec::new())).is_none());
+        assert!(super::privacy(&shown(false, false, false)).is_none());
     }
 
     #[test]

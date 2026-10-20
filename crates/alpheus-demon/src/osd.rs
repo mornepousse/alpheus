@@ -357,6 +357,7 @@ mod tests {
             sink_name: dev(OUT, "Desk speakers"),
             source_name: dev(IN, "Desk microphone"),
             sinks: None,
+            capture: None,
         }
     }
 

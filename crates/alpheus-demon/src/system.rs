@@ -20,6 +20,9 @@ pub struct SoundState {
     /// Every sink, by label then id, at most `pipewire::MAX_SINKS`: only while the quick panel is
     /// open (`Scope::Panel`); None otherwise, and never kept by the bar.
     pub sinks: Option<Vec<Sink>>,
+    /// What the capture graph says is held (privacy spec § 2): `Some` exactly when the `privacy`
+    /// module is on, None otherwise.
+    pub capture: Option<crate::privacy::Capture>,
 }
 
 /// A default device: its `node.name` (its identity) and what a person reads (`node.description`,

@@ -19,9 +19,9 @@ use common::sway_client::{TestWindow, con_id};
 use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
-    default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder, launcher, process_alive,
-    pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype,
-    wtype_spawn,
+    capture_delta, capture_gone, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder,
+    launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file,
+    write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -4638,4 +4638,231 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert!(d.wait_for("popup closed (outside click)", DELAY), "a second click on ⏻ closes it: {:?}", d.log());
     thread::sleep(Duration::from_millis(500));
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
+}
+
+// ---- The privacy indicators (privacy plan, task 6). The fake pw-dump is `Fifo`, the batches
+// synthetic (`capture_delta`); wpctl a fake recorder; the compositor the fake Hyprland. ----
+
+/// The bar's height in px (default font): the glyphs are looked for above it.
+const BAR_HEIGHT: u32 = 22;
+
+/// A daemon with the default modules (privacy among them, privacy spec § 1) on one output,
+/// catppuccin dark with `module_colors = "none"`: no other module paints a hue, so a pixel in
+/// orange, green or red on the bar is a privacy glyph (they keep their hue whatever
+/// `module_colors` says). The temperature sensor named matches none: never the machine's own, hot
+/// under a build and then drawn in the error colour, catppuccin's red. The fake wpctl records the
+/// middle click. `modules`: a `modules = […]` line, or "" for the default ones. Returned once the
+/// bar is placed and pw-dump's initial state is read, with no glyph drawn yet.
+fn privacy_daemon(name: &str, modules: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\nmodule_colors = \"none\"\n").unwrap();
+    fake_recorder(&sway, "wpctl");
+    let toml = format!("{modules}[resources]\nsensor = \"alpheus-it-no-sensor\"\n");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), pw_dump: PwDump::Fifo, ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // pw-dump's initial state read, the bar drawn
+    let shot = sway.screenshot("HEADLESS-1").expect("grim");
+    for hue in [privacy_orange(), privacy_red()] {
+        assert_eq!(on_the_bar(&shot, hue), None, "no glyph at rest, nothing else in {hue:?}: {:?}", d.log());
+    }
+    (sway, hypr, d)
+}
+
+/// The rest tests' bar: the default modules but the resources, which tick by design.
+const PRIVACY_REST_BAR: &str = "modules = [\"workspaces\", \"window\", \"privacy\", \"volume\", \"clock\"]\n";
+
+fn privacy_orange() -> [u8; 3] {
+    rgb(preset("catppuccin").unwrap().dark.hues.orange)
+}
+
+fn privacy_red() -> [u8; 3] {
+    rgb(preset("catppuccin").unwrap().dark.hues.red)
+}
+
+/// Whether `p` is `colour` drawn over the bar's background at half coverage or more: on the line
+/// from the background to `colour`, at least half way, within a few levels of it. The screen glyph
+/// is thin outlines: anti-aliased, no pixel of it is fully covered at scale 1.
+fn inked_in(p: [u8; 3], colour: [u8; 3]) -> bool {
+    let bg = bar_bg("catppuccin").map(f64::from);
+    let (p, c) = (p.map(f64::from), colour.map(f64::from));
+    let (d, v): (Vec<f64>, Vec<f64>) = (0..3).map(|i| (c[i] - bg[i], p[i] - bg[i])).unzip();
+    let t = (0..3).map(|i| d[i] * v[i]).sum::<f64>() / (0..3).map(|i| d[i] * d[i]).sum::<f64>();
+    let off = (0..3).map(|i| (v[i] - t * d[i]).powi(2)).sum::<f64>().sqrt();
+    t >= 0.5 && off <= 16.0
+}
+
+/// The leftmost and rightmost x of the pixels inked in `colour` on the bar. None: none there.
+fn on_the_bar(s: &Ppm, colour: [u8; 3]) -> Option<(u32, u32)> {
+    let xs: Vec<u32> = (0..BAR_HEIGHT)
+        .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| s.at(x, y).is_some_and(|p| inked_in(p, colour)))
+        .map(|(x, _)| x)
+        .collect();
+    Some((*xs.iter().min()?, *xs.iter().max()?))
+}
+
+/// Waits until a glyph in `colour` is on the bar; returns the middle of its x span.
+fn wait_for_the_glyph(sway: &Sway, d: &Daemon, colour: [u8; 3]) -> u32 {
+    let at = Cell::new(None);
+    let shown = sway.wait_for_screen("HEADLESS-1", |s| {
+        at.set(on_the_bar(s, colour));
+        at.get().is_some()
+    });
+    assert!(shown, "the glyph {colour:?} never drawn: {:?}", d.log());
+    let (x0, x1) = at.get().unwrap();
+    (x0 + x1) / 2
+}
+
+/// Screenshots until no glyph in `colour` is on the bar (10 s at most); how long that took from
+/// `since`, or None if it never went.
+fn glyph_gone_after(sway: &Sway, colour: [u8; 3], since: Instant) -> Option<Duration> {
+    while since.elapsed() < DELAY {
+        if sway.screenshot("HEADLESS-1").is_some_and(|s| on_the_bar(&s, colour).is_none()) {
+            return Some(since.elapsed());
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    None
+}
+
+/// The microphone lit by `firefox` (node 200, link 300); returns the glyph's x.
+fn firefox_records(sway: &Sway, d: &Daemon) -> u32 {
+    pw_dump_send(&sway.runtime, &capture_delta(200, "firefox", "running", 300, true));
+    wait_for_the_glyph(sway, d, privacy_orange())
+}
+
+/// Waits until the privacy popup is on screen: its heading's glyph (orange, below the bar), then,
+/// one 22 px row down, a name 7 cells wide starting 4 cells to the right of the heading's glyph
+/// (`    firefox`, privacy spec § 5), before the popup's right frame. "privacy popup shown" is logged before the
+/// configure and the first buffer: a key or click in that gap is lost.
+fn wait_for_the_privacy_popup(sway: &Sway, d: &Daemon) {
+    let (orange, bg) = (privacy_orange(), popup_bg("catppuccin"));
+    let drawn = |s: &Ppm| {
+        let heading: Vec<(u32, u32)> = (BAR_HEIGHT + 2..s.height.min(120))
+            .flat_map(|y| (0..s.width).map(move |x| (x, y)))
+            .filter(|&(x, y)| s.at(x, y) == Some(orange))
+            .collect();
+        let (Some(left), Some(top), Some(bottom)) =
+            (heading.iter().map(|p| p.0).min(), heading.iter().map(|p| p.1).min(), heading.iter().map(|p| p.1).max())
+        else {
+            return false;
+        };
+        // The name's row: 22 px under the heading's, on the popup's background.
+        let middle = (top + bottom) / 2 + 22;
+        let ink: Vec<u32> = (middle - 8..middle + 8)
+            .flat_map(|y| (left..left + 110).map(move |x| (x, y)))
+            .filter(|&(x, y)| s.at(x, y).is_some_and(|c| c != bg))
+            .map(|(x, _)| x)
+            .collect();
+        let (Some(from), Some(to)) = (ink.iter().min(), ink.iter().max()) else {
+            return false;
+        };
+        // 4 cells in (≈ 34 px), 7 cells wide (≈ 59 px), a few px of glyph bearing either way.
+        (24..=44).contains(&(from - left)) && (45..=70).contains(&(to - from))
+    };
+    assert!(sway.wait_for_screen("HEADLESS-1", drawn), "the popup with firefox drawn: {:?}", d.log());
+}
+
+/// Privacy spec § 2, § 4: a recording stream lights the microphone in orange; its removal hides
+/// it after the 0.5 s off-delay, through the timer (never a later message).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_recording_stream_shows_the_microphone_then_it_goes() {
+    let (sway, _hypr, d) = privacy_daemon("privacy-mic", "");
+    firefox_records(&sway, &d);
+    let sent = Instant::now();
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    let gone = glyph_gone_after(&sway, privacy_orange(), sent);
+    assert!(gone.is_some_and(|t| t >= Duration::from_millis(400)), "kept through the off-delay: {gone:?} {:?}", d.log());
+    assert!(gone.is_some_and(|t| t <= Duration::from_secs(2)), "gone after the off-delay: {gone:?} {:?}", d.log());
+}
+
+/// Privacy spec § 2: a meter (`stream.monitor`) linked and running never lights it.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_a_meter_never_lights_it() {
+    let (sway, _hypr, d) = privacy_daemon("privacy-meter", "");
+    let meter = capture_delta(201, "pavucontrol", "running", 301, true)
+        .replace(r#""application.name":"pavucontrol""#, r#""application.name":"pavucontrol","stream.monitor":"true""#);
+    assert!(meter.contains("stream.monitor"), "{meter}");
+    pw_dump_send(&sway.runtime, &meter);
+    thread::sleep(Duration::from_secs(1));
+    let shot = sway.screenshot("HEADLESS-1").expect("grim");
+    assert_eq!(on_the_bar(&shot, privacy_orange()), None, "a meter is no recording: {:?}", d.log());
+    // A recorder sent after it lights the glyph: the meter's batch, through the same pipe first, was read.
+    firefox_records(&sway, &d);
+}
+
+/// Privacy spec § 5, § 6: a left click opens the popup listing the app; Escape closes it; a middle
+/// click toggles the default source's mute through wpctl.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn privacy_left_click_lists_the_app_and_middle_click_mutes() {
+    let (sway, _hypr, d) = privacy_daemon("privacy-click", "");
+    let x = firefox_records(&sway, &d);
+    sway.click(x, MIDDLE, "button1");
+    assert!(d.wait_for("privacy popup shown", DELAY), "{:?}", d.log());
+    wait_for_the_privacy_popup(&sway, &d);
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "wpctl").is_empty(), "neither the click nor Escape ran wpctl");
+    sway.click(x, MIDDLE, "button2");
+    assert!(wait_for_call(&sway, "wpctl", "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"), "{:?} {:?}", recorded(&sway, "wpctl"), d.log());
+    assert_eq!(d.count("privacy popup shown"), 1, "the middle click opens nothing: {:?}", d.log());
+}
+
+/// Privacy spec § 4, § 5 (Review Focus 4): the open popup stays through the off-delay, a capture
+/// back within it keeps it open, and once the capture ends for good it closes with
+/// "nothing captured" no sooner than the delay; then nothing wakes (the timer went with it).
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn privacy_the_popup_closes_when_the_capture_ends() {
+    let (sway, _hypr, d) = privacy_daemon("privacy-close", PRIVACY_REST_BAR);
+    let x = firefox_records(&sway, &d);
+    sway.click(x, MIDDLE, "button1");
+    assert!(d.wait_for("privacy popup shown", DELAY), "{:?}", d.log());
+    wait_for_the_privacy_popup(&sway, &d);
+    // Gone, then back at once: well inside the off-delay.
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    pw_dump_send(&sway.runtime, &capture_delta(200, "firefox", "running", 300, true));
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("popup closed"), 0, "back within the delay: still open: {:?}", d.log());
+    let sent = Instant::now();
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    assert!(d.wait_for("popup closed (nothing captured)", DELAY), "{:?}", d.log());
+    let closed = sent.elapsed();
+    assert!(closed >= Duration::from_millis(400), "open through the off-delay, closed after {closed:?}: {:?}", d.log());
+    assert_eq!(on_the_bar(&sway.screenshot("HEADLESS-1").expect("grim"), privacy_orange()), None, "the glyph went too");
+    let rest = rest_over_5_s(&d);
+    assert_eq!(rest, 0, "the popup closed, nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
+}
+
+/// Privacy spec § 3: Hyprland's screencast events light the screen glyph in red; the release
+/// counts after its 1 s hold, then the 0.5 s off-delay.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_hyprland_screencast_lights_the_screen() {
+    let (sway, hypr, d) = privacy_daemon("privacy-cast", "");
+    assert!(wait_until(|| hypr.write("screencast>>1,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    let sent = Instant::now();
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    let gone = glyph_gone_after(&sway, privacy_red(), sent);
+    assert!(gone.is_some_and(|t| t >= Duration::from_millis(1300)), "held, then delayed: {gone:?} {:?}", d.log());
+    assert!(gone.is_some_and(|t| t <= Duration::from_secs(3)), "gone within 3 s: {gone:?} {:?}", d.log());
+}
+
+/// Privacy spec § 8: once a capture ended and its glyph went, the loop sleeps (no timer left).
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn privacy_at_rest_no_wakeups_after_a_capture() {
+    let (sway, _hypr, d) = privacy_daemon("privacy-rest", PRIVACY_REST_BAR);
+    firefox_records(&sway, &d);
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    assert!(glyph_gone_after(&sway, privacy_orange(), Instant::now()).is_some(), "{:?}", d.log());
+    let rest = rest_over_5_s(&d);
+    assert_eq!(rest, 0, "nothing pending: no timer ({rest} wake-ups): {:?}", d.log());
 }

@@ -148,6 +148,8 @@ pub enum GroupKind {
     Launcher,
     /// The media module: a block of its own (media spec § 1).
     Media,
+    /// The privacy indicators: a block of its own (privacy spec § 1).
+    Privacy,
     /// The power button: a block of its own (power spec § 1).
     Power,
 }

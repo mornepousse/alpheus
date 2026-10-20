@@ -29,9 +29,10 @@ use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 /// media, title), then the system indicators (Q9); the tray goes right
 /// after resources (Mae, tray plan 2 question 1), and the launcher button
 /// after the system indicators (Mae, 2026-10-05: `Mod+Space` still opens the
-/// launcher), then the power button, the last of all (power spec § 1).
+/// launcher), then the privacy indicators (privacy spec § 1), then the power button, the last of
+/// all (power spec § 1).
 /// Workspaces, the clock and the bell always stay.
-const REMOVAL: [ModuleId; 10] = [
+const REMOVAL: [ModuleId; 11] = [
     ModuleId::Resources,
     ModuleId::Tray,
     ModuleId::Media,
@@ -41,6 +42,7 @@ const REMOVAL: [ModuleId; 10] = [
     ModuleId::Volume,
     ModuleId::Battery,
     ModuleId::Launcher,
+    ModuleId::Privacy,
     ModuleId::Power,
 ];
 /// Minimum title width before it disappears.
@@ -90,6 +92,7 @@ pub fn group_kind(m: ModuleId) -> GroupKind {
         | ModuleId::Notifications
         | ModuleId::Osd
         | ModuleId::Quick => GroupKind::Status,
+        ModuleId::Privacy => GroupKind::Privacy,
         ModuleId::Resources => GroupKind::Resources,
         ModuleId::Tray => GroupKind::Tray,
         ModuleId::Clock => GroupKind::Clock,
@@ -112,6 +115,7 @@ pub const fn module_hue(m: ModuleId) -> Option<Hue> {
         | ModuleId::Notifications
         | ModuleId::Osd
         | ModuleId::Quick
+        | ModuleId::Privacy
         | ModuleId::Clock
         | ModuleId::Power => None,
     }
@@ -248,6 +252,7 @@ fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
         ModuleId::Osd => None,
         // The quick panel is a popup (quick.rs), never a segment.
         ModuleId::Quick => None,
+        ModuleId::Privacy => segments::privacy(&bar.privacy),
         // ⏻ alone; none when `[quick]` has no session command (power spec § 1).
         ModuleId::Power => segments::power(&bar.config.quick),
     }
@@ -414,6 +419,7 @@ mod tests {
     use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ModuleId};
     use crate::media::MediaView;
     use crate::notify::NotifyView;
+    use crate::privacy::{Capture, Indicator};
     use crate::state::Msg;
     use crate::system::{Battery, Charge, Link, NetState, Peripheral, PeripheralKind, PowerState, SoundState, Volume};
     use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
@@ -674,6 +680,7 @@ mod tests {
             workspaces: Vec::new(),
             window: Some(Window { class: "firefox".into(), title: "Page".into() }),
             toplevels: Vec::new(),
+            ..Default::default()
         };
         let mut b2 = bar();
         b2.apply(Msg::Compositor(Some(e2)));
@@ -965,6 +972,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- the privacy module (privacy spec § 1) ----
+
+    fn with_mic(mut b: Bar) -> Bar {
+        let held = Indicator { names: vec!["firefox".into()], unnamed: false };
+        b.privacy_at(
+            &Msg::Sound(Some(SoundState { capture: Some(Capture { mic: held, ..Capture::default() }), ..SoundState::default() })),
+            std::time::Instant::now(),
+        );
+        b
+    }
+
+    #[test]
+    fn privacy_is_its_own_block_with_no_hue_removed_just_before_power() {
+        assert_eq!(group_kind(ModuleId::Privacy), GroupKind::Privacy);
+        assert_eq!(module_hue(ModuleId::Privacy), None, "its glyphs carry their own hues");
+        assert_eq!(REMOVAL[REMOVAL.len() - 2..], [ModuleId::Privacy, ModuleId::Power]);
+    }
+
+    /// On a narrow bar, whatever the style, a shown capture outlives the tray, the title and the
+    /// system indicators: only the launcher button and the power button leave after it.
+    #[test]
+    fn privacy_stays_on_a_narrow_bar_while_the_title_goes() {
+        let mut seen_without_title = false;
+        for style in BarStyle::ALL {
+            let mut b = styled(bar_with_right_modules(), style);
+            let at = b.config.modules.iter().position(|m| *m == ModuleId::Volume).unwrap();
+            b.config.modules.insert(at, ModuleId::Privacy);
+            let b = with_mic(b);
+            for w in (45u16..=140).rev() {
+                let g = b.grid("HDMI-A-1", w);
+                let shown = |m: ModuleId| g.zones().iter().any(|z| z.target == Target::Module(m));
+                let title = g.text().contains("Web");
+                if !shown(ModuleId::Privacy) {
+                    assert!(!title && !shown(ModuleId::Volume) && !shown(ModuleId::Battery), "{style:?} at {w}: {}", g.text());
+                }
+                seen_without_title |= shown(ModuleId::Privacy) && !title;
+            }
+        }
+        assert!(seen_without_title, "a width where the title is gone and privacy stays");
     }
 
     // ---- the media module (media spec § 1) ----

@@ -222,7 +222,7 @@ impl Model {
                 focused: c.is_focused,
             })
             .collect();
-        CompositorState { workspaces, window, toplevels }
+        CompositorState { workspaces, window, toplevels, ..Default::default() }
     }
 }
 

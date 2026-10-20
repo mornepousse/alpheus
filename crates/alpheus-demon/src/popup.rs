@@ -156,6 +156,8 @@ pub enum PopupClose {
     PlayerGone,
     /// The quick panel: `alpheus-launch --quick` again.
     Verb,
+    /// The privacy popup: every indicator went off, the off-delay passed (privacy spec § 5).
+    NothingCaptured,
     Error,
 }
 
@@ -177,6 +179,7 @@ impl PopupClose {
             PopupClose::Restyled => "restyled",
             PopupClose::PlayerGone => "player gone",
             PopupClose::Verb => "verb",
+            PopupClose::NothingCaptured => "nothing captured",
             PopupClose::Error => "error",
         }
     }
@@ -226,6 +229,8 @@ pub enum PopupBody {
     Quick(Box<Quick>),
     /// The ⏻ power menu (power spec § 2).
     Power(Power),
+    /// The privacy popup (privacy spec § 5): its rows are drawn from `Bar.privacy`, nothing kept here.
+    Privacy,
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -242,6 +247,8 @@ pub enum ModulePopup {
     Quick,
     /// The ⏻ power menu: the power button (power spec § 1).
     Power,
+    /// The privacy popup: the privacy module (privacy spec § 5).
+    Privacy,
 }
 
 impl ModulePopup {
@@ -254,6 +261,7 @@ impl ModulePopup {
             (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
             (Target::Module(ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth), Button::Left) if quick => Some(ModulePopup::Quick),
             (Target::Module(ModuleId::Power), Button::Left) => Some(ModulePopup::Power),
+            (Target::Module(ModuleId::Privacy), Button::Left) => Some(ModulePopup::Privacy),
             _ => None,
         }
     }
@@ -268,6 +276,7 @@ impl PopupBody {
             PopupBody::Panel(_) => Some(ModulePopup::Panel),
             PopupBody::Quick(_) => Some(ModulePopup::Quick),
             PopupBody::Power(_) => Some(ModulePopup::Power),
+            PopupBody::Privacy => Some(ModulePopup::Privacy),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -737,6 +746,12 @@ impl App {
                 let action = self.power_with(|p| p.key(k, repeat, now));
                 self.power_action(action);
             }
+            // Not selectable: Escape closes it, every other key does nothing (privacy spec § 5).
+            PopupBody::Privacy => {
+                if k == Key::Escape {
+                    self.popup_close(PopupClose::Escape);
+                }
+            }
             PopupBody::Tooltip(_) => {}
         }
     }
@@ -826,6 +841,8 @@ impl App {
                 let action = self.power_with(|p| power_app::pointer(p, cell, kind, now));
                 self.power_action(action);
             }
+            // Nothing on it reacts: a click or the wheel inside does nothing (privacy spec § 5).
+            PopupBody::Privacy => {}
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
                 if let PopupPointer::Press(_) = kind {
@@ -1137,6 +1154,22 @@ mod tests {
         assert_eq!(body.module_popup(), Some(ModulePopup::Power), "a second press on ⏻ only closes it");
     }
 
+    /// Privacy spec § 5: a left press on the privacy module toggles its popup; the middle click
+    /// mutes the source (actions.rs), the other buttons do nothing here.
+    #[test]
+    fn a_left_press_on_the_privacy_module_toggles_its_popup() {
+        use crate::config::ModuleId;
+        use crate::grid::Target;
+        let privacy = Target::Module(ModuleId::Privacy);
+        for quick in [false, true] {
+            assert_eq!(ModulePopup::of(&privacy, Button::Left, quick), Some(ModulePopup::Privacy), "quick: {quick}");
+            for b in [Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
+                assert_eq!(ModulePopup::of(&privacy, b, quick), None, "{b:?}");
+            }
+        }
+        assert_eq!(PopupBody::Privacy.module_popup(), Some(ModulePopup::Privacy), "a second press only closes it");
+    }
+
     fn under(output: &str, start: u16, end: u16) -> Anchor {
         Anchor { output: output.into(), start, end }
     }
@@ -1330,6 +1363,7 @@ mod tests {
             Launcher,
             HoverEnded,
             PlayerGone,
+            NothingCaptured,
             Error,
         ];
         assert_eq!(
@@ -1347,6 +1381,7 @@ mod tests {
                 "launcher",
                 "hover ended",
                 "player gone",
+                "nothing captured",
                 "error"
             ]
         );

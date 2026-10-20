@@ -6,9 +6,11 @@ use crate::compositor::CompositorState;
 use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
+use crate::privacy::Privacy;
 use crate::system::{BtState, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Feed<T> {
@@ -66,6 +68,8 @@ pub struct Bar {
     pub media: Option<MediaView>,
     /// The bell; None until the notification server says anything (no bell drawn).
     pub notifications: Option<NotifyView>,
+    /// The privacy indicators (privacy spec §§ 3 and 4), fed by `privacy_at`; empty without the module.
+    pub privacy: Privacy,
     /// How much of each module takes its hue (themes spec § 9): the theme's setting, written by the wiring
     /// at start and on every theme reload. `None` until then, the look of delivery 1.
     pub module_colors: ModuleColors,
@@ -115,8 +119,10 @@ fn same_drawing(a: &Feed<CompositorState>, b: &Feed<CompositorState>) -> bool {
 
 impl Bar {
     pub fn new(config: BarConfig) -> Bar {
+        let privacy = Privacy::new(config.privacy.ignore.clone());
         Bar {
             config,
+            privacy,
             compositor: Feed::Waiting,
             clock: None,
             sound: Feed::Waiting,
@@ -130,6 +136,22 @@ impl Bar {
             notifications: None,
             module_colors: ModuleColors::None,
             style: BarStyle::Flat,
+        }
+    }
+
+    /// Feeds the privacy indicators from a sound or compositor message, at `now` (privacy spec
+    /// §§ 3 and 4); called before `apply`. True when what they show changed. Nothing is read or
+    /// kept without the `privacy` module. A compositor that is down counts as not casting.
+    pub fn privacy_at(&mut self, m: &Msg, now: Instant) -> bool {
+        if !self.config.modules.contains(&ModuleId::Privacy) {
+            return false;
+        }
+        match m {
+            Msg::Sound(None) => self.privacy.set_sound(None, false, now),
+            Msg::Sound(Some(s)) => self.privacy.set_sound(s.capture.as_ref(), s.source.map(|v| v.muted).unwrap_or(false), now),
+            Msg::Compositor(Some(c)) => self.privacy.set_casting(c.casting, c.cast_hold, now),
+            Msg::Compositor(None) => self.privacy.set_casting(false, Duration::ZERO, now),
+            _ => false,
         }
     }
 
@@ -221,6 +243,64 @@ mod tests {
         let s = SoundState { sink: Some(Volume { percent: 84, muted: false }), sinks: Some(sinks), ..SoundState::default() };
         assert!(b.apply(Msg::Sound(Some(s))));
         assert!(matches!(&b.sound, Feed::Ready(s) if s.sinks.is_none()), "{:?}", b.sound);
+    }
+
+    // ---- privacy (privacy spec §§ 3, 4 and 7) ----
+
+    fn holding_the_mic() -> SoundState {
+        let mic = crate::privacy::Indicator { names: vec!["firefox".into()], unnamed: false };
+        SoundState { capture: Some(crate::privacy::Capture { mic, ..Default::default() }), ..SoundState::default() }
+    }
+
+    #[test]
+    fn privacy_at_feeds_the_bar_only_with_the_module() {
+        let now = Instant::now();
+        let mut b = Bar::new(BarConfig::default());
+        assert!(b.config.modules.contains(&ModuleId::Privacy));
+        assert!(b.privacy_at(&Msg::Sound(Some(holding_the_mic())), now), "the microphone lights");
+        assert!(b.privacy.shown().mic.active());
+        assert!(!b.privacy_at(&Msg::Sound(Some(holding_the_mic())), now), "same capture: nothing changed");
+        let mut muted = holding_the_mic();
+        muted.source = Some(Volume { percent: 40, muted: true });
+        assert!(b.privacy_at(&Msg::Sound(Some(muted)), now), "the mute flip changes what is drawn");
+        assert!(b.privacy.mic_muted());
+        assert!(b.privacy_at(&Msg::Sound(None), now), "the source down: no capture");
+        assert!(!b.privacy.mic_muted());
+        // The off-delay keeps it shown for now; it goes once due.
+        assert!(b.privacy.deadline().is_some());
+
+        let mut config = BarConfig::default();
+        config.modules.retain(|m| *m != ModuleId::Privacy);
+        let mut off = Bar::new(config);
+        assert!(!off.privacy_at(&Msg::Sound(Some(holding_the_mic())), now));
+        assert!(!off.privacy.shown().mic.active() && off.privacy.deadline().is_none(), "nothing kept");
+    }
+
+    #[test]
+    fn privacy_at_reads_the_compositor_casting_even_when_the_bar_draws_the_same() {
+        let now = Instant::now();
+        let mut b = Bar::new(BarConfig::default());
+        let mut e = example();
+        assert!(!b.privacy_at(&Msg::Compositor(Some(e.clone())), now), "not casting");
+        e.casting = true;
+        assert!(b.privacy_at(&Msg::Compositor(Some(e.clone())), now), "the screen lights");
+        assert!(b.privacy.shown().screen.active());
+        e.casting = false;
+        e.cast_hold = std::time::Duration::ZERO;
+        b.privacy_at(&Msg::Compositor(Some(e)), now);
+        assert!(b.privacy.shown().screen.active(), "the off-delay still applies");
+        b.privacy_at(&Msg::Compositor(None), now);
+        assert!(b.privacy.deadline().is_some());
+        assert!(b.privacy.due(now + crate::privacy::OFF_DELAY));
+        assert!(!b.privacy.shown().screen.active());
+    }
+
+    #[test]
+    fn privacy_at_ignores_every_other_message() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(!b.privacy_at(&Msg::Clock(H), Instant::now()));
+        assert!(!b.privacy_at(&Msg::Network(None), Instant::now()));
+        assert!(!b.privacy.shown().mic.active());
     }
 
     #[test]

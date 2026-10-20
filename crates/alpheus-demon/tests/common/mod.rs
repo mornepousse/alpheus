@@ -514,6 +514,22 @@ pub fn default_sink_delta(node: &str) -> String {
     )
 }
 
+/// A pw-dump delta in which app `app` records the fixture's AG06 source: its `Stream/Input/Audio`
+/// node `consumer_id` in `state`, and the link `link_id` from the source to it (`active` or
+/// `paused`). Only the props the privacy rules read (privacy spec § 2): well under PIPE_BUF.
+pub fn capture_delta(consumer_id: u32, app: &str, state: &str, link_id: u32, active: bool) -> String {
+    let source = AG06_SOURCE.0;
+    let link_state = if active { "active" } else { "paused" };
+    format!(
+        r#"[{{"id":{consumer_id},"type":"PipeWire:Interface:Node","info":{{"state":"{state}","props":{{"media.class":"Stream/Input/Audio","node.name":"{app}","application.name":"{app}"}}}}}},{{"id":{link_id},"type":"PipeWire:Interface:Link","info":{{"output-node-id":{source},"input-node-id":{consumer_id},"state":"{link_state}"}}}}]"#
+    )
+}
+
+/// A pw-dump delta removing `capture_delta`'s link and node (pw-dump's `"info": null`).
+pub fn capture_gone(consumer_id: u32, link_id: u32) -> String {
+    format!(r#"[{{"id":{link_id},"info":null}},{{"id":{consumer_id},"info":null}}]"#)
+}
+
 fn make_fifo(path: &Path) {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
