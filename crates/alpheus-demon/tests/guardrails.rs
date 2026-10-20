@@ -1474,7 +1474,7 @@ fn the_theme_watch_only_reads_the_config_directory() {
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
             {
-                assert!(!prod.contains(never), "{never} in {name}: the config directory is read-only to the daemon");
+                assert!(!prod.contains(never), "{never} in {name}: the config directory and the video devices are read-only to the daemon");
             }
         } else {
             assert!(!prod.contains("inotify_"), "inotify outside watch.rs and camera_dev.rs: {name}");

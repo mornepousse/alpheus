@@ -505,4 +505,19 @@ mod tests {
         let err = CameraWatch::start(&t.join("nope")).err().unwrap();
         assert!(err.contains("nope"), "{err}");
     }
+
+    #[test]
+    fn a_watched_node_at_the_limit_keeps_its_watch_on_attrib() {
+        use std::os::unix::fs::PermissionsExt;
+        let names: Vec<String> = (0..MAX_DEVICE_WATCHES).map(|i| format!("video{i}")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let t = dev("limit-attrib", &refs);
+        let mut w = CameraWatch::start(&t).unwrap();
+        assert_eq!(w.watched(), MAX_DEVICE_WATCHES);
+        fs::set_permissions(t.join("video7"), fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(w.drain());
+        assert_eq!(w.watched(), MAX_DEVICE_WATCHES);
+        drop(fs::File::open(t.join("video7")).unwrap());
+        assert!(w.drain(), "its kernel watch survived the attrib");
+    }
 }
