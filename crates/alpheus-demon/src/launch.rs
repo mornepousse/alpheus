@@ -240,14 +240,14 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
     }
 }
 
-/// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
-/// microphone or a label change wakes nothing).
 /// Whether the camera devices are watched: only with the `privacy` module (no inotify instance,
 /// no timer and no scan otherwise).
 pub fn camera_wanted(modules: &[ModuleId]) -> bool {
     modules.contains(&ModuleId::Privacy)
 }
 
+/// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
+/// microphone or a label change wakes nothing).
 pub fn sound_scope(modules: &[ModuleId]) -> Scope {
     if modules.contains(&ModuleId::Osd) { Scope::Osd } else { Scope::Bar }
 }

@@ -1,10 +1,10 @@
 //! The camera devices' wiring (privacy delivery 2, spec §§ 3-4): one inotify fd in the loop, level
 //! triggered and drained to EAGAIN, so it never wakes the loop at rest. An event is only a trigger:
-//! it moves the 300 ms debounce (`camera_timer`) back, and when that fires one scan of `/proc`
+//! it moves the 300 ms debounce (`camera_timer`) back (at most 1 s after the burst's first trigger), and when that fires one scan of `/proc`
 //! decides what is shown. The start scan runs once the watches are set, so a camera held across a
 //! daemon restart lights with no event. Logs never name a process or a pid.
 
-use crate::camera_dev::{CameraWatch, SCAN_DEBOUNCE, scan};
+use crate::camera_dev::{CameraWatch, scan, scan_deadline};
 use crate::log::write as log;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
@@ -70,13 +70,16 @@ impl App {
             return;
         }
         if let Some(handle) = self.loop_handle.clone() {
-            self.camera_timer.sync(&handle, Some(Instant::now() + SCAN_DEBOUNCE), App::camera_tick);
+            let now = Instant::now();
+            let first = *self.camera_burst.get_or_insert(now);
+            self.camera_timer.sync(&handle, Some(scan_deadline(first, now)), App::camera_tick);
         }
     }
 
     /// The debounce fired (its source is dropped): one scan.
     pub(crate) fn camera_tick(app: &mut App, now: Instant) {
         app.camera_timer.fired();
+        app.camera_burst = None;
         app.camera_scan(now);
     }
 

@@ -13,10 +13,13 @@ use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A trigger is followed by one scan this long after the last one (an open and its close, a burst).
 pub const SCAN_DEBOUNCE: Duration = Duration::from_millis(300);
+/// A burst of triggers is scanned at the latest this long after its first one, however often a
+/// process keeps opening and closing a node.
+pub const SCAN_MAX_WAIT: Duration = Duration::from_secs(1);
 /// Video nodes watched at most.
 pub const MAX_DEVICE_WATCHES: usize = 64;
 /// Processes and open files per process a scan looks at, at most.
@@ -37,6 +40,12 @@ pub struct Scan {
 }
 
 /// A node name the watch cares about.
+/// When the scan runs for a trigger at `now`, the burst having begun at `first`: the debounce
+/// after this trigger, never later than `SCAN_MAX_WAIT` after the burst's first one.
+pub fn scan_deadline(first: Instant, now: Instant) -> Instant {
+    (now + SCAN_DEBOUNCE).min(first + SCAN_MAX_WAIT)
+}
+
 pub fn is_video(name: &[u8]) -> bool {
     name.starts_with(b"video")
 }
@@ -268,6 +277,24 @@ mod tests {
     use std::path::Path;
 
     const SELF_PID: u32 = 999_999;
+
+    /// A trigger every 200 ms keeps pushing the debounce back; the scan still runs by the first
+    /// trigger + 1 s, and a lone trigger keeps the plain debounce.
+    #[test]
+    fn a_steady_stream_of_triggers_is_scanned_within_the_max_wait() {
+        let first = Instant::now();
+        assert_eq!(scan_deadline(first, first), first + SCAN_DEBOUNCE);
+        let mut scanned = None;
+        for i in 0..=10u32 {
+            let now = first + Duration::from_millis(200) * i;
+            let deadline = scan_deadline(first, now);
+            if deadline <= now + Duration::from_millis(200) {
+                scanned = Some(deadline);
+                break;
+            }
+        }
+        assert_eq!(scanned, Some(first + SCAN_MAX_WAIT));
+    }
 
     fn euid() -> u32 {
         // SAFETY: geteuid has no preconditions and cannot fail.

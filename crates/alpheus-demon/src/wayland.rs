@@ -526,6 +526,8 @@ pub struct App {
     pub(crate) camera_roots: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// The camera scan's debounce: armed only for `SCAN_DEBOUNCE` after a device event.
     pub(crate) camera_timer: DeadlineTimer,
+    /// The first trigger of the burst waiting for its scan (the debounce's cap); cleared by the scan.
+    pub(crate) camera_burst: Option<std::time::Instant>,
     /// The process-scan bound was logged (once per daemon).
     pub(crate) camera_bound_logged: bool,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
@@ -724,6 +726,7 @@ impl App {
             camera_watch: None,
             camera_roots: None,
             camera_timer: DeadlineTimer::new(),
+            camera_burst: None,
             camera_bound_logged: false,
             sound_tap: None,
             wifi_tap: None,

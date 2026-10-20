@@ -638,13 +638,22 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     fs::create_dir_all(&dev).unwrap();
     fs::create_dir_all(&proc).unwrap();
     let text = o.bar_toml.unwrap_or("");
-    if o.bar_toml.is_some() || !text.contains("[privacy]") {
-        let privacy = if text.contains("[privacy]") {
-            String::new()
+    if o.bar_toml.is_some() || !text.contains("dev_dir") {
+        let roots = format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display());
+        let text = if text.contains("dev_dir") {
+            text.to_string()
+        } else if let Some(at) = text.find("[privacy]") {
+            // TOML forbids a second `[privacy]` header: the roots go right under the existing one.
+            let (head, rest) = match text[at..].find('\n') {
+                Some(n) => text.split_at(at + n + 1),
+                None => (text, ""),
+            };
+            let nl = if head.ends_with('\n') { "" } else { "\n" };
+            format!("{head}{nl}{roots}{rest}")
         } else {
-            format!("\n[privacy]\ndev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display())
+            format!("{text}\n[privacy]\n{roots}")
         };
-        fs::write(config.join("alpheus/bar.toml"), format!("{text}{privacy}")).unwrap();
+        fs::write(config.join("alpheus/bar.toml"), text).unwrap();
     }
     if let Some(text) = o.launcher_toml {
         fs::write(config.join("alpheus/launcher.toml"), text).unwrap();
