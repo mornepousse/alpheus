@@ -25,7 +25,7 @@ use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
-use alpheus_demon::sources::dbus::bt_act::ActMethod;
+use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
@@ -1024,11 +1024,53 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
     assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
     assert_eq!(prod.matches(".send(").count(), 1, "every message leaves through `post`");
     assert_eq!(prod.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
-    for never in
-        ["send_with_reply_and_block", "RequestName", "RequestDefaultAgent", "Crossroads", "blocking_pop_message", "RefArg", "new_signal("]
-    {
+    assert_eq!(prod.matches("method_return(").count(), 1, "in `answer`: the only reply it builds");
+    assert_eq!(prod.matches(".error(").count(), 1, "in `answer`: the only error it builds");
+    for never in [
+        "send_with_reply_and_block",
+        "RequestName",
+        "request_name",
+        "RequestDefaultAgent",
+        "Crossroads",
+        "blocking_pop_message",
+        "RefArg",
+        "new_signal(",
+        "Message::method_call(",
+        "call_with_args(",
+        "Message::signal(",
+        "return_with_args(",
+        ".add_match(",
+        "\"Suspend\"",
+        "\"Hibernate\"",
+        "\"PowerOff\"",
+        "\"Reboot\"",
+        "\"Sleep\"",
+        "\"ActivateConnection\"",
+        "\"DeactivateConnection\"",
+        "\"GetSecrets\"",
+        "\"Enable\"",
+    ] {
         assert!(!prod.contains(never), "{never} in bt_act.rs");
     }
+}
+
+/// Bluetooth spec § 3, § 5: the acting connection serves one object, `org.bluez.Agent1` at
+/// AGENT_PATH, to BlueZ's unique name only; every reply is built in `answer`.
+#[test]
+fn the_bluetooth_connection_serves_only_the_agent() {
+    assert_eq!((AGENT_PATH, CAPABILITY), ("/org/alpheus/bluetooth/agent", "KeyboardDisplay"));
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
+    let prod = production_code(&file);
+    assert_eq!(prod.matches("method_return(").count(), 1);
+    assert_eq!(prod.matches(".error(").count(), 1);
+    let answer = function_body(&prod, "fn answer(");
+    assert!(answer.contains("method_return(") && answer.contains(".error("), "replies only in `answer`: {answer}");
+    assert_eq!(prod.matches("\"org.bluez.Agent1\"").count(), 1, "one served interface, named once (AGENT_INTERFACE)");
+    let screen = function_body(&prod, "fn screen(");
+    for must in ["ACCESS_DENIED", "AGENT_PATH", "AGENT_INTERFACE", "UNKNOWN_METHOD"] {
+        assert!(screen.contains(must), "{must} missing from screen: {screen}");
+    }
+    assert!(screen.find("ACCESS_DENIED") < screen.find("UNKNOWN_METHOD"), "the sender is checked first");
 }
 
 /// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads

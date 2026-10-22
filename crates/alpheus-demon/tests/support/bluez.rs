@@ -5,7 +5,9 @@
 //! speaks raw D-Bus and never the daemon's code; dropped, the thread is joined and the name loses
 //! its owner. Every call is recorded as `"<Member> <path> <args>"`. Any other call to it (the acting
 //! connection's: `Set`, `Connect`, `Pair`…) is answered with an empty return, unless `fail` or `hold`
-//! said otherwise, and its destination is kept (`destinations`).
+//! said otherwise, and its destination is kept (`destinations`). The sender and path of the last
+//! `RegisterAgent` are kept: `ask_passkey`, `ask_confirmation` and `cancel` call that agent from
+//! the fake's thread, and its answers are recorded (`replies`), matched by serial.
 
 use super::busctl_wire::push_reply;
 use super::{Peer, PrivateBus};
@@ -32,6 +34,8 @@ pub fn device_path(n: u8) -> String {
 }
 
 enum Command {
+    /// An agent call to send; its answer is matched by serial.
+    Ask(Message),
     Add(u8, String, i16),
     Remove(u8),
     Connected(u8, bool),
@@ -49,6 +53,10 @@ struct Shared {
     failures: Vec<(String, String)>,
     /// Calls of this member stay unanswered until `release`.
     hold: Option<String>,
+    /// The sender and object path of the last `RegisterAgent`.
+    agent: Option<(String, String)>,
+    /// The agent's answers: `"<Member> ok"` or `"<Member> <error name>"`.
+    replies: Vec<String>,
 }
 
 /// path -> interface -> property -> busctl's `{"type", "data"}`.
@@ -146,6 +154,37 @@ impl FakeBluez {
         let _ = self.commands.send(Command::Release);
     }
 
+    /// The sender of the last `RegisterAgent` (the agent the fake calls).
+    pub fn agent_owner(&self) -> Option<String> {
+        self.shared.lock().unwrap().agent.as_ref().map(|(sender, _)| sender.clone())
+    }
+
+    /// BlueZ shows the device `n` a passkey: `DisplayPasskey(device, passkey, 0)`.
+    pub fn ask_passkey(&self, n: u8, passkey: u32) {
+        self.ask(|m| m.append3(path(&device_path(n)), passkey, 0u16), "DisplayPasskey");
+    }
+
+    /// BlueZ asks to confirm the device `n`'s passkey: `RequestConfirmation(device, passkey)`.
+    pub fn ask_confirmation(&self, n: u8, passkey: u32) {
+        self.ask(|m| m.append2(path(&device_path(n)), passkey), "RequestConfirmation");
+    }
+
+    /// BlueZ cancels the agent's pending request: `Cancel()`.
+    pub fn cancel(&self) {
+        self.ask(|m| m, "Cancel");
+    }
+
+    /// The agent's answers, in arrival order.
+    pub fn replies(&self) -> Vec<String> {
+        self.shared.lock().unwrap().replies.clone()
+    }
+
+    fn ask(&self, args: impl FnOnce(Message) -> Message, member: &str) {
+        let (owner, at) = self.shared.lock().unwrap().agent.clone().expect("an agent registered");
+        let m = Message::new_method_call(owner, at, "org.bluez.Agent1", member).unwrap();
+        let _ = self.commands.send(Command::Ask(args(m)));
+    }
+
     /// The unique name that owns `org.bluez`.
     pub fn unique_name(&self) -> String {
         self.name.clone()
@@ -202,7 +241,7 @@ fn emit(peer: &Peer, command: Command, tree: &mut Tree) {
             push_reply(&mut m, &json!({ "type": "as", "data": [[]] }).to_string());
             send(peer, m);
         }
-        Command::Release | Command::Stop => {}
+        Command::Ask(_) | Command::Release | Command::Stop => {}
     }
 }
 
@@ -232,6 +271,10 @@ fn act(call: &Message, shared: &Mutex<Shared>) -> Option<Message> {
     let member = call.member().map(|m| m.to_string()).unwrap_or_default();
     let mut s = shared.lock().unwrap();
     s.calls.push(format!("{member} {p} {}", args(call)).trim_end().to_string());
+    if member == "RegisterAgent" {
+        let at = call.read1::<Path>().map(|p| p.to_string()).unwrap_or_default();
+        s.agent = Some((call.sender().map(|n| n.to_string()).unwrap_or_default(), at));
+    }
     s.destinations.push(call.destination().map(|d| d.to_string()).unwrap_or_default());
     if let Some(i) = s.failures.iter().position(|(m, _)| *m == member) {
         let (_, error) = s.failures.remove(i);
@@ -274,10 +317,19 @@ fn answer(call: &Message, tree: &Tree, shared: &Mutex<Shared>) -> Option<Message
 
 fn serve(peer: Peer, mut tree: Tree, shared: Arc<Mutex<Shared>>, commands: Receiver<Command>) {
     let mut held = Vec::new();
+    // The agent calls sent, by serial: their member.
+    let mut asked = BTreeMap::new();
     loop {
         while let Ok(c) = commands.try_recv() {
             match c {
                 Command::Stop => return,
+                Command::Ask(m) => {
+                    let member = m.member().map(|m| m.to_string()).unwrap_or_default();
+                    if let Ok(serial) = peer.channel.send(m) {
+                        asked.insert(serial, member);
+                    }
+                    peer.channel.flush();
+                }
                 Command::Release => held.drain(..).for_each(|m: Message| send(&peer, m.method_return())),
                 c => emit(&peer, c, &mut tree),
             }
@@ -288,7 +340,16 @@ fn serve(peer: Peer, mut tree: Tree, shared: Arc<Mutex<Shared>>, commands: Recei
                 Some(_) => {}
                 None => held.push(m),
             },
-            Ok(_) => {}
+            Ok(Some(mut m)) => {
+                if let Some(member) = m.get_reply_serial().and_then(|s| asked.remove(&s)) {
+                    let outcome = match m.as_result() {
+                        Ok(_) => "ok".to_string(),
+                        Err(e) => e.name().unwrap_or("").to_string(),
+                    };
+                    shared.lock().unwrap().replies.push(format!("{member} {outcome}"));
+                }
+            }
+            Ok(None) => {}
             Err(_) => return,
         }
     }

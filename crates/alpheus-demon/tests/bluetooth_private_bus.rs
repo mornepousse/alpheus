@@ -5,13 +5,13 @@
 mod common;
 
 use alpheus_demon::sources::dbus::bt::BtTap;
-use alpheus_demon::sources::dbus::bt_act::{ActCall, ActError, BtAct, BtEvent};
+use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActCall, ActError, AgentId, AgentReply, AgentRequest, BtAct, BtEvent};
 use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
 use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Domain, DomainLog, session};
 use alpheus_demon::system::{BtEntry, BtScope, BtState, BtView};
-use common::PrivateBus;
 use common::bluez::FakeBluez;
+use common::{Peer, PrivateBus};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
@@ -133,6 +133,7 @@ fn ok(call: ActCall) -> BtEvent {
 }
 
 const HCI: &str = "/org/bluez/hci0";
+const REGISTER: &str = "RegisterAgent /org/bluez /org/alpheus/bluetooth/agent KeyboardDisplay";
 
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -159,6 +160,7 @@ fn each_call_reaches_the_fake_with_its_arguments() {
     assert_eq!(
         bz.calls(),
         [
+            REGISTER,
             "Set /org/bluez/hci0 org.bluez.Adapter1 Powered false",
             "Set /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02 org.bluez.Device1 Trusted true",
             "StartDiscovery /org/bluez/hci0",
@@ -170,7 +172,7 @@ fn each_call_reaches_the_fake_with_its_arguments() {
             "CancelPairing /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02",
         ]
     );
-    assert_eq!(act.in_flight(), 0);
+    assert_eq!(act.in_flight(), 0, "the registration is not counted");
 }
 
 #[test]
@@ -183,7 +185,7 @@ fn calls_wait_for_the_owner_then_go_to_the_unique_name() {
     act.call(connect.clone());
     assert_eq!(act.in_flight(), 1, "queued until the owner is known");
     assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [ok(connect)]);
-    assert_eq!(bz.destinations(), [bz.unique_name()], "never the well-known name");
+    assert_eq!(bz.destinations(), [bz.unique_name(), bz.unique_name()], "never the well-known name (RegisterAgent, Connect)");
     assert_eq!(act.in_flight(), 0);
 }
 
@@ -265,4 +267,166 @@ fn the_connection_closing_answers_pending_gone() {
     );
     act.call(connect.clone());
     assert_eq!(act.read(), [BtEvent::Answer { call: connect, result: Err(ActError::Gone) }]);
+}
+
+/// Pumps `act` until the fake recorded `RegisterAgent` (2 s, else panics).
+fn wait_registered(act: &mut BtAct, fake: &FakeBluez) {
+    let end = Instant::now() + Duration::from_secs(2);
+    while !fake.calls().iter().any(|c| c.starts_with("RegisterAgent ")) {
+        assert!(Instant::now() < end, "never registered: {:?}", fake.calls());
+        act.read();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Pumps `act` until an agent request arrives (2 s, else panics).
+fn agent_event(act: &mut BtAct) -> (AgentId, AgentRequest) {
+    let end = Instant::now() + Duration::from_secs(2);
+    loop {
+        assert!(Instant::now() < end, "no agent request");
+        for e in act.read() {
+            if let BtEvent::Agent { id, request } = e {
+                return (id, request);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// Waits (2 s at most) until the fake has `n` replies from the agent.
+fn replies(fake: &FakeBluez, act: &mut BtAct, n: usize) -> Vec<String> {
+    let end = Instant::now() + Duration::from_secs(2);
+    while fake.replies().len() < n && Instant::now() < end {
+        act.read();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    fake.replies()
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_agent_is_registered_never_as_default() {
+    let b = PrivateBus::start("bt-agent-reg");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [ok(connect)]);
+    assert_eq!(bz.calls(), [REGISTER, "Connect /org/bluez/hci0/dev_AA_BB_CC_DD_EE_01"]);
+    assert!(!bz.calls().iter().any(|c| c.starts_with("RequestDefaultAgent")));
+    assert!(bz.agent_owner().is_some());
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn display_passkey_is_delivered_and_answered() {
+    let b = PrivateBus::start("bt-agent-passkey");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    act.call(ActCall::Pair { device: dev(2) });
+    act.flush();
+    bz.ask_passkey(2, 482_913);
+    let (id, request) = agent_event(&mut act);
+    assert_eq!(request, AgentRequest::DisplayPasskey { device: dev(2), passkey: 482_913 });
+    act.reply(id, AgentReply::Ok);
+    act.flush();
+    assert_eq!(replies(&bz, &mut act, 1), ["DisplayPasskey ok"]);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn request_confirmation_waits_for_the_reply() {
+    let b = PrivateBus::start("bt-agent-confirm");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    bz.ask_confirmation(2, 7);
+    let (id, request) = agent_event(&mut act);
+    assert_eq!(request, AgentRequest::RequestConfirmation { device: dev(2), passkey: 7 });
+    std::thread::sleep(Duration::from_millis(300));
+    act.read();
+    assert!(bz.replies().is_empty(), "held until the panel answers: {:?}", bz.replies());
+    act.reply(id, AgentReply::Ok);
+    act.flush();
+    assert_eq!(replies(&bz, &mut act, 1), ["RequestConfirmation ok"]);
+    bz.ask_confirmation(2, 7);
+    let (id2, _) = agent_event(&mut act);
+    act.reply(id2, AgentReply::Rejected);
+    act.flush();
+    assert_eq!(replies(&bz, &mut act, 2), ["RequestConfirmation ok", "RequestConfirmation org.bluez.Error.Rejected"]);
+    act.reply(id2, AgentReply::Ok);
+    act.flush();
+    assert_eq!(replies(&bz, &mut act, 3).len(), 2, "already answered: nothing sent");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn cancel_is_delivered() {
+    let b = PrivateBus::start("bt-agent-cancel");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    bz.cancel();
+    assert_eq!(agent_event(&mut act).1, AgentRequest::Cancel);
+    assert_eq!(replies(&bz, &mut act, 1), ["Cancel ok"], "acknowledged without a reply() call");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_stranger_calling_the_agent_is_refused() {
+    let b = PrivateBus::start("bt-agent-stranger");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    let owner = bz.agent_owner().unwrap();
+    let stranger = Peer::connect(&b);
+    let t = std::thread::spawn(move || {
+        let m = dbus::Message::new_method_call(owner, AGENT_PATH, "org.bluez.Agent1", "DisplayPasskey").unwrap().append3(
+            dbus::Path::from(dev(2)),
+            1u32,
+            0u16,
+        );
+        stranger.call(m).map(|_| ())
+    });
+    let events = pump(&mut act, usize::MAX, Duration::from_secs(2));
+    assert!(!events.iter().any(|e| matches!(e, BtEvent::Agent { .. })), "{events:?}");
+    let e = t.join().unwrap().unwrap_err();
+    assert_eq!(e.name(), Some("org.freedesktop.DBus.Error.AccessDenied"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn close_unregisters() {
+    let b = PrivateBus::start("bt-agent-close");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    bz.ask_confirmation(2, 7);
+    agent_event(&mut act);
+    act.close();
+    let end = Instant::now() + Duration::from_secs(2);
+    while (bz.replies().is_empty() || !bz.calls().last().is_some_and(|c| c.starts_with("UnregisterAgent"))) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(bz.replies(), ["RequestConfirmation org.bluez.Error.Rejected"]);
+    assert_eq!(bz.calls().last().map(String::as_str), Some("UnregisterAgent /org/bluez /org/alpheus/bluetooth/agent"));
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_fifth_held_call_rejects_the_oldest() {
+    let b = PrivateBus::start("bt-agent-evict");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    for _ in 0..4 {
+        bz.ask_confirmation(2, 7);
+        agent_event(&mut act);
+    }
+    assert!(bz.replies().is_empty(), "four held: {:?}", bz.replies());
+    bz.ask_confirmation(2, 7);
+    agent_event(&mut act);
+    act.flush();
+    assert_eq!(replies(&bz, &mut act, 1), ["RequestConfirmation org.bluez.Error.Rejected"]);
 }
