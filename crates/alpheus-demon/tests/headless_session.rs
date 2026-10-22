@@ -10,6 +10,7 @@ use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_demon::quick::{BAR, BAR_START};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
+use common::bluez::{FakeBluez, device_path};
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
@@ -4255,6 +4256,210 @@ fn quick_wifi_closed_during_a_successful_new_network_attempt_deletes_nothing() {
     assert_eq!(d.count("quick: wifi connection failed"), 0, "connected: never a failure: {:?}", d.log());
     assert!(recorded(&sway, "nmcli").iter().all(|c| !c.contains("delete")), "nothing deleted: {:?}", recorded(&sway, "nmcli"));
     assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
+}
+
+const BT_MODULES: &str = "\"bluetooth\", \"quick\", \"clock\"";
+/// A press on the bluetooth module: the first one of `BT_MODULES`, from cell 1.
+const BLUETOOTH_AT: (u32, u32) = (16, 10);
+/// The fake BlueZ's paired headset, `CasqueBT` (support/bluez.rs: device 2).
+const CASQUE: u8 = 2;
+
+/// The quick panel's Bluetooth (catppuccin dark): `modules` and the panel; a private system bus with
+/// the fake BlueZ (hci0 powered, CasqueBT paired, not connected); fake `wpctl` and `rfkill`
+/// recording their calls; the `Fifo` fake pw-dump; a backlight directory with no device (no
+/// brightness row, never the real /sys).
+fn bt_daemon(name: &str, modules: &str) -> (PrivateBus, FakeBluez, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let bluez = FakeBluez::serve(&bus);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    for program in ["wpctl", "rfkill"] {
+        fake_recorder(&sway, program);
+    }
+    let toml = format!("modules = [{modules}]\n[osd]\nbacklight_dir = \"{}\"\n", sway.runtime.join("no-backlight").display());
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500)); // BlueZ's tree read, the bluetooth module drawn
+    (bus, bluez, sway, hypr, d)
+}
+
+/// Waits until the fake BlueZ received a call starting with `prefix`.
+fn bt_calls(b: &FakeBluez, prefix: &str) -> bool {
+    wait_until(|| b.calls().iter().any(|c| c.starts_with(prefix)))
+}
+
+/// The detail open: the agent registered and discovery started, then 300 ms to paint.
+fn wait_for_the_bt_detail(b: &FakeBluez) -> bool {
+    let ok = bt_calls(b, "RegisterAgent ") && bt_calls(b, "StartDiscovery /org/bluez/hci0");
+    thread::sleep(Duration::from_millis(300));
+    ok
+}
+
+/// A click on the bluetooth module: the panel shown on the Bluetooth detail, drawn (its background
+/// down more than one row).
+fn open_the_bt_detail(sway: &Sway, d: &Daemon, b: &FakeBluez) {
+    sway.click(BLUETOOTH_AT.0, BLUETOOTH_AT.1, "button1");
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_the_bt_detail(b), "{:?} {:?}", b.calls(), d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| panel_height(s) > 22), "the panel drawn: {:?}", d.log());
+}
+
+/// No device name, address or object path of the fixtures in the daemon's log (constraints: BlueZ
+/// paths embed the address).
+fn no_device_logged(d: &Daemon) -> bool {
+    !d.log()
+        .iter()
+        .any(|l| ["CasqueBT", "Keyboard-Test", "Speaker-X", "AA:BB", "AA_BB", "/org/bluez/hci0/dev"].iter().any(|s| l.contains(s)))
+}
+
+/// The panel's height: `popup_bg` pixels down its third cell's column.
+fn panel_height(s: &Ppm) -> usize {
+    let bg = popup_bg("catppuccin");
+    column(s, popup_cell(0, 2, 0).0).iter().filter(|p| **p == bg).count()
+}
+
+/// Quick Bluetooth spec § 2, § 5: a click on the bluetooth module opens the panel on its detail; a
+/// second connection to the system bus registers the pairing agent (KeyboardDisplay, never as the
+/// default agent) and starts discovery on hci0.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_a_module_click_opens_the_detail() {
+    let (bus, bluez, sway, _hypr, d) = bt_daemon("bt-open", BT_MODULES);
+    assert_eq!(connections_of(&bus, d.pid()), 1, "closed: the read connection only");
+    open_the_bt_detail(&sway, &d, &bluez);
+    let calls = bluez.calls();
+    assert!(
+        calls.iter().any(|c| c.starts_with("RegisterAgent ") && c.contains("/org/alpheus/bluetooth/agent KeyboardDisplay")),
+        "{calls:?}"
+    );
+    assert!(!calls.iter().any(|c| c.contains("RequestDefaultAgent")), "{calls:?}");
+    assert_eq!(connections_of(&bus, d.pid()), 2, "open: read and act");
+    assert!(no_device_logged(&d), "{:?}", d.log());
+}
+
+/// Quick Bluetooth spec § 3: Enter on the paired headset (selected first) calls `Connect` on it;
+/// once BlueZ says it is connected, the bar's module shows it (more ink); nothing names it in the
+/// log.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_enter_connects_a_paired_device() {
+    let (_bus, bluez, sway, _hypr, d) = bt_daemon("bt-connect", BT_MODULES);
+    open_the_bt_detail(&sway, &d, &bluez);
+    let before = ink(&sway.screenshot("HEADLESS-1").expect("grim"), 0, 200);
+    keys(&sway, &["Return"]);
+    let connect = format!("Connect {}", device_path(CASQUE));
+    assert!(bt_calls(&bluez, &connect), "{:?} {:?}", bluez.calls(), d.log());
+    bluez.set_connected(CASQUE, true);
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 0, 200) > before + 40), "the module shows the device: {before} {:?}", d.log());
+    assert!(no_device_logged(&d), "{:?}", d.log());
+}
+
+/// Quick Bluetooth spec § 3, § 5: Enter on a nearby keyboard calls `Pair` (held by the fake); BlueZ
+/// shows a passkey through the agent, which answers it, and the panel grows one line: `Type 482
+/// 913 then ⏎`.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_pairing_a_keyboard_shows_its_code() {
+    let (_bus, bluez, sway, _hypr, d) = bt_daemon("bt-pair", BT_MODULES);
+    open_the_bt_detail(&sway, &d, &bluez);
+    bluez.hold("Pair");
+    bluez.add_nearby(3, "Keyboard-Test", -45);
+    thread::sleep(Duration::from_millis(500));
+    keys(&sway, &["Down", "Return"]); // CasqueBT, the `Nearby` heading (not selectable), Keyboard-Test
+    let pair = format!("Pair {}", device_path(3));
+    assert!(bt_calls(&bluez, &pair), "{:?} {:?}", bluez.calls(), d.log());
+    thread::sleep(Duration::from_millis(300));
+    let h = panel_height(&sway.screenshot("HEADLESS-1").expect("grim"));
+    bluez.ask_passkey(3, 482_913);
+    assert!(
+        wait_until(|| bluez.replies().iter().any(|r| r.starts_with("DisplayPasskey") && !r.contains("Rejected"))),
+        "{:?} {:?}",
+        bluez.replies(),
+        d.log()
+    );
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| panel_height(s) >= h + 11), "one more line, the code: {h} {:?}", d.log());
+    assert!(no_device_logged(&d), "{:?}", d.log());
+}
+
+/// Quick Bluetooth spec § 3: Delete asks `Forget? ⏎`; Enter past `CONFIRM_AFTER` removes the
+/// device from the adapter.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_forget_removes_a_device() {
+    let (_bus, bluez, sway, _hypr, d) = bt_daemon("bt-forget", BT_MODULES);
+    open_the_bt_detail(&sway, &d, &bluez);
+    keys(&sway, &["Delete"]);
+    thread::sleep(Duration::from_millis(500)); // past CONFIRM_AFTER (0.4 s)
+    keys(&sway, &["Return"]);
+    let target = device_path(CASQUE);
+    assert!(
+        wait_until(|| bluez.calls().iter().any(|c| c.starts_with("RemoveDevice ") && c.contains(&target))),
+        "{:?} {:?}",
+        bluez.calls(),
+        d.log()
+    );
+    assert!(no_device_logged(&d), "{:?}", d.log());
+}
+
+/// Quick Bluetooth spec § 4: the default sink on a Bluetooth headset adds the headset row under
+/// the volume; Enter on it switches the headset to its other mode (`headset-head-unit`, index 3).
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_headset_row_switches_profile() {
+    let (_bus, _bluez, sway, _hypr, d) = bt_daemon("bt-headset", "\"volume\", \"bluetooth\", \"quick\", \"clock\"");
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pw-dump-bluez-headset.json");
+    pw_dump_send(&sway.runtime, &std::fs::read_to_string(fixture).unwrap());
+    thread::sleep(Duration::from_millis(500));
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume headset", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    keys(&sway, &["Down", "Return"]);
+    assert!(wait_for_call(&sway, "wpctl", "wpctl set-profile 61 3"), "{:?} {:?}", recorded(&sway, "wpctl"), d.log());
+}
+
+/// Constraints (acting connection): closing the panel unregisters the agent and lets the acting
+/// connection go; a device found afterwards reaches no reader that calls BlueZ, and nothing wakes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_at_rest_no_wakeups_after_the_panel_closes() {
+    let (bus, bluez, sway, _hypr, d) = bt_daemon("bt-rest", BT_MODULES);
+    open_the_bt_detail(&sway, &d, &bluez);
+    keys(&sway, &["Escape", "Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(bt_calls(&bluez, "UnregisterAgent "), "{:?} {:?}", bluez.calls(), d.log());
+    assert!(wait_until(|| connections_of(&bus, d.pid()) == 1), "the acting connection gone: {:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // the close settles
+    let calls = bluez.calls().len();
+    bluez.add_nearby(4, "Speaker-X", -60);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(bluez.calls().len(), calls, "closed: nothing read: {:?}", &bluez.calls()[calls..]);
+    assert_eq!(rest_over_5_s(&d), 0, "closed: nothing left awake");
+}
+
+/// Quick Bluetooth spec § 6: BlueZ leaving while a `Pair` is under way ends it silently: no
+/// `failed` drawn, no failure logged, and the acting connection goes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn bluetooth_bluez_gone_mid_pair_shows_no_failure() {
+    let (bus, bluez, sway, _hypr, d) = bt_daemon("bt-gone", BT_MODULES);
+    open_the_bt_detail(&sway, &d, &bluez);
+    bluez.hold("Pair");
+    bluez.add_nearby(3, "Keyboard-Test", -45);
+    thread::sleep(Duration::from_millis(500));
+    keys(&sway, &["Down", "Return"]);
+    assert!(bt_calls(&bluez, &format!("Pair {}", device_path(3))), "{:?} {:?}", bluez.calls(), d.log());
+    drop(bluez); // org.bluez loses its owner, the held Pair unanswered
+    assert!(wait_until(|| connections_of(&bus, d.pid()) == 1), "the acting connection gone: {:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert!(!d.log().iter().any(|l| l.contains("quick: bluetooth") && l.contains("failed")), "{:?}", d.log());
+    assert!(!warn_in_the_panel(&sway.screenshot("HEADLESS-1").expect("grim")), "no `failed` drawn: {:?}", d.log());
+    assert!(no_device_logged(&d), "{:?}", d.log());
 }
 
 /// The fake source's lines (fictional, in tools-menu's shape).
