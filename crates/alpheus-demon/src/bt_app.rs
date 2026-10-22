@@ -49,6 +49,18 @@ pub(crate) fn unanswered(panel_shown: bool, request: &AgentRequest) -> Option<Ag
 /// `failed`).
 const REFUSED: &str = "bluetooth connection";
 
+/// The panel's record that the connection already closed under us once this open.
+const LOST: &str = "bluetooth connection lost";
+
+/// The connection closed under us with BlueZ still there (a bus restart, a refusal): the syncs
+/// reopen it once per panel open; a second loss stops them (`REFUSED`), so a bus that keeps closing
+/// it is not asked again on every bar message. A user's action, or the next open, still tries.
+pub(crate) fn note_lost(q: &mut Quick) {
+    if !q.note_failure(LOST) {
+        q.note_failure(REFUSED);
+    }
+}
+
 /// The panel's sync opens the connection: wanted, an adapter seen, and not already refused this
 /// open (a sync runs on every bar message: a refusing bus is not asked again each time).
 pub(crate) fn opens_on_sync(q: Option<&Quick>, in_flight: usize) -> bool {
@@ -190,7 +202,13 @@ impl App {
                             self.quick_action(action);
                         }
                     },
-                    BtEvent::Closed => self.bt_drop(),
+                    BtEvent::Closed => {
+                        log("quick: bluetooth connection lost");
+                        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
+                            note_lost(q);
+                        }
+                        self.bt_drop();
+                    }
                 }
             }
         }
@@ -347,6 +365,23 @@ pub(crate) mod tests {
         assert_eq!(sync_step(Some(&q), true, true, 0), SyncStep::Close);
         assert_eq!(sync_step(None, true, true, 0), SyncStep::Close, "the panel gone");
         assert_eq!(sync_step(None, false, true, 0), SyncStep::Drop);
+    }
+
+    /// Fix round 1: one unexpected close is reopened by the syncs, a second within the same open is
+    /// not.
+    #[test]
+    fn a_second_loss_stops_the_syncs_reopening() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        q.follow_bt(&live, Some(bt_view()), t);
+        q.bt.open_detail();
+        note_lost(&mut q);
+        assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Open, "lost once: reopened");
+        note_lost(&mut q);
+        assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Keep, "lost twice: left closed");
+        let call = [BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() })];
+        assert!(opens_for(&call, adapter_seen(&q)), "an action still tries");
     }
 
     #[test]

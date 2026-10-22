@@ -546,7 +546,8 @@ impl Quick {
             _ => rows.first().copied().unwrap_or(Row::Volume),
         };
         if focus == Focus::Bluetooth && q.selected == Row::Bluetooth {
-            // Asked for (the module, `--quick bluetooth`), never a first row by chance. No view read yet: nothing to discover, a repaint the open paints anyway.
+            // Asked for (the module, `--quick bluetooth`), never a first row by chance. No view read
+            // yet: nothing to discover, a repaint the open paints anyway.
             q.open_bt(live);
         }
         q.fit(live);

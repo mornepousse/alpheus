@@ -647,7 +647,8 @@ impl App {
     /// goes to a followed attempt (Mae's ruling P1). True when the open panel shows what it carries:
     /// the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
-        // Both taken always, so the bar never keeps either (decision 13); the headset first: it reads `sinks` as the panel-scope marker.
+        // Both taken always, so the bar never keeps either (decision 13); the headset first: it
+        // reads `sinks` as the panel-scope marker.
         let (headset, sinks) = (taken_headset(m), taken_sinks(m));
         if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
             if let Some(sinks) = sinks {

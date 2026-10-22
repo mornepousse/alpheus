@@ -1999,6 +1999,9 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
     // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
     assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
+    // Fix round 1: a connection lost under us is reopened by the syncs once per open, not forever.
+    let readable = function_body(&bt_app, "pub(crate) fn bt_readable(");
+    assert!(readable.contains("note_lost(") && readable.contains("self.bt_drop()"), "{readable}");
     let run = function_body(&bt_app, "pub(crate) fn bt_run(");
     assert!(run.contains("opens_for(") && run.contains(".flush()"), "{run}");
     // libdbus's flush also reads: what it read is delivered by the next `read`, the fd may stay quiet.

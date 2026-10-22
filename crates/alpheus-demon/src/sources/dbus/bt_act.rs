@@ -45,6 +45,9 @@ const MAX_HELD: usize = 4;
 const MAX_PIN: usize = 16;
 /// A call libdbus refused to build (an object path that is not one).
 const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
+/// The bus's answer when a call's recipient left without replying, or a timeout: told apart by
+/// asking BlueZ's owner again (`recheck`).
+const NO_REPLY: &str = "org.freedesktop.DBus.Error.NoReply";
 
 /// Every method this connection may call, exhaustively (spec § 5; pinned by tests/guardrails.rs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,7 +261,7 @@ pub fn message(call: &ActCall, owner: &str) -> Option<Message> {
 }
 
 /// What an error name means for the action: BlueZ or the connection gone, or a remote error kept
-/// by name (`NoReply` included: a timeout shows `failed`; BlueZ leaving is its name owner change).
+/// by name (`NoReply` too: the connection first asks who owns `org.bluez` now, `recheck`).
 fn act_error(name: &str) -> ActError {
     match name {
         "org.freedesktop.DBus.Error.ServiceUnknown"
@@ -370,6 +373,16 @@ fn take(held: &mut VecDeque<(AgentId, Message)>, id: AgentId) -> Option<Message>
     held.remove(i).map(|(_, m)| m)
 }
 
+/// A `NoReply` once the owner was asked again (`answer`: the owner's unique name, None when
+/// `org.bluez` has none): BlueZ still there under the same name, a remote error that shows
+/// `failed`; gone or replaced, the action ends silently (spec § 6).
+fn rechecked(known: Option<&str>, answer: Option<&str>) -> ActError {
+    match (known, answer) {
+        (Some(k), Some(a)) if k == a => ActError::Remote(NO_REPLY.into()),
+        _ => ActError::Gone,
+    }
+}
+
 /// Who answers for `org.bluez`.
 #[derive(Debug)]
 enum Owner {
@@ -396,6 +409,8 @@ pub struct BtAct {
     held: VecDeque<(AgentId, Message)>,
     /// `RegisterAgent` was sent: `close` unregisters.
     registered: bool,
+    /// `GetNameOwner` sent again after a `NoReply` (its serial), and the calls waiting for it.
+    rechecking: Option<(u32, Vec<ActCall>)>,
     closed: bool,
 }
 
@@ -423,6 +438,7 @@ impl BtAct {
             ready: Vec::new(),
             held: VecDeque::new(),
             registered: false,
+            rechecking: None,
             closed: false,
         };
         let serial = name_owner().and_then(|m| act.post(m)).ok_or_else(|| io::Error::other("GetNameOwner not sent"))?;
@@ -476,6 +492,10 @@ impl BtAct {
             self.pending.remove(&serial);
         } else if let Some(i) = self.queued.iter().position(|c| c == call) {
             self.queued.remove(i);
+        } else if let Some((_, calls)) = self.rechecking.as_mut()
+            && let Some(i) = calls.iter().position(|c| c == call)
+        {
+            calls.remove(i);
         }
     }
 
@@ -526,12 +546,17 @@ impl BtAct {
                     let serial = m.get_reply_serial();
                     if matches!(self.owner, Owner::Asking(s) if Some(s) == serial) {
                         posted |= self.owned(&m, out);
+                    } else if self.rechecking.as_ref().is_some_and(|(s, _)| Some(*s) == serial) {
+                        self.recheck_answered(&m, out);
                     } else if let Some(call) = serial.and_then(|s| self.pending.remove(&s)) {
                         let result = match m.as_result() {
                             Ok(_) => Ok(()),
                             Err(e) => Err(act_error(e.name().unwrap_or(""))),
                         };
-                        out.push(BtEvent::Answer { call, result });
+                        match result {
+                            Err(ActError::Remote(why)) if why == NO_REPLY => posted |= self.recheck(call, out),
+                            result => out.push(BtEvent::Answer { call, result }),
+                        }
                     }
                 }
                 MessageType::MethodCall => posted |= self.agent_call(m, out),
@@ -542,7 +567,8 @@ impl BtAct {
         if lost || !self.channel.is_connected() {
             self.closed = true;
             let pending = std::mem::take(&mut self.pending).into_values();
-            for call in pending.chain(std::mem::take(&mut self.queued)) {
+            let rechecking = self.rechecking.take().map(|(_, calls)| calls).unwrap_or_default();
+            for call in pending.chain(std::mem::take(&mut self.queued)).chain(rechecking) {
                 out.push(BtEvent::Answer { call, result: Err(ActError::Gone) });
             }
             out.push(BtEvent::Closed);
@@ -579,9 +605,49 @@ impl BtAct {
         }
     }
 
+    /// `call` got `NoReply`: BlueZ may have left (the bus answers so for a recipient gone without
+    /// replying) or timed out. Its answer waits for `GetNameOwner` asked again (one at a time; the
+    /// calls meeting a `NoReply` meanwhile wait for the same one). True when it was posted; not
+    /// posted, the call is answered `Gone` (the connection is going).
+    fn recheck(&mut self, call: ActCall, out: &mut Vec<BtEvent>) -> bool {
+        if let Some((_, calls)) = self.rechecking.as_mut() {
+            calls.push(call);
+            return false;
+        }
+        match name_owner().and_then(|m| self.post(m)) {
+            Some(serial) => {
+                self.rechecking = Some((serial, vec![call]));
+                true
+            }
+            None => {
+                out.push(BtEvent::Answer { call, result: Err(ActError::Gone) });
+                false
+            }
+        }
+    }
+
+    /// The owner asked again: each waiting call answered `rechecked`. BlueZ gone or replaced, the
+    /// owner is forgotten: no later call (nor `UnregisterAgent`) goes to the old unique name.
+    fn recheck_answered(&mut self, reply: &Message, out: &mut Vec<BtEvent>) {
+        let now = match reply.msg_type() {
+            MessageType::MethodReturn => reply.read1::<&str>().ok(),
+            _ => None,
+        };
+        let known = match &self.owner {
+            Owner::Known(owner) => Some(owner.as_str()),
+            _ => None,
+        };
+        let error = rechecked(known, now);
+        if error == ActError::Gone {
+            self.owner = Owner::Absent;
+        }
+        let calls = self.rechecking.take().map(|(_, calls)| calls).unwrap_or_default();
+        out.extend(calls.into_iter().map(|call| BtEvent::Answer { call, result: Err(error.clone()) }));
+    }
+
     /// Calls waiting for an answer, queued ones included (`GetNameOwner` is not one).
     pub fn in_flight(&self) -> usize {
-        self.queued.len() + self.pending.len()
+        self.queued.len() + self.pending.len() + self.rechecking.as_ref().map_or(0, |(_, calls)| calls.len())
     }
 
     /// The panel's answer to the held agent call `id`; an unknown (or already answered) `id` does
@@ -777,6 +843,16 @@ mod tests {
         ] {
             assert_eq!(act_error(kept), ActError::Remote(kept.into()));
         }
+    }
+
+    /// Fix round 1 (spec § 6): a `NoReply` is a remote error only while the same unique name still
+    /// owns `org.bluez`; gone or replaced, the action ends silently.
+    #[test]
+    fn a_no_reply_is_gone_unless_the_same_owner_is_still_there() {
+        assert_eq!(rechecked(Some(":1.7"), Some(":1.7")), ActError::Remote(NO_REPLY.into()), "a timeout");
+        assert_eq!(rechecked(Some(":1.7"), None), ActError::Gone, "BlueZ left without replying");
+        assert_eq!(rechecked(Some(":1.7"), Some(":1.9")), ActError::Gone, "another bluetoothd now");
+        assert_eq!(rechecked(None, Some(":1.7")), ActError::Gone, "no owner known: nothing to compare");
     }
 
     const BLUEZ: &str = ":1.7";

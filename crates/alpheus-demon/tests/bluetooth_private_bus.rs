@@ -219,6 +219,53 @@ fn bluez_error_name_is_kept() {
     );
 }
 
+/// Fix round 1 (spec § 6): BlueZ leaving with a call held makes the bus answer `NoReply`; asked
+/// again, `org.bluez` has no owner (or another one): the call ends `Gone`, never `failed`, and no
+/// later call goes to the old name nor to the new owner.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn bluez_leaving_with_a_call_held_answers_gone() {
+    let b = PrivateBus::start("bt-act-noreply-gone");
+    let bz = FakeBluez::serve(&b);
+    bz.hold("Pair");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let pair = ActCall::Pair { device: dev(2) };
+    act.call(pair.clone());
+    act.flush();
+    assert_eq!(recorded(&bz, &mut act, "Pair "), []);
+    drop(bz);
+    assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [BtEvent::Answer { call: pair, result: Err(ActError::Gone) }]);
+    assert_eq!(act.in_flight(), 0);
+    let new = FakeBluez::serve(&b);
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    act.flush();
+    assert_eq!(act.read(), [BtEvent::Answer { call: connect, result: Err(ActError::Gone) }], "no round-trip");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(!new.calls().iter().any(|c| c.starts_with("Connect ")), "the new owner is never called: {:?}", new.calls());
+}
+
+/// Fix round 1: a `NoReply` while the same BlueZ still owns its name (a timeout) stays an error.
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_no_reply_from_the_same_owner_is_kept() {
+    let b = PrivateBus::start("bt-act-noreply-kept");
+    let bz = FakeBluez::serve(&b);
+    bz.fail("Pair", "org.freedesktop.DBus.Error.NoReply");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let pair = ActCall::Pair { device: dev(2) };
+    act.call(pair.clone());
+    act.flush();
+    assert_eq!(
+        pump(&mut act, 1, Duration::from_secs(5)),
+        [BtEvent::Answer { call: pair, result: Err(ActError::Remote("org.freedesktop.DBus.Error.NoReply".into())) }]
+    );
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    act.flush();
+    assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [ok(connect)], "the owner kept: calls still go");
+}
+
 /// Waits (2 s at most) until the fake recorded a call starting with `prefix`.
 fn recorded(bz: &FakeBluez, act: &mut BtAct, prefix: &str) -> Vec<BtEvent> {
     let end = Instant::now() + Duration::from_secs(2);
