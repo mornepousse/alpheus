@@ -15,6 +15,7 @@ use crate::keys::Key;
 use crate::list;
 use crate::quick::{Line, Question, QuickAction, run, text_row};
 use crate::quick_wifi::VALUE_CELLS;
+use crate::segments::{BLUETOOTH, BLUETOOTH_CONNECTED};
 use crate::session::{self, Activation};
 use crate::sources::dbus::bt_act::{ActCall, ActError, AgentId, AgentReply, AgentRequest};
 use crate::system::{BtAdapter, BtEntry, BtKind, BtScope, BtState, BtView};
@@ -23,9 +24,8 @@ use std::time::{Duration, Instant};
 
 /// The most devices the detail lists, paired and nearby together (quick Bluetooth spec § 2).
 pub const ROWS_MAX: usize = 32;
-/// Material Design (Nerd Font): bluetooth, bluetooth-connect, bluetooth-off.
-pub const BT_ON: char = '\u{f00af}';
-pub const BT_CONNECTED: char = '\u{f00b1}';
+/// Material Design (Nerd Font) bluetooth-off; on and connected are the bar module's own
+/// (`segments::BLUETOOTH`, `segments::BLUETOOTH_CONNECTED`): the row draws as the module.
 pub const BT_OFF: char = '\u{f00b2}';
 /// A device's glyph by its kind: headphones, keyboard, mouse, speaker, cellphone, and the
 /// bluetooth-connect one for anything else.
@@ -34,7 +34,7 @@ pub const KEYBOARD: char = '\u{f030c}';
 pub const MOUSE: char = '\u{f037d}';
 pub const SPEAKER: char = '\u{f04c3}';
 pub const PHONE: char = '\u{f03f2}';
-pub const GENERIC: char = '\u{f00b1}';
+pub const GENERIC: char = BLUETOOTH_CONNECTED;
 /// The detail's note with the adapter off, and the nearby devices' heading.
 pub const OFF_NOTE: &str = "Bluetooth is off";
 pub const NEARBY: &str = "Nearby";
@@ -152,8 +152,8 @@ impl Bt {
 
     pub fn glyph(&self, bt: &BtState) -> char {
         match bt {
-            BtState::On { devices } if !devices.is_empty() => BT_CONNECTED,
-            BtState::On { .. } => BT_ON,
+            BtState::On { devices } if !devices.is_empty() => BLUETOOTH_CONNECTED,
+            BtState::On { .. } => BLUETOOTH,
             _ => BT_OFF,
         }
     }
@@ -854,11 +854,11 @@ mod tests {
         let b = Bt::default();
         let both = |s: &BtState| (b.value(s), b.glyph(s));
         assert_eq!(both(&BtState::Off), ("off".into(), BT_OFF));
-        assert_eq!(both(&BtState::On { devices: vec![] }), ("on".into(), BT_ON));
+        assert_eq!(both(&BtState::On { devices: vec![] }), ("on".into(), BLUETOOTH));
         let two = BtState::On {
             devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(80) }, BtDevice { name: "ClavierBT".into(), battery: None }],
         };
-        assert_eq!(both(&two), ("CasqueBT".into(), BT_CONNECTED), "the first, as the bar orders them");
+        assert_eq!(both(&two), ("CasqueBT".into(), BLUETOOTH_CONNECTED), "the first, as the bar orders them");
         let long = BtState::On { devices: vec![BtDevice { name: "CasqueBT-".repeat(5), battery: None }] };
         let v = b.value(&long);
         assert_eq!(text_width(&v), 16);

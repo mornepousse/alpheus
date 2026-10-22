@@ -4414,10 +4414,22 @@ fn bluetooth_headset_row_switches_profile() {
     let (_bus, _bluez, sway, _hypr, d) = bt_daemon("bt-headset", "\"volume\", \"bluetooth\", \"quick\", \"clock\"");
     let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pw-dump-bluez-headset.json");
     pw_dump_send(&sway.runtime, &std::fs::read_to_string(fixture).unwrap());
-    thread::sleep(Duration::from_millis(500));
-    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
-    assert!(d.wait_for("quick shown (rows: volume headset", DELAY), "{:?}", d.log());
-    wait_for_the_popup_drawn(&sway, &d);
+    // The sound thread publishes nothing to wait for: the panel is opened until it shows the
+    // headset row (a slow pw-dump read under load), closed again in between.
+    let t = Instant::now();
+    for opens in 1.. {
+        sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+        assert!(d.wait_for_count("quick shown", opens, DELAY), "{:?}", d.log());
+        wait_for_the_popup_drawn(&sway, &d);
+        let last = d.log().into_iter().rfind(|l| l.contains("quick shown")).unwrap_or_default();
+        if last.contains("quick shown (rows: volume headset") {
+            break;
+        }
+        assert!(t.elapsed() < DELAY, "the headset row never showed: {:?}", d.log());
+        keys(&sway, &["Escape"]);
+        assert!(d.wait_for_count("popup closed (escape)", opens, DELAY), "{:?}", d.log());
+        assert!(d.wait_for_count("keyboard released", opens, DELAY), "{:?}", d.log());
+    }
     keys(&sway, &["Down", "Return"]);
     assert!(wait_for_call(&sway, "wpctl", "wpctl set-profile 61 3"), "{:?} {:?}", recorded(&sway, "wpctl"), d.log());
 }

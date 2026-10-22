@@ -1055,6 +1055,14 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
         "\"DeactivateConnection\"",
         "\"GetSecrets\"",
         "\"Enable\"",
+        // Final review: a message is addressed by `build` alone (`Message::new_method_call`'s
+        // arguments), never re-aimed afterwards; no call may start BlueZ; no error but `answer`'s.
+        "set_auto_start(true)",
+        "set_destination(",
+        "set_path(",
+        "set_interface(",
+        "set_member(",
+        "Message::new_error(",
     ] {
         assert!(!prod.contains(never), "{never} in bt_act.rs");
     }
@@ -1995,13 +2003,26 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(tick.contains("bt_logs") && tick.contains("bt_orders") && tick.contains("bt_run("), "{tick}");
     let close = function_body(&bt_app, "pub(crate) fn bt_close(");
     assert!(close.contains(".remove(") && close.contains(".close()"), "{close}");
-    let drop = function_body(&bt_app, "pub(crate) fn bt_drop(");
+    let drop = function_body(&bt_app, "fn bt_let_go(");
+    assert!(function_body(&bt_app, "pub(crate) fn bt_drop(").contains("self.bt_let_go()"), "bt_drop is bt_let_go's action taken");
     assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
     // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
     assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
     // Fix round 1: a connection lost under us is reopened by the syncs once per open, not forever.
     let readable = function_body(&bt_app, "pub(crate) fn bt_readable(");
-    assert!(readable.contains("note_lost(") && readable.contains("self.bt_drop()"), "{readable}");
+    assert!(readable.contains("self.bt_note_lost()") && readable.contains("self.bt_let_go()"), "{readable}");
+    // Final review: a `Gone` on a live connection (a stale owner) lets it go, counted as a loss.
+    let stale = readable.find("stale_owner(").expect("bt_readable reads a stale owner");
+    assert!(readable[stale..].find("self.bt_let_go()").is_some(), "{readable}");
+    // Final review: no action taken inside a batch (it may run orders that read again, nested), and
+    // nothing of a batch handled once its connection went.
+    let batch = function_body(&readable[readable.find("for event in events").expect("the batch")..], "for event in events");
+    for nested in ["self.quick_action(", "self.bt_answer(", "self.bt_drop()", "self.bt_run(", "self.bt_readable()"] {
+        assert!(!batch.contains(nested), "{nested} inside the batch: {batch}");
+    }
+    assert!(batch.contains("if self.bt_act.is_none() {\n                    break;"), "the rest of a gone connection's batch: {batch}");
+    let after = &readable[readable.find(batch).expect("the batch") + batch.len()..];
+    assert!(after.contains("self.quick_action(action)"), "the batch's actions taken after it: {after}");
     let run = function_body(&bt_app, "pub(crate) fn bt_run(");
     assert!(run.contains("opens_for(") && run.contains(".flush()"), "{run}");
     // libdbus's flush also reads: what it read is delivered by the next `read`, the fd may stay quiet.
@@ -2424,4 +2445,16 @@ fn the_camera_logs_name_no_process() {
         }
     }
     assert!(logs >= 3, "the log lines were not found: the check is hollow");
+}
+
+/// Final review: the panel's Bluetooth row draws as the bar's module, from the same glyphs
+/// (`segments::BLUETOOTH`, `segments::BLUETOOTH_CONNECTED`), never a copy of them.
+#[test]
+fn the_bluetooth_row_reuses_the_modules_glyphs() {
+    let files = source_files();
+    let quick_bt = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_bt.rs").expect("quick_bt.rs").1);
+    for copy in ["\\u{f00af}", "\\u{f00b1}", "\u{f00af}", "\u{f00b1}"] {
+        assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
+    }
+    assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick_bt.rs takes the module's glyphs");
 }

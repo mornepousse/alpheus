@@ -1374,8 +1374,8 @@ pub fn describe(live: &Live, q: &Quick) -> String {
 mod tests {
     use super::*;
     use crate::grid::Tint;
-    use crate::quick_bt::BT_CONNECTED;
     use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
+    use crate::segments::BLUETOOTH_CONNECTED;
     use crate::segments::VOLUME_MEDIUM;
     use crate::system::{AccessPoint, BtDevice, Headset, HeadsetMode, Profile, SavedWifi, Security, WifiDevice, WifiState};
 
@@ -1590,7 +1590,7 @@ mod tests {
         let l = w.live();
         let mut q = quick(&w, Focus::Top);
         assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Bluetooth, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
-        assert_eq!(texts(&rows(&l, &q))[3], format!(" {BT_CONNECTED} Bluetooth{}CasqueBT ›", " ".repeat(11)));
+        assert_eq!(texts(&rows(&l, &q))[3], format!(" {BLUETOOTH_CONNECTED} Bluetooth{}CasqueBT ›", " ".repeat(11)));
         q.selected = Row::Bluetooth;
         let t = Instant::now();
         assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "no view read yet: no discovery");

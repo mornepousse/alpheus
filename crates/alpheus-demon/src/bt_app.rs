@@ -8,7 +8,7 @@
 
 use crate::log::write as log;
 use crate::popup::PopupBody;
-use crate::quick::{self, Quick};
+use crate::quick::{self, Quick, QuickAction};
 use crate::quick_app::bt_scope_for;
 use crate::quick_bt::{Bt, BtOrder};
 use crate::sources::dbus::bt_act::{ActCall, ActError, AgentReply, AgentRequest, BtAct, BtEvent};
@@ -33,9 +33,22 @@ pub(crate) fn adapter_seen(q: &Quick) -> bool {
 }
 
 /// These orders open a connection: a call among them, with an adapter seen. A reply or a forget
-/// never does: it belongs to the connection it came from.
+/// never does: it belongs to the connection it came from; nor does a leaving call (`StopDiscovery`,
+/// `CancelPairing`): it undoes what a connection did, and with none there is nothing to undo.
 pub(crate) fn opens_for(orders: &[BtOrder], adapter_seen: bool) -> bool {
-    adapter_seen && orders.iter().any(|o| matches!(o, BtOrder::Call(_)))
+    let opening = |o: &BtOrder| match o {
+        BtOrder::Call(ActCall::StopDiscovery { .. } | ActCall::CancelPairing { .. }) => false,
+        BtOrder::Call(_) => true,
+        BtOrder::Reply(..) | BtOrder::Forget(_) => false,
+    };
+    adapter_seen && orders.iter().any(opening)
+}
+
+/// A call answered `Gone` on a connection still open: BlueZ left or was replaced without the
+/// connection seeing it close (a hand-over with no gap, a `NoReply` recheck finding another owner).
+/// The connection is let go, so the next need opens one on the owner there then.
+pub(crate) fn stale_owner(result: &Result<(), ActError>) -> bool {
+    matches!(result, Err(ActError::Gone))
 }
 
 /// An agent request nobody can answer: with no panel, rejected at once (BlueZ's `Cancel` and
@@ -170,6 +183,12 @@ impl App {
 
     /// `call`'s answer to the open panel: its line logged, its action taken.
     fn bt_answer(&mut self, call: &ActCall, result: Result<(), ActError>, now: Instant) {
+        let action = self.bt_result(call, result, now);
+        self.quick_action(action);
+    }
+
+    /// `call`'s answer given to the open panel, its line logged; the action is the caller's to take.
+    fn bt_result(&mut self, call: &ActCall, result: Result<(), ActError>, now: Instant) -> QuickAction {
         let mut line = None;
         let action = self.quick_with(|q, _| {
             let (a, l) = q.bt_answered(call, result, now);
@@ -179,17 +198,40 @@ impl App {
         if let Some(line) = line {
             log(&line);
         }
-        self.quick_action(action);
+        action
     }
 
-    /// The connection's fd is readable (or a flush read for it): every event delivered, until a
-    /// read brings nothing more; then the tap and the connection follow the panel.
+    /// The connection went under us: counted (`note_lost`, the syncs' bounded reopening).
+    fn bt_note_lost(&mut self) {
+        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
+            note_lost(q);
+        }
+    }
+
+    /// The connection's fd is readable (or a flush read for it): every event of a batch handled in
+    /// order, the actions they produce taken only after the batch (final review: an action may run
+    /// orders, which read again; nested, newer events would be handled before older ones), until a
+    /// read brings nothing more; then the tap and the connection follow the panel. Once the
+    /// connection goes mid-batch, the rest of the batch was its own: dropped.
     pub(crate) fn bt_readable(&mut self) {
         let now = Instant::now();
         while let Some(events) = self.bt_act.as_mut().map(BtAct::read).filter(|e| !e.is_empty()) {
+            let mut later = Vec::new();
+            // A lost connection answers its calls `Gone`, then `Closed`: that one is let go there.
+            let closing = events.iter().any(|e| matches!(e, BtEvent::Closed));
             for event in events {
+                if self.bt_act.is_none() {
+                    break;
+                }
                 match event {
-                    BtEvent::Answer { call, result } => self.bt_answer(&call, result, now),
+                    BtEvent::Answer { call, result } => {
+                        let stale = !closing && stale_owner(&result);
+                        later.push(self.bt_result(&call, result, now));
+                        if stale {
+                            self.bt_note_lost();
+                            later.push(self.bt_let_go());
+                        }
+                    }
                     BtEvent::Agent { id, request } => match unanswered(self.quick_shown(), &request) {
                         Some(reply) => {
                             if let Some(act) = self.bt_act.as_mut() {
@@ -197,19 +239,17 @@ impl App {
                                 act.flush();
                             }
                         }
-                        None => {
-                            let action = self.quick_with(|q, _| q.bt_agent(id, request, now));
-                            self.quick_action(action);
-                        }
+                        None => later.push(self.quick_with(|q, _| q.bt_agent(id, request, now))),
                     },
                     BtEvent::Closed => {
                         log("quick: bluetooth connection lost");
-                        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
-                            note_lost(q);
-                        }
-                        self.bt_drop();
+                        self.bt_note_lost();
+                        later.push(self.bt_let_go());
                     }
                 }
+            }
+            for action in later {
+                self.quick_action(action);
             }
         }
         self.quick_bt_sync();
@@ -252,15 +292,22 @@ impl App {
     /// connection closed under us. Nothing is sent, so no `UnregisterAgent` reaches an old owner;
     /// the panel's action, whose answer can no longer come, ends silently (`Gone`).
     pub(crate) fn bt_drop(&mut self) {
+        let action = self.bt_let_go();
+        self.quick_action(action);
+    }
+
+    /// `bt_drop` but for its action, the caller's to take (`bt_readable` takes it after its batch).
+    fn bt_let_go(&mut self) -> QuickAction {
         if let (Some(token), Some(handle)) = (self.bt_source.take(), self.loop_handle.as_ref()) {
             handle.remove(token);
         }
         if self.bt_act.take().is_none() {
-            return;
+            return QuickAction::Nothing;
         }
         let call = panel(self).and_then(|q| q.bt.action.as_ref().map(|a| a.call.clone()));
-        if let Some(call) = call {
-            self.bt_answer(&call, Err(ActError::Gone), Instant::now());
+        match call {
+            Some(call) => self.bt_result(&call, Err(ActError::Gone), Instant::now()),
+            None => QuickAction::Nothing,
         }
     }
 }
@@ -269,7 +316,7 @@ impl App {
 pub(crate) mod tests {
     use super::*;
     use crate::config::BarConfig;
-    use crate::quick::{self, Focus, QuickAction};
+    use crate::quick::{self, Focus};
     use crate::sources::dbus::bt_act::AgentId;
     use crate::state::{Bar, Msg};
     use crate::system::{BtAdapter, BtEntry, BtKind, BtState, BtView};
@@ -312,13 +359,26 @@ pub(crate) mod tests {
 
     #[test]
     fn only_a_call_with_an_adapter_seen_opens_the_connection() {
-        let call = BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() });
+        let call = BtOrder::Call(ActCall::Connect { device: CASQUE.into() });
         assert!(opens_for(std::slice::from_ref(&call), true));
-        assert!(!opens_for(&[call], false), "BlueZ gone: nothing to reach");
+        assert!(!opens_for(std::slice::from_ref(&call), false), "BlueZ gone: nothing to reach");
         let reply = BtOrder::Reply(AgentId(7), AgentReply::Rejected);
         let forget = BtOrder::Forget(ActCall::Connect { device: CASQUE.into() });
         assert!(!opens_for(&[reply, forget], true), "a reply or a forget needs the connection it came from");
         assert!(!opens_for(&[], true));
+        // Final review: a leaving order undoes what a connection did; with none, nothing to undo.
+        let stop = BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() });
+        let cancel = BtOrder::Call(ActCall::CancelPairing { device: CASQUE.into() });
+        assert!(!opens_for(&[stop.clone(), cancel.clone()], true), "a leaving order never opens one");
+        assert!(opens_for(&[stop, cancel, call], true), "another call among them does");
+    }
+
+    /// Final review: a `Gone` on a live connection means its owner is stale; any other answer keeps it.
+    #[test]
+    fn only_a_gone_answer_marks_the_owner_stale() {
+        assert!(stale_owner(&Err(ActError::Gone)));
+        assert!(!stale_owner(&Ok(())));
+        assert!(!stale_owner(&Err(ActError::Remote(NO_SERVER.into()))), "a remote error: BlueZ is there");
     }
 
     #[test]
@@ -380,7 +440,7 @@ pub(crate) mod tests {
         assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Open, "lost once: reopened");
         note_lost(&mut q);
         assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Keep, "lost twice: left closed");
-        let call = [BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() })];
+        let call = [BtOrder::Call(ActCall::Connect { device: CASQUE.into() })];
         assert!(opens_for(&call, adapter_seen(&q)), "an action still tries");
     }
 
