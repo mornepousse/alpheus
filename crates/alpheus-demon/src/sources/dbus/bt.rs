@@ -7,15 +7,13 @@
 
 use super::bluez::{ADAPTER, DEVICE};
 use super::props::Props;
+pub use super::tap::BtTap;
 use super::{BLUEZ, Bus, under};
 use crate::log::write as log;
 use crate::pipewire::drawable;
 use crate::system::{BtAdapter, BtEntry, BtKind, BtScope, BtView};
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::net::UnixStream;
-use std::sync::{Mutex, PoisonError};
+use std::io;
 
 /// The detail reads at most this many devices of the adapter, in path order.
 pub const MAX_DEVICES: usize = 64;
@@ -31,69 +29,6 @@ pub enum BtChange {
     Added(String),
     /// A device object went.
     Removed(String),
-}
-
-/// What the loop asks the D-Bus thread: the scope the open panel shows, and a socket pair whose
-/// first end the thread polls beside the bus's own socket; the loop writes one byte to the second
-/// when the scope changes, never otherwise (no wake-up at rest). Without the pair (`default()`, the
-/// tests' tap) the scope is still kept, and nothing wakes. The tap also counts the panel's opens
-/// (Closed to any other scope), as `WifiTap` does.
-#[derive(Debug, Default)]
-pub struct BtTap {
-    /// The scope asked, and the opens so far.
-    scope: Mutex<(BtScope, u64)>,
-    wake: Option<(UnixStream, UnixStream)>,
-}
-
-impl BtTap {
-    /// A tap with its socket pair, both ends non-blocking and close-on-exec.
-    pub fn new() -> io::Result<BtTap> {
-        let (read, write) = UnixStream::pair()?;
-        read.set_nonblocking(true)?;
-        write.set_nonblocking(true)?;
-        Ok(BtTap { scope: Mutex::new((BtScope::Closed, 0)), wake: Some((read, write)) })
-    }
-
-    pub fn scope(&self) -> BtScope {
-        self.snapshot().0
-    }
-
-    /// The scope asked and the opens so far, read together.
-    pub fn snapshot(&self) -> (BtScope, u64) {
-        *self.scope.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The loop asks for `scope`: kept, and the thread woken when it changed (a byte already waiting
-    /// is enough: a full socket is not an error); from Closed to another scope, one more open. True
-    /// when it changed.
-    pub fn set(&self, scope: BtScope) -> bool {
-        let changed = {
-            let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
-            let changed = s.0 != scope;
-            if s.0 == BtScope::Closed && scope != BtScope::Closed {
-                s.1 = s.1.wrapping_add(1);
-            }
-            s.0 = scope;
-            changed
-        };
-        if changed && let Some((_, w)) = &self.wake {
-            let _ = (&*w).write(&[1]);
-        }
-        changed
-    }
-
-    /// The end the D-Bus thread polls; None for the tests' tap.
-    pub fn wake_fd(&self) -> Option<RawFd> {
-        self.wake.as_ref().map(|(r, _)| r.as_raw_fd())
-    }
-
-    /// Reads every byte waiting, so the poll sleeps again.
-    pub fn drain(&self) {
-        if let Some((r, _)) = &self.wake {
-            let mut buf = [0u8; 64];
-            while matches!((&*r).read(&mut buf), Ok(n) if n > 0) {}
-        }
-    }
 }
 
 /// A device's `Icon` as the panel's glyph picks it; anything else (or none) is `Other`.
@@ -112,7 +47,8 @@ pub fn kind_of_icon(icon: Option<&str>) -> BtKind {
 #[derive(Debug)]
 struct Known {
     entry: BtEntry,
-    /// BlueZ gave it a `Name` (an address-only device is noise from scanning).
+    /// BlueZ gave it a `Name` that is something once cleaned (an address-only device is noise from
+    /// scanning).
     named: bool,
     /// The last RSSI seen during this detail.
     rssi: Option<i64>,
@@ -134,7 +70,7 @@ impl Known {
                 trusted: flag("Trusted"),
                 connected: flag("Connected"),
             },
-            named: p.str("Name").is_some(),
+            named: p.str("Name").is_some_and(|n| !drawable(n).is_empty()),
             rssi: p.int("RSSI").or(before.and_then(|b| b.rssi)),
             listed_rssi: before.and_then(|b| b.listed_rssi),
         }
@@ -201,13 +137,14 @@ impl BtReader {
         }
     }
 
-    /// A signal of the panel (see `Signal::bt_change`). Closed: None. Outside the scope that reads
-    /// it (a device while only the row is open) or for something not listed: the last view, no call.
+    /// A signal of the panel (see `Signal::bt_change`). None: nothing to publish, and no call made
+    /// (closed; outside the scope that reads it, a device while only the row is open; a device
+    /// over the cap, unknown or not waiting for its RSSI): a scan's RSSI signals never wake the loop.
     pub fn changed(&mut self, bus: &mut dyn Bus, c: &BtChange) -> io::Result<Option<BtView>> {
         if self.scope == BtScope::Closed {
             return Ok(None);
         }
-        let (Some(owner), Some(adapter)) = (self.owner.clone(), self.adapter.clone()) else { return Ok(self.last.clone()) };
+        let (Some(owner), Some(adapter)) = (self.owner.clone(), self.adapter.clone()) else { return Ok(None) };
         let detail = self.scope == BtScope::Detail;
         match c {
             BtChange::Adapter(p) if *p == adapter.path => match bus.get_all(&owner, p, ADAPTER) {
@@ -219,20 +156,21 @@ impl BtReader {
                 let known = self.devices.get(path);
                 // An RSSI alone only matters to a device that waits for one.
                 let reads = if *rssi_only { known.is_some_and(|k| !k.entry.paired && k.named && k.listed_rssi.is_none()) } else { true };
-                if reads && (known.is_some() || self.devices.len() < MAX_DEVICES) {
-                    return self.read_device(bus, &owner, path);
+                if !reads || (known.is_none() && self.devices.len() >= MAX_DEVICES) {
+                    return Ok(None);
                 }
+                return self.read_device(bus, &owner, path);
             }
             BtChange::Added(path) if detail && under(path, &adapter.path) => {
-                if self.devices.contains_key(path) || self.devices.len() < MAX_DEVICES {
-                    return self.read_device(bus, &owner, path);
+                if !self.devices.contains_key(path) && self.devices.len() >= MAX_DEVICES {
+                    return Ok(None);
                 }
+                return self.read_device(bus, &owner, path);
             }
-            BtChange::Removed(path) if detail => {
-                self.devices.remove(path);
+            BtChange::Removed(path) if detail && self.devices.remove(path).is_some() => {
                 self.order.retain(|p| p != path);
             }
-            _ => return Ok(self.last.clone()),
+            _ => return Ok(None),
         }
         Ok(self.publish())
     }
@@ -445,7 +383,7 @@ mod tests {
         for (n, rssi) in [(0x11, -30), (0x10, -90)] {
             device1(&mut bus, &dev(n)).0.insert("RSSI".into(), Prop::Int(rssi));
             let again = r.changed(&mut bus, &BtChange::Device { path: dev(n), rssi_only: true }).unwrap();
-            assert_eq!(again, Some(v.clone()), "rows never move");
+            assert_eq!(again, None, "an RSSI change of a listed device publishes nothing");
         }
         assert_eq!(bus.calls.len(), calls, "an RSSI change of a listed device reads nothing");
     }
@@ -474,13 +412,64 @@ mod tests {
         let (mut r, v) = detail(&mut bus);
         assert!(v.nearby.is_empty(), "an address only: not listed");
         let calls = bus.calls.len();
-        r.changed(&mut bus, &BtChange::Device { path: dev(0x10), rssi_only: true }).unwrap();
+        let still = r.changed(&mut bus, &BtChange::Device { path: dev(0x10), rssi_only: true }).unwrap();
+        assert_eq!(still, None, "still unnamed: nothing published");
         assert_eq!(bus.calls.len(), calls, "still unnamed: its RSSI reads nothing");
         let d = device1(&mut bus, &dev(0x10));
         d.0.insert("Name".into(), Prop::Str("Keyboard-Test".into()));
         d.0.insert("Alias".into(), Prop::Str("Keyboard-Test".into()));
         let v = r.changed(&mut bus, &BtChange::Device { path: dev(0x10), rssi_only: false }).unwrap().unwrap();
         assert_eq!(labels(&v.nearby), ["Keyboard-Test"]);
+    }
+
+    #[test]
+    fn a_name_empty_once_cleaned_is_not_a_name() {
+        let mut bus = FakeBus::workstation();
+        bus.nearby(&dev(0x10), "Keyboard-Test", Some(-50));
+        device1(&mut bus, &dev(0x10)).0.insert("Name".into(), Prop::Str("\u{202e}\u{7}".into()));
+        let (mut r, v) = detail(&mut bus);
+        assert!(v.nearby.is_empty(), "a control-only name: not listed");
+        let calls = bus.calls.len();
+        assert_eq!(r.changed(&mut bus, &BtChange::Device { path: dev(0x10), rssi_only: true }).unwrap(), None);
+        assert_eq!(bus.calls.len(), calls);
+        device1(&mut bus, &dev(0x10)).0.insert("Name".into(), Prop::Str("Keyboard-Test".into()));
+        let v = r.changed(&mut bus, &BtChange::Device { path: dev(0x10), rssi_only: false }).unwrap().unwrap();
+        assert_eq!(labels(&v.nearby), ["Keyboard-Test"]);
+    }
+
+    #[test]
+    fn the_adapter_is_read_again_on_its_change() {
+        let mut bus = FakeBus::workstation();
+        let mut r = BtReader::default();
+        r.rescope(&mut bus, BtScope::Row).unwrap();
+        let a = bus.bluez.get_mut(HCI0).and_then(|i| i.get_mut("org.bluez.Adapter1")).unwrap();
+        a.0.insert("Powered".into(), Prop::Bool(false));
+        a.0.insert("PowerState".into(), Prop::Str("off-blocked".into()));
+        let calls = bus.calls.len();
+        let v = r.changed(&mut bus, &BtChange::Adapter(HCI0.into())).unwrap().unwrap();
+        assert_eq!(v.adapter, Some(BtAdapter { path: HCI0.into(), powered: false, blocked: true }));
+        assert_eq!(bus.calls.len(), calls + 1, "one GetAll of the adapter");
+        let other = r.changed(&mut bus, &BtChange::Adapter("/org/bluez/hci1".into())).unwrap();
+        assert_eq!(other, None, "not the adapter we show");
+        assert_eq!(bus.calls.len(), calls + 1);
+    }
+
+    #[test]
+    fn a_failed_read_keeps_the_last_view_and_the_bus_going_is_an_error() {
+        let mut bus = FakeBus::workstation();
+        let (mut r, v) = detail(&mut bus);
+        assert!(!r.logged);
+        bus.failing.insert("/".into());
+        assert_eq!(r.reread(&mut bus).unwrap(), Some(v.clone()), "the last view again");
+        assert!(r.logged, "logged, once per open");
+        bus.failing.insert(HCI0.into());
+        assert_eq!(r.changed(&mut bus, &BtChange::Adapter(HCI0.into())).unwrap(), Some(v), "a failed adapter read too");
+        bus.disconnecting.insert(HCI0.into());
+        let e = r.changed(&mut bus, &BtChange::Adapter(HCI0.into())).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof);
+        // Nothing before the first read: the default view.
+        let mut first = BtReader::default();
+        assert_eq!(first.rescope(&mut bus, BtScope::Row).unwrap(), Some(BtView::default()));
     }
 
     #[test]
@@ -496,6 +485,7 @@ mod tests {
         assert_eq!(bus.calls.len(), calls, "a removal reads nothing");
         let v = r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap().unwrap();
         assert!(v.paired.is_empty());
+        assert_eq!(r.changed(&mut bus, &BtChange::Removed(HEADSET.into())).unwrap(), None, "already gone: nothing to publish");
         assert_eq!(bus.calls.len(), calls);
     }
 
@@ -510,9 +500,8 @@ mod tests {
         assert_eq!(v.paired[0].label, "CasqueBT", "path order: the headset is read first");
         bus.nearby(&dev(0x60), "Late-Test", Some(-10));
         let calls = bus.calls.len();
-        let v = r.changed(&mut bus, &BtChange::Added(dev(0x60))).unwrap().unwrap();
+        assert_eq!(r.changed(&mut bus, &BtChange::Added(dev(0x60))).unwrap(), None, "over the cap: nothing published");
         assert_eq!(bus.calls.len(), calls, "over the cap: no read");
-        assert!(!labels(&v.nearby).contains(&"Late-Test"));
     }
 
     #[test]
@@ -520,6 +509,7 @@ mod tests {
         let mut bus = FakeBus::workstation();
         bus.nearby(&dev(0x10), &format!("\u{202e}Clavier\u{7}BT\u{200b}{}", "x".repeat(300)), Some(-50));
         bus.nearby(&dev(0x11), "\u{202e}\u{7}", Some(-60));
+        device1(&mut bus, &dev(0x11)).0.insert("Name".into(), Prop::Str("Speaker-X".into())); // listed: only its alias is hostile
         let (_, v) = detail(&mut bus);
         let first = &v.nearby[0].label;
         assert!(first.starts_with("ClavierBT"), "{first:?}");

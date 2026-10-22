@@ -11,6 +11,7 @@ pub mod dbusrs_bus;
 pub mod network;
 pub mod power;
 pub mod props;
+pub mod tap;
 pub mod upower;
 pub mod wifi;
 
