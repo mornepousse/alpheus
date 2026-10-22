@@ -1024,9 +1024,32 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
     assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
     assert_eq!(prod.matches(".send(").count(), 1, "every message leaves through `post`");
     assert_eq!(prod.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
-    for never in
-        ["send_with_reply_and_block", "RequestName", "RequestDefaultAgent", "Crossroads", "blocking_pop_message", "RefArg", "new_signal("]
-    {
+    assert_eq!(prod.matches("method_return(").count(), 1, "in `answer`: the only reply it builds");
+    assert_eq!(prod.matches(".error(").count(), 1, "in `answer`: the only error it builds");
+    for never in [
+        "send_with_reply_and_block",
+        "RequestName",
+        "request_name",
+        "RequestDefaultAgent",
+        "Crossroads",
+        "blocking_pop_message",
+        "RefArg",
+        "new_signal(",
+        "Message::method_call(",
+        "call_with_args(",
+        "Message::signal(",
+        "return_with_args(",
+        ".add_match(",
+        "\"Suspend\"",
+        "\"Hibernate\"",
+        "\"PowerOff\"",
+        "\"Reboot\"",
+        "\"Sleep\"",
+        "\"ActivateConnection\"",
+        "\"DeactivateConnection\"",
+        "\"GetSecrets\"",
+        "\"Enable\"",
+    ] {
         assert!(!prod.contains(never), "{never} in bt_act.rs");
     }
 }
