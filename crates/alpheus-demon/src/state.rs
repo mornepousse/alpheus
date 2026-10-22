@@ -7,7 +7,7 @@ use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::privacy::Privacy;
-use crate::system::{BtState, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
+use crate::system::{BtState, BtView, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
 use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use std::time::{Duration, Instant};
@@ -39,6 +39,13 @@ pub enum Msg {
     Wifi {
         open: Option<u64>,
         state: Option<WifiState>,
+    },
+    /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
+    /// (quick_app takes it, Task 8), never kept by the bar. `state` None: the panel closed, BlueZ
+    /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
+    Bt {
+        open: Option<u64>,
+        state: Option<BtView>,
     },
     Resources(Sample),
     /// The tray's shown items, rebuilt whole by the wiring (task 11).
@@ -196,6 +203,7 @@ impl Bar {
             }
             // The open quick panel's (quick_app.rs takes it first): never kept, no bar redraw.
             Msg::Wifi { .. } => false,
+            Msg::Bt { .. } => false,
             Msg::Resources(s) => self.resources.push(s),
             Msg::Tray(icons) => {
                 if self.tray == icons {
@@ -370,6 +378,14 @@ mod tests {
         let mut b = Bar::new(BarConfig::default());
         assert!(!b.apply(Msg::Wifi { open: Some(1), state: Some(WifiState { enabled: true, device: None, stale: false }) }));
         assert!(!b.apply(Msg::Wifi { open: None, state: None }));
+    }
+
+    /// Quick settings delivery 3: the Bluetooth view is the open panel's, as the Wi-Fi state is.
+    #[test]
+    fn a_bt_view_is_never_kept_nor_drawn_by_the_bar() {
+        let mut b = Bar::new(BarConfig::default());
+        assert!(!b.apply(Msg::Bt { open: Some(1), state: Some(BtView::default()) }));
+        assert!(!b.apply(Msg::Bt { open: None, state: None }));
     }
 
     /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads

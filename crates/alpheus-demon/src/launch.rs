@@ -217,6 +217,8 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
         // The quick panel's Wi-Fi row needs NetworkManager's state (quick Wi-Fi decision 3).
         (ModuleId::Quick, Domain::Network),
         (ModuleId::Bluetooth, Domain::Bluetooth),
+        // The quick panel's Bluetooth row reads the bar's BtState (quick settings delivery 3, decision 1).
+        (ModuleId::Quick, Domain::Bluetooth),
         (ModuleId::Battery, Domain::Battery),
         (ModuleId::Quick, Domain::Power),
     ]
@@ -792,7 +794,14 @@ pub fn run() -> i32 {
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
-        sources::dbus::start(want.dbus.clone(), state.wifi_tap.clone(), move |s| {
+        // The Bluetooth row and detail, the same way (quick settings delivery 3).
+        if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
+            match crate::sources::dbus::bt::BtTap::new() {
+                Ok(t) => state.bt_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
+            }
+        }
+        sources::dbus::start(want.dbus.clone(), state.wifi_tap.clone(), state.bt_tap.clone(), move |s| {
             sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
         });
     }
@@ -938,12 +947,12 @@ mod tests {
         );
         assert_eq!(
             wanted(&[ModuleId::Quick]).dbus,
-            vec![Domain::Network, Domain::Power],
-            "the panel's Wi-Fi row (quick Wi-Fi decision 3) and power profile: read only, on the system bus"
+            vec![Domain::Network, Domain::Bluetooth, Domain::Power],
+            "the panel's Wi-Fi row (quick Wi-Fi decision 3), the Bluetooth row (delivery 3 decision 1: the bar's BtState) and power profile: read only, on the system bus"
         );
         assert_eq!(
             wanted(&[ModuleId::Quick, ModuleId::Network]).dbus,
-            vec![Domain::Network, Domain::Power],
+            vec![Domain::Network, Domain::Bluetooth, Domain::Power],
             "the network domain read once for the module and the panel"
         );
     }
@@ -1010,6 +1019,8 @@ mod tests {
             power: None,
             wifi: None,
             wifi_open: 0,
+            bt: None,
+            bt_open: 0,
         };
         for m in messages(Some(s)) {
             on_message(&mut c, m, || AFTER);

@@ -1,0 +1,113 @@
+//! The D-Bus thread's Bluetooth panel reads against a PRIVATE dbus-daemon started by the test, its
+//! socket in a temporary directory: never the session bus, never the system bus.
+//! `nix develop -c cargo test -p alpheus-demon --test bluetooth_private_bus -- --ignored`
+
+mod common;
+
+use alpheus_demon::sources::dbus::bt::BtTap;
+use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
+use alpheus_demon::sources::dbus::wifi::WifiTap;
+use alpheus_demon::sources::dbus::{Domain, DomainLog, session};
+use alpheus_demon::system::{BtEntry, BtScope, BtState, BtView};
+use common::PrivateBus;
+use common::bluez::FakeBluez;
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
+
+type Seen = (Option<BtState>, Option<BtView>);
+
+fn follow(b: &PrivateBus, tap: &Arc<BtTap>) -> mpsc::Receiver<Seen> {
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Bluetooth]).unwrap().waking_bt(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let t = tap.clone();
+    std::thread::spawn(move || {
+        let _ = session(&mut bus, &[Domain::Bluetooth], &mut DomainLog::default(), &WifiTap::default(), &t, &mut |s| {
+            tx.send((s.bluetooth, s.bt)).is_ok()
+        });
+    });
+    rx
+}
+
+fn next(rx: &mpsc::Receiver<Seen>) -> Seen {
+    rx.recv_timeout(Duration::from_secs(5)).expect("a publication")
+}
+
+fn names(v: &Option<BtView>) -> (Vec<String>, Vec<String>) {
+    let l = |e: &[BtEntry]| e.iter().map(|e| e.label.clone()).collect();
+    v.as_ref().map(|v| (l(&v.paired), l(&v.nearby))).unwrap_or_default()
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn bt_detail_follows_devices_only_while_open() {
+    let b = PrivateBus::start("bt-detail");
+    let bz = FakeBluez::serve(&b);
+    let tap = Arc::new(BtTap::new().unwrap());
+    let rx = follow(&b, &tap);
+    let on = Some(BtState::On { devices: vec![] });
+    assert_eq!(next(&rx), (on.clone(), None), "closed: no view");
+    tap.set(BtScope::Row);
+    assert_eq!(names(&next(&rx).1), (vec![], vec![]), "the row: the adapter only");
+    bz.add_nearby(5, "Keyboard-Test", -50);
+    assert!(rx.recv_timeout(Duration::from_millis(500)).is_err(), "the row follows no device");
+    assert!(!bz.calls().iter().any(|c| c.starts_with("GetAll") && c.contains("dev_")), "{:?}", bz.calls());
+    tap.set(BtScope::Detail);
+    let (bar, view) = next(&rx);
+    assert_eq!((bar, names(&view)), (on.clone(), (vec!["CasqueBT".into()], vec!["Keyboard-Test".into()])));
+    bz.add_nearby(6, "Speaker-X", -40);
+    let (bar, view) = next(&rx);
+    assert_eq!(names(&view).1, ["Speaker-X", "Keyboard-Test"], "inserted by its RSSI, the first never moved");
+    assert_eq!(bar, on, "the bar's state unchanged");
+}
+
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn the_bt_tap_wakes_the_thread() {
+    let b = PrivateBus::start("bt-wake");
+    let _bz = FakeBluez::serve(&b);
+    let tap = Arc::new(BtTap::new().unwrap());
+    let rx = follow(&b, &tap);
+    next(&rx);
+    let t = Instant::now();
+    assert!(tap.set(BtScope::Detail));
+    let (_, view) = rx.recv_timeout(Duration::from_secs(1)).expect("woken by the tap");
+    assert!(view.is_some(), "the detail read");
+    assert!(t.elapsed() < Duration::from_secs(1));
+    assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "asleep again");
+}
+
+/// Review focus 1, the read side: BlueZ restarting (a new unique name) with the detail open is read
+/// again on the new owner, not device by device through NotFound on the old one.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn bluez_restarting_reads_the_new_owner() {
+    let b = PrivateBus::start("bt-restart");
+    let bz = FakeBluez::serve(&b);
+    let tap = Arc::new(BtTap::new().unwrap());
+    let rx = follow(&b, &tap);
+    next(&rx);
+    tap.set(BtScope::Detail);
+    let (_, view) = next(&rx);
+    assert_eq!(names(&view).0, ["CasqueBT"]);
+    let old = bz.unique_name();
+    drop(bz);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (bar, view) = rx.recv_timeout(left).expect("BlueZ gone seen");
+        if bar == Some(BtState::Absent) && view == Some(BtView::default()) {
+            break;
+        }
+    }
+    let bz = FakeBluez::serve(&b);
+    assert_ne!(bz.unique_name(), old);
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        let (_, view) = rx.recv_timeout(left).expect("the new owner read");
+        if view.as_ref().is_some_and(|v| v.adapter.is_some()) {
+            assert_eq!(names(&view).0, ["CasqueBT"]);
+            break;
+        }
+    }
+    assert!(bz.calls().iter().any(|c| c == "GetManagedObjects /"), "{:?}", bz.calls());
+}

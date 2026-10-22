@@ -536,6 +536,9 @@ pub struct App {
     /// Shared with the D-Bus thread (`sources::dbus::wifi::WifiTap`): what the open quick panel
     /// shows of the Wi-Fi. None without the quick module or the network domain.
     pub(crate) wifi_tap: Option<Arc<crate::sources::dbus::wifi::WifiTap>>,
+    /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
+    /// of Bluetooth. None without the quick module or the Bluetooth domain.
+    pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,
     /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
     /// Wi-Fi stays read for it until it ends. None at rest.
     pub(crate) wifi_follow: Option<crate::quick_app::WifiFollow>,
@@ -730,6 +733,7 @@ impl App {
             camera_bound_logged: false,
             sound_tap: None,
             wifi_tap: None,
+            bt_tap: None,
             wifi_follow: None,
             quick_verb_opened: None,
             key_repeat: false,

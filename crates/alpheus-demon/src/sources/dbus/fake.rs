@@ -3,6 +3,7 @@
 //! bus. Records every call, and refuses — panics on — a call addressed to a
 //! well-known name: on a real bus, that call could start the service.
 
+use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};
 use super::wifi::{self, WifiTap};
 use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone, under};
@@ -89,6 +90,8 @@ pub struct FakeBus {
     pub rules: Vec<String>,
     /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
     pub tap: Arc<WifiTap>,
+    /// The Bluetooth panel's, the same way.
+    pub bt_tap: Arc<BtTap>,
     pub script: VecDeque<Step>,
     pub calls: Vec<String>,
 }
@@ -112,6 +115,7 @@ impl FakeBus {
             late_rules: BTreeSet::new(),
             rules: Vec::new(),
             tap: Arc::default(),
+            bt_tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
         }
