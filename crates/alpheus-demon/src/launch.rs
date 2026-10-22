@@ -51,7 +51,9 @@ const ACCEPT_PAUSE: Duration = Duration::from_secs(1);
 /// A failed request that buffered at least this much gives its pages back.
 const RELEASE_AFTER: usize = 1 << 20;
 
-/// Mail received by the loop from the other threads.
+/// Mail received by the loop from the other threads. One is moved once per event: the bar's
+/// messages (the sound state with the open panel's headset among them) outweigh the rest.
+#[allow(clippy::large_enum_variant)]
 pub enum Mail {
     Bar(Msg),
     /// A finished scan: adopted by the open launcher if `generation` is its

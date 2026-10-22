@@ -1635,7 +1635,11 @@ fn every_quick_command_stays_on_the_allowlist() {
     let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
-    let fresh = || Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    let fresh = || {
+        let mut q = Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+        q.set_headset(Some(Headset { device: 61, label: "CasqueBT".into(), active: HeadsetMode::HiFi, hifi: 1, mic: 3 }));
+        q
+    };
     let t = Instant::now();
     // Mae (M1): a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
@@ -1803,6 +1807,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
+            ["wpctl", "set-profile", id, idx] => *id == "61" && ["1", "3"].contains(idx),
             ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
@@ -1825,6 +1830,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
         "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
         "wpctl set-default 99",
+        "wpctl set-profile 61 3",
         "brightnessctl --class=backlight --device=intel_backlight set 55%",
         "brightnessctl --class=backlight --device=intel_backlight set 45%",
         "brightnessctl --class=backlight --device=intel_backlight set 50%",

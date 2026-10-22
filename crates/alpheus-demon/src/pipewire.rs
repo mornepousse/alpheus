@@ -7,7 +7,7 @@
 
 use crate::log::write as log;
 use crate::privacy::{self, GraphLink, GraphNode};
-use crate::system::{DeviceName, Sink, SoundState, Volume};
+use crate::system::{DeviceName, Headset, HeadsetMode, Sink, SoundState, Volume};
 use crate::text::clean;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -48,6 +48,14 @@ pub struct NodeProps {
     pub description: Option<String>,
     #[serde(rename = "node.nick", default, deserialize_with = "lenient_text")]
     pub nick: Option<String>,
+    /// A device's (`bluez5` is the one kept) and a node's device: the headset (quick Bluetooth
+    /// spec § 4).
+    #[serde(rename = "device.api", default, deserialize_with = "lenient_text")]
+    pub device_api: Option<String>,
+    #[serde(rename = "device.description", default, deserialize_with = "lenient_text")]
+    pub device_description: Option<String>,
+    #[serde(rename = "device.id", default, deserialize_with = "lenient_u32")]
+    pub device_id: Option<u32>,
 }
 
 /// `Object`'s twin for a model built for privacy (privacy spec § 8): the same fields plus what the
@@ -113,12 +121,34 @@ pub struct PrivacyProps {
     pub passive: Option<String>,
     #[serde(rename = "node.link-group", default, deserialize_with = "lenient_text")]
     pub link_group: Option<String>,
+    #[serde(rename = "device.description", default, deserialize_with = "lenient_text")]
+    pub device_description: Option<String>,
+    #[serde(rename = "device.id", default, deserialize_with = "lenient_u32")]
+    pub device_id: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
 pub struct Params {
     #[serde(rename = "Props", default, deserialize_with = "null_as_default")]
     pub props: Vec<PropsParam>,
+    /// A device's profiles and its active one (the headset, quick Bluetooth spec § 4).
+    #[serde(rename = "EnumProfile", default, deserialize_with = "null_as_default")]
+    pub enum_profile: Vec<ProfileParam>,
+    #[serde(rename = "Profile", default, deserialize_with = "null_as_default")]
+    pub profile: Vec<ProfileParam>,
+}
+
+/// One profile of a device, every field lenient: a wrong type reads None, never fails the batch.
+#[derive(Deserialize)]
+pub struct ProfileParam {
+    #[serde(default, deserialize_with = "lenient_u32")]
+    pub index: Option<u32>,
+    #[serde(default, deserialize_with = "lenient_text")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    pub priority: Option<i64>,
+    #[serde(default, deserialize_with = "lenient_text")]
+    pub available: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -187,6 +217,17 @@ where
     })
 }
 
+/// A priority as a plain number; any other JSON type becomes `None`.
+fn lenient_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<serde_json::Value>::deserialize(deserializer)? {
+        Some(serde_json::Value::Number(n)) => n.as_i64(),
+        _ => None,
+    })
+}
+
 /// A node's volume as `wpctl` shows it: the cube root of the mean linear
 /// channel volume (PipeWire stores amplitudes, wpctl shows "cubic" volumes).
 pub fn to_volume(p: &PropsParam) -> Option<Volume> {
@@ -203,6 +244,10 @@ pub const LABEL_MAX: usize = 128;
 
 /// The most sinks the quick panel lists (spec § 6).
 pub const MAX_SINKS: usize = 32;
+
+/// The most bluez5 devices kept, and the most profiles kept of each (quick Bluetooth spec § 4).
+pub const MAX_BT_DEVICES: usize = 8;
+pub const MAX_PROFILES: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -320,6 +365,50 @@ struct Node {
     name: String,
     label: String,
     volume: Option<Volume>,
+    /// The device it belongs to (`device.id`).
+    device: Option<u32>,
+}
+
+/// A bluez5 device as the headset row reads it: what a person reads, its profiles, the active one.
+#[derive(Debug, Default)]
+struct BtDevice {
+    label: Option<String>,
+    profiles: Vec<BtProfile>,
+    active: Option<u32>,
+}
+
+/// One profile: its index (what `wpctl set-profile` takes), the mode its name says (`a2dp-sink*`:
+/// Hi-Fi, `headset-head-unit*`: Mic; anything else, `off` and `bap-sink` among them, neither), its
+/// priority and whether it is available.
+#[derive(Debug)]
+struct BtProfile {
+    index: u32,
+    mode: Option<HeadsetMode>,
+    priority: i64,
+    available: bool,
+}
+
+impl BtProfile {
+    fn new(p: &ProfileParam) -> Option<BtProfile> {
+        let name = p.name.as_deref()?;
+        let mode = if name.starts_with("a2dp-sink") {
+            Some(HeadsetMode::HiFi)
+        } else if name.starts_with("headset-head-unit") {
+            Some(HeadsetMode::Mic)
+        } else {
+            None
+        };
+        Some(BtProfile { index: p.index?, mode, priority: p.priority.unwrap_or(i64::MIN), available: p.available.as_deref() != Some("no") })
+    }
+}
+
+/// The highest-priority available profile of `mode`, the lowest index on a tie.
+fn pick(profiles: &[BtProfile], mode: HeadsetMode) -> Option<u32> {
+    profiles
+        .iter()
+        .filter(|p| p.mode == Some(mode) && p.available)
+        .min_by_key(|p| (std::cmp::Reverse(p.priority), p.index))
+        .map(|p| p.index)
 }
 
 #[derive(Debug, Default)]
@@ -330,6 +419,8 @@ pub struct Model {
     default_meta: Option<u32>,
     default_sink: Option<Named>,
     default_source: Option<Named>,
+    /// The bluez5 devices (device id → profiles), bounded (`MAX_BT_DEVICES`, `MAX_PROFILES`).
+    bt: HashMap<u32, BtDevice>,
     /// With the `privacy` module (spec § 8): the capture graph, bounded, and whether its bound was
     /// told (nodes, links) in this model's life. Empty and untouched otherwise.
     privacy: bool,
@@ -359,8 +450,11 @@ impl Model {
                 if kind.is_some() {
                     self.track(id, kind.as_deref(), &i);
                 }
-                let PrivacyProps { media_class, node_name, description, nick, .. } = i.props;
-                Info { props: NodeProps { media_class, node_name, description, nick }, params: i.params }
+                let PrivacyProps { media_class, node_name, description, nick, device_api, device_description, device_id, .. } = i.props;
+                Info {
+                    props: NodeProps { media_class, node_name, description, nick, device_api, device_description, device_id },
+                    params: i.params,
+                }
             });
             self.apply_one(Object { id, kind, info, props, metadata });
         }
@@ -371,6 +465,7 @@ impl Model {
             self.remove(o.id);
             self.graph.remove(&o.id);
             self.links.remove(&o.id);
+            self.bt.remove(&o.id);
             if self.default_meta == Some(o.id) {
                 self.default_meta = None;
                 self.default_sink = None;
@@ -391,6 +486,10 @@ impl Model {
             return;
         }
         let Some(info) = o.info else { return };
+        if o.kind.as_deref() == Some("PipeWire:Interface:Device") {
+            self.device(o.id, info);
+            return;
+        }
         let Some(kind) = kind_of(info.props.media_class.as_deref()) else {
             self.remove(o.id);
             return;
@@ -399,9 +498,51 @@ impl Model {
         // A re-dump without params keeps the last known volume; one without a label, the label.
         let volume = info.params.props.iter().find_map(to_volume).or(known.and_then(|n| n.volume));
         let label = label_of(&info.props).or_else(|| known.map(|n| n.label.clone()));
+        let device = info.props.device_id.or(known.and_then(|n| n.device));
         let name = info.props.node_name.unwrap_or_default();
         let label = label.unwrap_or_else(|| drawable(&name));
-        self.nodes.insert(o.id, Node { kind, name, label, volume });
+        self.nodes.insert(o.id, Node { kind, name, label, volume, device });
+    }
+
+    /// A device object: kept when bluez5 (or known already and re-dumped without its API), its
+    /// description and profiles as far as this dump carries them; another API drops it.
+    fn device(&mut self, id: u32, info: Info) {
+        let Info { props, params } = info;
+        match props.device_api.as_deref() {
+            Some("bluez5") => {}
+            Some(_) => {
+                self.bt.remove(&id);
+                return;
+            }
+            None if self.bt.contains_key(&id) => {}
+            None => return,
+        }
+        if !self.bt.contains_key(&id) && self.bt.len() >= MAX_BT_DEVICES {
+            return;
+        }
+        let d = self.bt.entry(id).or_default();
+        if let Some(label) = props.device_description.as_deref().map(drawable).filter(|l| !l.is_empty()) {
+            d.label = Some(label);
+        }
+        if !params.enum_profile.is_empty() {
+            d.profiles = params.enum_profile.iter().filter_map(BtProfile::new).take(MAX_PROFILES).collect();
+        }
+        if let Some(active) = params.profile.iter().find_map(|p| p.index) {
+            d.active = Some(active);
+        }
+    }
+
+    /// The default sink's bluez5 device when it offers both kinds of profile and is on one of them
+    /// (quick Bluetooth spec § 4): the highest-priority available profile of each kind, by name
+    /// prefix (`bap-sink` is neither).
+    pub fn headset(&self) -> Option<Headset> {
+        let named = self.default_sink.as_ref().filter(|n| !n.gone)?;
+        let node = self.resolve(Kind::Sink, &named.name)?;
+        let device = node.device?;
+        let d = self.bt.get(&device)?;
+        let (hifi, mic) = (pick(&d.profiles, HeadsetMode::HiFi)?, pick(&d.profiles, HeadsetMode::Mic)?);
+        let active = d.profiles.iter().find(|p| Some(p.index) == d.active)?.mode?;
+        Some(Headset { device, label: d.label.clone().unwrap_or_else(|| node.label.clone()), active, hifi, mic })
     }
 
     /// Keeps what the privacy rules read of one object (spec § 2): a link, or a node of a class
@@ -519,7 +660,7 @@ impl Model {
         let osd = sink_name == s.sink_name.as_ref().map(|d| (d.node.as_str(), d.label.as_str()))
             && source.map(|v| v.muted) == s.source.map(|v| v.muted)
             && source_name.map(|(node, _)| node) == s.source_name.as_ref().map(|d| d.node.as_str());
-        osd && (scope != Scope::Panel || s.sinks.as_ref().is_some_and(|l| *l == self.sinks()))
+        osd && (scope != Scope::Panel || (s.sinks.as_ref().is_some_and(|l| *l == self.sinks()) && s.headset == self.headset()))
     }
 
     pub fn state(&self) -> SoundState {
@@ -532,6 +673,7 @@ impl Model {
             source_name: source_name.map(named),
             sinks: None,
             capture: self.privacy.then(|| self.held()),
+            headset: None,
         }
     }
 
@@ -556,12 +698,25 @@ impl Model {
 
     /// The state as `scope` reads it: with the sink list under `Scope::Panel` only.
     pub fn state_in(&self, scope: Scope) -> SoundState {
-        SoundState { sinks: (scope == Scope::Panel).then(|| self.sinks()), ..self.state() }
+        let panel = scope == Scope::Panel;
+        SoundState { sinks: panel.then(|| self.sinks()), headset: if panel { self.headset() } else { None }, ..self.state() }
     }
 
     /// Sinks and sources kept in memory (tests: nothing else of the dump is).
     pub fn nodes(&self) -> usize {
         self.nodes.len()
+    }
+
+    /// bluez5 devices kept (tests).
+    #[cfg(test)]
+    fn bt_devices(&self) -> usize {
+        self.bt.len()
+    }
+
+    /// Profiles kept of one bluez5 device (tests).
+    #[cfg(test)]
+    fn profiles(&self, device: u32) -> usize {
+        self.bt.get(&device).map_or(0, |d| d.profiles.len())
     }
 
     /// Nodes and links kept for privacy (tests).
@@ -613,6 +768,7 @@ impl SoundTap {
         t.panel = false;
         if let Some(last) = t.last.as_mut() {
             last.sinks = None;
+            last.headset = None;
         }
     }
 
@@ -745,6 +901,7 @@ mod tests {
                 source_name: name(AG06_IN, "AG06/AG03 Analog Stereo"),
                 sinks: None,
                 capture: None,
+                headset: None,
             }]
         );
     }
@@ -1457,7 +1614,12 @@ mod tests {
         // Privacy spec § 8: nothing more is parsed without the module. The lean types hold only
         // what the sinks and sources need; the privacy twin carries the rest.
         let opt = size_of::<Option<String>>();
-        assert_eq!(size_of::<NodeProps>(), 4 * opt, "media.class, node.name, description, nick");
+        let device = size_of::<Option<u32>>();
+        assert_eq!(
+            size_of::<NodeProps>(),
+            6 * opt + device,
+            "media.class, node.name, description, nick, device.api, device.description, device.id (the headset)"
+        );
         assert_eq!(size_of::<Info>(), size_of::<NodeProps>() + size_of::<Params>(), "props and params: no state, no link ends");
         assert!(size_of::<PrivacyProps>() > size_of::<NodeProps>() && size_of::<PrivacyInfo>() > size_of::<Info>());
     }
@@ -1491,5 +1653,121 @@ mod tests {
         tap.close();
         let seen = run_tapped(&text, Scope::Bar, &tap);
         assert_eq!(mic(seen.last().unwrap()), Some((vec!["firefox"], false)), "and a second stream builds it again");
+    }
+
+    const HEADSET_DUMP: &str = include_str!("../tests/fixtures/pw-dump-bluez-headset.json");
+    type P<'a> = (u32, &'a str, i64, &'a str);
+    const PROFILES: [P<'static>; 6] = [
+        (0, "off", 0, "yes"),
+        (1, "a2dp-sink", 18, "yes"),
+        (2, "a2dp-sink-sbc", 17, "yes"),
+        (3, "headset-head-unit", 2, "yes"),
+        (4, "headset-head-unit-cvsd", 1, "yes"),
+        (5, "bap-sink", 30, "yes"),
+    ];
+
+    fn device(id: u32, api: &str, profiles: &[P<'_>], active: u32) -> String {
+        let listed: Vec<String> = profiles
+            .iter()
+            .map(|(i, n, p, a)| format!(r#"{{"index":{i},"name":"{n}","description":"{n}","priority":{p},"available":"{a}"}}"#))
+            .collect();
+        format!(
+            r#"{{"id":{id},"type":"PipeWire:Interface:Device","info":{{"props":{{"device.api":"{api}","device.description":"CasqueBT"}},"params":{{"EnumProfile":[{}],"Profile":[{{"index":{active}}}]}}}}}}"#,
+            listed.join(",")
+        )
+    }
+
+    fn apply_all(m: &mut Model, objects: &[String]) {
+        m.apply(serde_json::from_str::<Vec<Object>>(&format!("[{}]", objects.join(","))).unwrap());
+    }
+
+    fn headset_model() -> Model {
+        let mut m = Model::default();
+        m.apply(serde_json::from_str::<Vec<Object>>(HEADSET_DUMP).unwrap());
+        m
+    }
+
+    fn casque(active: HeadsetMode, hifi: u32, mic: u32) -> Option<Headset> {
+        Some(Headset { device: 61, label: "CasqueBT".into(), active, hifi, mic })
+    }
+
+    #[test]
+    fn a_bluez_headset_is_kept_and_published_to_the_panel_only() {
+        let m = headset_model();
+        assert_eq!(m.headset(), casque(HeadsetMode::HiFi, 1, 3));
+        assert_eq!(m.state_in(Scope::Panel).headset, casque(HeadsetMode::HiFi, 1, 3));
+        assert_eq!(m.state_in(Scope::Osd).headset, None);
+        assert_eq!(m.state().headset, None);
+        let mut p = Model::new(true);
+        p.apply_privacy(serde_json::from_str::<Vec<PrivacyObject>>(HEADSET_DUMP).unwrap());
+        assert_eq!(p.headset(), casque(HeadsetMode::HiFi, 1, 3), "a model built for privacy keeps it too");
+    }
+
+    #[test]
+    fn profiles_by_priority_and_availability() {
+        let mut m = headset_model();
+        let mut p = PROFILES;
+        p[1].3 = "no"; // a2dp-sink unavailable
+        p[4].2 = 5; // cvsd above mSBC
+        apply_all(&mut m, &[device(61, "bluez5", &p, 2)]);
+        assert_eq!(m.headset(), casque(HeadsetMode::HiFi, 2, 4));
+    }
+
+    #[test]
+    fn lone_kind_or_bap_only_hides_it() {
+        let mut m = headset_model();
+        apply_all(&mut m, &[device(61, "bluez5", &PROFILES[..3], 1)]);
+        assert_eq!(m.headset(), None, "Hi-Fi alone");
+        apply_all(&mut m, &[device(61, "bluez5", &[(1, "a2dp-sink", 18, "yes"), (3, "headset-head-unit", 2, "no")], 1)]);
+        assert_eq!(m.headset(), None, "the Mic kind unavailable");
+        apply_all(&mut m, &[device(61, "bluez5", &PROFILES, 5)]);
+        assert_eq!(m.headset(), None, "active on bap-sink: neither kind (decision 12)");
+        apply_all(&mut m, &[device(61, "bluez5", &PROFILES, 0)]);
+        assert_eq!(m.headset(), None, "off");
+    }
+
+    #[test]
+    fn non_bluez_devices_cost_nothing() {
+        let mut m = Model::default();
+        m.apply(serde_json::from_str::<Vec<Object>>(INITIAL).unwrap());
+        // 94: the AG06's device, the default sink's (its node carries device.id 94).
+        apply_all(&mut m, &[device(94, "alsa", &PROFILES, 1)]);
+        assert_eq!((m.bt_devices(), m.headset()), (0, None));
+    }
+
+    #[test]
+    fn matches_panel_sees_a_profile_switch() {
+        let mut m = headset_model();
+        let s = m.state_in(Scope::Panel);
+        assert!(m.matches(&s, Scope::Panel));
+        // A re-dump with the params only: the device is kept, its active profile follows.
+        m.apply(
+            serde_json::from_str::<Vec<Object>>(
+                r#"[{"id":61,"type":"PipeWire:Interface:Device","info":{"params":{"Profile":[{"index":3}]}}}]"#,
+            )
+            .unwrap(),
+        );
+        assert!(!m.matches(&s, Scope::Panel), "the panel hears the switch");
+        assert!(m.matches(&s, Scope::Osd), "the OSD does not");
+        assert_eq!(m.state_in(Scope::Panel).headset, casque(HeadsetMode::Mic, 1, 3));
+    }
+
+    #[test]
+    fn device_removed_drops_it() {
+        let mut m = headset_model();
+        m.apply(serde_json::from_str::<Vec<Object>>(r#"[{"id":61,"info":null}]"#).unwrap());
+        assert_eq!((m.bt_devices(), m.headset()), (0, None));
+    }
+
+    #[test]
+    fn bounds_8_devices_32_profiles() {
+        let mut m = Model::default();
+        let all: Vec<String> = (100..110).map(|id| device(id, "bluez5", &PROFILES, 1)).collect();
+        apply_all(&mut m, &all);
+        assert_eq!(m.bt_devices(), MAX_BT_DEVICES);
+        let names: Vec<String> = (0..40).map(|i| format!("a2dp-sink-{i}")).collect();
+        let long: Vec<P<'_>> = names.iter().enumerate().map(|(i, n)| (i as u32, n.as_str(), 1, "yes")).collect();
+        apply_all(&mut m, &[device(100, "bluez5", &long, 1)]);
+        assert_eq!(m.profiles(100), MAX_PROFILES);
     }
 }

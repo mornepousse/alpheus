@@ -17,7 +17,7 @@ use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
-use crate::system::{Sink, SoundState, WifiScope, WifiState};
+use crate::system::{Headset, Sink, SoundState, WifiScope, WifiState};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
@@ -30,13 +30,14 @@ use std::time::Instant;
 /// published (no `osd` module) shows at once. An empty model (pw-dump starting, or down since the
 /// stream ended) leaves the bar as it is: no level-less row, never a dead PipeWire's volumes. True
 /// when the bar's own drawing changed.
-pub(crate) fn opened_sound(bar: &mut Bar, mut s: SoundState) -> (Vec<Sink>, bool) {
+pub(crate) fn opened_sound(bar: &mut Bar, mut s: SoundState) -> (Vec<Sink>, Option<Headset>, bool) {
     let sinks = s.sinks.take().unwrap_or_default();
+    let headset = s.headset.take();
     if s.sink.is_none() && s.source.is_none() {
-        return (sinks, false);
+        return (sinks, headset, false);
     }
     let redraw = bar.apply(Msg::Sound(Some(s)));
-    (sinks, redraw)
+    (sinks, headset, redraw)
 }
 
 /// The sink list a bar message carries for the open panel, taken out of it (the bar never keeps
@@ -46,6 +47,17 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
     match m {
         Msg::Sound(Some(s)) => s.sinks.take(),
         Msg::Sound(None) => Some(Vec::new()),
+        _ => None,
+    }
+}
+
+/// The headset a bar message carries for the open panel (quick Bluetooth spec § 4), taken out of it
+/// like the sink list (the bar never keeps one): `Some(None)` when it carries none, or pw-dump went
+/// (`Msg::Sound(None)`), so the row goes; None: not a sound message.
+pub(crate) fn taken_headset(m: &mut Msg) -> Option<Option<Headset>> {
+    match m {
+        Msg::Sound(Some(s)) => Some(s.headset.take()),
+        Msg::Sound(None) => Some(None),
         _ => None,
     }
 }
@@ -297,21 +309,22 @@ impl App {
         // From here the sound thread publishes the list (Scope::Panel): every way out below, and
         // every close, goes back through `quick_closed`.
         let opened = self.sound_tap.as_ref().map(|t| t.open());
-        let sinks = match opened {
+        let (sinks, headset) = match opened {
             Some(s) => {
-                let (sinks, redraw) = opened_sound(&mut self.bar, s);
+                let (sinks, headset, redraw) = opened_sound(&mut self.bar, s);
                 if redraw {
                     self.dirty = true;
                 }
-                sinks
+                (sinks, headset)
             }
-            None => Vec::new(),
+            None => (Vec::new(), None),
         };
         let backlight = self.quick_backlight();
         let toggles = [self.quick_toggle_state(Toggle::KeepAwake), self.quick_toggle_state(Toggle::NightLight)];
         let built = {
             let live = quick::live(&self.bar, self.dnd);
-            let q = Quick::new(focus, &live, sinks, backlight, toggles, room);
+            let mut q = Quick::new(focus, &live, sinks, backlight, toggles, room);
+            q.set_headset(headset);
             (!q.is_empty(&live)).then(|| {
                 let rows = quick::rows(&live, &q);
                 let what = quick::describe(&live, &q);
@@ -573,10 +586,15 @@ impl App {
     /// goes to a followed attempt (Mae's ruling P1). True when the open panel shows what it carries:
     /// the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
-        if let Some(sinks) = taken_sinks(m)
-            && let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body)
-        {
-            q.set_sinks(sinks);
+        // Both taken always, so the bar never keeps either (decision 13).
+        let (sinks, headset) = (taken_sinks(m), taken_headset(m));
+        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
+            if let Some(sinks) = sinks {
+                q.set_sinks(sinks);
+            }
+            if let Some(h) = headset {
+                q.set_headset(h);
+            }
         }
         if let Some((open, state)) = taken_wifi(m) {
             let now = Instant::now();
@@ -777,7 +795,7 @@ mod tests {
             sinks: Some(vec![sink(99, "Speaker", false), sink(122, "AG06", true)]),
             ..SoundState::default()
         };
-        let (sinks, redraw) = opened_sound(&mut bar, opened);
+        let (sinks, _, redraw) = opened_sound(&mut bar, opened);
         assert_eq!(sinks.len(), 2, "the list goes to the panel");
         assert!(!redraw, "the bar draws the sink alone: unchanged");
         let live = quick::live(&bar, false);
@@ -834,7 +852,7 @@ mod tests {
     fn an_empty_model_at_open_leaves_the_bar_alone() {
         let mut bar = Bar::new(BarConfig::default());
         bar.apply(Msg::Sound(None));
-        let (sinks, redraw) = opened_sound(&mut bar, SoundState { sinks: Some(vec![]), ..SoundState::default() });
+        let (sinks, _, redraw) = opened_sound(&mut bar, SoundState { sinks: Some(vec![]), ..SoundState::default() });
         assert!(sinks.is_empty() && !redraw);
         let live = quick::live(&bar, false);
         assert!(live.sound.is_none(), "still down");
@@ -938,5 +956,23 @@ mod tests {
         let QuickAction::Run { argv, what } = q.wifi.key(&c, Key::Enter, t) else { panic!("an open network") };
         spawn_logged(&fake, Some(&mut q), &argv, &what);
         assert!(q.wifi.attempt.is_some(), "Io: maybe started, kept");
+    }
+
+    fn casque() -> Option<crate::system::Headset> {
+        Some(crate::system::Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
+    }
+
+    /// Quick Bluetooth spec § 4 (decision 13): the headset goes to the open panel, never the bar.
+    #[test]
+    fn the_headset_goes_to_the_panel_never_the_bar() {
+        let mut bar = Bar::new(BarConfig::default());
+        let (_, headset, _) = opened_sound(&mut bar, SoundState { sink: vol(40, false), headset: casque(), ..SoundState::default() });
+        assert_eq!(headset, casque());
+        assert_eq!(quick::live(&bar, false).sound.and_then(|s| s.headset.clone()), None, "the bar keeps none");
+        let mut m = Msg::Sound(Some(SoundState { headset: casque(), ..SoundState::default() }));
+        assert_eq!(taken_headset(&mut m), Some(casque()));
+        assert!(matches!(&m, Msg::Sound(Some(s)) if s.headset.is_none()), "taken out of the message");
+        assert_eq!(taken_headset(&mut Msg::Sound(None)), Some(None), "pw-dump gone: the row goes");
+        assert_eq!(taken_headset(&mut Msg::Profile(None)), None, "only a sound message carries one");
     }
 }
