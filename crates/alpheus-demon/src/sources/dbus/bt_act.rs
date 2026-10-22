@@ -169,6 +169,13 @@ pub enum ActError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentId(pub u32);
 
+/// The agent's answer to one of BlueZ's requests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentReply {
+    Ok,
+    Rejected,
+}
+
 /// What BlueZ asks the agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRequest {

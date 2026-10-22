@@ -45,6 +45,7 @@ pub mod privacy;
 pub mod privacy_app;
 pub mod quick;
 pub mod quick_app;
+pub mod quick_bt;
 pub mod quick_secret;
 pub mod quick_state;
 pub mod quick_wifi;

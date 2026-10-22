@@ -1152,7 +1152,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 39] = [
+const NO_THREAD_NOR_COMMAND: [&str; 40] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1181,6 +1181,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 39] = [
     "quick_state.rs",
     "quick_wifi.rs",
     "quick_secret.rs",
+    "quick_bt.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -1630,7 +1631,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -1651,7 +1652,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 3, "quick.rs, quick_state.rs and quick_wifi.rs");
+    assert_eq!(checked, 4, "quick.rs, quick_state.rs, quick_wifi.rs and quick_bt.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -1673,7 +1674,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config };
+    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config, bluetooth: None };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || {
@@ -1797,6 +1798,13 @@ fn every_quick_command_stays_on_the_allowlist() {
         record(q.set_wifi(Some(failing), t).action);
         record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
+    // Quick Bluetooth spec § 2: Space on the row with rfkill holding the adapter off unblocks it.
+    let bt_off = Live { bluetooth: Some(&BtState::Off), ..live };
+    let mut q = Quick::new(Focus::Top, &bt_off, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    q.bt.view =
+        Some(BtView { adapter: Some(BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }), ..BtView::default() });
+    q.selected = quick::Row::Bluetooth;
+    record(q.key(&bt_off, Key::Char(' '), false, t));
     // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
     let line = |a: &QuickAction| match a {
@@ -1857,6 +1865,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
+            ["rfkill", "unblock", "bluetooth"] => true,
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
@@ -1891,6 +1900,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli --ask device wifi connect Bureau-Test",
         "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
         "fake-more",
+        "rfkill unblock bluetooth",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
@@ -1900,7 +1910,7 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "session.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "quick_bt.rs", "session.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

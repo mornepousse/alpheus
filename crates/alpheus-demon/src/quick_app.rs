@@ -384,6 +384,7 @@ impl App {
             QuickVerb::Top => Focus::Top,
             QuickVerb::Sound => Focus::Sound,
             QuickVerb::Wifi => Focus::Wifi,
+            QuickVerb::Bluetooth => Focus::Bluetooth,
         };
         let qh = self.qh.clone();
         self.quick_toggle(&qh, None, focus);
@@ -418,6 +419,8 @@ impl App {
                 self.quick_refresh();
             }
             // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
+            // Until the acting connection is wired (Task 8): repainted, the orders not sent yet.
+            QuickAction::Bluetooth(_) => self.quick_refresh(),
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
                 self.set_dnd(on);

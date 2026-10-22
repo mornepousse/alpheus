@@ -12,12 +12,13 @@ use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
+use crate::quick_bt::{Bt, BtOrder};
 use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
 use crate::state::{Bar, Feed};
-use crate::system::{Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
+use crate::system::{BtScope, BtState, BtView, Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
 use std::time::{Duration, Instant};
 
 /// Content width in cells; a row is two more (a blank pad cell each side, as the other popups').
@@ -62,14 +63,16 @@ const REACH: u16 = 2;
 /// Where the panel opens (spec § 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
-    /// The first row: a click on the Bluetooth module (its section comes in delivery 3), or the
-    /// bare verb.
+    /// The first row: the bare verb.
     Top,
     /// The volume row: a click on the volume module, or `--quick sound`.
     Sound,
     /// The Wi-Fi row, its detail opened once the Wi-Fi state arrives (quick Wi-Fi spec § 1): a
     /// click on the network module, or `--quick wifi`. Without a Wi-Fi row, the first row.
     Wifi,
+    /// The Bluetooth row, its detail opened (quick Bluetooth spec § 1): a click on the Bluetooth
+    /// module, or `--quick bluetooth`. Without a Bluetooth row, the first row.
+    Bluetooth,
 }
 
 impl Focus {
@@ -78,6 +81,7 @@ impl Focus {
         match target {
             Target::Module(ModuleId::Volume) => Focus::Sound,
             Target::Module(ModuleId::Network) => Focus::Wifi,
+            Target::Module(ModuleId::Bluetooth) => Focus::Bluetooth,
             _ => Focus::Top,
         }
     }
@@ -91,6 +95,8 @@ pub enum Row {
     Brightness,
     /// The Wi-Fi (quick Wi-Fi spec § 1): first under the sliders' separator.
     Wifi,
+    /// The Bluetooth adapter (quick Bluetooth spec § 1): right under the Wi-Fi row.
+    Bluetooth,
     Mic,
     Dnd,
     Profile,
@@ -101,11 +107,12 @@ pub enum Row {
 
 impl Row {
     /// Top to bottom (spec § 2): also the order a selection falls back along when its row goes.
-    pub const ORDER: [Row; 10] = [
+    pub const ORDER: [Row; 11] = [
         Row::Volume,
         Row::Headset,
         Row::Brightness,
         Row::Wifi,
+        Row::Bluetooth,
         Row::Mic,
         Row::Dnd,
         Row::Profile,
@@ -121,6 +128,7 @@ impl Row {
             Row::Headset => "headset",
             Row::Brightness => "brightness",
             Row::Wifi => "wifi",
+            Row::Bluetooth => "bluetooth",
             Row::Mic => "mic",
             Row::Dnd => "dnd",
             Row::Profile => "profile",
@@ -194,6 +202,16 @@ pub enum Line {
     WifiMore,
     /// The Wi-Fi detail's password field, under its network.
     Password,
+    /// The Bluetooth detail's "‹ Bluetooth" (selectable: Space powers the adapter).
+    BtHeader,
+    /// The n-th of the Bluetooth detail's devices (`Bt::devices`).
+    BtDevice(usize),
+    /// The "Nearby" heading over the devices found while the detail is open.
+    BtNearby,
+    /// "Bluetooth is off".
+    BtNote(&'static str),
+    /// The pairing code under its device.
+    BtCode,
 }
 
 /// The backlight as the panel shows it: its device (`brightnessctl --device=`) and level.
@@ -213,6 +231,8 @@ pub struct Live<'a> {
     /// power-profiles-daemon's state; None while the system bus is down.
     pub profile: Option<&'a ProfileState>,
     pub config: &'a QuickConfig,
+    /// The bar's Bluetooth state; None while it is not read (no row).
+    pub bluetooth: Option<&'a BtState>,
 }
 
 /// The bar's state as the panel reads it.
@@ -228,6 +248,10 @@ pub fn live(bar: &Bar, dnd: bool) -> Live<'_> {
             _ => None,
         },
         config: &bar.config.quick,
+        bluetooth: match &bar.bluetooth {
+            Feed::Ready(s) => Some(s),
+            _ => None,
+        },
     }
 }
 
@@ -257,6 +281,14 @@ pub enum QuickAction {
         argv: Vec<String>,
         what: String,
     },
+    /// Calls on BlueZ's acting connection, or the agent's answers (quick_bt.rs), in order.
+    Bluetooth(Vec<BtOrder>),
+}
+
+/// The question the panel waits on for a second activation: "Reboot? ⏎", "Power off? ⏎".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Question {
+    Session(Session),
 }
 
 /// What a tick finds due (`Quick::due`): the re-reads to do, whether to repaint (the question
@@ -389,7 +421,7 @@ pub struct Quick {
     /// Keep awake, night light: on, off, or unknown (`·`).
     pub toggles: [Option<bool>; 2],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
-    pub confirm: Option<(Session, Instant)>,
+    pub confirm: Option<(Question, Instant)>,
     /// The volume shown and sent while its slider moves (fix S1), and the default sink's node it
     /// was set for; None: pw-dump's own level. Kept until pw-dump reports it, or SETTLE passes.
     pub volume_level: Option<u8>,
@@ -412,6 +444,8 @@ pub struct Quick {
     pub failed: Vec<String>,
     /// The Wi-Fi row and its detail (quick_wifi.rs).
     pub wifi: Wifi,
+    /// The Bluetooth row and its detail (quick_bt.rs).
+    pub bt: Bt,
 }
 
 pub(crate) fn argv(parts: &[&str]) -> Vec<String> {
@@ -430,6 +464,7 @@ fn present(r: Row, live: &Live, q: &Quick) -> bool {
         Row::Headset => q.headset.is_some(),
         Row::Brightness => q.backlight.is_some(),
         Row::Wifi => q.wifi.shows(),
+        Row::Bluetooth => Bt::shows(live.bluetooth),
         Row::Mic => live.sound.is_some_and(|s| s.source.is_some()),
         Row::Dnd => live.dnd.is_some(),
         Row::Profile => live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
@@ -447,6 +482,9 @@ pub fn shown(live: &Live, q: &Quick) -> Vec<Row> {
 /// The lines drawn: the rows with a separator between two blocks; in the detail, its header, a
 /// separator and the sinks.
 pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
+    if q.bt.open {
+        return q.bt.lines();
+    }
     if q.wifi.open {
         return q.wifi.lines(live.config);
     }
@@ -492,12 +530,18 @@ impl Quick {
             room,
             failed: Vec::new(),
             wifi: Wifi { focus_pending: focus == Focus::Wifi, ..Wifi::default() },
+            bt: Bt::default(),
         };
         let rows = shown(live, &q);
         q.selected = match focus {
             Focus::Sound if rows.contains(&Row::Volume) => Row::Volume,
+            Focus::Bluetooth if rows.contains(&Row::Bluetooth) => Row::Bluetooth,
             _ => rows.first().copied().unwrap_or(Row::Volume),
         };
+        if q.selected == Row::Bluetooth {
+            // No view read yet: nothing to discover, a repaint the open paints anyway.
+            q.open_bt(live);
+        }
         q.fit(live);
         q
     }
@@ -516,6 +560,14 @@ impl Quick {
     /// by id (else the default); the selection back on a shown row (the next one down the order when
     /// its own went, else the one above); the session button on a drawn one.
     pub fn fit(&mut self, live: &Live) {
+        if self.bt.open && !present(Row::Bluetooth, live, self) {
+            // The row went (BlueZ or its adapter gone): back on the rows, its orders dropped (the
+            // acting connection goes with BlueZ).
+            let _dropped = self.bt.close_detail();
+            self.selected = Row::Bluetooth;
+            self.top = 0;
+        }
+        self.bt.fit();
         let was_open = self.wifi.open;
         self.wifi.fit(live.config);
         if self.wifi.open {
@@ -574,6 +626,7 @@ impl Quick {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
             l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
+            l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l),
             _ => false,
         })
     }
@@ -605,7 +658,14 @@ impl Quick {
         self.fit(live);
         // Moving away cancels "Reboot? ⏎" (spec § 2): any key but Enter, its second activation.
         let cancelled = k != Key::Enter && self.confirm.take().is_some();
-        let action = if self.wifi.open {
+        let action = if self.bt.open {
+            let a = self.bt.key(k, &mut self.confirm, now);
+            if !self.bt.open {
+                self.selected = Row::Bluetooth;
+                self.top = 0;
+            }
+            a
+        } else if self.wifi.open {
             let a = self.wifi.key(live.config, k, now);
             if !self.wifi.open {
                 self.selected = Row::Wifi;
@@ -658,6 +718,8 @@ impl Quick {
             (Row::Brightness, Key::Left) => self.brightness(Level::Down(step), now),
             (Row::Wifi, Key::Char(' ')) => self.wifi.radio(),
             (Row::Wifi, Key::Enter | Key::Right) => self.open_wifi(),
+            (Row::Bluetooth, Key::Char(' ')) => live.bluetooth.map_or(QuickAction::Nothing, |s| self.bt.power(s)),
+            (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
             (Row::Profile, Key::Enter) => cycle(live),
@@ -724,7 +786,13 @@ impl Quick {
         if argv.is_empty() {
             return QuickAction::Nothing;
         }
-        match session::activate(&mut self.confirm, s, now) {
+        let activation = if s.asks() {
+            session::ask(&mut self.confirm, Question::Session(s), now)
+        } else {
+            self.confirm = None;
+            Activation::Run
+        };
+        match activation {
             // Too soon after the question (Mae): a double activation; the question stays.
             Activation::Wait => QuickAction::Nothing,
             Activation::Ask => QuickAction::Redraw,
@@ -756,6 +824,14 @@ impl Quick {
                 let a = self.wifi.press(live.config, l, b, now);
                 if !self.wifi.open {
                     self.selected = Row::Wifi;
+                    self.top = 0;
+                }
+                a
+            }
+            (l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode), _) => {
+                let a = self.bt.press(l, b, &mut self.confirm, now);
+                if !self.bt.open {
+                    self.selected = Row::Bluetooth;
                     self.top = 0;
                 }
                 a
@@ -793,7 +869,7 @@ impl Quick {
     /// the row is the second activation.
     fn press_session(&mut self, live: &Live, col: u16, now: Instant) -> QuickAction {
         self.selected = Row::Session;
-        if let Some((s, _)) = self.confirm {
+        if let Some((Question::Session(s), _)) = self.confirm {
             return self.activate(live, s, now);
         }
         let drawn = self.buttons(live);
@@ -848,7 +924,7 @@ impl Quick {
             self.brightness_settle,
             self.reread_toggles[0],
             self.reread_toggles[1],
-            self.confirm.map(|(_, at)| at),
+            self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
         ]
         .into_iter()
@@ -988,6 +1064,42 @@ impl Quick {
         self.wifi.scope()
     }
 
+    /// Enter, →, or a click on the Bluetooth row (quick Bluetooth spec § 1): its detail in place of
+    /// the rows, discovery started on a powered adapter.
+    fn open_bt(&mut self, live: &Live) -> QuickAction {
+        if !present(Row::Bluetooth, live, self) {
+            return QuickAction::Nothing;
+        }
+        self.detail = false;
+        self.wifi.close_detail();
+        self.top = 0;
+        self.bt.open_detail()
+    }
+
+    /// What the Bluetooth reading covers while the panel is open: the detail's lists, else the row.
+    pub fn bt_scope(&self) -> BtScope {
+        self.bt.scope(true)
+    }
+
+    /// The D-Bus thread's Bluetooth view for the open panel (`Bt::set_view`), then fitted: the
+    /// selection back on the row when the detail closed under it; the window follows the selection
+    /// only when it moved (as `follow_wifi`).
+    pub fn follow_bt(&mut self, live: &Live, view: Option<BtView>, now: Instant) -> QuickAction {
+        let was_open = self.bt.open;
+        let action = self.bt.set_view(view, now);
+        if was_open && !self.bt.open {
+            self.selected = Row::Bluetooth;
+            self.top = 0;
+        }
+        self.fit(live);
+        let all = lines(live, self);
+        let at = self.selected_line(&all);
+        if at != self.kept_at {
+            self.keep_visible(at, all.len());
+        }
+        action
+    }
+
     /// Keys in the outputs detail: ↑ ↓ Home End move, Enter makes the sink the default, Esc or ←
     /// go back to the rows (the volume still selected).
     fn detail_key(&mut self, k: Key) -> QuickAction {
@@ -1084,6 +1196,9 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
             l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password) => {
                 q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
             }
+            l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode) => {
+                q.bt.draw(&mut g, l, q.confirm.as_ref(), q.bt.is_selected(l))
+            }
         }
         out.rows.push(g);
     }
@@ -1111,6 +1226,11 @@ fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
             }
         }
         Row::Wifi => text_row(g, Some(q.wifi.glyph()), "Wi-Fi", &format!("{} ›", q.wifi.value()), Style::NORMAL, selected),
+        Row::Bluetooth => {
+            if let Some(s) = live.bluetooth {
+                text_row(g, Some(q.bt.glyph(s)), "Bluetooth", &format!("{} ›", q.bt.value(s)), Style::NORMAL, selected);
+            }
+        }
         Row::Mic => {
             if let Some(v) = live.sound.and_then(|s| s.source) {
                 let (glyph, word, style) = if v.muted { (MIC_OFF, "muted", Style::WARN) } else { (MIC_ON, "live", Style::NORMAL) };
@@ -1173,7 +1293,7 @@ pub(crate) fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &st
 /// selected. Waiting for a second activation, the row is the question instead, in warn.
 fn session_row(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     let end = g.width();
-    if let Some((s, _)) = q.confirm {
+    if let Some((Question::Session(s), _)) = &q.confirm {
         g.write(1, end.saturating_sub(1), &s.question(), Style::WARN);
         return;
     }
@@ -1199,9 +1319,10 @@ pub fn describe(live: &Live, q: &Quick) -> String {
 mod tests {
     use super::*;
     use crate::grid::Tint;
+    use crate::quick_bt::BT_CONNECTED;
     use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
     use crate::segments::VOLUME_MEDIUM;
-    use crate::system::{AccessPoint, Headset, HeadsetMode, Profile, SavedWifi, Security, WifiDevice, WifiState};
+    use crate::system::{AccessPoint, BtDevice, Headset, HeadsetMode, Profile, SavedWifi, Security, WifiDevice, WifiState};
 
     fn vol(percent: u8, muted: bool) -> Option<Volume> {
         Some(Volume { percent, muted })
@@ -1226,6 +1347,7 @@ mod tests {
         dnd: Option<bool>,
         profile: ProfileState,
         config: QuickConfig,
+        bluetooth: Option<BtState>,
     }
 
     impl World {
@@ -1237,11 +1359,18 @@ mod tests {
                 dnd: Some(false),
                 profile: ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() },
                 config: QuickConfig::default(),
+                bluetooth: None,
             }
         }
 
         fn live(&self) -> Live<'_> {
-            Live { sound: Some(&self.sound), dnd: self.dnd, profile: Some(&self.profile), config: &self.config }
+            Live {
+                sound: Some(&self.sound),
+                dnd: self.dnd,
+                profile: Some(&self.profile),
+                config: &self.config,
+                bluetooth: self.bluetooth.as_ref(),
+            }
         }
     }
 
@@ -1366,7 +1495,7 @@ mod tests {
     #[test]
     fn with_nothing_to_show_the_panel_is_empty() {
         let c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
-        let l = Live { sound: None, dnd: None, profile: None, config: &c };
+        let l = Live { sound: None, dnd: None, profile: None, config: &c, bluetooth: None };
         let q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 40);
         assert!(q.is_empty(&l), "nothing to open: the wiring logs it and opens nothing");
         assert!(lines(&l, &q).is_empty());
@@ -1380,7 +1509,7 @@ mod tests {
         assert_eq!(Focus::of(&Target::Module(ModuleId::Volume)), Focus::Sound);
         assert_eq!(Focus::of(&Target::Module(ModuleId::Network)), Focus::Wifi, "quick Wi-Fi spec § 1");
         assert_eq!(quick(&World::full(), Focus::Wifi).selected, Row::Volume, "no Wi-Fi state read yet, so no Wi-Fi row: the first row");
-        assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Top);
+        assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Bluetooth, "quick Bluetooth spec § 1");
         let w = World::full();
         assert_eq!(quick(&w, Focus::Sound).selected, Row::Volume);
         assert_eq!(quick(&w, Focus::Top).selected, Row::Volume, "decision 3: the volume is the first row");
@@ -1390,6 +1519,73 @@ mod tests {
             Row::Brightness,
             "no volume row: the first"
         );
+    }
+
+    /// Quick Bluetooth spec § 1: a click on the Bluetooth module, or `--quick bluetooth`, opens its
+    /// detail; Enter on the row too, Escape goes back to the row.
+    #[test]
+    fn focus_bluetooth_opens_the_detail() {
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(80) }] });
+        let q = quick(&w, Focus::Bluetooth);
+        assert!(q.bt.open);
+        assert_eq!(q.selected, Row::Bluetooth);
+        assert_eq!(lines(&w.live(), &q)[..2], [Line::BtHeader, Line::Separator]);
+        assert_eq!(q.bt_scope(), BtScope::Detail);
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Bluetooth, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
+        assert_eq!(texts(&rows(&l, &q))[3], format!(" {BT_CONNECTED} Bluetooth{}CasqueBT ›", " ".repeat(11)));
+        q.selected = Row::Bluetooth;
+        let t = Instant::now();
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "no view read yet: no discovery");
+        assert!(q.bt.open);
+        assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
+        assert!(!q.bt.open);
+        assert_eq!(q.selected, Row::Bluetooth, "back on its row");
+        w.bluetooth = Some(BtState::Absent);
+        let q = quick(&w, Focus::Bluetooth);
+        assert!(!q.bt.open, "no Bluetooth row: nothing opens");
+        assert_eq!(q.selected, Row::Volume, "the first row");
+    }
+
+    /// The D-Bus thread's view while the detail is open: discovery, BlueZ lost, the row gone.
+    #[test]
+    fn the_bluetooth_detail_follows_its_view() {
+        use crate::quick_bt::BtOrder;
+        use crate::sources::dbus::bt_act::ActCall;
+        use crate::system::{BtAdapter, BtEntry, BtKind, BtView};
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let adapter = "/org/bluez/hci0";
+        let view = || BtView {
+            adapter: Some(BtAdapter { path: adapter.into(), powered: true, blocked: false }),
+            paired: vec![BtEntry {
+                path: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01".into(),
+                label: "CasqueBT".into(),
+                kind: BtKind::Headset,
+                paired: true,
+                trusted: true,
+                connected: false,
+            }],
+            nearby: vec![],
+        };
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        assert_eq!(
+            q.follow_bt(&w.live(), Some(view()), t),
+            QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::StartDiscovery { adapter: adapter.into() })])
+        );
+        assert!(q.bt.is_selected(Line::BtDevice(0)), "the first device");
+        assert_eq!(q.follow_bt(&w.live(), None, t), QuickAction::Redraw, "BlueZ lost: its orders dropped");
+        assert!(!q.bt.open);
+        assert_eq!(q.selected, Row::Bluetooth, "back on the row");
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(view()), t);
+        w.bluetooth = Some(BtState::Absent);
+        q.fit(&w.live());
+        assert!(!q.bt.open, "the row gone: the detail closes");
+        assert_eq!(q.selected, Row::Mic, "the next row down");
     }
 
     #[test]
@@ -1811,7 +2007,7 @@ mod tests {
         assert_eq!(q.key(&l, Key::Enter, false, t), lock, "lock: at once");
         q.button = Session::Reboot;
         assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "the first activation asks");
-        assert_eq!(q.confirm, Some((Session::Reboot, t + CONFIRM)));
+        assert_eq!(q.confirm, Some((Question::Session(Session::Reboot), t + CONFIRM)));
         let b = rows(&l, &q);
         assert_eq!(texts(&b)[7], format!(" {REBOOT} Reboot? ⏎"));
         assert_eq!(b.rows[7].styles()[1..12], "w".repeat(11), "in warn");
@@ -1819,7 +2015,7 @@ mod tests {
         let early = t + Duration::from_millis(200);
         assert_eq!(q.key(&l, Key::Enter, false, early), QuickAction::Nothing, "Mae (M1): a double activation never confirms");
         assert_eq!(q.press(&l, (20, SESSION_LINE), Button::Left, early), QuickAction::Nothing, "nor a double click");
-        assert_eq!(q.confirm, Some((Session::Reboot, t + CONFIRM)), "the question stays, its 3 s unchanged");
+        assert_eq!(q.confirm, Some((Question::Session(Session::Reboot), t + CONFIRM)), "the question stays, its 3 s unchanged");
         assert_eq!(
             q.key(&l, Key::Enter, false, t + Duration::from_millis(500)),
             QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
@@ -1851,7 +2047,7 @@ mod tests {
         let t = Instant::now();
         assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
         assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Redraw, "← moves to lock");
-        assert_eq!((q.confirm, q.button), (None, Session::Lock), "and cancels");
+        assert_eq!((q.confirm.clone(), q.button), (None, Session::Lock), "and cancels");
         q.key(&l, Key::Right, false, t);
         assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw, "back on reboot: it asks again, never runs");
         assert_eq!(q.key(&l, Key::Up, false, t), QuickAction::Redraw);
