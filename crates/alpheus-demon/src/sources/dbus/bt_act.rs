@@ -6,12 +6,13 @@
 //! auto-start off: nothing outside the list can reach BlueZ, and no call can start it. Answers are
 //! matched by reply serial; the read connection (`bt.rs`) stays read only.
 
+use crate::pipewire::drawable;
 use dbus::Message;
 use dbus::arg::Variant;
 use dbus::channel::{BusType, Channel};
 use dbus::message::MessageType;
 use dbus::strings::{BusName, ErrorName, Interface, Member, Path};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::time::Duration;
@@ -24,8 +25,24 @@ const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
 const LOCAL: &str = "org.freedesktop.DBus.Local";
-/// What a method call to this connection gets (Task 5 serves the agent's).
+/// Where `AgentManager1` lives.
+const AGENT_MANAGER_PATH: &str = "/org/bluez";
+/// The one object this connection serves (spec § 3), to BlueZ's unique name only.
+pub const AGENT_PATH: &str = "/org/alpheus/bluetooth/agent";
+/// The agent's IO capability: it shows a code and confirms one, never types one in.
+pub const CAPABILITY: &str = "KeyboardDisplay";
+/// The one interface served, at AGENT_PATH.
+const AGENT_INTERFACE: &str = "org.bluez.Agent1";
+/// What any sender but BlueZ's unique name gets: it learns nothing, not even what is served.
+const ACCESS_DENIED: &str = "org.freedesktop.DBus.Error.AccessDenied";
+/// What BlueZ gets for any other path, interface or member.
 const UNKNOWN_METHOD: &str = "org.freedesktop.DBus.Error.UnknownMethod";
+/// The agent's refusal (a code declined, a passkey out of range, a held call evicted or closed).
+const REJECTED: &str = "org.bluez.Error.Rejected";
+/// Agent calls waiting for the panel's answer; beyond it the oldest is rejected.
+const MAX_HELD: usize = 4;
+/// A legacy PIN, in characters, once cleaned.
+const MAX_PIN: usize = 16;
 /// A call libdbus refused to build (an object path that is not one).
 const INVALID_ARGS: &str = "org.freedesktop.DBus.Error.InvalidArgs";
 
@@ -165,13 +182,26 @@ pub enum ActError {
     Gone,
 }
 
-/// The agent object's registration (Task 5).
+/// An agent call waiting for `BtAct::reply`: the incoming call's serial.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentId(pub u32);
 
-/// What BlueZ asks the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentReply {
+    Ok,
+    Rejected,
+}
+
+/// What BlueZ asks the agent (`org.bluez.Agent1`); `device` is an object path (never logged).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentRequest {
+    DisplayPasskey { device: String, passkey: u32 },
+    DisplayPinCode { device: String, pincode: String },
+    RequestConfirmation { device: String, passkey: u32 },
+    RequestAuthorization { device: String },
+    RequestPinCode { device: String },
+    RequestPasskey { device: String },
+    AuthorizeService { device: String },
     Cancel,
     Release,
 }
@@ -246,6 +276,78 @@ fn answer(call: &Message, outcome: Result<(), &'static str>) -> Message {
     }
 }
 
+/// An agent call, read with its member's exact signature; None for any other member or a
+/// signature that does not match. A PIN is cleaned (`drawable`) and capped at MAX_PIN characters.
+pub(crate) fn agent_request(m: &Message) -> Option<AgentRequest> {
+    use AgentRequest::*;
+    let device = |p: Path| p.to_string();
+    Some(match &*m.member()? {
+        "DisplayPasskey" => {
+            let (d, passkey, _entered) = m.read3::<Path, u32, u16>().ok()?;
+            DisplayPasskey { device: device(d), passkey }
+        }
+        "DisplayPinCode" => {
+            let (d, pin) = m.read2::<Path, &str>().ok()?;
+            DisplayPinCode { device: device(d), pincode: drawable(pin).chars().take(MAX_PIN).collect() }
+        }
+        "RequestConfirmation" => {
+            let (d, passkey) = m.read2::<Path, u32>().ok()?;
+            RequestConfirmation { device: device(d), passkey }
+        }
+        "RequestAuthorization" => RequestAuthorization { device: device(m.read1::<Path>().ok()?) },
+        "RequestPinCode" => RequestPinCode { device: device(m.read1::<Path>().ok()?) },
+        "RequestPasskey" => RequestPasskey { device: device(m.read1::<Path>().ok()?) },
+        "AuthorizeService" => AuthorizeService { device: device(m.read2::<Path, &str>().ok()?.0) },
+        "Cancel" => Cancel,
+        "Release" => Release,
+        _ => return None,
+    })
+}
+
+/// What becomes of a method call made to this connection.
+#[derive(Debug, PartialEq, Eq)]
+enum Screen {
+    /// Held until the panel's `reply`.
+    Deliver(AgentRequest),
+    /// Answered at once, then told to the panel.
+    AckAndDeliver(AgentRequest),
+    /// Answered with this error name; the panel never hears of it.
+    Refuse(&'static str),
+}
+
+/// Sorts an incoming call: the sender first (BlueZ's unique name, `owner`, or ACCESS_DENIED: no
+/// owner known means nobody is BlueZ), then the path and interface, the member and its signature
+/// (UNKNOWN_METHOD), then the passkey's six digits (REJECTED).
+fn screen(m: &Message, owner: Option<&str>) -> Screen {
+    let sender = m.sender();
+    if owner.is_none() || sender.as_deref() != owner {
+        return Screen::Refuse(ACCESS_DENIED);
+    }
+    if m.path().as_deref() != Some(AGENT_PATH) || m.interface().as_deref() != Some(AGENT_INTERFACE) {
+        return Screen::Refuse(UNKNOWN_METHOD);
+    }
+    match agent_request(m) {
+        None => Screen::Refuse(UNKNOWN_METHOD),
+        Some(AgentRequest::DisplayPasskey { passkey, .. } | AgentRequest::RequestConfirmation { passkey, .. }) if passkey > 999_999 => {
+            Screen::Refuse(REJECTED)
+        }
+        Some(r @ (AgentRequest::Cancel | AgentRequest::Release)) => Screen::AckAndDeliver(r),
+        Some(r) => Screen::Deliver(r),
+    }
+}
+
+/// Keeps `m` for its answer; beyond MAX_HELD the oldest comes back, to be rejected.
+fn hold(held: &mut VecDeque<(AgentId, Message)>, id: AgentId, m: Message) -> Option<Message> {
+    held.push_back((id, m));
+    if held.len() > MAX_HELD { held.pop_front().map(|(_, m)| m) } else { None }
+}
+
+/// Removes the held call `id`: None when unknown or already answered.
+fn take(held: &mut VecDeque<(AgentId, Message)>, id: AgentId) -> Option<Message> {
+    let i = held.iter().position(|(h, _)| *h == id)?;
+    held.remove(i).map(|(_, m)| m)
+}
+
 /// Who answers for `org.bluez`.
 #[derive(Debug)]
 enum Owner {
@@ -268,6 +370,10 @@ pub struct BtAct {
     pending: BTreeMap<u32, ActCall>,
     /// Events `read` delivers first.
     ready: Vec<BtEvent>,
+    /// Agent calls waiting for `reply`, oldest first (at most MAX_HELD).
+    held: VecDeque<(AgentId, Message)>,
+    /// `RegisterAgent` was sent: `close` unregisters.
+    registered: bool,
     closed: bool,
 }
 
@@ -287,8 +393,16 @@ impl BtAct {
 
     fn start(mut channel: Channel) -> io::Result<BtAct> {
         channel.set_watch_enabled(true);
-        let mut act =
-            BtAct { channel, owner: Owner::Absent, queued: Vec::new(), pending: BTreeMap::new(), ready: Vec::new(), closed: false };
+        let mut act = BtAct {
+            channel,
+            owner: Owner::Absent,
+            queued: Vec::new(),
+            pending: BTreeMap::new(),
+            ready: Vec::new(),
+            held: VecDeque::new(),
+            registered: false,
+            closed: false,
+        };
         let serial = name_owner().and_then(|m| act.post(m)).ok_or_else(|| io::Error::other("GetNameOwner not sent"))?;
         act.owner = Owner::Asking(serial);
         Ok(act)
@@ -398,12 +512,7 @@ impl BtAct {
                         out.push(BtEvent::Answer { call, result });
                     }
                 }
-                MessageType::MethodCall => {
-                    if !m.get_no_reply() {
-                        let refusal = answer(&m, Err(UNKNOWN_METHOD));
-                        posted |= self.post(refusal).is_some();
-                    }
-                }
+                MessageType::MethodCall => posted |= self.agent_call(m, out),
                 MessageType::Signal if m.interface().is_some_and(|i| &*i == LOCAL) => lost = true,
                 MessageType::Signal => {}
             }
@@ -430,7 +539,10 @@ impl BtAct {
         match owner {
             Some(owner) => {
                 self.owner = Owner::Known(owner.clone());
-                let sent = !queued.is_empty();
+                // First: one connection's messages are handled in order, so BlueZ has the agent
+                // before any `Pair`.
+                self.registered = self.agent_manager(&owner, ActMethod::RegisterAgent);
+                let sent = self.registered || !queued.is_empty();
                 for call in queued {
                     self.dispatch(call, &owner);
                 }
@@ -450,8 +562,68 @@ impl BtAct {
         self.queued.len() + self.pending.len()
     }
 
-    /// Writes what is queued, then closes the connection.
+    /// The panel's answer to the held agent call `id`; an unknown (or already answered) `id` does
+    /// nothing. `flush` writes it.
+    pub fn reply(&mut self, id: AgentId, reply: AgentReply) {
+        let Some(m) = take(&mut self.held, id) else { return };
+        let outcome = match reply {
+            AgentReply::Ok => Ok(()),
+            AgentReply::Rejected => Err(REJECTED),
+        };
+        self.respond(&m, outcome);
+    }
+
+    /// Posts `answer(m, outcome)` unless `m` expects no reply; true when posted.
+    fn respond(&mut self, m: &Message, outcome: Result<(), &'static str>) -> bool {
+        !m.get_no_reply() && self.post(answer(m, outcome)).is_some()
+    }
+
+    /// `AgentManager1.RegisterAgent` or `UnregisterAgent` for AGENT_PATH, to `owner`; no reply
+    /// expected (a refused registration shows up as a failed `Pair`). True when posted.
+    fn agent_manager(&mut self, owner: &str, method: ActMethod) -> bool {
+        let Ok(agent) = Path::new(AGENT_PATH) else { return false };
+        let Some(m) = build(owner, AGENT_MANAGER_PATH, method) else { return false };
+        let mut m = if method == ActMethod::RegisterAgent { m.append2(agent, CAPABILITY) } else { m.append1(agent) };
+        m.set_no_reply(true);
+        self.post(m).is_some()
+    }
+
+    /// An agent call: screened; refused, acknowledged and told, or held and told.
+    fn agent_call(&mut self, m: Message, out: &mut Vec<BtEvent>) -> bool {
+        let owner = match &self.owner {
+            Owner::Known(owner) => Some(owner.clone()),
+            _ => None,
+        };
+        let Some(serial) = m.get_serial() else { return false };
+        let id = AgentId(serial);
+        match screen(&m, owner.as_deref()) {
+            Screen::Refuse(name) => self.respond(&m, Err(name)),
+            Screen::AckAndDeliver(request) => {
+                let posted = self.respond(&m, Ok(()));
+                out.push(BtEvent::Agent { id, request });
+                posted
+            }
+            Screen::Deliver(request) => {
+                let posted = match hold(&mut self.held, id, m) {
+                    Some(evicted) => self.respond(&evicted, Err(REJECTED)),
+                    None => false,
+                };
+                out.push(BtEvent::Agent { id, request });
+                posted
+            }
+        }
+    }
+
+    /// Rejects every held agent call, unregisters the agent, writes what is queued, then closes
+    /// the connection.
     pub fn close(mut self) {
+        for (_, m) in std::mem::take(&mut self.held) {
+            self.respond(&m, Err(REJECTED));
+        }
+        if let (true, Owner::Known(owner)) = (self.registered, &self.owner) {
+            let owner = owner.clone();
+            self.agent_manager(&owner, ActMethod::UnregisterAgent);
+        }
         self.flush();
     }
 }
@@ -585,6 +757,98 @@ mod tests {
         ] {
             assert_eq!(act_error(kept), ActError::Remote(kept.into()));
         }
+    }
+
+    const BLUEZ: &str = ":1.7";
+
+    fn agent_call(member: &str) -> Message {
+        let mut m = Message::new_method_call(":1.99", AGENT_PATH, "org.bluez.Agent1", member).unwrap();
+        m.set_sender(Some(BLUEZ.into()));
+        m.set_serial(41);
+        m
+    }
+
+    fn dev() -> dbus::Path<'static> {
+        dbus::Path::from(DEV)
+    }
+
+    #[test]
+    fn agent_request_decodes_each_member() {
+        use AgentRequest::*;
+        let d = || DEV.to_string();
+        let rows: Vec<(Message, AgentRequest)> = vec![
+            (agent_call("DisplayPasskey").append3(dev(), 482_913u32, 0u16), DisplayPasskey { device: d(), passkey: 482_913 }),
+            (agent_call("DisplayPinCode").append2(dev(), "0000"), DisplayPinCode { device: d(), pincode: "0000".into() }),
+            (agent_call("RequestConfirmation").append2(dev(), 7u32), RequestConfirmation { device: d(), passkey: 7 }),
+            (agent_call("RequestAuthorization").append1(dev()), RequestAuthorization { device: d() }),
+            (agent_call("RequestPinCode").append1(dev()), RequestPinCode { device: d() }),
+            (agent_call("RequestPasskey").append1(dev()), RequestPasskey { device: d() }),
+            (agent_call("AuthorizeService").append2(dev(), "0000110b-0000-1000-8000-00805f9b34fb"), AuthorizeService { device: d() }),
+            (agent_call("Cancel"), Cancel),
+            (agent_call("Release"), Release),
+        ];
+        for (m, want) in rows {
+            assert_eq!(agent_request(&m), Some(want));
+        }
+        assert_eq!(agent_request(&agent_call("DisplayPasskey").append1(dev())), None, "missing arguments");
+        assert_eq!(agent_request(&agent_call("RequestConfirmation").append2("not o", 7u32)), None, "wrong signature");
+        assert_eq!(agent_request(&agent_call("Explode")), None);
+    }
+
+    #[test]
+    fn screen_answers_only_bluez_at_the_agent_path() {
+        let owner = Some(BLUEZ);
+        let confirm = || agent_call("RequestConfirmation").append2(dev(), 482_913u32);
+        assert_eq!(screen(&confirm(), owner), Screen::Deliver(AgentRequest::RequestConfirmation { device: DEV.into(), passkey: 482_913 }));
+        assert_eq!(screen(&agent_call("Cancel"), owner), Screen::AckAndDeliver(AgentRequest::Cancel));
+        assert_eq!(screen(&agent_call("Release"), owner), Screen::AckAndDeliver(AgentRequest::Release));
+        let mut stranger = confirm();
+        stranger.set_sender(Some(":1.100".into()));
+        assert_eq!(screen(&stranger, owner), Screen::Refuse(ACCESS_DENIED));
+        assert_eq!(screen(&confirm(), None), Screen::Refuse(ACCESS_DENIED), "owner unknown: nobody is BlueZ");
+        let mut elsewhere = Message::new_method_call(":1.99", "/org/alpheus/other", "org.bluez.Agent1", "Cancel").unwrap();
+        elsewhere.set_sender(Some(BLUEZ.into()));
+        assert_eq!(screen(&elsewhere, owner), Screen::Refuse(UNKNOWN_METHOD));
+        let mut introspect = Message::new_method_call(":1.99", AGENT_PATH, "org.freedesktop.DBus.Introspectable", "Introspect").unwrap();
+        introspect.set_sender(Some(BLUEZ.into()));
+        assert_eq!(screen(&introspect, owner), Screen::Refuse(UNKNOWN_METHOD));
+        assert_eq!(screen(&agent_call("Explode"), owner), Screen::Refuse(UNKNOWN_METHOD));
+    }
+
+    #[test]
+    fn bad_passkey_rejected() {
+        let owner = Some(BLUEZ);
+        assert_eq!(screen(&agent_call("DisplayPasskey").append3(dev(), 1_000_000u32, 0u16), owner), Screen::Refuse(REJECTED));
+        assert_eq!(screen(&agent_call("RequestConfirmation").append2(dev(), 1_000_000u32), owner), Screen::Refuse(REJECTED));
+        assert!(matches!(screen(&agent_call("RequestConfirmation").append2(dev(), 999_999u32), owner), Screen::Deliver(_)));
+    }
+
+    #[test]
+    fn pin_capped_and_cleaned() {
+        let m = agent_call("DisplayPinCode").append2(dev(), "\u{202e}12\u{7}34567890123456789XYZ");
+        assert_eq!(agent_request(&m), Some(AgentRequest::DisplayPinCode { device: DEV.into(), pincode: "1234567890123456".into() }));
+    }
+
+    #[test]
+    fn a_held_call_is_taken_once() {
+        let mut held = VecDeque::new();
+        hold(&mut held, AgentId(1), agent_call("Cancel"));
+        hold(&mut held, AgentId(2), agent_call("Cancel"));
+        assert!(take(&mut held, AgentId(1)).is_some());
+        assert!(take(&mut held, AgentId(1)).is_none(), "already answered");
+        assert!(take(&mut held, AgentId(9)).is_none(), "unknown");
+        assert_eq!(held.iter().map(|(id, _)| id.0).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn at_most_four_agent_calls_are_held() {
+        let mut held = VecDeque::new();
+        for serial in 1..=4 {
+            assert!(hold(&mut held, AgentId(serial), agent_call("Cancel")).is_none());
+        }
+        let evicted = hold(&mut held, AgentId(5), agent_call("Cancel"));
+        assert!(evicted.is_some());
+        assert_eq!(held.iter().map(|(id, _)| id.0).collect::<Vec<_>>(), [2, 3, 4, 5]);
     }
 
     #[test]
