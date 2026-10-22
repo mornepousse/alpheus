@@ -52,11 +52,16 @@ pub(crate) fn taken_sinks(m: &mut Msg) -> Option<Vec<Sink>> {
 }
 
 /// The headset a bar message carries for the open panel (quick Bluetooth spec § 4), taken out of it
-/// like the sink list (the bar never keeps one): `Some(None)` when it carries none, or pw-dump went
-/// (`Msg::Sound(None)`), so the row goes; None: not a sound message.
+/// like the sink list (the bar never keeps one), and read before `taken_sinks`: a message carries
+/// the panel's state only when it has a sink list (`Scope::Panel`); a base-scope one, whose headset
+/// is None for "not carried", gives None and leaves the panel's row alone. pw-dump gone
+/// (`Msg::Sound(None)`) gives `Some(None)`, so the row goes; None: nothing to set.
 pub(crate) fn taken_headset(m: &mut Msg) -> Option<Option<Headset>> {
     match m {
-        Msg::Sound(Some(s)) => Some(s.headset.take()),
+        Msg::Sound(Some(s)) => {
+            let h = s.headset.take();
+            s.sinks.is_some().then_some(h)
+        }
         Msg::Sound(None) => Some(None),
         _ => None,
     }
@@ -586,8 +591,8 @@ impl App {
     /// goes to a followed attempt (Mae's ruling P1). True when the open panel shows what it carries:
     /// the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
-        // Both taken always, so the bar never keeps either (decision 13).
-        let (sinks, headset) = (taken_sinks(m), taken_headset(m));
+        // Both taken always, so the bar never keeps either (decision 13); the headset first: it reads `sinks` as the panel-scope marker.
+        let (headset, sinks) = (taken_headset(m), taken_sinks(m));
         if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
             if let Some(sinks) = sinks {
                 q.set_sinks(sinks);
@@ -969,9 +974,19 @@ mod tests {
         let (_, headset, _) = opened_sound(&mut bar, SoundState { sink: vol(40, false), headset: casque(), ..SoundState::default() });
         assert_eq!(headset, casque());
         assert_eq!(quick::live(&bar, false).sound.and_then(|s| s.headset.clone()), None, "the bar keeps none");
-        let mut m = Msg::Sound(Some(SoundState { headset: casque(), ..SoundState::default() }));
+        let mut m = Msg::Sound(Some(SoundState { headset: casque(), sinks: Some(vec![]), ..SoundState::default() }));
         assert_eq!(taken_headset(&mut m), Some(casque()));
         assert!(matches!(&m, Msg::Sound(Some(s)) if s.headset.is_none()), "taken out of the message");
+        let mut base = Msg::Sound(Some(SoundState { headset: casque(), ..SoundState::default() }));
+        assert_eq!(taken_headset(&mut base), None, "a base-scope message says nothing of the headset");
+        assert!(matches!(&base, Msg::Sound(Some(s)) if s.headset.is_none()), "and still never keeps one");
+        let l = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 20);
+        q.set_headset(casque());
+        if let Some(h) = taken_headset(&mut base) {
+            q.set_headset(h);
+        }
+        assert_eq!(q.headset, casque(), "a stale base-scope message never wipes the panel's row");
         assert_eq!(taken_headset(&mut Msg::Sound(None)), Some(None), "pw-dump gone: the row goes");
         assert_eq!(taken_headset(&mut Msg::Profile(None)), None, "only a sound message carries one");
     }

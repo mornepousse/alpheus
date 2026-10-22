@@ -1709,7 +1709,9 @@ mod tests {
         let mut p = PROFILES;
         p[1].3 = "no"; // a2dp-sink unavailable
         p[4].2 = 5; // cvsd above mSBC
-        apply_all(&mut m, &[device(61, "bluez5", &p, 2)]);
+        let mut all = p.to_vec();
+        all.push((6, "a2dp-duplex", 40, "yes")); // never a Hi-Fi pick: not an a2dp-sink profile
+        apply_all(&mut m, &[device(61, "bluez5", &all, 2)]);
         assert_eq!(m.headset(), casque(HeadsetMode::HiFi, 2, 4));
     }
 
