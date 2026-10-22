@@ -3,7 +3,11 @@
 //! object path, its keys and clicks, and the BlueZ calls they ask for (`BtOrder`), which the wiring
 //! hands to the acting connection (`sources/dbus/bt_act.rs`). The view comes from the D-Bus thread
 //! (`sources/dbus/bt.rs`) only while the panel is open. Device names, aliases, addresses and object
-//! paths never reach a log from here.
+//! paths never reach a log from here: a log line names the action's word and the D-Bus error.
+//!
+//! One action at a time (spec § 2): a power toggle, a connect, a disconnect, a pairing (pair, trust,
+//! connect), a forget; each call with its own CALL_DEADLINE, suspended while a pairing code shows.
+//! The agent's requests (spec § 3) are answered for the device being paired only.
 
 use crate::actions::Button;
 use crate::grid::{Grid, Style, text_width, truncate};
@@ -11,10 +15,11 @@ use crate::keys::Key;
 use crate::list;
 use crate::quick::{Line, Question, QuickAction, run, text_row};
 use crate::quick_wifi::VALUE_CELLS;
-use crate::sources::dbus::bt_act::{ActCall, AgentId, AgentReply};
+use crate::session::{self, Activation};
+use crate::sources::dbus::bt_act::{ActCall, ActError, AgentId, AgentReply, AgentRequest};
 use crate::system::{BtAdapter, BtEntry, BtKind, BtScope, BtState, BtView};
 use crate::text;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// The most devices the detail lists, paired and nearby together (quick Bluetooth spec § 2).
 pub const ROWS_MAX: usize = 32;
@@ -35,6 +40,18 @@ pub const OFF_NOTE: &str = "Bluetooth is off";
 pub const NEARBY: &str = "Nearby";
 /// A paired, unconnected device's tag.
 const PAIRED_TAG: &str = "paired";
+/// The tags of an action running, a failure, and the forget question (spec § 2).
+const RUNNING_TAG: &str = "…";
+const FAILED_TAG: &str = "failed";
+const FORGET_TAG: &str = "Forget? ⏎";
+/// How long each call of an action may wait for its answer (spec § 2).
+pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
+/// How long `failed` shows after a failure.
+pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
+/// BlueZ's answer to a `Connect` on a device already connected: a success.
+const ALREADY_CONNECTED: &str = "org.bluez.Error.AlreadyConnected";
+/// The object went (a device removed meanwhile): the action ends silently.
+const UNKNOWN_OBJECT: &str = "org.freedesktop.DBus.Error.UnknownObject";
 
 /// What the panel asks of BlueZ: a call on the acting connection, or the agent's answer to one of
 /// BlueZ's requests.
@@ -42,6 +59,39 @@ const PAIRED_TAG: &str = "paired";
 pub enum BtOrder {
     Call(ActCall),
     Reply(AgentId, AgentReply),
+    /// Stop waiting for this call's answer (`BtAct::forget`): nothing goes on the bus.
+    Forget(ActCall),
+}
+
+/// Where an action is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    Power,
+    Connect,
+    Disconnect,
+    Pair,
+    /// `Trusted` set after a pairing.
+    Trust,
+    /// The `Connect` after a pairing's trust.
+    ConnectAfterPair,
+    Forget,
+}
+
+/// The one action running: its device (None: the adapter's power), its step, the call waiting for
+/// its answer, and until when (None: suspended while a code shows, or not armed yet).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Action {
+    pub device: Option<String>,
+    pub step: Step,
+    pub call: ActCall,
+    pub deadline: Option<Instant>,
+}
+
+/// A pairing's code (spec § 3): shown to be typed on the device, or asked to be compared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Code {
+    Shown { device: String, text: String },
+    Question { device: String, passkey: u32, id: AgentId },
 }
 
 /// The panel's Bluetooth: dropped whole with the panel.
@@ -57,11 +107,17 @@ pub struct Bt {
     pub discovering: bool,
     /// `rfkill unblock bluetooth` ran: power the adapter on once BlueZ reports it unblocked.
     pub power_after_unblock: bool,
+    /// The one action running.
+    pub action: Option<Action>,
+    /// The device whose action failed, until when `failed` shows.
+    pub failed: Option<(String, Instant)>,
+    /// The running pairing's code.
+    pub code: Option<Code>,
 }
 
-/// The adapter's path and its power the other way, as a call.
-fn powered(a: &BtAdapter, on: bool) -> BtOrder {
-    BtOrder::Call(ActCall::Powered { adapter: a.path.clone(), on })
+/// The adapter's power set to `on`, as a call.
+fn powered(a: &BtAdapter, on: bool) -> ActCall {
+    ActCall::Powered { adapter: a.path.clone(), on }
 }
 
 fn kind_glyph(kind: BtKind) -> char {
@@ -147,11 +203,27 @@ impl Bt {
         }
     }
 
-    /// Back to the rows: discovery stops if this open started it.
+    /// Back to the rows (`leaving`'s orders).
     pub fn close_detail(&mut self) -> Vec<BtOrder> {
         self.open = false;
         self.selected = None;
+        self.leaving()
+    }
+
+    /// Leaving the detail or closing the panel, in order: a pending code question rejected, a
+    /// pairing cancelled and its call forgotten (the code could no longer show), discovery stopped
+    /// if this open started it. A connect, disconnect, trust or forget outlives the detail.
+    pub fn leaving(&mut self) -> Vec<BtOrder> {
         let mut v = Vec::new();
+        if let Some(Code::Question { id, .. }) = self.code.take() {
+            v.push(BtOrder::Reply(id, AgentReply::Rejected));
+        }
+        if let Some(a) = self.action.take_if(|a| a.step == Step::Pair) {
+            if let Some(device) = a.device {
+                v.push(BtOrder::Call(ActCall::CancelPairing { device }));
+            }
+            v.push(BtOrder::Forget(a.call));
+        }
         if std::mem::take(&mut self.discovering)
             && let Some(a) = self.adapter()
         {
@@ -160,10 +232,11 @@ impl Bt {
         v
     }
 
-    /// What the D-Bus thread is to read: the detail's lists while it is open, the adapter while the
-    /// row shows, nothing otherwise.
+    /// What the D-Bus thread is to read: the detail's lists while it is open (or while an action on
+    /// a device runs: a row reading would look like that device gone), the adapter while the row
+    /// shows, nothing otherwise.
     pub fn scope(&self, row_shown: bool) -> BtScope {
-        if self.open {
+        if self.open || self.action.as_ref().is_some_and(|a| a.device.is_some()) {
             BtScope::Detail
         } else if row_shown {
             BtScope::Row
@@ -172,16 +245,245 @@ impl Bt {
         }
     }
 
-    /// The acting connection is wanted: the detail is open.
+    /// The acting connection is wanted: the detail is open, an action runs or a code shows.
     pub fn wants_connection(&self) -> bool {
-        self.open
+        self.open || self.action.is_some() || self.code.is_some()
+    }
+
+    /// The action and its code end: a pending code question rejected; its call forgotten when its
+    /// answer is still awaited (`forget`); `failed` on its device from `failed_at`, if given.
+    fn finish(&mut self, forget: bool, failed_at: Option<Instant>) -> Vec<BtOrder> {
+        let mut v = Vec::new();
+        if let Some(Code::Question { id, .. }) = self.code.take() {
+            v.push(BtOrder::Reply(id, AgentReply::Rejected));
+        }
+        if let Some(a) = self.action.take() {
+            if let (Some(at), Some(d)) = (failed_at, a.device) {
+                self.failed = Some((d, at + FAILED_SHOWN));
+            }
+            if forget {
+                v.push(BtOrder::Forget(a.call));
+            }
+        }
+        v
+    }
+
+    /// Starts an action on `call`, armed at `now` (None: armed by `arm`); the order sending it.
+    fn start(&mut self, device: Option<String>, step: Step, call: ActCall, now: Option<Instant>) -> BtOrder {
+        self.action = Some(Action { device, step, call: call.clone(), deadline: now.map(|n| n + CALL_DEADLINE) });
+        BtOrder::Call(call)
+    }
+
+    /// A just-started action with no deadline and no code gets its CALL_DEADLINE from `now` (the
+    /// power toggle keeps no clock).
+    pub(crate) fn arm(&mut self, now: Instant) {
+        if self.code.is_none()
+            && let Some(a) = self.action.as_mut().filter(|a| a.deadline.is_none())
+        {
+            a.deadline = Some(now + CALL_DEADLINE);
+        }
+    }
+
+    /// Enter (or a left press) on the selected device, no action running (spec § 2): a connected one
+    /// disconnects, a paired one connects, a nearby one pairs.
+    pub fn enter(&mut self, now: Instant) -> QuickAction {
+        if self.action.is_some() {
+            return QuickAction::Nothing;
+        }
+        let devices = self.devices();
+        let Some(d) = self.selected.as_ref().and_then(|p| devices.iter().find(|d| &d.path == p)) else {
+            return QuickAction::Nothing;
+        };
+        let device = d.path.clone();
+        let (step, call) = if d.connected {
+            (Step::Disconnect, ActCall::Disconnect { device: device.clone() })
+        } else if d.paired {
+            (Step::Connect, ActCall::Connect { device: device.clone() })
+        } else {
+            (Step::Pair, ActCall::Pair { device: device.clone() })
+        };
+        QuickAction::Bluetooth(vec![self.start(Some(device), step, call, Some(now))])
+    }
+
+    /// The selected device's forget question (Delete, a right press): only on a paired device, with
+    /// no action running.
+    fn ask_forget(&mut self, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
+        let Some(p) = self.selected.clone() else { return QuickAction::Nothing };
+        let paired = self.view.as_ref().is_some_and(|v| v.paired.iter().any(|e| e.path == p));
+        if self.action.is_some() || !paired {
+            return QuickAction::Nothing;
+        }
+        *confirm = Some((Question::Forget(p), now + session::CONFIRM));
+        QuickAction::Redraw
+    }
+
+    /// Enter, or a left press, on the selected device: the forget question's second activation when
+    /// it asks about this device (from CONFIRM_AFTER to CONFIRM), else `enter`.
+    fn activate(&mut self, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
+        let asked = matches!((confirm.as_ref(), &self.selected), (Some((Question::Forget(q), until)), Some(p)) if q == p && now < *until);
+        if !asked {
+            *confirm = None;
+            return self.enter(now);
+        }
+        let (Some(device), Some(adapter)) = (self.selected.clone(), self.adapter().map(|a| a.path.clone())) else {
+            return QuickAction::Nothing;
+        };
+        match session::ask(confirm, Question::Forget(device.clone()), now) {
+            Activation::Wait => QuickAction::Nothing,
+            Activation::Ask => QuickAction::Redraw,
+            Activation::Run if self.action.is_some() => QuickAction::Redraw,
+            Activation::Run => {
+                let call = ActCall::RemoveDevice { adapter, device: device.clone() };
+                QuickAction::Bluetooth(vec![self.start(Some(device), Step::Forget, call, Some(now))])
+            }
+        }
+    }
+
+    /// The answer to `call` (the acting connection's `BtEvent::Answer`): the action's next step,
+    /// its end, or its failure; the log line to write, if any (never a device in it).
+    pub fn answered(&mut self, call: &ActCall, result: Result<(), ActError>, now: Instant) -> (QuickAction, Option<String>) {
+        let Some(a) = self.action.as_ref().filter(|a| &a.call == call) else {
+            // Not the action's: discovery failing is logged once, never retried.
+            return match (call, result) {
+                (ActCall::StartDiscovery { .. }, Err(ActError::Remote(why))) => {
+                    (QuickAction::Nothing, Some(format!("quick: bluetooth {} failed ({why})", call.word())))
+                }
+                _ => (QuickAction::Nothing, None),
+            };
+        };
+        let step = a.step;
+        let success = match &result {
+            Ok(()) => true,
+            Err(ActError::Remote(why)) => why == ALREADY_CONNECTED && matches!(step, Step::Connect | Step::ConnectAfterPair),
+            Err(ActError::Gone) => false,
+        };
+        if !success {
+            return match result {
+                Err(ActError::Remote(why)) if why != UNKNOWN_OBJECT => {
+                    let v = self.finish(false, Some(now));
+                    (orders(v), Some(format!("quick: bluetooth {} failed ({why})", call.word())))
+                }
+                _ => (orders(self.finish(false, None)), None),
+            };
+        }
+        let device = a.device.clone();
+        let next = match (step, device) {
+            (Step::Pair, Some(d)) => {
+                self.code = None;
+                Some((Step::Trust, ActCall::Trusted { device: d }))
+            }
+            (Step::Trust, Some(d)) if !self.connected(&d) => Some((Step::ConnectAfterPair, ActCall::Connect { device: d })),
+            _ => None,
+        };
+        match next {
+            Some((step, call)) => {
+                let device = self.action.as_ref().and_then(|a| a.device.clone());
+                (QuickAction::Bluetooth(vec![self.start(device, step, call, Some(now))]), None)
+            }
+            None => {
+                self.action = None;
+                (QuickAction::Redraw, None)
+            }
+        }
+    }
+
+    /// The view shows `path` connected.
+    fn connected(&self, path: &str) -> bool {
+        self.view.as_ref().is_some_and(|v| v.paired.iter().chain(&v.nearby).any(|e| e.path == path && e.connected))
+    }
+
+    /// The device being paired: the action's, while its step is `Pair`.
+    fn pairing(&self) -> Option<&str> {
+        self.action.as_ref().filter(|a| a.step == Step::Pair).and_then(|a| a.device.as_deref())
+    }
+
+    /// `code` replaces the one showing: a pending question is rejected first. The deadline waits.
+    fn show(&mut self, code: Code, v: &mut Vec<BtOrder>) {
+        if let Some(Code::Question { id, .. }) = self.code.take() {
+            v.push(BtOrder::Reply(id, AgentReply::Rejected));
+        }
+        self.code = Some(code);
+        if let Some(a) = self.action.as_mut() {
+            a.deadline = None;
+        }
+    }
+
+    /// One of BlueZ's agent requests (spec § 3), for the device being paired only: a code shown, a
+    /// code question, a code to type in (refused: `failed`), BlueZ cancelling. Anything else, or for
+    /// any other device, is rejected.
+    pub fn agent(&mut self, id: AgentId, request: AgentRequest, now: Instant) -> QuickAction {
+        use AgentRequest::*;
+        let reject = || QuickAction::Bluetooth(vec![BtOrder::Reply(id, AgentReply::Rejected)]);
+        let mut v = Vec::new();
+        match request {
+            Cancel | Release => {
+                // BlueZ's own (acting.rs answered it): the code goes, the deadline runs again.
+                let shown = self.code.take().is_some();
+                if let Some(a) = self.action.as_mut().filter(|a| shown || a.deadline.is_none()) {
+                    a.deadline = Some(now + CALL_DEADLINE);
+                }
+                QuickAction::Redraw
+            }
+            DisplayPasskey { device, passkey } if self.pairing() == Some(device.as_str()) => {
+                self.show(Code::Shown { device, text: Bt::format_code(passkey) }, &mut v);
+                v.push(BtOrder::Reply(id, AgentReply::Ok));
+                QuickAction::Bluetooth(v)
+            }
+            DisplayPinCode { device, pincode } if self.pairing() == Some(device.as_str()) => {
+                self.show(Code::Shown { device, text: pincode }, &mut v);
+                v.push(BtOrder::Reply(id, AgentReply::Ok));
+                QuickAction::Bluetooth(v)
+            }
+            RequestConfirmation { device, passkey } if self.pairing() == Some(device.as_str()) => {
+                self.show(Code::Question { device, passkey, id }, &mut v);
+                orders(v)
+            }
+            RequestPinCode { device } | RequestPasskey { device } if self.pairing() == Some(device.as_str()) => {
+                v.push(BtOrder::Reply(id, AgentReply::Rejected));
+                v.extend(self.finish(true, Some(now)));
+                QuickAction::Bluetooth(v)
+            }
+            _ => reject(),
+        }
+    }
+
+    /// The six digits of a passkey, zero-padded, grouped 3+3: `482 913`.
+    pub fn format_code(n: u32) -> String {
+        format!("{:03} {:03}", n / 1000, n % 1000)
+    }
+
+    /// At `now`: the action's deadline passed (its pairing cancelled, its call forgotten, `failed`,
+    /// a `(timeout)` log line), `failed` gone; and whether to repaint.
+    pub fn due(&mut self, now: Instant) -> (Vec<BtOrder>, Option<String>, bool) {
+        let mut redraw = false;
+        if self.failed.as_ref().is_some_and(|(_, until)| *until <= now) {
+            self.failed = None;
+            redraw = true;
+        }
+        let Some(a) = self.action.as_ref().filter(|a| a.deadline.is_some_and(|d| d <= now)) else {
+            return (Vec::new(), None, redraw);
+        };
+        let log = format!("quick: bluetooth {} failed (timeout)", a.call.word());
+        let mut v = Vec::new();
+        if let (Step::Pair, Some(device)) = (a.step, a.device.clone()) {
+            v.push(BtOrder::Call(ActCall::CancelPairing { device }));
+        }
+        v.extend(self.finish(true, Some(now)));
+        (v, Some(log), true)
+    }
+
+    /// The earliest of the action's deadline and `failed`'s end; None: nothing to wait for.
+    pub fn deadline(&self) -> Option<Instant> {
+        [self.action.as_ref().and_then(|a| a.deadline), self.failed.as_ref().map(|(_, until)| *until)].into_iter().flatten().min()
     }
 
     /// The D-Bus thread's view, while the panel is open. None (BlueZ lost) closes the detail, its
-    /// orders dropped (the acting connection goes with BlueZ). An adapter just unblocked after
-    /// `rfkill` is powered on; an open detail on a powered adapter discovers, once per open (power
-    /// back after an outage starts it again); the first view of an open selects the first device.
-    pub fn set_view(&mut self, view: Option<BtView>, _now: Instant) -> QuickAction {
+    /// orders dropped (the acting connection goes with BlueZ). An action whose device left both
+    /// lists, or whose adapter is off, ends silently. An adapter just unblocked after `rfkill` is
+    /// powered on (once no action runs); an open detail on a powered adapter discovers, once per
+    /// open (power back after an outage starts it again); the first view of an open selects the
+    /// first device.
+    pub fn set_view(&mut self, view: Option<BtView>, now: Instant) -> QuickAction {
         let first = self.view.is_none();
         self.view = view;
         if self.view.is_none() {
@@ -192,10 +494,17 @@ impl Bt {
             return QuickAction::Redraw;
         }
         let mut v = Vec::new();
+        let gone =
+            self.action.as_ref().and_then(|a| a.device.as_deref()).is_some_and(|d| {
+                !self.powered() || self.view.as_ref().is_none_or(|w| !w.paired.iter().chain(&w.nearby).any(|e| e.path == d))
+            });
+        if gone {
+            v.extend(self.finish(true, None));
+        }
         match self.adapter().cloned() {
             Some(a) => {
-                if !a.blocked && std::mem::take(&mut self.power_after_unblock) {
-                    v.push(powered(&a, true));
+                if !a.blocked && self.action.is_none() && std::mem::take(&mut self.power_after_unblock) {
+                    v.push(self.start(None, Step::Power, powered(&a, true), Some(now)));
                 }
                 if !a.powered {
                     // BlueZ ended it: power back starts it again.
@@ -222,14 +531,18 @@ impl Bt {
         self.toggle()
     }
 
-    /// The view's adapter the other way (the row's and the header's Space).
+    /// The view's adapter the other way (the row's and the header's Space), an action until its
+    /// answer (`arm` gives it its deadline); nothing while another action runs.
     fn toggle(&mut self) -> QuickAction {
-        let Some(a) = self.adapter() else { return QuickAction::Nothing };
+        let Some(a) = self.adapter().cloned() else { return QuickAction::Nothing };
+        if self.action.is_some() {
+            return QuickAction::Nothing;
+        }
         if a.blocked {
             self.power_after_unblock = true;
             return run(&["rfkill", "unblock", "bluetooth"], "bluetooth unblock");
         }
-        QuickAction::Bluetooth(vec![powered(a, !a.powered)])
+        QuickAction::Bluetooth(vec![self.start(None, Step::Power, powered(&a, !a.powered), None)])
     }
 
     /// Before each use: a selected device no longer listed gives the selection to the header (it
@@ -253,31 +566,67 @@ impl Bt {
             v.push(Line::BtNote(OFF_NOTE));
             return v;
         }
-        let all = self.devices().len();
+        let devices = self.devices();
         let paired = self.paired_listed();
-        v.extend((0..paired).map(Line::BtDevice));
+        let shown = match &self.code {
+            Some(Code::Shown { device, .. }) => devices.iter().position(|d| &d.path == device),
+            _ => None,
+        };
+        let device = |v: &mut Vec<Line>, i: usize| {
+            v.push(Line::BtDevice(i));
+            if shown == Some(i) {
+                v.push(Line::BtCode);
+            }
+        };
+        (0..paired).for_each(|i| device(&mut v, i));
         v.push(Line::BtNearby);
-        v.extend((paired..all).map(Line::BtDevice));
+        (paired..devices.len()).for_each(|i| device(&mut v, i));
         v
     }
 
-    pub fn is_selected(&self, line: Line) -> bool {
+    /// Whether `line` is selected; `devices` is `devices()`, computed once per pass.
+    pub fn is_selected(&self, line: Line, devices: &[&BtEntry]) -> bool {
         match line {
             Line::BtHeader => self.selected.is_none(),
-            Line::BtDevice(i) => self.devices().get(i).is_some_and(|d| self.selected.as_deref() == Some(d.path.as_str())),
+            Line::BtDevice(i) => devices.get(i).is_some_and(|d| self.selected.as_deref() == Some(d.path.as_str())),
             _ => false,
         }
     }
 
-    /// Escape or ← back to the rows; ↑ ↓ Home End over the header and the devices, never wrapping;
-    /// Space on the header powers the adapter.
-    pub fn key(&mut self, k: Key, _confirm: &mut Option<(Question, Instant)>, _now: Instant) -> QuickAction {
+    /// A code question first takes the key: Enter replies OK, any other key rejects it and ends the
+    /// pairing silently. Otherwise: Escape or ← back to the rows; ↑ ↓ Home End over the header and
+    /// the devices, never wrapping; Space on the header powers the adapter; Enter acts on the device
+    /// (or confirms its forget question); Delete asks to forget it. Any key but Enter drops the
+    /// question.
+    pub fn key(&mut self, k: Key, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
+        if let Some(Code::Question { id, .. }) = self.code {
+            if k == Key::Enter {
+                self.code = None;
+                if let Some(a) = self.action.as_mut() {
+                    a.deadline = Some(now + CALL_DEADLINE);
+                }
+                return QuickAction::Bluetooth(vec![BtOrder::Reply(id, AgentReply::Ok)]);
+            }
+            let mut v = vec![BtOrder::Reply(id, AgentReply::Rejected)];
+            self.code = None;
+            v.extend(self.finish(true, None));
+            return QuickAction::Bluetooth(v);
+        }
+        if k != Key::Enter {
+            *confirm = None;
+        }
         let devices: Vec<String> = self.devices().iter().map(|d| d.path.clone()).collect();
         let at = self.selected.as_ref().and_then(|p| devices.iter().position(|d| d == p)).map_or(0, |i| i + 1);
         let last = devices.len();
         let to = match k {
             Key::Escape | Key::Left => return orders(self.close_detail()),
-            Key::Char(' ') if self.selected.is_none() => return self.toggle(),
+            Key::Char(' ') if self.selected.is_none() => {
+                let a = self.toggle();
+                self.arm(now);
+                return a;
+            }
+            Key::Enter => return self.activate(confirm, now),
+            Key::Delete => return self.ask_forget(confirm, now),
             Key::Up | Key::CtrlP => at.saturating_sub(1),
             Key::Down | Key::CtrlN => (at + 1).min(last),
             Key::Home => 0,
@@ -296,26 +645,63 @@ impl Bt {
         QuickAction::Redraw
     }
 
-    /// A press on a detail line (the left button only): the header goes back, a device is selected.
-    pub fn press(&mut self, line: Line, b: Button, _confirm: &mut Option<(Question, Instant)>, _now: Instant) -> QuickAction {
-        if b != Button::Left {
+    /// A press on a detail line: a left one on the header goes back; on a device it selects it then
+    /// is Enter (the forget question's second activation there); a right one selects it and asks to
+    /// forget it. While a code question shows, only the header answers. The question goes with a
+    /// press anywhere but its own device.
+    pub fn press(&mut self, line: Line, b: Button, confirm: &mut Option<(Question, Instant)>, now: Instant) -> QuickAction {
+        let device = match line {
+            Line::BtDevice(i) => self.devices().get(i).map(|d| d.path.clone()),
+            _ => None,
+        };
+        if !matches!((confirm.as_ref(), &device), (Some((Question::Forget(q), _)), Some(p)) if q == p) {
+            *confirm = None;
+        }
+        if matches!(self.code, Some(Code::Question { .. })) && line != Line::BtHeader {
             return QuickAction::Nothing;
         }
-        match line {
-            Line::BtHeader => orders(self.close_detail()),
-            Line::BtDevice(i) => match self.devices().get(i).map(|d| d.path.clone()) {
-                Some(p) => self.select(Some(p)),
-                None => QuickAction::Nothing,
-            },
+        match (line, b, device) {
+            (Line::BtHeader, Button::Left, _) => orders(self.close_detail()),
+            (Line::BtDevice(_), Button::Left, Some(p)) => {
+                let moved = self.select(Some(p));
+                match self.activate(confirm, now) {
+                    QuickAction::Nothing => moved,
+                    a => a,
+                }
+            }
+            (Line::BtDevice(_), Button::Right, Some(p)) => {
+                let moved = self.select(Some(p));
+                if confirm.is_some() {
+                    // Already asked about this device: the question stays as it is.
+                    return moved;
+                }
+                match self.ask_forget(confirm, now) {
+                    QuickAction::Nothing => moved,
+                    a => a,
+                }
+            }
             _ => QuickAction::Nothing,
         }
     }
 
-    /// One detail line into `g` (`WIDTH + 2` wide, a pad cell each side).
-    pub fn draw(&self, g: &mut Grid, line: Line, _confirm: Option<&(Question, Instant)>, selected: bool) {
+    /// One detail line into `g` (`WIDTH + 2` wide, a pad cell each side); `devices` is `devices()`,
+    /// computed once per pass.
+    pub fn draw(&self, g: &mut Grid, line: Line, devices: &[&BtEntry], confirm: Option<&(Question, Instant)>, selected: bool) {
         let end = g.width();
         match line {
-            Line::BtHeader => text_row(g, None, "‹ Bluetooth", if self.powered() { "on" } else { "off" }, Style::MUTED, selected),
+            Line::BtHeader => {
+                let value = match &self.view {
+                    None => "",
+                    Some(_) if self.powered() => "on",
+                    Some(_) => "off",
+                };
+                text_row(g, None, "‹ Bluetooth", value, Style::MUTED, selected)
+            }
+            Line::BtCode => {
+                if let Some(Code::Shown { text, .. }) = &self.code {
+                    g.write(5, end.saturating_sub(1), &format!("Type {text} then ⏎"), Style::ACCENT);
+                }
+            }
             Line::BtNearby => {
                 g.write(1, end.saturating_sub(1), NEARBY, Style::MUTED);
             }
@@ -323,13 +709,36 @@ impl Bt {
                 g.write(3, end.saturating_sub(1), note, Style::MUTED);
             }
             Line::BtDevice(i) => {
-                if let Some(d) = self.devices().get(i) {
-                    let tag = if d.paired && !d.connected { PAIRED_TAG } else { "" };
-                    device_row(g, d, tag, Style::MUTED, selected);
+                if let Some(d) = devices.get(i) {
+                    let (tag, style) = self.tag(d, confirm);
+                    device_row(g, d, &tag, style, selected);
                 }
             }
             _ => {}
         }
+    }
+}
+
+impl Bt {
+    /// A device's tag, the first that applies (spec §§ 2–3): its forget question, its code
+    /// question, its action running, its failure, paired.
+    fn tag(&self, d: &BtEntry, confirm: Option<&(Question, Instant)>) -> (String, Style) {
+        let is = |p: &str| p == d.path;
+        if matches!(confirm, Some((Question::Forget(p), _)) if is(p)) {
+            return (FORGET_TAG.into(), Style::WARN);
+        }
+        if let Some(Code::Question { device, passkey, .. }) = &self.code
+            && is(device)
+        {
+            return (format!("Code {}? ⏎", Bt::format_code(*passkey)), Style::ACCENT);
+        }
+        if self.action.as_ref().and_then(|a| a.device.as_deref()).is_some_and(is) {
+            return (RUNNING_TAG.into(), Style::MUTED);
+        }
+        if self.failed.as_ref().is_some_and(|(p, _)| is(p)) {
+            return (FAILED_TAG.into(), Style::WARN);
+        }
+        if d.paired && !d.connected { (PAIRED_TAG.into(), Style::MUTED) } else { (String::new(), Style::MUTED) }
     }
 }
 
@@ -359,8 +768,8 @@ fn device_row(g: &mut Grid, d: &BtEntry, tag: &str, tag_style: Style, selected: 
 mod tests {
     use super::*;
     use crate::quick::{WIDTH, argv};
+    use crate::session::{self, CONFIRM, CONFIRM_AFTER};
     use crate::system::BtDevice;
-    use std::time::Duration;
 
     const ADAPTER: &str = "/org/bluez/hci0";
 
@@ -409,11 +818,12 @@ mod tests {
     }
 
     fn texts(b: &Bt, confirm: Option<&(Question, Instant)>) -> Vec<String> {
+        let d = b.devices();
         b.lines()
             .into_iter()
             .map(|l| {
                 let mut g = Grid::empty(WIDTH + 2);
-                b.draw(&mut g, l, confirm, b.is_selected(l));
+                b.draw(&mut g, l, &d, confirm, b.is_selected(l, &d));
                 g.text().trim_end().to_string()
             })
             .collect()
@@ -589,20 +999,24 @@ mod tests {
         b.set_view(Some(more), t);
         b.fit();
         assert_eq!(b.selected, Some(path(2)), "by path");
-        assert!(b.is_selected(Line::BtDevice(3)));
+        assert!(b.is_selected(Line::BtDevice(3), &b.devices()));
         let mut gone = workstation();
         gone.paired.retain(|e| e.path != path(2));
         b.set_view(Some(gone), t);
         b.fit();
         assert_eq!(b.selected, None, "gone: the header, never another device");
-        assert!(b.is_selected(Line::BtHeader));
+        assert!(b.is_selected(Line::BtHeader, &b.devices()));
         assert_eq!(key(&mut b, Key::Up), QuickAction::Nothing, "never wrapping");
         assert_eq!(key(&mut b, Key::End), QuickAction::Redraw);
         assert_eq!(b.selected, Some(path(3)), "the last device");
         assert_eq!(key(&mut b, Key::Down), QuickAction::Nothing);
         assert_eq!(key(&mut b, Key::Home), QuickAction::Redraw);
         assert_eq!(b.selected, None);
-        assert_eq!(b.press(Line::BtDevice(1), Button::Left, &mut None, t), QuickAction::Redraw, "a click selects");
+        assert_eq!(
+            b.press(Line::BtDevice(1), Button::Left, &mut None, t),
+            call(ActCall::Connect { device: path(5) }),
+            "a click selects, then is Enter"
+        );
         assert_eq!(b.selected, Some(path(5)));
         assert_eq!(b.press(Line::BtDevice(1), Button::Right, &mut None, t), QuickAction::Nothing);
         assert_eq!(key(&mut b, Key::Escape), call(ActCall::StopDiscovery { adapter: ADAPTER.into() }), "Escape leaves");
@@ -631,5 +1045,439 @@ mod tests {
         assert_eq!(none.selected, None);
         none.set_view(Some(workstation()), Instant::now());
         assert_eq!(none.selected, Some(path(1)), "the first view of an open selects the first device");
+    }
+
+    const SEC: Duration = Duration::from_secs(1);
+
+    fn remote(name: &str) -> Result<(), ActError> {
+        Err(ActError::Remote(name.into()))
+    }
+
+    fn bt(orders: Vec<BtOrder>) -> QuickAction {
+        QuickAction::Bluetooth(orders)
+    }
+
+    /// `opened()` with device `n` selected and Enter pressed at `t`.
+    fn acting(n: u8, t: Instant) -> (Bt, QuickAction) {
+        let mut b = opened();
+        b.selected = Some(path(n));
+        let a = b.enter(t);
+        (b, a)
+    }
+
+    fn step(b: &Bt) -> Option<Step> {
+        b.action.as_ref().map(|a| a.step)
+    }
+
+    #[test]
+    fn enter_builds_the_call_per_device_kind() {
+        let t = Instant::now();
+        for (n, c, s) in [
+            (1, ActCall::Disconnect { device: path(1) }, Step::Disconnect),
+            (2, ActCall::Connect { device: path(2) }, Step::Connect),
+            (3, ActCall::Pair { device: path(3) }, Step::Pair),
+        ] {
+            let (b, a) = acting(n, t);
+            assert_eq!(a, call(c.clone()), "device {n}");
+            assert_eq!(b.action, Some(Action { device: Some(path(n)), step: s, call: c, deadline: Some(t + CALL_DEADLINE) }));
+        }
+        let mut b = opened();
+        b.selected = None;
+        assert_eq!(b.enter(t), QuickAction::Nothing, "the header");
+        assert_eq!(b.action, None);
+    }
+
+    #[test]
+    fn pair_then_trust_then_connect() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        assert_eq!(b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t), (call(ActCall::Trusted { device: path(3) }), None));
+        assert_eq!(step(&b), Some(Step::Trust));
+        assert_eq!(b.answered(&ActCall::Trusted { device: path(3) }, Ok(()), t), (call(ActCall::Connect { device: path(3) }), None));
+        assert_eq!(step(&b), Some(Step::ConnectAfterPair));
+        assert_eq!(b.answered(&ActCall::Connect { device: path(3) }, Ok(()), t), (QuickAction::Redraw, None));
+        assert_eq!(b.action, None);
+    }
+
+    #[test]
+    fn pair_on_le_already_connected_skips_connect() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t);
+        let mut v = workstation();
+        v.nearby.retain(|e| e.path != path(3));
+        v.paired.push(entry(3, "Keyboard-Test", BtKind::Keyboard, true, true));
+        b.set_view(Some(v), t);
+        assert_eq!(b.answered(&ActCall::Trusted { device: path(3) }, Ok(()), t), (QuickAction::Redraw, None));
+        assert_eq!(b.action, None);
+    }
+
+    #[test]
+    fn already_connected_is_success() {
+        let t = Instant::now();
+        let (mut b, _) = acting(2, t);
+        assert_eq!(
+            b.answered(&ActCall::Connect { device: path(2) }, remote("org.bluez.Error.AlreadyConnected"), t),
+            (QuickAction::Redraw, None)
+        );
+        assert_eq!((b.action.clone(), b.failed.clone()), (None, None));
+    }
+
+    #[test]
+    fn one_action_at_a_time() {
+        let t = Instant::now();
+        let (mut b, a) = acting(2, t);
+        assert_eq!(a, call(ActCall::Connect { device: path(2) }));
+        b.selected = Some(path(3));
+        assert_eq!(b.enter(t), QuickAction::Nothing, "another device during …");
+        assert_eq!(b.press(Line::BtDevice(4), Button::Left, &mut None, t), QuickAction::Nothing, "a click on it neither");
+        b.selected = Some(path(2));
+        let mut confirm = None;
+        assert_eq!(b.key(Key::Delete, &mut confirm, t), QuickAction::Nothing);
+        assert_eq!(confirm, None, "no forget question during an action");
+        b.selected = None;
+        assert_eq!(b.key(Key::Char(' '), &mut None, t), QuickAction::Nothing, "nor a power toggle");
+        assert_eq!(b.power(&BtState::On { devices: vec![] }), QuickAction::Nothing);
+        assert_eq!(step(&b), Some(Step::Connect));
+    }
+
+    #[test]
+    fn failure_shows_failed_4s_and_logs_the_error_name() {
+        let t = Instant::now();
+        let (mut b, _) = acting(2, t);
+        assert_eq!(texts(&b, None)[4], format!("   {KEYBOARD} ClavierBT{}…", " ".repeat(18)));
+        assert_eq!(
+            b.answered(&ActCall::Connect { device: path(2) }, remote("org.bluez.Error.Failed"), t + SEC),
+            (QuickAction::Redraw, Some("quick: bluetooth connect failed (org.bluez.Error.Failed)".into()))
+        );
+        assert_eq!(b.failed, Some((path(2), t + SEC + FAILED_SHOWN)));
+        assert_eq!(b.action, None);
+        assert_eq!(texts(&b, None)[4], format!("   {KEYBOARD} ClavierBT{}failed", " ".repeat(13)));
+        assert_eq!(b.deadline(), Some(t + 5 * SEC));
+        assert_eq!(b.due(t + 4 * SEC), (vec![], None, false));
+        assert_eq!(b.due(t + 5 * SEC), (vec![], None, true));
+        assert_eq!((b.failed.clone(), b.deadline()), (None, None));
+        assert_eq!(texts(&b, None)[4], format!("   {KEYBOARD} ClavierBT{}paired", " ".repeat(13)));
+    }
+
+    #[test]
+    fn deadline_30s_per_call_and_suspended_while_a_code_shows() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        assert_eq!(b.deadline(), Some(t + 30 * SEC));
+        b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(3), passkey: 482_913 }, t + 5 * SEC);
+        assert_eq!(b.deadline(), None, "suspended while the code shows");
+        assert_eq!(b.due(t + 60 * SEC), (vec![], None, false));
+        assert_eq!(b.agent(AgentId(2), AgentRequest::Cancel, t + 61 * SEC), QuickAction::Redraw);
+        assert_eq!(b.deadline(), Some(t + 91 * SEC));
+        b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t + 62 * SEC);
+        assert_eq!(step(&b), Some(Step::Trust));
+        assert_eq!(b.deadline(), Some(t + 92 * SEC), "the next call's own 30 s");
+        assert_eq!(
+            b.due(t + 92 * SEC),
+            (vec![BtOrder::Forget(ActCall::Trusted { device: path(3) })], Some("quick: bluetooth trust failed (timeout)".into()), true)
+        );
+        assert_eq!(b.failed, Some((path(3), t + 92 * SEC + FAILED_SHOWN)));
+        assert_eq!(b.action, None);
+        let (mut b, _) = acting(3, t);
+        assert_eq!(
+            b.due(t + 30 * SEC),
+            (
+                vec![BtOrder::Call(ActCall::CancelPairing { device: path(3) }), BtOrder::Forget(ActCall::Pair { device: path(3) })],
+                Some("quick: bluetooth pair failed (timeout)".into()),
+                true
+            )
+        );
+    }
+
+    #[test]
+    fn silent_ends() {
+        let t = Instant::now();
+        for gone in [Err(ActError::Gone), remote("org.freedesktop.DBus.Error.UnknownObject")] {
+            let (mut b, _) = acting(2, t);
+            assert_eq!(b.answered(&ActCall::Connect { device: path(2) }, gone, t), (QuickAction::Redraw, None));
+            assert_eq!((b.action.clone(), b.failed.clone()), (None, None));
+        }
+        let (mut b, _) = acting(2, t);
+        let mut v = workstation();
+        v.paired.retain(|e| e.path != path(2));
+        assert_eq!(b.set_view(Some(v), t), bt(vec![BtOrder::Forget(ActCall::Connect { device: path(2) })]), "the device went");
+        assert_eq!((b.action.clone(), b.failed.clone()), (None, None));
+        // Review Focus 5: the adapter powered off elsewhere mid-pairing.
+        let (mut b, _) = acting(3, t);
+        b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(3), passkey: 482_913 }, t);
+        assert_eq!(b.set_view(Some(view(false, paired(), vec![])), t), bt(vec![BtOrder::Forget(ActCall::Pair { device: path(3) })]));
+        assert_eq!((b.action.clone(), b.code.clone(), b.failed.clone()), (None, None, None));
+        assert_eq!(b.lines()[2], Line::BtNote(OFF_NOTE));
+        assert!(!b.discovering, "not restarted while off");
+        assert_eq!(b.set_view(Some(view(false, paired(), vec![])), t), QuickAction::Redraw);
+        assert_eq!(b.set_view(Some(workstation()), t), call(ActCall::StartDiscovery { adapter: ADAPTER.into() }), "power back");
+        // A power action has no device: the adapter going off is its own answer.
+        let mut b = Bt { view: Some(workstation()), ..Bt::default() };
+        b.power(&BtState::On { devices: vec![] });
+        b.arm(t);
+        assert_eq!(b.set_view(Some(view(false, paired(), vec![])), t), QuickAction::Redraw);
+        assert_eq!(step(&b), Some(Step::Power));
+    }
+
+    #[test]
+    fn a_power_toggle_is_an_action_until_its_answer() {
+        let t = Instant::now();
+        let mut b = Bt { view: Some(workstation()), ..Bt::default() };
+        let off = ActCall::Powered { adapter: ADAPTER.into(), on: false };
+        assert_eq!(b.power(&BtState::On { devices: vec![] }), call(off.clone()));
+        assert_eq!(b.action, Some(Action { device: None, step: Step::Power, call: off.clone(), deadline: None }));
+        assert!(b.wants_connection(), "the row's toggle keeps the connection until its answer");
+        assert_eq!(b.scope(true), BtScope::Row, "no device: the row's reading");
+        b.arm(t);
+        assert_eq!(b.deadline(), Some(t + CALL_DEADLINE));
+        b.arm(t + SEC);
+        assert_eq!(b.deadline(), Some(t + CALL_DEADLINE), "armed once");
+        assert_eq!(
+            b.answered(&off, remote("org.bluez.Error.Busy"), t),
+            (QuickAction::Redraw, Some("quick: bluetooth power failed (org.bluez.Error.Busy)".into()))
+        );
+        assert_eq!((b.action.clone(), b.failed.clone()), (None, None), "nothing to tag");
+        assert!(!b.wants_connection());
+        // Unblocked by rfkill: powered on as an action, with its deadline.
+        let mut b = Bt { view: Some(blocked()), ..Bt::default() };
+        b.power(&BtState::Off);
+        assert_eq!(b.action, None, "rfkill is a command, not a call");
+        let running = Action { device: None, step: Step::Power, call: off.clone(), deadline: Some(t) };
+        b.action = Some(running.clone());
+        assert_eq!(b.set_view(Some(view(false, vec![], vec![])), t), QuickAction::Redraw, "waits while an action runs");
+        assert_eq!((b.action.clone(), b.power_after_unblock), (Some(running), true));
+        b.action = None;
+        b.set_view(Some(view(false, vec![], vec![])), t);
+        assert_eq!(
+            b.action,
+            Some(Action {
+                device: None,
+                step: Step::Power,
+                call: ActCall::Powered { adapter: ADAPTER.into(), on: true },
+                deadline: Some(t + CALL_DEADLINE)
+            })
+        );
+    }
+
+    #[test]
+    fn forget_timing_and_cancels() {
+        let t = Instant::now();
+        let mut b = opened();
+        let mut confirm = None;
+        b.selected = Some(path(2));
+        assert_eq!(b.key(Key::Delete, &mut confirm, t), QuickAction::Redraw);
+        assert_eq!(confirm, Some((Question::Forget(path(2)), t + CONFIRM)));
+        assert_eq!(texts(&b, confirm.as_ref())[4], format!("   {KEYBOARD} ClavierBT{}Forget? ⏎", " ".repeat(10)));
+        assert_eq!(b.key(Key::Enter, &mut confirm, t + Duration::from_millis(200)), QuickAction::Nothing, "a double Enter never confirms");
+        assert!(confirm.is_some(), "the question stays");
+        assert_eq!(
+            b.key(Key::Enter, &mut confirm, t + CONFIRM_AFTER),
+            call(ActCall::RemoveDevice { adapter: ADAPTER.into(), device: path(2) })
+        );
+        assert_eq!(confirm, None);
+        assert_eq!(step(&b), Some(Step::Forget));
+        let mut b = opened();
+        b.selected = Some(path(5));
+        b.key(Key::Delete, &mut confirm, t);
+        assert!(session::expire(&mut confirm, t + CONFIRM));
+        assert_eq!(b.key(Key::Enter, &mut confirm, t + CONFIRM), call(ActCall::Connect { device: path(5) }), "expired: Enter is Enter");
+        let mut b = opened();
+        b.selected = Some(path(2));
+        b.key(Key::Delete, &mut confirm, t);
+        assert_eq!(b.key(Key::Down, &mut confirm, t), QuickAction::Redraw);
+        assert_eq!(confirm, None, "any other key cancels");
+        b.selected = Some(path(4));
+        assert_eq!(b.key(Key::Delete, &mut confirm, t), QuickAction::Nothing, "a nearby device cannot be forgotten");
+        assert_eq!(confirm, None);
+        b.selected = Some(path(1));
+        assert_eq!(b.press(Line::BtDevice(2), Button::Right, &mut confirm, t), QuickAction::Redraw);
+        assert_eq!(confirm, Some((Question::Forget(path(2)), t + CONFIRM)));
+        assert_eq!(b.selected, Some(path(2)));
+        assert_eq!(
+            b.press(Line::BtDevice(2), Button::Left, &mut confirm, t + CONFIRM_AFTER),
+            call(ActCall::RemoveDevice { adapter: ADAPTER.into(), device: path(2) }),
+            "a left press there is the second activation"
+        );
+    }
+
+    #[test]
+    fn each_agent_request_state_and_reply() {
+        use AgentRequest::*;
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        let id = AgentId(1);
+        assert_eq!(b.agent(id, DisplayPasskey { device: path(3), passkey: 482_913 }, t), bt(vec![BtOrder::Reply(id, AgentReply::Ok)]));
+        assert_eq!(b.code, Some(Code::Shown { device: path(3), text: "482 913".into() }));
+        assert_eq!(b.lines()[b.lines().len() - 2..], [Line::BtDevice(4), Line::BtCode]);
+        assert_eq!(texts(&b, None).last().map(String::as_str), Some("     Type 482 913 then ⏎"));
+        assert!(b.wants_connection());
+        assert_eq!(b.agent(AgentId(2), Cancel, t), QuickAction::Redraw);
+        assert_eq!(b.code, None);
+        b.agent(AgentId(3), DisplayPinCode { device: path(3), pincode: "0000".into() }, t);
+        assert_eq!(texts(&b, None).last().map(String::as_str), Some("     Type 0000 then ⏎"));
+        assert_eq!(b.agent(AgentId(4), Release, t), QuickAction::Redraw);
+        assert_eq!(b.code, None);
+        let id = AgentId(5);
+        assert_eq!(b.agent(id, RequestConfirmation { device: path(3), passkey: 7 }, t), QuickAction::Redraw);
+        assert_eq!(b.code, Some(Code::Question { device: path(3), passkey: 7, id }));
+        assert_eq!(b.deadline(), None);
+        assert_eq!(texts(&b, None)[7], format!("   {KEYBOARD} Keyboard-Te… Code 000 007? ⏎"));
+        assert_eq!(b.press(Line::BtDevice(0), Button::Left, &mut None, t), QuickAction::Nothing, "presses wait for the answer");
+        let now = t + 10 * SEC;
+        assert_eq!(b.key(Key::Enter, &mut None, now), bt(vec![BtOrder::Reply(id, AgentReply::Ok)]));
+        assert_eq!(b.code, None);
+        assert_eq!(b.deadline(), Some(now + 30 * SEC));
+        let id2 = AgentId(6);
+        b.agent(id2, RequestConfirmation { device: path(3), passkey: 8 }, now);
+        assert_eq!(
+            b.agent(AgentId(7), RequestConfirmation { device: path(3), passkey: 9 }, now),
+            bt(vec![BtOrder::Reply(id2, AgentReply::Rejected)]),
+            "an older question rejected first"
+        );
+        let id2 = AgentId(7);
+        assert_eq!(
+            b.key(Key::Escape, &mut None, now),
+            bt(vec![BtOrder::Reply(id2, AgentReply::Rejected), BtOrder::Forget(ActCall::Pair { device: path(3) })])
+        );
+        assert_eq!((b.action.clone(), b.code.clone(), b.failed.clone()), (None, None, None));
+        assert!(b.open, "the key does nothing else");
+        for r in [RequestAuthorization { device: path(3) }, AuthorizeService { device: path(3) }] {
+            let (mut b, _) = acting(3, t);
+            assert_eq!(b.agent(AgentId(8), r, t), bt(vec![BtOrder::Reply(AgentId(8), AgentReply::Rejected)]));
+            assert_eq!((step(&b), b.code.clone()), (Some(Step::Pair), None));
+        }
+        for r in [RequestPinCode { device: path(3) }, RequestPasskey { device: path(3) }] {
+            let (mut b, _) = acting(3, now);
+            assert_eq!(
+                b.agent(AgentId(9), r, now),
+                bt(vec![BtOrder::Reply(AgentId(9), AgentReply::Rejected), BtOrder::Forget(ActCall::Pair { device: path(3) })])
+            );
+            assert_eq!((b.action.clone(), b.failed.clone()), (None, Some((path(3), now + 4 * SEC))));
+        }
+        assert_eq!(Bt::format_code(0), "000 000");
+        assert_eq!(Bt::format_code(999_999), "999 999");
+    }
+
+    /// A DisplayPasskey repeats as keys are typed on the keyboard: the same line, updated.
+    #[test]
+    fn display_passkey_repeats_on_one_line() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        for (i, id) in (1..=3).map(AgentId).enumerate() {
+            assert_eq!(
+                b.agent(id, AgentRequest::DisplayPasskey { device: path(3), passkey: 482_913 }, t),
+                bt(vec![BtOrder::Reply(id, AgentReply::Ok)]),
+                "{i}"
+            );
+        }
+        assert_eq!(b.lines().iter().filter(|l| **l == Line::BtCode).count(), 1);
+    }
+
+    #[test]
+    fn another_device_is_rejected() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        let reject = bt(vec![BtOrder::Reply(AgentId(1), AgentReply::Rejected)]);
+        assert_eq!(b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(4), passkey: 1 }, t), reject);
+        assert_eq!(b.agent(AgentId(1), AgentRequest::RequestConfirmation { device: path(4), passkey: 1 }, t), reject);
+        assert_eq!(b.code, None);
+        let mut b = opened();
+        assert_eq!(b.agent(AgentId(1), AgentRequest::RequestConfirmation { device: path(3), passkey: 1 }, t), reject, "nothing pairing");
+        assert_eq!(b.code, None);
+        let (mut b, _) = acting(2, t);
+        assert_eq!(
+            b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(2), passkey: 1 }, t),
+            reject,
+            "a connect is not a pairing"
+        );
+        assert_eq!(b.code, None);
+    }
+
+    /// Review Focus 2: closing during `Code 482 913? ⏎`: Rejected, CancelPairing, then discovery stops.
+    #[test]
+    fn leaving_rejects_then_cancels_pairing_then_stops_discovery() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        b.agent(AgentId(9), AgentRequest::RequestConfirmation { device: path(3), passkey: 482_913 }, t);
+        assert_eq!(
+            b.leaving(),
+            vec![
+                BtOrder::Reply(AgentId(9), AgentReply::Rejected),
+                BtOrder::Call(ActCall::CancelPairing { device: path(3) }),
+                BtOrder::Forget(ActCall::Pair { device: path(3) }),
+                BtOrder::Call(ActCall::StopDiscovery { adapter: ADAPTER.into() }),
+            ]
+        );
+        assert_eq!((b.action.clone(), b.code.clone(), b.discovering), (None, None, false));
+        assert_eq!(b.leaving(), vec![]);
+        let (mut b, _) = acting(2, t);
+        assert_eq!(b.close_detail(), vec![BtOrder::Call(ActCall::StopDiscovery { adapter: ADAPTER.into() })]);
+        assert_eq!(step(&b), Some(Step::Connect), "a connect outlives the detail");
+        assert!(!b.open);
+        assert!(b.wants_connection());
+        assert_eq!(b.scope(true), BtScope::Detail, "its device still read");
+        assert_eq!(b.answered(&ActCall::Connect { device: path(2) }, Ok(()), t), (QuickAction::Redraw, None));
+        assert!(!b.wants_connection());
+        assert_eq!(b.scope(true), BtScope::Row);
+    }
+
+    #[test]
+    fn no_log_names_a_device() {
+        let t = Instant::now();
+        let d = path(1);
+        let calls = [
+            ActCall::Powered { adapter: ADAPTER.into(), on: true },
+            ActCall::Trusted { device: d.clone() },
+            ActCall::StartDiscovery { adapter: ADAPTER.into() },
+            ActCall::StopDiscovery { adapter: ADAPTER.into() },
+            ActCall::RemoveDevice { adapter: ADAPTER.into(), device: d.clone() },
+            ActCall::Connect { device: d.clone() },
+            ActCall::Disconnect { device: d.clone() },
+            ActCall::Pair { device: d.clone() },
+            ActCall::CancelPairing { device: d.clone() },
+        ];
+        let mut logs = Vec::new();
+        for c in &calls {
+            for e in ["org.bluez.Error.Failed", "org.bluez.Error.AuthenticationFailed"] {
+                for step in [Step::Power, Step::Connect, Step::Pair, Step::Forget] {
+                    let mut b = opened();
+                    b.action = Some(Action { device: Some(d.clone()), step, call: c.clone(), deadline: Some(t) });
+                    logs.extend(b.answered(c, remote(e), t).1);
+                    let mut b = opened();
+                    b.action = Some(Action { device: Some(d.clone()), step, call: c.clone(), deadline: Some(t) });
+                    logs.extend(b.due(t).1);
+                }
+            }
+        }
+        assert!(logs.len() >= 2 * calls.len(), "{}", logs.len());
+        let words = |s: &str| s.chars().all(|c| c.is_ascii_lowercase() || c == ' ');
+        for l in &logs {
+            let rest = l.strip_prefix("quick: bluetooth ").unwrap_or_else(|| panic!("{l}"));
+            let (word, why) = rest.split_once(" failed (").unwrap_or_else(|| panic!("{l}"));
+            let why = why.strip_suffix(')').unwrap_or_else(|| panic!("{l}"));
+            assert!(words(word) && !word.is_empty(), "{l}");
+            assert!(why.chars().all(|c| c.is_ascii_alphabetic() || c == '.'), "{l}");
+            for never in ["AA_BB", "/org", "CasqueBT", "Keyboard"] {
+                assert!(!l.contains(never), "{l}");
+            }
+        }
+    }
+
+    /// A left click on the Bluetooth row (in the panel) opens the detail: see quick::tests; here a
+    /// left click on a device is Enter.
+    #[test]
+    fn a_left_press_on_a_device_is_enter() {
+        let t = Instant::now();
+        let mut b = opened();
+        assert_eq!(b.press(Line::BtDevice(2), Button::Left, &mut None, t), call(ActCall::Connect { device: path(2) }));
+        assert_eq!(b.selected, Some(path(2)));
+    }
+
+    #[test]
+    fn the_header_draws_no_value_before_a_view() {
+        let mut b = Bt::default();
+        b.open_detail();
+        assert_eq!(texts(&b, None)[0], " ‹ Bluetooth");
     }
 }

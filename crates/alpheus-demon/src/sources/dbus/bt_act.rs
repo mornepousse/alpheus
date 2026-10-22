@@ -343,6 +343,27 @@ fn hold(held: &mut VecDeque<(AgentId, Message)>, id: AgentId, m: Message) -> Opt
     if held.len() > MAX_HELD { held.pop_front().map(|(_, m)| m) } else { None }
 }
 
+/// A call to answer now, with its outcome (`answer`).
+type Answer = (Message, Result<(), &'static str>);
+
+/// What becomes of a screened call `m` (serial `id`): the calls to answer now with their outcome,
+/// and the request told to the panel. A call expecting no reply (BlueZ's `DisplayPasskey`) is told,
+/// never held, so it never evicts one that needs an answer; BlueZ's `Cancel` ends its pending
+/// requests: the held calls are dropped unanswered.
+fn route(held: &mut VecDeque<(AgentId, Message)>, id: AgentId, m: Message, screened: Screen) -> (Vec<Answer>, Option<AgentRequest>) {
+    match screened {
+        Screen::Refuse(name) => (vec![(m, Err(name))], None),
+        Screen::AckAndDeliver(request) => {
+            if request == AgentRequest::Cancel {
+                held.clear();
+            }
+            (vec![(m, Ok(()))], Some(request))
+        }
+        Screen::Deliver(request) if m.get_no_reply() => (Vec::new(), Some(request)),
+        Screen::Deliver(request) => (hold(held, id, m).map(|evicted| (evicted, Err(REJECTED))).into_iter().collect(), Some(request)),
+    }
+}
+
 /// Removes the held call `id`: None when unknown or already answered.
 fn take(held: &mut VecDeque<(AgentId, Message)>, id: AgentId) -> Option<Message> {
     let i = held.iter().position(|(h, _)| *h == id)?;
@@ -589,7 +610,8 @@ impl BtAct {
         self.post(m).is_some()
     }
 
-    /// An agent call: screened; refused, acknowledged and told, or held and told.
+    /// An agent call: screened then routed (refused, acknowledged and told, or held and told). A
+    /// `Release` means BlueZ dropped the agent itself: `close` unregisters nothing after it.
     fn agent_call(&mut self, m: Message, out: &mut Vec<BtEvent>) -> bool {
         let owner = match &self.owner {
             Owner::Known(owner) => Some(owner.clone()),
@@ -597,22 +619,19 @@ impl BtAct {
         };
         let Some(serial) = m.get_serial() else { return false };
         let id = AgentId(serial);
-        match screen(&m, owner.as_deref()) {
-            Screen::Refuse(name) => self.respond(&m, Err(name)),
-            Screen::AckAndDeliver(request) => {
-                let posted = self.respond(&m, Ok(()));
-                out.push(BtEvent::Agent { id, request });
-                posted
-            }
-            Screen::Deliver(request) => {
-                let posted = match hold(&mut self.held, id, m) {
-                    Some(evicted) => self.respond(&evicted, Err(REJECTED)),
-                    None => false,
-                };
-                out.push(BtEvent::Agent { id, request });
-                posted
-            }
+        let screened = screen(&m, owner.as_deref());
+        let (answers, request) = route(&mut self.held, id, m, screened);
+        let mut posted = false;
+        for (m, outcome) in answers {
+            posted |= self.respond(&m, outcome);
         }
+        if let Some(request) = request {
+            if request == AgentRequest::Release {
+                self.registered = false;
+            }
+            out.push(BtEvent::Agent { id, request });
+        }
+        posted
     }
 
     /// Rejects every held agent call, unregisters the agent, writes what is queued, then closes
@@ -850,6 +869,46 @@ mod tests {
         let evicted = hold(&mut held, AgentId(5), agent_call("Cancel"));
         assert!(evicted.is_some());
         assert_eq!(held.iter().map(|(id, _)| id.0).collect::<Vec<_>>(), [2, 3, 4, 5]);
+    }
+
+    fn ids(held: &VecDeque<(AgentId, Message)>) -> Vec<u32> {
+        held.iter().map(|(id, _)| id.0).collect()
+    }
+
+    /// BlueZ sends `DisplayPasskey` expecting no reply: told to the panel, never held, so it never
+    /// evicts a held call that needs its answer.
+    #[test]
+    fn a_call_expecting_no_reply_is_never_held() {
+        let mut held = VecDeque::new();
+        for serial in 1..=4 {
+            hold(&mut held, AgentId(serial), agent_call("RequestConfirmation"));
+        }
+        let mut shown = agent_call("DisplayPasskey");
+        shown.set_no_reply(true);
+        let request = AgentRequest::DisplayPasskey { device: DEV.into(), passkey: 1 };
+        let (answers, told) = route(&mut held, AgentId(5), shown, Screen::Deliver(request.clone()));
+        assert!(answers.is_empty(), "nothing evicted, nothing answered");
+        assert_eq!(told, Some(request));
+        assert_eq!(ids(&held), [1, 2, 3, 4]);
+        let (answers, _) = route(&mut held, AgentId(6), agent_call("RequestConfirmation"), Screen::Deliver(AgentRequest::Cancel));
+        assert_eq!(answers.iter().map(|(_, o)| *o).collect::<Vec<_>>(), [Err(REJECTED)], "a fifth that needs a reply evicts the oldest");
+        assert_eq!(ids(&held), [2, 3, 4, 6]);
+    }
+
+    /// BlueZ's `Cancel` ends its pending requests: the held calls are dropped, `Cancel` acknowledged.
+    #[test]
+    fn cancel_drops_the_held_calls() {
+        let mut held = VecDeque::new();
+        hold(&mut held, AgentId(1), agent_call("RequestConfirmation"));
+        let (answers, told) = route(&mut held, AgentId(2), agent_call("Cancel"), Screen::AckAndDeliver(AgentRequest::Cancel));
+        assert_eq!(answers.iter().map(|(_, o)| *o).collect::<Vec<_>>(), [Ok(())]);
+        assert_eq!(told, Some(AgentRequest::Cancel));
+        assert!(held.is_empty());
+        hold(&mut held, AgentId(3), agent_call("RequestConfirmation"));
+        route(&mut held, AgentId(4), agent_call("Release"), Screen::AckAndDeliver(AgentRequest::Release));
+        assert_eq!(ids(&held), [3], "only a Cancel drops them");
+        let (answers, told) = route(&mut held, AgentId(5), agent_call("Explode"), Screen::Refuse(UNKNOWN_METHOD));
+        assert_eq!((answers.iter().map(|(_, o)| *o).collect::<Vec<_>>(), told), (vec![Err(UNKNOWN_METHOD)], None));
     }
 
     #[test]

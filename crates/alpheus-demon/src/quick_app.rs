@@ -418,9 +418,9 @@ impl App {
                 self.quick_send_secret(&argv, &what);
                 self.quick_refresh();
             }
-            // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
             // Until the acting connection is wired (Task 8): repainted, the orders not sent yet.
             QuickAction::Bluetooth(_) => self.quick_refresh(),
+            // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
                 self.set_dnd(on);

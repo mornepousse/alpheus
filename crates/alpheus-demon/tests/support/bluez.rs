@@ -174,6 +174,11 @@ impl FakeBluez {
         self.ask(|m| m, "Cancel");
     }
 
+    /// BlueZ releases the agent (it unregistered it itself): `Release()`.
+    pub fn release_agent(&self) {
+        self.ask(|m| m, "Release");
+    }
+
     /// The agent's answers, in arrival order.
     pub fn replies(&self) -> Vec<String> {
         self.shared.lock().unwrap().replies.clone()

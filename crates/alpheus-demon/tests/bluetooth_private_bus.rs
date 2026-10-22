@@ -430,3 +430,21 @@ fn a_fifth_held_call_rejects_the_oldest() {
     act.flush();
     assert_eq!(replies(&bz, &mut act, 1), ["RequestConfirmation org.bluez.Error.Rejected"]);
 }
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_released_agent_is_not_unregistered() {
+    let b = PrivateBus::start("bt-agent-release");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    wait_registered(&mut act, &bz);
+    bz.release_agent();
+    assert_eq!(agent_event(&mut act).1, AgentRequest::Release);
+    assert_eq!(replies(&bz, &mut act, 1), ["Release ok"]);
+    act.close();
+    let connect = ActCall::Connect { device: dev(1) };
+    let mut probe = BtAct::at(&b.address).unwrap();
+    probe.call(connect.clone());
+    assert_eq!(pump(&mut probe, 1, Duration::from_secs(5)), [ok(connect)], "the bus has seen everything before");
+    assert!(!bz.calls().iter().any(|c| c.starts_with("UnregisterAgent")), "{:?}", bz.calls());
+}

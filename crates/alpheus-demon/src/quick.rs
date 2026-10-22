@@ -12,11 +12,12 @@ use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
-use crate::quick_bt::{Bt, BtOrder};
+use crate::quick_bt::{Bt, BtOrder, Code};
 use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
+use crate::sources::dbus::bt_act::{ActCall, ActError, AgentId, AgentRequest};
 use crate::state::{Bar, Feed};
 use crate::system::{BtScope, BtState, BtView, Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
 use std::time::{Duration, Instant};
@@ -285,10 +286,12 @@ pub enum QuickAction {
     Bluetooth(Vec<BtOrder>),
 }
 
-/// The question the panel waits on for a second activation: "Reboot? ⏎", "Power off? ⏎".
+/// The question the panel waits on for a second activation: "Reboot? ⏎", "Power off? ⏎", or a
+/// Bluetooth device's "Forget? ⏎" (by object path).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Question {
     Session(Session),
+    Forget(String),
 }
 
 /// What a tick finds due (`Quick::due`): the re-reads to do, whether to repaint (the question
@@ -301,6 +304,10 @@ pub struct Due {
     pub run: Vec<QuickAction>,
     /// A Wi-Fi connection failed at this tick (the 20 s timeout): why, for the log.
     pub wifi_failed: Option<&'static str>,
+    /// Bluetooth's log lines at this tick (an action's timeout), and its orders (a pairing
+    /// cancelled, a call forgotten).
+    pub bt_logs: Vec<String>,
+    pub bt_orders: Vec<BtOrder>,
 }
 
 /// What a Wi-Fi state brought (`Quick::set_wifi`): the action to take (a rescan, a cleanup), and why
@@ -622,11 +629,12 @@ impl Quick {
     /// The selected line's index among `all` (the lines shown), if any.
     fn selected_line(&self, all: &[Line]) -> Option<usize> {
         let nets = if self.wifi.open { self.wifi.networks() } else { Vec::new() };
+        let devices = if self.bt.open { self.bt.devices() } else { Vec::new() };
         all.iter().position(|l| match *l {
             Line::Row(r) => r == self.selected,
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
             l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
-            l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l),
+            l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l, &devices),
             _ => false,
         })
     }
@@ -718,7 +726,11 @@ impl Quick {
             (Row::Brightness, Key::Left) => self.brightness(Level::Down(step), now),
             (Row::Wifi, Key::Char(' ')) => self.wifi.radio(),
             (Row::Wifi, Key::Enter | Key::Right) => self.open_wifi(),
-            (Row::Bluetooth, Key::Char(' ')) => live.bluetooth.map_or(QuickAction::Nothing, |s| self.bt.power(s)),
+            (Row::Bluetooth, Key::Char(' ')) => {
+                let a = live.bluetooth.map_or(QuickAction::Nothing, |s| self.bt.power(s));
+                self.bt.arm(now);
+                a
+            }
             (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
@@ -807,8 +819,14 @@ impl Quick {
         let all = lines(live, self);
         let top = self.top.min(all.len().saturating_sub(self.visible()));
         let Some(line) = all.get(top + usize::from(cell.1)).copied() else { return QuickAction::Nothing };
-        // A press anywhere but the session row cancels the question.
-        let cancelled = line != Line::Row(Row::Session) && self.confirm.take().is_some();
+        // A press anywhere but the question's own line cancels it: the session row for a session
+        // question, the asking device for a forget one.
+        let keep = match (&self.confirm, line) {
+            (Some((Question::Session(_), _)), Line::Row(Row::Session)) => true,
+            (Some((Question::Forget(p), _)), Line::BtDevice(i)) => self.bt.devices().get(i).is_some_and(|d| &d.path == p),
+            _ => false,
+        };
+        let cancelled = !keep && self.confirm.take().is_some();
         let before = self.selected;
         let action = match (line, b) {
             (Line::Header, Button::Left) => {
@@ -926,6 +944,7 @@ impl Quick {
             self.reread_toggles[1],
             self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
+            self.bt.deadline(),
         ]
         .into_iter()
         .flatten()
@@ -973,6 +992,10 @@ impl Quick {
         let (run, failed, redraw) = self.wifi.due(now);
         d.run.extend(run);
         d.wifi_failed = failed;
+        d.redraw |= redraw;
+        let (orders, log, redraw) = self.bt.due(now);
+        d.bt_orders = orders;
+        d.bt_logs.extend(log);
         d.redraw |= redraw;
         d
     }
@@ -1081,6 +1104,32 @@ impl Quick {
         self.bt.scope(true)
     }
 
+    /// The acting connection's answer to `call` (`Bt::answered`), then fitted; the log line, if any.
+    pub fn bt_answered(&mut self, call: &ActCall, result: Result<(), ActError>, now: Instant) -> (QuickAction, Option<String>) {
+        let r = self.bt.answered(call, result, now);
+        self.bt.fit();
+        r
+    }
+
+    /// One of BlueZ's agent requests (`Bt::agent`), then fitted; a code question cancels a pending
+    /// `Forget?` (spec § 3).
+    pub fn bt_agent(&mut self, id: AgentId, request: AgentRequest, now: Instant) -> QuickAction {
+        let a = self.bt.agent(id, request, now);
+        if matches!(self.bt.code, Some(Code::Question { .. })) && matches!(self.confirm, Some((Question::Forget(_), _))) {
+            self.confirm = None;
+        }
+        self.bt.fit();
+        a
+    }
+
+    /// The panel closing: a pending `Forget?` dropped, then `Bt::leaving`'s orders.
+    pub fn bt_leaving(&mut self) -> Vec<BtOrder> {
+        if matches!(self.confirm, Some((Question::Forget(_), _))) {
+            self.confirm = None;
+        }
+        self.bt.leaving()
+    }
+
     /// The D-Bus thread's Bluetooth view for the open panel (`Bt::set_view`), then fitted: the
     /// selection back on the row when the detail closed under it; the window follows the selection
     /// only when it moved (as `follow_wifi`).
@@ -1182,6 +1231,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
     let top = q.top.min(all.len().saturating_sub(visible));
     let mut out = Boxed::default();
     let nets = if q.wifi.open { q.wifi.networks() } else { Vec::new() };
+    let devices = if q.bt.open { q.bt.devices() } else { Vec::new() };
     for (r, line) in all.iter().skip(top).take(visible).enumerate() {
         let mut g = Grid::empty(WIDTH + 2);
         match *line {
@@ -1197,7 +1247,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
                 q.wifi.draw(&mut g, l, &nets, q.wifi.is_selected(l, &nets))
             }
             l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode) => {
-                q.bt.draw(&mut g, l, q.confirm.as_ref(), q.bt.is_selected(l))
+                q.bt.draw(&mut g, l, &devices, q.confirm.as_ref(), q.bt.is_selected(l, &devices))
             }
         }
         out.rows.push(g);
@@ -1576,7 +1626,7 @@ mod tests {
             q.follow_bt(&w.live(), Some(view()), t),
             QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::StartDiscovery { adapter: adapter.into() })])
         );
-        assert!(q.bt.is_selected(Line::BtDevice(0)), "the first device");
+        assert!(q.bt.is_selected(Line::BtDevice(0), &q.bt.devices()), "the first device");
         assert_eq!(q.follow_bt(&w.live(), None, t), QuickAction::Redraw, "BlueZ lost: its orders dropped");
         assert!(!q.bt.open);
         assert_eq!(q.selected, Row::Bluetooth, "back on the row");
@@ -1586,6 +1636,159 @@ mod tests {
         q.fit(&w.live());
         assert!(!q.bt.open, "the row gone: the detail closes");
         assert_eq!(q.selected, Row::Mic, "the next row down");
+    }
+
+    /// A Bluetooth view with ClavierBT paired, and Keyboard-Test nearby.
+    fn clavier_view() -> BtView {
+        use crate::system::{BtAdapter, BtEntry, BtKind};
+        let entry = |n: u8, label: &str, paired: bool| BtEntry {
+            path: format!("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_{n:02X}"),
+            label: label.into(),
+            kind: BtKind::Keyboard,
+            paired,
+            trusted: paired,
+            connected: false,
+        };
+        BtView {
+            adapter: Some(BtAdapter { path: "/org/bluez/hci0".into(), powered: true, blocked: false }),
+            paired: vec![entry(2, "ClavierBT", true)],
+            nearby: vec![entry(3, "Keyboard-Test", false)],
+        }
+    }
+
+    /// Review Focus 3: a double Enter (or a held one) on a device makes one call.
+    #[test]
+    fn a_double_enter_on_a_device_calls_once() {
+        use crate::quick_bt::BtOrder;
+        use crate::sources::dbus::bt_act::ActCall;
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(clavier_view()), t);
+        let l = w.live();
+        let connect = ActCall::Connect { device: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into() };
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Bluetooth(vec![BtOrder::Call(connect)]));
+        assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "auto-repeat");
+        assert_eq!(q.key(&l, Key::Enter, false, t + Duration::from_millis(50)), QuickAction::Nothing, "during …");
+    }
+
+    /// Spec § 3: a code question cancels a pending `Forget?`; leaving drops it too.
+    #[test]
+    fn the_question_cancels_forget() {
+        use crate::quick_bt::BtOrder;
+        use crate::sources::dbus::bt_act::{ActCall, AgentId, AgentReply, AgentRequest};
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(clavier_view()), t);
+        let l = w.live();
+        let pairing = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".to_string();
+        q.key(&l, Key::Down, false, t);
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::Pair { device: pairing.clone() })]));
+        q.confirm = Some((Question::Forget("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into()), t + CONFIRM));
+        assert_eq!(
+            q.bt_agent(AgentId(1), AgentRequest::RequestConfirmation { device: pairing.clone(), passkey: 1 }, t),
+            QuickAction::Redraw
+        );
+        assert_eq!(q.confirm, None);
+        q.confirm = Some((Question::Forget("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into()), t + CONFIRM));
+        assert_eq!(
+            q.bt_leaving(),
+            vec![
+                BtOrder::Reply(AgentId(1), AgentReply::Rejected),
+                BtOrder::Call(ActCall::CancelPairing { device: pairing.clone() }),
+                BtOrder::Forget(ActCall::Pair { device: pairing }),
+                BtOrder::Call(ActCall::StopDiscovery { adapter: "/org/bluez/hci0".into() }),
+            ]
+        );
+        assert_eq!(q.confirm, None, "leaving drops a pending Forget");
+        q.confirm = Some((Question::Session(Session::Reboot), t + CONFIRM));
+        q.bt_leaving();
+        assert!(q.confirm.is_some(), "not a session question");
+    }
+
+    /// The Bluetooth timers join the panel's: the earliest deadline, and what `due` finds.
+    #[test]
+    fn bluetooth_deadlines_and_logs_go_through_due() {
+        use crate::quick_bt::{BtOrder, CALL_DEADLINE};
+        use crate::sources::dbus::bt_act::ActCall;
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(clavier_view()), t);
+        q.key(&w.live(), Key::Enter, false, t);
+        assert_eq!(q.deadline(), Some(t + CALL_DEADLINE));
+        let connect = ActCall::Connect { device: "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".into() };
+        assert_eq!(
+            q.due(t + CALL_DEADLINE),
+            Due {
+                redraw: true,
+                bt_orders: vec![BtOrder::Forget(connect)],
+                bt_logs: vec!["quick: bluetooth connect failed (timeout)".into()],
+                ..Due::default()
+            }
+        );
+        let (a, log) = q.bt_answered(
+            &ActCall::StartDiscovery { adapter: "/org/bluez/hci0".into() },
+            Err(crate::sources::dbus::bt_act::ActError::Remote("org.bluez.Error.InProgress".into())),
+            t,
+        );
+        assert_eq!((a, log.as_deref()), (QuickAction::Nothing, Some("quick: bluetooth discovery failed (org.bluez.Error.InProgress)")));
+    }
+
+    /// Spec § 2: a left press on the device asked about is the forget question's second activation;
+    /// a press on any other line cancels it.
+    #[test]
+    fn a_press_on_the_asking_device_confirms_forget() {
+        use crate::quick_bt::BtOrder;
+        use crate::sources::dbus::bt_act::ActCall;
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(clavier_view()), t);
+        let l = w.live();
+        let clavier = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02".to_string();
+        let row = |q: &Quick, line: Line| lines(&l, q).iter().position(|x| *x == line).unwrap() as u16;
+        assert_eq!(q.key(&l, Key::Delete, false, t), QuickAction::Redraw);
+        assert_eq!(q.press(&l, (3, row(&q, Line::BtNearby)), Button::Left, t), QuickAction::Redraw, "another line: cancelled");
+        assert_eq!(q.confirm, None);
+        q.key(&l, Key::Delete, false, t);
+        assert_eq!(q.confirm, Some((Question::Forget(clavier.clone()), t + CONFIRM)));
+        assert_eq!(
+            q.press(&l, (3, row(&q, Line::BtDevice(0))), Button::Left, t + CONFIRM_AFTER),
+            QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::RemoveDevice { adapter: "/org/bluez/hci0".into(), device: clavier })])
+        );
+    }
+
+    /// A left click on the Bluetooth row opens its detail.
+    #[test]
+    fn a_left_click_on_the_bluetooth_row_opens_the_detail() {
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Bluetooth)).unwrap();
+        assert_eq!(q.press(&l, (3, at as u16), Button::Left, Instant::now()), QuickAction::Redraw, "no view read yet");
+        assert!(q.bt.open);
+        assert_eq!(q.selected, Row::Bluetooth);
+    }
+
+    /// Spec § 2: Space on the Bluetooth row is a power action with its 30 s deadline.
+    #[test]
+    fn the_rows_power_toggle_is_armed() {
+        use crate::quick_bt::{CALL_DEADLINE, Step};
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Top);
+        q.bt.view = Some(clavier_view());
+        q.selected = Row::Bluetooth;
+        q.key(&w.live(), Key::Char(' '), false, t);
+        assert_eq!(q.bt.action.as_ref().map(|a| (a.step, a.deadline)), Some((Step::Power, Some(t + CALL_DEADLINE))));
     }
 
     #[test]
