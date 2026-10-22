@@ -25,6 +25,7 @@ use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
+use alpheus_demon::sources::dbus::bt_act::ActMethod;
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
@@ -910,7 +911,8 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         if uses_crate(&t, "dbus") {
             assert!(DBUS_FILES.contains(&name.as_str()), "the dbus crate used in {name}");
         }
-        if name.starts_with("sources/dbus/") {
+        // bt_act.rs, Bluetooth's acting connection, has its own guardrail, below.
+        if name.starts_with("sources/dbus/") && name != "sources/dbus/bt_act.rs" {
             let prod = production_code(&t);
             for word in [
                 "\"Set\"",
@@ -988,9 +990,46 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
-/// The files that may name the `dbus` crate: the system bus's, and the
-/// tray's four (its connection, codec, watcher and router).
-const DBUS_FILES: [&str; 5] = ["sources/dbus/dbusrs_bus.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+/// The files that may name the `dbus` crate: the system bus's, Bluetooth's
+/// acting connection (`bt_act.rs`), and the tray's four (its connection,
+/// codec, watcher and router).
+const DBUS_FILES: [&str; 6] =
+    ["sources/dbus/dbusrs_bus.rs", "sources/dbus/bt_act.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+
+/// Bluetooth's acting connection (quick settings delivery 3, spec § 5): the
+/// only D-Bus file that changes anything, and only through the pinned
+/// `ActMethod` list; one builder, one sender, auto-start off; never a name
+/// requested, never the default agent, never a blocking call.
+#[test]
+fn the_bluetooth_connection_acts_only_through_act_method() {
+    let names: Vec<&str> = ActMethod::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "GetNameOwner",
+            "Set",
+            "StartDiscovery",
+            "StopDiscovery",
+            "RemoveDevice",
+            "Connect",
+            "Disconnect",
+            "Pair",
+            "CancelPairing",
+            "RegisterAgent",
+            "UnregisterAgent"
+        ]
+    );
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
+    let prod = production_code(&file);
+    assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
+    assert_eq!(prod.matches(".send(").count(), 1, "every message leaves through `post`");
+    assert_eq!(prod.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
+    for never in
+        ["send_with_reply_and_block", "RequestName", "RequestDefaultAgent", "Crossroads", "blocking_pop_message", "RefArg", "new_signal("]
+    {
+        assert!(!prod.contains(never), "{never} in bt_act.rs");
+    }
+}
 
 /// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
@@ -1113,7 +1152,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 37] = [
+const NO_THREAD_NOR_COMMAND: [&str; 39] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1151,6 +1190,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 37] = [
     "privacy.rs",
     "camera_dev.rs",
     "camera_app.rs",
+    "sources/dbus/bt.rs",
+    "sources/dbus/bt_act.rs",
 ];
 
 #[test]
@@ -2049,6 +2090,20 @@ fn every_power_menu_activation_is_a_configured_session() {
 fn the_power_menu_has_no_panicking_path() {
     let files = source_files();
     for name in ["power.rs", "power_app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus
+/// thread and the bar's loop; neither may panic (constraints: no panicking path).
+#[test]
+fn the_bluetooth_d_bus_files_have_no_panicking_path() {
+    let files = source_files();
+    for name in ["sources/dbus/bt.rs", "sources/dbus/bt_act.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

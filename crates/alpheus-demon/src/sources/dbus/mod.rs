@@ -7,6 +7,7 @@
 
 pub mod bluez;
 pub mod bt;
+pub mod bt_act;
 pub mod dbusrs_bus;
 pub mod network;
 pub mod power;

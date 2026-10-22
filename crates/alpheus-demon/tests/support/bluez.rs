@@ -3,11 +3,14 @@
 //! at `/` and `Properties.GetAll`; an object it does not hold gets UnknownObject, any other member
 //! UnknownMethod. It is one `Peer` served by its own thread (20 ms poll, like support/portal.rs),
 //! speaks raw D-Bus and never the daemon's code; dropped, the thread is joined and the name loses
-//! its owner. Every call is recorded as `"<Member> <path> <args>"`.
+//! its owner. Every call is recorded as `"<Member> <path> <args>"`. Any other call to it (the acting
+//! connection's: `Set`, `Connect`, `Pair`…) is answered with an empty return, unless `fail` or `hold`
+//! said otherwise, and its destination is kept (`destinations`).
 
 use super::busctl_wire::push_reply;
 use super::{Peer, PrivateBus};
 use dbus::Message;
+use dbus::arg::{ArgType, RefArg};
 use dbus::message::MessageType;
 use dbus::strings::Path;
 use serde_json::{Value, json};
@@ -32,7 +35,20 @@ enum Command {
     Add(u8, String, i16),
     Remove(u8),
     Connected(u8, bool),
+    Release,
     Stop,
+}
+
+/// What the test and the serving thread share.
+#[derive(Default)]
+struct Shared {
+    calls: Vec<String>,
+    /// The destination of each acting call, in arrival order.
+    destinations: Vec<String>,
+    /// (member, error name): the next call of that member gets the error.
+    failures: Vec<(String, String)>,
+    /// Calls of this member stay unanswered until `release`.
+    hold: Option<String>,
 }
 
 /// path -> interface -> property -> busctl's `{"type", "data"}`.
@@ -40,7 +56,7 @@ type Tree = BTreeMap<String, BTreeMap<String, serde_json::Map<String, Value>>>;
 
 pub struct FakeBluez {
     commands: Sender<Command>,
-    calls: Arc<Mutex<Vec<String>>>,
+    shared: Arc<Mutex<Shared>>,
     name: String,
     thread: Option<JoinHandle<()>>,
 }
@@ -82,11 +98,11 @@ impl FakeBluez {
         let peer = Peer::connect(bus);
         peer.own("org.bluez");
         let name = peer.name.clone();
-        let calls = Arc::new(Mutex::new(Vec::new()));
+        let shared = Arc::new(Mutex::new(Shared::default()));
         let (commands, rx) = mpsc::channel();
-        let c = calls.clone();
+        let c = shared.clone();
         let thread = thread::spawn(move || serve(peer, initial_tree(), c, rx));
-        FakeBluez { commands, calls, name, thread: Some(thread) }
+        FakeBluez { commands, shared, name, thread: Some(thread) }
     }
 
     /// A device scanning found: unpaired, named `alias`, advertising at `rssi`; `InterfacesAdded` goes out.
@@ -106,7 +122,28 @@ impl FakeBluez {
 
     /// Every method call received, `"<Member> <path> <args>"`, in arrival order.
     pub fn calls(&self) -> Vec<String> {
-        self.calls.lock().unwrap().clone()
+        self.shared.lock().unwrap().calls.clone()
+    }
+
+    /// The destination of every acting call (not the read side's), in arrival order.
+    pub fn destinations(&self) -> Vec<String> {
+        self.shared.lock().unwrap().destinations.clone()
+    }
+
+    /// The next call of `member` is answered with the error `error`.
+    pub fn fail(&self, member: &str, error: &str) {
+        self.shared.lock().unwrap().failures.push((member.into(), error.into()));
+    }
+
+    /// Calls of `member` stay unanswered until `release`.
+    pub fn hold(&self, member: &str) {
+        self.shared.lock().unwrap().hold = Some(member.into());
+    }
+
+    /// Answers the held calls (an empty return each) and holds no more.
+    pub fn release(&self) {
+        self.shared.lock().unwrap().hold = None;
+        let _ = self.commands.send(Command::Release);
     }
 
     /// The unique name that owns `org.bluez`.
@@ -165,17 +202,58 @@ fn emit(peer: &Peer, command: Command, tree: &mut Tree) {
             push_reply(&mut m, &json!({ "type": "as", "data": [[]] }).to_string());
             send(peer, m);
         }
-        Command::Stop => {}
+        Command::Release | Command::Stop => {}
     }
 }
 
-fn answer(call: &Message, tree: &Tree, calls: &Mutex<Vec<String>>) -> Message {
+/// A call's arguments as the recorded string has them: `s`/`o` as is, `b` as `true`/`false`, `v`
+/// unwrapped, separated by single spaces.
+fn args(m: &Message) -> String {
+    fn word(a: &dyn RefArg) -> String {
+        match a.arg_type() {
+            ArgType::Variant => a.as_iter().and_then(|mut i| i.next().map(word)).unwrap_or_default(),
+            ArgType::Boolean => (a.as_u64() == Some(1)).to_string(),
+            _ => a.as_str().map(String::from).unwrap_or_else(|| format!("{a:?}")),
+        }
+    }
+    let mut it = m.iter_init();
+    let mut out = Vec::new();
+    while let Some(a) = it.get_refarg() {
+        out.push(word(&*a));
+        it.next();
+    }
+    out.join(" ")
+}
+
+/// An acting call: recorded with its arguments and destination; answered at once (empty, or the
+/// error `fail` named), or None while its member is held.
+fn act(call: &Message, shared: &Mutex<Shared>) -> Option<Message> {
+    let p = call.path().map(|p| p.to_string()).unwrap_or_default();
+    let member = call.member().map(|m| m.to_string()).unwrap_or_default();
+    let mut s = shared.lock().unwrap();
+    s.calls.push(format!("{member} {p} {}", args(call)).trim_end().to_string());
+    s.destinations.push(call.destination().map(|d| d.to_string()).unwrap_or_default());
+    if let Some(i) = s.failures.iter().position(|(m, _)| *m == member) {
+        let (_, error) = s.failures.remove(i);
+        return Some(call.error(&error.into(), c"failed"));
+    }
+    if s.hold.as_deref() == Some(member.as_str()) {
+        return None;
+    }
+    Some(call.method_return())
+}
+
+/// The read side's calls; None: an acting call (`act`).
+fn answer(call: &Message, tree: &Tree, shared: &Mutex<Shared>) -> Option<Message> {
     let p = call.path().map(|p| p.to_string()).unwrap_or_default();
     let member = call.member().map(|m| m.to_string()).unwrap_or_default();
     let interface = call.interface().map(|i| i.to_string()).unwrap_or_default();
+    if !matches!((interface.as_str(), member.as_str()), (OBJECT_MANAGER, "GetManagedObjects") | (PROPERTIES, "GetAll")) {
+        return None;
+    }
     let asked = call.read1::<&str>().unwrap_or("").to_string();
-    calls.lock().unwrap().push(format!("{member} {p} {asked}").trim_end().to_string());
-    match (interface.as_str(), member.as_str()) {
+    shared.lock().unwrap().calls.push(format!("{member} {p} {asked}").trim_end().to_string());
+    Some(match (interface.as_str(), member.as_str()) {
         (OBJECT_MANAGER, "GetManagedObjects") if p == "/" => {
             let all: serde_json::Map<String, Value> = tree.iter().map(|(p, i)| (p.clone(), json!(i))).collect();
             let mut r = call.method_return();
@@ -191,19 +269,25 @@ fn answer(call: &Message, tree: &Tree, calls: &Mutex<Vec<String>>) -> Message {
             None => call.error(&"org.freedesktop.DBus.Error.UnknownObject".into(), c"no such object"),
         },
         _ => call.error(&"org.freedesktop.DBus.Error.UnknownMethod".into(), c"no such method"),
-    }
+    })
 }
 
-fn serve(peer: Peer, mut tree: Tree, calls: Arc<Mutex<Vec<String>>>, commands: Receiver<Command>) {
+fn serve(peer: Peer, mut tree: Tree, shared: Arc<Mutex<Shared>>, commands: Receiver<Command>) {
+    let mut held = Vec::new();
     loop {
         while let Ok(c) = commands.try_recv() {
-            if matches!(c, Command::Stop) {
-                return;
+            match c {
+                Command::Stop => return,
+                Command::Release => held.drain(..).for_each(|m: Message| send(&peer, m.method_return())),
+                c => emit(&peer, c, &mut tree),
             }
-            emit(&peer, c, &mut tree);
         }
         match peer.channel.blocking_pop_message(POLL) {
-            Ok(Some(m)) if m.msg_type() == MessageType::MethodCall => send(&peer, answer(&m, &tree, &calls)),
+            Ok(Some(m)) if m.msg_type() == MessageType::MethodCall => match answer(&m, &tree, &shared).or_else(|| act(&m, &shared)) {
+                Some(r) if !m.get_no_reply() => send(&peer, r),
+                Some(_) => {}
+                None => held.push(m),
+            },
             Ok(_) => {}
             Err(_) => return,
         }

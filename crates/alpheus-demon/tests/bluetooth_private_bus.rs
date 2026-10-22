@@ -5,6 +5,7 @@
 mod common;
 
 use alpheus_demon::sources::dbus::bt::BtTap;
+use alpheus_demon::sources::dbus::bt_act::{ActCall, ActError, BtAct, BtEvent};
 use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
 use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Domain, DomainLog, session};
@@ -110,4 +111,158 @@ fn bluez_restarting_reads_the_new_owner() {
         }
     }
     assert!(bz.calls().iter().any(|c| c == "GetManagedObjects /"), "{:?}", bz.calls());
+}
+
+/// Reads `act` every 5 ms until `n` events came or `timeout` passed.
+fn pump(act: &mut BtAct, n: usize, timeout: Duration) -> Vec<BtEvent> {
+    let end = Instant::now() + timeout;
+    let mut out = Vec::new();
+    while out.len() < n && Instant::now() < end {
+        out.extend(act.read());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    out
+}
+
+fn dev(n: u8) -> String {
+    format!("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_{n:02X}")
+}
+
+fn ok(call: ActCall) -> BtEvent {
+    BtEvent::Answer { call, result: Ok(()) }
+}
+
+const HCI: &str = "/org/bluez/hci0";
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn each_call_reaches_the_fake_with_its_arguments() {
+    let b = PrivateBus::start("bt-act-calls");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    let calls = [
+        ActCall::Powered { adapter: HCI.into(), on: false },
+        ActCall::Trusted { device: dev(2) },
+        ActCall::StartDiscovery { adapter: HCI.into() },
+        ActCall::StopDiscovery { adapter: HCI.into() },
+        ActCall::RemoveDevice { adapter: HCI.into(), device: dev(2) },
+        ActCall::Connect { device: dev(1) },
+        ActCall::Disconnect { device: dev(1) },
+        ActCall::Pair { device: dev(2) },
+        ActCall::CancelPairing { device: dev(2) },
+    ];
+    for c in calls.clone() {
+        act.call(c);
+    }
+    act.flush();
+    assert_eq!(pump(&mut act, 9, Duration::from_secs(5)), calls.map(ok));
+    assert_eq!(
+        bz.calls(),
+        [
+            "Set /org/bluez/hci0 org.bluez.Adapter1 Powered false",
+            "Set /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02 org.bluez.Device1 Trusted true",
+            "StartDiscovery /org/bluez/hci0",
+            "StopDiscovery /org/bluez/hci0",
+            "RemoveDevice /org/bluez/hci0 /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02",
+            "Connect /org/bluez/hci0/dev_AA_BB_CC_DD_EE_01",
+            "Disconnect /org/bluez/hci0/dev_AA_BB_CC_DD_EE_01",
+            "Pair /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02",
+            "CancelPairing /org/bluez/hci0/dev_AA_BB_CC_DD_EE_02",
+        ]
+    );
+    assert_eq!(act.in_flight(), 0);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn calls_wait_for_the_owner_then_go_to_the_unique_name() {
+    let b = PrivateBus::start("bt-act-owner");
+    let bz = FakeBluez::serve(&b);
+    let mut act = BtAct::at(&b.address).unwrap();
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    assert_eq!(act.in_flight(), 1, "queued until the owner is known");
+    assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [ok(connect)]);
+    assert_eq!(bz.destinations(), [bz.unique_name()], "never the well-known name");
+    assert_eq!(act.in_flight(), 0);
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn no_bluez_answers_gone() {
+    let b = PrivateBus::start("bt-act-absent");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    act.flush();
+    assert_eq!(pump(&mut act, 1, Duration::from_secs(5)), [BtEvent::Answer { call: connect, result: Err(ActError::Gone) }]);
+    let pair = ActCall::Pair { device: dev(2) };
+    act.call(pair.clone());
+    assert_eq!(act.read(), [BtEvent::Answer { call: pair, result: Err(ActError::Gone) }], "no round-trip");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn bluez_error_name_is_kept() {
+    let b = PrivateBus::start("bt-act-error");
+    let bz = FakeBluez::serve(&b);
+    bz.fail("Connect", "org.bluez.Error.AlreadyConnected");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    act.flush();
+    assert_eq!(
+        pump(&mut act, 1, Duration::from_secs(5)),
+        [BtEvent::Answer { call: connect, result: Err(ActError::Remote("org.bluez.Error.AlreadyConnected".into())) }]
+    );
+}
+
+/// Waits (2 s at most) until the fake recorded a call starting with `prefix`.
+fn recorded(bz: &FakeBluez, act: &mut BtAct, prefix: &str) -> Vec<BtEvent> {
+    let end = Instant::now() + Duration::from_secs(2);
+    let mut out = Vec::new();
+    while !bz.calls().iter().any(|c| c.starts_with(prefix)) {
+        assert!(Instant::now() < end, "{prefix} never reached the fake: {:?}", bz.calls());
+        out.extend(act.read());
+        act.flush();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    out
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn a_forgotten_call_answer_is_dropped() {
+    let b = PrivateBus::start("bt-act-forget");
+    let bz = FakeBluez::serve(&b);
+    bz.hold("Pair");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let pair = ActCall::Pair { device: dev(2) };
+    act.call(pair.clone());
+    act.flush();
+    assert_eq!(recorded(&bz, &mut act, "Pair "), []);
+    act.forget(&pair);
+    assert_eq!(act.in_flight(), 0);
+    bz.release();
+    assert_eq!(pump(&mut act, 1, Duration::from_millis(300)), [], "the late answer is dropped");
+}
+
+#[test]
+#[ignore = "private dbus-daemon (nix develop)"]
+fn the_connection_closing_answers_pending_gone() {
+    let mut b = PrivateBus::start("bt-act-closed");
+    let bz = FakeBluez::serve(&b);
+    bz.hold("Connect");
+    let mut act = BtAct::at(&b.address).unwrap();
+    let connect = ActCall::Connect { device: dev(1) };
+    act.call(connect.clone());
+    act.flush();
+    assert_eq!(recorded(&bz, &mut act, "Connect "), []);
+    b.kill();
+    assert_eq!(
+        pump(&mut act, 2, Duration::from_secs(5)),
+        [BtEvent::Answer { call: connect.clone(), result: Err(ActError::Gone) }, BtEvent::Closed]
+    );
+    act.call(connect.clone());
+    assert_eq!(act.read(), [BtEvent::Answer { call: connect, result: Err(ActError::Gone) }]);
 }
