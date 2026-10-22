@@ -7,6 +7,7 @@ pub mod actions;
 pub mod appearance;
 pub mod background;
 pub mod backlight;
+pub mod bt_app;
 pub mod bubbles;
 pub mod bubbles_surface;
 pub mod calendar;

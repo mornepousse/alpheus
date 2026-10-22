@@ -17,7 +17,7 @@ use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
-use crate::system::{Headset, Sink, SoundState, WifiScope, WifiState};
+use crate::system::{BtScope, BtView, Headset, Sink, SoundState, WifiScope, WifiState};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
@@ -98,6 +98,41 @@ pub(crate) fn panel_wifi(
     now: Instant,
 ) -> Option<WifiNews> {
     wifi_current(open, current).then(|| q.follow_wifi(live, state, now))
+}
+
+/// The Bluetooth view a bar message carries for the open panel (quick Bluetooth spec § 5), taken out
+/// of it with the open it was read for: the bar never keeps one. None: not a Bluetooth view message.
+pub(crate) fn taken_bt(m: &mut Msg) -> Option<(Option<u64>, Option<BtView>)> {
+    match m {
+        Msg::Bt { open, state } => Some((*open, state.take())),
+        _ => None,
+    }
+}
+
+/// The open panel's part of a Bluetooth view message: `Quick::follow_bt` on a view of this open
+/// (`wifi_current`, the same tags), nothing for an earlier open's.
+pub(crate) fn panel_bt(
+    q: &mut Quick,
+    live: &Live,
+    open: Option<u64>,
+    view: Option<BtView>,
+    current: Option<u64>,
+    now: Instant,
+) -> Option<QuickAction> {
+    wifi_current(open, current).then(|| q.follow_bt(live, view, now))
+}
+
+/// A view of this open says BlueZ is no longer there to be reached (Review Focus 1): none (the bus
+/// down, the Bluetooth domain out), or one with no adapter (BlueZ gone: the D-Bus thread reads
+/// `BtState::Absent` between two owners). The acting connection is then let go.
+pub(crate) fn bluez_left(open: Option<u64>, view: Option<&BtView>, current: Option<u64>) -> bool {
+    wifi_current(open, current) && view.is_none_or(|v| v.adapter.is_none())
+}
+
+/// What the D-Bus thread reads of Bluetooth: nothing without a panel, else what its row and
+/// detail show (`row_shown`: `Bt::shows` on the bar's state).
+pub(crate) fn bt_scope_for(panel: Option<&Quick>, row_shown: bool) -> BtScope {
+    panel.map_or(BtScope::Closed, |q| q.bt.scope(row_shown))
 }
 
 /// Whether a verb arriving at `now` is the key press that opened the panel again (Hyprland
@@ -348,6 +383,7 @@ impl App {
             log(&format!("quick shown ({what})"));
             self.quick_resume();
             self.quick_wifi_sync();
+            self.quick_bt_sync();
         } else {
             self.quick_closed();
         }
@@ -418,8 +454,11 @@ impl App {
                 self.quick_send_secret(&argv, &what);
                 self.quick_refresh();
             }
-            // Until the acting connection is wired (Task 8): repainted, the orders not sent yet.
-            QuickAction::Bluetooth(_) => self.quick_refresh(),
+            // The acting connection (bt_app.rs), opened for a call when BlueZ has an adapter.
+            QuickAction::Bluetooth(orders) => {
+                self.bt_run(orders);
+                self.quick_refresh();
+            }
             // The one path (notify_app.rs): persisted, given to the server; it repaints this panel.
             QuickAction::ToggleDnd => {
                 let on = !self.dnd;
@@ -475,6 +514,7 @@ impl App {
         }
         self.quick_timer_sync();
         self.quick_wifi_sync();
+        self.quick_bt_sync();
     }
 
     /// The timer follows the panel's earliest pending re-read, question or Wi-Fi deadline; with the
@@ -518,7 +558,7 @@ impl App {
     /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick_timer.fired();
-        let (due, device) = match app.popup.as_mut().map(|p| &mut p.body) {
+        let (mut due, device) = match app.popup.as_mut().map(|p| &mut p.body) {
             Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => {
                 // No panel: a followed attempt's timeout (Mae's ruling P1).
@@ -531,6 +571,11 @@ impl App {
         if let Some(why) = due.wifi_failed {
             log(&format!("quick: wifi connection failed ({why})"));
         }
+        // A Bluetooth call's deadline: its pairing cancelled, its answer forgotten, `failed`.
+        for line in &due.bt_logs {
+            log(line);
+        }
+        app.bt_run(std::mem::take(&mut due.bt_orders));
         for a in &due.run {
             if let QuickAction::Run { argv, what } = a {
                 app.quick_spawn(argv, what);
@@ -557,13 +602,16 @@ impl App {
     /// for their window are sent now, never lost; an attempt on a new network handed to the follower
     /// (Mae's ruling P1), the D-Bus thread's reading left as it is (never Closed in between).
     pub(crate) fn quick_flush(&mut self) {
-        let (waiting, follow) = match self.popup.as_mut().map(|p| &mut p.body) {
-            Some(PopupBody::Quick(q)) => (q.flush(), WifiFollow::leaving(&mut q.wifi)),
+        let (leaving, waiting, follow) = match self.popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => (q.bt_leaving(), q.flush(), WifiFollow::leaving(&mut q.wifi)),
             _ => return,
         };
         if follow.is_some() {
             self.wifi_follow = follow;
         }
+        // Review Focus 2: a code question rejected, the pairing cancelled, discovery stopped while
+        // the connection still exists (`quick_closed` then unregisters the agent and closes it).
+        self.bt_run(leaving);
         for a in waiting {
             if let QuickAction::Run { argv, what } = a {
                 self.quick_spawn(&argv, &what);
@@ -582,6 +630,11 @@ impl App {
         if let Some(tap) = &self.wifi_tap {
             wifi_closed(tap, self.wifi_follow.as_ref());
         }
+        // Nothing of Bluetooth outlives the panel: the D-Bus thread reads nothing, the agent goes.
+        if let Some(tap) = &self.bt_tap {
+            tap.set(BtScope::Closed);
+        }
+        self.bt_close();
         if let Some(handle) = self.loop_handle.clone() {
             let at = self.wifi_follow.as_ref().map(WifiFollow::deadline);
             self.quick_timer.sync(&handle, at, App::quick_tick);
@@ -627,7 +680,25 @@ impl App {
                 self.quick_action(news.action);
             }
         }
-        self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. })
+        if let Some((open, view)) = taken_bt(m) {
+            let now = Instant::now();
+            let current = self.bt_tap.as_ref().map(|t| t.snapshot().1);
+            // BlueZ gone or replaced: the connection let go first, so nothing the panel orders next
+            // reaches the old owner; the next need opens one on the new owner.
+            if bluez_left(open, view.as_ref(), current) {
+                self.bt_drop();
+            }
+            let App { popup, bar, dnd, .. } = &mut *self;
+            let action = match popup.as_mut().map(|p| &mut p.body) {
+                Some(PopupBody::Quick(q)) => panel_bt(q, &quick::live(bar, *dnd), open, view, current, now),
+                _ => None,
+            };
+            if let Some(action) = action {
+                self.quick_action(action);
+            }
+        }
+        self.quick_bt_sync();
+        self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. } | Msg::Bluetooth(_) | Msg::Bt { .. })
     }
 }
 
@@ -992,5 +1063,79 @@ mod tests {
         assert_eq!(q.headset, casque(), "a stale base-scope message never wipes the panel's row");
         assert_eq!(taken_headset(&mut Msg::Sound(None)), Some(None), "pw-dump gone: the row goes");
         assert_eq!(taken_headset(&mut Msg::Profile(None)), None, "only a sound message carries one");
+    }
+
+    use crate::bt_app::tests::{HCI0, bar_bt_on, bt_view};
+    use crate::system::BtScope;
+
+    /// Quick Bluetooth spec § 5: a Bluetooth view goes to the open panel; the message left for the
+    /// bar carries nothing.
+    #[test]
+    fn a_bt_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
+        let mut m = Msg::Bt { open: Some(2), state: Some(bt_view()) };
+        assert_eq!(taken_bt(&mut m), Some((Some(2), Some(bt_view()))));
+        assert_eq!(m, Msg::Bt { open: Some(2), state: None }, "emptied");
+        assert_eq!(taken_bt(&mut Msg::Bt { open: None, state: None }), Some((None, None)), "the bus down: heard too");
+        assert_eq!(taken_bt(&mut Msg::Wifi { open: Some(2), state: None }), None, "only a Bluetooth message");
+    }
+
+    #[test]
+    fn only_a_view_read_for_this_open_reaches_the_panel() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        assert_eq!(panel_bt(&mut q, &live, Some(6), Some(bt_view()), Some(7), t), None, "the open before's: dropped");
+        assert!(q.bt.view.is_none());
+        assert!(panel_bt(&mut q, &live, Some(7), Some(bt_view()), Some(7), t).is_some());
+        assert_eq!(q.bt.view, Some(bt_view()));
+        assert_eq!(panel_bt(&mut q, &live, Some(6), None, Some(7), t), None, "a close's None, queued: dropped");
+        assert!(q.bt.view.is_some(), "never blanked by it");
+        assert!(panel_bt(&mut q, &live, None, None, Some(7), t).is_some(), "the bus down (untagged): heard");
+        assert!(q.bt.view.is_none());
+        assert!(panel_bt(&mut q, &live, Some(3), Some(bt_view()), None, t).is_some(), "no tap: nothing to tell apart");
+    }
+
+    #[test]
+    fn bt_scope_follows_the_panel() {
+        let bar = bar_bt_on();
+        let live = quick::live(&bar, false);
+        assert_eq!(bt_scope_for(None, true), BtScope::Closed);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        assert_eq!(bt_scope_for(Some(&q), false), BtScope::Closed, "no row: nothing read");
+        assert_eq!(bt_scope_for(Some(&q), true), BtScope::Row);
+        q.bt.open_detail();
+        assert_eq!(bt_scope_for(Some(&q), true), BtScope::Detail);
+    }
+
+    /// Review Focus 1: BlueZ restarting with the detail open.
+    #[test]
+    fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
+        use crate::bt_app::{adapter_seen, connection_wanted, opens_for};
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Bluetooth, &live, vec![], None, [None, None], 20);
+        panel_bt(&mut q, &live, Some(3), Some(bt_view()), Some(3), t).expect("this open's");
+        assert!(q.bt.open && adapter_seen(&q) && connection_wanted(Some(&q), 0));
+        panel_bt(&mut q, &live, Some(3), None, Some(3), t).expect("BlueZ gone: heard");
+        assert!(!q.bt.open, "the detail closed");
+        assert!(!adapter_seen(&q) && !connection_wanted(Some(&q), 0));
+        assert!(!opens_for(&q.bt_leaving(), adapter_seen(&q)), "nothing reopened toward the old owner");
+        let late = crate::quick_bt::BtOrder::Call(crate::sources::dbus::bt_act::ActCall::StopDiscovery { adapter: HCI0.into() });
+        assert!(!opens_for(&[late], adapter_seen(&q)), "nor by a call still made before the new owner shows");
+        panel_bt(&mut q, &live, Some(3), Some(bt_view()), Some(3), t).expect("the new owner");
+        assert!(adapter_seen(&q) && quick::shown(&live, &q).contains(&Row::Bluetooth), "the row back");
+    }
+
+    /// Review Focus 1, as the D-Bus thread reports it: BlueZ gone reads as a view with no adapter
+    /// (`BtState::Absent`), the bus down as None; either lets the acting connection go before the
+    /// panel's orders, a view of an earlier open never does.
+    #[test]
+    fn a_view_without_an_adapter_of_this_open_lets_the_connection_go() {
+        let no_adapter = BtView { adapter: None, ..bt_view() };
+        assert!(bluez_left(Some(3), None, Some(3)), "BlueZ's view gone");
+        assert!(bluez_left(Some(3), Some(&no_adapter), Some(3)), "BlueZ gone: an empty view");
+        assert!(bluez_left(None, None, Some(3)), "the bus down");
+        assert!(!bluez_left(Some(3), Some(&bt_view()), Some(3)), "an adapter: kept");
+        assert!(!bluez_left(Some(2), None, Some(3)), "an earlier open's close: kept");
     }
 }

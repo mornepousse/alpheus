@@ -59,7 +59,7 @@ const UNKNOWN_OBJECT: &str = "org.freedesktop.DBus.Error.UnknownObject";
 pub enum BtOrder {
     Call(ActCall),
     Reply(AgentId, AgentReply),
-    /// Stop waiting for this call's answer (`BtAct::forget`): nothing goes on the bus.
+    /// Stop waiting for this call's answer (the acting connection's `forget`): nothing goes on the bus.
     Forget(ActCall),
 }
 
@@ -253,10 +253,7 @@ impl Bt {
     /// The action and its code end: a pending code question rejected; its call forgotten when its
     /// answer is still awaited (`forget`); `failed` on its device from `failed_at`, if given.
     fn finish(&mut self, forget: bool, failed_at: Option<Instant>) -> Vec<BtOrder> {
-        let mut v = Vec::new();
-        if let Some(Code::Question { id, .. }) = self.code.take() {
-            v.push(BtOrder::Reply(id, AgentReply::Rejected));
-        }
+        let mut v = self.end_code();
         if let Some(a) = self.action.take() {
             if let (Some(at), Some(d)) = (failed_at, a.device) {
                 self.failed = Some((d, at + FAILED_SHOWN));
@@ -266,6 +263,14 @@ impl Bt {
             }
         }
         v
+    }
+
+    /// The code goes; a pending code question is rejected (the order to send).
+    fn end_code(&mut self) -> Vec<BtOrder> {
+        match self.code.take() {
+            Some(Code::Question { id, .. }) => vec![BtOrder::Reply(id, AgentReply::Rejected)],
+            _ => Vec::new(),
+        }
     }
 
     /// Starts an action on `call`, armed at `now` (None: armed by `arm`); the order sending it.
@@ -367,9 +372,10 @@ impl Bt {
             };
         }
         let device = a.device.clone();
+        let mut v = Vec::new();
         let next = match (step, device) {
             (Step::Pair, Some(d)) => {
-                self.code = None;
+                v = self.end_code();
                 Some((Step::Trust, ActCall::Trusted { device: d }))
             }
             (Step::Trust, Some(d)) if !self.connected(&d) => Some((Step::ConnectAfterPair, ActCall::Connect { device: d })),
@@ -378,7 +384,8 @@ impl Bt {
         match next {
             Some((step, call)) => {
                 let device = self.action.as_ref().and_then(|a| a.device.clone());
-                (QuickAction::Bluetooth(vec![self.start(device, step, call, Some(now))]), None)
+                v.push(self.start(device, step, call, Some(now)));
+                (QuickAction::Bluetooth(v), None)
             }
             None => {
                 self.action = None;
@@ -430,7 +437,8 @@ impl Bt {
                 QuickAction::Bluetooth(v)
             }
             DisplayPinCode { device, pincode } if self.pairing() == Some(device.as_str()) => {
-                self.show(Code::Shown { device, text: pincode }, &mut v);
+                // Cleaned like a label, whatever handed it (the connection already cleans it).
+                self.show(Code::Shown { device, text: text::clean(&pincode) }, &mut v);
                 v.push(BtOrder::Reply(id, AgentReply::Ok));
                 QuickAction::Bluetooth(v)
             }
@@ -1097,6 +1105,38 @@ mod tests {
         assert_eq!(step(&b), Some(Step::ConnectAfterPair));
         assert_eq!(b.answered(&ActCall::Connect { device: path(3) }, Ok(()), t), (QuickAction::Redraw, None));
         assert_eq!(b.action, None);
+    }
+
+    /// A pairing that succeeds while its code question is still pending rejects that question
+    /// first, as any other end of the action does (`finish`; Task 7 review minor).
+    #[test]
+    fn a_pair_success_rejects_a_pending_code_question() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        let id = AgentId(5);
+        b.agent(id, AgentRequest::RequestConfirmation { device: path(3), passkey: 7 }, t);
+        assert_eq!(
+            b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t),
+            (bt(vec![BtOrder::Reply(id, AgentReply::Rejected), BtOrder::Call(ActCall::Trusted { device: path(3) })]), None)
+        );
+        assert_eq!((b.code.clone(), step(&b)), (None, Some(Step::Trust)));
+        let (mut b, _) = acting(3, t);
+        b.agent(AgentId(6), AgentRequest::DisplayPasskey { device: path(3), passkey: 7 }, t);
+        assert_eq!(
+            b.answered(&ActCall::Pair { device: path(3) }, Ok(()), t),
+            (call(ActCall::Trusted { device: path(3) }), None),
+            "a code shown needs no answer"
+        );
+        assert_eq!(b.code, None);
+    }
+
+    /// A PIN shown is cleaned like a label (control and invisible characters), whatever handed it.
+    #[test]
+    fn a_pin_shown_is_cleaned_like_a_label() {
+        let t = Instant::now();
+        let (mut b, _) = acting(3, t);
+        b.agent(AgentId(1), AgentRequest::DisplayPinCode { device: path(3), pincode: "\u{202e}12\u{7}34\u{200b}".into() }, t);
+        assert_eq!(b.code, Some(Code::Shown { device: path(3), text: "1234".into() }));
     }
 
     #[test]

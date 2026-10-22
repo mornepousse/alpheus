@@ -1,0 +1,363 @@
+//! The quick panel's acting Bluetooth connection on the loop (quick Bluetooth spec § 5): opened
+//! when the detail opens or a call goes out with an adapter seen, one level-triggered fd source
+//! while it lives, closed (the agent unregistered first) once the panel no longer wants it: the
+//! detail left with no call in flight, or the panel gone. When BlueZ goes or its owner changes, the
+//! connection is let go without a word (`bt_drop`): nothing is ever sent to an old unique name, the
+//! panel's action ends silently, and the next need opens a new one on the owner then there. Logs
+//! name an action and a D-Bus error name, never a device: BlueZ paths embed the address.
+
+use crate::log::write as log;
+use crate::popup::PopupBody;
+use crate::quick::{self, Quick};
+use crate::quick_app::bt_scope_for;
+use crate::quick_bt::{Bt, BtOrder};
+use crate::sources::dbus::bt_act::{ActCall, ActError, AgentReply, AgentRequest, BtAct, BtEvent};
+use crate::wayland::App;
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{Interest, Mode as Trigger, PostAction};
+use std::time::Instant;
+
+/// What a call gets when no acting connection could be opened: the action shows `failed`.
+pub(crate) const NO_SERVER: &str = "org.freedesktop.DBus.Error.NoServer";
+
+/// The acting connection is wanted (spec § 5): a panel, and its detail open, an action or a code
+/// running, or a call still in flight (kept for its reply). Never without a panel: closing it sent
+/// its leaving orders first.
+pub(crate) fn connection_wanted(q: Option<&Quick>, in_flight: usize) -> bool {
+    q.is_some_and(|q| q.bt.wants_connection() || in_flight > 0)
+}
+
+/// The panel's view holds an adapter: BlueZ is there to be reached.
+pub(crate) fn adapter_seen(q: &Quick) -> bool {
+    q.bt.view.as_ref().is_some_and(|v| v.adapter.is_some())
+}
+
+/// These orders open a connection: a call among them, with an adapter seen. A reply or a forget
+/// never does: it belongs to the connection it came from.
+pub(crate) fn opens_for(orders: &[BtOrder], adapter_seen: bool) -> bool {
+    adapter_seen && orders.iter().any(|o| matches!(o, BtOrder::Call(_)))
+}
+
+/// An agent request nobody can answer: with no panel, rejected at once (BlueZ's `Cancel` and
+/// `Release` were already acknowledged by the connection); None: the panel answers it.
+pub(crate) fn unanswered(panel_shown: bool, request: &AgentRequest) -> Option<AgentReply> {
+    (!panel_shown && !matches!(request, AgentRequest::Cancel | AgentRequest::Release)).then_some(AgentReply::Rejected)
+}
+
+/// The panel's own record (`Quick::note_failure`) that no acting connection could be opened this
+/// open: logged once, and the panel's syncs stop retrying (an action still tries, and shows
+/// `failed`).
+const REFUSED: &str = "bluetooth connection";
+
+/// The panel's sync opens the connection: wanted, an adapter seen, and not already refused this
+/// open (a sync runs on every bar message: a refusing bus is not asked again each time).
+pub(crate) fn opens_on_sync(q: Option<&Quick>, in_flight: usize) -> bool {
+    connection_wanted(q, in_flight) && q.is_some_and(|q| adapter_seen(q) && !q.failed.iter().any(|p| p == REFUSED))
+}
+
+/// What a sync does to the acting connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SyncStep {
+    Keep,
+    Open,
+    Close,
+    /// BlueZ gone by the bar's own reading (its row hidden): let go without a word (`bt_drop`).
+    Drop,
+}
+
+/// The sync's step: with a connection (`connected`), dropped once the row hides (BlueZ gone, the
+/// domain out: whichever of the bar's state and the panel's view says it first), closed once no
+/// longer wanted; without one, opened by `opens_on_sync` while the row shows.
+pub(crate) fn sync_step(q: Option<&Quick>, row_shown: bool, connected: bool, in_flight: usize) -> SyncStep {
+    match connected {
+        true if !row_shown => SyncStep::Drop,
+        true if !connection_wanted(q, in_flight) => SyncStep::Close,
+        false if row_shown && opens_on_sync(q, in_flight) => SyncStep::Open,
+        _ => SyncStep::Keep,
+    }
+}
+
+/// The open quick panel, if any.
+fn panel(app: &App) -> Option<&Quick> {
+    match app.popup.as_ref().map(|p| &p.body) {
+        Some(PopupBody::Quick(q)) => Some(q),
+        _ => None,
+    }
+}
+
+impl App {
+    /// Opens the acting connection and its fd source; on any failure one line, and false.
+    fn bt_open(&mut self) -> bool {
+        let opened = BtAct::system().and_then(|mut act| act.watch_fd().map(|fd| (act, fd)));
+        let (act, fd) = match opened {
+            Ok(o) => o,
+            Err(e) => {
+                self.bt_refused(&format!("{:?}", e.kind()));
+                return false;
+            }
+        };
+        // Level-triggered: `read` drains libdbus to its last message, so it never wakes the loop at
+        // rest.
+        let inserted = self.loop_handle.as_ref().map(|h| {
+            h.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
+                app.bt_readable();
+                Ok(PostAction::Continue)
+            })
+        });
+        match inserted {
+            Some(Ok(token)) => {
+                self.bt_act = Some(act);
+                self.bt_source = Some(token);
+                true
+            }
+            _ => {
+                self.bt_refused("event loop refused the source");
+                false
+            }
+        }
+    }
+
+    /// No acting connection: one line per open (`REFUSED`), or with no panel.
+    fn bt_refused(&mut self, why: &str) {
+        let first = match self.popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Quick(q)) => q.note_failure(REFUSED),
+            _ => true,
+        };
+        if first {
+            log(&format!("quick: no bluetooth connection ({why})"));
+        }
+    }
+
+    /// The panel's orders on the acting connection, opened for a call when BlueZ has an adapter;
+    /// written, then what libdbus read meanwhile delivered. With no connection to be had, each call
+    /// is answered NO_SERVER (its action shows `failed`); the other orders are dropped.
+    pub(crate) fn bt_run(&mut self, orders: Vec<BtOrder>) {
+        if orders.is_empty() {
+            return;
+        }
+        if self.bt_act.is_none() && opens_for(&orders, panel(self).is_some_and(adapter_seen)) && !self.bt_open() {
+            let now = Instant::now();
+            for o in orders {
+                if let BtOrder::Call(call) = o {
+                    self.bt_answer(&call, Err(ActError::Remote(NO_SERVER.into())), now);
+                }
+            }
+            return;
+        }
+        let Some(act) = self.bt_act.as_mut() else { return };
+        for o in orders {
+            match o {
+                BtOrder::Call(call) => act.call(call),
+                BtOrder::Reply(id, reply) => act.reply(id, reply),
+                BtOrder::Forget(call) => act.forget(&call),
+            }
+        }
+        act.flush();
+        self.bt_readable();
+    }
+
+    /// `call`'s answer to the open panel: its line logged, its action taken.
+    fn bt_answer(&mut self, call: &ActCall, result: Result<(), ActError>, now: Instant) {
+        let mut line = None;
+        let action = self.quick_with(|q, _| {
+            let (a, l) = q.bt_answered(call, result, now);
+            line = l;
+            a
+        });
+        if let Some(line) = line {
+            log(&line);
+        }
+        self.quick_action(action);
+    }
+
+    /// The connection's fd is readable (or a flush read for it): every event delivered, until a
+    /// read brings nothing more; then the tap and the connection follow the panel.
+    pub(crate) fn bt_readable(&mut self) {
+        let now = Instant::now();
+        while let Some(events) = self.bt_act.as_mut().map(BtAct::read).filter(|e| !e.is_empty()) {
+            for event in events {
+                match event {
+                    BtEvent::Answer { call, result } => self.bt_answer(&call, result, now),
+                    BtEvent::Agent { id, request } => match unanswered(self.quick_shown(), &request) {
+                        Some(reply) => {
+                            if let Some(act) = self.bt_act.as_mut() {
+                                act.reply(id, reply);
+                                act.flush();
+                            }
+                        }
+                        None => {
+                            let action = self.quick_with(|q, _| q.bt_agent(id, request, now));
+                            self.quick_action(action);
+                        }
+                    },
+                    BtEvent::Closed => self.bt_drop(),
+                }
+            }
+        }
+        self.quick_bt_sync();
+    }
+
+    /// The D-Bus thread reads what the open panel shows of Bluetooth (`bt_scope_for`); the acting
+    /// connection opens while it is wanted and BlueZ has an adapter, and closes once it is not.
+    pub(crate) fn quick_bt_sync(&mut self) {
+        let in_flight = self.bt_act.as_ref().map_or(0, BtAct::in_flight);
+        let (scope, step) = {
+            let q = panel(self);
+            let row_shown = Bt::shows(quick::live(&self.bar, self.dnd).bluetooth);
+            (bt_scope_for(q, row_shown), sync_step(q, row_shown, self.bt_act.is_some(), in_flight))
+        };
+        if let Some(tap) = &self.bt_tap {
+            tap.set(scope);
+        }
+        match step {
+            SyncStep::Keep => {}
+            SyncStep::Open => {
+                self.bt_open();
+            }
+            SyncStep::Close => self.bt_close(),
+            SyncStep::Drop => self.bt_drop(),
+        }
+    }
+
+    /// The connection closed in order: its source removed, then the held agent calls rejected, the
+    /// agent unregistered, what is queued written (`BtAct::close`).
+    pub(crate) fn bt_close(&mut self) {
+        if let (Some(token), Some(handle)) = (self.bt_source.take(), self.loop_handle.as_ref()) {
+            handle.remove(token);
+        }
+        if let Some(act) = self.bt_act.take() {
+            act.close();
+        }
+    }
+
+    /// The connection let go without a word (Review Focus 1): BlueZ gone or replaced, or the
+    /// connection closed under us. Nothing is sent, so no `UnregisterAgent` reaches an old owner;
+    /// the panel's action, whose answer can no longer come, ends silently (`Gone`).
+    pub(crate) fn bt_drop(&mut self) {
+        if let (Some(token), Some(handle)) = (self.bt_source.take(), self.loop_handle.as_ref()) {
+            handle.remove(token);
+        }
+        if self.bt_act.take().is_none() {
+            return;
+        }
+        let call = panel(self).and_then(|q| q.bt.action.as_ref().map(|a| a.call.clone()));
+        if let Some(call) = call {
+            self.bt_answer(&call, Err(ActError::Gone), Instant::now());
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::config::BarConfig;
+    use crate::quick::{self, Focus, QuickAction};
+    use crate::sources::dbus::bt_act::AgentId;
+    use crate::state::{Bar, Msg};
+    use crate::system::{BtAdapter, BtEntry, BtKind, BtState, BtView};
+    use std::time::Instant;
+
+    pub(crate) const HCI0: &str = "/org/bluez/hci0";
+    pub(crate) const CASQUE: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_01";
+
+    pub(crate) fn bar_bt_on() -> Bar {
+        let mut bar = Bar::new(BarConfig::default());
+        bar.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![] })));
+        bar
+    }
+
+    pub(crate) fn bt_view() -> BtView {
+        let casque =
+            BtEntry { path: CASQUE.into(), label: "CasqueBT".into(), kind: BtKind::Headset, paired: true, trusted: true, connected: false };
+        BtView { adapter: Some(BtAdapter { path: HCI0.into(), powered: true, blocked: false }), paired: vec![casque], nearby: vec![] }
+    }
+
+    #[test]
+    fn connection_wanted_table() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        assert!(!connection_wanted(None, 0) && !connection_wanted(None, 2), "no panel: never (leaving was sent first)");
+        q.follow_bt(&live, Some(bt_view()), t);
+        assert!(!connection_wanted(Some(&q), 0), "the rows only");
+        q.bt.open_detail();
+        assert!(connection_wanted(Some(&q), 0), "the detail open");
+        q.bt.close_detail();
+        assert!(connection_wanted(Some(&q), 1), "left with a call in flight: kept for its reply");
+        assert!(!connection_wanted(Some(&q), 0), "left, nothing in flight");
+        let off = ActCall::Powered { adapter: HCI0.into(), on: false };
+        assert_eq!(q.bt.power(&BtState::On { devices: vec![] }), QuickAction::Bluetooth(vec![BtOrder::Call(off.clone())]));
+        assert!(connection_wanted(Some(&q), 0), "a power toggle from the row: until its reply");
+        q.bt_answered(&off, Ok(()), t);
+        assert!(!connection_wanted(Some(&q), 0), "its reply came: closed");
+    }
+
+    #[test]
+    fn only_a_call_with_an_adapter_seen_opens_the_connection() {
+        let call = BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() });
+        assert!(opens_for(std::slice::from_ref(&call), true));
+        assert!(!opens_for(&[call], false), "BlueZ gone: nothing to reach");
+        let reply = BtOrder::Reply(AgentId(7), AgentReply::Rejected);
+        let forget = BtOrder::Forget(ActCall::Connect { device: CASQUE.into() });
+        assert!(!opens_for(&[reply, forget], true), "a reply or a forget needs the connection it came from");
+        assert!(!opens_for(&[], true));
+    }
+
+    #[test]
+    fn an_agent_call_with_no_panel_is_rejected() {
+        let ask = AgentRequest::RequestConfirmation { device: CASQUE.into(), passkey: 482_913 };
+        assert_eq!(unanswered(false, &ask), Some(AgentReply::Rejected));
+        assert_eq!(unanswered(true, &ask), None, "the panel answers");
+        for done in [AgentRequest::Cancel, AgentRequest::Release] {
+            assert_eq!(unanswered(false, &done), None, "already replied by BtAct");
+        }
+    }
+
+    /// A refusing bus is asked once per open by the syncs, never on every bar message.
+    #[test]
+    fn a_refused_connection_is_not_reopened_by_the_syncs() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        q.bt.open_detail();
+        assert!(!opens_on_sync(Some(&q), 0), "no adapter seen yet");
+        q.follow_bt(&live, Some(bt_view()), t);
+        assert!(opens_on_sync(Some(&q), 0), "the detail open, BlueZ there");
+        assert!(q.note_failure(REFUSED), "refused: noted once");
+        assert!(!opens_on_sync(Some(&q), 0), "not asked again this open");
+        assert!(!opens_on_sync(None, 1), "never without a panel");
+    }
+
+    /// Review Focus 1: the bar's row hiding (BlueZ gone) drops the connection without a word, even
+    /// when the panel's view has not said so yet; otherwise it closes once no longer wanted.
+    #[test]
+    fn a_sync_drops_closes_or_opens() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        q.follow_bt(&live, Some(bt_view()), t);
+        assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Keep, "the rows only: none");
+        q.bt.open_detail();
+        assert_eq!(sync_step(Some(&q), true, false, 0), SyncStep::Open);
+        assert_eq!(sync_step(Some(&q), true, true, 0), SyncStep::Keep);
+        assert_eq!(sync_step(Some(&q), false, true, 0), SyncStep::Drop, "the row hid: BlueZ gone");
+        assert_eq!(sync_step(Some(&q), false, false, 0), SyncStep::Keep, "never opened while the row is hidden");
+        q.bt.close_detail();
+        assert_eq!(sync_step(Some(&q), true, true, 1), SyncStep::Keep, "a call in flight");
+        assert_eq!(sync_step(Some(&q), true, true, 0), SyncStep::Close);
+        assert_eq!(sync_step(None, true, true, 0), SyncStep::Close, "the panel gone");
+        assert_eq!(sync_step(None, false, true, 0), SyncStep::Drop);
+    }
+
+    #[test]
+    fn adapter_seen_needs_an_adapter_in_the_view() {
+        let (t, bar) = (Instant::now(), bar_bt_on());
+        let live = quick::live(&bar, false);
+        let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+        assert!(!adapter_seen(&q), "nothing read yet");
+        q.follow_bt(&live, Some(BtView { adapter: None, ..bt_view() }), t);
+        assert!(!adapter_seen(&q), "BlueZ without an adapter");
+        q.follow_bt(&live, Some(bt_view()), t);
+        assert!(adapter_seen(&q));
+    }
+}

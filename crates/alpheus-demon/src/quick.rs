@@ -545,8 +545,8 @@ impl Quick {
             Focus::Bluetooth if rows.contains(&Row::Bluetooth) => Row::Bluetooth,
             _ => rows.first().copied().unwrap_or(Row::Volume),
         };
-        if q.selected == Row::Bluetooth {
-            // No view read yet: nothing to discover, a repaint the open paints anyway.
+        if focus == Focus::Bluetooth && q.selected == Row::Bluetooth {
+            // Asked for (the module, `--quick bluetooth`), never a first row by chance. No view read yet: nothing to discover, a repaint the open paints anyway.
             q.open_bt(live);
         }
         q.fit(live);
@@ -660,6 +660,10 @@ impl Quick {
     pub fn key(&mut self, live: &Live, k: Key, repeat: bool, now: Instant) -> QuickAction {
         let erasing = k == Key::Backspace && self.wifi.field.is_some();
         if repeat && !erasing && !matches!(k, Key::Up | Key::Down | Key::Left | Key::Right | Key::CtrlP | Key::CtrlN) {
+            return QuickAction::Nothing;
+        }
+        // A held key never answers a code question: pressed before it arrived, it would reject it.
+        if repeat && matches!(self.bt.code, Some(Code::Question { .. })) {
             return QuickAction::Nothing;
         }
         self.wifi.focus_pending = false;
@@ -1671,6 +1675,34 @@ mod tests {
         assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Bluetooth(vec![BtOrder::Call(connect)]));
         assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "auto-repeat");
         assert_eq!(q.key(&l, Key::Enter, false, t + Duration::from_millis(50)), QuickAction::Nothing, "during …");
+    }
+
+    /// A held arrow while a code question shows repeats into nothing: the question that just
+    /// arrived is never rejected by a key pressed before it (Task 7 review minor).
+    #[test]
+    fn a_held_key_never_answers_a_code_question() {
+        use crate::quick_bt::{BtOrder, Code};
+        use crate::sources::dbus::bt_act::{ActCall, AgentId, AgentReply, AgentRequest};
+        let mut w = World::full();
+        w.bluetooth = Some(BtState::On { devices: vec![] });
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Bluetooth);
+        q.follow_bt(&w.live(), Some(clavier_view()), t);
+        let l = w.live();
+        let pairing = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_03".to_string();
+        q.key(&l, Key::Down, false, t);
+        assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Bluetooth(vec![BtOrder::Call(ActCall::Pair { device: pairing.clone() })]));
+        let id = AgentId(4);
+        q.bt_agent(id, AgentRequest::RequestConfirmation { device: pairing.clone(), passkey: 482_913 }, t);
+        for k in [Key::Down, Key::Up, Key::Left, Key::Right] {
+            assert_eq!(q.key(&l, k, true, t), QuickAction::Nothing, "{k:?} held");
+        }
+        assert!(matches!(q.bt.code, Some(Code::Question { .. })), "still asked");
+        assert_eq!(
+            q.key(&l, Key::Down, false, t),
+            QuickAction::Bluetooth(vec![BtOrder::Reply(id, AgentReply::Rejected), BtOrder::Forget(ActCall::Pair { device: pairing })]),
+            "a fresh press still answers no"
+        );
     }
 
     /// Spec § 3: a code question cancels a pending `Forget?`; leaving drops it too.

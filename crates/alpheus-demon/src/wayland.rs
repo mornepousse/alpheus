@@ -510,8 +510,10 @@ pub struct App {
     /// The pill's hide timer: armed only while it shows.
     pub(crate) osd_timer: DeadlineTimer,
     /// The quick panel's timer (quick task 6): armed only while the panel is open and a re-read
-    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending; closed, only for
-    /// an attempt still followed (`wifi_follow`, Mae's ruling P1).
+    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
+    /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
+    /// question (quick delivery 3); closed, only for an attempt still followed (`wifi_follow`, Mae's
+    /// ruling P1).
     pub(crate) quick_timer: DeadlineTimer,
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
@@ -539,6 +541,11 @@ pub struct App {
     /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
     /// of Bluetooth. None without the quick module or the Bluetooth domain.
     pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,
+    /// The quick panel's acting Bluetooth connection (bt_app.rs): only while the Bluetooth detail
+    /// is open or a call is in flight. None at rest.
+    pub(crate) bt_act: Option<crate::sources::dbus::bt_act::BtAct>,
+    /// Its fd's source on the loop, while it lives.
+    pub(crate) bt_source: Option<smithay_client_toolkit::reexports::calloop::RegistrationToken>,
     /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
     /// Wi-Fi stays read for it until it ends. None at rest.
     pub(crate) wifi_follow: Option<crate::quick_app::WifiFollow>,
@@ -734,6 +741,8 @@ impl App {
             sound_tap: None,
             wifi_tap: None,
             bt_tap: None,
+            bt_act: None,
+            bt_source: None,
             wifi_follow: None,
             quick_verb_opened: None,
             key_repeat: false,

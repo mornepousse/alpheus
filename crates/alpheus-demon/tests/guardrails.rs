@@ -861,7 +861,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
         // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
         // pending off; the camera scan's debounce (privacy delivery 2), armed only for 300 ms after
-        // a device open, close, creation or removal.
+        // a device open, close, creation or removal. The quick panel's timer also covers a Bluetooth
+        // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
+        // question (quick delivery 3).
         ("wayland.rs", "Timer::", 10),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
@@ -871,6 +873,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
         // creation or removal of a video device; `drain` reads it to EAGAIN.
         ("camera_app.rs", "Generic::new", 1),
+        // The quick panel's acting Bluetooth connection (quick delivery 3): inserted only while the
+        // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
+        // answers or calls the agent.
+        ("bt_app.rs", "Generic::new", 1),
         // The bar's own session link (themes task 6, media task 5): only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
         // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
@@ -1194,7 +1200,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 40] = [
+const NO_THREAD_NOR_COMMAND: [&str; 41] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1235,6 +1241,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 40] = [
     "camera_app.rs",
     "sources/dbus/bt.rs",
     "sources/dbus/bt_act.rs",
+    "bt_app.rs",
 ];
 
 #[test]
@@ -1952,12 +1959,92 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "quick_bt.rs", "session.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "quick_bt.rs", "session.rs", "bt_app.rs"]
+    {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick Bluetooth spec § 5, Review Focus 1-2: the acting connection goes with the panel and is
+/// let go without a call when BlueZ goes.
+#[test]
+fn the_bluetooth_connection_goes_with_the_panel() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (quick_app, bt_app) = (src("quick_app.rs"), src("bt_app.rs"));
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains("BtScope::Closed") && closed.contains("self.bt_close()"), "{closed}");
+    let flush = function_body(&quick_app, "pub(crate) fn quick_flush(");
+    let (leaving, run) = (flush.find("bt_leaving()"), flush.find("self.bt_run("));
+    assert!(matches!((leaving, run), (Some(l), Some(r)) if l < r), "the leaving orders sent before the body goes: {flush}");
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle(", "pub(crate) fn quick_take("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_bt_sync()"), "{f}: the tap and the connection follow the panel");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_bt(") && take.contains("snapshot()") && take.contains("wifi_current("), "{take}");
+    let (dropped, panel) = (take.find("self.bt_drop()"), take.find("panel_bt("));
+    assert!(matches!((dropped, panel), (Some(d), Some(p)) if d < p), "BlueZ gone: dropped before the panel's orders: {take}");
+    // Task 3's carry: the headset is read before the sink list, which marks a panel-scope message.
+    let (headset, sinks) = (take.find("taken_headset("), take.find("taken_sinks("));
+    assert!(matches!((headset, sinks), (Some(h), Some(s)) if h < s), "the headset before the sinks: {take}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("bt_logs") && tick.contains("bt_orders") && tick.contains("bt_run("), "{tick}");
+    let close = function_body(&bt_app, "pub(crate) fn bt_close(");
+    assert!(close.contains(".remove(") && close.contains(".close()"), "{close}");
+    let drop = function_body(&bt_app, "pub(crate) fn bt_drop(");
+    assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
+    // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
+    assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
+    let run = function_body(&bt_app, "pub(crate) fn bt_run(");
+    assert!(run.contains("opens_for(") && run.contains(".flush()"), "{run}");
+    // libdbus's flush also reads: what it read is delivered by the next `read`, the fd may stay quiet.
+    let (flushed, read) = (run.rfind(".flush()"), run.rfind("self.bt_readable()"));
+    assert!(matches!((flushed, read), (Some(f), Some(r)) if f < r), "read after the flush: {run}");
+}
+
+/// Only bt_app.rs drives the acting connection; wayland.rs only declares its field.
+#[test]
+fn only_bt_app_and_bt_act_name_btact() {
+    let mut naming = Vec::new();
+    for (p, t) in source_files() {
+        let (name, prod) = (relative_path(&p), production_code(&t));
+        if prod.contains("BtAct") {
+            naming.push(name.clone());
+        }
+        if prod.contains(".bt_act") {
+            assert_eq!(name, "bt_app.rs", "the acting connection used outside bt_app.rs");
+        }
+    }
+    naming.sort();
+    assert_eq!(naming, ["bt_app.rs", "sources/dbus/bt_act.rs", "wayland.rs"]);
+}
+
+/// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
+/// the glue formats nothing with Debug but an `io::ErrorKind` (an `ActCall`, an `AgentRequest` or a
+/// `BtEvent` carries an object path).
+#[test]
+fn the_bluetooth_logs_name_no_device() {
+    let files = source_files();
+    let mut lines = 0;
+    for name in ["quick_bt.rs", "bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
+        let prod = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
+            lines += 1;
+            for word in ["path", "device", "label", "alias", "name", "address"] {
+                let braced = format!("{{{word}"); // {path}, {path:?}
+                let token = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!line.contains(&braced) && !token, "{name}: a log line may name a device (`{word}`): {line}");
+            }
+        }
+    }
+    assert!(lines >= 3, "the log lines were not found: the check is hollow");
+    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "bt_app.rs").expect("bt_app.rs").1);
+    for line in bt_app.lines().filter(|l| l.contains(":?") || l.contains(":#?")) {
+        assert!(line.contains(".kind()"), "bt_app.rs: Debug of anything but an io::ErrorKind: {line}");
     }
 }
 
