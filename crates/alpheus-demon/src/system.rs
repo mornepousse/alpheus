@@ -23,6 +23,31 @@ pub struct SoundState {
     /// What the capture graph says is held (privacy spec § 2): `Some` exactly when the `privacy`
     /// module is on, None otherwise.
     pub capture: Option<crate::privacy::Capture>,
+    /// The default sink's Bluetooth headset, when it offers both a Hi-Fi and a call profile:
+    /// only while the quick panel is open (`Scope::Panel`); None otherwise, and never kept by the
+    /// bar.
+    pub headset: Option<Headset>,
+}
+
+// The headset (quick Bluetooth spec § 4).
+
+/// A Bluetooth headset's two modes: Hi-Fi playback (A2DP) or call mode with a microphone (HSP/HFP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadsetMode {
+    HiFi,
+    Mic,
+}
+
+/// The default sink's bluez5 device and what `wpctl set-profile` takes to switch it: its device id,
+/// what a person reads (`pipewire::LABEL_MAX` bytes at most), the active mode, and the profile index
+/// of each mode (the highest-priority available one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Headset {
+    pub device: u32,
+    pub label: String,
+    pub active: HeadsetMode,
+    pub hifi: u32,
+    pub mic: u32,
 }
 
 /// A default device: its `node.name` (its identity) and what a person reads (`node.description`,

@@ -17,7 +17,7 @@ use crate::segments::BELL;
 use crate::session::{self, Activation};
 pub use crate::session::{CONFIRM, CONFIRM_AFTER, LOCK, LOGOUT, POWER, REBOOT, Session};
 use crate::state::{Bar, Feed};
-use crate::system::{ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
+use crate::system::{Headset, HeadsetMode, ProfileState, Sink, SoundState, Volume, WifiScope, WifiState};
 use std::time::{Duration, Instant};
 
 /// Content width in cells; a row is two more (a blank pad cell each side, as the other popups').
@@ -86,6 +86,8 @@ impl Focus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Volume,
+    /// The default sink's Bluetooth headset: Hi-Fi or call mode (quick Bluetooth spec § 4).
+    Headset,
     Brightness,
     /// The Wi-Fi (quick Wi-Fi spec § 1): first under the sliders' separator.
     Wifi,
@@ -99,13 +101,24 @@ pub enum Row {
 
 impl Row {
     /// Top to bottom (spec § 2): also the order a selection falls back along when its row goes.
-    pub const ORDER: [Row; 9] =
-        [Row::Volume, Row::Brightness, Row::Wifi, Row::Mic, Row::Dnd, Row::Profile, Row::KeepAwake, Row::NightLight, Row::Session];
+    pub const ORDER: [Row; 10] = [
+        Row::Volume,
+        Row::Headset,
+        Row::Brightness,
+        Row::Wifi,
+        Row::Mic,
+        Row::Dnd,
+        Row::Profile,
+        Row::KeepAwake,
+        Row::NightLight,
+        Row::Session,
+    ];
 
     /// For the log line "quick shown (rows: …)".
     pub fn name(self) -> &'static str {
         match self {
             Row::Volume => "volume",
+            Row::Headset => "headset",
             Row::Brightness => "brightness",
             Row::Wifi => "wifi",
             Row::Mic => "mic",
@@ -120,7 +133,7 @@ impl Row {
     /// Its block: the sliders, the toggles, the session buttons (a 1 px line between two).
     fn group(self) -> u8 {
         match self {
-            Row::Volume | Row::Brightness => 0,
+            Row::Volume | Row::Headset | Row::Brightness => 0,
             Row::Session => 2,
             _ => 1,
         }
@@ -370,6 +383,8 @@ pub struct Quick {
     /// The sink chosen in the detail, by node id.
     pub sink: Option<u32>,
     pub sinks: Vec<Sink>,
+    /// The default sink's headset, while the panel is open (`set_headset`).
+    pub headset: Option<Headset>,
     pub backlight: Option<Backlight>,
     /// Keep awake, night light: on, off, or unknown (`·`).
     pub toggles: [Option<bool>; 2],
@@ -412,6 +427,7 @@ fn default_sink(sinks: &[Sink]) -> Option<u32> {
 fn present(r: Row, live: &Live, q: &Quick) -> bool {
     match r {
         Row::Volume => live.sound.is_some_and(|s| s.sink.is_some()),
+        Row::Headset => q.headset.is_some(),
         Row::Brightness => q.backlight.is_some(),
         Row::Wifi => q.wifi.shows(),
         Row::Mic => live.sound.is_some_and(|s| s.source.is_some()),
@@ -460,6 +476,7 @@ impl Quick {
             detail: false,
             sink: None,
             sinks,
+            headset: None,
             backlight,
             toggles,
             confirm: None,
@@ -597,6 +614,9 @@ impl Quick {
             a
         } else if self.detail {
             self.detail_key(k)
+        } else if repeat && self.selected == Row::Headset && matches!(k, Key::Left | Key::Right) {
+            // A held arrow would send `wpctl set-profile` again before pw-dump reports the switch.
+            QuickAction::Nothing
         } else {
             self.rows_key(live, k, now)
         };
@@ -630,6 +650,7 @@ impl Quick {
     fn act(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
         let step = live.config.step;
         match (self.selected, k) {
+            (Row::Headset, Key::Char(' ') | Key::Enter | Key::Left | Key::Right) => self.switch_headset(),
             (Row::Volume, Key::Right) => self.volume(live, Level::Up(step), now),
             (Row::Volume, Key::Left) => self.volume(live, Level::Down(step), now),
             (Row::Volume, Key::Char(' ')) => run(&["wpctl", "set-mute", SINK, "toggle"], "mute"),
@@ -1000,6 +1021,21 @@ impl Quick {
         }
     }
 
+    /// The other mode of the headset: `wpctl set-profile` with that mode's profile index.
+    fn switch_headset(&self) -> QuickAction {
+        let Some(h) = &self.headset else { return QuickAction::Nothing };
+        let (index, what) = match h.active {
+            HeadsetMode::HiFi => (h.mic, "headset mode mic"),
+            HeadsetMode::Mic => (h.hifi, "headset mode hi-fi"),
+        };
+        run(&["wpctl", "set-profile", &h.device.to_string(), &index.to_string()], what)
+    }
+
+    /// The sound thread's headset, while open (`quick_take`).
+    pub fn set_headset(&mut self, h: Option<Headset>) {
+        self.headset = h;
+    }
+
     /// The sound thread's list, while open (`quick_take`).
     pub fn set_sinks(&mut self, sinks: Vec<Sink>) {
         self.sinks = sinks;
@@ -1061,6 +1097,12 @@ fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
             if let Some(v) = live.sound.and_then(|s| s.sink) {
                 let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
                 slider(g, volume_glyph(v), v, q.sinks.len() >= 2, selected);
+            }
+        }
+        Row::Headset => {
+            if let Some(h) = &q.headset {
+                let mode = if h.active == HeadsetMode::HiFi { "‹ Hi-Fi ›" } else { "‹ Mic ›" };
+                text_row(g, None, &h.label, mode, Style::NORMAL, selected);
             }
         }
         Row::Brightness => {
@@ -1159,7 +1201,7 @@ mod tests {
     use crate::grid::Tint;
     use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
     use crate::segments::VOLUME_MEDIUM;
-    use crate::system::{AccessPoint, Profile, SavedWifi, Security, WifiDevice, WifiState};
+    use crate::system::{AccessPoint, Headset, HeadsetMode, Profile, SavedWifi, Security, WifiDevice, WifiState};
 
     fn vol(percent: u8, muted: bool) -> Option<Volume> {
         Some(Volume { percent, muted })
@@ -2084,5 +2126,49 @@ mod tests {
         assert_eq!(q.wifi.password().map(|s| s.bytes()), Some(&b"ab"[..]));
         q.key(&l, Key::Escape, false, t);
         assert_eq!(q.key(&l, Key::Backspace, true, t), QuickAction::Nothing, "no field: no repeat");
+    }
+
+    fn casque(active: HeadsetMode) -> Option<Headset> {
+        Some(Headset { device: 61, label: "CasqueBT".into(), active, hifi: 1, mic: 3 })
+    }
+
+    #[test]
+    fn the_headset_row_switches_to_the_other_kind() {
+        let w = World::full();
+        let l = w.live();
+        let t = Instant::now();
+        let mut q = quick(&w, Focus::Sound);
+        q.set_headset(casque(HeadsetMode::HiFi));
+        q.selected = Row::Headset;
+        let to_mic = QuickAction::Run { argv: argv(&["wpctl", "set-profile", "61", "3"]), what: "headset mode mic".into() };
+        for k in [Key::Enter, Key::Char(' '), Key::Left, Key::Right] {
+            assert_eq!(q.clone().key(&l, k, false, t), to_mic, "{k:?}");
+        }
+        let y = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Headset)).expect("shown") as u16;
+        assert_eq!(q.clone().press(&l, (10, y), Button::Left, t), to_mic, "a click is Enter");
+        q.set_headset(casque(HeadsetMode::Mic));
+        let to_hifi = QuickAction::Run { argv: argv(&["wpctl", "set-profile", "61", "1"]), what: "headset mode hi-fi".into() };
+        assert_eq!(q.clone().key(&l, Key::Right, false, t), to_hifi);
+        assert_eq!(q.key(&l, Key::Right, true, t), QuickAction::Nothing, "a held arrow switches once");
+    }
+
+    #[test]
+    fn the_headset_row_shows_under_the_volume_only_with_a_headset() {
+        let w = World::full();
+        let l = w.live();
+        let mut q = quick(&w, Focus::Top);
+        assert!(!shown(&l, &q).contains(&Row::Headset));
+        q.set_headset(casque(HeadsetMode::HiFi));
+        assert_eq!(shown(&l, &q)[..3], [Row::Volume, Row::Headset, Row::Brightness]);
+        assert_eq!(lines(&l, &q)[..4], [Line::Row(Row::Volume), Line::Row(Row::Headset), Line::Row(Row::Brightness), Line::Separator]);
+        let t = texts(&rows(&l, &q));
+        assert!(t[1].contains("CasqueBT") && t[1].ends_with("‹ Hi-Fi ›"), "{:?}", t[1]);
+        q.set_headset(casque(HeadsetMode::Mic));
+        assert!(texts(&rows(&l, &q))[1].ends_with("‹ Mic ›"));
+        assert!(describe(&l, &q).contains("rows: volume headset brightness"));
+        q.selected = Row::Headset;
+        q.set_headset(None);
+        q.fit(&l);
+        assert_eq!(q.selected, Row::Brightness, "its row gone: the next one below");
     }
 }
