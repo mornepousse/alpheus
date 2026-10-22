@@ -376,7 +376,8 @@ fn keys(it: &mut Iter<'_>) -> Vec<String> {
 }
 
 /// What `Signal::domain` needs from a received signal: its path, interface
-/// and member, and the first string argument and the names of the few
+/// and member, and the first string argument (the object path of an
+/// `InterfacesAdded` or `InterfacesRemoved`) and the names of the few
 /// members it reads. A body that doesn't parse gives nothing (the signal
 /// counts). Changed values are never decoded.
 pub fn signal(m: &Message) -> Signal {
@@ -397,10 +398,14 @@ pub fn signal(m: &Message) -> Signal {
             }
         }
         "InterfacesAdded" if sig(&mut it).as_deref() == Some("o") => {
+            let at = it.get::<Path>().map(path_string);
             it.next();
-            (None, if sig(&mut it).as_deref() == Some("a{sa{sv}}") { keys(&mut it) } else { Vec::new() })
+            (at, if sig(&mut it).as_deref() == Some("a{sa{sv}}") { keys(&mut it) } else { Vec::new() })
         }
-        "InterfacesRemoved" => (None, m.read2::<Path, Vec<String>>().map(|(_, i)| i).unwrap_or_default()),
+        "InterfacesRemoved" => match m.read2::<Path, Vec<String>>() {
+            Ok((p, names)) => (Some(path_string(p)), names),
+            Err(_) => (None, Vec::new()),
+        },
         // logind's bool argument, kept as "true"/"false": `Signal::is_wake` reads it.
         "PrepareForSleep" => (it.get::<bool>().map(|b| b.to_string()), Vec::new()),
         _ => (None, Vec::new()),
@@ -855,7 +860,29 @@ mod tests {
         let cut = received("org.freedesktop.DBus.Properties", "PropertiesChanged", "/x", &[r#"{"type":"s","data":["org.bluez.Device1"]}"#]);
         assert_eq!(nothing(cut), (None, vec![]), "PropertiesChanged with its interface only");
         let cut = received("org.freedesktop.DBus.ObjectManager", "InterfacesAdded", "/", &[r#"{"type":"o","data":["/org/bluez/hci0"]}"#]);
-        assert_eq!(nothing(cut), (None, vec![]), "InterfacesAdded with its path only");
+        assert_eq!(nothing(cut), (Some("/org/bluez/hci0".to_string()), vec![]), "InterfacesAdded with its path only");
+    }
+
+    #[test]
+    fn interfaces_added_and_removed_carry_the_object_path() {
+        const DEV: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_10";
+        let path = format!(r#"{{"type":"o","data":["{DEV}"]}}"#);
+        let added = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesAdded",
+            "/",
+            &[&path, r#"{"type":"a{sa{sv}}","data":[{"org.bluez.Device1":{"Alias":{"type":"s","data":"Keyboard-Test"}}}]}"#],
+        );
+        assert_eq!(added.arg0.as_deref(), Some(DEV));
+        assert_eq!(added.names, ["org.bluez.Device1"]);
+        let removed = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesRemoved",
+            "/",
+            &[&path, r#"{"type":"as","data":[["org.bluez.Device1"]]}"#],
+        );
+        assert_eq!(removed.arg0.as_deref(), Some(DEV));
+        assert_eq!(removed.names, ["org.bluez.Device1"]);
     }
 
     #[test]

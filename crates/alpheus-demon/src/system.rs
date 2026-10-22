@@ -81,6 +81,59 @@ pub enum BtState {
     On { devices: Vec<BtDevice> },
 }
 
+/// What the quick panel's Bluetooth reading covers (quick settings delivery 3): asked by the loop
+/// through `sources::dbus::bt::BtTap`, read by the D-Bus thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BtScope {
+    /// The panel is closed: nothing read, nothing followed, nothing kept.
+    #[default]
+    Closed,
+    /// The panel is open: the adapter (powered, blocked).
+    Row,
+    /// The Bluetooth detail is open: the paired devices and the ones seen nearby too.
+    Detail,
+}
+
+/// What a device is, from BlueZ's `Icon` (never its address).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BtKind {
+    Headset,
+    Keyboard,
+    Mouse,
+    Speaker,
+    Phone,
+    Other,
+}
+
+/// A device the panel lists. `path` is BlueZ's object path (it embeds the address: never logged);
+/// `label` is the alias, cleaned and capped, `?` when nothing is left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtEntry {
+    pub path: String,
+    pub label: String,
+    pub kind: BtKind,
+    pub paired: bool,
+    pub trusted: bool,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtAdapter {
+    pub path: String,
+    pub powered: bool,
+    /// `PowerState` is `off-blocked`: rfkill holds it off.
+    pub blocked: bool,
+}
+
+/// The panel's Bluetooth view: the first adapter (None: no BlueZ, or none), the paired devices in
+/// path order, the ones nearby in the order the reader listed them (detail only).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BtView {
+    pub adapter: Option<BtAdapter>,
+    pub paired: Vec<BtEntry>,
+    pub nearby: Vec<BtEntry>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Charge {
     Charging,

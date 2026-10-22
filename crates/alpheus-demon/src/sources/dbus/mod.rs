@@ -6,6 +6,7 @@
 //! name, which D-Bus activation would use to start it.
 
 pub mod bluez;
+pub mod bt;
 pub mod dbusrs_bus;
 pub mod network;
 pub mod power;
@@ -226,6 +227,32 @@ impl Signal {
             }
             "AccessPointAdded" | "AccessPointRemoved" if self.interface == wifi::WIRELESS => Some(wifi::WifiChange::AccessPoints),
             "NewConnection" | "ConnectionRemoved" if self.interface == wifi::SETTINGS => Some(wifi::WifiChange::Saved),
+            _ => None,
+        }
+    }
+
+    /// A Bluetooth panel signal (quick settings delivery 3), heard only while the panel is open:
+    /// what a device's or the adapter's properties changed to show, or a device appearing or going.
+    /// None: not one (the bar's own signals, a scan's noise). `domain` does not change.
+    pub fn bt_change(&self) -> Option<bt::BtChange> {
+        const DEVICE_PROPS: [&str; 6] = ["Name", "Alias", "Icon", "Paired", "Trusted", "Connected"];
+        const ADAPTER_PROPS: [&str; 2] = ["Powered", "PowerState"];
+        let has = |n: &str| self.names.iter().any(|x| x == n);
+        match self.member.as_str() {
+            "PropertiesChanged" if under(&self.path, "/org/bluez") => match self.arg0.as_deref() {
+                Some(bluez::DEVICE) if self.names.is_empty() || DEVICE_PROPS.iter().any(|n| has(n)) => {
+                    Some(bt::BtChange::Device { path: self.path.clone(), rssi_only: false })
+                }
+                Some(bluez::DEVICE) if has("RSSI") => Some(bt::BtChange::Device { path: self.path.clone(), rssi_only: true }),
+                Some(bluez::ADAPTER) if self.names.is_empty() || ADAPTER_PROPS.iter().any(|n| has(n)) => {
+                    Some(bt::BtChange::Adapter(self.path.clone()))
+                }
+                _ => None,
+            },
+            "InterfacesAdded" | "InterfacesRemoved" if self.interface == OBJECT_MANAGER && has(bluez::DEVICE) => {
+                let at = self.arg0.as_deref().filter(|p| under(p, "/org/bluez"))?;
+                Some(if self.member == "InterfacesAdded" { bt::BtChange::Added(at.into()) } else { bt::BtChange::Removed(at.into()) })
+            }
             _ => None,
         }
     }
@@ -1308,6 +1335,35 @@ mod tests {
                 Msg::Wifi { open: Some(0), state: None }
             ]
         );
+    }
+
+    #[test]
+    fn bt_changes_are_told_apart() {
+        use bt::BtChange;
+        const DEV: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_10";
+        let changed =
+            |at: &str, iface: &str, names: &[&str]| with_names(signal(at, PROPERTIES, "PropertiesChanged", Some(iface)), names).bt_change();
+        let device = |rssi_only| Some(BtChange::Device { path: DEV.into(), rssi_only });
+        for n in ["Name", "Alias", "Icon", "Paired", "Trusted", "Connected"] {
+            assert_eq!(changed(DEV, "org.bluez.Device1", &[n]), device(false), "{n}");
+        }
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI"]), device(true));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI", "TxPower", "ManufacturerData"]), device(true));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI", "Connected"]), device(false));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["ManufacturerData"]), None);
+        assert_eq!(changed(DEV, "org.bluez.Device1", &[]), device(false), "unknown names: read");
+        for n in ["Powered", "PowerState"] {
+            assert_eq!(changed("/org/bluez/hci0", "org.bluez.Adapter1", &[n]), Some(BtChange::Adapter("/org/bluez/hci0".into())));
+        }
+        assert_eq!(changed("/org/bluez/hci0", "org.bluez.Adapter1", &["Discovering"]), None);
+        assert_eq!(changed(DEV, "org.bluez.Battery1", &["Percentage"]), None, "the bar's only");
+        let objects = |member, arg0, names: &[&str]| with_names(signal("/", OBJECT_MANAGER, member, arg0), names).bt_change();
+        let both = ["org.freedesktop.DBus.Introspectable", "org.bluez.Device1"];
+        assert_eq!(objects("InterfacesAdded", Some(DEV), &both), Some(BtChange::Added(DEV.into())));
+        assert_eq!(objects("InterfacesRemoved", Some(DEV), &["org.bluez.Device1"]), Some(BtChange::Removed(DEV.into())));
+        assert_eq!(objects("InterfacesAdded", Some(DEV), &["org.bluez.Battery1"]), None);
+        assert_eq!(objects("InterfacesAdded", None, &both), None, "no path: nothing to read");
+        assert_eq!(objects("InterfacesAdded", Some("/org/freedesktop/x"), &both), None, "not BlueZ's");
     }
 
     #[test]
