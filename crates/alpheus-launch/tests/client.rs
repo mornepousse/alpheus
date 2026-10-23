@@ -491,7 +491,8 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
-    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound|wifi]"] {
+    for option in ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound|wifi|bluetooth]"]
+    {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
 }
@@ -518,6 +519,7 @@ fn quick_sends_its_word_and_exits_0() {
         (&["--quick"][..], Request::Quick(QuickVerb::Top)),
         (&["--quick", "sound"], Request::Quick(QuickVerb::Sound)),
         (&["--quick", "wifi"], Request::Quick(QuickVerb::Wifi)),
+        (&["--quick", "bluetooth"], Request::Quick(QuickVerb::Bluetooth)),
     ]
     .into_iter()
     .enumerate()
@@ -553,6 +555,20 @@ fn a_daemon_without_the_wifi_word_exits_3() {
     let (code, out, err) = launch(&["--quick", "wifi"], &socket, b"");
     assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
     assert!(err.contains("--quick wifi"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
+/// Quick Bluetooth spec § 1: a daemon of delivery 2 knows `quick` but not its `bluetooth` word: exit
+/// 3, as for any verb an older daemon refuses, one request, no retry.
+#[test]
+fn a_daemon_without_the_bluetooth_word_exits_3() {
+    let (socket, connections, stop, daemon) =
+        replying_daemon("quick-bt-old", Reply::Error("malformed request: unknown quick word \"bluetooth\"".into()));
+    let (code, out, err) = launch(&["--quick", "bluetooth"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--quick bluetooth"), "{err}");
     stop.store(true, Ordering::SeqCst);
     daemon.join().unwrap();
     assert_eq!(connections.load(Ordering::SeqCst), 1);

@@ -4,6 +4,7 @@
 
 mod common;
 
+use alpheus_demon::sources::dbus::bt::BtTap;
 use alpheus_demon::sources::dbus::dbusrs_bus::{DbusRsBus, WIFI_RULES};
 use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
@@ -102,7 +103,7 @@ fn the_session_on_an_empty_bus_hides_everything() {
     let b = PrivateBus::start("session");
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -122,7 +123,9 @@ fn the_power_profile_is_read_followed_and_hidden_on_a_private_bus() {
     let mut bus = DbusRsBus::at(&b.address, &[Domain::Power]).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &WifiTap::default(), &mut |s| tx.send(s.power).is_ok());
+        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
+            tx.send(s.power).is_ok()
+        });
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let all = Profile::ALL.to_vec();
@@ -190,7 +193,7 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
     let _workstation = Workstation::serve(&b);
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -309,7 +312,7 @@ fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &mut |s| tx.send(s.wifi).is_ok());
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &mut |s| tx.send(s.wifi).is_ok());
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     assert_eq!(next(), None, "closed: no Wi-Fi read");
@@ -345,7 +348,7 @@ fn the_wifi_detail_is_read_followed_and_let_go_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &mut |s| tx.send(s.wifi).is_ok());
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &mut |s| tx.send(s.wifi).is_ok());
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let device = |w: Option<alpheus_demon::system::WifiState>| w.and_then(|w| w.device).expect("the Wi-Fi device");

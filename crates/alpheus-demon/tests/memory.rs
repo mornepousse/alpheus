@@ -19,13 +19,14 @@ mod common;
 
 use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::presets::preset;
+use common::bluez::FakeBluez;
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway,
-    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_source, fake_stdin_recorder, launcher, pw_dump_send,
-    start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source, fake_stdin_recorder,
+    launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -1616,6 +1617,262 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
     eprintln!("wake-ups at rest after the Wi-Fi detail (10 s): {delta} whole daemon, {main_delta} loop thread, {dbus_delta} D-Bus thread");
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
     assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 10 s: its tap and its bus are quiet");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the
+/// Bluetooth tap are there either way); `[osd] backlight_dir` a fake directory of the test's own.
+fn bt_bar(backlight_dir: &Path) -> String {
+    format!("modules = [\"bluetooth\", \"quick\", \"clock\"]\n[osd]\nbacklight_dir = {:?}\n", backlight_dir.display().to_string())
+}
+
+/// The Bluetooth bar on one output with the fake BlueZ (hci0 powered, CasqueBT paired) and fake
+/// `wpctl` and `rfkill` recorders (never the real tools), the launcher socket ready.
+fn start_bt(name: &str, bus: &PrivateBus, bar_toml: &str) -> (Sway, FakeHyprland, Daemon) {
+    let (sway, hypr, d) = start(name, 1, bus, None, Some(bar_toml), PwDump::Fifo);
+    for program in ["wpctl", "rfkill"] {
+        fake_recorder(&sway, program);
+    }
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// Waits until the fake BlueZ saw the `n`-th StartDiscovery: the `n`-th detail open.
+fn detail_opened(b: &FakeBluez, n: usize) -> bool {
+    let t = Instant::now();
+    while t.elapsed() < DELAY {
+        if b.calls().iter().filter(|c| c.starts_with("StartDiscovery ")).count() >= n {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Quick Bluetooth spec § 7: PSS with the panel's module at rest, the detail open on 20 devices
+/// (CasqueBT paired and 19 nearby, found while open), closed, and after 10 more cycles.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn bluetooth_detail_pss_with_20_devices_and_after() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("bt-cost");
+    let bluez = FakeBluez::serve(&bus);
+    let backlight = fake_backlight("bt-cost-backlight");
+    let (sway, _hypr, d) = start_bt("bt-cost", &bus, &bt_bar(&backlight.0));
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_own = idle - idle_shm;
+    let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Bluetooth)), Reply::Done);
+    toggle();
+    assert!(detail_opened(&bluez, 1), "{:?} {:?}", bluez.calls(), d.log());
+    // CasqueBT is device 2: devices 3…21 make 20 with it.
+    for n in 3..=21u8 {
+        bluez.add_nearby(n, &format!("Device-Test-{n:02}"), -30 - i16::from(n));
+    }
+    std::thread::sleep(Duration::from_secs(1)); // read, published, configured and painted
+    let (open, open_shm) = d.pss_and_shm_kb();
+    toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_own = closed - closed_shm;
+    for n in 2..=11 {
+        toggle();
+        assert!(detail_opened(&bluez, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        toggle();
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_own = cycled - cycled_shm;
+    let detail_cost = open.saturating_sub(idle);
+    eprintln!(
+        "quick Bluetooth PSS (KB): {idle} at rest, {open} with the detail open on 20 devices (cost {detail_cost}), \
+         {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {} open, {closed_own} closed, \
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, {closed_shm} closed, {cycled_shm} cycled",
+        open - open_shm
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    // Open, the cost splits in two (release, 2026-10-23, 8 runs: +1078…+1788 KB in all). The daemon's
+    // own memory +436…+540 KB (4 runs): the D-Bus thread's 20 devices, the panel's model and the first
+    // open's code, font and glyph-cache pages (most of which stay, below). The shm pools +774…+1240 KB
+    // (4 runs), the moving part, most likely because the detail grows one row per device found while
+    // it is open, so its buffers are re-made at each new height while the compositor may still hold
+    // the previous ones; all of it goes with the popup (the pools' closed bound below). Report, never
+    // raise.
+    let (open_own, open_pools) = (open - open_shm, open_shm.saturating_sub(idle_shm));
+    assert!(
+        open_own <= idle_own + 768,
+        "open {open_own} KB vs {idle_own} KB without the pools: more than 20 devices, the panel and its first-open pages"
+    );
+    assert!(
+        open_pools <= 1536,
+        "the pools open {open_pools} KB over rest: more than a growing panel's buffers (≤ 32 rows) — report, never raise"
+    );
+    // Closed, the first open leaves +412…+516 KB of the daemon's own (8 runs), as the Wi-Fi
+    // detail's +532…+556: code, font and glyph-cache pages touched for the first time. Pools kept
+    // out, as there.
+    assert!(
+        closed_own <= idle_own + 640,
+        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+    );
+    // 10 cycles: +40…+64 KB (8 runs).
+    assert!(
+        cycled_own <= closed_own + 128,
+        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
+    );
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
+}
+
+/// Quick Bluetooth spec § 7: the acting connection (a second system-bus connection with the
+/// pairing agent) while the detail is open, against the panel's rows open without it; no thread,
+/// and the loop asleep while it idles.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn bluetooth_acting_connection_cost() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("bt-act");
+    let bluez = FakeBluez::serve(&bus);
+    let backlight = fake_backlight("bt-act-backlight");
+    let (sway, _hypr, d) = start_bt("bt-act", &bus, &bt_bar(&backlight.0));
+    std::thread::sleep(TRAY_SETTLE);
+    let quick = |verb| assert_eq!(launcher(&sway, &Request::Quick(verb)), Reply::Done);
+    // The rows (no acting connection), twice: the first open's one-time warm-up (code and font
+    // pages) is paid before the figure.
+    for n in 1..=2 {
+        quick(QuickVerb::Top);
+        assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(1));
+        if n == 1 {
+            quick(QuickVerb::Top);
+            assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        }
+    }
+    let rows = d.pss_kb();
+    let rows_threads = wait_for_stable_threads(&d, DELAY);
+    assert!(!bluez.calls().iter().any(|c| c.starts_with("RegisterAgent ")), "the rows alone open no acting connection");
+    quick(QuickVerb::Top);
+    assert!(d.wait_for_count("popup closed", 2, DELAY), "{:?}", d.log());
+    std::thread::sleep(PAST_DEBOUNCE);
+    quick(QuickVerb::Bluetooth);
+    assert!(detail_opened(&bluez, 1), "{:?} {:?}", bluez.calls(), d.log());
+    assert!(bluez.calls().iter().any(|c| c.starts_with("RegisterAgent ")), "{:?}", bluez.calls());
+    std::thread::sleep(Duration::from_secs(1));
+    let detail = d.pss_kb();
+    let detail_threads = wait_for_stable_threads(&d, DELAY);
+    let delta = detail as i64 - rows as i64;
+    eprintln!(
+        "quick Bluetooth acting connection (KB): {rows} rows, {detail} detail ({delta:+}); threads {rows_threads} → {detail_threads}"
+    );
+    assert_eq!(detail_threads, rows_threads, "the acting connection adds no thread");
+    // Measured +54…+116 KB (release, 5 runs): the connection, its agent object and the detail's
+    // one device, against the rows. Report, never raise.
+    assert!(delta <= 512, "the detail with its acting connection costs {delta} KB over the rows: report, never raise");
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(Duration::from_secs(6));
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "with the Bluetooth detail open");
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups with the Bluetooth detail open (5 s): {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s with the detail open and nothing happening");
+}
+
+/// Quick Bluetooth spec § 4: the headset row's cost — the panel's rows open on a wired default
+/// sink, then on a Bluetooth headset (its bluez5 device and profiles kept, the row drawn).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn bluetooth_headset_row_cost() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("bt-headset");
+    let _bluez = FakeBluez::serve(&bus);
+    let backlight = fake_backlight("bt-headset-backlight");
+    let toml = format!(
+        "modules = [\"volume\", \"bluetooth\", \"quick\", \"clock\"]\n[osd]\nbacklight_dir = {:?}\n",
+        backlight.0.display().to_string()
+    );
+    let (sway, _hypr, d) = start_bt("bt-headset", &bus, &toml);
+    std::thread::sleep(TRAY_SETTLE);
+    let quick = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Top)), Reply::Done);
+    // Twice on the wired sink: the first open's warm-up paid before the figure.
+    for n in 1..=2 {
+        quick();
+        assert!(d.wait_for_count("quick shown", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(1));
+        if n == 1 {
+            quick();
+            assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        }
+    }
+    assert!(!d.log().iter().any(|l| l.contains("quick shown (rows: volume headset")), "{:?}", d.log());
+    let wired = d.pss_kb();
+    quick();
+    assert!(d.wait_for_count("popup closed", 2, DELAY), "{:?}", d.log());
+    let fixture = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/pw-dump-bluez-headset.json")).unwrap();
+    pw_dump_send(&sway.runtime, &fixture);
+    std::thread::sleep(TRAY_SETTLE);
+    let wired_closed = d.pss_kb();
+    quick();
+    assert!(d.wait_for("quick shown (rows: volume headset", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    let headset = d.pss_kb();
+    let delta = headset as i64 - wired as i64;
+    eprintln!(
+        "quick Bluetooth headset row (KB): {wired} rows on a wired sink, {headset} with the headset row ({delta:+}); {wired_closed} closed on the headset"
+    );
+    assert!(headset < STARTUP_MAX_KB, "{headset} KB >= 15 MB — report to Mae, never raise");
+    // Measured +12…+20 KB (release, 5 runs): the bluez5 device and its profiles (a few hundred
+    // bytes), one row more in the panel's buffers. Report, never raise.
+    assert!(delta <= 128, "the headset row costs {delta} KB: report, never raise");
+}
+
+/// Quick Bluetooth spec § 7: once the detail closed, no timer, no wake-up (the loop's nor the
+/// D-Bus thread's), no spin; the acting connection gone.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn bluetooth_at_rest_no_wakeups_after_the_detail() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("bt-rest");
+    let bluez = FakeBluez::serve(&bus);
+    let backlight = fake_backlight("bt-rest-backlight");
+    let (sway, _hypr, d) = start_bt("bt-rest", &bus, &bt_bar(&backlight.0));
+    const REST: Duration = Duration::from_secs(10);
+    // As `at_rest_no_wakeups_after_the_wifi_detail`: three cycles at least, the last one away from
+    // the minute, the window within a second of the close.
+    let mut n = 0;
+    loop {
+        n += 1;
+        if n >= 3 {
+            away_from_the_minute(REST + Duration::from_secs(5));
+        }
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Bluetooth)), Reply::Done);
+        assert!(detail_opened(&bluez, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Bluetooth)), Reply::Done);
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        if n >= 3 && fits_the_minute(REST + Duration::from_secs(1)) {
+            break;
+        }
+        assert!(n < 6, "the minute's tick always too close to the window");
+    }
+    let closed_at = Instant::now();
+    std::thread::sleep(Duration::from_millis(300));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    assert!(closed_at.elapsed() < Duration::from_millis(900), "the window starts within a second of the close");
+    let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread");
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the Bluetooth detail");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    let dbus_delta = d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(dbus_before);
+    eprintln!(
+        "wake-ups at rest after the Bluetooth detail (10 s): {delta} whole daemon, {main_delta} loop thread, {dbus_delta} D-Bus thread"
+    );
+    let unregistered = bluez.calls().iter().filter(|c| c.starts_with("UnregisterAgent ")).count();
+    assert_eq!(unregistered, n, "each close unregisters the agent: {:?}", bluez.calls());
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
+    assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 10 s: its taps and its bus are quiet");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
 

@@ -68,7 +68,8 @@ impl OsdVerb {
     }
 }
 
-/// `--quick`'s optional word (quick spec § 1, quick Wi-Fi spec § 1): where the panel opens.
+/// `--quick`'s optional word (quick spec § 1, quick Wi-Fi spec § 1, quick Bluetooth spec § 1): where
+/// the panel opens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickVerb {
     /// `--quick`: the first row.
@@ -77,10 +78,12 @@ pub enum QuickVerb {
     Sound,
     /// `--quick wifi`: the Wi-Fi detail, once the Wi-Fi state is read.
     Wifi,
+    /// `--quick bluetooth`: the Bluetooth detail.
+    Bluetooth,
 }
 
 impl QuickVerb {
-    pub const ALL: [QuickVerb; 3] = [QuickVerb::Top, QuickVerb::Sound, QuickVerb::Wifi];
+    pub const ALL: [QuickVerb; 4] = [QuickVerb::Top, QuickVerb::Sound, QuickVerb::Wifi, QuickVerb::Bluetooth];
 
     /// The word after `quick` (wire) and `--quick` (command line); None for the top.
     pub fn word(self) -> Option<&'static str> {
@@ -88,10 +91,11 @@ impl QuickVerb {
             QuickVerb::Top => None,
             QuickVerb::Sound => Some("sound"),
             QuickVerb::Wifi => Some("wifi"),
+            QuickVerb::Bluetooth => Some("bluetooth"),
         }
     }
 
-    /// A word after `quick`: "sound" or "wifi".
+    /// A word after `quick`: "sound", "wifi" or "bluetooth".
     pub fn parse(s: &str) -> Option<QuickVerb> {
         QuickVerb::ALL.into_iter().find(|v| v.word() == Some(s))
     }
@@ -573,6 +577,7 @@ mod tests {
             Request::Quick(QuickVerb::Top),
             Request::Quick(QuickVerb::Sound),
             Request::Quick(QuickVerb::Wifi),
+            Request::Quick(QuickVerb::Bluetooth),
         ]
     }
 
@@ -615,6 +620,7 @@ mod tests {
         assert_eq!(encode_request(&Request::Quick(QuickVerb::Top)), b"alpheus-launcher/1 quick\n");
         assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
         assert_eq!(encode_request(&Request::Quick(QuickVerb::Wifi)), b"alpheus-launcher/1 quick wifi\n");
+        assert_eq!(encode_request(&Request::Quick(QuickVerb::Bluetooth)), b"alpheus-launcher/1 quick bluetooth\n");
         assert_eq!(
             encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
             b"alpheus-launcher/1 dmenu - 0\n"
@@ -743,8 +749,9 @@ mod tests {
         assert_eq!(QuickVerb::Top.word(), None, "the bare verb");
         assert_eq!(QuickVerb::parse("Sound"), None, "the words are exact");
         assert_eq!(QuickVerb::parse("wifi"), Some(QuickVerb::Wifi), "quick Wi-Fi spec § 1");
-        assert_eq!(QuickVerb::ALL.len(), 3);
-        assert_eq!(QuickVerb::parse("network"), None, "the Wi-Fi's word is wifi; Bluetooth comes in delivery 3");
+        assert_eq!(QuickVerb::parse("bluetooth"), Some(QuickVerb::Bluetooth), "quick Bluetooth spec § 1");
+        assert_eq!(QuickVerb::ALL.len(), 4);
+        assert_eq!(QuickVerb::parse("network"), None, "the Wi-Fi's word is wifi");
     }
 
     #[test]

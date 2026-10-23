@@ -23,6 +23,31 @@ pub struct SoundState {
     /// What the capture graph says is held (privacy spec § 2): `Some` exactly when the `privacy`
     /// module is on, None otherwise.
     pub capture: Option<crate::privacy::Capture>,
+    /// The default sink's Bluetooth headset, when it offers both a Hi-Fi and a call profile:
+    /// only while the quick panel is open (`Scope::Panel`); None otherwise, and never kept by the
+    /// bar.
+    pub headset: Option<Headset>,
+}
+
+// The headset (quick Bluetooth spec § 4).
+
+/// A Bluetooth headset's two modes: Hi-Fi playback (A2DP) or call mode with a microphone (HSP/HFP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadsetMode {
+    HiFi,
+    Mic,
+}
+
+/// The default sink's bluez5 device and what `wpctl set-profile` takes to switch it: its device id,
+/// what a person reads (`pipewire::LABEL_MAX` bytes at most), the active mode, and the profile index
+/// of each mode (the highest-priority available one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Headset {
+    pub device: u32,
+    pub label: String,
+    pub active: HeadsetMode,
+    pub hifi: u32,
+    pub mic: u32,
 }
 
 /// A default device: its `node.name` (its identity) and what a person reads (`node.description`,
@@ -79,6 +104,59 @@ pub enum BtState {
     Off,
     /// Connected devices: those reporting a battery first, then by name (Q8).
     On { devices: Vec<BtDevice> },
+}
+
+/// What the quick panel's Bluetooth reading covers (quick settings delivery 3): asked by the loop
+/// through `sources::dbus::bt::BtTap`, read by the D-Bus thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BtScope {
+    /// The panel is closed: nothing read, nothing followed, nothing kept.
+    #[default]
+    Closed,
+    /// The panel is open: the adapter (powered, blocked).
+    Row,
+    /// The Bluetooth detail is open: the paired devices and the ones seen nearby too.
+    Detail,
+}
+
+/// What a device is, from BlueZ's `Icon` (never its address).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BtKind {
+    Headset,
+    Keyboard,
+    Mouse,
+    Speaker,
+    Phone,
+    Other,
+}
+
+/// A device the panel lists. `path` is BlueZ's object path (it embeds the address: never logged);
+/// `label` is the alias, cleaned and capped, `?` when nothing is left.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtEntry {
+    pub path: String,
+    pub label: String,
+    pub kind: BtKind,
+    pub paired: bool,
+    pub trusted: bool,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BtAdapter {
+    pub path: String,
+    pub powered: bool,
+    /// `PowerState` is `off-blocked`: rfkill holds it off.
+    pub blocked: bool,
+}
+
+/// The panel's Bluetooth view: the first adapter (None: no BlueZ, or none), the paired devices in
+/// path order, the ones nearby in the order the reader listed them (detail only).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BtView {
+    pub adapter: Option<BtAdapter>,
+    pub paired: Vec<BtEntry>,
+    pub nearby: Vec<BtEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

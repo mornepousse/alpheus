@@ -1250,6 +1250,9 @@ pub mod sway_client;
 #[path = "../support/fake_mango.rs"]
 pub mod fake_mango;
 
+#[path = "../support/bluez.rs"]
+pub mod bluez;
+
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
 /// The workstation recorded on 2026-10-04 (tests/fixtures/dbus-*.json,

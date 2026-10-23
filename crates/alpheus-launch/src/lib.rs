@@ -34,7 +34,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound|wifi] | --help]
+                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -51,13 +51,15 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
-  --quick [sound|wifi]    open or close the bar's quick settings (at the volume with sound, on the Wi-Fi with wifi)
+  --quick [sound|wifi|bluetooth]
+                          open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
+                          with wifi, on Bluetooth with bluetooth)
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--quick (or its wifi word) (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--quick (or its wifi or bluetooth word) (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -420,6 +422,10 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             fail(&format!("alpheus-demon does not know --quick wifi yet (restart it after the upgrade): {m}"));
             EXIT_UNREACHABLE
         }
+        (Request::Quick(QuickVerb::Bluetooth), Reply::Error(m)) if m == OLD_QUICK_BLUETOOTH_REFUSAL => {
+            fail(&format!("alpheus-demon does not know --quick bluetooth yet (restart it after the upgrade): {m}"));
+            EXIT_UNREACHABLE
+        }
         (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
         // Never the chosen text itself: with --password, it is the secret.
         (_, Reply::Chosen(mut line)) => {
@@ -447,6 +453,8 @@ const OLD_QUICK_REFUSAL: &str = "malformed request: unknown request \"quick\"";
 /// What a daemon of quick settings delivery 1 answers `--quick wifi` (`parse_header`'s unknown quick
 /// word): exit 3, so a key bound to it can fall back.
 const OLD_QUICK_WIFI_REFUSAL: &str = "malformed request: unknown quick word \"wifi\"";
+/// What a daemon of quick settings delivery 2 answers `--quick bluetooth`: exit 3, as for `wifi`.
+const OLD_QUICK_BLUETOOTH_REFUSAL: &str = "malformed request: unknown quick word \"bluetooth\"";
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.
@@ -500,6 +508,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
         assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
         assert_eq!(parse_args(&args(&["--quick", "wifi"])), Ok(Invocation::Quick(QuickVerb::Wifi)));
+        assert_eq!(parse_args(&args(&["--quick", "bluetooth"])), Ok(Invocation::Quick(QuickVerb::Bluetooth)));
         let dmenu = |index, password| Ok(Invocation::Dmenu { prompt: None, flags: DmenuFlags { index, password, visible: None } });
         assert_eq!(parse_args(&args(&["--dmenu", "--index"])), dmenu(true, false));
         assert_eq!(parse_args(&args(&["--password", "--dmenu"])), dmenu(false, true));

@@ -3,9 +3,10 @@
 //! bus. Records every call, and refuses — panics on — a call addressed to a
 //! well-known name: on a real bus, that call could start the service.
 
+use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};
 use super::wifi::{self, WifiTap};
-use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone};
+use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone, under};
 use crate::system::SavedWifi;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
@@ -89,6 +90,8 @@ pub struct FakeBus {
     pub rules: Vec<String>,
     /// The quick panel's tap, which a script's step sets (no socket pair: nothing to wake).
     pub tap: Arc<WifiTap>,
+    /// The Bluetooth panel's, the same way.
+    pub bt_tap: Arc<BtTap>,
     pub script: VecDeque<Step>,
     pub calls: Vec<String>,
 }
@@ -112,6 +115,7 @@ impl FakeBus {
             late_rules: BTreeSet::new(),
             rules: Vec::new(),
             tap: Arc::default(),
+            bt_tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
         }
@@ -215,6 +219,23 @@ impl FakeBus {
         self.bluez.insert("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_04".into(), [("org.bluez.Device1".to_string(), keyboard)].into());
     }
 
+    /// A device BlueZ has seen while scanning, unpaired and unconnected: named `alias` (its `Name`
+    /// too), with the `rssi` of its last advertisement when it had one. Fictional.
+    pub fn nearby(&mut self, path: &str, alias: &str, rssi: Option<i64>) {
+        let mut p = BTreeMap::from([
+            ("Name".to_string(), Prop::Str(alias.into())),
+            ("Alias".to_string(), Prop::Str(alias.into())),
+            ("Paired".to_string(), Prop::Bool(false)),
+            ("Trusted".to_string(), Prop::Bool(false)),
+            ("Connected".to_string(), Prop::Bool(false)),
+            ("Adapter".to_string(), Prop::Path("/org/bluez/hci0".into())),
+        ]);
+        if let Some(r) = rssi {
+            p.insert("RSSI".into(), Prop::Int(r));
+        }
+        self.bluez.insert(path.into(), [("org.bluez.Device1".to_string(), Props(p))].into());
+    }
+
     /// A call's destination must be a unique name (see the module comment).
     /// A unique name nobody holds any more: NotFound, like a real bus.
     fn reach(&self, destination: &str) -> io::Result<()> {
@@ -241,6 +262,13 @@ impl Bus for FakeBus {
         self.props
             .get(&(path.to_string(), interface.to_string()))
             .cloned()
+            .or_else(|| {
+                // BlueZ's objects live in `bluez` (the recording's ObjectManager answer).
+                if !under(path, "/org/bluez") {
+                    return None;
+                }
+                self.bluez.get(path).and_then(|i| i.get(interface)).cloned()
+            })
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("UnknownObject: {path}")))
     }
 

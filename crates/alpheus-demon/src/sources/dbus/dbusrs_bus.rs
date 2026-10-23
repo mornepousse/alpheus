@@ -7,6 +7,7 @@
 //! Replies are read in place with libdbus's iterators: a type the bar
 //! doesn't read is skipped, never decoded.
 
+use super::bt::BtTap;
 use super::props::{Objects, Prop, Props};
 use super::wifi::{self, WifiTap};
 use super::{Bus, Domain, Signal, UPOWER, bluez, network, upower};
@@ -376,7 +377,8 @@ fn keys(it: &mut Iter<'_>) -> Vec<String> {
 }
 
 /// What `Signal::domain` needs from a received signal: its path, interface
-/// and member, and the first string argument and the names of the few
+/// and member, and the first string argument (the object path of an
+/// `InterfacesAdded` or `InterfacesRemoved`) and the names of the few
 /// members it reads. A body that doesn't parse gives nothing (the signal
 /// counts). Changed values are never decoded.
 pub fn signal(m: &Message) -> Signal {
@@ -397,10 +399,14 @@ pub fn signal(m: &Message) -> Signal {
             }
         }
         "InterfacesAdded" if sig(&mut it).as_deref() == Some("o") => {
+            let at = it.get::<Path>().map(path_string);
             it.next();
-            (None, if sig(&mut it).as_deref() == Some("a{sa{sv}}") { keys(&mut it) } else { Vec::new() })
+            (at, if sig(&mut it).as_deref() == Some("a{sa{sv}}") { keys(&mut it) } else { Vec::new() })
         }
-        "InterfacesRemoved" => (None, m.read2::<Path, Vec<String>>().map(|(_, i)| i).unwrap_or_default()),
+        "InterfacesRemoved" => match m.read2::<Path, Vec<String>>() {
+            Ok((p, names)) => (Some(path_string(p)), names),
+            Err(_) => (None, Vec::new()),
+        },
         // logind's bool argument, kept as "true"/"false": `Signal::is_wake` reads it.
         "PrepareForSleep" => (it.get::<bool>().map(|b| b.to_string()), Vec::new()),
         _ => (None, Vec::new()),
@@ -443,6 +449,8 @@ pub struct DbusRsBus {
     channel: Channel,
     /// The quick panel's tap, polled beside the bus's socket (`waking`); None: libdbus sleeps alone.
     wake: Option<Arc<WifiTap>>,
+    /// The Bluetooth panel's, the same way (`waking_bt`).
+    wake_bt: Option<Arc<BtTap>>,
 }
 
 impl DbusRsBus {
@@ -470,10 +478,19 @@ impl DbusRsBus {
         self
     }
 
+    /// The same for the Bluetooth panel's tap (quick settings delivery 3): a third socket to poll.
+    pub fn waking_bt(mut self, tap: Arc<BtTap>) -> DbusRsBus {
+        if tap.wake_fd().is_some() {
+            self.channel.set_watch_enabled(true);
+            self.wake_bt = Some(tap);
+        }
+        self
+    }
+
     /// Connecting and `Hello` are blocking (libdbus's own deadlines); then
     /// the match rules, each with `TIMEOUT`.
     fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
-        let bus = DbusRsBus { channel, wake: None };
+        let bus = DbusRsBus { channel, wake: None, wake_bt: None };
         for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
             bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(rule))?;
         }
@@ -500,7 +517,7 @@ impl DbusRsBus {
         self.channel.set_watch_enabled(true);
         let fd = self.channel.watch().fd;
         // `waking`'s poll needs the watch: left on with a tap.
-        if self.wake.is_none() {
+        if self.wake.is_none() && self.wake_bt.is_none() {
             self.channel.set_watch_enabled(false);
         }
         fd
@@ -571,21 +588,28 @@ impl Bus for DbusRsBus {
                     _ => {}
                 }
             }
-            let Some(wake_fd) = self.wake.as_ref().and_then(|t| t.wake_fd()) else {
+            let wake_fd = self.wake.as_ref().and_then(|t| t.wake_fd());
+            let bt_fd = self.wake_bt.as_ref().and_then(|t| t.wake_fd());
+            if wake_fd.is_none() && bt_fd.is_none() {
                 // None: asleep on the socket until the bus sends something.
                 if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
                     return Err(closed());
                 }
                 continue;
-            };
-            // Asleep on both sockets: the bus's, and the quick panel's tap (no timeout: nothing
+            }
+            // Asleep on every socket: the bus's, and each quick panel tap's (no timeout: nothing
             // wakes the thread at rest). Then whatever the bus sent is read without waiting
             // (`read_write(0)`), and a word from the loop comes first.
             let w = self.channel.watch();
             let events = libc::POLLIN | if w.write { libc::POLLOUT } else { 0 };
-            let mut fds = [libc::pollfd { fd: w.fd, events, revents: 0 }, libc::pollfd { fd: wake_fd, events: libc::POLLIN, revents: 0 }];
-            // SAFETY: poll(2) reads and fills the two pollfd above, owned here for the whole call.
-            if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            let mut fds = [libc::pollfd { fd: w.fd, events, revents: 0 }; 3];
+            let mut n = 1;
+            for fd in [wake_fd, bt_fd].into_iter().flatten() {
+                fds[n] = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                n += 1;
+            }
+            // SAFETY: poll(2) reads and fills the first `n` pollfd above, owned here for the whole call.
+            if unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, -1) } < 0 {
                 let e = io::Error::last_os_error();
                 if e.kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -595,10 +619,24 @@ impl Bus for DbusRsBus {
             if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
                 return Err(closed());
             }
-            if fds[1].revents & libc::POLLIN != 0 {
-                if let Some(t) = &self.wake {
+            let mut poked = false;
+            let mut at = 1;
+            if wake_fd.is_some() {
+                if fds[at].revents & libc::POLLIN != 0 {
+                    if let Some(t) = &self.wake {
+                        t.drain();
+                    }
+                    poked = true;
+                }
+                at += 1;
+            }
+            if bt_fd.is_some() && fds[at].revents & libc::POLLIN != 0 {
+                if let Some(t) = &self.wake_bt {
                     t.drain();
                 }
+                poked = true;
+            }
+            if poked {
                 return Ok(Signal::poke());
             }
         }
@@ -855,7 +893,29 @@ mod tests {
         let cut = received("org.freedesktop.DBus.Properties", "PropertiesChanged", "/x", &[r#"{"type":"s","data":["org.bluez.Device1"]}"#]);
         assert_eq!(nothing(cut), (None, vec![]), "PropertiesChanged with its interface only");
         let cut = received("org.freedesktop.DBus.ObjectManager", "InterfacesAdded", "/", &[r#"{"type":"o","data":["/org/bluez/hci0"]}"#]);
-        assert_eq!(nothing(cut), (None, vec![]), "InterfacesAdded with its path only");
+        assert_eq!(nothing(cut), (Some("/org/bluez/hci0".to_string()), vec![]), "InterfacesAdded with its path only");
+    }
+
+    #[test]
+    fn interfaces_added_and_removed_carry_the_object_path() {
+        const DEV: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_10";
+        let path = format!(r#"{{"type":"o","data":["{DEV}"]}}"#);
+        let added = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesAdded",
+            "/",
+            &[&path, r#"{"type":"a{sa{sv}}","data":[{"org.bluez.Device1":{"Alias":{"type":"s","data":"Keyboard-Test"}}}]}"#],
+        );
+        assert_eq!(added.arg0.as_deref(), Some(DEV));
+        assert_eq!(added.names, ["org.bluez.Device1"]);
+        let removed = received(
+            "org.freedesktop.DBus.ObjectManager",
+            "InterfacesRemoved",
+            "/",
+            &[&path, r#"{"type":"as","data":[["org.bluez.Device1"]]}"#],
+        );
+        assert_eq!(removed.arg0.as_deref(), Some(DEV));
+        assert_eq!(removed.names, ["org.bluez.Device1"]);
     }
 
     #[test]

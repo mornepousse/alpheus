@@ -7,14 +7,12 @@
 
 use super::dbusrs_bus::WIFI_RULES;
 use super::props::Props;
+pub use super::tap::WifiTap;
 use super::{Bus, NM, is_service_gone, network, optional};
 use crate::log::write as log;
 use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
 use std::collections::BTreeMap;
-use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, RawFd};
-use std::os::unix::net::UnixStream;
-use std::sync::{Mutex, PoisonError};
+use std::io;
 
 pub const DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 pub const WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
@@ -43,71 +41,6 @@ pub enum WifiChange {
     AccessPoints,
     /// The saved connections (NewConnection, ConnectionRemoved).
     Saved,
-}
-
-/// What the loop asks the D-Bus thread (quick Wi-Fi decision 1): the scope the open panel shows,
-/// and a socket pair whose first end the thread polls beside the bus's own socket; the loop writes
-/// one byte to the second when the scope changes, never otherwise (no wake-up at rest). Without the
-/// pair (`default()`, the tests' tap) the scope is still kept, and nothing wakes: a session reads it
-/// when it starts and on each `Signal::poke`. The tap also counts the panel's opens (Closed to any
-/// other scope): a close and a reopen the thread reads as one poke are still a new open, and a
-/// state read for an earlier open is told apart from the current one's.
-#[derive(Debug, Default)]
-pub struct WifiTap {
-    /// The scope asked, and the opens so far.
-    scope: Mutex<(WifiScope, u64)>,
-    wake: Option<(UnixStream, UnixStream)>,
-}
-
-impl WifiTap {
-    /// A tap with its socket pair, both ends non-blocking and close-on-exec.
-    pub fn new() -> io::Result<WifiTap> {
-        let (read, write) = UnixStream::pair()?;
-        read.set_nonblocking(true)?;
-        write.set_nonblocking(true)?;
-        Ok(WifiTap { scope: Mutex::new((WifiScope::Closed, 0)), wake: Some((read, write)) })
-    }
-
-    pub fn scope(&self) -> WifiScope {
-        self.snapshot().0
-    }
-
-    /// The scope asked and the opens so far, read together.
-    pub fn snapshot(&self) -> (WifiScope, u64) {
-        *self.scope.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The loop asks for `scope`: kept, and the thread woken when it changed (a byte already waiting
-    /// is enough: a full socket is not an error); from Closed to another scope, one more open. True
-    /// when it changed.
-    pub fn set(&self, scope: WifiScope) -> bool {
-        let changed = {
-            let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
-            let changed = s.0 != scope;
-            if s.0 == WifiScope::Closed && scope != WifiScope::Closed {
-                s.1 = s.1.wrapping_add(1);
-            }
-            s.0 = scope;
-            changed
-        };
-        if changed && let Some((_, w)) = &self.wake {
-            let _ = (&*w).write(&[1]);
-        }
-        changed
-    }
-
-    /// The end the D-Bus thread polls; None for the tests' tap.
-    pub fn wake_fd(&self) -> Option<RawFd> {
-        self.wake.as_ref().map(|(r, _)| r.as_raw_fd())
-    }
-
-    /// Reads every byte waiting, so the poll sleeps again.
-    pub fn drain(&self) {
-        if let Some((r, _)) = &self.wake {
-            let mut buf = [0u8; 64];
-            while matches!((&*r).read(&mut buf), Ok(n) if n > 0) {}
-        }
-    }
 }
 
 /// NetworkManager's uuid as the panel will pass it to nmcli, one argument: hexadecimal digits and

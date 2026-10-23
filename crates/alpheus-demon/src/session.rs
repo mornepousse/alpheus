@@ -113,30 +113,35 @@ pub enum Activation {
 }
 
 /// An activation of `s` at `now`, `question` the one pending ("Reboot? ⏎" until that instant):
-/// lock and log out run at once; reboot and power off ask on a first activation, run on a second
-/// within CONFIRM, and ignore one inside CONFIRM_AFTER. Another entry's question, or an expired
-/// one, never confirms: the entry asks its own.
+/// lock and log out run at once; reboot and power off ask (`ask`).
 pub fn activate(question: &mut Option<(Session, Instant)>, s: Session, now: Instant) -> Activation {
     if !s.asks() {
         *question = None;
         return Activation::Run;
     }
-    match *question {
-        Some((c, until)) if c == s && now < until && until.saturating_duration_since(now) > CONFIRM - CONFIRM_AFTER => Activation::Wait,
-        Some((c, until)) if c == s && now < until => {
+    ask(question, s, now)
+}
+
+/// A question `q` at `now`, `question` the one pending until that instant: asked on a first
+/// activation, answered on a second within CONFIRM, one inside CONFIRM_AFTER ignored. Another
+/// question, or an expired one, never answers it: `q` asks its own.
+pub fn ask<Q: PartialEq + Clone>(question: &mut Option<(Q, Instant)>, q: Q, now: Instant) -> Activation {
+    match question {
+        Some((c, until)) if *c == q && now < *until && until.saturating_duration_since(now) > CONFIRM - CONFIRM_AFTER => Activation::Wait,
+        Some((c, until)) if *c == q && now < *until => {
             *question = None;
             Activation::Run
         }
         _ => {
-            *question = Some((s, now + CONFIRM));
+            *question = Some((q, now + CONFIRM));
             Activation::Ask
         }
     }
 }
 
 /// At `now`: the question gone once CONFIRM passed; true when it just went (its row redrawn).
-pub fn expire(question: &mut Option<(Session, Instant)>, now: Instant) -> bool {
-    if question.is_some_and(|(_, at)| at <= now) {
+pub fn expire<Q>(question: &mut Option<(Q, Instant)>, now: Instant) -> bool {
+    if question.as_ref().is_some_and(|(_, at)| *at <= now) {
         *question = None;
         true
     } else {
@@ -218,6 +223,29 @@ mod tests {
         let later = t + Duration::from_secs(1);
         assert_eq!(activate(&mut q, Session::Poweroff, later), Activation::Ask, "reboot's question never confirms power off");
         assert_eq!(q, Some((Session::Poweroff, later + CONFIRM)));
+    }
+
+    /// The generic question (the quick panel's session buttons and its Bluetooth forget): `activate`
+    /// for an entry that asks, on any question type.
+    #[test]
+    fn ask_is_activate_for_a_question_that_asks() {
+        let t = Instant::now();
+        let mut q: Option<(&str, Instant)> = None;
+        assert_eq!(ask(&mut q, "a", t), Activation::Ask);
+        assert_eq!(q, Some(("a", t + CONFIRM)));
+        assert_eq!(ask(&mut q, "a", t + CONFIRM_AFTER - MS), Activation::Wait, "too soon");
+        assert_eq!(ask(&mut q, "b", t + MS), Activation::Ask, "another question asks its own");
+        assert_eq!(q, Some(("b", t + MS + CONFIRM)));
+        assert_eq!(ask(&mut q, "b", t + MS + CONFIRM_AFTER), Activation::Run);
+        assert_eq!(q, None, "answered");
+        for s in [Session::Reboot, Session::Poweroff] {
+            let (mut by_activate, mut by_ask) = (None, None);
+            for ms in [0, 100, 400, 2999, 3000] {
+                let at = t + ms * MS;
+                assert_eq!(activate(&mut by_activate, s, at), ask(&mut by_ask, s, at), "{s:?} at {ms} ms");
+                assert_eq!(by_activate, by_ask, "{s:?} at {ms} ms");
+            }
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
+use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
@@ -860,7 +861,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
         // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
         // pending off; the camera scan's debounce (privacy delivery 2), armed only for 300 ms after
-        // a device open, close, creation or removal.
+        // a device open, close, creation or removal. The quick panel's timer also covers a Bluetooth
+        // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
+        // question (quick delivery 3).
         ("wayland.rs", "Timer::", 10),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
@@ -870,6 +873,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
         // creation or removal of a video device; `drain` reads it to EAGAIN.
         ("camera_app.rs", "Generic::new", 1),
+        // The quick panel's acting Bluetooth connection (quick delivery 3): inserted only while the
+        // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
+        // answers or calls the agent.
+        ("bt_app.rs", "Generic::new", 1),
         // The bar's own session link (themes task 6, media task 5): only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
         // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
@@ -910,7 +917,8 @@ fn d_bus_is_confined_to_sources_and_read_only() {
         if uses_crate(&t, "dbus") {
             assert!(DBUS_FILES.contains(&name.as_str()), "the dbus crate used in {name}");
         }
-        if name.starts_with("sources/dbus/") {
+        // bt_act.rs, Bluetooth's acting connection, has its own guardrail, below.
+        if name.starts_with("sources/dbus/") && name != "sources/dbus/bt_act.rs" {
             let prod = production_code(&t);
             for word in [
                 "\"Set\"",
@@ -988,9 +996,96 @@ fn d_bus_is_confined_to_sources_and_read_only() {
     assert!(LOGIN1_RULE.starts_with("type='signal',"), "{LOGIN1_RULE}");
 }
 
-/// The files that may name the `dbus` crate: the system bus's, and the
-/// tray's four (its connection, codec, watcher and router).
-const DBUS_FILES: [&str; 5] = ["sources/dbus/dbusrs_bus.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+/// The files that may name the `dbus` crate: the system bus's, Bluetooth's
+/// acting connection (`bt_act.rs`), and the tray's four (its connection,
+/// codec, watcher and router).
+const DBUS_FILES: [&str; 6] =
+    ["sources/dbus/dbusrs_bus.rs", "sources/dbus/bt_act.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+
+/// Bluetooth's acting connection (quick settings delivery 3, spec § 5): the
+/// only D-Bus file that changes anything, and only through the pinned
+/// `ActMethod` list; one builder, one sender, auto-start off; never a name
+/// requested, never the default agent, never a blocking call.
+#[test]
+fn the_bluetooth_connection_acts_only_through_act_method() {
+    let names: Vec<&str> = ActMethod::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(
+        names,
+        [
+            "GetNameOwner",
+            "Set",
+            "StartDiscovery",
+            "StopDiscovery",
+            "RemoveDevice",
+            "Connect",
+            "Disconnect",
+            "Pair",
+            "CancelPairing",
+            "RegisterAgent",
+            "UnregisterAgent"
+        ]
+    );
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
+    let prod = production_code(&file);
+    assert_eq!(prod.matches("Message::new_method_call(").count(), 1, "every call is built by `build`, from an ActMethod");
+    assert_eq!(prod.matches(".send(").count(), 1, "every message leaves through `post`");
+    assert_eq!(prod.matches("set_auto_start(false)").count(), 1, "in `build`: no call starts BlueZ");
+    assert_eq!(prod.matches("method_return(").count(), 1, "in `answer`: the only reply it builds");
+    assert_eq!(prod.matches(".error(").count(), 1, "in `answer`: the only error it builds");
+    for never in [
+        "send_with_reply_and_block",
+        "RequestName",
+        "request_name",
+        "RequestDefaultAgent",
+        "Crossroads",
+        "blocking_pop_message",
+        "RefArg",
+        "new_signal(",
+        "Message::method_call(",
+        "call_with_args(",
+        "Message::signal(",
+        "return_with_args(",
+        ".add_match(",
+        "\"Suspend\"",
+        "\"Hibernate\"",
+        "\"PowerOff\"",
+        "\"Reboot\"",
+        "\"Sleep\"",
+        "\"ActivateConnection\"",
+        "\"DeactivateConnection\"",
+        "\"GetSecrets\"",
+        "\"Enable\"",
+        // Final review: a message is addressed by `build` alone (`Message::new_method_call`'s
+        // arguments), never re-aimed afterwards; no call may start BlueZ; no error but `answer`'s.
+        "set_auto_start(true)",
+        "set_destination(",
+        "set_path(",
+        "set_interface(",
+        "set_member(",
+        "Message::new_error(",
+    ] {
+        assert!(!prod.contains(never), "{never} in bt_act.rs");
+    }
+}
+
+/// Bluetooth spec § 3, § 5: the acting connection serves one object, `org.bluez.Agent1` at
+/// AGENT_PATH, to BlueZ's unique name only; every reply is built in `answer`.
+#[test]
+fn the_bluetooth_connection_serves_only_the_agent() {
+    assert_eq!((AGENT_PATH, CAPABILITY), ("/org/alpheus/bluetooth/agent", "KeyboardDisplay"));
+    let file = source_files().into_iter().find(|(p, _)| relative_path(p) == "sources/dbus/bt_act.rs").expect("bt_act.rs").1;
+    let prod = production_code(&file);
+    assert_eq!(prod.matches("method_return(").count(), 1);
+    assert_eq!(prod.matches(".error(").count(), 1);
+    let answer = function_body(&prod, "fn answer(");
+    assert!(answer.contains("method_return(") && answer.contains(".error("), "replies only in `answer`: {answer}");
+    assert_eq!(prod.matches("\"org.bluez.Agent1\"").count(), 1, "one served interface, named once (AGENT_INTERFACE)");
+    let screen = function_body(&prod, "fn screen(");
+    for must in ["ACCESS_DENIED", "AGENT_PATH", "AGENT_INTERFACE", "UNKNOWN_METHOD"] {
+        assert!(screen.contains(must), "{must} missing from screen: {screen}");
+    }
+    assert!(screen.find("ACCESS_DENIED") < screen.find("UNKNOWN_METHOD"), "the sender is checked first");
+}
 
 /// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
@@ -1113,7 +1208,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist (later tasks) are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 37] = [
+const NO_THREAD_NOR_COMMAND: [&str; 41] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1142,6 +1237,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 37] = [
     "quick_state.rs",
     "quick_wifi.rs",
     "quick_secret.rs",
+    "quick_bt.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -1151,6 +1247,9 @@ const NO_THREAD_NOR_COMMAND: [&str; 37] = [
     "privacy.rs",
     "camera_dev.rs",
     "camera_app.rs",
+    "sources/dbus/bt.rs",
+    "sources/dbus/bt_act.rs",
+    "bt_app.rs",
 ];
 
 #[test]
@@ -1589,7 +1688,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -1610,7 +1709,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 3, "quick.rs, quick_state.rs and quick_wifi.rs");
+    assert_eq!(checked, 4, "quick.rs, quick_state.rs, quick_wifi.rs and quick_bt.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -1632,10 +1731,14 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config };
+    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config, bluetooth: None };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
-    let fresh = || Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    let fresh = || {
+        let mut q = Quick::new(Focus::Top, &live, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+        q.set_headset(Some(Headset { device: 61, label: "CasqueBT".into(), active: HeadsetMode::HiFi, hifi: 1, mic: 3 }));
+        q
+    };
     let t = Instant::now();
     // Mae (M1): a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
@@ -1752,6 +1855,13 @@ fn every_quick_command_stays_on_the_allowlist() {
         record(q.set_wifi(Some(failing), t).action);
         record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
+    // Quick Bluetooth spec § 2: Space on the row with rfkill holding the adapter off unblocks it.
+    let bt_off = Live { bluetooth: Some(&BtState::Off), ..live };
+    let mut q = Quick::new(Focus::Top, &bt_off, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
+    q.bt.view =
+        Some(BtView { adapter: Some(BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }), ..BtView::default() });
+    q.selected = quick::Row::Bluetooth;
+    record(q.key(&bt_off, Key::Char(' '), false, t));
     // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
     let line = |a: &QuickAction| match a {
@@ -1803,6 +1913,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-volume", "-l", "1.0", "@DEFAULT_AUDIO_SINK@", n] => percent(n, 0),
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
+            ["wpctl", "set-profile", id, idx] => *id == "61" && ["1", "3"].contains(idx),
             ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
@@ -1811,6 +1922,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
+            ["rfkill", "unblock", "bluetooth"] => true,
             _ => configured.contains(&c.as_str()),
         };
         assert!(ok, "command outside the allowlist: {c}");
@@ -1825,6 +1937,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
         "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle",
         "wpctl set-default 99",
+        "wpctl set-profile 61 3",
         "brightnessctl --class=backlight --device=intel_backlight set 55%",
         "brightnessctl --class=backlight --device=intel_backlight set 45%",
         "brightnessctl --class=backlight --device=intel_backlight set 50%",
@@ -1844,6 +1957,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli --ask device wifi connect Bureau-Test",
         "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
         "fake-more",
+        "rfkill unblock bluetooth",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");
     }
@@ -1853,12 +1967,108 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "session.rs"] {
+    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "quick_bt.rs", "session.rs", "bt_app.rs"]
+    {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Quick Bluetooth spec § 5, Review Focus 1-2: the acting connection goes with the panel and is
+/// let go without a call when BlueZ goes.
+#[test]
+fn the_bluetooth_connection_goes_with_the_panel() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let (quick_app, bt_app) = (src("quick_app.rs"), src("bt_app.rs"));
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains("BtScope::Closed") && closed.contains("self.bt_close()"), "{closed}");
+    let flush = function_body(&quick_app, "pub(crate) fn quick_flush(");
+    let (leaving, run) = (flush.find("bt_leaving()"), flush.find("self.bt_run("));
+    assert!(matches!((leaving, run), (Some(l), Some(r)) if l < r), "the leaving orders sent before the body goes: {flush}");
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle(", "pub(crate) fn quick_take("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_bt_sync()"), "{f}: the tap and the connection follow the panel");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_bt(") && take.contains("snapshot()") && take.contains("wifi_current("), "{take}");
+    let (dropped, panel) = (take.find("self.bt_drop()"), take.find("panel_bt("));
+    assert!(matches!((dropped, panel), (Some(d), Some(p)) if d < p), "BlueZ gone: dropped before the panel's orders: {take}");
+    // Task 3's carry: the headset is read before the sink list, which marks a panel-scope message.
+    let (headset, sinks) = (take.find("taken_headset("), take.find("taken_sinks("));
+    assert!(matches!((headset, sinks), (Some(h), Some(s)) if h < s), "the headset before the sinks: {take}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("bt_logs") && tick.contains("bt_orders") && tick.contains("bt_run("), "{tick}");
+    let close = function_body(&bt_app, "pub(crate) fn bt_close(");
+    assert!(close.contains(".remove(") && close.contains(".close()"), "{close}");
+    let drop = function_body(&bt_app, "fn bt_let_go(");
+    assert!(function_body(&bt_app, "pub(crate) fn bt_drop(").contains("self.bt_let_go()"), "bt_drop is bt_let_go's action taken");
+    assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
+    // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
+    assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
+    // Fix round 1: a connection lost under us is reopened by the syncs once per open, not forever.
+    let readable = function_body(&bt_app, "pub(crate) fn bt_readable(");
+    assert!(readable.contains("self.bt_note_lost()") && readable.contains("self.bt_let_go()"), "{readable}");
+    // Final review: a `Gone` on a live connection (a stale owner) lets it go, counted as a loss.
+    let stale = readable.find("stale_owner(").expect("bt_readable reads a stale owner");
+    assert!(readable[stale..].find("self.bt_let_go()").is_some(), "{readable}");
+    // Final review: no action taken inside a batch (it may run orders that read again, nested), and
+    // nothing of a batch handled once its connection went.
+    let batch = function_body(&readable[readable.find("for event in events").expect("the batch")..], "for event in events");
+    for nested in ["self.quick_action(", "self.bt_answer(", "self.bt_drop()", "self.bt_run(", "self.bt_readable()"] {
+        assert!(!batch.contains(nested), "{nested} inside the batch: {batch}");
+    }
+    assert!(batch.contains("if self.bt_act.is_none() {\n                    break;"), "the rest of a gone connection's batch: {batch}");
+    let after = &readable[readable.find(batch).expect("the batch") + batch.len()..];
+    assert!(after.contains("self.quick_action(action)"), "the batch's actions taken after it: {after}");
+    let run = function_body(&bt_app, "pub(crate) fn bt_run(");
+    assert!(run.contains("opens_for(") && run.contains(".flush()"), "{run}");
+    // libdbus's flush also reads: what it read is delivered by the next `read`, the fd may stay quiet.
+    let (flushed, read) = (run.rfind(".flush()"), run.rfind("self.bt_readable()"));
+    assert!(matches!((flushed, read), (Some(f), Some(r)) if f < r), "read after the flush: {run}");
+}
+
+/// Only bt_app.rs drives the acting connection; wayland.rs only declares its field.
+#[test]
+fn only_bt_app_and_bt_act_name_btact() {
+    let mut naming = Vec::new();
+    for (p, t) in source_files() {
+        let (name, prod) = (relative_path(&p), production_code(&t));
+        if prod.contains("BtAct") {
+            naming.push(name.clone());
+        }
+        if prod.contains(".bt_act") {
+            assert_eq!(name, "bt_app.rs", "the acting connection used outside bt_app.rs");
+        }
+    }
+    naming.sort();
+    assert_eq!(naming, ["bt_app.rs", "sources/dbus/bt_act.rs", "wayland.rs"]);
+}
+
+/// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
+/// the glue formats nothing with Debug but an `io::ErrorKind` (an `ActCall`, an `AgentRequest` or a
+/// `BtEvent` carries an object path).
+#[test]
+fn the_bluetooth_logs_name_no_device() {
+    let files = source_files();
+    let mut lines = 0;
+    for name in ["quick_bt.rs", "bt_app.rs", "sources/dbus/bt_act.rs", "sources/dbus/bt.rs"] {
+        let prod = production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+        for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
+            lines += 1;
+            for word in ["path", "device", "label", "alias", "name", "address"] {
+                let braced = format!("{{{word}"); // {path}, {path:?}
+                let token = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!line.contains(&braced) && !token, "{name}: a log line may name a device (`{word}`): {line}");
+            }
+        }
+    }
+    assert!(lines >= 3, "the log lines were not found: the check is hollow");
+    let bt_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "bt_app.rs").expect("bt_app.rs").1);
+    for line in bt_app.lines().filter(|l| l.contains(":?") || l.contains(":#?")) {
+        assert!(line.contains(".kind()"), "bt_app.rs: Debug of anything but an io::ErrorKind: {line}");
     }
 }
 
@@ -2051,6 +2261,20 @@ fn the_power_menu_has_no_panicking_path() {
     }
 }
 
+/// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus
+/// thread and the bar's loop; neither may panic (constraints: no panicking path).
+#[test]
+fn the_bluetooth_d_bus_files_have_no_panicking_path() {
+    let files = source_files();
+    for name in ["sources/dbus/bt.rs", "sources/dbus/bt_act.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
 /// Power spec § 3, § 4: whatever closes the menu (Escape, an entry run, an outside click, a restyle,
 /// the output gone, a replacing popup), its timer goes; an entry runs its own `[quick]` command
 /// through the executor's `spawn`, and nothing else. No fake Wayland popup can be closed every way
@@ -2221,4 +2445,16 @@ fn the_camera_logs_name_no_process() {
         }
     }
     assert!(logs >= 3, "the log lines were not found: the check is hollow");
+}
+
+/// Final review: the panel's Bluetooth row draws as the bar's module, from the same glyphs
+/// (`segments::BLUETOOTH`, `segments::BLUETOOTH_CONNECTED`), never a copy of them.
+#[test]
+fn the_bluetooth_row_reuses_the_modules_glyphs() {
+    let files = source_files();
+    let quick_bt = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_bt.rs").expect("quick_bt.rs").1);
+    for copy in ["\\u{f00af}", "\\u{f00b1}", "\u{f00af}", "\u{f00b1}"] {
+        assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
+    }
+    assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick_bt.rs takes the module's glyphs");
 }

@@ -358,6 +358,7 @@ mod tests {
             source_name: dev(IN, "Desk microphone"),
             sinks: None,
             capture: None,
+            headset: None,
         }
     }
 

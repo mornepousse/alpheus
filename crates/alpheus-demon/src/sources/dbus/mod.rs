@@ -6,10 +6,13 @@
 //! name, which D-Bus activation would use to start it.
 
 pub mod bluez;
+pub mod bt;
+pub mod bt_act;
 pub mod dbusrs_bus;
 pub mod network;
 pub mod power;
 pub mod props;
+pub mod tap;
 pub mod upower;
 pub mod wifi;
 
@@ -23,7 +26,8 @@ use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
-use crate::system::{BtState, NetState, PowerState, ProfileState, SavedWifi, WifiScope, WifiState};
+use crate::system::{BtScope, BtState, BtView, NetState, PowerState, ProfileState, SavedWifi, WifiScope, WifiState};
+use bt::{BtReader, BtTap};
 use props::{Objects, Props};
 use std::io;
 use std::marker::PhantomData;
@@ -230,6 +234,32 @@ impl Signal {
         }
     }
 
+    /// A Bluetooth panel signal (quick settings delivery 3), heard only while the panel is open:
+    /// what a device's or the adapter's properties changed to show, or a device appearing or going.
+    /// None: not one (the bar's own signals, a scan's noise). `domain` does not change.
+    pub fn bt_change(&self) -> Option<bt::BtChange> {
+        const DEVICE_PROPS: [&str; 6] = ["Name", "Alias", "Icon", "Paired", "Trusted", "Connected"];
+        const ADAPTER_PROPS: [&str; 2] = ["Powered", "PowerState"];
+        let has = |n: &str| self.names.iter().any(|x| x == n);
+        match self.member.as_str() {
+            "PropertiesChanged" if under(&self.path, "/org/bluez") => match self.arg0.as_deref() {
+                Some(bluez::DEVICE) if self.names.is_empty() || DEVICE_PROPS.iter().any(|n| has(n)) => {
+                    Some(bt::BtChange::Device { path: self.path.clone(), rssi_only: false })
+                }
+                Some(bluez::DEVICE) if has("RSSI") => Some(bt::BtChange::Device { path: self.path.clone(), rssi_only: true }),
+                Some(bluez::ADAPTER) if self.names.is_empty() || ADAPTER_PROPS.iter().any(|n| has(n)) => {
+                    Some(bt::BtChange::Adapter(self.path.clone()))
+                }
+                _ => None,
+            },
+            "InterfacesAdded" | "InterfacesRemoved" if self.interface == OBJECT_MANAGER && has(bluez::DEVICE) => {
+                let at = self.arg0.as_deref().filter(|p| under(p, "/org/bluez"))?;
+                Some(if self.member == "InterfacesAdded" { bt::BtChange::Added(at.into()) } else { bt::BtChange::Removed(at.into()) })
+            }
+            _ => None,
+        }
+    }
+
     /// The domain to re-read on this signal; None: not ours, or nothing the
     /// bar shows can have changed.
     pub fn domain(&self) -> Option<Domain> {
@@ -339,6 +369,11 @@ pub struct SystemState {
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
     /// earlier open (final review B-M1).
     pub wifi_open: u64,
+    /// The quick panel's Bluetooth, only while it is open (quick settings delivery 3); None
+    /// otherwise. The bar's `bluetooth` is separate and unchanged.
+    pub bt: Option<BtView>,
+    /// The open `bt` was read for (`BtTap::snapshot`), as `wifi_open`.
+    pub bt_open: u64,
 }
 
 /// Why a session ended (I2, review): a single domain's read failing, its
@@ -536,17 +571,35 @@ fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Resul
     }
 }
 
-/// `wifi`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
+/// A Bluetooth read's result into `s`, as `wifi_into`: the bus going away is a bus outage, any other
+/// error the Bluetooth domain's (the view dropped either way).
+fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io::Result<()> {
+    match r {
+        Ok(v) => {
+            s.bt = v;
+            Ok(())
+        }
+        Err(e) => {
+            s.bt = None;
+            let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(Domain::Bluetooth) };
+            Err(tag(e, outage))
+        }
+    }
+}
+
+/// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
 /// again on each of its pokes and with every network re-read; Closed reads nothing.
 pub fn session(
     bus: &mut dyn Bus,
     domains: &[Domain],
     log_state: &mut DomainLog,
     wifi: &WifiTap,
+    bt: &BtTap,
     publish: &mut dyn FnMut(SystemState) -> bool,
 ) -> io::Result<()> {
     let mut s = SystemState::default();
     let mut reader = WifiReader::default();
+    let mut bt_reader = BtReader::default();
     let mut last = None;
     let mut failed = read_all(bus, domains, &mut s, log_state);
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
@@ -555,6 +608,12 @@ pub fn session(
     let (scope, open) = wifi.snapshot();
     s.wifi_open = open;
     if let Err(e) = wifi_into(reader.rescope(bus, scope), &mut s) {
+        failed = Some(e);
+    }
+    bt.drain();
+    let (bt_scope, bt_now) = bt.snapshot();
+    s.bt_open = bt_now;
+    if let Err(e) = bt_into(bt_reader.rescope(bus, bt_scope), &mut s) {
         failed = Some(e);
     }
     if !publish_if_changed(&mut last, &s, publish) {
@@ -592,14 +651,25 @@ pub fn session(
                 reader.rescope(bus, scope)
             };
             let r = wifi_into(r, &mut s);
+            // The same for Bluetooth, read whichever tap spoke (a poke does not say which).
+            let (bscope, bopen) = bt.snapshot();
+            let breopened = bopen != s.bt_open && bscope != BtScope::Closed;
+            s.bt_open = bopen;
+            let b = if breopened {
+                bt_reader.rescope(bus, BtScope::Closed).and_then(|_| bt_reader.rescope(bus, bscope))
+            } else {
+                bt_reader.rescope(bus, bscope)
+            };
+            let b = bt_into(b, &mut s);
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());
             }
             // The panel closed: what this thread's arena held for it goes back, as at startup.
-            if reader.scope() == WifiScope::Closed {
+            if reader.scope() == WifiScope::Closed && bt_reader.scope() == BtScope::Closed {
                 release_memory();
             }
             r?;
+            b?;
             continue;
         }
         if signal.is_wake() {
@@ -609,6 +679,9 @@ pub fn session(
             // would otherwise point to.
             let mut failed = read_all(bus, domains, &mut s, log_state);
             if let Err(e) = wifi_into(reader.reread(bus), &mut s) {
+                failed = Some(e);
+            }
+            if let Err(e) = bt_into(bt_reader.reread(bus), &mut s) {
                 failed = Some(e);
             }
             if !publish_if_changed(&mut last, &s, publish) {
@@ -634,21 +707,41 @@ pub fn session(
             }
             continue;
         }
-        let Some(d) = signal.domain().filter(|d| domains.contains(d)) else { continue };
+        // A Bluetooth panel signal: never `continue`d (Connected matters to the bar as well).
+        let change = signal.bt_change();
+        let b = match &change {
+            // `Ok(None)`: nothing read (the row, a device outside the detail): `s.bt` is left as it is.
+            Some(c) => match bt_reader.changed(bus, c) {
+                Ok(None) => Ok(()),
+                r => bt_into(r, &mut s),
+            },
+            None => Ok(()),
+        };
+        let Some(d) = signal.domain().filter(|d| domains.contains(d)) else {
+            if !publish_if_changed(&mut last, &s, publish) {
+                return Ok(());
+            }
+            b?;
+            continue;
+        };
         let r = read(bus, d, &mut s, log_state);
         let w = if d == Domain::Network { wifi_into(reader.reread(bus), &mut s) } else { Ok(()) };
+        // BlueZ itself changed (its owner, the adapter's or a battery's properties): the panel's
+        // view is read again on the owner now there.
+        let b = if d == Domain::Bluetooth && change.is_none() { bt_into(bt_reader.reread(bus), &mut s).and(b) } else { b };
         if !publish_if_changed(&mut last, &s, publish) {
             return Ok(());
         }
         // The Wi-Fi read fails only with the bus itself gone: that outage wins over the domain's.
         w?;
+        b?;
         r?;
     }
 }
 
 /// The bar's messages for a published state; None (the whole bus down): "–" for every module, no
 /// power profile, no Wi-Fi.
-pub fn messages(s: Option<SystemState>) -> [Msg; 5] {
+pub fn messages(s: Option<SystemState>) -> [Msg; 6] {
     match s {
         Some(s) => [
             Msg::Network(s.network),
@@ -656,8 +749,16 @@ pub fn messages(s: Option<SystemState>) -> [Msg; 5] {
             Msg::Battery(s.battery),
             Msg::Profile(s.power),
             Msg::Wifi { open: Some(s.wifi_open), state: s.wifi },
+            Msg::Bt { open: Some(s.bt_open), state: s.bt },
         ],
-        None => [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi { open: None, state: None }],
+        None => [
+            Msg::Network(None),
+            Msg::Bluetooth(None),
+            Msg::Battery(None),
+            Msg::Profile(None),
+            Msg::Wifi { open: None, state: None },
+            Msg::Bt { open: None, state: None },
+        ],
     }
 }
 
@@ -713,6 +814,15 @@ fn run_supervised(
                     // stale (F4): read before the outage, it may no longer hold by the backoff's
                     // end, so an attempt never deletes on it; the next session reads it afresh.
                     Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, ..last.clone() }),
+                    // BlueZ's own outage: the panel's Bluetooth view is dropped (nothing to trust
+                    // until the next session reads it), the Wi-Fi kept stale as any other's.
+                    Outage::Domain(Domain::Bluetooth) => {
+                        let mut kept = SystemState { bt: None, ..last.clone() };
+                        if let Some(w) = kept.wifi.as_mut() {
+                            w.stale = true;
+                        }
+                        Some(kept)
+                    }
                     Outage::Domain(_) => {
                         let mut kept = last.clone();
                         if let Some(w) = kept.wifi.as_mut() {
@@ -746,7 +856,12 @@ fn wanted(domains: &[Domain]) -> bool {
 /// value during the delay (I2, review); the bus itself going away blanks
 /// all three. `wifi`: the quick panel's tap (quick Wi-Fi spec § 5), polled beside the bus; None: a
 /// tap nothing ever sets.
-pub fn start(domains: Vec<Domain>, wifi: Option<Arc<WifiTap>>, send: impl Fn(Option<SystemState>) -> bool + Send + 'static) {
+pub fn start(
+    domains: Vec<Domain>,
+    wifi: Option<Arc<WifiTap>>,
+    bt: Option<Arc<BtTap>>,
+    send: impl Fn(Option<SystemState>) -> bool + Send + 'static,
+) {
     if !wanted(&domains) {
         return;
     }
@@ -756,9 +871,10 @@ pub fn start(domains: Vec<Domain>, wifi: Option<Arc<WifiTap>>, send: impl Fn(Opt
         // re-review): a domain stuck down must log once, not once per round.
         let mut log_state = DomainLog::default();
         let tap = wifi.unwrap_or_default();
+        let bt_tap = bt.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone());
-            session(&mut bus, &domains, &mut log_state, &tap, p)
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking_bt(bt_tap.clone());
+            session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, p)
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
     });
@@ -815,7 +931,8 @@ mod tests {
     fn run_over(bus: &mut FakeBus, domains: &[Domain]) -> (Vec<SystemState>, io::Result<()>) {
         let mut seen = Vec::new();
         let tap = bus.tap.clone();
-        let r = session(bus, domains, &mut DomainLog::default(), &tap, &mut |s| {
+        let bt_tap = bus.bt_tap.clone();
+        let r = session(bus, domains, &mut DomainLog::default(), &tap, &bt_tap, &mut |s| {
             seen.push(s);
             true
         });
@@ -861,6 +978,8 @@ mod tests {
                 power: Some(ProfileState::default()),
                 wifi: None,
                 wifi_open: 0,
+                bt: None,
+                bt_open: 0,
             }
         );
         assert!(matches!(&seen[1].network, Some(NetState::Online { link: Link::Wifi, .. })), "{:?}", seen[1]);
@@ -977,7 +1096,7 @@ mod tests {
     fn stops_when_the_bar_stops() {
         let mut bus = FakeBus::workstation();
         bus.script = VecDeque::from([(signal(network::PATH, PROPERTIES, "PropertiesChanged", None), nothing as fn(&mut FakeBus))]);
-        assert!(session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &mut |_| false).is_ok());
+        assert!(session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |_| false).is_ok());
         assert_eq!(bus.script.len(), 1, "no signal read after the bar said stop");
     }
 
@@ -1283,11 +1402,136 @@ mod tests {
         assert_eq!(owner.domain(), Some(Domain::Power));
     }
 
+    const HEADSET: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_02";
+    const KEYBOARD_TEST: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_05";
+
+    fn bt_row(b: &mut FakeBus) {
+        b.bt_tap.set(BtScope::Row);
+    }
+    fn bt_detail(b: &mut FakeBus) {
+        b.bt_tap.set(BtScope::Detail);
+    }
+    fn bt_closed(b: &mut FakeBus) {
+        b.bt_tap.set(BtScope::Closed);
+    }
+    fn keyboard_nearby(b: &mut FakeBus) {
+        b.nearby(KEYBOARD_TEST, "Keyboard-Test", Some(-50));
+    }
+
+    fn bt_added(path: &str) -> Signal {
+        with_names(
+            signal("/", OBJECT_MANAGER, "InterfacesAdded", Some(path)),
+            &["org.freedesktop.DBus.Introspectable", "org.bluez.Device1"],
+        )
+    }
+
+    fn bt_labels(v: &[crate::system::BtEntry]) -> Vec<&str> {
+        v.iter().map(|e| e.label.as_str()).collect()
+    }
+
+    #[test]
+    fn the_bt_view_is_read_on_a_poke_followed_in_detail_and_dropped_on_close() {
+        let mut bus = FakeBus::workstation();
+        let steps: [Step; 4] = [
+            (Signal::poke(), bt_row),
+            (Signal::poke(), bt_detail),
+            (bt_added(KEYBOARD_TEST), keyboard_nearby),
+            (Signal::poke(), bt_closed),
+        ];
+        bus.script = VecDeque::from(steps);
+        let (seen, r) = run(&mut bus);
+        assert_eq!(r.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        let shape: Vec<_> =
+            seen.iter().map(|s| s.bt.as_ref().map(|v| (v.adapter.is_some(), bt_labels(&v.paired), bt_labels(&v.nearby)))).collect();
+        assert_eq!(
+            shape,
+            [
+                None,
+                Some((true, vec![], vec![])),
+                Some((true, vec!["CasqueBT"], vec![])),
+                Some((true, vec!["CasqueBT"], vec!["Keyboard-Test"])),
+                None
+            ],
+            "initial, the row, the detail, the device found, closed"
+        );
+        assert_eq!(seen.iter().map(|s| s.bt_open).collect::<Vec<_>>(), [0, 1, 1, 1, 1]);
+        assert!(seen.iter().all(|s| s.bluetooth == Some(BtState::On { devices: vec![] })), "the bar's state unchanged");
+        assert_eq!(bus.calls.iter().filter(|c| c.starts_with("GetManagedObjects")).count(), 3, "the bar's, the row's, the detail's");
+        let device_reads: Vec<_> = bus.calls.iter().filter(|c| c.starts_with("GetAll") && c.ends_with("org.bluez.Device1")).collect();
+        assert_eq!(device_reads, [&format!("GetAll {BLUEZ_OWNER} {KEYBOARD_TEST} org.bluez.Device1")]);
+    }
+
+    #[test]
+    fn a_bt_device_signal_reads_nothing_outside_the_detail() {
+        let mut bus = FakeBus::workstation();
+        let alias = with_names(signal(HEADSET, PROPERTIES, "PropertiesChanged", Some("org.bluez.Device1")), &["Alias"]);
+        let steps: [Step; 5] = [
+            (bt_added(KEYBOARD_TEST), keyboard_nearby),
+            (alias.clone(), nothing),
+            (Signal::poke(), bt_row),
+            (bt_added(KEYBOARD_TEST), nothing),
+            (alias, nothing),
+        ];
+        bus.script = VecDeque::from(steps);
+        let (seen, _) = run(&mut bus);
+        assert_eq!(seen.len(), 2, "initial and the row");
+        assert!(!bus.calls.iter().any(|c| c.starts_with("GetAll") && c.contains("/org/bluez/")), "{:?}", bus.calls);
+    }
+
+    /// Never `continue`d as Wi-Fi's signals are: Connected matters to the bar and to the open detail.
+    #[test]
+    fn a_device_connecting_in_the_detail_reaches_the_bar_and_the_panel() {
+        let mut bus = FakeBus::workstation();
+        let connected = with_names(signal(HEADSET, PROPERTIES, "PropertiesChanged", Some("org.bluez.Device1")), &["Connected"]);
+        let steps: [Step; 2] = [(Signal::poke(), bt_detail), (connected, bluetooth_connected)];
+        bus.script = VecDeque::from(steps);
+        let (seen, _) = run(&mut bus);
+        let last = seen.last().expect("published");
+        assert!(matches!(&last.bluetooth, Some(BtState::On { devices }) if devices.len() == 2), "{:?}", last.bluetooth);
+        assert_eq!(last.bt.as_ref().map(|v| v.paired[0].connected), Some(true));
+    }
+
+    #[test]
+    fn messages_has_six_and_bt_none_when_down() {
+        assert_eq!(messages(None)[5], Msg::Bt { open: None, state: None });
+        let s = SystemState { bt: Some(BtView::default()), bt_open: 4, ..SystemState::default() };
+        assert_eq!(messages(Some(s))[5], Msg::Bt { open: Some(4), state: Some(BtView::default()) });
+    }
+
+    #[test]
+    fn a_bluetooth_outage_resends_no_bt_view() {
+        let shown = SystemState { bt: Some(BtView::default()), bt_open: 2, ..SystemState::default() };
+        for (domain, expected) in [(Domain::Bluetooth, SystemState { bt: None, ..shown.clone() }), (Domain::Battery, shown.clone())] {
+            let sends = RefCell::new(Vec::new());
+            run_supervised(
+                |publish: &mut dyn FnMut(SystemState) -> bool| {
+                    publish(shown.clone());
+                    Err(tag(io::Error::other("wedged"), Outage::Domain(domain)))
+                },
+                &|v: Option<SystemState>| {
+                    sends.borrow_mut().push(v);
+                    sends.borrow().len() < 2
+                },
+                |_| {},
+                clock(Duration::ZERO),
+                |_| {},
+            );
+            assert_eq!(sends.borrow()[1], Some(expected), "{domain:?} down");
+        }
+    }
+
     #[test]
     fn messages_for_the_bar() {
         assert_eq!(
             messages(None),
-            [Msg::Network(None), Msg::Bluetooth(None), Msg::Battery(None), Msg::Profile(None), Msg::Wifi { open: None, state: None }],
+            [
+                Msg::Network(None),
+                Msg::Bluetooth(None),
+                Msg::Battery(None),
+                Msg::Profile(None),
+                Msg::Wifi { open: None, state: None },
+                Msg::Bt { open: None, state: None }
+            ],
             "bus down: \"–\" everywhere"
         );
         let s = SystemState {
@@ -1297,6 +1541,8 @@ mod tests {
             power: Some(ProfileState::default()),
             wifi: None,
             wifi_open: 0,
+            bt: None,
+            bt_open: 0,
         };
         assert_eq!(
             messages(Some(s)),
@@ -1305,9 +1551,39 @@ mod tests {
                 Msg::Bluetooth(None),
                 Msg::Battery(Some(PowerState::default())),
                 Msg::Profile(Some(ProfileState::default())),
-                Msg::Wifi { open: Some(0), state: None }
+                Msg::Wifi { open: Some(0), state: None },
+                Msg::Bt { open: Some(0), state: None }
             ]
         );
+    }
+
+    #[test]
+    fn bt_changes_are_told_apart() {
+        use bt::BtChange;
+        const DEV: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_10";
+        let changed =
+            |at: &str, iface: &str, names: &[&str]| with_names(signal(at, PROPERTIES, "PropertiesChanged", Some(iface)), names).bt_change();
+        let device = |rssi_only| Some(BtChange::Device { path: DEV.into(), rssi_only });
+        for n in ["Name", "Alias", "Icon", "Paired", "Trusted", "Connected"] {
+            assert_eq!(changed(DEV, "org.bluez.Device1", &[n]), device(false), "{n}");
+        }
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI"]), device(true));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI", "TxPower", "ManufacturerData"]), device(true));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["RSSI", "Connected"]), device(false));
+        assert_eq!(changed(DEV, "org.bluez.Device1", &["ManufacturerData"]), None);
+        assert_eq!(changed(DEV, "org.bluez.Device1", &[]), device(false), "unknown names: read");
+        for n in ["Powered", "PowerState"] {
+            assert_eq!(changed("/org/bluez/hci0", "org.bluez.Adapter1", &[n]), Some(BtChange::Adapter("/org/bluez/hci0".into())));
+        }
+        assert_eq!(changed("/org/bluez/hci0", "org.bluez.Adapter1", &["Discovering"]), None);
+        assert_eq!(changed(DEV, "org.bluez.Battery1", &["Percentage"]), None, "the bar's only");
+        let objects = |member, arg0, names: &[&str]| with_names(signal("/", OBJECT_MANAGER, member, arg0), names).bt_change();
+        let both = ["org.freedesktop.DBus.Introspectable", "org.bluez.Device1"];
+        assert_eq!(objects("InterfacesAdded", Some(DEV), &both), Some(BtChange::Added(DEV.into())));
+        assert_eq!(objects("InterfacesRemoved", Some(DEV), &["org.bluez.Device1"]), Some(BtChange::Removed(DEV.into())));
+        assert_eq!(objects("InterfacesAdded", Some(DEV), &["org.bluez.Battery1"]), None);
+        assert_eq!(objects("InterfacesAdded", None, &both), None, "no path: nothing to read");
+        assert_eq!(objects("InterfacesAdded", Some("/org/freedesktop/x"), &both), None, "not BlueZ's");
     }
 
     #[test]
@@ -1531,6 +1807,8 @@ mod tests {
             power: None,
             wifi: None,
             wifi_open: 0,
+            bt: None,
+            bt_open: 0,
         };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {
@@ -1611,6 +1889,8 @@ mod tests {
             power: None,
             wifi: None,
             wifi_open: 0,
+            bt: None,
+            bt_open: 0,
         };
         run_supervised(
             |publish: &mut dyn FnMut(SystemState) -> bool| {
@@ -1673,7 +1953,7 @@ mod tests {
             |publish: &mut dyn FnMut(SystemState) -> bool| {
                 let mut bus = FakeBus::workstation();
                 bus.failing.insert("/".into());
-                session(&mut bus, &domains, &mut DomainLog::default(), &WifiTap::default(), publish)
+                session(&mut bus, &domains, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), publish)
             },
             &|v: Option<SystemState>| {
                 sends.borrow_mut().push(v);
@@ -1699,7 +1979,7 @@ mod tests {
             // An empty script: the next (and only) call to `next_signal`
             // ends the session — a real bus going away, untagged.
             |publish: &mut dyn FnMut(SystemState) -> bool| {
-                session(&mut FakeBus::workstation(), &domains, &mut DomainLog::default(), &WifiTap::default(), publish)
+                session(&mut FakeBus::workstation(), &domains, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), publish)
             },
             &|v: Option<SystemState>| {
                 sends.borrow_mut().push(v);
@@ -1735,7 +2015,7 @@ mod tests {
     fn start_with_no_domains_connects_nothing() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let c = calls.clone();
-        start(vec![], None, move |_| {
+        start(vec![], None, None, move |_| {
             c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             true
         });
