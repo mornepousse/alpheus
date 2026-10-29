@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::Msg;
 
 /// Task 4 review: the opaque region is sent only when it changes; a region that cannot be made
 /// clears the surface's claim (never a stale one over transparent gaps) and is retried later.
@@ -48,21 +49,6 @@ fn a_bar_waiting_for_its_new_placement_is_not_drawn() {
     assert!(!drawable(true, 800, true), "re-placed: the configure paints");
     assert!(!drawable(false, 800, false), "never configured");
     assert!(!drawable(true, 0, false), "no width yet");
-}
-
-/// Final review R2: the press remembered for an Activate answer is spent by the first answer
-/// that uses it; a second (late) answer, or one for another icon, finds nothing.
-#[test]
-fn the_remembered_press_is_consumed_by_the_menu_it_opens() {
-    let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-    let press = |n: u32| Some((key(n), PopupAnchor { output: "DP-1".into(), start: 3, end: 5 }, Button::Left));
-    let mut last = press(1);
-    assert!(take_icon_for(&mut last, &key(1)).is_some(), "the first answer opens the menu");
-    assert!(last.is_none(), "and spends the press");
-    assert!(take_icon_for(&mut last, &key(1)).is_none(), "a late second answer opens nothing");
-    let mut last = press(1);
-    assert!(take_icon_for(&mut last, &key(2)).is_none(), "another icon's answer opens nothing");
-    assert!(last.is_none(), "and the stale press is gone too");
 }
 
 #[test]
@@ -136,27 +122,6 @@ fn a_press_on_a_module_right_after_its_popup_was_done_does_not_reopen_it() {
         !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Panel), t0),
         "a calendar record does not swallow a bell press"
     );
-}
-
-/// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current
-/// selection is still the one it was asked for.
-#[test]
-fn a_submenu_fetch_grafts_only_while_still_selected() {
-    assert!(submenu_still_selected(Some(3), Some(3)), "still on it: graft it in");
-    assert!(!submenu_still_selected(Some(3), Some(7)), "selection moved elsewhere: drop it");
-    assert!(!submenu_still_selected(Some(3), None), "nothing selected any more: drop it");
-    assert!(!submenu_still_selected(None, Some(3)), "nothing was ever asked for");
-}
-
-/// Review requirement 3: a duplicate failed Activate (two quick left clicks on an item without
-/// its own Activate, e.g. Steam) must not close and reopen the menu already asked for it.
-#[test]
-fn open_menu_for_the_same_key_already_asked_is_a_no_op() {
-    let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-    let (a, b) = (key(1), key(2));
-    assert!(already_requested(Some(&a), &a), "the same icon: a duplicate failed Activate changes nothing");
-    assert!(!already_requested(Some(&a), &b), "a different icon: its own menu still opens");
-    assert!(!already_requested(None, &a), "nothing asked yet: opens normally");
 }
 
 #[test]

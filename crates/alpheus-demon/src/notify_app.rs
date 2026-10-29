@@ -12,7 +12,8 @@ use crate::state::Msg;
 use crate::state_file;
 use crate::tray::notifications::Notifications;
 use crate::tray::router::TrayOutput;
-use crate::wayland::{App, notifications_of};
+use crate::tray_bridge::notifications_of;
+use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{DndVerb, Reply, Request};
 use alpheus_commun::paths;
 

@@ -513,8 +513,8 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
 #[test]
 fn the_panel_marks_read_only_after_it_opened() {
     let files = source_files();
-    let wayland = production_code(&files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1);
-    let body = function_body(&wayland, "pub(crate) fn panel_toggle(");
+    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "panel_app.rs").expect("panel_app.rs").1);
+    let body = function_body(&panel_app, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
     let shown = body.find("\"panel shown (entries").expect("panel_toggle logs the shown panel");
@@ -533,16 +533,16 @@ fn the_panel_marks_read_only_after_it_opened() {
 fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (link, wayland) = (src("link.rs"), src("wayland.rs"));
+    let (link, bridge) = (src("link.rs"), src("tray_bridge.rs"));
     for (body, ready, read) in [
         (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
-        (function_body(&wayland, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
+        (function_body(&bridge, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
     ] {
         let (at, idle) = (body.find(ready), body.find("insert_idle"));
         assert!(at.is_some() && idle.is_some(), "{ready} must queue an idle: {body}");
         assert!(body[idle.unwrap_or(0)..].contains(read), "the idle must read: {read}: {body}");
     }
-    let mpris_do = function_body(&wayland, "pub(crate) fn mpris_do(");
+    let mpris_do = function_body(&bridge, "pub(crate) fn mpris_do(");
     assert!(mpris_do.contains("self.link_sync()") && mpris_do.contains("self.tray_sync()"), "mpris_do ends in the syncs: {mpris_do}");
 }
 
@@ -555,8 +555,8 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (wayland, popup, surface) = (src("wayland.rs"), src("popup.rs"), src("launcher/surface.rs"));
-    let repaint = function_body(&wayland, "fn menu_repaint(");
+    let (menu_app, popup, surface) = (src("menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
+    let repaint = function_body(&menu_app, "fn menu_repaint(");
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
     assert!(repaint.contains("position_by"), "menu_repaint must find its bar by the popup's parent surface: {repaint}");
     let open = function_body(&surface, "pub fn launcher_open(");
