@@ -1,0 +1,158 @@
+# Architecture
+
+A short map for contributors. The reasons behind each part are in
+[`SCOPE.md`](SCOPE.md) (the original scope) and the specs in
+[`specs/`](specs/); the per-module `//!` comments in the source are the
+detailed reference and are kept current with the code.
+
+## Crates
+
+One Cargo workspace, four crates:
+
+| Crate | What it is | Does not depend on |
+|---|---|---|
+| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol | ratatui, Wayland |
+| `alpheus` | the TUI control center (ratatui) | Wayland |
+| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators | ratatui |
+| `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
+
+These boundaries are enforced from `Cargo.lock` by
+`crates/alpheus-commun/tests/boundaries.rs`: a dependency added across a
+line fails the build's tests. The TUI re-exports the shared modules, so
+paths like `alpheus::backends::…` still work.
+
+## The daemon
+
+`alpheus-demon` is one process with a **single event loop** (calloop) on the
+main thread. It draws with cosmic-text into shared-memory buffers attached to
+layer-shell surfaces, one bar per output, through smithay-client-toolkit.
+Everything else follows from one rule: *nothing runs unless something
+happened*.
+
+- **State is pure.** `state::Bar` holds only what the sources have said;
+  messages change it and `layout` derives, per output, a grid of cells that the
+  painter draws. Styles and themes are another pass over that grid, not new
+  state.
+- **Sources feed the loop through channels.** A source is a supervised
+  thread with a small stack (`sources::spawn_source`): a read-only
+  connection, a backoff when it goes down (1 s doubling up to 30 s; the bar shows
+  "–" meanwhile), a panic published as "–". The sources are:
+  - the **compositor** (Hyprland, niri, Sway, Mango; one of four, detected
+    once from the environment: see [compositors.md](compositors.md)),
+  - **sound** (a long-lived `pw-dump -m -N -R` child: volume, default devices,
+    the capture graph used by the privacy indicators),
+  - the system **D-Bus** (NetworkManager, UPower, BlueZ, power-profiles-daemon)
+    on one thread blocked on the bus while nothing changes.
+  Resources (`/proc`, `/sys`) are a timer on the loop, not a thread. With
+  every module on, the daemon measures six threads at rest; they are
+  accounted for in the README's memory table.
+- **A guard thread** waits for SIGTERM, SIGHUP and SIGINT without running,
+  asks the loop to stop and forces the exit if the loop does not finish within
+  a one-second grace period. A single-instance `flock` in `$XDG_RUNTIME_DIR`
+  keeps a second copy from starting.
+- **Session-bus features run on the loop itself,** through a second,
+  non-blocking connection (the tray's StatusNotifierWatcher and dbusmenu,
+  MPRIS, the notification server, the portal's colour scheme): no new thread.
+- **Timers are deadlines, not ticks.** `deadline::DeadlineTimer` arms one
+  calloop timer at the earliest deadline while there is one and nothing
+  otherwise: tooltips, notification expiry, the OSD's 1.3 s, popups, the
+  quick panel's confirmations. At rest there are **no wake-ups**, which the
+  tests assert.
+- **Popups and panels** (menus, calendar, media, notifications panel, quick
+  settings, power menu, privacy list) are `xdg_popup`s on the bar's own layer
+  surface and share the launcher's list rendering and keys. The launcher, the
+  notification bubbles and the OSD are their own Overlay-layer surfaces,
+  created on show and dropped when done; the launcher binds the keyboard only
+  while open.
+- **Configuration.** `bar.toml` is read once at start; the theme files are
+  watched by one inotify fd and reloaded live; `launcher.toml` is read at each
+  open. A file with an unknown key or a bad value falls back wholly to the
+  defaults, with one log line.
+
+### The launcher bridge
+
+`alpheus-launch` talks to the daemon over `$XDG_RUNTIME_DIR/alpheus-launcher.sock`
+(mode 0600, peers of another uid refused). The wire protocol lives in
+`alpheus-commun::launcher_ipc`. The daemon's side is `launcher/socket.rs`, the
+only place that binds it. Application and `$PATH` scans run on a short-lived
+thread at each open; command sources (`[[sources]]`) run through the executor's
+bounded `capture`.
+
+## Policy: what the daemon may touch
+
+These are guardrails from the scope document, checked mechanically.
+
+1. **No sleep or `dpms` handling.** Locking and blanking stay with an idle
+   daemon; the words are forbidden in the sources.
+2. **The compositor is only read.** Each compositor module has a fixed list of
+   requests it may write (four for Hyprland, one subscription for niri, three
+   messages for Sway, two `watch` lines and a `poll` for Mango); sockets are
+   opened only under `src/sources/`. Anything that must change the compositor
+   goes through a configured external command (see [compositors.md](compositors.md)).
+3. **Nothing resident without a reason.** A closed launcher owns no thread,
+   timer or keyboard.
+4. **The system D-Bus is read-only.** The one connection on the D-Bus thread
+   has only read methods, calls a service through the **unique name** of the
+   process that owns it (never the well-known name, which would let D-Bus
+   activation start it), and a guardrail test fails if a write word (`Set`,
+   `Connect`, `ActivateConnection`, `GetSecrets`, `Pair`, …) appears there.
+   **The one named exemption** is the Bluetooth acting connection
+   (`sources/dbus/bt_act.rs`), a second system-bus connection opened only
+   while the quick panel's Bluetooth detail is open or a call is in flight,
+   with a typed allowlist of methods (adapter power, device trust, discovery,
+   pair, connect, disconnect, remove, and registering alpheus's pairing agent),
+   every call going to BlueZ's unique name with auto-start off. Wi-Fi changes
+   go through `nmcli`, not D-Bus. The session-bus pieces (tray, notifications,
+   MPRIS, the portal) have their own allowlists, also pinned by tests.
+5. **No command by hand.** Every external program is started through the
+   `Executor` (next section); in the daemon nothing calls `Command` directly,
+   and a guardrail checks it.
+
+## The executor
+
+`alpheus-commun::exec::Executor` is the **only** way alpheus launches a system
+tool (`run`, `spawn`, `stream`, `capture`, `spawn_with_input`). Production code
+uses `SystemExecutor` (argument vectors, never a shell, a timeout, the whole
+process group killed and reaped on timeout); tests use `FakeExecutor`, which
+records the exact command lines and answers from a script. In the daemon the
+only executor is wrapped in `NonBlocking`, which refuses `run` outright
+(it would freeze every bar) and lets clicks `spawn`, the sound source `stream`
+and the launcher's scan thread `capture`. This is what makes the rule "no test
+ever calls a real `wpctl`, `nmcli`, `systemctl`, `wm-set`…" practical.
+
+## Tests and guardrails
+
+- **Unit tests** sit beside the code (pure models: `quick.rs`, `privacy.rs`,
+  `media.rs`, `layout`, the compositor parsers).
+- **Guardrail tests** (`crates/alpheus-demon/tests/guardrails.rs`,
+  `crates/alpheus/tests/guardrails.rs`, `crates/alpheus-commun/tests/boundaries.rs`)
+  read the *source files* and fail on a forbidden pattern: D-Bus confined to
+  `sources/` and read-only, the Bluetooth connection acting only through its
+  allowlist, compositor requests read-only, the launcher socket bound in one
+  file, no thread or timer while the launcher is closed, and so on.
+- **Integration tests** use a private `dbus-daemon` (never the session or
+  system bus), fake Hyprland/Mango sockets serving recorded captures, a
+  headless sway, and fake `pw-dump`/MPRIS peers. Those that need sway or
+  `wtype`/`grim` are `#[ignore]`d and run in the dev shell.
+- **Budget tests** (`tests/memory.rs`) measure PSS and wake-ups of the real
+  daemon and **require a release build**.
+- **Fixtures** are anonymised captures (`crates/*/tests/fixtures/`).
+
+## Lightness rules
+
+The reason the project exists, applied as rules:
+
+- Resident memory is small and measured; a feature's cost is measured against
+  the commit before it (back to back, separate target directories, deltas rather
+  than absolutes) and recorded in the README's tables. The overall budget is
+  ≤ 120 MB; the daemon sits around 8 to 11 MB.
+- **An unused option costs nothing**: a module not in `modules` creates no
+  thread, connection or timer; surfaces exist only while shown.
+- **Zero wake-ups at rest.** Event-driven sources, deadline timers, no polling
+  of D-Bus or `/proc` beyond the resources module's own interval.
+- No heavy dependency "for configuration"; TOML parsing and a hand-rolled
+  protocol client are preferred over an async runtime. The D-Bus stack is
+  dbus-rs over the system libdbus, shared with the rest of the session.
+- The TUI renders its first frame in under 100 ms.
+- Don't hard-code what is specific to one workstation (scripts, layouts,
+  paths) without a neutral default or a configurable path.
