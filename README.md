@@ -776,6 +776,8 @@ unknown action or key makes the file invalid.
 
 - [`docs/install.md`](docs/install.md): build and runtime dependencies, a flake
   input, starting the daemon, key binds for Hyprland, Sway, niri and Mango.
+- [`docs/compositors.md`](docs/compositors.md): what each compositor gives the
+  bar, and the external commands (`wm-set` and others) alpheus expects.
 - [`docs/cli.md`](docs/cli.md): the command lines of `alpheus`,
   `alpheus-demon` and `alpheus-launch`: verbs, options, exit codes.
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
