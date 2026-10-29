@@ -85,18 +85,25 @@ pub struct Bar {
     pub style: BarStyle,
 }
 
-/// Puts `v` in `slot` (None: down); true if it changed.
-fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
-    let n = match v {
-        Some(x) => Feed::Ready(x),
-        None => Feed::Down,
-    };
-    if *slot == n {
+/// Puts `v` in `slot`; true if it changed.
+fn set_if_changed<T: PartialEq>(slot: &mut T, v: T) -> bool {
+    if *slot == v {
         false
     } else {
-        *slot = n;
+        *slot = v;
         true
     }
+}
+
+/// Puts `v` in `slot` (None: down); true if it changed.
+fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
+    set_if_changed(
+        slot,
+        match v {
+            Some(x) => Feed::Ready(x),
+            None => Feed::Down,
+        },
+    )
 }
 
 /// What the bar draws of the sound: the sink's volume, or the source's state ("…", "–"); None
@@ -175,14 +182,7 @@ impl Bar {
                 self.compositor = new;
                 redraw
             }
-            Msg::Clock(h) => {
-                if self.clock == Some(h) {
-                    false
-                } else {
-                    self.clock = Some(h);
-                    true
-                }
-            }
+            Msg::Clock(h) => set_if_changed(&mut self.clock, Some(h)),
             Msg::Sound(s) => {
                 // The sink list is the open quick panel's (`quick_take` moved it there): never kept here.
                 let s = s.map(|s| SoundState { sinks: None, ..s });
@@ -205,30 +205,9 @@ impl Bar {
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
             Msg::Resources(s) => self.resources.push(s),
-            Msg::Tray(icons) => {
-                if self.tray == icons {
-                    false
-                } else {
-                    self.tray = icons;
-                    true
-                }
-            }
-            Msg::Media(view) => {
-                if self.media == view {
-                    false
-                } else {
-                    self.media = view;
-                    true
-                }
-            }
-            Msg::Notifications(view) => {
-                if self.notifications == Some(view) {
-                    false
-                } else {
-                    self.notifications = Some(view);
-                    true
-                }
-            }
+            Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
+            Msg::Media(view) => set_if_changed(&mut self.media, view),
+            Msg::Notifications(view) => set_if_changed(&mut self.notifications, Some(view)),
         }
     }
 }
@@ -309,6 +288,15 @@ mod tests {
         assert!(!b.privacy_at(&Msg::Clock(H), Instant::now()));
         assert!(!b.privacy_at(&Msg::Network(None), Instant::now()));
         assert!(!b.privacy.shown().mic.active());
+    }
+
+    #[test]
+    fn set_if_changed_stores_and_reports_only_a_change() {
+        let mut slot = 1;
+        assert!(!set_if_changed(&mut slot, 1), "same value: nothing changed");
+        assert!(set_if_changed(&mut slot, 2));
+        assert_eq!(slot, 2, "the new value is kept");
+        assert!(!set_if_changed(&mut slot, 2));
     }
 
     #[test]
