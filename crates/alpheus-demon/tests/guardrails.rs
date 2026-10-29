@@ -501,7 +501,7 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     }
     let retire = function_body(&popup, "fn keyboard_retire(");
     assert!(retire.contains("self.retired_keyboards.hold(k)"), "keyboard_retire must hold it: {retire}");
-    let run = function_body(&launch, "pub fn run(");
+    let run = function_body(&launch, "fn main_loop(");
     let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
     let drain = run.find("state.retired_keyboards.drain()").expect("the loop must drain the retired keyboards");
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
@@ -1604,7 +1604,7 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
     let last = at("state.theme_changed();");
     assert_eq!(prod.matches("state.theme_changed();").count(), 1);
-    for before in ["crate::watch::start(", "start_tray(&mut state", "state.follow_portal_if_auto();", "state.publish_mode();"] {
+    for before in ["crate::watch::start(", "start_tray(state, handle)", "state.follow_portal_if_auto();", "state.publish_mode();"] {
         assert!(at(before) < last, "{before} must come before the startup re-resolve");
     }
 }

@@ -598,16 +598,7 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
 }
 
 pub fn run() -> i32 {
-    // Caps glibc's malloc arenas before any thread starts (startup budget,
-    // 15 MB, step 6): otherwise the sound and D-Bus threads would each
-    // get their own arena, whose freed fragments `release_memory`
-    // (`malloc_trim`) can't always hand back to the system.
-    // SAFETY: mallopt(3) only changes the allocator's configuration; no
-    // other thread exists yet (sources and the guard start further below).
-    #[cfg(target_env = "gnu")]
-    unsafe {
-        libc::mallopt(libc::M_ARENA_MAX, 2);
-    }
+    limit_malloc_arenas();
     // Block signals BEFORE any thread: all of them inherit the mask; only
     // the guard thread receives them (sigwait).
     let signals = match shutdown::block_signals() {
@@ -634,6 +625,53 @@ pub fn run() -> i32 {
         log(w);
     }
     let launcher_server: Option<Rc<Server>> = launcher_server.map(Rc::new);
+    let loaded = load_settings();
+    let plan = Plan::of(&loaded.config);
+    // `run` (blocking) is refused: see nonblocking.rs.
+    let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
+    let Some((mut core, rx)) = build_app(loaded, &exec) else { return 1 };
+    if !insert_core_sources(&core.handle, rx, &plan) {
+        return 1;
+    }
+    start_modules(&mut core.state, &core.handle, &plan);
+    start_sources(&mut core.state, &core.tx, &plan, &exec);
+    if let Some(server) = &launcher_server {
+        match watch_launcher_socket(&core.handle, server, core.qh.clone()) {
+            Ok(()) => log("launcher socket ready"),
+            Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
+        }
+    }
+    if !start_guard(signals, core.tx.clone()) {
+        return 1;
+    }
+    let dispatch_failure = main_loop(&mut core.state, &mut core.event_loop, &core.qh);
+    shut_down(core, launcher_server);
+    exit_code(dispatch_failure)
+}
+
+/// Caps glibc's malloc arenas before any thread starts (startup budget,
+/// 15 MB, step 6): otherwise the sound and D-Bus threads would each
+/// get their own arena, whose freed fragments `release_memory`
+/// (`malloc_trim`) can't always hand back to the system.
+fn limit_malloc_arenas() {
+    // SAFETY: mallopt(3) only changes the allocator's configuration; no
+    // other thread exists yet (sources and the guard start further below).
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+}
+
+/// bar.toml and the theme, read once at start-up.
+struct Loaded {
+    config: BarConfig,
+    theme_settings: ThemeSettings,
+    roles: Roles,
+    theme_warnings: Vec<String>,
+}
+
+/// Reads bar.toml and the theme (warnings logged, the theme line too).
+fn load_settings() -> Loaded {
     let config_dir = paths::config_dir();
     let (config, warnings) = settings(&config_dir);
     for a in &warnings {
@@ -645,6 +683,48 @@ pub fn run() -> i32 {
         log(a);
     }
     log(&format!("theme: {}", describe(&theme_settings, effective_mode(theme_settings.mode, None))));
+    Loaded { config, theme_settings, roles, theme_warnings }
+}
+
+/// What the configuration asks for, derived once before the config moves into the bar.
+struct Plan {
+    seconds: bool,
+    want: Wanted,
+    scope: Scope,
+    privacy: bool,
+    camera_roots: (PathBuf, PathBuf),
+    resources_config: ResourcesConfig,
+}
+
+impl Plan {
+    fn of(config: &BarConfig) -> Plan {
+        Plan {
+            seconds: clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date),
+            want: wanted(&config.modules),
+            scope: sound_scope(&config.modules),
+            privacy: camera_wanted(&config.modules),
+            camera_roots: (config.privacy.dev_dir.clone(), config.privacy.proc_dir.clone()),
+            resources_config: config.resources.clone(),
+        }
+    }
+}
+
+/// The daemon's live parts after `build_app`. The field order is the drop order (the loop's handle,
+/// the loop, the queue handle, the connection last).
+struct Core {
+    handle: LoopHandle<'static, App>,
+    event_loop: EventLoop<'static, App>,
+    qh: QueueHandle<App>,
+    conn: Connection,
+    tx: channel::Sender<Mail>,
+    state: App,
+}
+
+/// Fonts, the Wayland connection, the app and its event loop, with the mail channel's two ends
+/// (the receiver is returned to be inserted by `insert_core_sources`). None: the reason is logged
+/// and `run` returns 1.
+fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel::Channel<Mail>)> {
+    let Loaded { config, theme_settings, roles, theme_warnings } = loaded;
     // cosmic-text parses fonts with rayon: one thread is enough for a bar,
     // instead of one thread per core kept around for the whole session.
     // SAFETY: no other thread exists yet (sources and the guard start after).
@@ -658,32 +738,24 @@ pub fn run() -> i32 {
         }
         Err(m) => {
             log(&m);
-            return 1;
+            return None;
         }
     };
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
             log(&format!("no Wayland session: {e}"));
-            return 1;
+            return None;
         }
     };
     let (globals, file) = match registry_queue_init::<App>(&conn) {
         Ok(x) => x,
         Err(e) => {
             log(&format!("Wayland registry: {e}"));
-            return 1;
+            return None;
         }
     };
     let qh = file.handle();
-    let seconds = clock::has_seconds(&config.clock.format) || clock::has_seconds(&config.clock.date);
-    let want = wanted(&config.modules);
-    let scope = sound_scope(&config.modules);
-    let privacy = camera_wanted(&config.modules);
-    let camera_roots = (config.privacy.dev_dir.clone(), config.privacy.proc_dir.clone());
-    let resources_config = config.resources.clone();
-    // `run` (blocking) is refused: see nonblocking.rs.
-    let exec: Arc<dyn Executor> = Arc::new(NonBlocking(SystemExecutor::new(Duration::from_secs(2))));
     // The bar's tints and shape follow `module_colors` and `style` from its first paint (`Bar::new`
     // starts at none and flat).
     let mut bar = Bar::new(config);
@@ -693,25 +765,31 @@ pub fn run() -> i32 {
         Ok(e) => e,
         Err(m) => {
             log(&m);
-            return 1;
+            return None;
         }
     };
     state.theme_warnings = theme_warnings;
-    let mut event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
+    let event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
             log(&format!("event loop: {e}"));
-            return 1;
+            return None;
         }
     };
     let handle = event_loop.handle();
     state.loop_handle = Some(handle.clone());
     if WaylandSource::new(conn.clone(), file).insert(handle.clone()).is_err() {
         log("Wayland source: could not insert");
-        return 1;
+        return None;
     }
     let (tx, rx) = channel::channel::<Mail>();
     state.mail = Some(tx.clone());
+    Some((Core { handle, event_loop, qh, conn, tx, state }, rx))
+}
+
+/// The loop's own sources: the mail channel, the clock, and the resources timer when shown.
+/// False: one was refused (logged).
+fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<Mail>, plan: &Plan) -> bool {
     // Each callback (channel, clock) only raises the `dirty` flag (see
     // `DeferredRedraw`): neither one draws. A burst of several messages
     // (e.g. niri, which sends several at once) handled in the same
@@ -727,6 +805,7 @@ pub fn run() -> i32 {
     });
     // Clock: one wakeup per display change (minute, or second if the format
     // shows one), never more.
+    let seconds = plan.seconds;
     let timer = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
         let (h, nanos) = LocalTime::now();
         on_message(state, Msg::Clock(h), || h); // never consulted: Msg::Clock is not "from the compositor"
@@ -734,31 +813,38 @@ pub fn run() -> i32 {
     });
     if mail.is_err() || timer.is_err() {
         log("event loop: source refused");
-        return 1;
+        return false;
     }
     // Resources: a reading of /proc every `interval` seconds, on the loop
     // (a few µs), only if the module is shown.
-    if want.resources {
-        let mut reader = resources::Reader::new(Path::new("/"), &resources_config.sensor);
-        let period = resources_period(&resources_config);
+    if plan.want.resources {
+        let mut reader = resources::Reader::new(Path::new("/"), &plan.resources_config.sensor);
+        let period = resources_period(&plan.resources_config);
         let r = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
             on_message(state, Msg::Resources(reader.sample()), || LocalTime::now().0);
             TimeoutAction::ToDuration(period)
         });
         if r.is_err() {
             log("event loop: resources timer refused");
-            return 1;
+            return false;
         }
     }
+    true
+}
 
+/// The modules that live on the loop: the theme watch, the camera watch, the tray, media,
+/// notifications, the mode file and the portal; the theme is resolved once more last. The order
+/// matters (see the comments, and the guardrail on the startup theme).
+fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan) {
+    let want = &plan.want;
     // Hot reload of the theme: one inotify fd, no thread, no timer (themes task 5).
-    crate::watch::start(&mut state, &handle);
+    crate::watch::start(state, handle);
     // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
-    if privacy {
-        crate::camera_app::start(&mut state, &handle, &camera_roots.0, &camera_roots.1);
+    if plan.privacy {
+        crate::camera_app::start(state, handle, &plan.camera_roots.0, &plan.camera_roots.1);
     }
     if want.tray {
-        start_tray(&mut state, &handle);
+        start_tray(state, handle);
     }
     // The media module: on the tray's connection, or on the bar's link, which the portal joins next.
     state.start_media(want.media);
@@ -782,14 +868,19 @@ pub fn run() -> i32 {
     // portal start would see no bus and give up for the whole session. Idempotent: no repaint when
     // the roles are equal, warnings deduplicated.
     state.theme_changed();
+}
+
+/// The threads that feed the loop: compositor, sound and D-Bus, each only when wanted.
+fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec: &Arc<dyn Executor>) {
+    let want = &plan.want;
     let tx_compositor = tx.clone();
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
         // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
-        let tap = Arc::new(crate::pipewire::SoundTap::new(privacy));
+        let tap = Arc::new(crate::pipewire::SoundTap::new(plan.privacy));
         state.sound_tap = Some(tap.clone());
-        sources::sound::start(exec.clone(), scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
+        sources::sound::start(exec.clone(), plan.scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
         let tx = tx.clone();
@@ -812,14 +903,12 @@ pub fn run() -> i32 {
             sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
         });
     }
-    if let Some(server) = &launcher_server {
-        match watch_launcher_socket(&handle, server, qh.clone()) {
-            Ok(()) => log("launcher socket ready"),
-            Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
-        }
-    }
-    // Guard thread: waits for a signal without running, asks the loop to
-    // stop, forces an exit if it doesn't finish within the grace period.
+}
+
+/// Guard thread: waits for a signal without running, asks the loop to
+/// stop, forces an exit if it doesn't finish within the grace period.
+/// False: it could not start (logged).
+fn start_guard(signals: libc::sigset_t, tx: channel::Sender<Mail>) -> bool {
     let guard = std::thread::Builder::new().name("guard".into()).spawn(move || {
         let sig = shutdown::wait_signal(&signals);
         STOP.store(true, Ordering::SeqCst);
@@ -828,11 +917,16 @@ pub fn run() -> i32 {
     });
     if guard.is_err() {
         log("guard thread failed");
-        return 1;
+        return false;
     }
+    true
+}
+
+/// Dispatches until a stop is asked or the loop fails; true when it failed.
+fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &QueueHandle<App>) -> bool {
     let mut dispatch_failure = false;
     while !state.stop {
-        if let Err(e) = event_loop.dispatch(None, &mut state) {
+        if let Err(e) = event_loop.dispatch(None, state) {
             if end_of_session(&e) {
                 log(&format!("end of session: {e}"));
             } else {
@@ -841,28 +935,33 @@ pub fn run() -> i32 {
             }
             break;
         }
-        after_dispatch(&mut state);
-        after_dispatch_windows(&mut state);
+        after_dispatch(state);
+        after_dispatch_windows(state);
         // Outside the dispatch: a released keyboard's last reference (`retired`).
         state.retired_keyboards.drain();
         // After the whole batch (so any `output_destroyed` paired with a
         // `closed` of this same batch has already run): places the bar
         // back on outputs `closed` marked for restoration and that are
         // still known now (see `App::restore_pending`'s doc).
-        state.restore_pending(&qh);
+        state.restore_pending(qh);
     }
+    dispatch_failure
+}
+
+/// Closes the launcher, drops the app (its surfaces), the socket, flushes the connection and says
+/// the shutdown is over.
+fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A script still waiting gets "cancelled" (exit 1), not a cut connection.
     // Guarded like every launcher entry point: a launcher bug must not turn a
     // clean stop into a crash.
-    state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
-    drop(state); // surfaces destroyed
+    core.state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
+    drop(core.state); // surfaces destroyed
     // The socket file goes now (Server's Drop), not with the loop: the
     // loop's sources may keep each other alive through LoopHandle clones.
     drop(launcher_server);
-    let _ = conn.flush();
+    let _ = core.conn.flush();
     FINISHED.store(true, Ordering::SeqCst);
     log("shutdown");
-    exit_code(dispatch_failure)
 }
 
 #[cfg(test)]
