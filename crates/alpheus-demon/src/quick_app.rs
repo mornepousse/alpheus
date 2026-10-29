@@ -524,9 +524,7 @@ impl App {
             Some(PopupBody::Quick(q)) => q.deadline(),
             _ => self.wifi_follow.as_ref().map(WifiFollow::deadline),
         };
-        if let Some(handle) = self.loop_handle.clone() {
-            self.quick_timer.sync(&handle, at, App::quick_tick);
-        }
+        self.quick_timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
 
     /// The D-Bus thread follows what the open panel shows of the Wi-Fi (quick Wi-Fi spec § 5): its row,
@@ -635,10 +633,8 @@ impl App {
             tap.set(BtScope::Closed);
         }
         self.bt_close();
-        if let Some(handle) = self.loop_handle.clone() {
-            let at = self.wifi_follow.as_ref().map(WifiFollow::deadline);
-            self.quick_timer.sync(&handle, at, App::quick_tick);
-        }
+        let at = self.wifi_follow.as_ref().map(WifiFollow::deadline);
+        self.quick_timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
 
     /// A bar message before anyone else reads it: a sound message's sink list and a Wi-Fi state go to

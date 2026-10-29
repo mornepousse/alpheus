@@ -2144,7 +2144,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     // followed (then it stays on that attempt's deadline only).
     assert!(
         closed.contains(".close()")
-            && closed.contains("quick_timer.sync(")
+            && closed.contains("quick_timer.sync_opt(")
             && closed.contains("self.wifi_follow.as_ref().map(WifiFollow::deadline)"),
         "{closed}"
     );
@@ -2289,7 +2289,7 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("self.power_closed()"), "popup_close must let the power menu's timer go: {close}");
     let closed = function_body(&power_app, "pub(crate) fn power_closed(");
-    assert!(closed.contains("power_timer.sync(") && closed.contains("None"), "{closed}");
+    assert!(closed.contains("power_timer.sync_opt(") && closed.contains("None"), "{closed}");
     let tick = function_body(&power_app, "pub(crate) fn power_tick(");
     let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
     assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
@@ -2355,7 +2355,7 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     assert!(changed.contains("self.privacy_timer_sync()"), "the timer follows every change: {changed}");
     assert!(changed.contains("self.dirty = true"), "the bar's redraw flag, drawn after the pass: {changed}");
     let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
-    assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync("), "{sync}");
+    assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync_opt("), "{sync}");
     assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
     // Each message: a change follows `privacy_changed`; anything else still re-syncs the timer, since
     // an indicator going off changes nothing shown yet, only the deadline (without it, the glyph

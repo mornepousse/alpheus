@@ -445,9 +445,7 @@ impl App {
     /// the name not held).
     pub(crate) fn bubble_timer_sync(&mut self) {
         let deadline = notifications_of(self.tray.as_ref(), self.link.as_ref()).filter(|n| n.held()).and_then(|n| n.center().next_expiry());
-        if let Some(handle) = self.loop_handle.clone() {
-            self.bubble_timer.sync(&handle, deadline, App::bubble_expire);
-        }
+        self.bubble_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::bubble_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never

@@ -1358,9 +1358,7 @@ impl App {
             .and_then(|m| m.players().active())
             .and_then(|p| media_popup::player_tick(open, p, now));
         let at = media_popup::next_deadline(due, self.media_timer.deadline(), now);
-        if let Some(handle) = self.loop_handle.clone() {
-            self.media_timer.sync(&handle, at, App::media_tick);
-        }
+        self.media_timer.sync_opt(self.loop_handle.as_ref(), at, App::media_tick);
     }
 
     /// The tick fired (calloop callback; its source is dropped).
@@ -2072,9 +2070,7 @@ impl App {
         if tooltip_shown {
             self.popup_close(PopupClose::HoverEnded);
         }
-        if let Some(handle) = self.loop_handle.clone() {
-            self.hover_timer.sync(&handle, deadline, App::hover_fire);
-        }
+        self.hover_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::hover_fire);
     }
 
     /// The tooltip's item left the tray: its tooltip goes.

@@ -100,9 +100,7 @@ impl App {
             Some(PopupBody::Power(p)) => p.deadline(),
             _ => None,
         };
-        if let Some(handle) = self.loop_handle.clone() {
-            self.power_timer.sync(&handle, at, App::power_tick);
-        }
+        self.power_timer.sync_opt(self.loop_handle.as_ref(), at, App::power_tick);
     }
 
     /// The timer fired (calloop callback; its source is dropped): the question's 3 s are up.
@@ -114,9 +112,7 @@ impl App {
 
     /// The menu went, whatever closed it (`popup_close`): its timer goes too.
     pub(crate) fn power_closed(&mut self) {
-        if let Some(handle) = self.loop_handle.clone() {
-            self.power_timer.sync(&handle, None, App::power_tick);
-        }
+        self.power_timer.sync_opt(self.loop_handle.as_ref(), None, App::power_tick);
     }
 }
 

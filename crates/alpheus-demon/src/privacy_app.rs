@@ -79,9 +79,7 @@ impl App {
     /// The timer follows the earliest pending off; none without one (privacy spec § 4).
     pub(crate) fn privacy_timer_sync(&mut self) {
         let at = self.bar.privacy.deadline();
-        if let Some(handle) = self.loop_handle.clone() {
-            self.privacy_timer.sync(&handle, at, App::privacy_tick);
-        }
+        self.privacy_timer.sync_opt(self.loop_handle.as_ref(), at, App::privacy_tick);
     }
 
     /// The timer fired (calloop callback; its source is dropped): what is due goes off.

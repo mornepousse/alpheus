@@ -308,9 +308,7 @@ impl App {
     /// The hide timer follows the pill's deadline: armed only while it shows (spec § 3).
     pub(crate) fn osd_timer_sync(&mut self) {
         let deadline = self.osd.deadline();
-        if let Some(handle) = self.loop_handle.clone() {
-            self.osd_timer.sync(&handle, deadline, App::osd_expire);
-        }
+        self.osd_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never
