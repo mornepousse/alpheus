@@ -30,7 +30,7 @@ pub(crate) fn after_change(shown_empty: bool, open: bool) -> Follow {
 
 impl App {
     pub(crate) fn privacy_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Privacy))
+        matches!(self.popup_body(), Some(PopupBody::Privacy))
     }
 
     /// A left press on the module: toggles its popup under it (a second press closes it).

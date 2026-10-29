@@ -630,7 +630,7 @@ impl App {
     pub fn popup_close(&mut self, why: PopupClose) {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
-        let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        let menu = matches!(self.popup_body(), Some(PopupBody::Menu(_)));
         // The panel's card follows the same Seeked rule and tick: they go when it closes.
         let media = self.media_shown() || self.panel_shown();
         // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
@@ -653,11 +653,11 @@ impl App {
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
-        let quick = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Quick(_)));
+        let quick = matches!(self.popup_body(), Some(PopupBody::Quick(_)));
         if quick {
             self.quick_flush();
         }
-        let power = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Power(_)));
+        let power = matches!(self.popup_body(), Some(PopupBody::Power(_)));
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
@@ -701,12 +701,13 @@ impl App {
         crate::memory::release_memory();
     }
 
-    pub fn popup(&self) -> Option<&OpenPopup> {
-        self.popup.as_ref()
+    /// The open popup's body, if any.
+    pub(crate) fn popup_body(&self) -> Option<&PopupBody> {
+        self.popup.as_ref().map(|p| &p.body)
     }
 
-    pub fn popup_mut(&mut self) -> Option<&mut OpenPopup> {
-        self.popup.as_mut()
+    pub(crate) fn popup_body_mut(&mut self) -> Option<&mut PopupBody> {
+        self.popup.as_mut().map(|p| &mut p.body)
     }
 
     /// A key while a grabbing popup is open (the launcher is closed).
@@ -758,7 +759,7 @@ impl App {
 
     /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint` repositions on a size change.
     fn calendar_scroll(&mut self, months: i32) {
-        let Some(PopupBody::Calendar(c)) = self.popup.as_mut().map(|p| &mut p.body) else { return };
+        let Some(PopupBody::Calendar(c)) = self.popup_body_mut() else { return };
         if !c.scroll(months) {
             return;
         }

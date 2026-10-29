@@ -104,7 +104,7 @@ pub(crate) fn sync_step(q: Option<&Quick>, row_shown: bool, connected: bool, in_
 
 /// The open quick panel, if any.
 fn panel(app: &App) -> Option<&Quick> {
-    match app.popup.as_ref().map(|p| &p.body) {
+    match app.popup_body() {
         Some(PopupBody::Quick(q)) => Some(q),
         _ => None,
     }
@@ -144,7 +144,7 @@ impl App {
 
     /// No acting connection: one line per open (`REFUSED`), or with no panel.
     fn bt_refused(&mut self, why: &str) {
-        let first = match self.popup.as_mut().map(|p| &mut p.body) {
+        let first = match self.popup_body_mut() {
             Some(PopupBody::Quick(q)) => q.note_failure(REFUSED),
             _ => true,
         };
@@ -203,7 +203,7 @@ impl App {
 
     /// The connection went under us: counted (`note_lost`, the syncs' bounded reopening).
     fn bt_note_lost(&mut self) {
-        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
+        if let Some(PopupBody::Quick(q)) = self.popup_body_mut() {
             note_lost(q);
         }
     }

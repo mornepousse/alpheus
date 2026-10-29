@@ -293,7 +293,7 @@ impl App {
     }
 
     pub(crate) fn quick_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Quick(_)))
+        matches!(self.popup_body(), Some(PopupBody::Quick(_)))
     }
 
     /// The backlight as the panel shows it: the OSD's device and directory (decision 13), read once.
@@ -520,7 +520,7 @@ impl App {
     /// The timer follows the panel's earliest pending re-read, question or Wi-Fi deadline; with the
     /// panel closed, only a followed attempt's (Mae's ruling P1); none when nothing is pending.
     pub(crate) fn quick_timer_sync(&mut self) {
-        let at = match self.popup.as_ref().map(|p| &p.body) {
+        let at = match self.popup_body() {
             Some(PopupBody::Quick(q)) => q.deadline(),
             _ => self.wifi_follow.as_ref().map(WifiFollow::deadline),
         };
@@ -535,7 +535,7 @@ impl App {
     /// nothing.
     pub(crate) fn quick_wifi_sync(&self) {
         let Some(tap) = &self.wifi_tap else { return };
-        let panel = match self.popup.as_ref().map(|p| &p.body) {
+        let panel = match self.popup_body() {
             Some(PopupBody::Quick(q)) => q.wifi_scope(),
             _ => WifiScope::Closed,
         };
@@ -558,7 +558,7 @@ impl App {
     /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
         app.quick_timer.fired();
-        let (mut due, device) = match app.popup.as_mut().map(|p| &mut p.body) {
+        let (mut due, device) = match app.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => {
                 // No panel: a followed attempt's timeout (Mae's ruling P1).
@@ -585,7 +585,7 @@ impl App {
         let dir = &app.bar.config.osd.backlight_dir;
         let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
-        if let Some(PopupBody::Quick(q)) = app.popup.as_mut().map(|p| &mut p.body) {
+        if let Some(PopupBody::Quick(q)) = app.popup_body_mut() {
             if let Some(level) = level {
                 q.set_backlight(level);
             }
@@ -602,7 +602,7 @@ impl App {
     /// for their window are sent now, never lost; an attempt on a new network handed to the follower
     /// (Mae's ruling P1), the D-Bus thread's reading left as it is (never Closed in between).
     pub(crate) fn quick_flush(&mut self) {
-        let (leaving, waiting, follow) = match self.popup.as_mut().map(|p| &mut p.body) {
+        let (leaving, waiting, follow) = match self.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.bt_leaving(), q.flush(), WifiFollow::leaving(&mut q.wifi)),
             _ => return,
         };
@@ -650,7 +650,7 @@ impl App {
         // Both taken always, so the bar never keeps either (decision 13); the headset first: it
         // reads `sinks` as the panel-scope marker.
         let (headset, sinks) = (taken_headset(m), taken_sinks(m));
-        if let Some(PopupBody::Quick(q)) = self.popup.as_mut().map(|p| &mut p.body) {
+        if let Some(PopupBody::Quick(q)) = self.popup_body_mut() {
             if let Some(sinks) = sinks {
                 q.set_sinks(sinks);
             }

@@ -1048,7 +1048,7 @@ impl App {
         if out.bus_closed && self.menu_for.is_some() {
             // The session went with the bus (the tray is already dropped): a menu shown closes, a
             // request still waiting dies.
-            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+            if matches!(self.popup_body(), Some(PopupBody::Menu(_))) {
                 self.popup_close(PopupClose::ItemGone);
             }
             self.menu_end();
@@ -1066,7 +1066,7 @@ impl App {
             } else {
                 PopupClose::Timeout
             };
-            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+            if matches!(self.popup_body(), Some(PopupBody::Menu(_))) {
                 self.popup_close(why);
             } else {
                 // Never shown (no layout within 2 s, question 8): nothing to close but the request.
@@ -1231,7 +1231,7 @@ impl App {
 
     /// Left press on the clock zone: toggles the calendar under it (a second click closes it).
     pub(crate) fn calendar_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
-        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_))) {
+        if matches!(self.popup_body(), Some(PopupBody::Calendar(_))) {
             self.popup_close(PopupClose::OutsideClick);
             return;
         }
@@ -1273,7 +1273,7 @@ impl App {
     }
 
     pub(crate) fn media_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Media(_)))
+        matches!(self.popup_body(), Some(PopupBody::Media(_)))
     }
 
     /// `f` on the open media popup and the players; Nothing when either is missing.
@@ -1406,7 +1406,7 @@ impl App {
     }
 
     pub(crate) fn panel_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Panel(_)))
+        matches!(self.popup_body(), Some(PopupBody::Panel(_)))
     }
 
     /// `f` on the open panel, the notifications center and the players; Nothing when the panel or the
@@ -1937,7 +1937,7 @@ impl PointerHandler for App {
                         self.last_icon = None;
                     }
                     let b = actions::button(*button);
-                    let menu_shown_for = match self.popup.as_ref().map(|p| &p.body) {
+                    let menu_shown_for = match self.popup_body() {
                         Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
                         _ => None,
                     };
@@ -2060,7 +2060,7 @@ impl App {
 
     /// Arm: the timer at that instant (a tooltip shown for another icon goes); Cancel: no timer, no tooltip.
     pub(crate) fn hover_apply(&mut self, c: HoverChange) {
-        let tooltip_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Tooltip(_)));
+        let tooltip_shown = matches!(self.popup_body(), Some(PopupBody::Tooltip(_)));
         let deadline = match c {
             HoverChange::Nothing => return,
             HoverChange::Arm(at) => Some(at),
@@ -2173,7 +2173,7 @@ impl App {
             return;
         }
         // One menu at a time: a menu shown goes (its session is replaced by the new one).
-        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
+        if matches!(self.popup_body(), Some(PopupBody::Menu(_))) {
             self.popup_close(PopupClose::Replaced);
         }
         let opened = self.tray.as_mut().is_some_and(|t| t.open_menu(&key));
@@ -2194,7 +2194,7 @@ impl App {
 
     /// The session's layout changed: the first one opens the popup, later ones patch it.
     fn menu_layout_changed(&mut self) {
-        let menu_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        let menu_shown = matches!(self.popup_body(), Some(PopupBody::Menu(_)));
         if menu_shown {
             let App { tray, popup, submenu_wanted, .. } = self;
             let (Some(layout), Some(PopupBody::Menu(m))) =
