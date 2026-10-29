@@ -215,7 +215,8 @@ pub enum Input {
     Keys,
 }
 
-/// What a popup shows (filled by tasks 16–18); dropped whole on close.
+/// What a popup shows: a tray or hover menu, a tooltip, or one of the module popups
+/// (`ModulePopup`); dropped whole on close.
 pub enum PopupBody {
     Menu(Menu),
     Calendar(Calendar),
@@ -234,7 +235,8 @@ pub enum PopupBody {
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
-/// module's popup. It is the anchor's and the press race's single source of truth (wayland.rs
+/// popup, the notifications panel, the quick settings panel, the ⏻ power menu, the privacy
+/// popup. It is the anchor's and the press race's single source of truth (wayland.rs
 /// `module_popup_at`, `closed_by_done`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePopup {
