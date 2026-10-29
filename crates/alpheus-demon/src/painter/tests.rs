@@ -120,7 +120,7 @@ fn a_critical_box_takes_the_urgent_frame() {
 }
 
 /// Frozen copy of `Fonts::glyph` exactly as it shaped text before the
-/// memo (B-I3): reshapes `ch` from scratch every single call, however
+/// memo: reshapes `ch` from scratch every single call, however
 /// many times it was already drawn. Kept only so
 /// `memoized_shaping_is_pixel_identical_to_reshaping_every_glyph` has
 /// an independent ground truth to compare the memoized path against —
@@ -589,8 +589,7 @@ fn only_useful_faces_are_loaded() {
     // Regular + bold of the family, plus regular + bold of DejaVu Sans
     // Mono (the default fallback): ≈ 2 MB, DejaVu's own share close to
     // nothing (measured in the release memory suite). The whole
-    // database (system + Nerd Font directory) cost ≈ 47 MB at the
-    // plan's review.
+    // database (system + Nerd Font directory) cost ≈ 47 MB when measured.
     let p = fonts();
     assert_eq!(p.loaded_faces(), 4, "faces loaded: {}", p.loaded_faces());
 }

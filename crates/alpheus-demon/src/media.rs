@@ -177,7 +177,7 @@ pub enum Need {
 pub struct Applied {
     pub need: Need,
     /// Something the bar or the popup shows moved: the status, the track or a capability. Never for
-    /// Rate, Volume or a value repeated (media task 5: the view is rebuilt only then).
+    /// Rate, Volume or a value repeated (the view is rebuilt only then).
     pub visible: bool,
 }
 

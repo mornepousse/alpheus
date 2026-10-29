@@ -57,7 +57,7 @@ fn on(devices: &[(&str, Option<u8>)]) -> Feed<BtState> {
 
 #[test]
 fn volume_icon_gauge_and_percent() {
-    // Fixed width (A-m5, review): the number is always 3 wide, padded
+    // Fixed width: the number is always 3 wide, padded
     // with spaces, so the modules to its right never shift with the
     // volume level (5 %, 84 %, 100 % used to draw 4, 4, 5 cells wide).
     assert_eq!(draw(&volume(&sound(84, false)).unwrap()), ("\u{f057e} ▁▃▅▆▇▇  84%".into(), "..aaaaaa.....".into()));
@@ -808,8 +808,7 @@ fn tray_zones_target_each_item() {
     for blank in [0u16, 2, 4, 6] {
         assert_eq!(g.target_at(blank), None, "no zone on the margin, the blank cells or the separator ({blank})");
     }
-    // Counted among the tray's own targets only: other modules may have zones of their own
-    // (task 18 gives the clock one).
+    // Counted among the tray's own targets only: other modules may have zones of their own.
     let tray_zones = g.zones().iter().filter(|z| matches!(z.target, Target::TrayItem(_))).count();
     assert_eq!(tray_zones, 3, "one zone per icon");
     assert!(!g.zones().iter().any(|z| z.target == Target::Module(ModuleId::Tray)), "none over the whole segment");

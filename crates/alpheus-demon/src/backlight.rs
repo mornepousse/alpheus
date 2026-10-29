@@ -168,7 +168,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// Final review A-m2: one failed read is not a device gone.
+    /// One failed read is not a device gone.
     #[test]
     fn a_re_read_tells_an_unreadable_device_from_a_gone_one() {
         let root = tree("reread");

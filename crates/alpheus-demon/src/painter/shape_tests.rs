@@ -93,7 +93,7 @@ fn islands_gaps_are_transparent_and_blocks_pill_bg() {
     }
 }
 
-/// Spec § 3 and reconciliation 4, islands:
+/// Spec § 3, islands:
 /// - each block inset 2 logical px from the bar's top and bottom, the bands transparent;
 /// - rounded corners: the very corner pixel transparent, an anti-aliased arc, the inside opaque;
 /// - radius min(22 / 2 − 2, 8) = 8 logical px: the straight left edge starts right below it;
@@ -131,7 +131,7 @@ fn islands_corners_are_rounded_and_blocks_bordered() {
     }
 }
 
-/// Reconciliation 4 and ruling 11: a cell background (the active workspace on `accent_container`)
+/// A cell background (the active workspace on `accent_container`)
 /// stays inside its block, clipped to the block's rows as it is painted (nothing is cleared after
 /// the text).
 #[test]
@@ -155,7 +155,7 @@ fn islands_cell_backgrounds_stay_inside_their_block() {
     }
 }
 
-/// Ruling 11: no glyph pixel is ever erased. A full block in a block's first cell (over its
+/// No glyph pixel is ever erased. A full block in a block's first cell (over its
 /// rounded corner, its border and the inset band) inks every pixel it inks under flat.
 #[test]
 fn no_glyph_pixel_is_erased_by_the_block_styles() {
@@ -192,7 +192,7 @@ fn no_glyph_pixel_is_erased_by_the_block_styles() {
     }
 }
 
-/// Ruling 11 under underline: its lines go under the glyphs. Full blocks overflowing a thin bar
+/// Under underline: its lines go under the glyphs. Full blocks overflowing a thin bar
 /// (a big font on a short bar, as descenders do on any bar) over the bottom line and a block's hue
 /// underline keep every pixel they ink under flat; wherever nothing is inked, the lines show as
 /// they do with no text.
@@ -282,7 +282,7 @@ fn pills_fill_blocks_with_their_hue_and_pick_the_text_by_contrast_and_states_win
             assert_eq!(s.at(s.mid(9), y), opaque(roles.warn), "{style:?} scale {scale}: warn wins");
             assert_eq!(s.at(s.mid(1), y), opaque(roles.pill_bg), "{style:?} scale {scale}: no hue, pill_bg");
             assert_eq!(s.at(s.mid(2), y), opaque(roles.on_accent), "{style:?} scale {scale}: the active workspace keeps its colours");
-            // The full blocks reach the border's rows, and a glyph is never erased (ruling 11): the
+            // The full blocks reach the border's rows, and a glyph is never erased: the
             // border shows on the bare bar.
             let bare = Painted::new(&mut p, &Grid::empty(COLUMNS), &roles, &bg, scale, DEFAULT_HEIGHT);
             let top = blocks::ISLAND_INSET * s.e;
@@ -291,7 +291,7 @@ fn pills_fill_blocks_with_their_hue_and_pick_the_text_by_contrast_and_states_win
     }
 }
 
-/// Review focus 4: on a light theme the wallpaper shows through the gaps, yet every block keeps a
+/// On a light theme the wallpaper shows through the gaps, yet every block keeps a
 /// visible border, and the pills text is picked against the block's hue, never what is behind.
 #[test]
 fn light_themes_keep_the_block_border_and_pick_the_pills_text_against_the_block() {
@@ -552,7 +552,7 @@ fn powerline_pills_text_contrasts_with_its_block() {
     }
 }
 
-/// Ruling 11, the block's inset rectangle: a cell background outside every block (a stray active
+/// The block's inset rectangle: a cell background outside every block (a stray active
 /// cell in a gap) is not painted under the block styles; inside a block it is.
 #[test]
 fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
@@ -584,7 +584,7 @@ fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
 
 /// Mae (2026-10-08): inside a pill a MUTED cell (the gauge's unlit cells, Bluetooth off, offline,
 /// an outage's "–") is the pill's ink mixed 50 % toward the fill, so it reads paler than normal
-/// text, which keeps the full ink; states still win. Floating's pills blocks too (task 6 review).
+/// text, which keeps the full ink; states still win. Floating's pills blocks too.
 #[test]
 fn muted_cells_in_pills_are_the_ink_halfway_to_the_fill() {
     let roles = Roles::default();
@@ -748,7 +748,7 @@ fn floating_pills_text_contrasts_with_its_block() {
     }
 }
 
-/// Ruling 11 under floating: no glyph pixel is erased by the rounding (the bar's ends, the pills
+/// Under floating: no glyph pixel is erased by the rounding (the bar's ends, the pills
 /// blocks' corners), including a full block over the bar's first cell and a pill's first cell.
 #[test]
 fn no_glyph_pixel_is_erased_by_floating() {
@@ -787,7 +787,7 @@ fn no_glyph_pixel_is_erased_by_floating() {
     }
 }
 
-/// Ruling 11 and reconciliation 13 under floating's pills: a cell background inside a hued block
+/// Under floating's pills: a cell background inside a hued block
 /// stays in the block's inset rows; one on the bar itself (no hue, no block) spans the band.
 #[test]
 fn floating_pills_clip_cell_backgrounds_to_their_hued_block_only() {

@@ -3,7 +3,7 @@
 //!   workspaces, which are on `pill_bg` (Mae, 2026-10-08), or their hue under pills;
 //! - between them, a one-cell arrow drawn as an analytically anti-aliased triangle in the colour
 //!   of the block it comes from, never a Nerd Font glyph. Left-side blocks (ending at or before
-//!   `Grid::split`, reconciliation 2) point right, from the free cell after them; right-side blocks
+//!   `Grid::split`) point right, from the free cell after them; right-side blocks
 //!   point left, from the free cell before them.
 
 use super::Background;

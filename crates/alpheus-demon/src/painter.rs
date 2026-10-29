@@ -236,7 +236,7 @@ fn attrs(family: &str, bold: bool) -> Attrs<'_> {
     if bold { a.weight(Weight::BOLD) } else { a }
 }
 
-/// Which cell backgrounds `cell_backgrounds` keeps inside a block (ruling 11).
+/// Which cell backgrounds `cell_backgrounds` keeps inside a block.
 #[derive(Debug, Clone, Copy)]
 enum Clip<'a> {
     /// No block: every cell background over the band's whole height (flat, underline, floating
@@ -535,8 +535,7 @@ impl Fonts {
     ///   under islands, translucent and floating's pills its inset rows);
     /// - the edges pass of islands, translucent and floating (rounded corners, borders, floating's
     ///   shadow), and underline's lines, over the cell backgrounds;
-    /// - last the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased
-    ///   (ruling 11).
+    /// - last the glyphs, in the pills inks under the block styles: no glyph pixel is ever erased.
     ///
     /// Under floating the bar's band is the surface minus its shadow rows (`placement::FLOAT_SHADOW`):
     /// the text never reaches the shadow. Under `flat` it paints exactly what `paint` paints, byte
@@ -573,7 +572,7 @@ impl Fonts {
             }
             _ => fill(px, width, 0, width, band, roles.bar_bg),
         }
-        // The block styles keep a cell background inside its block (ruling 11); flat, underline and
+        // The block styles keep a cell background inside its block; flat, underline and
         // floating without pills draw no block and clip nothing.
         let clip = match bg.style {
             BarStyle::Islands | BarStyle::Translucent | BarStyle::Powerline => Clip::Blocks(bg),
@@ -590,7 +589,7 @@ impl Fonts {
             floating::edges(&mut self.masks, px, width, height, band, scale, advance, roles, bg);
         }
         if bg.style == BarStyle::Underline {
-            // Over the cell backgrounds, under the glyphs: a descender is never cut (ruling 11).
+            // Over the cell backgrounds, under the glyphs: a descender is never cut.
             background::underline_lines(px, width, band, roles, bg, background::active_runs(grid.cells()), edge, self.scale);
         }
         // No inks unless pills applies (`blocks::pills`): flat's glyphs are today's.

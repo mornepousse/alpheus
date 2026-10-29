@@ -209,7 +209,7 @@ impl App {
     }
 
     /// The connection's fd is readable (or a flush read for it): every event of a batch handled in
-    /// order, the actions they produce taken only after the batch (final review: an action may run
+    /// order, the actions they produce taken only after the batch (an action may run
     /// orders, which read again; nested, newer events would be handled before older ones), until a
     /// read brings nothing more; then the tap and the connection follow the panel. Once the
     /// connection goes mid-batch, the rest of the batch was its own: dropped.
@@ -288,7 +288,7 @@ impl App {
         }
     }
 
-    /// The connection let go without a word (Review Focus 1): BlueZ gone or replaced, or the
+    /// The connection let go without a word: BlueZ gone or replaced, or the
     /// connection closed under us. Nothing is sent, so no `UnregisterAgent` reaches an old owner;
     /// the panel's action, whose answer can no longer come, ends silently (`Gone`).
     pub(crate) fn bt_drop(&mut self) {
@@ -366,14 +366,14 @@ pub(crate) mod tests {
         let forget = BtOrder::Forget(ActCall::Connect { device: CASQUE.into() });
         assert!(!opens_for(&[reply, forget], true), "a reply or a forget needs the connection it came from");
         assert!(!opens_for(&[], true));
-        // Final review: a leaving order undoes what a connection did; with none, nothing to undo.
+        // A leaving order undoes what a connection did; with none, nothing to undo.
         let stop = BtOrder::Call(ActCall::StopDiscovery { adapter: HCI0.into() });
         let cancel = BtOrder::Call(ActCall::CancelPairing { device: CASQUE.into() });
         assert!(!opens_for(&[stop.clone(), cancel.clone()], true), "a leaving order never opens one");
         assert!(opens_for(&[stop, cancel, call], true), "another call among them does");
     }
 
-    /// Final review: a `Gone` on a live connection means its owner is stale; any other answer keeps it.
+    /// A `Gone` on a live connection means its owner is stale; any other answer keeps it.
     #[test]
     fn only_a_gone_answer_marks_the_owner_stale() {
         assert!(stale_owner(&Err(ActError::Gone)));
@@ -406,7 +406,7 @@ pub(crate) mod tests {
         assert!(!opens_on_sync(None, 1), "never without a panel");
     }
 
-    /// Review Focus 1: the bar's row hiding (BlueZ gone) drops the connection without a word, even
+    /// The bar's row hiding (BlueZ gone) drops the connection without a word, even
     /// when the panel's view has not said so yet; otherwise it closes once no longer wanted.
     #[test]
     fn a_sync_drops_closes_or_opens() {
@@ -427,7 +427,7 @@ pub(crate) mod tests {
         assert_eq!(sync_step(None, false, true, 0), SyncStep::Drop);
     }
 
-    /// Fix round 1: one unexpected close is reopened by the syncs, a second within the same open is
+    /// One unexpected close is reopened by the syncs, a second within the same open is
     /// not.
     #[test]
     fn a_second_loss_stops_the_syncs_reopening() {

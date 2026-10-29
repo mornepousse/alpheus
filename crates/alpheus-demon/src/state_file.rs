@@ -223,7 +223,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Review focus: a `dnd` that is a symlink or a directory is refused and reads as off.
+    /// A `dnd` that is a symlink or a directory is refused and reads as off.
     #[test]
     fn a_dnd_symlink_or_directory_is_refused_and_reads_as_off() {
         let root = scratch("dnd-hostile");

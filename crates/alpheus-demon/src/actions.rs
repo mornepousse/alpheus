@@ -135,7 +135,7 @@ pub fn command(bar: &Bar, output: &str, target: &Target, b: Button) -> Option<Ve
             Some(template.iter().map(|a| substitute(a, &[("{workspace}", &workspace), ("{output}", &workspace_output)])).collect())
         }
         Target::Module(m) => module_command(bar, *m, b),
-        // The tray never runs a command: its gestures are D-Bus calls (tray plan 2, task 10).
+        // The tray never runs a command: its gestures are D-Bus calls.
         Target::TrayItem(_) => None,
     }
 }
@@ -179,13 +179,13 @@ pub fn click(bar: &Bar, output: &str, grid: &Grid, x_logical: f64, scale: i32, a
     command(bar, output, grid.target_at(col)?, b)
 }
 
-/// Notch size of `Gesture::Scroll` (controller decision 4: Qt's angle delta,
+/// Notch size of `Gesture::Scroll` (Qt's angle delta,
 /// what Plasma sends).
 pub const SCROLL_NOTCH: i32 = 120;
 
 /// A bar button on a tray icon → its gesture: Left/Right/Middle; WheelUp →
 /// Scroll(+120, Vertical), WheelDown → Scroll(-120, Vertical) (positive for
-/// wheel up, decision 4).
+/// wheel up).
 pub fn tray_gesture(b: Button) -> Gesture {
     let vertical = |delta| Gesture::Scroll { delta, orientation: Orientation::Vertical };
     match b {

@@ -507,7 +507,7 @@ fn quick_refused_with_reason() {
     assert!(w.is_some_and(|w| w.contains("bar.toml invalid") && w.contains("quick.step")));
 }
 
-/// Review Focus 4: the kernel keeps 15 bytes of a process name (`/proc/<pid>/comm`):
+/// The kernel keeps 15 bytes of a process name (`/proc/<pid>/comm`):
 /// "gammastep-indicator" reads "gammastep-indic" there, so a longer name could never match.
 #[test]
 fn a_process_state_longer_than_comm_is_refused() {

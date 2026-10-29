@@ -94,7 +94,7 @@ fn every_row_shows_in_the_spec_order_with_its_separators() {
     assert_eq!(t[5], format!(" {PROFILE} Power profile{}balanced ›", " ".repeat(7)));
     assert_eq!(t[7], format!("   {LOCK}    {REBOOT}    {POWER}"), "lock, reboot, power off: logout is empty by default");
     // Selected: the band spans the whole row, its track included; the bar cells keep their own
-    // foreground on it (decision 6, final review: a band that skipped the track looked broken).
+    // foreground on it (a band that skipped the track looked broken).
     let selected = b.rows[0].cells();
     assert!(selected.iter().all(|c| c.style.bg == Tint::Selection), "the band spans the row: {}", b.rows[0].styles());
     assert_eq!((&b.rows[0].styles()[..3], &b.rows[0].styles()[25..]), ("SSS", "S".repeat(9).as_str()));
@@ -154,7 +154,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
         "no default source"
     );
     assert_eq!(rows_of(&Live { sound: None, ..l }, backlight(75))[0], Row::Brightness, "pw-dump down: no volume, no microphone");
-    assert!(!rows_of(&Live { dnd: None, ..l }, backlight(75)).contains(&Row::Dnd), "no notifications module (decision 4)");
+    assert!(!rows_of(&Live { dnd: None, ..l }, backlight(75)).contains(&Row::Dnd), "no notifications module");
     let mut c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
     assert!(!rows_of(&Live { config: &c, ..l }, backlight(75)).contains(&Row::Session), "every session command empty");
     c.logout = vec!["fake-logout".into()];
@@ -170,7 +170,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
     );
 }
 
-/// Review Focus 2: nothing at all to show.
+/// Nothing at all to show.
 #[test]
 fn with_nothing_to_show_the_panel_is_empty() {
     let c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
@@ -191,7 +191,7 @@ fn the_section_asked_for_is_selected_at_open() {
     assert_eq!(Focus::of(&Target::Module(ModuleId::Bluetooth)), Focus::Bluetooth, "quick Bluetooth spec § 1");
     let w = World::full();
     assert_eq!(quick(&w, Focus::Sound).selected, Row::Volume);
-    assert_eq!(quick(&w, Focus::Top).selected, Row::Volume, "decision 3: the volume is the first row");
+    assert_eq!(quick(&w, Focus::Top).selected, Row::Volume, "the volume is the first row");
     let l = Live { sound: None, ..w.live() };
     assert_eq!(
         Quick::new(Focus::Sound, &l, two_sinks(), backlight(75), [None, None], 40).selected,
@@ -285,7 +285,7 @@ fn clavier_view() -> BtView {
     }
 }
 
-/// Review Focus 3: a double Enter (or a held one) on a device makes one call.
+/// A double Enter (or a held one) on a device makes one call.
 #[test]
 fn a_double_enter_on_a_device_calls_once() {
     use crate::quick_bt::BtOrder;
@@ -303,7 +303,7 @@ fn a_double_enter_on_a_device_calls_once() {
 }
 
 /// A held arrow while a code question shows repeats into nothing: the question that just
-/// arrived is never rejected by a key pressed before it (Task 7 review minor).
+/// arrived is never rejected by a key pressed before it.
 #[test]
 fn a_held_key_never_answers_a_code_question() {
     use crate::quick_bt::{BtOrder, Code};
@@ -492,7 +492,7 @@ fn arrows_home_and_end_move_over_the_rows_never_wrapping() {
     assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Close);
 }
 
-/// Review Focus 5: a held Enter opens nothing more; the arrows repeat.
+/// A held Enter opens nothing more; the arrows repeat.
 #[test]
 fn a_held_space_or_enter_acts_once() {
     let w = World::full();
@@ -527,7 +527,7 @@ fn the_outputs_detail_lists_every_sink_and_sets_the_default() {
         q.key(&l, Key::Enter, false, t),
         QuickAction::Run { argv: argv(&["wpctl", "set-default", "99"]), what: "default sink 99".into() }
     );
-    assert!(q.detail, "decision 5: the detail stays, the ● follows pw-dump");
+    assert!(q.detail, "the detail stays, the ● follows pw-dump");
     assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
     assert!(!q.detail);
     assert_eq!(q.selected, Row::Volume, "back on the volume row");
@@ -680,7 +680,7 @@ fn a_held_slider_key_sends_the_latest_level_once_per_window() {
     assert_eq!(q.flush(), vec![], "once");
 }
 
-/// Fix round 2: wpctl and pw-dump (or brightnessctl) slower than a window. The level sent stays
+/// wpctl and pw-dump (or brightnessctl) slower than a window. The level sent stays
 /// until the live source reports it, or SETTLE passes: a stale reading never makes the next
 /// press step backwards.
 #[test]
@@ -709,7 +709,7 @@ fn a_stale_live_level_never_makes_the_next_press_step_backwards() {
     assert_eq!(q.key(&w.live(), Key::Right, false, later(t, 5)), set_brightness(85), "from 80 % shown, never 75 %");
 }
 
-/// Fix round 2: the default sink switched while a level is held or waiting: that level was the
+/// The default sink switched while a level is held or waiting: that level was the
 /// old sink's; it is dropped, never sent to the new one.
 #[test]
 fn a_default_sink_switch_drops_the_held_volume() {
@@ -817,7 +817,7 @@ fn the_toggles_run_their_command_and_re_read_their_state() {
     assert_eq!(q.key(&l, Key::Enter, false, t), mic);
     q.selected = Row::Dnd;
     assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::ToggleDnd, "set_dnd's one path, in the wiring");
-    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "Review Focus 5: a held Space acts once");
+    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space acts once");
     q.selected = Row::KeepAwake;
     assert_eq!(q.key(&l, Key::Enter, false, t), run(&["fake-keep-awake"], "keep awake"), "run as given");
     q.selected = Row::NightLight;
@@ -838,7 +838,7 @@ fn enter_cycles_the_power_profile_and_space_does_not() {
     q.selected = Row::Profile;
     let t = Instant::now();
     assert_eq!(q.key(&l, Key::Enter, false, t), run(&["powerprofilesctl", "set", "performance"], "profile performance"));
-    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "decision 8");
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "space does not cycle the profile");
     let top = ProfileState { active: Some(Profile::Performance), offered: Profile::ALL.to_vec() };
     assert_eq!(
         q.key(&Live { profile: Some(&top), ..l }, Key::Enter, false, t),
@@ -893,7 +893,6 @@ fn reboot_and_power_off_ask_first_and_the_question_expires() {
     assert_eq!(texts(&rows(&l, &q))[7], format!(" {POWER} Power off? ⏎"));
 }
 
-/// Review Focus 3.
 #[test]
 fn moving_away_cancels_the_confirmation_and_coming_back_asks_again() {
     let w = World::full();
@@ -1023,7 +1022,7 @@ fn space_toggles_the_radio_and_enter_right_or_a_click_open_the_detail() {
     assert_eq!(texts(&rows(&l, &q))[2].trim(), OFF_NOTE);
 }
 
-/// Quick Wi-Fi spec § 1, decision 12: from the network module (or `--quick wifi`), the first Wi-Fi
+/// Quick Wi-Fi spec § 1: from the network module (or `--quick wifi`), the first Wi-Fi
 /// state with a device selects the row and opens the detail, once.
 #[test]
 fn the_network_module_opens_the_detail_once_the_state_arrives() {
@@ -1041,12 +1040,12 @@ fn the_network_module_opens_the_detail_once_the_state_arrives() {
     assert_eq!(none.set_wifi(Some(WifiState { enabled: true, device: None, stale: false }), t).action, QuickAction::Redraw);
     assert!(!none.wifi.open && none.selected == Row::Volume, "no device: nothing to open");
     none.set_wifi(Some(wifi_state(true, true, false)), t);
-    assert!(none.wifi.open && none.selected == Row::Wifi, "final review B-M1: spent only on a state with a device");
+    assert!(none.wifi.open && none.selected == Row::Wifi, "spent only on a state with a device");
     let mut top = quick(&w, Focus::Top);
     assert_eq!(top.set_wifi(Some(wifi_state(true, true, false)), t).action, QuickAction::Redraw, "the top: no detail");
 }
 
-/// F3 m2: the focus asked at open waits for the user only until they act. Their first key,
+/// The focus asked at open waits for the user only until they act. Their first key,
 /// click or wheel notch drops it: a device appearing later moves nothing and opens no detail.
 #[test]
 fn the_users_first_key_or_click_drops_a_pending_wifi_focus() {
@@ -1097,7 +1096,7 @@ fn the_window_follows_the_selection_in_the_wifi_detail() {
     assert_eq!(texts(&b).last().map(|s| s.trim().to_string()), Some("More…".to_string()), "More… in view: {:?}", texts(&b));
 }
 
-/// Task 5 review: a Wi-Fi state while open (`follow_wifi`) goes through `fit`; the window
+/// A Wi-Fi state while open (`follow_wifi`) goes through `fit`; the window
 /// follows the selection only when the state moved it (a reorder), never undoing a wheel scroll
 /// otherwise; a state that closes the detail (the device gone) brings the window back to the top.
 #[test]
@@ -1158,7 +1157,7 @@ fn the_wifi_attempt_rides_the_panel_s_one_timer() {
     assert_eq!(q.deadline(), Some(t + crate::quick_wifi::CONNECT_TIMEOUT + crate::quick_wifi::FAILED_SHOWN));
 }
 
-/// Fix round 1 (minor 5): a held Backspace keeps erasing in the password field; elsewhere it
+/// A held Backspace keeps erasing in the password field; elsewhere it
 /// does not repeat, nor does a held character.
 #[test]
 fn backspace_repeats_in_the_password_field_only() {

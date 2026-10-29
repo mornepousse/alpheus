@@ -97,7 +97,7 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Privacy spec § 5 (Review Focus 4): while open, the popup follows `shown`; once it is empty
+    /// Privacy spec § 5: while open, the popup follows `shown`; once it is empty
     /// (the off-delay passed) it closes; closed, nothing is opened.
     #[test]
     fn the_popup_closes_when_nothing_is_captured_after_the_delay() {

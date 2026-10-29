@@ -139,7 +139,7 @@ fn enter_on_each_kind_of_network() {
     assert_eq!(w.key(&QuickConfig { wifi_more: Some(vec![]), ..config() }, Key::Enter, t), QuickAction::Nothing, "no More…");
 }
 
-/// Review Focus 2: an SSID that cannot be one nmcli argument as is (a leading '-', a NUL, not
+/// An SSID that cannot be one nmcli argument as is (a leading '-', a NUL, not
 /// UTF-8) is shown cleaned and never passed: More… unsaved, by uuid saved.
 #[test]
 fn refused_ssids_go_to_more_unless_saved() {
@@ -358,7 +358,7 @@ fn a_press_elsewhere_closes_the_field() {
     assert!(w.field.is_none() && w.password().is_none(), "another network pressed: the field gone");
 }
 
-/// Review Focus 3: characters, not bytes; a whole character per Backspace; a character that
+/// Characters, not bytes; a whole character per Backspace; a character that
 /// does not fit refuses the attempt until Ctrl+U: never a password sent cut short.
 #[test]
 fn the_password_field_counts_characters_and_refuses_an_overflow() {
@@ -472,7 +472,7 @@ fn state_120_fails_at_once_and_twenty_seconds_without_an_answer_too() {
     assert!(w.attempt.is_none() && w.failed.is_none());
 }
 
-/// Review Focus 4: one attempt at a time; More… still works.
+/// One attempt at a time; More… still works.
 #[test]
 fn one_attempt_at_a_time() {
     let (c, t) = (config(), Instant::now());
@@ -490,7 +490,7 @@ fn one_attempt_at_a_time() {
     assert!(matches!(w.key(&c, Key::Enter, t), QuickAction::RunAndClose { .. }), "More… still runs");
 }
 
-/// Review Focus 5: the cleanup deletes only a profile that appeared during the attempt, and only
+/// The cleanup deletes only a profile that appeared during the attempt, and only
 /// while it is still saved.
 #[test]
 fn the_cleanup_deletes_only_the_profile_the_attempt_made() {
@@ -517,7 +517,7 @@ fn the_cleanup_deletes_only_the_profile_the_attempt_made() {
     );
 }
 
-/// Decision 10: the detail's reading outlives the detail while connecting.
+/// The detail's reading outlives the detail while connecting.
 #[test]
 fn the_detail_s_reading_outlives_the_detail_while_connecting() {
     let (c, t) = (config(), Instant::now());
@@ -652,7 +652,7 @@ fn an_attempt_expiring_on_a_state_from_before_an_outage_keeps_its_profile() {
     assert_eq!(w.due(t + CONNECT_TIMEOUT), (vec![delete(NEW)], Some("no answer in 20 s"), true));
 }
 
-/// Controller reconciliation P12: an open field whose network leaves the list (an access point
+/// An open field whose network leaves the list (an access point
 /// aged out while typing) stays, its row with it, for FIELD_KEPT; then it goes, wiped.
 #[test]
 fn a_field_outlives_its_network_leaving_the_list_for_a_while() {
@@ -678,7 +678,7 @@ fn a_field_outlives_its_network_leaving_the_list_for_a_while() {
     assert_eq!(w.pick, Pick::Network(b"Maison-Test".to_vec()), "the first pick");
 }
 
-/// Task 5 review: an SSID of zeros or one that cleans to nothing is hidden; a connected hidden
+/// An SSID of zeros or one that cleans to nothing is hidden; a connected hidden
 /// network shows `hidden` as the row's value.
 #[test]
 fn hidden_ssids_are_left_out_and_a_connected_one_says_so() {
@@ -694,7 +694,7 @@ fn hidden_ssids_are_left_out_and_a_connected_one_says_so() {
     assert!(!labels(&w).iter().any(|l| l.is_empty()), "{:?}", labels(&w));
 }
 
-/// Task 5 review: nmcli reads a BSSID-looking SSID as a BSSID, and h, he, hel, help as help.
+/// nmcli reads a BSSID-looking SSID as a BSSID, and h, he, hel, help as help.
 #[test]
 fn bssid_and_help_lookalikes_are_refused() {
     for ssid in ["00:00:5E:00:53:01", "00-00-5e-00-53-01", "0:0:5E:0:53:1", "h", "he", "hel", "help"] {
@@ -705,9 +705,9 @@ fn bssid_and_help_lookalikes_are_refused() {
     }
 }
 
-/// Task 5 review: the selection is an SSID, not a position: it follows its network across a
+/// The selection is an SSID, not a position: it follows its network across a
 /// reorder.
-/// Task 7 (headless): the detail opens before its list is read (`Searching…`); the selection
+/// The detail opens before its list is read (`Searching…`); the selection
 /// waits for the list, then lands on the first network, never left on `More…`. An empty list
 /// read, or the radio off: `More…` is the only pick.
 #[test]
@@ -729,7 +729,7 @@ fn the_selection_waits_for_the_list_then_takes_the_first_network() {
     assert_eq!(open(off).pick, Pick::More, "off: More…");
 }
 
-/// Fix round 1 (minor a): a Down while searching picks `More…` (the only pick then); the first
+/// A Down while searching picks `More…` (the only pick then); the first
 /// list read moves it to the first network, once: `More…` chosen after the list stays.
 #[test]
 fn more_chosen_while_searching_gives_way_to_the_first_network() {
@@ -768,7 +768,7 @@ fn the_pick_follows_its_ssid_across_a_reorder() {
     assert_eq!(w.key(&c, Key::Enter, t), run(&["nmcli", "device", "wifi", "connect", "Cafe-Libre"], "wifi connect (open)"));
 }
 
-/// Fix round 1 (I2): an attempt begun before the saved list was read whole (a failed listing,
+/// An attempt begun before the saved list was read whole (a failed listing,
 /// more than MAX_SAVED profiles: the reader sends None) knows no profile, so it deletes none,
 /// even one of its SSID that shows later.
 #[test]
@@ -787,7 +787,7 @@ fn an_attempt_begun_without_the_whole_saved_list_deletes_nothing() {
     assert_eq!(device_at(&mut w, 30, None, t), (QuickAction::Redraw, Some("the activation failed")), "an older profile, never deleted");
 }
 
-/// Fix round 1 (minor 1): a saved network's `connection up` never deletes, even a profile of its
+/// A saved network's `connection up` never deletes, even a profile of its
 /// SSID that appeared meanwhile.
 #[test]
 fn a_connection_up_attempt_never_deletes() {
@@ -802,7 +802,7 @@ fn a_connection_up_attempt_never_deletes() {
     assert_eq!(device_at(&mut w, 30, None, t), (QuickAction::Redraw, Some("the activation failed")));
 }
 
-/// Fix round 1 (minor 2): an activation on another network (an autoconnect) is not ours; an
+/// An activation on another network (an autoconnect) is not ours; an
 /// activated device whose access point could not be read is no word yet; another network taking
 /// the device once ours was under way is a failure.
 #[test]
@@ -827,7 +827,7 @@ fn only_its_own_network_counts_for_an_attempt() {
     assert_eq!(device_at(&mut w, 50, Some("Bureau-Test"), t), (QuickAction::Redraw, Some("the activation failed")), "another took over");
 }
 
-/// Fix round 2: activated on the profile the attempt made counts even with its access point
+/// Activated on the profile the attempt made counts even with its access point
 /// unread; and a timeout while the device was last seen activated deletes nothing.
 #[test]
 fn an_activated_device_is_never_cleaned_up() {
@@ -860,7 +860,7 @@ fn an_activated_device_is_never_cleaned_up() {
     assert_eq!(w.due(t + CONNECT_TIMEOUT).0, vec![delete(NEW)], "activated on another profile's uuid (the old one): a failure, cleaned");
 }
 
-/// Fix round 3 (controller ruling): a slow activation never loses its profile. Still activating
+/// A slow activation never loses its profile. Still activating
 /// on its network at 20 s: the deadline moves to 60 s from the start; still activating then: it
 /// ends, nothing deleted; activated meanwhile: connected. The follower keeps the same deadline.
 #[test]

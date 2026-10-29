@@ -232,7 +232,7 @@ fn a_long_history_scrolls_with_the_selection() {
     assert_eq!(rows(&c, None, &tiny, t0, TODAY).cells().1, 2 + 3, "at least one entry, whatever the room");
 }
 
-/// Fix round 1: the selection is the entry, not its row. A notification arriving above it moves
+/// The selection is the entry, not its row. A notification arriving above it moves
 /// the highlight down with it, so Enter and Delete still hit the entry the user chose, never the
 /// newcomer (whose default action is another app's).
 #[test]
@@ -375,7 +375,7 @@ fn deleting_the_selected_entry_selects_its_neighbour() {
     assert_eq!(key(&mut p, &c, None, Key::Delete), PanelAction::Remove(ids[2]), "f, above it");
 }
 
-/// Review Focus: a notification arriving while the panel is open shows first, and the selection
+/// A notification arriving while the panel is open shows first, and the selection
 /// stays on a row that exists.
 #[test]
 fn a_notification_arriving_while_open_shows_first() {

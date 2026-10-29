@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(activation(None, 1), Activation::Stale);
     }
 
-    /// Review Focus: the focused output changing while bubbles are shown.
+    /// The focused output changing while bubbles are shown.
     #[test]
     fn the_stack_moves_to_the_focused_output_only_when_it_changes() {
         assert!(!moves(false, Some("HEADLESS-1"), Some("HEADLESS-2")), "focus alone: they stay put");
@@ -334,7 +334,7 @@ mod tests {
         assert!(moves(true, Some("HEADLESS-1"), None), "from the compositor's choice to a known focus");
     }
 
-    /// Fix wave A: with no known output (the compositor chooses), a new surface starts at scale 1,
+    /// With no known output (the compositor chooses), a new surface starts at scale 1,
     /// whatever the outputs' scales; on a known output, at that output's.
     #[test]
     fn a_surface_on_an_unknown_output_starts_at_scale_1() {
@@ -343,7 +343,7 @@ mod tests {
         assert_eq!(start_scale(Some(0)), 1, "never below 1");
     }
 
-    /// Review Focus: an output unplugged. Only the one the bubbles were placed on takes them down;
+    /// An output unplugged. Only the one the bubbles were placed on takes them down;
     /// placed by the compositor (no output asked), they wait for its `closed`.
     #[test]
     fn only_the_output_holding_the_bubbles_takes_them_down() {
@@ -369,7 +369,7 @@ mod tests {
         }
     }
 
-    /// Review Focus: 4 visible and 6 waiting; dismissing the top one shows the next waiting one
+    /// 4 visible and 6 waiting; dismissing the top one shows the next waiting one
     /// (`Center::bubbles` is the newest `max_visible` live ones), and `find` reaches both.
     #[test]
     fn four_shown_six_waiting_and_a_dismissal_shows_the_next() {

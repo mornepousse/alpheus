@@ -2,7 +2,7 @@
 //! (`placement::FLOAT_SHADOW`):
 //! - the band is one rounded rectangle on `bar_bg`, radius 10 px, transparent outside its arcs;
 //! - under pills, each hued block is a rounded hue rectangle inside it, inset as an island
-//!   (`blocks::island_y`, islands radius, no border, reconciliation 13);
+//!   (`blocks::island_y`, islands radius, no border);
 //! - the shadow is black, its alpha falling from 0.35 to 0 downward, following the bar's rounded
 //!   silhouette horizontally.
 
@@ -38,8 +38,8 @@ pub(crate) fn background(px: &mut [u8], width: u32, band: u32, scale: i32, advan
     }
 }
 
-/// Edges pass, over the cell backgrounds and under the glyphs (no glyph pixel is ever erased,
-/// ruling 11), over the whole surface (`height` = band + shadow):
+/// Edges pass, over the cell backgrounds and under the glyphs (no glyph pixel is ever erased),
+/// over the whole surface (`height` = band + shadow):
 /// - the pills blocks rounded against `bar_bg`;
 /// - the bar's ends rounded against transparency;
 /// - the shadow under it.

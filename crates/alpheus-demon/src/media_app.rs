@@ -46,7 +46,7 @@ impl App {
             self.popup_paint(rows);
             self.mpris_do(|m, out| m.popup_opened(out));
             self.media_timer_sync();
-            // What it shows on top, as drawn (controller reconciliation 10: the headless tests read it).
+            // What it shows on top, as drawn (the headless tests read it).
             log(&format!("media popup shown: {heading}"));
         }
     }

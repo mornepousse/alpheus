@@ -43,7 +43,7 @@ fn status_reads_playing_and_paused_and_anything_else_is_stopped() {
     }
 }
 
-/// Review focus: an unknown status string is Stopped, so the player is hidden.
+/// An unknown status string is Stopped, so the player is hidden.
 #[test]
 fn an_unknown_status_hides_the_player() {
     let mut p = players(&[("spotify", ":1.4", "Playing")]);
@@ -94,7 +94,7 @@ fn length_is_any_integer_or_a_float_and_unknown_otherwise() {
     assert_eq!(length(Value::Bool(true)), None);
 }
 
-/// Review focus: `mpris:length` sent as a string is unknown, and nothing panics.
+/// `mpris:length` sent as a string is unknown, and nothing panics.
 #[test]
 fn a_length_sent_as_a_string_is_unknown() {
     assert_eq!(metadata(&[("mpris:length", s("355000000"))]).length_us, None);
@@ -106,7 +106,7 @@ fn a_length_sent_as_a_string_is_unknown() {
     assert_eq!((player.track.length_us, position_now(player, Instant::now())), (None, None));
 }
 
-/// Review focus: an empty artist list is no artist (no row in the popup), never ", ".
+/// An empty artist list is no artist (no row in the popup), never ", ".
 #[test]
 fn an_empty_artist_list_is_no_artist() {
     for v in [list(&[]), list(&["", "  ", "\u{1}"]), s(""), Value::Other] {
@@ -124,7 +124,7 @@ fn artists_are_capped_at_8() {
     assert_eq!((t.artists[0].as_str(), t.artists[7].as_str()), ("Artist 1", "Artist 8"), "the first 8, in order");
 }
 
-/// Review focus: a player sending a 100 KB title keeps 256 characters of it.
+/// A player sending a 100 KB title keeps 256 characters of it.
 #[test]
 fn a_100_kb_title_is_capped() {
     let huge = "é".repeat(50_000);
@@ -137,7 +137,7 @@ fn a_100_kb_title_is_capped() {
     assert_eq!(p.get(":1.4").and_then(|x| x.identity.as_ref()).map(|x| x.chars().count()), Some(crate::tray::MAX_TEXT));
 }
 
-/// Review focus: a newline in a title never reaches the bar (cleaned to a space, like the tray).
+/// A newline in a title never reaches the bar (cleaned to a space, like the tray).
 #[test]
 fn a_newline_in_a_title_is_stripped() {
     let t = metadata(&[("xesam:title", s("Line one\nLine two\r\n")), ("xesam:artist", s("A\u{1b}[31mB"))]);
@@ -214,7 +214,7 @@ fn apply_reads_the_player_properties_and_asks_for_invalidated_metadata() {
     }
 }
 
-/// Task 4's review: only what the bar or the popup shows (status, track, capabilities) asks for
+/// Only what the bar or the popup shows (status, track, capabilities) asks for
 /// the view to be rebuilt; Rate, Volume or a repeat of the same value never does.
 #[test]
 fn apply_says_whether_anything_shown_changed() {
@@ -248,7 +248,7 @@ fn a_status_track_or_rate_change_forgets_the_position() {
     assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same status: kept");
     p.apply(":1.4", &props(&[("PlaybackStatus", s("Paused"))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, None, "a status change");
-    // Fix wave A: a new Rate too, or the time since the last read would be counted at it.
+    // A new Rate too, or the time since the last read would be counted at it.
     p.set_position(":1.4", sync);
     p.apply(":1.4", &props(&[("Rate", Value::Float(1.0))]), &[]);
     assert_eq!(p.get(":1.4").unwrap().position, Some(sync), "the same rate: kept");
@@ -341,7 +341,7 @@ fn the_title_falls_back_to_the_url_then_the_name() {
     assert_eq!(display_title(&track(None, None), None, bus), "vlc", "no identity: the bus name's first label");
     assert_eq!(player_name(None, "org.mpris.MediaPlayer2.spotify"), "spotify");
     assert_eq!(player_name(Some(""), "org.mpris.MediaPlayer2.spotify"), "spotify");
-    // Fix wave A: never the scheme nor the host — a url with no path segment is no title.
+    // Never the scheme nor the host — a url with no path segment is no title.
     assert_eq!(display_title(&track(None, Some("file:///")), Some("VLC"), bus), "VLC", "file:/// alone");
     assert_eq!(display_title(&track(None, Some("https://radio.example/")), None, bus), "vlc", "a host alone");
     assert_eq!(display_title(&track(None, Some("https://radio.example")), None, bus), "vlc", "a host, no slash");
@@ -349,7 +349,7 @@ fn the_title_falls_back_to_the_url_then_the_name() {
     assert_eq!(display_title(&track(None, Some("/music/Song.ogg")), None, bus), "Song.ogg", "a bare path");
 }
 
-/// Fix wave A: a title of combining marks or zero-width characters alone draws nothing: it is
+/// A title of combining marks or zero-width characters alone draws nothing: it is
 /// blank, so the url or the player's name stands in.
 #[test]
 fn a_title_that_takes_no_cell_is_blank() {

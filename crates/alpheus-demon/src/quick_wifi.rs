@@ -25,15 +25,15 @@ pub const ACTIVATED: u32 = 100;
 /// The row's value: at most this many cells of the connected SSID.
 pub const VALUE_CELLS: u16 = 16;
 /// Material Design (Nerd Font): wifi-strength-1 to 4; wifi-strength-outline (on, not connected);
-/// wifi-strength-off-outline (decision 5).
+/// wifi-strength-off-outline.
 pub const STRENGTH: [char; 4] = ['\u{f091f}', '\u{f0922}', '\u{f0925}', '\u{f0928}'];
 pub const WIFI_ON: char = '\u{f092f}';
 pub const WIFI_OFF: char = '\u{f092e}';
-/// The detail's notes (decision 11).
+/// The detail's notes.
 pub const OFF_NOTE: &str = "Wi-Fi is off";
 pub const SEARCHING: &str = "Searching…";
 pub const NO_NETWORKS: &str = "No networks";
-/// The row's value on a connected network whose SSID shows nothing (Task 5 review).
+/// The row's value on a connected network whose SSID shows nothing.
 pub const HIDDEN: &str = "hidden";
 /// NMDeviceState: an activation under way (prepare to secondaries); failed.
 pub const ACTIVATING: RangeInclusive<u32> = 40..=90;
@@ -46,11 +46,11 @@ pub const ACTIVATION_BOUND: Duration = Duration::from_secs(60);
 /// How long a failed network shows `failed`.
 pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
 /// How long an open password field outlives its network leaving the list (an access point aged
-/// out while typing; controller reconciliation P12).
+/// out while typing).
 pub const FIELD_KEPT: Duration = Duration::from_secs(10);
 /// The password's first cell: after "Password" and two spaces.
 pub const PASSWORD_AT: u16 = 13;
-/// The field after a character that did not fit (Review Focus 3).
+/// The field after a character that did not fit.
 pub const TOO_LONG: &str = "too long";
 /// Why an attempt failed, for the log (never an SSID).
 const ACTIVATION_FAILED: &str = "the activation failed";
@@ -65,7 +65,7 @@ const CONNECTING: &str = "…";
 const FAILED_TAG: &str = "failed";
 const SAVED_TAG: &str = "saved";
 
-/// 1 to 4 steps of signal: 0–24 %, 25–49 %, 50–74 %, 75–100 % (decision 5).
+/// 1 to 4 steps of signal: 0–24 %, 25–49 %, 50–74 %, 75–100 %.
 pub fn steps(strength: u8) -> usize {
     1 + usize::from(strength >= 25) + usize::from(strength >= 50) + usize::from(strength >= 75)
 }
@@ -85,7 +85,7 @@ pub fn hidden(ssid: &[u8]) -> bool {
     ssid.iter().all(|b| *b == 0) || label(ssid).is_empty()
 }
 
-/// An SSID that cannot be one nmcli argument as is (quick Wi-Fi spec § 5, decision 7): empty, a
+/// An SSID that cannot be one nmcli argument as is (quick Wi-Fi spec § 5): empty, a
 /// NUL, a leading '-' (read as an option), not UTF-8, or one nmcli reads as something else: `h`,
 /// `he`, `hel`, `help` (help), or six hexadecimal groups (a BSSID).
 pub fn refused(ssid: &[u8]) -> bool {
@@ -118,7 +118,7 @@ pub fn more(config: &QuickConfig) -> &[String] {
     config.wifi_more.as_deref().unwrap_or(&[])
 }
 
-/// `More…`: `wifi_more` as given, then the panel closes (decision 7); nothing when it is empty.
+/// `More…`: `wifi_more` as given, then the panel closes; nothing when it is empty.
 fn run_more(config: &QuickConfig) -> QuickAction {
     let argv = more(config).to_vec();
     if argv.is_empty() { QuickAction::Nothing } else { QuickAction::RunAndClose { argv, what: "wifi more".into() } }
@@ -165,8 +165,7 @@ pub enum Pick {
 /// The password field, under the network `ap` (quick Wi-Fi spec § 3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
-    /// Its network as listed when the field opened: listed still while the field waits for it
-    /// (controller reconciliation P12).
+    /// Its network as listed when the field opened: listed still while the field waits for it.
     pub ap: AccessPoint,
     pub secret: Secret,
     /// A character did not fit: Enter is refused until Ctrl+U.
@@ -176,7 +175,7 @@ pub struct Field {
     pub missing: Option<Instant>,
 }
 
-/// A connection under way (quick Wi-Fi spec § 2, decisions 8–9), followed by the panel (`Wifi`) or,
+/// A connection under way (quick Wi-Fi spec § 2), followed by the panel (`Wifi`) or,
 /// once the panel closed, by `quick_app::WifiFollow` (Mae's ruling P1): it needs nothing of the
 /// panel, only the states read and the clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,7 +321,7 @@ pub struct Wifi {
     /// The detail shows in place of the rows.
     pub open: bool,
     pub pick: Pick,
-    /// Opened from the network module or `--quick wifi` (decision 12): the first state opens the detail.
+    /// Opened from the network module or `--quick wifi`: the first state opens the detail.
     pub focus_pending: bool,
     /// The password field, while open.
     pub field: Option<Field>,
@@ -463,7 +462,7 @@ impl Wifi {
     }
 
     /// What the D-Bus thread is to read for the open panel: the detail's lists while it is open, or
-    /// while an attempt runs (decision 10: its new profile must be seen).
+    /// while an attempt runs (its new profile must be seen).
     pub fn scope(&self) -> WifiScope {
         if self.open || self.attempt.is_some() { WifiScope::Detail } else { WifiScope::Row }
     }
@@ -750,7 +749,7 @@ impl Wifi {
 
     /// Enter on `n` (quick Wi-Fi spec § 2): the exact nmcli command for its kind, the attempt it
     /// starts followed; the password field for a new secured one; `More…` chosen for one the panel
-    /// does not handle. One attempt at a time (decision 8): only `More…` goes on meanwhile.
+    /// does not handle. One attempt at a time: only `More…` goes on meanwhile.
     fn enter(&mut self, config: &QuickConfig, n: &Network, now: Instant) -> QuickAction {
         let kind = self.kind(n);
         if self.attempt.is_some() && kind != Kind::Unsupported {

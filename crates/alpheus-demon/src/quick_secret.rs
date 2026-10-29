@@ -128,7 +128,7 @@ mod tests {
             &self.buf
         }
 
-        /// The whole buffer, to dirty past the typed part (controller reconciliation P3).
+        /// The whole buffer, to dirty past the typed part.
         fn raw_mut(&mut self) -> &mut [u8; CAPACITY] {
             &mut self.buf
         }

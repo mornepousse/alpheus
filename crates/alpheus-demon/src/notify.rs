@@ -500,7 +500,7 @@ impl Center {
     }
 
     /// Takes in one notification and returns its id: always answered, bubble or not (see the
-    /// decisions of the plan's Task 1 for replacement, tags, merging, the bucket and the history).
+    /// notifications spec for replacement, tags, merging, the bucket and the history).
     pub fn notify(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
         let identity = n.desktop_entry.as_deref().filter(|d| !d.is_empty()).unwrap_or(&n.app_name).to_string();
         let critical = n.urgency == Urgency::Critical;
@@ -737,7 +737,7 @@ impl Center {
         }
     }
 
-    /// The server stopped serving (NameLost, or the session bus gone; notifications task 4): every
+    /// The server stopped serving (NameLost, or the session bus gone): every
     /// bubble goes at once, with no NotificationClosed (nobody listens to us any more), and the
     /// history stays for the panel. Nothing is left to expire: `next_expiry` is None.
     pub fn hide_all(&mut self) {

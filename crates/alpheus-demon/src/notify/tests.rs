@@ -46,7 +46,7 @@ fn hidden(summary: &str) -> Incoming {
     }
 }
 
-/// NameLost and a dead bus (notifications task 4): every bubble goes, silently, the history stays.
+/// NameLost and a dead bus: every bubble goes, silently, the history stays.
 #[test]
 fn hide_all_drops_every_bubble_and_keeps_the_history() {
     let mut c = Center::new(&NotificationsConfig::default(), false);
@@ -113,7 +113,7 @@ fn hostile_markup_never_hides_text_nor_panics() {
     }
 }
 
-/// Review focus: a body of only markup strips to empty; the notification still shows.
+/// A body of only markup strips to empty; the notification still shows.
 #[test]
 fn a_body_of_only_markup_strips_to_empty_and_still_shows() {
     assert_eq!(body_text("<b></b><i><u></u></i><br/>"), "", "a line break alone is trimmed away");
@@ -228,7 +228,7 @@ fn ids_count_from_1_and_an_unknown_replaces_id_makes_the_counter_jump() {
     assert_eq!(c.notify(note("a", "four"), t0, 0), 7_000_002, "it never moves the counter back");
 }
 
-/// Review focus: the counter wraps past u32::MAX to 1, never 0, never an id in use.
+/// The counter wraps past u32::MAX to 1, never 0, never an id in use.
 #[test]
 fn ids_wrap_past_u32_max_to_1_and_skip_ids_still_in_use() {
     let (mut c, t0) = (center(), Instant::now());
@@ -367,7 +367,7 @@ fn ten_bubbles_then_one_per_second_and_critical_bypasses_the_bucket() {
     assert!(!c.entry(id).unwrap().live, "and only one");
 }
 
-/// Review focus: an application sending 1000 notifications in a loop.
+/// An application sending 1000 notifications in a loop.
 #[test]
 fn an_app_sending_1000_notifications_in_a_loop_stays_bounded() {
     let (mut c, t0) = (center(), Instant::now());
@@ -594,7 +594,7 @@ fn a_merge_that_shows_a_waiting_bubble_starts_its_timeout() {
 
 /// A bubble that has shown keeps its expiry when newer ones push it back: an app sending at
 /// about max_visible / timeout keeps the bubbles expiring, live stays small, and a critical one
-/// still shows at once afterwards (the review of fix wave A: nothing expired, live reached
+/// still shows at once afterwards (otherwise nothing expired, live reached
 /// MAX_LIVE in about 32 s and the critical got no bubble).
 #[test]
 fn a_steady_flow_keeps_expiring_and_a_critical_still_shows() {

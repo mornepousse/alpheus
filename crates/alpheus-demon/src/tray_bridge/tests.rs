@@ -1,7 +1,7 @@
 use super::*;
 use crate::popup::Anchor as PopupAnchor;
 
-/// Final review R2: the press remembered for an Activate answer is spent by the first answer
+/// The press remembered for an Activate answer is spent by the first answer
 /// that uses it; a second (late) answer, or one for another icon, finds nothing.
 #[test]
 fn the_remembered_press_is_consumed_by_the_menu_it_opens() {

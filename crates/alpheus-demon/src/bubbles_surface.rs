@@ -107,7 +107,7 @@ impl Closes {
 
 impl App {
     /// The one path for a change made on the App's side (a bubble clicked or expired, do-not-disturb,
-    /// Clear all; the panel, task 7): `notify_do` (signals sent, the view and bubbles deferred to the
+    /// Clear all; the panel): `notify_do` (signals sent, the view and bubbles deferred to the
     /// host's next output), then the bubbles and the open panel follow.
     pub(crate) fn notify_act(&mut self, f: impl FnOnce(&mut Notifications)) {
         self.notify_do(f);

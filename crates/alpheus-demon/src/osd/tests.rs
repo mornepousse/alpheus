@@ -100,7 +100,7 @@ fn a_default_sink_switch_shows_its_name_then_a_grace() {
     assert_eq!(w.sound(Some(&other), back + ms(200), false), Heard::Quiet, "a second switch inside the first one's grace, no card shown");
 }
 
-/// Final review (slice A): inside the grace a switch starts, a shown card follows the default
+/// Inside the grace a switch starts, a shown card follows the default
 /// (switch to A, then B 400 ms later: the card says B) and its level (a key pressed during the
 /// grace); with no pill shown, the grace still keeps quiet.
 #[test]
@@ -128,7 +128,7 @@ fn a_shown_card_follows_a_switch_and_a_level_inside_the_grace() {
     );
 }
 
-/// Final review (slice A): a switch to a node whose volume is not known yet shows its card once
+/// A switch to a node whose volume is not known yet shows its card once
 /// the volume arrives, inside the switch's grace; later than that, the level is a new baseline.
 #[test]
 fn a_switch_before_its_volume_shows_the_card_once_the_volume_is_known() {
@@ -156,7 +156,7 @@ fn a_switch_before_its_volume_shows_the_card_once_the_volume_is_known() {
     assert_eq!(w.sound(Some(&hdmi(Some(vol(20, false)))), back + GRACE + ms(3), false), Heard::Quiet, "hdmi's card is no longer pending");
 }
 
-/// The sound model and the watch together (final review, slice A): whether pw-dump names the
+/// The sound model and the watch together: whether pw-dump names the
 /// new default before its node arrives, or its node arrives before its volume, the card shows
 /// once, with the node's label and level.
 #[test]

@@ -12,7 +12,7 @@ fn the_media_module_answers_the_middle_button_and_the_wheel() {
     assert_eq!(media_control(&media, Button::Middle), Some(Control::PlayPause));
     assert_eq!(media_control(&media, Button::WheelUp), Some(Control::Next), "spec § 1: up is next");
     assert_eq!(media_control(&media, Button::WheelDown), Some(Control::Previous));
-    assert_eq!(media_control(&media, Button::Left), None, "the popup's (task 7), not a control");
+    assert_eq!(media_control(&media, Button::Left), None, "the popup's, not a control");
     assert_eq!(media_control(&media, Button::Right), None);
     assert_eq!(media_control(&Target::Module(ModuleId::Volume), Button::Middle), None, "another module: its own action");
 }

@@ -227,7 +227,7 @@ pub struct Backlight {
 pub struct Live<'a> {
     /// pw-dump's state; None while it starts or is down (no volume, no microphone).
     pub sound: Option<&'a SoundState>,
-    /// Do-not-disturb; None without the notifications module (no row, decision 4).
+    /// Do-not-disturb; None without the notifications module (no row).
     pub dnd: Option<bool>,
     /// power-profiles-daemon's state; None while the system bus is down.
     pub profile: Option<&'a ProfileState>,
@@ -268,7 +268,7 @@ pub enum QuickAction {
         argv: Vec<String>,
         what: String,
     },
-    /// A session button: spawn, then close the panel (decision 7).
+    /// A session button: spawn, then close the panel.
     RunAndClose {
         argv: Vec<String>,
         what: String,
@@ -391,12 +391,12 @@ fn brightness_command(b: &Backlight) -> QuickAction {
     QuickAction::Run { argv, what: format!("brightness {}%", b.percent) }
 }
 
-/// The percent a press on a slider's bar sets (decision 10); None off the bar.
+/// The percent a press on a slider's bar sets; None off the bar.
 fn bar_value(col: u16) -> Option<u8> {
     (BAR_START..BAR_START + BAR).contains(&col).then(|| ((u32::from(col - BAR_START) + 1) * 100 / u32::from(BAR)) as u8)
 }
 
-/// Enter or a click on the profile: the next one the daemon offers, wrapping (decision 8).
+/// Enter or a click on the profile: the next one the daemon offers, wrapping.
 fn cycle(live: &Live) -> QuickAction {
     let Some(p) = live.profile else { return QuickAction::Nothing };
     let Some(active) = p.active else { return QuickAction::Nothing };
@@ -554,7 +554,7 @@ impl Quick {
         q
     }
 
-    /// Nothing to show at all (Review Focus 2): the wiring opens nothing, or closes the panel.
+    /// Nothing to show at all: the wiring opens nothing, or closes the panel.
     pub fn is_empty(&self, live: &Live) -> bool {
         shown(live, self).is_empty()
     }
@@ -902,7 +902,7 @@ impl Quick {
         self.activate(live, s, now)
     }
 
-    /// The wheel, `steps` notches (negative: up), at most 10 (decision 9): over a slider, one move
+    /// The wheel, `steps` notches (negative: up), at most 10: over a slider, one move
     /// of `steps × step` percent (up: louder, brighter); elsewhere the window moves when the lines
     /// do not fit.
     pub fn scroll(&mut self, live: &Live, cell: Option<(u16, u16)>, steps: i32, now: Instant) -> QuickAction {
@@ -1055,10 +1055,10 @@ impl Quick {
         WifiNews { action: self.spend_wifi_focus().unwrap_or(action), failed }
     }
 
-    /// The focus asked at open (decision 12), spent on the first state with a device: the row
-    /// selected and the detail opened (its action). A state without one keeps it (final review
-    /// B-M1: NetworkManager not read yet is no reason to give up); the user's first key, click or
-    /// wheel notch drops it (F3 m2: the panel never jumps under them).
+    /// The focus asked at open, spent on the first state with a device: the row
+    /// selected and the detail opened (its action). A state without one keeps it
+    /// (NetworkManager not read yet is no reason to give up); the user's first key, click or
+    /// wheel notch drops it (the panel never jumps under them).
     fn spend_wifi_focus(&mut self) -> Option<QuickAction> {
         (self.wifi.shows() && std::mem::take(&mut self.wifi.focus_pending)).then(|| {
             self.selected = Row::Wifi;
@@ -1208,7 +1208,7 @@ impl Quick {
     }
 
     /// A re-read of the backlight: its level now; Gone: the device went, and its row with it;
-    /// Unreadable (a transient sysfs error): the last level stands (final review A-m2). Within
+    /// Unreadable (a transient sysfs error): the last level stands. Within
     /// SETTLE of a quiet window, a level that differs from the one sent is not taken yet
     /// (brightnessctl may not have written it): the last re-read, at SETTLE, is.
     pub fn set_backlight(&mut self, read: Reread) {
@@ -1321,7 +1321,7 @@ fn mark_style(on: Option<bool>) -> Style {
 /// "G ━━━━━━━━━━━━━━────────  64%  ›" (spec § 2), the OSD's level (`osd::level`) one pad cell in:
 /// the glyph dim when muted; filled in the accent, the rest dim; muted, all dim; above 100 %, the
 /// whole bar in warn. Selected: the band across the whole row, the track included; the bar
-/// keeps its own foreground on it (decision 6).
+/// keeps its own foreground on it.
 fn slider(g: &mut Grid, glyph: char, v: Volume, more: bool, selected: bool) {
     let end = g.width();
     if selected {

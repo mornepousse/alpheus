@@ -76,7 +76,7 @@ fn one_player_title_artist_time_and_buttons() {
     assert_eq!(&b.rows[0].styles()[1..2], "G", "the title in bold accent");
 }
 
-/// Fix wave A: the selection is a player (by bus name) or the buttons, not a row number, so the
+/// The selection is a player (by bus name) or the buttons, not a row number, so the
 /// highlight never jumps to a neighbour when rows come or go above it.
 #[test]
 fn the_selection_follows_its_player_when_rows_or_players_change() {
@@ -249,7 +249,7 @@ fn a_press_maps_cells_to_buttons_and_players() {
     assert_eq!(press(&mut p, &players, (3, 6), WIDTH), MediaAction::Pin(second));
     assert_eq!(p.selected, 6);
     assert_eq!(press(&mut p, &players, (3, 40), WIDTH), MediaAction::Nothing, "below the rows");
-    // Fix wave A: the hit map is the drawn one, at the width the rows were drawn at.
+    // The hit map is the drawn one, at the width the rows were drawn at.
     let wide = rows(&players, &p, t0, 40);
     assert_eq!(wide.rows[3].cells()[26].ch, SKIP_NEXT, "40 wide: ⏭ at content 25");
     assert_eq!(press(&mut p, &players, (26, 3), 40), MediaAction::Control(Control::Next));
@@ -267,7 +267,7 @@ fn the_tick_runs_only_while_open_playing_and_before_the_end() {
     assert_eq!(tick_due(true, true, 1.0, LEN as u64, len), None, "at the end: the timer stops");
     assert_eq!(tick_due(true, true, 1.0, 102_250_000, len), Some(Duration::from_millis(750) + SLACK), "the next whole second");
     assert_eq!(tick_due(true, true, 1.0, 102_000_000, len), Some(Duration::from_secs(1) + SLACK));
-    // Fix wave A: faster than 1×, the whole second waited for is the first one at least
+    // Faster than 1×, the whole second waited for is the first one at least
     // 1 − 1/rate real seconds away: about one redraw a real second whatever the rate, never 2
     // or 16, and 1× unchanged.
     assert_eq!(tick_due(true, true, 2.0, 102_250_000, len), Some(Duration::from_micros(875_000) + SLACK), "twice as fast: 104 s");
@@ -290,7 +290,7 @@ fn the_tick_runs_only_while_open_playing_and_before_the_end() {
     }
 }
 
-/// Review Focus: the position beyond the length (a player reporting 6:40 of a 4:05 track).
+/// The position beyond the length (a player reporting 6:40 of a 4:05 track).
 #[test]
 fn a_position_beyond_the_length_is_clamped_and_stops_the_tick() {
     let t0 = Instant::now();
@@ -305,7 +305,7 @@ fn a_position_beyond_the_length_is_clamped_and_stops_the_tick() {
     assert_eq!(tick_due(true, true, 1.0, 400_000_000, Some(LEN as u64)), None, "even unclamped");
 }
 
-/// Review Focus: a track change while the popup is open. The rows follow, and once the
+/// A track change while the popup is open. The rows follow, and once the
 /// position is read again (Mpris asks on a track change while open) the tick restarts from 0:00.
 #[test]
 fn a_track_change_while_open_updates_the_rows_and_the_tick() {
@@ -328,7 +328,7 @@ fn a_track_change_while_open_updates_the_rows_and_the_tick() {
     );
 }
 
-/// Review Focus: a pause while open. The timer is disarmed, and ⏯ shows play.
+/// A pause while open. The timer is disarmed, and ⏯ shows play.
 #[test]
 fn a_pause_while_open_stops_the_tick_and_shows_play() {
     let t0 = Instant::now();
@@ -340,7 +340,7 @@ fn a_pause_while_open_stops_the_tick_and_shows_play() {
     assert_eq!(b.rows[3].cells()[16].ch, PLAY);
 }
 
-/// Fix round 1: until the position is read (the popup just opened, or the read failed), the
+/// Until the position is read (the popup just opened, or the read failed), the
 /// time row stands at 0:00 — nothing to redraw, so no tick.
 #[test]
 fn an_unknown_position_never_ticks() {
@@ -355,7 +355,7 @@ fn an_unknown_position_never_ticks() {
     assert_eq!(player_tick(false, p, t0), None, "closed");
 }
 
-/// Fix round 1: a refresh (a key, a host output) never moves a tick already armed ahead.
+/// A refresh (a key, a host output) never moves a tick already armed ahead.
 #[test]
 fn a_refresh_keeps_the_armed_tick() {
     let now = Instant::now();
@@ -366,7 +366,7 @@ fn a_refresh_keeps_the_armed_tick() {
     assert_eq!(next_deadline(None, Some(now + Duration::from_millis(300)), now), None, "no tick due: removed");
 }
 
-/// Controller reconciliation 10: the "media popup shown" line carries what the popup shows on
+/// The "media popup shown" line carries what the popup shows on
 /// top, as drawn (cut to its width), so a headless test can check the fake track reached it.
 #[test]
 fn the_heading_is_the_drawn_title_and_artist() {

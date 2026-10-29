@@ -59,7 +59,7 @@ pub fn input_rect(p: &Placement) -> Option<(i32, i32, i32, i32)> {
 mod tests {
     use super::*;
 
-    /// Spec § 3 (amended ad309a0) and reconciliation 5:
+    /// Spec § 3 (amended ad309a0):
     /// - margin 6 top, left and right;
     /// - the surface the bar plus a 4 px shadow;
     /// - exclusive zone = the bar height (compositors add the 6 px margin themselves);

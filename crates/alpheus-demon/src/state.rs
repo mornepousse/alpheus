@@ -41,14 +41,14 @@ pub enum Msg {
         state: Option<WifiState>,
     },
     /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
-    /// (quick_app takes it, Task 8), never kept by the bar. `state` None: the panel closed, BlueZ
+    /// (quick_app takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
         open: Option<u64>,
         state: Option<BtView>,
     },
     Resources(Sample),
-    /// The tray's shown items, rebuilt whole by the wiring (task 11).
+    /// The tray's shown items, rebuilt whole by the wiring.
     Tray(Vec<TrayIcon>),
     /// What the media module shows; None: no player, or every player stopped (media spec § 1).
     Media(Option<MediaView>),
@@ -376,7 +376,7 @@ mod tests {
         assert!(!b.apply(Msg::Bt { open: None, state: None }));
     }
 
-    /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads
+    /// The bar draws the sink only. A microphone or label change is kept (the OSD reads
     /// it from the same message) but redraws nothing.
     #[test]
     fn a_microphone_or_label_change_alone_does_not_redraw_the_bar() {
@@ -395,7 +395,7 @@ mod tests {
         assert!(b.apply(Msg::Sound(None)), "down: redraw");
     }
 
-    /// OSD task 3: with the OSD on and the volume module off, the bar draws no sound at all, so no
+    /// With the OSD on and the volume module off, the bar draws no sound at all, so no
     /// sound message re-lays it out (the OSD alone keeps pw-dump running).
     #[test]
     fn without_the_volume_module_a_sound_change_never_redraws_the_bar() {

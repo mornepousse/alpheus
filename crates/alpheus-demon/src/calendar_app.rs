@@ -15,7 +15,7 @@ impl App {
             self.popup_close(PopupClose::OutsideClick);
             return;
         }
-        // The locale's first day, read at each open (decision 11): never at startup, nothing kept
+        // The locale's first day, read at each open: never at startup, nothing kept
         // while closed.
         let calendar = Calendar::new(&LocalTime::now().0, locale_first_day(), self.bar.config.clock.week_numbers);
         let rows = crate::list::padded(&calendar.render());

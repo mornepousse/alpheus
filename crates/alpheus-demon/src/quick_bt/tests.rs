@@ -147,7 +147,7 @@ fn detail_order_paired_then_nearby() {
     );
 }
 
-/// Review Focus 4: a hostile alias fits its row; an empty one reads `?`.
+/// A hostile alias fits its row; an empty one reads `?`.
 #[test]
 fn an_empty_or_long_label_fits_its_row() {
     let one = |e: BtEntry| {
@@ -332,7 +332,7 @@ fn pair_then_trust_then_connect() {
 }
 
 /// A pairing that succeeds while its code question is still pending rejects that question
-/// first, as any other end of the action does (`finish`; Task 7 review minor).
+/// first, as any other end of the action does (`finish`).
 #[test]
 fn a_pair_success_rejects_a_pending_code_question() {
     let t = Instant::now();
@@ -467,7 +467,7 @@ fn silent_ends() {
     v.paired.retain(|e| e.path != path(2));
     assert_eq!(b.set_view(Some(v), t), bt(vec![BtOrder::Forget(ActCall::Connect { device: path(2) })]), "the device went");
     assert_eq!((b.action.clone(), b.failed.clone()), (None, None));
-    // Review Focus 5: the adapter powered off elsewhere mid-pairing.
+    // The adapter powered off elsewhere mid-pairing.
     let (mut b, _) = acting(3, t);
     b.agent(AgentId(1), AgentRequest::DisplayPasskey { device: path(3), passkey: 482_913 }, t);
     assert_eq!(b.set_view(Some(view(false, paired(), vec![])), t), bt(vec![BtOrder::Forget(ActCall::Pair { device: path(3) })]));
@@ -654,7 +654,7 @@ fn another_device_is_rejected() {
     assert_eq!(b.code, None);
 }
 
-/// Review Focus 2: closing during `Code 482 913? ⏎`: Rejected, CancelPairing, then discovery stops.
+/// Closing during `Code 482 913? ⏎`: Rejected, CancelPairing, then discovery stops.
 #[test]
 fn leaving_rejects_then_cancels_pairing_then_stops_discovery() {
     let t = Instant::now();

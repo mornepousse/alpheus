@@ -517,7 +517,7 @@ fn narrow_outputs_drop_modules_in_order_under_every_style() {
             };
             let gone = removable.iter().filter(|m| !shown(**m)).count();
             assert!(removable[gone..].iter().all(|m| shown(*m)), "{style:?} at {w}: out of REMOVAL's order: {t}");
-            // Review focus 3: a block always holds something; no lone border around blank cells.
+            // A block always holds something; no lone border around blank cells.
             for x in g.groups() {
                 let cells = &g.cells()[usize::from(x.start)..usize::from(x.end)];
                 assert!(cells.iter().any(|c| c.ch != ' '), "{style:?} at {w}: an empty block {x:?}: {t}");
