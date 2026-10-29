@@ -41,6 +41,9 @@ pub const UPOWER: &str = "org.freedesktop.UPower";
 pub const BLUEZ: &str = "org.bluez";
 /// power-profiles-daemon (quick spec § 5): read, never set (the panel runs powerprofilesctl).
 pub const POWER_PROFILES: &str = "net.hadess.PowerProfiles";
+/// The bus driver, which answers `GetNameOwner`, `AddMatch` and the rest.
+pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
+pub const BUS_DRIVER_PATH: &str = "/org/freedesktop/DBus";
 pub const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 pub const OBJECT_MANAGER: &str = "org.freedesktop.DBus.ObjectManager";
 /// Not called (reading only): only its `PrepareForSleep` signal is heard.
