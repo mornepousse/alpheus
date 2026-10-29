@@ -27,7 +27,7 @@ use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 
 /// Order of disappearance when space runs short: the spec's (resources,
 /// media, title), then the system indicators (Q9); the tray goes right
-/// after resources (Mae, 2026-10-05), and the launcher button
+/// after resources (Mae's ruling for the tray), and the launcher button
 /// after the system indicators (Mae, 2026-10-05: `Mod+Space` still opens the
 /// launcher), then the privacy indicators (privacy spec § 1), then the power button, the last of
 /// all (power spec § 1).
