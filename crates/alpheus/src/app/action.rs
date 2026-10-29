@@ -1,6 +1,7 @@
 //! Vocabulary of the application: tabs, keyboard intents (Action), business
 //! effects (Command), external tools, palette entries.
 
+use super::{ToggleId, toggle_label};
 use crate::backends::PowerAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,10 +105,10 @@ pub enum Command {
 impl Command {
     pub fn label(&self) -> String {
         match self {
-            Command::ToggleWifi => "Wi-Fi".into(),
-            Command::ToggleBluetooth => "Bluetooth".into(),
-            Command::ToggleDnd => "Do not disturb".into(),
-            Command::ToggleKeepAwake => "Keep awake".into(),
+            Command::ToggleWifi => toggle_label(ToggleId::Wifi).into(),
+            Command::ToggleBluetooth => toggle_label(ToggleId::Bluetooth).into(),
+            Command::ToggleDnd => toggle_label(ToggleId::Dnd).into(),
+            Command::ToggleKeepAwake => toggle_label(ToggleId::KeepAwake).into(),
             Command::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Command::Power(a) => a.label().into(),
             Command::Open(e) => e.label().into(),

@@ -185,10 +185,10 @@ fn op_label(op: &Op) -> String {
         Op::SetVolume(..) => "Volume".into(),
         Op::SetDefault(_) => "Default device".into(),
         Op::SetBrightness(_) => "Brightness".into(),
-        Op::SetWifi(_) => "Wi-Fi".into(),
-        Op::SetBluetooth(_) => "Bluetooth".into(),
-        Op::SetDnd(_) => "Do not disturb".into(),
-        Op::ToggleKeepAwake { .. } => "Keep awake".into(),
+        Op::SetWifi(_) => toggle_label(ToggleId::Wifi).into(),
+        Op::SetBluetooth(_) => toggle_label(ToggleId::Bluetooth).into(),
+        Op::SetDnd(_) => toggle_label(ToggleId::Dnd).into(),
+        Op::ToggleKeepAwake { .. } => toggle_label(ToggleId::KeepAwake).into(),
         Op::SetProfile(_) => "Energy profile".into(),
         Op::Power(a) => a.label().into(),
         Op::ApplyDisplays { .. } => "Displays".into(),
@@ -407,7 +407,7 @@ impl App {
     }
 
     fn success_message(&self, op: &Op) -> Option<String> {
-        let onoff = |b: bool| if b { "on" } else { "off" };
+        let onoff = |id: ToggleId, b: bool| format!("{}: {}", toggle_label(id), if b { "on" } else { "off" });
         Some(match op {
             Op::SetVolume(..) | Op::SetBrightness(_) => return None,
             Op::SetDefault(id) => {
@@ -417,10 +417,10 @@ impl App {
                     None => format!("Input: {}", a.sources.iter().find(|n| n.id == *id)?.name),
                 }
             }
-            Op::SetWifi(b) => format!("Wi-Fi: {}", onoff(*b)),
-            Op::SetBluetooth(b) => format!("Bluetooth: {}", onoff(*b)),
-            Op::SetDnd(b) => format!("Do not disturb: {}", onoff(*b)),
-            Op::ToggleKeepAwake { now_on } => format!("Keep awake: {}", onoff(*now_on)),
+            Op::SetWifi(b) => onoff(ToggleId::Wifi, *b),
+            Op::SetBluetooth(b) => onoff(ToggleId::Bluetooth, *b),
+            Op::SetDnd(b) => onoff(ToggleId::Dnd, *b),
+            Op::ToggleKeepAwake { now_on } => onoff(ToggleId::KeepAwake, *now_on),
             Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
             Op::ApplyDisplays { .. } => return None,
