@@ -1540,7 +1540,8 @@ impl App {
     /// True when the item `Hover` is tracking (armed, or already shown as a tooltip) lost its
     /// zone, or moved to different columns, in the grid `self.bar` would now paint for the
     /// surface it was armed on — found by `hover_surface`'s
-    /// IDENTITY, never `anchor.output`'s name (it can change meanwhile). An unrelated icon changing elsewhere never moves THIS one's zone, so this stays
+    /// IDENTITY, never `anchor.output`'s name (it can change meanwhile). An unrelated icon changing elsewhere never moves THIS one's
+    /// zone, so this stays
     /// false then — the whole point of only cancelling here, not on every redraw. Nothing
     /// tracked: never "moved".
     pub(crate) fn hover_target_moved(&self) -> bool {

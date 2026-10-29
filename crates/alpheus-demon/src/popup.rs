@@ -760,7 +760,8 @@ impl App {
         }
     }
 
-    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint` repositions on a size change.
+    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint`
+    /// repositions on a size change.
     fn calendar_scroll(&mut self, months: i32) {
         let Some(PopupBody::Calendar(c)) = self.popup_body_mut() else { return };
         if !c.scroll(months) {
@@ -774,7 +775,8 @@ impl App {
 
     /// Runs `f` on the open menu and its session's layout; Nothing when either is missing — the
     /// session ended under it (its item gone, its path moved, a call timed out), which `tray_
-    /// output` has already closed and logged with the right reason: a fabricated `MenuAction::Close` here would make `menu_action` log it again,
+    /// output` has already closed and logged with the right reason: a fabricated `MenuAction::Close` here would make `menu_action`
+    /// log it again,
     /// wrongly, as "escape".
     fn menu_with(&mut self, f: impl FnOnce(&mut Menu, &Layout) -> MenuAction) -> MenuAction {
         let App { tray, popup, .. } = self;

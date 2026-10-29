@@ -71,7 +71,8 @@ impl Item {
         }
     }
 
-    /// Every first Get and the process id have answered, failed or timed out (the process name is waited for too, so a fallback letter never changes once drawn).
+    /// Every first Get and the process id have answered, failed or timed out (the process name is waited for too, so a fallback
+    /// letter never changes once drawn).
     pub fn is_ready(&self) -> bool {
         self.first.is_empty() && !self.awaiting_pid
     }
@@ -205,7 +206,8 @@ pub struct Host {
     proc_root: PathBuf,
     changes: Changes,
     refusal_logged: bool,
-    /// Whether a self-registration refusal has already been logged once: a looping signal from a misbehaving watcher — the same self-naming entry in its
+    /// Whether a self-registration refusal has already been logged once: a looping signal from a misbehaving watcher — the same
+    /// self-naming entry in its
     /// list on every `NameOwnerChanged`, say — must never flood the log.
     self_registration_logged: bool,
     /// Our own unique name: never one of the items we host (checked in `add`, on the resolved

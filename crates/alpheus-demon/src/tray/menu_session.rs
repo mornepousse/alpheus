@@ -153,7 +153,8 @@ impl MenuSession {
         }
     }
 
-    /// After `parent` was grafted: the submenus fetched before under it (kept on screen by graft) are read again (strictly below `parent`, so this ends); those gone from the menu are forgotten, unless a
+    /// After `parent` was grafted: the submenus fetched before under it (kept on screen by graft) are read again (strictly below
+    /// `parent`, so this ends); those gone from the menu are forgotten, unless a
     /// re-read in flight may bring them back.
     fn refetch_under(&mut self, parent: i32, out: &mut dyn Outbox) {
         let Some(layout) = &self.layout else { return };

@@ -163,7 +163,8 @@ fn panel(rows: &Boxed, b: &BoxLayout) -> Vec<String> {
 
 /// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
 /// selection moves, and the panel — once reserved — always shows the selected result; it
-/// is never blank while one exists. `Left`/`Right` (the model has no toggle for them to drive, and no `Ctrl+Space`) are still recognised keys,
+/// is never blank while one exists. `Left`/`Right` (the model has no toggle for them to drive, and no `Ctrl+Space`) are still
+/// recognised keys,
 /// simply ignored — pressing them changes nothing here either.
 #[test]
 fn the_panel_always_shows_the_selected_result() {

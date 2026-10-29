@@ -81,7 +81,8 @@ impl Hover {
 
 /// The tray icon under `column` of the bar, borrowed from `grid` (no allocation): its key, and the
 /// zone's own columns. Always None when `[tray] tooltips = false` (no hover timer at all). The
-/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms: a plain motion event over the SAME icon must allocate nothing.
+/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms: a plain motion event over the SAME icon
+/// must allocate nothing.
 pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, u16)> {
     if !tooltips {
         return None;
