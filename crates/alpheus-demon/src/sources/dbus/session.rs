@@ -3,10 +3,10 @@
 use super::*;
 
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
-/// domain is now None, tagged `Outage::Domain(d)` (I2, review) so a caller
+/// domain is now None, tagged `Outage::Domain(d)` (I2) so a caller
 /// can blank just that domain rather than the whole state — unless the
 /// failure is the bus itself going away mid-call (`UnexpectedEof`), tagged
-/// `Outage::Bus` instead (I2 carry-over, tray plan 1 review): nothing can be
+/// `Outage::Bus` instead: nothing can be
 /// trusted then, not just `d`. An absence (NotFound) also gives None, but is
 /// not an error.
 pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state: &mut DomainLog) -> io::Result<()> {
@@ -35,7 +35,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
     if e.kind() == io::ErrorKind::NotFound {
         return Ok(());
     }
-    // A bus disconnect mid-call (I2 carry-over, tray plan 1 review) is the
+    // A bus disconnect mid-call is the
     // whole connection going away, not this domain alone: tagging it
     // `Outage::Domain(d)` would leave the other domains showing their last
     // value for a whole backoff round after nothing can be trusted any more.
@@ -45,7 +45,7 @@ pub(super) fn read(bus: &mut dyn Bus, d: Domain, s: &mut SystemState, log_state:
 
 /// Reads every domain in `domains` into `s`; the first real failure (not an
 /// absence), if any — unless a later failure is the bus itself going away
-/// (`Outage::Bus`, fix round, review item 6): that one always wins over an
+/// (`Outage::Bus`): that one always wins over an
 /// earlier `Outage::Domain`, stale the moment the connection itself is
 /// gone. Used both for the initial state and for logind's
 /// `PrepareForSleep(false)`, which re-reads all of them at once.
@@ -71,7 +71,7 @@ pub(super) fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemStat
 /// caller's (`start`'s closure persists across every backoff round;
 /// `session`'s own locals, like `s`, do not).
 /// Calls `publish` only when `s` differs from the last state actually
-/// published (B-m6, review): a signal that passed `relevant`'s allowlist
+/// published: a signal that passed `relevant`'s allowlist
 /// can still leave every field `session` tracks unchanged (two different
 /// allowed properties parsing to the same `SystemState`, a duplicate
 /// signal…), and publishing it anyway would reach the bar's channel, and
@@ -93,7 +93,7 @@ pub(super) fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState
 
 /// A Wi-Fi read's result into `s`. Err when the bus itself went away, tagged so (every domain
 /// blanked, never the network domain alone), or when a detail rule could not be removed: the
-/// network domain's outage (final review A-M4), so the session ends and the reconnection drops
+/// network domain's outage, so the session ends and the reconnection drops
 /// every rule, the other modules kept meanwhile.
 pub(super) fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
     match r {

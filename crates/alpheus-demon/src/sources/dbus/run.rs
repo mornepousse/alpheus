@@ -2,8 +2,7 @@
 
 use super::*;
 
-/// Like `sources::supervise`, specialized for the D-Bus source (I2,
-/// review): the "–" shown during the backoff delay depends on why the
+/// Like `sources::supervise`, specialized for the D-Bus source: the "–" shown during the backoff delay depends on why the
 /// session ended — a single domain's outage (`Outage::Domain`) keeps the
 /// others' last published value (the session already showed "–" for just
 /// that one domain), the bus itself going away (`Outage::Bus`) blanks all
@@ -48,10 +47,10 @@ pub(super) fn run_supervised(
                     log(&format!("source down: {e}"));
                 }
                 match outage_of(e) {
-                    // Never the Wi-Fi last read on NetworkManager's own outage (final review
-                    // A-M5): a detail's lists, stale by the time the session is back; the panel
-                    // hears none until it is. Another domain's outage keeps it (F3 I1), marked
-                    // stale (F4): read before the outage, it may no longer hold by the backoff's
+                    // Never the Wi-Fi last read on NetworkManager's own outage:
+                    // a detail's lists, stale by the time the session is back; the panel
+                    // hears none until it is. Another domain's outage keeps it, marked
+                    // stale: read before the outage, it may no longer hold by the backoff's
                     // end, so an attempt never deletes on it; the next session reads it afresh.
                     Outage::Domain(Domain::Network) => Some(SystemState { wifi: None, ..last.clone() }),
                     // BlueZ's own outage: the panel's Bluetooth view is dropped (nothing to trust

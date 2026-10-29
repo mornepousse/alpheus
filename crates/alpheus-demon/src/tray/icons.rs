@@ -2,7 +2,7 @@
 //! from a small built-in table, or `[tray.icons]` overrides, matched against
 //! what the item says about itself; an application nobody knows gets the
 //! first letter of its name. Never an image: the item's pixmaps are never
-//! even requested (task 2).
+//! even requested.
 
 use super::host::Item;
 use super::{ItemKey, Status};
@@ -50,7 +50,7 @@ pub struct TrayIcon {
 
 /// The four fields an item is recognised by, in priority order, lower-cased
 /// with `str::to_lowercase` — no Unicode normalisation (NFC/NFKC), the same
-/// folding `[tray.icons]` keys get at load (task 7); absent or empty fields
+/// folding `[tray.icons]` keys get at load; absent or empty fields
 /// left out.
 fn fields(item: &Item) -> Vec<String> {
     [&item.id, &item.icon_name, &item.tooltip, &item.process]
@@ -64,7 +64,7 @@ fn fields(item: &Item) -> Vec<String> {
 /// The longest needle of `table` found in a field, fields in priority order:
 /// among several needles matching the same field, the longest (most
 /// specific) one wins — not whichever a `BTreeMap`'s key order happens to
-/// put first (controller decision, `[tray.icons]`'s overrides).
+/// put first (`[tray.icons]`'s overrides).
 fn find<'a, G>(fields: &[String], table: impl Iterator<Item = (&'a str, G)> + Clone) -> Option<G> {
     fields
         .iter()
@@ -73,7 +73,7 @@ fn find<'a, G>(fields: &[String], table: impl Iterator<Item = (&'a str, G)> + Cl
 
 /// Id, IconName, ToolTip title, process name — each lower-cased and matched as
 /// a substring, against `overrides` over all four, then against TABLE over all
-/// four (controller decision 9). No match: the item's letter.
+/// four. No match: the item's letter.
 pub fn icon(item: &Item, overrides: &BTreeMap<String, String>) -> Icon {
     let fields = fields(item);
     if let Some(g) = find(&fields, overrides.iter().map(|(k, v)| (k.as_str(), v))) {
@@ -90,7 +90,7 @@ pub fn icon(item: &Item, overrides: &BTreeMap<String, String>) -> Icon {
 /// (never a lone combining mark, never a wide one) of the first of them that has
 /// one. The process name
 /// comes before the Id: an Electron item's Id (`chrome_status_icon_N`) says
-/// nothing about the application (controller decision).
+/// nothing about the application.
 pub fn letter(item: &Item) -> char {
     [&item.title, &item.process, &item.id]
         .into_iter()
@@ -106,8 +106,8 @@ pub fn icons(items: &[Item], overrides: &BTreeMap<String, String>) -> Vec<TrayIc
 }
 
 /// Items built the way the host builds them — registered, then their first
-/// `Get`s answered — through `Host`'s public API only: what tasks 8 and 10
-/// test against, independent of the host's internals.
+/// `Get`s answered — through `Host`'s public API only: what the tests
+/// run against, independent of the host's internals.
 #[cfg(test)]
 pub(crate) mod testing {
     use crate::tray::bus::testing::FakeOutbox;
@@ -209,7 +209,7 @@ pub(crate) mod testing {
             }
         }
         // Our own unique name (never one of the fakes: they are registered as
-        // ":1.100", ":1.101"…), as `Host::new` needs it since task 5's review.
+        // ":1.100", ":1.101"…), as `Host::new` needs it.
         let mut host = Host::new(root.clone(), ":1.0".into());
         let mut out = FakeOutbox::default();
         for i in 0..fakes.len() {
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(
             icon(&one(kettle), &overrides),
             Icon::Glyph("\u{f030b}".into()),
-            "an override on the process name beats the table on the Id (decision 9)"
+            "an override on the process name beats the table on the Id"
         );
         let wide = BTreeMap::from([("lumen".to_string(), "日".to_string())]);
         assert_eq!(icon(&one(Fake::new(&[(Prop::Id, "lumen-tray")])), &wide), Icon::Glyph("日".into()), "two cells");
@@ -319,7 +319,7 @@ mod tests {
     fn letter_of_a_silent_item_comes_from_its_process() {
         let silent = Fake::new(&[(Prop::Title, "Nimbus")]).process("kettle").answers(Answers::Timeout);
         let item = one(silent);
-        assert!(item.is_ready(), "every Get timed out: shown (decision 8)");
+        assert!(item.is_ready(), "every Get timed out: shown");
         assert_eq!(icon(&item, &no_overrides()), Icon::Letter('K'));
     }
 

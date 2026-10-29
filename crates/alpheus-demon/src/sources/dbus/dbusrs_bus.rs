@@ -99,7 +99,7 @@ pub const MATCH_RULES: [(Domain, &str); 13] = [
     ),
     (
         Domain::Battery,
-        // Narrowed to the device objects (M5, review): UPower's own root
+        // Narrowed to the device objects: UPower's own root
         // object never sends PropertiesChanged the bar would read. This
         // still matches BAT0 and the line power supplies — a path_namespace
         // can't exclude a few device names — so `Signal::domain` drops

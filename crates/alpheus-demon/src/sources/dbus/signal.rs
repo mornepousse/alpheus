@@ -40,7 +40,7 @@ const BLUEZ_BATTERY_PROPS: [&str; 1] = ["Percentage"];
 /// power-profiles-daemon: what the quick panel shows.
 const POWER_PROFILES_PROPS: [&str; 2] = ["ActiveProfile", "Profiles"];
 
-/// The properties of `path`/`interface` the bar reads (I1, review): an
+/// The properties of `path`/`interface` the bar reads (I1): an
 /// ALLOWLIST, replacing the denylist (`NOISE`) this used to be — a property
 /// not named here can't change what the bar shows. None: an interface the
 /// bar never reads at all (BlueZ's MediaTransport1, MediaPlayer1…).
@@ -76,8 +76,8 @@ fn looks_like_builtin_battery_name(native: &str) -> bool {
 }
 
 /// UPower emits `PropertiesChanged` for every device it tracks, including
-/// the laptop's raw battery (`battery_BAT0`…) and the line power supplies
-/// (M5, review): the bar never reads those objects directly — `DisplayDevice`
+/// the laptop's raw battery (`battery_BAT0`…) and the line power supplies:
+/// the bar never reads those objects directly — `DisplayDevice`
 /// already aggregates the laptop battery, and a peripheral is read by its
 /// own device path, named differently (`battery_hidpp_battery_1`…). A
 /// `path_namespace` match rule can't exclude a few device names by itself,
@@ -166,7 +166,7 @@ impl Signal {
     }
 
     /// `logind`'s `PrepareForSleep(false)`: the machine just resumed, not
-    /// going to sleep. Every shown domain is re-read once (task 13) — a VPN
+    /// going to sleep. Every shown domain is re-read once — a VPN
     /// may have reconnected, a Bluetooth device too, the battery drained
     /// while asleep. Reading only: the daemon never calls a logind method
     /// (Suspend, Hibernate, PowerOff… the guardrail already forbids the
@@ -176,7 +176,7 @@ impl Signal {
     }
 
     /// Whether this signal, already narrowed to `d` by its path, can
-    /// actually change what the bar shows for `d` (I1, review): an
+    /// actually change what the bar shows for `d` (I1): an
     /// allowlist of the properties/interfaces the bar reads, not a denylist
     /// of known noise.
     fn relevant(&self, d: Domain) -> bool {
@@ -191,7 +191,7 @@ impl Signal {
                 relevant_properties(&self.path, self.arg0.as_deref())
                     .is_some_and(|allowed| self.names.iter().any(|n| allowed.contains(&n.as_str())))
             }
-            // Symmetric with InterfacesAdded (review): a connected device
+            // Symmetric with InterfacesAdded: a connected device
             // always sends Connected=false before being removed, so its own
             // removal re-reads nothing; only a new/removed adapter or
             // battery can change the bar.

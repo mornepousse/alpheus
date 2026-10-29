@@ -230,7 +230,7 @@ fn service_unknown_no_reply_or_unknown_method_remove_the_player_and_nothing_else
     }
 }
 
-/// Review Focus: a player whose PropertiesChanged arrives before its GetAll answer.
+/// A player whose PropertiesChanged arrives before its GetAll answer.
 #[test]
 fn a_change_arriving_before_the_get_all_answer_is_kept_then_completed() {
     let (mut out, mut m) = started();
@@ -317,7 +317,7 @@ fn seeked_resyncs_the_position() {
     assert_eq!(m.players().active().and_then(|p| p.position).map(|s| s.us), Some(0), "a negative position is 0");
 }
 
-/// Task 3's review: the PropertiesChanged rule has no sender filter, so any peer may broadcast
+/// The PropertiesChanged rule has no sender filter, so any peer may broadcast
 /// one on the MPRIS object. A sender that is not a followed player's unique name is dropped.
 #[test]
 fn a_stranger_signalling_on_the_mpris_object_changes_nothing() {
@@ -343,7 +343,7 @@ fn a_stranger_signalling_on_the_mpris_object_changes_nothing() {
     assert_eq!(m.built, built, "dropped before it reaches the model: nothing to rebuild");
 }
 
-/// Task 3's review: a call never goes to a well-known name; only owners the bus driver gave
+/// A call never goes to a well-known name; only owners the bus driver gave
 /// as unique names (":1.N") enter the owner table, and every call takes its destination there.
 #[test]
 fn a_well_known_owner_is_never_followed_nor_called() {
@@ -359,7 +359,7 @@ fn a_well_known_owner_is_never_followed_nor_called() {
     assert!(out.sent.iter().all(|c| matches!(c, Call::AddMatch { .. })), "{:?}", out.sent);
 }
 
-/// Task 3's review: `view()` allocates (`truncate_title`), so `take_view_change` builds it only
+/// `view()` allocates (`truncate_title`), so `take_view_change` builds it only
 /// after something that can move it, never on every batch.
 #[test]
 fn the_view_is_built_only_after_a_change() {
@@ -384,7 +384,7 @@ fn the_view_is_built_only_after_a_change() {
     assert_eq!(m.built, built + 1);
 }
 
-/// Task 4's review: Rate and Volume are shown nowhere, an unknown pin moves nothing: neither
+/// Rate and Volume are shown nowhere, an unknown pin moves nothing: neither
 /// rebuilds the view. A capability is shown (the popup's buttons): it does.
 #[test]
 fn unseen_changes_never_rebuild_the_view() {
@@ -407,7 +407,7 @@ fn unseen_changes_never_rebuild_the_view() {
     assert_eq!(m.built, built + 2, "a known pin: rebuilt");
 }
 
-/// Task 4's review: one connection may own two MPRIS names; only the first is followed. The
+/// One connection may own two MPRIS names; only the first is followed. The
 /// second one released must not take the first one's player away.
 #[test]
 fn a_released_second_name_of_the_same_connection_leaves_the_player() {
@@ -422,10 +422,10 @@ fn a_released_second_name_of_the_same_connection_leaves_the_player() {
     assert_eq!(m.players().len(), 0, "its own name released: gone");
 }
 
-/// Task 5's review: when a followed player's name is released, the same connection may still own a
+/// When a followed player's name is released, the same connection may still own a
 /// second MPRIS name (never followed while the first one was): one ListNames, even once listed,
 /// picks it up. A release that removes nothing lists nothing.
-/// Fix wave A: a resolution that fails frees its slot for a listed name waiting behind the 16 in
+/// A resolution that fails frees its slot for a listed name waiting behind the 16 in
 /// flight; only followed players fill the cap.
 #[test]
 fn a_failed_resolution_frees_its_slot_for_a_waiting_name() {
@@ -449,7 +449,7 @@ fn a_failed_resolution_frees_its_slot_for_a_waiting_name() {
     assert_eq!(lines("players already followed"), 0, "nobody was turned away");
 }
 
-/// Fix wave B: the last resolution in flight ends because its name vanishes (a NameOwnerChanged
+/// The last resolution in flight ends because its name vanishes (a NameOwnerChanged
 /// with no new owner), not because its answer came: the waiting name still gets the slot.
 #[test]
 fn a_name_vanishing_mid_resolution_frees_its_slot_for_a_waiting_name() {
@@ -467,7 +467,7 @@ fn a_name_vanishing_mid_resolution_frees_its_slot_for_a_waiting_name() {
     assert_eq!(asked, [Call::GetNameOwner { name: names[MAX_PLAYERS].clone() }], "the 17th, in the freed slot");
 }
 
-/// Fix wave B: a timed-out resolution is asked once more only if there is room, as the first
+/// A timed-out resolution is asked once more only if there is room, as the first
 /// ask is; a player that arrived meanwhile took the slot.
 #[test]
 fn a_lost_get_name_owner_is_not_retried_without_room() {
@@ -485,7 +485,7 @@ fn a_lost_get_name_owner_is_not_retried_without_room() {
     assert!(!out.take().iter().any(|(_, c)| matches!(c, Call::GetNameOwner { .. })), "full: no retry");
 }
 
-/// Fix wave A: only followed players fill the cap. A player arriving while 16 listed names are
+/// Only followed players fill the cap. A player arriving while 16 listed names are
 /// still being resolved is followed; the one resolution that finds no room is the one turned
 /// away, and the line says so truly.
 #[test]
@@ -506,7 +506,7 @@ fn an_arrival_is_followed_while_listed_names_resolve() {
     assert_eq!(lines(&format!("16 players already followed; {} and any more", names[MAX_PLAYERS - 1])), 1);
 }
 
-/// Fix wave A: departures in one batch share one listing; a new one is asked once it answered.
+/// Departures in one batch share one listing; a new one is asked once it answered.
 #[test]
 fn departures_share_one_listing_in_flight() {
     let (mut out, mut m) = started();
@@ -547,7 +547,7 @@ fn a_released_player_lists_again_so_a_second_name_of_its_connection_is_followed(
     assert_eq!(m.players().get(":1.7").map(|p| p.bus_name.as_str()), Some(LANTERN), "the second name followed now");
 }
 
-/// Task 4's review (login): a ListNames lost to our timeout is asked once more at once; if that
+/// A ListNames lost to our timeout is asked once more at once; if that
 /// one is lost too, the next MPRIS arrival lists again, so players already running are found
 /// without a timer. Once listed, never again.
 #[test]
@@ -575,7 +575,7 @@ fn a_lost_list_names_is_asked_again_once_then_on_the_next_arrival() {
     assert!(!out.take().iter().any(|(_, c)| *c == Call::ListNames), "listed: never again");
 }
 
-/// Task 4's review: a GetNameOwner lost to our timeout is asked once more, never twice.
+/// A GetNameOwner lost to our timeout is asked once more, never twice.
 #[test]
 fn a_lost_get_name_owner_is_asked_again_once() {
     let (mut out, mut m) = started();
@@ -699,7 +699,7 @@ fn seeked_moves_the_position_only_while_the_popup_is_open() {
     assert_eq!(position(&m), Some(5_000_000), "a sender that is no player");
 }
 
-/// Review Focus: a player that never sends Seeked after a seek in its own UI. Reopening reads the
+/// A player that never sends Seeked after a seek in its own UI. Reopening reads the
 /// position again; nothing kept from the last open is trusted.
 #[test]
 fn reopening_reads_the_position_again() {
@@ -714,7 +714,7 @@ fn reopening_reads_the_position_again() {
     assert_eq!(position(&m), Some(100_000_000));
 }
 
-/// Review Focus: the track changes while the popup is open. The position is read again (the
+/// The track changes while the popup is open. The position is read again (the
 /// new track starts elsewhere); with the popup closed, nothing is asked.
 #[test]
 fn a_track_or_status_change_rereads_the_position_only_while_open() {
@@ -751,7 +751,7 @@ fn a_track_or_status_change_rereads_the_position_only_while_open() {
     assert!(positions_asked(&out).is_empty(), "neither status nor track: no read");
 }
 
-/// Reconciliation 5: `Players::apply` forgets the position on ANY change of the track — an
+/// `Players::apply` forgets the position on ANY change of the track — an
 /// artist corrected alone too — so `moment` must see it, or the popup stays at 0:00 unread.
 #[test]
 fn an_artist_only_change_while_open_rereads_the_position() {
@@ -773,7 +773,7 @@ fn an_artist_only_change_while_open_rereads_the_position() {
     assert_eq!(positions_asked(&out).len(), 1, "so it is read again");
 }
 
-/// Fix wave A: a new Rate while open moves where the track will be: `Players::apply` forgets the
+/// A new Rate while open moves where the track will be: `Players::apply` forgets the
 /// position, so it is read again (else the elapsed time jumps by the time since × the new rate).
 #[test]
 fn a_rate_change_while_open_rereads_the_position() {

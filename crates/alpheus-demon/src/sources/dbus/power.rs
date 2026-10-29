@@ -39,7 +39,7 @@ mod tests {
         assert_eq!(bus.calls.last().cloned(), Some(format!("GetAll {POWER_OWNER} {PATH} {INTERFACE}")));
     }
 
-    /// Decision 12: only the three known profiles, each once; an unknown active one hides the row.
+    /// Only the three known profiles, each once; an unknown active one hides the row.
     #[test]
     fn unknown_or_repeated_profiles_are_left_out() {
         let mut bus = FakeBus::empty();

@@ -160,8 +160,7 @@ fn add_never_treats_our_own_unique_name_as_an_item() {
     // entry already keyed by a unique name in another watcher's list or signal, looks like.
     // `sender` is irrelevant on this path — `add`'s guard checks `key.owner` (the name
     // itself), never `sender` — so an arbitrary, unrelated value proves that here on purpose
-    // (task 5 fix round 2 review: a prior version of this comment read as if the sender were
-    // part of what gets checked).
+    // (not part of what gets checked).
     h.register(OWN, "irrelevant-sender", &mut out);
     assert!(h.items().is_empty());
     assert!(out.take().is_empty(), "nothing asked of our own connection");
@@ -170,7 +169,7 @@ fn add_never_treats_our_own_unique_name_as_an_item() {
 #[test]
 fn add_never_treats_a_well_known_name_resolving_to_us_as_an_item() {
     let (mut h, mut out, _proc) = host("self-well-known");
-    // A registration naming our own well-known name (task 5 review): `split_service` alone
+    // A registration naming our own well-known name: `split_service` alone
     // cannot see this is us, only the GetNameOwner round trip it triggers can — the same
     // round trip `register` takes for any well-known name, so this also covers an entry of
     // another watcher's list or its ItemRegistered signal (both call `register` the same
@@ -260,7 +259,7 @@ fn duplicate_registration_is_one_item() {
 fn a_duplicate_registration_rereads_the_menu() {
     // No StatusNotifierItem signal exists for Menu: an item that first registered with none
     // (or "/NO_DBUSMENU") and gains one later is only ever noticed through a duplicate
-    // RegisterStatusNotifierItem (fix round, 2026-10-06).
+    // RegisterStatusNotifierItem.
     let (mut h, mut out, _proc) = host("reread-menu");
     h.register(":1.7", ":1.7", &mut out);
     settle(&mut h, &mut out, nimbus);
@@ -608,7 +607,7 @@ fn tooltip_text_falls_back_to_title_then_id() {
     assert_eq!(i.tooltip_text(), Some("Lumen: 2 unread"));
 }
 
-/// Fix round 2026-10-06, item 5: `codec::clean` turns a ToolTip of just "\n" into a single
+/// `codec::clean` turns a ToolTip of just "\n" into a single
 /// space — stored as absent, so `tooltip_text` falls back instead of a blank floating box.
 #[test]
 fn a_whitespace_only_tooltip_is_stored_as_absent() {

@@ -34,7 +34,7 @@ pub struct Item {
     pub item_is_menu: bool,
     /// /proc/<pid>/comm of its owner (GetConnectionUnixProcessID), cleaned.
     pub process: Option<String>,
-    /// First Gets not answered yet (controller decision 8).
+    /// First Gets not answered yet.
     first: PropSet,
     /// Failed or timed out: not asked again until a signal names them.
     failed: PropSet,
@@ -71,8 +71,7 @@ impl Item {
         }
     }
 
-    /// Every first Get and the process id have answered, failed or timed out (controller decision 8;
-    /// the process name is waited for too, so a fallback letter never changes once drawn).
+    /// Every first Get and the process id have answered, failed or timed out (the process name is waited for too, so a fallback letter never changes once drawn).
     pub fn is_ready(&self) -> bool {
         self.first.is_empty() && !self.awaiting_pid
     }
@@ -98,7 +97,7 @@ impl Item {
     }
 
     /// Stores `v` as `p`; whether anything changed. An empty, or whitespace-only, text is absent
-    /// (fix round 2026-10-06, item 5: `codec::clean` turns a tooltip of just "\n" into a single
+    /// (`codec::clean` turns a tooltip of just "\n" into a single
     /// space, which `tooltip_row` would otherwise draw as a blank floating box). Compares only the
     /// one field a property maps to — never the whole item (no clone).
     fn apply(&mut self, p: Prop, v: PropValue) -> bool {
@@ -119,7 +118,7 @@ impl Item {
             (Prop::ToolTip, v) => set(&mut self.tooltip, text(v)),
             (Prop::Status, PropValue::Status(s)) => set(&mut self.status, s),
             // "/" and Qt's "/NO_DBUSMENU" (QSystemTrayIcon without a context menu): no dbusmenu object
-            // behind them, so a right click sends ContextMenu instead of opening a menu (task 10).
+            // behind them, so a right click sends ContextMenu instead of opening a menu.
             (Prop::Menu, PropValue::Path(m)) => set(&mut self.menu, Some(m).filter(|m| m != "/" && m != "/NO_DBUSMENU")),
             (Prop::ItemIsMenu, PropValue::Bool(b)) => set(&mut self.item_is_menu, b),
             _ => false,
@@ -206,12 +205,11 @@ pub struct Host {
     proc_root: PathBuf,
     changes: Changes,
     refusal_logged: bool,
-    /// Whether a self-registration refusal has already been logged once (task 5 fix round 2
-    /// review): a looping signal from a misbehaving watcher — the same self-naming entry in its
+    /// Whether a self-registration refusal has already been logged once: a looping signal from a misbehaving watcher — the same self-naming entry in its
     /// list on every `NameOwnerChanged`, say — must never flood the log.
     self_registration_logged: bool,
     /// Our own unique name: never one of the items we host (checked in `add`, on the resolved
-    /// owner — task 5 review — so a registration naming our own well-known name, an entry of
+    /// owner, so a registration naming our own well-known name, an entry of
     /// another watcher's list, or that watcher's ItemRegistered signal are all caught too, not
     /// only a direct RegisterStatusNotifierItem naming us literally).
     own: String,
@@ -284,8 +282,7 @@ impl Host {
     }
 
     fn add(&mut self, key: ItemKey, service: String, out: &mut dyn Outbox) {
-        // Our own connection is never one of the items we host (task 4 review, moved here and
-        // generalized in task 5's: `key.owner` is always the resolved unique name by this point,
+        // Our own connection is never one of the items we host (`key.owner` is always the resolved unique name by this point,
         // whether `register` had it directly or asked GetNameOwner to get it).
         if key.owner == self.own {
             if !self.self_registration_logged {
@@ -297,7 +294,7 @@ impl Host {
         // A duplicate registration of a known item: real clients re-register on their own (a
         // reconnect, a retry once a watcher appears) and no StatusNotifierItem signal exists for
         // Menu — so this is the only chance to notice an item that registered with none (or
-        // "/NO_DBUSMENU") and has since gained a real one (fix round, 2026-10-06).
+        // "/NO_DBUSMENU") and has since gained a real one.
         if self.items.iter().any(|i| i.key == key) {
             self.reread_menu(&key, out);
             return;
@@ -515,7 +512,7 @@ pub enum GestureOutcome {
     Nothing,
     /// Right click with a Menu, or a left click on an ItemIsMenu item.
     OpenMenu,
-    /// Activate sent: its answer decides (an error reply with a Menu → open the menu, decision 5).
+    /// Activate sent: its answer decides (an error reply with a Menu → open the menu).
     Activated(CallId),
 }
 
@@ -546,7 +543,7 @@ impl Host {
         }
     }
 
-    /// Activate's answer (controller decision 5): a D-Bus error reply (Steam's
+    /// Activate's answer: a D-Bus error reply (Steam's
     /// libappindicator has no Activate: UnknownMethod) opens the item's menu when it
     /// has one; a timeout is not a failure (a slow application may have acted), a
     /// success needs nothing more.
@@ -626,7 +623,7 @@ mod gesture_tests {
 
     #[test]
     fn a_no_dbusmenu_path_means_context_menu() {
-        // Qt's QSystemTrayIcon without a context menu says Menu = "/NO_DBUSMENU" (task 4: no menu).
+        // Qt's QSystemTrayIcon without a context menu says Menu = "/NO_DBUSMENU" (no menu).
         for none in ["/NO_DBUSMENU", "/"] {
             let (mut h, mut out) = host(&[Fake::new(&[(Prop::Id, "kettle"), (Prop::Menu, none)])]);
             assert_eq!(h.gesture(&key(), Gesture::Right, (30, 4), &mut out), GestureOutcome::Nothing, "{none}");

@@ -111,7 +111,7 @@ impl WifiReader {
     /// The loop asked for `scope` (a poke). The same scope: read again, nothing added. Leaving the
     /// detail removes its rules and drops its lists; entering it adds the rules and reads both lists
     /// whole; Closed forgets everything and reads nothing. Err when the bus itself went away
-    /// (`UnexpectedEof`), or a rule could not be removed (final review A-M4: never tried again
+    /// (`UnexpectedEof`), or a rule could not be removed (never tried again
     /// here, it would wake the thread for nothing; the session ends, and its reconnection drops
     /// every rule).
     pub fn rescope(&mut self, bus: &mut dyn Bus, scope: WifiScope) -> io::Result<Option<WifiState>> {
@@ -184,7 +184,7 @@ impl WifiReader {
         }
     }
 
-    /// A failed read (a timeout): the last state again, unchanged (final review A-M3: no device
+    /// A failed read (a timeout): the last state again, unchanged (no device
     /// reads as NetworkManager gone, and would end a followed attempt for nothing); none before the
     /// first. NetworkManager really gone reads as none without an error (no owner, no device).
     fn soft(&mut self, r: io::Result<WifiState>) -> io::Result<WifiState> {
@@ -339,7 +339,7 @@ impl WifiReader {
     /// through GetSettings (never their secrets). True when every one was read: one that failed
     /// (not gone, not another kind, not refused to this user) is left out of the map, so the next
     /// listing reads it again, and the list stays unknown until then. No listing, or NetworkManager
-    /// gone midway, is not a whole list either (final review A-M1): an empty one would let a
+    /// gone midway, is not a whole list either: an empty one would let a
     /// profile saved before be taken for an attempt's.
     fn reconcile_saved(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
         let all = match bus.list_connections(nm) {
@@ -358,7 +358,7 @@ impl WifiReader {
                         self.saved.insert(p.clone(), s);
                     }
                     Err(e) if is_service_gone(&e) => return Ok(false),
-                    // Gone since the listing, or another user's (final review A-M2): not ours.
+                    // Gone since the listing, or another user's: not ours.
                     Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
                         self.saved.insert(p.clone(), None);
                     }

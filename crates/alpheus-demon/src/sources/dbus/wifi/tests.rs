@@ -162,7 +162,7 @@ fn the_tap_wakes_only_on_a_change_and_drains() {
     assert!(idle.set(WifiScope::Detail) && idle.wake_fd().is_none(), "the tests' tap: a scope, no socket");
 }
 
-/// Review Focus 1, the row's part: NetworkManager restarting under a new unique name while the
+/// The row's part: NetworkManager restarting under a new unique name while the
 /// panel is open: the device's path, an object of the old instance, is dropped and found again.
 #[test]
 fn a_new_networkmanager_owner_finds_the_device_again() {
@@ -180,7 +180,7 @@ fn a_new_networkmanager_owner_finds_the_device_again() {
     }
 }
 
-/// Final review A-M3: a read that fails (a timeout) once the device is known keeps the last
+/// A read that fails (a timeout) once the device is known keeps the last
 /// state, unchanged, so a followed attempt never takes it for NetworkManager gone; NetworkManager
 /// really gone (no owner) or no Wi-Fi device any more still reads as no device.
 #[test]
@@ -375,7 +375,7 @@ fn one_unreadable_item_is_left_out_never_the_whole_detail() {
     bus.failing.insert("/org/freedesktop/NetworkManager/Settings/3".into());
     let (mut r, d) = detail(&mut bus);
     assert_eq!(ssids(&d), ["MON_WIFI_1", "Cafe-Libre"], "Voisin-Test left out, the others kept");
-    assert_eq!(d.saved, None, "a profile unread: the list unknown (fix round 2), so nothing is ever deleted");
+    assert_eq!(d.saved, None, "a profile unread: the list unknown, so nothing is ever deleted");
     assert!(d.active.is_some(), "the row's part kept");
     assert!(r.logged, "the failure noted");
     bus.failing.clear();
@@ -388,7 +388,7 @@ fn one_unreadable_item_is_left_out_never_the_whole_detail() {
     assert_eq!(e.kind(), io::ErrorKind::UnexpectedEof, "the bus itself gone: still the session's");
 }
 
-/// Final review A-M1: NetworkManager gone while the saved profiles are listed or read
+/// NetworkManager gone while the saved profiles are listed or read
 /// (ServiceUnknown), or ListConnections not there: the list is unknown, never empty, so a
 /// profile saved before is never taken for an attempt's. One profile gone (UnknownObject) is
 /// skipped, the list still whole.
@@ -412,7 +412,7 @@ fn networkmanager_gone_while_listing_leaves_the_saved_list_unknown() {
     assert_eq!(saved.len(), 1, "the wired one gone (UnknownObject): skipped, the list whole");
 }
 
-/// Final review A-M2: a profile NetworkManager will not show this user (PermissionDenied) is
+/// A profile NetworkManager will not show this user (PermissionDenied) is
 /// not ours to delete: skipped, the list still whole, nothing logged.
 #[test]
 fn a_profile_refused_to_this_user_is_skipped() {
@@ -428,7 +428,7 @@ fn rules_left(bus: &FakeBus) -> Vec<usize> {
     WIFI_RULES.iter().map(|r| bus.rules.iter().filter(|h| h == r).count()).collect()
 }
 
-/// Fix round 1: one rule refused (a timeout, LimitsExceeded) takes back the ones already added:
+/// One rule refused (a timeout, LimitsExceeded) takes back the ones already added:
 /// none left on the bus to wake the thread once the panel closes, none doubled at the next open.
 #[test]
 fn a_partly_added_set_of_rules_is_taken_back() {
@@ -447,7 +447,7 @@ fn a_partly_added_set_of_rules_is_taken_back() {
     assert_eq!(rules_left(&bus), [0; 5]);
 }
 
-/// Fix round 1: one RemoveMatch refused does not keep the others on the bus; final review A-M4:
+/// One RemoveMatch refused does not keep the others on the bus:
 /// the refused one is never tried again here, so the error ends the session (a reconnection
 /// drops every rule).
 #[test]
@@ -461,7 +461,7 @@ fn every_rule_is_removed_even_after_one_fails() {
     assert_eq!(rules_left(&bus), [1, 0, 0, 0, 0], "only the refused one left");
 }
 
-/// Final review A-M4: an AddMatch whose reply was lost may still have been applied, so the
+/// An AddMatch whose reply was lost may still have been applied, so the
 /// rollback removes it too; a rule the bus never took answers MatchRuleNotFound, ignored. A
 /// rule already gone when the detail closes (MatchRuleNotFound) is not a failure either.
 #[test]
@@ -478,7 +478,7 @@ fn a_timed_out_rule_is_rolled_back_too() {
     assert_eq!(rules_left(&bus), [0; 5]);
 }
 
-/// Fix round 1 (P4): an access point whose re-read fails is left out, like at the first read.
+/// An access point whose re-read fails is left out, like at the first read.
 #[test]
 fn an_access_points_failed_reread_leaves_it_out() {
     let mut bus = wifi_bus();
@@ -489,7 +489,7 @@ fn an_access_points_failed_reread_leaves_it_out() {
     assert!(d.active.is_some(), "the rest kept");
 }
 
-/// Fix round 1: the device's own access point changing reaches the row too (its strength, its
+/// The device's own access point changing reaches the row too (its strength, its
 /// glyph), not only the list.
 #[test]
 fn the_active_access_points_change_reaches_the_row() {
@@ -504,7 +504,7 @@ fn the_active_access_points_change_reaches_the_row() {
     assert_eq!(d.active.map(|a| a.strength), Some(20), "another access point: the row's stays");
 }
 
-/// Fix round 1: ListConnections failing (not absent) keeps the row and the access points, the
+/// ListConnections failing (not absent) keeps the row and the access points, the
 /// saved list empty until a later read lists it.
 #[test]
 fn a_failed_listing_keeps_the_row_and_is_tried_again() {
@@ -519,7 +519,7 @@ fn a_failed_listing_keeps_the_row_and_is_tried_again() {
     assert_eq!(d.saved.map(|s| s.len()), Some(1), "listed at the next read");
 }
 
-/// Review Focus 1: NetworkManager restarted with the detail open: another unique name, the same
+/// NetworkManager restarted with the detail open: another unique name, the same
 /// paths now other objects. Every cached path is dropped and read again from the new owner.
 #[test]
 fn a_new_networkmanager_owner_drops_every_cached_path() {

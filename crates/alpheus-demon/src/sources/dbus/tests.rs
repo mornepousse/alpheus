@@ -104,7 +104,7 @@ fn initial_state_then_one_publication_per_relevant_signal() {
 /// A signal can pass `relevant`'s allowlist (or carry no property names
 /// at all, counted as "unknown change") and still leave every field
 /// `session` tracks unchanged — a duplicate signal, or two different
-/// allowed properties that both parse to the same value (B-m6, review).
+/// allowed properties that both parse to the same value.
 #[test]
 fn an_unchanged_state_is_not_republished() {
     let mut bus = FakeBus::workstation();
@@ -283,7 +283,7 @@ fn the_bus_goes_during_a_network_outage(b: &mut FakeBus) {
     b.disconnecting.insert(WIFI_DEVICE.into());
 }
 
-/// Review 3a: a network signal whose own read fails (the network domain's outage) and whose
+/// A network signal whose own read fails (the network domain's outage) and whose
 /// Wi-Fi read then finds the bus gone ends as the bus's outage: every domain blanked, never the
 /// network domain alone over a dead connection.
 #[test]
@@ -323,7 +323,7 @@ fn close_and_reopen_the_detail(b: &mut FakeBus) {
     b.tap.set(WifiScope::Detail);
 }
 
-/// Final review A (coalesced poke): a close and a reopen the thread reads as one poke (the same
+/// A close and a reopen the thread reads as one poke (the same
 /// scope before and after) are still a new open: everything read again (the device found again,
 /// the saved profiles listed again) and published, tagged with the new open.
 #[test]
@@ -370,7 +370,7 @@ fn close_the_detail_a_rule_refused(b: &mut FakeBus) {
     b.tap.set(WifiScope::Row);
 }
 
-/// Final review A-M4: a detail rule the bus refuses to remove would wake the thread for nothing
+/// A detail rule the bus refuses to remove would wake the thread for nothing
 /// until the next reconnection: the session ends now (the outage of the network domain alone, the
 /// other modules kept), and the new connection holds none of them.
 #[test]
@@ -727,7 +727,7 @@ fn noise_and_unread_interfaces_point_nowhere() {
         "a device seen by a scan, not connected"
     );
     assert_eq!(objects("InterfacesAdded", &["org.bluez.Battery1"]), Some(Domain::Bluetooth), "a connected device's battery");
-    // Symmetric with InterfacesAdded (I1, review): a connected device
+    // Symmetric with InterfacesAdded (I1): a connected device
     // always sends Connected=false before being removed, so Device1's
     // own removal re-reads nothing — only Adapter1 or Battery1 does.
     assert_eq!(
@@ -743,7 +743,7 @@ fn noise_and_unread_interfaces_point_nowhere() {
 fn a_scan_storm_of_unconnected_devices_causes_zero_re_reads() {
     // A scan sees a device, then loses it again: Name, RSSI, UUIDs,
     // then InterfacesRemoved — none of it connects anything, none of it
-    // is relevant (I1, review).
+    // is relevant (I1).
     const SCANNED: &str = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_99";
     let changed = |names: &[&str]| with_names(signal(SCANNED, PROPERTIES, "PropertiesChanged", Some("org.bluez.Device1")), names).domain();
     assert_eq!(changed(&["Name"]), None);
@@ -783,7 +783,7 @@ fn only_the_allowlisted_properties_are_relevant() {
 
 #[test]
 fn upower_raw_battery_and_line_power_signals_are_dropped_display_device_carries_them() {
-    // M5, review: the match rule can't exclude a few device names by
+    // The match rule can't exclude a few device names by
     // itself, so `Signal::domain` drops these, whatever the property.
     let changed = |path: &str, names: &[&str]| {
         with_names(signal(path, PROPERTIES, "PropertiesChanged", Some("org.freedesktop.UPower.Device")), names).domain()
@@ -833,7 +833,7 @@ fn only_non_notfound_read_errors_are_worth_logging() {
 
 #[test]
 fn a_domains_failure_logs_once_until_it_recovers() {
-    // Follow-up (2), re-review: `read` is retried fresh on every backoff
+    // `read` is retried fresh on every backoff
     // round (a new `session`, a new `SystemState`) — without state that
     // outlives a single session, a domain stuck down would repeat the
     // same line every round forever. `DomainLog` is the pure predicate
@@ -932,7 +932,7 @@ fn a_domain_outage_blanks_only_that_domain_during_the_backoff() {
     assert_eq!(seen[1], seen[0], "the backoff \"down\" value: the same state, not a full blank");
 }
 
-/// Final review A-M5: the state re-sent for a domain's outage carries no Wi-Fi: the last one
+/// The state re-sent for a domain's outage carries no Wi-Fi: the last one
 /// read may be a detail's whole saved list, stale by the time the session is back.
 #[test]
 fn a_domain_outage_resends_no_wifi() {
@@ -959,7 +959,7 @@ fn a_domain_outage_resends_no_wifi() {
     let seen = sends.borrow();
     assert_eq!(seen[1], Some(SystemState { wifi: None, ..shown.clone() }), "the rest as it was, the Wi-Fi none");
     drop(seen);
-    // F3 I1: another domain's outage (BlueZ, UPower, the power profile) says nothing about
+    // Another domain's outage (BlueZ, UPower, the power profile) says nothing about
     // NetworkManager: the Wi-Fi stays, an open detail and its password field with it; marked
     // stale (F4), read before the outage: never enough for an attempt to delete a profile.
     for domain in [Domain::Bluetooth, Domain::Battery, Domain::Power] {
@@ -1014,7 +1014,7 @@ fn a_bus_outage_blanks_everything_during_the_backoff() {
     assert_eq!(seen[1], None, "the bus itself gone: \"–\" everywhere, untagged errors default to it");
 }
 
-/// I2 carry-over (tray plan 1 review): a single domain's own read
+/// A single domain's own read
 /// failing because the BUS went away mid-call (`UnexpectedEof`, as
 /// `dbusrs_bus::error` maps `Disconnected`) must be tagged `Outage::Bus`,
 /// never `Outage::Domain` — otherwise the other domains would keep
@@ -1030,7 +1030,7 @@ fn a_bus_disconnect_during_a_domains_read_is_tagged_as_a_bus_outage() {
     assert_eq!(outage_of(&e), Outage::Bus, "a bus disconnect blanks every domain, not just this one");
 }
 
-/// Fix round, review item 6: within one `read_all` call, a `Bus` outage
+/// Within one `read_all` call, a `Bus` outage
 /// must win over a `Domain` outage that came earlier — `DOMAINS` reads
 /// Network before Battery, so Network's own ordinary timeout is seen
 /// first, then the bus itself goes away while Battery is read. The
@@ -1049,7 +1049,7 @@ fn a_bus_outage_later_in_read_all_overrides_an_earlier_domain_outage() {
 
 #[test]
 fn a_wedged_bluez_leaves_network_and_battery_shown_while_bluetooth_shows_dash() {
-    // The scenario named in the review, through the real `session` and
+    // Through the real `session` and
     // a `FakeBus`: BlueZ's GetManagedObjects always times out.
     let sends = RefCell::new(Vec::new());
     let domains = DOMAINS;
@@ -1100,7 +1100,7 @@ fn bus_loss_blanks_everything_even_after_good_reads() {
 
 #[test]
 fn wanted_is_false_only_when_no_domain_is_shown() {
-    // M4, review: an unused module costs nothing.
+    // An unused module costs nothing.
     assert!(!wanted(&[]));
     assert!(wanted(&[Domain::Battery]));
     assert!(wanted(&DOMAINS));

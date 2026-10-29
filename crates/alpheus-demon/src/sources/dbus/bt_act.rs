@@ -842,7 +842,7 @@ mod tests {
         }
     }
 
-    /// Fix round 1 (spec § 6): a `NoReply` is a remote error only while the same unique name still
+    /// Spec § 6: a `NoReply` is a remote error only while the same unique name still
     /// owns `org.bluez`; gone or replaced, the action ends silently.
     #[test]
     fn a_no_reply_is_gone_unless_the_same_owner_is_still_there() {

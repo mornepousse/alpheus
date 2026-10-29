@@ -35,7 +35,7 @@ impl Hover {
 
     /// The pointer moved over `found` (the hovered zone's item key, by reference, and its
     /// columns; None: off any tray icon) on `output`, at `now`: a new icon (re)arms — cloning the
-    /// key and allocating `output` into an `Anchor` only then (fix round 2026-10-06, item 2) — the
+    /// key and allocating `output` into an `Anchor` only then — the
     /// same icon changes nothing (compared on the borrowed key, no allocation at all), none
     /// cancels.
     pub fn moved(&mut self, found: Option<(&ItemKey, u16, u16)>, output: &str, now: Instant) -> HoverChange {
@@ -73,8 +73,7 @@ impl Hover {
 
     /// The item currently tracked (armed, or already shown as a tooltip) and its last known
     /// anchor; None at rest. Lets `tray_output` (wayland.rs) tell an unrelated icon changing from
-    /// the tracked one actually moving or disappearing under a redrawn grid (fix round
-    /// 2026-10-06): only the latter should ever cancel.
+    /// the tracked one actually moving or disappearing under a redrawn grid: only the latter should ever cancel.
     pub fn target(&self) -> Option<(&ItemKey, &Anchor)> {
         self.over.as_ref().map(|(k, a)| (k, a))
     }
@@ -82,8 +81,7 @@ impl Hover {
 
 /// The tray icon under `column` of the bar, borrowed from `grid` (no allocation): its key, and the
 /// zone's own columns. Always None when `[tray] tooltips = false` (no hover timer at all). The
-/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms — fix
-/// round 2026-10-06, item 2: a plain motion event over the SAME icon must allocate nothing.
+/// `Anchor` (which owns the output name) is built only once `Hover::moved` actually arms: a plain motion event over the SAME icon must allocate nothing.
 pub fn over(tooltips: bool, grid: &Grid, column: u16) -> Option<(&ItemKey, u16, u16)> {
     if !tooltips {
         return None;
@@ -127,7 +125,7 @@ mod tests {
         Some((key(n), Anchor { output: "HDMI-A-1".into(), start: n as u16, end: n as u16 + 1 }))
     }
 
-    /// `Hover::moved` now borrows its key (item 2 of the 2026-10-06 fix round: no allocation on a
+    /// `Hover::moved` now borrows its key (no allocation on a
     /// plain motion event); these two helpers own the `ItemKey` for the call's duration, the way
     /// the real wiring's `Grid` does.
     fn moved_to(h: &mut Hover, n: u32, now: Instant) -> HoverChange {

@@ -249,7 +249,7 @@ fn matches_is_equality_on_what_the_scope_reads() {
     assert!(states.iter().any(|s| s.sink_name.as_ref().is_some_and(|n| n.node == "not-yet")));
 }
 
-/// Final review (slice A): without the OSD, only the sink's volume publishes (the bar draws
+/// Without the OSD, only the sink's volume publishes (the bar draws
 /// nothing else): a source's level, mute or label, or a sink's label, wakes nothing. With it,
 /// a source's mute does, never its level.
 #[test]
@@ -276,7 +276,7 @@ fn each_scope_publishes_only_what_it_reads() {
     );
 }
 
-/// Final review (slice A): a default named before its node is in the dump is that node, its
+/// A default named before its node is in the dump is that node, its
 /// volume not known yet (its label the node name until the node comes), so that the OSD sees a
 /// switch, never a default gone then back. A default whose node went is gone.
 #[test]
@@ -422,7 +422,7 @@ fn the_tap_reads_the_sinks_at_open_and_the_stream_carries_them_while_open() {
     assert!(run_tapped(INITIAL, Scope::Osd, &tap).iter().all(|s| s.sinks.is_none()), "closed again: none");
 }
 
-/// Controller ruling P4: without the OSD (`Scope::Bar`) a microphone mute publishes nothing,
+/// Without the OSD (`Scope::Bar`) a microphone mute publishes nothing,
 /// so the loop's copy is stale; opening hands over the whole state as the panel reads it —
 /// the sinks and both defaults with their mute — read from the thread's model at once.
 #[test]
@@ -457,7 +457,7 @@ fn opening_reads_the_whole_panel_state_even_what_the_base_scope_never_published(
     assert_eq!(open.sinks.map(|l| l.len()), Some(3));
 }
 
-/// Fix round 1: a stream that ended (EOF, a parse error, a panic) leaves nothing behind. Through
+/// A stream that ended (EOF, a parse error, a panic) leaves nothing behind. Through
 /// the backoff an opening panel reads an empty model — no sink, no microphone, an empty list —
 /// never the dead instance's volumes or node ids (`wpctl set-default` on a recycled id).
 #[test]
@@ -492,7 +492,7 @@ fn closing_drops_the_list_kept_as_the_last_publication() {
     assert!(checked, "closed: the kept list went");
 }
 
-/// Review Focus 1: PipeWire restarts while the panel is open. The new stream starts from a new
+/// PipeWire restarts while the panel is open. The new stream starts from a new
 /// model but keeps the panel's scope: every publication carries the list.
 #[test]
 fn a_restarted_stream_keeps_publishing_the_sinks_while_the_panel_is_open() {
@@ -852,7 +852,7 @@ fn lone_kind_or_bap_only_hides_it() {
     apply_all(&mut m, &[device(61, "bluez5", &[(1, "a2dp-sink", 18, "yes"), (3, "headset-head-unit", 2, "no")], 1)]);
     assert_eq!(m.headset(), None, "the Mic kind unavailable");
     apply_all(&mut m, &[device(61, "bluez5", &PROFILES, 5)]);
-    assert_eq!(m.headset(), None, "active on bap-sink: neither kind (decision 12)");
+    assert_eq!(m.headset(), None, "active on bap-sink: neither kind");
     apply_all(&mut m, &[device(61, "bluez5", &PROFILES, 0)]);
     assert_eq!(m.headset(), None, "off");
 }

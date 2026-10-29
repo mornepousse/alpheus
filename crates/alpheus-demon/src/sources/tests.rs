@@ -358,7 +358,7 @@ fn niri_flapper_backs_off() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
-/// Review Focus 4: a Mango that serves both snapshots then closes, round after round (a
+/// A Mango that serves both snapshots then closes, round after round (a
 /// compositor restarting): the delay still grows, a single log line, no spin.
 #[test]
 fn mango_flapper_backs_off() {

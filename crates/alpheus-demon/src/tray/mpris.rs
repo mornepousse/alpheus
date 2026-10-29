@@ -391,7 +391,7 @@ impl Mpris {
     }
 
     /// What, of `unique`'s state, moves its position elsewhere: its status, its track and its rate —
-    /// exactly what makes `Players::apply` forget the position (Task 1, fix wave A), any field of
+    /// exactly what makes `Players::apply` forget the position, any field of
     /// the track included. The track and rate as a hash: compared once before and once after a
     /// change, never cloned.
     fn moment(&self, unique: &str) -> Option<(Status, u64)> {

@@ -155,7 +155,7 @@ fn a_critical_demoted_by_a_flood_is_signalled_closed() {
     assert_eq!(effects[0].read2::<u32, u32>().unwrap(), (ids[0], 1));
 }
 
-/// Task 4's review: the local time is read only for a Notify served while the name is held,
+/// The local time is read only for a Notify served while the name is held,
 /// never for a refused call nor for the other methods.
 #[test]
 fn the_minute_is_read_only_for_a_served_notify() {
@@ -223,7 +223,7 @@ fn the_view_and_the_bubbles_are_reported_only_when_they_change() {
     assert!(!n.take_bubbles_change(), "a normal one under do not disturb: no bubble, nothing to repaint");
 }
 
-/// Constraints, Lightness (after task 2's review): the bubble timer follows every live bubble with
+/// Constraints, Lightness: the bubble timer follows every live bubble with
 /// a finite timeout, hidden by do-not-disturb or not. A hidden one replaced moves the earliest
 /// expiry without changing what shows: still a change for the host, which re-arms the timer.
 #[test]

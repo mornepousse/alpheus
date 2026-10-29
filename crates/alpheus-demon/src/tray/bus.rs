@@ -37,7 +37,7 @@ const DBUS: &str = "org.freedesktop.DBus";
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const PROPERTIES: &str = PROPERTIES_INTERFACE;
 
-/// The call allowlist (spec § 3 + controller decision 3): nothing else can be built.
+/// The call allowlist (spec § 3): nothing else can be built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
@@ -55,7 +55,7 @@ pub enum Method {
     AddMatch,
     RemoveMatch,
     RegisterStatusNotifierHost,
-    /// The portal's color-scheme (themes task 6).
+    /// The portal's color-scheme.
     ReadOne,
     /// A player's Player properties, at once (media spec § 3).
     GetAll,
@@ -176,7 +176,7 @@ pub enum Call {
         path: String,
         id: i32,
     },
-    /// Depth 1 and the fixed MENU_PROPERTIES (controller decision 6).
+    /// Depth 1 and the fixed MENU_PROPERTIES.
     GetLayout {
         destination: String,
         path: String,
@@ -332,7 +332,7 @@ pub trait Outbox {
     /// Sends `call` (auto-start off) and expects an answer within TIMEOUT.
     fn call(&mut self, call: Call) -> CallId;
     /// Sends `call` with NO_REPLY_EXPECTED: no pending entry, no timer — calls whose answer nobody
-    /// reads: dbusmenu `Event`, `RemoveMatch`, the appearance's `AddMatch` (themes task 6), the `ContextMenu`, `SecondaryActivate` and
+    /// reads: dbusmenu `Event`, `RemoveMatch`, the appearance's `AddMatch`, the `ContextMenu`, `SecondaryActivate` and
     /// `Scroll` gestures.
     fn send(&mut self, call: Call);
 }
@@ -343,7 +343,7 @@ pub trait Outbox {
 /// that libdbus would refuse to build is a bug, not an application's doing.
 /// So is a call to a well-known name (it could change hands between two
 /// calls): debug builds assert it never happens.
-/// The portal is the one well-known destination (themes task 6): a one-shot read with auto-start off;
+/// The portal is the one well-known destination: a one-shot read with auto-start off;
 /// if the name changes hands, `SettingChanged` (a rule on the well-known sender) follows the new owner.
 pub fn message(call: &Call) -> Message {
     let method = call.method();
@@ -425,7 +425,7 @@ fn notifications_signal(member: &str) -> Option<Message> {
         .ok()
 }
 
-/// The session bus address, pure (decision 1): `var("DBUS_SESSION_BUS_ADDRESS")` if set, non-empty
+/// The session bus address, pure: `var("DBUS_SESSION_BUS_ADDRESS")` if set, non-empty
 /// and free of any `autolaunch:` entry, else "unix:path=<XDG_RUNTIME_DIR>/bus" when `exists` says that
 /// socket is there, else None. An address list naming `autolaunch:` anywhere is ignored whole: libdbus
 /// would fall back to it, i.e. run `dbus-launch`.
@@ -497,7 +497,7 @@ pub struct SessionBus {
 }
 
 impl SessionBus {
-    /// The session bus, never autolaunched (controller decision 1): $DBUS_SESSION_BUS_ADDRESS (unless
+    /// The session bus, never autolaunched: $DBUS_SESSION_BUS_ADDRESS (unless
     /// it names `autolaunch:`), else unix:path=$XDG_RUNTIME_DIR/bus if it exists, else Err(NotFound).
     /// Blocking connect + Hello, once. Retries the runtime socket once if libdbus rejects the
     /// variable's address (`session_with`).
@@ -599,7 +599,7 @@ impl SessionBus {
     /// make it wait (the daemon queues for it, up to its own limits, then
     /// answers with an error) — and the daemon reads its clients promptly; a
     /// stopped daemon would stall the bar here, the same acceptance as the
-    /// blocking connect (controller decision 2). Calls are small; a burst of
+    /// blocking connect. Calls are small; a burst of
     /// them fits the socket buffer, so this returns at once in practice.
     ///
     /// With messages queued, libdbus's flush also reads the socket (DO_READING): whatever arrives

@@ -39,7 +39,7 @@ pub struct MenuSession {
     /// Submenus asked for and not arrived yet.
     fetching: Vec<i32>,
     /// Submenus whose children arrived: a re-read of one of their ancestors is one level deep
-    /// (graft carries their old children over, task 2), so they are fetched again to refresh them.
+    /// (graft carries their old children over), so they are fetched again to refresh them.
     fetched: Vec<i32>,
     /// Parents a `LayoutUpdated` named since the last frame: re-read once per frame (`on_frame`),
     /// however many signals a storm sends, like the host's dirty item properties.
@@ -153,8 +153,7 @@ impl MenuSession {
         }
     }
 
-    /// After `parent` was grafted: the submenus fetched before under it (kept on screen by graft's
-    /// carry-over, task 2) are read again (strictly below `parent`, so this ends); those gone from the menu are forgotten, unless a
+    /// After `parent` was grafted: the submenus fetched before under it (kept on screen by graft) are read again (strictly below `parent`, so this ends); those gone from the menu are forgotten, unless a
     /// re-read in flight may bring them back.
     fn refetch_under(&mut self, parent: i32, out: &mut dyn Outbox) {
         let Some(layout) = &self.layout else { return };

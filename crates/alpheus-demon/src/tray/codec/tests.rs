@@ -646,7 +646,7 @@ fn every_integer_type_is_an_int_and_odd_types_are_other() {
     assert_eq!(length(W::As(vec![])), Value::StrList(vec![]), "an empty artist list stays empty");
 }
 
-/// Review focus: a 100 KB title is cut while decoding; lists, maps and keys are bounded.
+/// A 100 KB title is cut while decoding; lists, maps and keys are bounded.
 #[test]
 fn player_strings_lists_and_maps_are_bounded() {
     let huge = "é\n".repeat(50_000);
@@ -670,7 +670,7 @@ fn player_strings_lists_and_maps_are_bounded() {
     assert_eq!(reply(&get_all(), &m), Ok(Reply::Props(vec![("CanPlay".into(), Value::Bool(true))])), "a key too long: skipped, never cut");
 }
 
-/// Fix wave A: only `Metadata` may be a map; an `a{sv}` under any other key is not read into one.
+/// Only `Metadata` may be a map; an `a{sv}` under any other key is not read into one.
 #[test]
 fn only_metadata_is_read_as_a_map() {
     let m = returned(|i| {
@@ -684,7 +684,7 @@ fn only_metadata_is_read_as_a_map() {
     assert_eq!(p[1], ("X-Extra".into(), Value::Other), "another key's map is not read");
 }
 
-/// Task 3's review: the cap counts entries read, not entries kept, so a reply full of keys
+/// The cap counts entries read, not entries kept, so a reply full of keys
 /// too long to keep stops after MAX_ENTRIES of them instead of being walked to its end.
 #[test]
 fn the_entry_cap_counts_what_is_read_not_what_is_kept() {
@@ -970,7 +970,7 @@ fn actions_come_in_pairs_at_most_6() {
     assert_eq!(keys(&late), Vec::<String>::new(), "only the first 32 pairs are ever read");
 }
 
-/// Review focus: a Notify carrying 200 actions keeps the first 6.
+/// A Notify carrying 200 actions keeps the first 6.
 #[test]
 fn a_notify_with_200_actions_keeps_6() {
     let pairs: Vec<String> = (0..200).flat_map(|i| [format!("k{i}"), format!("Label {i}")]).collect();

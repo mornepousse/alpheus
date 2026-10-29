@@ -3,7 +3,7 @@
 //! (`crate::list`, `crate::keys`), one level at a time — a submenu replaces
 //! the list in the same popup, its first row `◂ <parent>` (drill-down, Mae
 //! 2026-10-05). Pure: it reads the session's `Layout` and answers with a
-//! `MenuAction`; the D-Bus calls and the popup are the wiring's (task 17).
+//! `MenuAction`; the D-Bus calls and the popup are the wiring's.
 //! Never selects a separator, a disabled or a hidden entry.
 
 use crate::grid::{Grid, Style, text_width};
@@ -97,7 +97,7 @@ impl Menu {
         &mut self.levels[last]
     }
 
-    /// The current level's selected entry, if any (task 17 fix round: the wiring checks it still
+    /// The current level's selected entry, if any (the wiring checks it still
     /// matches a submenu fetch before grafting a reply that may have arrived late).
     pub fn selected(&self) -> Option<i32> {
         self.level().selected

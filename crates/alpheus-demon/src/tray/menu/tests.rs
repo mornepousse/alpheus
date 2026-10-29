@@ -14,7 +14,7 @@ fn root(children: Vec<MenuNode>) -> Layout {
     Layout { revision: 1, root: MenuNode { id: 0, props: MenuProps::default(), children } }
 }
 
-/// FakeMenu::sample's tree (task 3), built in memory: "Open", "Mute" (checkmark on), "Low"/"High"
+/// FakeMenu::sample's tree, built in memory: "Open", "Mute" (checkmark on), "Low"/"High"
 /// (radios, High on), a separator, "Disabled", a hidden entry, "More" (a submenu not fetched yet).
 fn sample() -> Layout {
     root(vec![
@@ -29,7 +29,7 @@ fn sample() -> Layout {
     ])
 }
 
-/// "More" fetched: its two children grafted (MenuSession, task 6).
+/// "More" fetched: its two children grafted (MenuSession).
 fn fetched() -> Layout {
     let mut l = sample();
     let mut more = l.node(8).unwrap().clone();
@@ -38,7 +38,7 @@ fn fetched() -> Layout {
     l
 }
 
-/// As the wiring opens it (task 17): relayout selects the first selectable entry.
+/// As the wiring opens it: relayout selects the first selectable entry.
 fn open(l: &Layout) -> Menu {
     let mut m = Menu::new();
     m.relayout(l);
@@ -336,7 +336,7 @@ fn relayout_pops_a_level_whose_own_entry_turns_disabled() {
 }
 
 /// LayoutUpdated(parent 0): the wiring re-reads the root at depth 1, which announces More
-/// again as a submenu but without its children; task 2's `graft` carries the fetched ones
+/// again as a submenu but without its children; `graft` carries the fetched ones
 /// over, so the open submenu is not popped and keeps its selection.
 #[test]
 fn relayout_keeps_a_submenu_across_a_root_reread() {

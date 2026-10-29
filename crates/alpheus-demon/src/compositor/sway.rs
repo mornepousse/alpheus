@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(e.workspaces[0].windows, 3, "the floating window counted");
     }
 
-    /// Review Focus 3: the launcher (a layer surface) holds the keyboard: no node focused; the
+    /// The launcher (a layer surface) holds the keyboard: no node focused; the
     /// most recently focused window, first in its `focus` array, stays last.
     #[test]
     fn with_no_focused_window_the_most_recent_stays_last() {
@@ -265,7 +265,7 @@ mod tests {
         assert_eq!(state(ws, TREE).unwrap().workspaces.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(), ["1"]);
     }
 
-    /// Review Focus 5: a named workspace is `name:<the raw name>`, one argv element; a numbered
+    /// A named workspace is `name:<the raw name>`, one argv element; a numbered
     /// one (`2: mail`) its number; the shown name cleaned.
     #[test]
     fn named_workspaces_are_referenced_by_name() {
@@ -313,7 +313,7 @@ mod tests {
         )
     }
 
-    /// Review Focus 2 (spec § 3): parsed on a thread with the compositor thread's 256 KiB stack:
+    /// Spec § 3: parsed on a thread with the compositor thread's 256 KiB stack:
     /// 43 containers deep (88 levels of JSON) still finds its window; 70 deep is past
     /// MAX_NESTING, refused before serde_json recurses (in a debug build its recursion to its own
     /// 128-level limit overflows 256 KiB); never a stack overflow.
@@ -343,7 +343,7 @@ mod tests {
         if kib == 0 { f() } else { with_reserve(kib - 1, f) }
     }
 
-    /// Review Focus 2 at the bound itself: replies nested exactly MAX_NESTING levels, in the
+    /// At the bound itself: replies nested exactly MAX_NESTING levels, in the
     /// shapes that cost serde_json the most stack per level (objects of several keys, and sway's
     /// own object/`nodes` alternation), parsed and dropped on a 256 KiB thread after a 24 KiB
     /// reserve, in a debug build too. A limit too high for this stack aborts here.

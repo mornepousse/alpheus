@@ -314,7 +314,7 @@ mod tests {
         assert_eq!(summary(&model(&none, CLIENTS).state()), expected, "absent: empty");
     }
 
-    /// Spec § 2 (amended at the final review): in the overview, an output with no window and
+    /// Spec § 2: in the overview, an output with no window and
     /// nothing urgent keeps its lowest tag as a placeholder (not visible, empty), so its bar never
     /// falls back to the other output's tags (`workspaces_of`), where a click would act there.
     #[test]

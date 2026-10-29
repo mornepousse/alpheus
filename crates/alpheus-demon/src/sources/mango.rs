@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(DELAY).unwrap().toplevels.len(), 4);
     }
 
-    /// Review Focus 1 (spec § 2): Mango rewrites every client's geometry on a move; nothing the
+    /// Spec § 2: Mango rewrites every client's geometry on a move; nothing the
     /// bar shows changed, nothing is published.
     #[test]
     fn a_new_snapshot_is_published_only_when_the_state_changes() {

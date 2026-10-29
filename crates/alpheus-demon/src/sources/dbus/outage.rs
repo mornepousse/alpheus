@@ -26,7 +26,7 @@ pub fn is_service_gone(e: &io::Error) -> bool {
 }
 
 /// An object gone between two reads (a connection going down): nothing to
-/// read, not an outage. `pub`: its callers are the readers (tasks 11b, 12).
+/// read, not an outage. `pub`: its callers are the readers.
 pub fn optional(r: io::Result<Props>) -> io::Result<Option<Props>> {
     match r {
         Ok(p) => Ok(Some(p)),
@@ -35,7 +35,7 @@ pub fn optional(r: io::Result<Props>) -> io::Result<Option<Props>> {
     }
 }
 
-/// Why a session ended (I2, review): a single domain's read failing, its
+/// Why a session ended (I2): a single domain's read failing, its
 /// own "–" already published while the others keep their last published
 /// value — versus the bus itself going away (the connection lost, or never
 /// made), which blanks all three: nothing can be trusted then. Carried by
@@ -78,7 +78,7 @@ pub(super) fn outage_of(e: &io::Error) -> Outage {
     e.get_ref().and_then(|r| r.downcast_ref::<Tagged>()).map_or(Outage::Bus, |t| t.outage)
 }
 
-/// Whether a read failure is worth a log line (M2, review): a real failure
+/// Whether a read failure is worth a log line: a real failure
 /// is; an absence (NotFound: the service left after `GetNameOwner`, its
 /// `NameOwnerChanged` follows and re-reads it) isn't — logging it on every
 /// such ordinary comings and goings of a service would be noise. Rate

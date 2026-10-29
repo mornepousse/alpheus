@@ -89,7 +89,7 @@ pub trait Bus {
     fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()>;
     /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).
     /// All or nothing when adding: one refused takes back those already added and itself (a reply
-    /// lost to a timeout may come after the bus took it; final review A-M4), their own refusals
+    /// lost to a timeout may come after the bus took it), their own refusals
     /// ignored (MatchRuleNotFound: never taken), so none is left on the bus that nobody would
     /// remove. Removing tries every rule and returns the first refusal; a rule the bus no longer
     /// holds (MatchRuleNotFound) is what removing asks, not one.
@@ -150,7 +150,7 @@ pub struct SystemState {
     /// The quick panel's Wi-Fi, only while it is open (quick Wi-Fi spec § 5); None otherwise.
     pub wifi: Option<WifiState>,
     /// The open `wifi` was read for (`WifiTap::snapshot`): the panel drops a state read for an
-    /// earlier open (final review B-M1).
+    /// earlier open.
     pub wifi_open: u64,
     /// The quick panel's Bluetooth, only while it is open (quick settings delivery 3); None
     /// otherwise. The bar's `bluetooth` is separate and unchanged.
@@ -159,7 +159,7 @@ pub struct SystemState {
     pub bt_open: u64,
 }
 
-/// An unused module costs nothing (M4, review): with no domain shown,
+/// An unused module costs nothing: with no domain shown,
 /// `start` neither connects nor spawns a thread.
 fn wanted(domains: &[Domain]) -> bool {
     !domains.is_empty()
@@ -169,7 +169,7 @@ fn wanted(domains: &[Domain]) -> bool {
 /// the shown modules: one connection to the system bus per session, made
 /// again with a growing delay if lost or if a domain's read fails. A
 /// domain's own outage shows "–" for it alone, the others keep their last
-/// value during the delay (I2, review); the bus itself going away blanks
+/// value during the delay (I2); the bus itself going away blanks
 /// all three. `wifi`: the quick panel's tap (quick Wi-Fi spec § 5), polled beside the bus; None: a
 /// tap nothing ever sets.
 pub fn start(
