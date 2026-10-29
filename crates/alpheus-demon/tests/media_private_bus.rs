@@ -264,7 +264,7 @@ fn the_17th_player_is_ignored_with_one_log_line() {
     assert_eq!(d.drained(), (0, None));
 }
 
-/// Review Focus: 50 players arriving at once.
+/// 50 players arriving at once.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn fifty_players_arriving_at_once_are_capped_at_16_with_one_log_line() {
@@ -309,7 +309,7 @@ fn a_service_unknown_or_unknown_method_answer_removes_the_player() {
     }
 }
 
-/// Review Focus: a player that vanishes between ListNames and GetNameOwner.
+/// A player that vanishes between ListNames and GetNameOwner.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_player_vanishing_between_list_names_and_get_name_owner_is_never_added() {
@@ -363,7 +363,7 @@ fn control_goes_to_the_active_player_only_and_only_when_capable() {
     assert_eq!(d.drained(), (0, None), "controls are sent without a reply: nothing pending, no timer");
 }
 
-/// Task 3's review: the PropertiesChanged rule has no sender filter, so any peer can broadcast one on
+/// The PropertiesChanged rule has no sender filter, so any peer can broadcast one on
 /// the MPRIS object; only a followed player's own count.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -441,7 +441,7 @@ fn the_tray_carries_the_media_module_on_its_connection() {
     assert!(outs.iter().any(|o| o.media == Some(shown(false, "Harbor Lights"))), "{outs:?}");
 }
 
-/// Review Focus: the tray's watcher restarting while media players exist.
+/// The tray's watcher restarting while media players exist.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn the_trays_watcher_changing_hands_leaves_the_players_alone() {
@@ -462,7 +462,7 @@ fn the_trays_watcher_changing_hands_leaves_the_players_alone() {
     assert!(outs.iter().all(|o| o.media.is_none()), "the bar's media text untouched: {outs:?}");
 }
 
-/// Review Focus (Tray side; the daemon side is task 5's headless test): the session bus dying.
+/// Tray side (the daemon side is in the headless tests): the session bus dying.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_dead_session_bus_takes_the_media_module_away() {

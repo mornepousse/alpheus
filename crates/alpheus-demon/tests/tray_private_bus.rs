@@ -218,7 +218,7 @@ fn the_xdg_runtime_bus_socket_is_found() {
     assert!(tray.unique_name().starts_with(":1."));
 }
 
-// ---- The fakes themselves (task 3), driven by a plain Peer ----
+// ---- The fakes themselves, driven by a plain Peer ----
 
 use alpheus_demon::tray::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use common::sni::{FakeItem, FakeMenu, FakeWatcher, Registration, Spec, Value};
@@ -681,7 +681,7 @@ fn an_icon_pixmap_value_is_available_though_never_read() {
     assert_eq!(v.signature().to_string(), "a(iiay)");
 }
 
-// ---- The watcher and the router (task 5) ----
+// ---- The watcher and the router ----
 
 use alpheus_demon::tray::ItemKey;
 use alpheus_demon::tray::host::Item;
@@ -697,7 +697,7 @@ struct Pump {
     tray: Arc<Mutex<Tray>>,
     outputs: Arc<Mutex<Vec<TrayOutput>>>,
     /// Every item owner `items()` has ever held, even one gone again by the time a test gets to
-    /// look (task 5 fix round 2 review): a self-item added and then removed once its own Gets come
+    /// look: a self-item added and then removed once its own Gets come
     /// back as errors is a transient `ready()`/`items().is_empty()` alone cannot see.
     seen_owners: Arc<Mutex<HashSet<String>>>,
     stop: Arc<AtomicBool>,
@@ -811,7 +811,7 @@ fn the_watcher_serves_what_real_clients_check() {
     let xml =
         ask(&peer, WATCHER_NAME, WATCHER_PATH, "org.freedesktop.DBus.Introspectable", "Introspect", |m| m, Duration::from_secs(2)).unwrap();
     assert!(xml.read1::<&str>().unwrap().contains("RegisterStatusNotifierItem"));
-    // GetAll answers the same three properties real clients read one at a time above (task 5 review).
+    // GetAll answers the same three properties real clients read one at a time above.
     let all = ask(
         &peer,
         WATCHER_NAME,
@@ -1128,7 +1128,7 @@ fn nothing_outside_the_allowlist_reaches_a_fake_app() {
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_registration_naming_our_own_unique_name_is_refused() {
-    // Task 4 review: the router must never treat its own connection as one of the items it hosts
+    // The router must never treat its own connection as one of the items it hosts
     // (a hostile or buggy RegisterStatusNotifierItem naming the daemon's own unique name).
     let bus = PrivateBus::start("router-self-registration");
     let pump = Pump::start(&bus);
@@ -1156,7 +1156,7 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
     assert!(pump.with(|t| t.items().is_empty()), "never an item under our own unique name, right after the reply");
     thread::sleep(Duration::from_millis(200));
     assert!(pump.with(|t| t.items().is_empty()), "still never, once any self-directed Get would have settled");
-    // Task 5 review: the check is on the RESOLVED owner (`Host::add`), so it also catches a
+    // The check is on the RESOLVED owner (`Host::add`), so it also catches a
     // registration naming our own WELL-KNOWN name — `split_service` alone cannot see this is us,
     // only the GetNameOwner round trip `register` takes for a non-unique name can.
     let reply = ask(
@@ -1171,7 +1171,7 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
     assert!(reply.is_ok(), "the watcher still answers at once");
     thread::sleep(Duration::from_millis(200));
     assert!(pump.with(|t| t.items().is_empty()), "never an item under our own well-known name either, once resolved");
-    // Task 5 fix round 2 review: unlike the unique-name path above, resolving a well-known name
+    // Unlike the unique-name path above, resolving a well-known name
     // takes a GetNameOwner round trip, so the guard in `Host::add` only runs once that answer
     // comes back — a self-item can exist for a beat before its own (necessarily failing) Gets
     // remove it again. `items().is_empty()` after a sleep cannot tell "never added" from "added,
@@ -1186,7 +1186,7 @@ fn a_registration_naming_our_own_unique_name_is_refused() {
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_watcher_naming_us_in_its_list_or_signal_is_never_treated_as_an_item() {
-    // Task 5 review: the self-registration check lives in `Host::add` on the RESOLVED owner, so
+    // The self-registration check lives in `Host::add` on the RESOLVED owner, so
     // it also covers a malicious or buggy "other watcher" naming our own unique name in its
     // RegisteredStatusNotifierItems list, or in its ItemRegistered signal — not only a direct
     // RegisterStatusNotifierItem to our own watcher object (the only path a router-level check,
@@ -1237,7 +1237,7 @@ fn a_watcher_naming_us_in_its_list_or_signal_is_never_treated_as_an_item() {
     }
     pump.until("the legitimate item of the second watcher's list", ready_count(1));
     assert_eq!(pump.ready()[0].key, item_key(&listed.unique, "/StatusNotifierItem"), "never an item under our own unique name");
-    // Task 5 fix round 2 review: here `register(name, "", out)` goes through the same
+    // Here `register(name, "", out)` goes through the same
     // GetNameOwner-then-add path as the well-known-name case above, so the same transient is
     // possible: the list entry naming us resolves to our own unique name, a self-item is added,
     // and its own (failing) Gets remove it again before `items().len()` or `ready()` would ever
@@ -1260,7 +1260,7 @@ fn a_watcher_naming_us_in_its_list_or_signal_is_never_treated_as_an_item() {
     assert!(pump.with(|t| t.item(&item_key(&signalled.unique, "/StatusNotifierItem")).is_some()));
 }
 
-// ---- Menus (task 6) ----
+// ---- Menus ----
 
 /// Labels of the open menu's root entries, in order.
 fn menu_labels(pump: &Pump) -> Vec<String> {
@@ -1347,12 +1347,12 @@ fn the_menu_closes_when_its_app_leaves() {
     assert!(pump.outputs.lock().unwrap().iter().any(|o| o.close_menu));
 }
 
-// ---- Gestures (task 10) ----
+// ---- Gestures ----
 
 use alpheus_demon::tray::Gesture;
 
 /// Steam's libappindicator has no Activate (spike § 4): the left click's
-/// UnknownMethod answer opens its menu instead (controller decision 5).
+/// UnknownMethod answer opens its menu instead.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn steam_left_click_opens_the_menu_over_the_wire() {
@@ -1375,7 +1375,7 @@ fn steam_left_click_opens_the_menu_over_the_wire() {
 }
 
 /// Qt's QSystemTrayIcon without a context menu says Menu = "/NO_DBUSMENU"
-/// (task 4: no menu): a right click asks the item's own ContextMenu and never
+/// (no menu): a right click asks the item's own ContextMenu and never
 /// opens an empty dbusmenu.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -1396,7 +1396,7 @@ fn a_qt_item_without_a_menu_gets_context_menu_over_the_wire() {
 
 /// No StatusNotifierItem signal exists for Menu: an item that registered with "/NO_DBUSMENU" and
 /// gains a real one later (Qt apps commonly do, once a context menu is actually built) is only
-/// noticed through a duplicate RegisterStatusNotifierItem (fix round, 2026-10-06).
+/// noticed through a duplicate RegisterStatusNotifierItem.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_menu_gained_after_registration_is_found_on_a_duplicate_registration() {

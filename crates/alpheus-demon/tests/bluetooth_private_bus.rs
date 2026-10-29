@@ -77,7 +77,7 @@ fn the_bt_tap_wakes_the_thread() {
     assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "asleep again");
 }
 
-/// Review focus 1, the read side: BlueZ restarting (a new unique name) with the detail open is read
+/// The read side: BlueZ restarting (a new unique name) with the detail open is read
 /// again on the new owner, not device by device through NotFound on the old one.
 #[test]
 #[ignore = "dbus-daemon (nix develop)"]
@@ -219,7 +219,7 @@ fn bluez_error_name_is_kept() {
     );
 }
 
-/// Fix round 1 (spec § 6): BlueZ leaving with a call held makes the bus answer `NoReply`; asked
+/// Spec § 6: BlueZ leaving with a call held makes the bus answer `NoReply`; asked
 /// again, `org.bluez` has no owner (or another one): the call ends `Gone`, never `failed`, and no
 /// later call goes to the old name nor to the new owner.
 #[test]
@@ -245,7 +245,7 @@ fn bluez_leaving_with_a_call_held_answers_gone() {
     assert!(!new.calls().iter().any(|c| c.starts_with("Connect ")), "the new owner is never called: {:?}", new.calls());
 }
 
-/// Fix round 1: a `NoReply` while the same BlueZ still owns its name (a timeout) stays an error.
+/// A `NoReply` while the same BlueZ still owns its name (a timeout) stays an error.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_no_reply_from_the_same_owner_is_kept() {

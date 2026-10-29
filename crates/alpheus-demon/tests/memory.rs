@@ -123,7 +123,7 @@ fn ten_fakes(session: &PrivateBus) -> Vec<FakeItem> {
 }
 
 /// Waits (10 s at most) until someone owns `org.kde.StatusNotifierWatcher`
-/// on `bus` (the same check as task 11's headless tests).
+/// on `bus` (the same check as the headless tests).
 fn wait_for_the_watcher(bus: &PrivateBus) {
     let peer = Peer::connect(bus);
     let t = Instant::now();
@@ -213,7 +213,7 @@ fn cycle(sway: &Sway, d: &Daemon, n: usize) {
 
 /// Open through the socket, close with a real Escape typed by wtype: the
 /// keyboard is bound (keymap, compose table), and the key that closes arms
-/// sctk's repeat timer (task 12, note 2) — what toggle cycles never touch.
+/// sctk's repeat timer — what toggle cycles never touch.
 fn key_cycle(sway: &Sway, d: &Daemon, n: usize) {
     assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
@@ -373,7 +373,7 @@ fn at_rest_no_wakeups_after_a_launcher_cycle() {
     std::thread::sleep(Duration::from_secs(2));
     let threads = d.threads();
     // Closed by a typed Escape: a key that closes arms sctk's repeat timer
-    // after the keyboard is released (task 12, note 2); it must fire once
+    // after the keyboard is released; it must fire once
     // and go, never keep re-arming.
     key_cycle(&sway, &d, 1);
     // A script menu whose client goes away: its watch must go with it.
@@ -410,7 +410,7 @@ fn launcher_threads_back_to_baseline() {
     }
 }
 
-/// Controller carry (task 1 review): a dmenu of 100,000 short lines, open
+/// A dmenu of 100,000 short lines, open
 /// PSS and its value 1 s after cancel — printed, no assertion (the budgets
 /// above already cover growth and the 6 MB open margin on a realistic
 /// catalog; this is the worst-case dmenu size, reported for the README).
@@ -458,12 +458,12 @@ fn pss_under_30mb_and_stable() {
     std::thread::sleep(Duration::from_secs(3));
     let initial = d.pss_kb();
     // Fonts: regular + bold ≈ 2 MB (the whole font database: ≈ 47 MB);
-    // plan 1 measured ≈ 12 MB here; the D-Bus source and the sound source
-    // must fit in what is left (task 16, budget decisions).
+    // the first three modules measured ≈ 12 MB here; the D-Bus source and the sound source
+    // must fit in what is left.
     assert!(initial < STARTUP_MAX_KB, "startup: PSS {initial} KB >= 15 MB: run startup_pss_per_source and report to Mae, never raise");
     let mut n = 0;
     pump(&hypr, Duration::from_secs(10), &mut n); // warm-up
-    // A first unplug/replug cycle before `baseline` (see plan 1, task 13):
+    // A first unplug/replug cycle before `baseline` (the first three modules):
     // `baseline` and `end` are read in comparable states.
     sway.command("output HEADLESS-2 disable");
     std::thread::sleep(Duration::from_secs(1));
@@ -499,9 +499,9 @@ macro_rules! every_module {
 /// Every module, the launcher's included: `startup_pss_per_source`'s "everything" case.
 const EVERYTHING: &str = concat!("modules = [", every_module!(), "]\n");
 
-/// Startup PSS per source, against the firm 15 MB budget: plan 1's modules
-/// alone, then each new source on its own, then everything. Printed for
-/// the task report (step 6): which source costs what.
+/// Startup PSS per source, against the firm 15 MB budget: the first three modules
+/// (workspaces, window, clock) alone, then each new source on its own, then everything. Printed:
+/// which source costs what.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn startup_pss_per_source() {
@@ -509,7 +509,7 @@ fn startup_pss_per_source() {
     let bus = PrivateBus::start("per-source");
     let _workstation = Workstation::serve(&bus);
     let cases = [
-        ("plan 1", "\"workspaces\", \"window\", \"clock\""),
+        ("first modules", "\"workspaces\", \"window\", \"clock\""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
@@ -582,7 +582,7 @@ fn at_rest_no_wakeups() {
     // Nothing changes on the bus nor in PipeWire: a single wake-up of one of
     // these threads is a poll (a loop with a timeout somewhere).
     assert_eq!((sound, dbus), (0, 0), "a source thread wakes at rest");
-    // Plan 1 observed 0 to 2; a 1 Hz tick would add ≈ 5.
+    // The first three modules observed 0 to 2; a 1 Hz tick would add ≈ 5.
     assert!(delta <= 4, "{delta} wake-ups in 5 s at rest");
     // Loop, guard, compositor, one rayon, sound, D-Bus (libdbus has no
     // thread of its own), plus transient command reapers.
@@ -627,7 +627,7 @@ fn no_thread_leak_across_system_bus_restarts() {
     for round in 1..=2 {
         bus.restart();
         // Down, then reconnected at the first retry (1 s, then 2 s). The
-        // "down" log line itself is rate-limited (dbus-fixes-report, M2):
+        // "down" log line itself is rate-limited:
         // only the first outage ever, or one after a SUCCEEDED session,
         // is logged (`first || succeeded` in `run_supervised`); a session
         // counts as succeeded only once it has run for `STABLE_DURATION`
@@ -801,7 +801,7 @@ fn the_tray_adds_no_thread() {
     assert_eq!(tb, ta, "the tray's fd is a calloop source on the loop thread: it must cost no extra thread");
 }
 
-/// The tray alone then the clock (task 11's convention): the first icon is
+/// The tray alone then the clock: the first icon is
 /// cell 1, x = 12 inside it at any monospace advance of the test machine.
 const ICON: (u32, u32) = (12, 10);
 /// Headless sway's output is 1280 px wide and, with no window module, the
@@ -867,7 +867,7 @@ fn startup_pss_with_the_tray_under_15_mb() {
     assert!(kb < STARTUP_MAX_KB, "{kb} KB >= 15 MB with the tray populated — report to Mae, never raise: {kb}");
 }
 
-/// Themes task 5: the inotify watch adds nothing at rest, even right after a reload. Read in the
+/// The inotify watch adds nothing at rest, even right after a reload. Read in the
 /// README as "0 wake-ups at rest" with the watch in place.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -927,7 +927,7 @@ fn theme_reloads_no_growth() {
 /// switch back from translucent is measured too).
 const STYLES: [&str; 6] = ["islands", "powerline", "floating", "underline", "translucent", "flat"];
 
-/// Shapes task 7: no style adds a wake-up at rest, `floating`'s reconfigured surfaces included.
+/// No style adds a wake-up at rest, `floating`'s reconfigured surfaces included.
 /// Three outputs, 5 s per style, away from the minute so the clock never ticks inside a window.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1047,7 +1047,7 @@ fn fake_players(session: &PrivateBus, names: &[&str]) -> Vec<FakePlayer> {
 /// configuration alone, its daemon gone before the next. In mode `auto` (no `theme.toml`) the bar's
 /// session link is open anyway, for the light/dark portal: the module adds its match rules and
 /// Mpris to it. In mode `dark` nothing else opens it: the module's cost includes the connection
-/// itself (fix wave A).
+/// itself.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn media_module_pss_without_and_with_players() {
@@ -1564,7 +1564,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
         cycled_own <= closed_own + 128,
         "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
     );
-    // The pools alone, looser (F3 m3): a pool or a buffer kept after the close shows here, the
+    // The pools alone, looser: a pool or a buffer kept after the close shows here, the
     // compositor's mapping and unmapping of a buffer stays within it.
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
@@ -1586,7 +1586,7 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
     // the close and the window: that sleep would let a stray one-second timer armed by the close
     // fire before the window (then unseen). A last cycle overrunning its 5 s on a loaded machine
     // brings the minute's tick too close: checked again right after the close, without sleeping,
-    // and then one more cycle (F3 m5).
+    // and then one more cycle.
     let mut n = 0;
     loop {
         n += 1;

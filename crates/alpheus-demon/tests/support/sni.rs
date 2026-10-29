@@ -204,7 +204,7 @@ impl Spec {
         }
     }
 
-    /// Qt without a context menu: Menu is "/NO_DBUSMENU", no dbusmenu object (task 10's right click).
+    /// Qt without a context menu: Menu is "/NO_DBUSMENU", no dbusmenu object (a right click).
     pub fn qt_without_menu() -> Spec {
         let mut spec = Spec::qt();
         spec.properties.retain(|(k, _)| k != "Menu");

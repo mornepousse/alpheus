@@ -210,7 +210,7 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
     );
 }
 
-/// I3 carry-over (tray plan 1 review): `PrivateBus::spawn`'s failure path
+/// `PrivateBus::spawn`'s failure path
 /// (the readiness line never printed) must kill and wait on the child
 /// before panicking, never leave it running. `fake-dbus-daemon.sh` stands
 /// in for a dbus-daemon that never becomes ready, printing something else
@@ -218,7 +218,7 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
 /// every failure we could otherwise produce here, leaving nothing to prove
 /// the fix against.
 // No dbus-daemon involved (`fake-dbus-daemon.sh` stands in for it): this
-// test needs no `#[ignore]` (fix round, review item 3).
+// test needs no `#[ignore]`.
 #[test]
 fn a_failed_readiness_read_kills_and_waits_the_child_never_leaking_it() {
     let directory = std::env::temp_dir().join(format!("alpheus-spawn-fail-{}", std::process::id()));
@@ -234,7 +234,7 @@ fn a_failed_readiness_read_kills_and_waits_the_child_never_leaking_it() {
     let (pid, line) = PrivateBus::spawn_never_ready_for_test(fake.to_str().unwrap(), &directory, address).unwrap_err();
     assert!(!line.starts_with(address), "the fake never prints the real address: {line:?}");
     assert!(!process_alive(pid), "pid {pid}: the failed child must be killed, never leaked running");
-    // Proves the WAIT, not just the kill (fix round, review item 3): a
+    // Proves the WAIT, not just the kill: a
     // killed-but-never-waited child stays a zombie in /proc/<pid> (state
     // 'Z', which `process_alive` above already treats as "not alive") for
     // as long as this test binary runs — nobody else reaps it. Only `wait`
@@ -249,7 +249,7 @@ fn a_failed_readiness_read_kills_and_waits_the_child_never_leaking_it() {
     let _ = std::fs::remove_dir_all(&directory);
 }
 
-/// I4 carry-over (tray plan 1 review): the bus going away AFTER a peer
+/// The bus going away AFTER a peer
 /// received a call but BEFORE it replied must end that call as an outage,
 /// never an absence, and quickly — then leave `next_signal` unable to read
 /// anything further either.
@@ -261,8 +261,8 @@ fn a_disconnect_mid_call_is_an_outage_never_an_absence() {
     let silent = Peer::connect(&b); // receives the call, never replies
     let name = silent.name.clone();
     let (tx, rx) = mpsc::channel();
-    // A second channel for `next_signal`'s own `io::ErrorKind` (fix round,
-    // review item 2): sent as itself, never wrapped in `Some(...)` — the
+    // A second channel for `next_signal`'s own `io::ErrorKind`:
+    // sent as itself, never wrapped in `Some(...)` — the
     // loop below only ever exits through its `Err` arm, so wrapping it in
     // an `Option` made the old `kind.is_some()` assertion unfalsifiable.
     let (tx2, rx2) = mpsc::channel();
