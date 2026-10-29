@@ -285,11 +285,10 @@ impl Pending {
     /// which only raises POLLRDHUP and makes reads return 0) is NOT a
     /// hang-up: that client still waits for its answer.
     pub fn hung_up(&self) -> bool {
-        let mut p = libc::pollfd { fd: self.stream.as_raw_fd(), events: 0, revents: 0 };
-        // SAFETY: poll(2) on one valid pollfd owned by this frame, timeout 0
-        // (never blocks); the fd stays open for the whole call.
-        let r = unsafe { libc::poll(&mut p, 1, 0) };
-        r > 0 && p.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+        let mut p = [libc::pollfd { fd: self.stream.as_raw_fd(), events: 0, revents: 0 }];
+        // Timeout 0: never blocks.
+        crate::sys::poll(&mut p, 0).is_ok_and(|r| r > 0)
+            && p.iter().any(|f| f.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0)
     }
 
     pub fn reply(self, r: &Reply) {

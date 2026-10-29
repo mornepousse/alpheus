@@ -608,14 +608,7 @@ impl Bus for DbusRsBus {
                 fds[n] = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 n += 1;
             }
-            // SAFETY: poll(2) reads and fills the first `n` pollfd above, owned here for the whole call.
-            if unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, -1) } < 0 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(e);
-            }
+            crate::sys::poll(&mut fds[..n], -1)?;
             if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
                 return Err(closed());
             }

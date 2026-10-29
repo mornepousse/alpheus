@@ -56,6 +56,7 @@ pub mod session;
 pub mod sources;
 pub mod state;
 pub mod state_file;
+pub mod sys;
 pub mod system;
 pub mod text;
 pub mod tray;
