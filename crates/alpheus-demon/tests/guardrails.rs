@@ -835,22 +835,24 @@ fn the_only_stream_is_pw_dump_monitor() {
 fn nothing_resident_while_the_launcher_is_closed() {
     const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
     const ALLOWED: &[(&str, &str, usize)] = &[
-        // The bar's clock and resources timers; the launcher's request
-        // deadline, armed per connection and removed once it is read; the
+        // The bar's clock and resources timers.
+        ("launch.rs", "Timer::", 2),
+        // The launcher's request deadline, armed per connection and removed once it is read; the
         // listener's resume, armed only after an accept() error.
-        ("launch.rs", "Timer::", 4),
+        ("launcher/socket_glue.rs", "Timer::", 2),
         // DeadlineTimer::default() and Timer::from_deadline: the tray's call
         // timeout, armed only while a call is pending (task 1; wired into
         // the loop at task 11).
         ("deadline.rs", "Timer::", 2),
         // The bar's signal guard.
         ("launch.rs", "thread::Builder", 1),
-        // The launcher's listening socket (its fd: the one thing at rest),
-        // one watch per connection being read, and the tray's session-bus fd
-        // (task 11; only inserted when "tray" is in modules and a session
-        // bus answers — an unused module costs nothing at runtime, but the
-        // call itself is still in the source).
-        ("launch.rs", "Generic::new", 3),
+        // The launcher's listening socket (its fd: the one thing at rest) and
+        // one watch per connection being read.
+        ("launcher/socket_glue.rs", "Generic::new", 2),
+        // The tray's session-bus fd (task 11; only inserted when "tray" is in modules and a
+        // session bus answers — an unused module costs nothing at runtime, but the call itself is
+        // still in the source).
+        ("launch.rs", "Generic::new", 1),
         // The tray's DeadlineTimer (task 11), armed only while calls are pending; the tooltip's
         // (task 16), armed only while the pointer rests on a tray icon; the bar's session link's
         // (media task 5, `link_timer`), armed only while one of its calls is pending — the portal's
