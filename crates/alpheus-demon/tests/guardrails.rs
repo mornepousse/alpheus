@@ -205,7 +205,9 @@ fn source_files() -> Vec<(PathBuf, String)> {
             let p = e.path();
             if p.is_dir() {
                 walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "rs") {
+            } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().is_some_and(|n| n != "tests.rs") {
+                // `tests.rs` files hold the moved-out `#[cfg(test)] mod tests;`
+                // bodies: test code, not production code to scan.
                 out.push(p);
             }
         }
