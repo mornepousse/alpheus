@@ -2332,7 +2332,7 @@ fn the_keyboards_own_repeat_is_told_from_a_press() {
 fn the_privacy_module_has_no_panicking_path() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let pipewire = src("pipewire.rs");
+    let pipewire = src("pipewire/graph.rs");
     let mut texts = vec![src("privacy.rs"), src("privacy_app.rs")];
     for f in ["fn flag(", "fn graph_node(", "pub fn apply_privacy(", "fn track(", "fn bound(", "fn bound_line(", "fn held("] {
         texts.push(function_body(&pipewire, f).to_string());
