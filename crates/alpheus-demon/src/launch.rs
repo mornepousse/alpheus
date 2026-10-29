@@ -260,6 +260,26 @@ pub fn resources_period(c: &ResourcesConfig) -> Duration {
     Duration::from_secs(c.interval)
 }
 
+impl App {
+    /// One message from a source thread, in the order the readers need: the quick panel takes a
+    /// sound message's sink list first (quick task 6), the OSD reads every sound message before the
+    /// bar keeps it (osd task 3: its trigger rules compare it with the last one), the privacy
+    /// indicators read sound and compositor messages first (privacy spec § 4); then the bar's own
+    /// handling, and the panel refreshes if it took something.
+    pub(crate) fn on_bar_message(&mut self, mut m: Msg) {
+        let quick = self.quick_take(&mut m);
+        if let Msg::Sound(s) = &m {
+            self.osd_sound(s.as_ref());
+        }
+        self.privacy_feed(&m);
+        note_compositor_message(self, &m);
+        on_message(self, m, || LocalTime::now().0);
+        if quick {
+            self.quick_refresh();
+        }
+    }
+}
+
 /// `SessionBus::session()` itself found nothing to connect to (spec § 3): the
 /// one case that is really "no session bus".
 fn no_session_bus(e: impl std::fmt::Display) -> String {
@@ -700,22 +720,7 @@ pub fn run() -> i32 {
     // raises `WindowsFeed`'s flag, fed to an open launcher at most once the
     // same way (`after_dispatch_windows`, below the loop).
     let mail = handle.insert_source(rx, |ev, _, state: &mut App| match ev {
-        channel::Event::Msg(Mail::Bar(mut m)) => {
-            // The quick panel first (quick task 6): a sound message's sink list goes to it, or nowhere.
-            let quick = state.quick_take(&mut m);
-            // The OSD reads every sound message first (osd task 3): its trigger rules compare it
-            // with the last one; the bar then keeps it.
-            if let Msg::Sound(s) = &m {
-                state.osd_sound(s.as_ref());
-            }
-            // The privacy indicators read sound and compositor messages first (privacy spec § 4).
-            state.privacy_feed(&m);
-            note_compositor_message(state, &m);
-            on_message(state, m, || LocalTime::now().0);
-            if quick {
-                state.quick_refresh();
-            }
-        }
+        channel::Event::Msg(Mail::Bar(m)) => state.on_bar_message(m),
         channel::Event::Msg(Mail::Catalog { generation, catalog }) => state.launcher_catalog(generation, catalog),
         channel::Event::Msg(Mail::Entries { generation, entries }) => state.launcher_entries(generation, entries),
         channel::Event::Msg(Mail::Stop) | channel::Event::Closed => state.stop = true,

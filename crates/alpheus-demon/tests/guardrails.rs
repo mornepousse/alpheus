@@ -2375,7 +2375,7 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     );
     // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
     let launch = src("launch.rs");
-    let (fed, kept) = (launch.find("state.privacy_feed(&m)"), launch.find("on_message(state, m,"));
+    let (fed, kept) = (launch.find("self.privacy_feed(&m)"), launch.find("on_message(self, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 
