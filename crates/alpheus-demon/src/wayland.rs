@@ -1945,8 +1945,7 @@ impl PointerHandler for App {
                     // the pointer (same client, fact check 5): it is a click outside that popup —
                     // except a module popup's own second click: its toggle closes it.
                     let pressed_popup = b.and_then(|b| self.module_popup_at(i, ev.position.0, b)).map(|(p, _, _)| p);
-                    let toggles_own_popup =
-                        pressed_popup.is_some() && pressed_popup == self.popup.as_ref().and_then(|o| o.body.module_popup());
+                    let toggles_own_popup = pressed_popup.is_some() && pressed_popup == self.popup_body().and_then(PopupBody::module_popup);
                     if self.popup.is_some() {
                         // Where the compositor delivered it: a press meant for the popup but handed
                         // to the bar (seen on Hyprland) shows here, at a row below the bar's own.

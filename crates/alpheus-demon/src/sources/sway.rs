@@ -114,9 +114,10 @@ fn subscribed(reply: &[u8]) -> bool {
 
 /// Readable right now (a zero-timeout poll): more of the same burst, read without waiting.
 fn readable_now(s: &UnixStream) -> io::Result<bool> {
-    let mut fd = [libc::pollfd { fd: s.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
-    let ready = crate::sys::poll(&mut fd, 0)?;
-    Ok(ready > 0 && fd.iter().any(|f| f.revents != 0))
+    let mut fds = [libc::pollfd { fd: s.as_raw_fd(), events: libc::POLLIN, revents: 0 }];
+    let ready = crate::sys::poll(&mut fds, 0)?;
+    let [fd] = fds;
+    Ok(ready > 0 && fd.revents != 0)
 }
 
 pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {

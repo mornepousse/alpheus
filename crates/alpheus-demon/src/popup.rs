@@ -215,7 +215,7 @@ pub enum Input {
     Keys,
 }
 
-/// What a popup shows: a tray or hover menu, a tooltip, or one of the module popups
+/// What a popup shows: a tray item's menu, its hover tooltip, or one of the module popups
 /// (`ModulePopup`); dropped whole on close.
 pub enum PopupBody {
     Menu(Menu),
@@ -648,7 +648,7 @@ impl App {
         // The same race for a module's popup (the calendar; the media popup, task 7): a left press on
         // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).
         if why == PopupClose::Dismissed
-            && let Some(p) = self.popup.as_ref().and_then(|o| o.body.module_popup())
+            && let Some(p) = self.popup_body().and_then(PopupBody::module_popup)
         {
             self.recently_closed_popup = Some((p, Instant::now()));
         }
@@ -708,6 +708,7 @@ impl App {
         self.popup.as_ref().map(|p| &p.body)
     }
 
+    /// The open popup's body, mutably.
     pub(crate) fn popup_body_mut(&mut self) -> Option<&mut PopupBody> {
         self.popup.as_mut().map(|p| &mut p.body)
     }

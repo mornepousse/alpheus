@@ -46,7 +46,8 @@ mod tests {
     /// A signal arriving during the wait does not end it: the call is retried until the data comes.
     #[test]
     fn an_interrupted_wait_is_retried() {
-        // SAFETY: installs a handler that does nothing, without SA_RESTART, so poll(2) returns EINTR.
+        // SAFETY: installs a handler that does nothing: the signal is no longer fatal, and poll(2) is
+        // never restarted by a handler (signal(7)), so it returns EINTR.
         unsafe {
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = nothing as extern "C" fn(libc::c_int) as usize;
@@ -56,10 +57,13 @@ mod tests {
         // SAFETY: pthread_self has no preconditions.
         let me = unsafe { libc::pthread_self() };
         let helper = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(50));
-            // SAFETY: the waiting thread is alive until it has read the word written below.
-            unsafe { libc::pthread_kill(me, libc::SIGUSR1) };
-            std::thread::sleep(Duration::from_millis(50));
+            // Signals every 20 ms for 300 ms: one lands while the thread is waiting, however late it
+            // reaches poll on a loaded machine.
+            for _ in 0..15 {
+                std::thread::sleep(Duration::from_millis(20));
+                // SAFETY: the waiting thread is alive until it has read the word written below.
+                unsafe { libc::pthread_kill(me, libc::SIGUSR1) };
+            }
             std::io::Write::write_all(&mut &b, b"x").unwrap();
         });
         let mut fds = [watching(&a)];

@@ -1585,7 +1585,9 @@ fn the_theme_and_camera_watches_only_read() {
                 assert!(!prod.contains(never), "{never} in {name}: the config directory and the video devices are read-only to the daemon");
             }
         } else {
-            assert!(!prod.contains("inotify_"), "inotify outside inotify.rs, watch.rs and camera_dev.rs: {name}");
+            for raw in ["inotify_", "Inotify::new", "inotify::"] {
+                assert!(!prod.contains(raw), "inotify ({raw}) outside inotify.rs, watch.rs and camera_dev.rs: {name}");
+            }
         }
     }
     assert!(found, "watch.rs not found");
