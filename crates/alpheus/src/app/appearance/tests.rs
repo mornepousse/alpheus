@@ -418,8 +418,8 @@ fn the_preview_includes_the_users_colour_overrides() {
 #[test]
 fn every_module_colours_value_reads_back() {
     use alpheus_commun::theme::settings::parse_settings;
-    for m in [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills] {
-        let (s, w) = parse_settings(&format!("module_colors = \"{}\"\n", colors_value(m)));
+    for m in ModuleColors::ALL {
+        let (s, w) = parse_settings(&format!("module_colors = \"{}\"\n", m.name()));
         assert_eq!((s.module_colors, w), (m, Vec::<String>::new()), "{m:?}");
     }
     assert_eq!(colors_label(ModuleColors::Pills), "Pills");

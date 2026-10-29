@@ -537,3 +537,21 @@ fn resolve_dir_is_the_one_path() {
     let (_, r) = resolve_dir(&dir, || panic!("a fixed mode never asks the portal"));
     assert_eq!(r.roles, named("nord").dark);
 }
+
+#[test]
+fn mode_and_module_colours_names_round_trip_and_parse() {
+    let modes: Vec<&str> = ModeSetting::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(modes, ["auto", "dark", "light"]);
+    let colors: Vec<&str> = ModuleColors::ALL.iter().map(|m| m.name()).collect();
+    assert_eq!(colors, ["none", "icons", "full", "pills"]);
+    for m in ModeSetting::ALL {
+        assert_eq!(ModeSetting::from_name(m.name()), Some(m));
+        assert_eq!(parse_settings(&format!("mode = \"{}\"\n", m.name())).0.mode, m);
+    }
+    for m in ModuleColors::ALL {
+        assert_eq!(ModuleColors::from_name(m.name()), Some(m));
+        assert_eq!(parse_settings(&format!("module_colors = \"{}\"\n", m.name())).0.module_colors, m);
+    }
+    assert_eq!(ModeSetting::from_name("Dark"), None);
+    assert_eq!(ModuleColors::from_name(""), None);
+}

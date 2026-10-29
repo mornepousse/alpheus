@@ -132,11 +132,11 @@ fn the_module_colours_row_is_drawn_with_its_four_values_and_regions() {
     let (rows, hits) = draw(&a, 100, 24);
     let row = rows.iter().find(|r| r.contains("Module colours")).expect("the row");
     assert!(row.contains("None") && row.contains("Icons") && row.contains("Full") && row.contains("Pills"), "{row:?}");
-    for m in COLORS {
+    for m in ModuleColors::ALL {
         assert!(hits.find(Target::AppearanceColors(m)).is_some(), "{m:?}");
     }
-    let mode_y = hits.find(Target::AppearanceMode(MODES[0])).unwrap().y;
-    assert_eq!(hits.find(Target::AppearanceColors(COLORS[0])).unwrap().y, mode_y + 1, "right under Mode");
+    let mode_y = hits.find(Target::AppearanceMode(ModeSetting::ALL[0])).unwrap().y;
+    assert_eq!(hits.find(Target::AppearanceColors(ModuleColors::ALL[0])).unwrap().y, mode_y + 1, "right under Mode");
     // The loaded value is the highlighted one.
     let b = buffer(&a);
     let full = hits.find(Target::AppearanceColors(ModuleColors::Full)).unwrap();
@@ -169,7 +169,7 @@ fn the_regions_and_the_tab_title() {
     assert!(rows[0].contains(" 7 Theme "), "{:?}", rows[0]);
     assert!(hits.find(Target::Tab(Tab::Appearance)).is_some());
     assert_eq!(hits.find(Target::AppearanceTheme(3)).map(|r| (r.y, r.width)), Some((6, 30)));
-    for m in MODES {
+    for m in ModeSetting::ALL {
         assert!(hits.find(Target::AppearanceMode(m)).is_some());
     }
     assert!(rows[23].contains("Enter Apply"), "{:?}", rows[23]);
@@ -199,12 +199,12 @@ fn short_terminals_scroll_the_list_and_never_expose_a_hidden_hit() {
                     assert_eq!(r.intersection(body), r, "theme {i} outside the body at height {h}");
                 }
             }
-            for m in MODES {
+            for m in ModeSetting::ALL {
                 if let Some(r) = hits.find(Target::AppearanceMode(m)) {
                     assert_eq!(r.intersection(body), r, "mode outside the body at height {h}");
                 }
             }
-            for m in COLORS {
+            for m in ModuleColors::ALL {
                 if let Some(r) = hits.find(Target::AppearanceColors(m)) {
                     assert_eq!(r.intersection(body), r, "module colours outside the body at height {h}");
                 }
@@ -215,8 +215,8 @@ fn short_terminals_scroll_the_list_and_never_expose_a_hidden_hit() {
                 }
             }
             // What a chip's region covers is that chip: never the preview drawn over it.
-            let chips = MODES.iter().map(|m| (Target::AppearanceMode(*m), mode_label(*m)));
-            let chips = chips.chain(COLORS.iter().map(|m| (Target::AppearanceColors(*m), colors_label(*m))));
+            let chips = ModeSetting::ALL.iter().map(|m| (Target::AppearanceMode(*m), mode_label(*m)));
+            let chips = chips.chain(ModuleColors::ALL.iter().map(|m| (Target::AppearanceColors(*m), colors_label(*m))));
             for (t, label) in chips.chain(STYLES.iter().map(|s| (Target::AppearanceStyle(*s), style_label(*s)))) {
                 if let Some(r) = hits.find(t) {
                     let shown: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();
@@ -230,8 +230,8 @@ fn short_terminals_scroll_the_list_and_never_expose_a_hidden_hit() {
                 assert!(rows[usize::from(r.y)].contains('❯'), "{:?}", rows[usize::from(r.y)]);
             }
             if h >= 9 {
-                assert!(hits.find(Target::AppearanceMode(MODES[0])).is_some(), "mode row visible at height {h}");
-                assert!(hits.find(Target::AppearanceColors(COLORS[0])).is_some(), "module colours row visible at height {h}");
+                assert!(hits.find(Target::AppearanceMode(ModeSetting::ALL[0])).is_some(), "mode row visible at height {h}");
+                assert!(hits.find(Target::AppearanceColors(ModuleColors::ALL[0])).is_some(), "module colours row visible at height {h}");
                 assert!(hits.find(Target::AppearanceStyle(STYLES[0])).is_some(), "style row visible at height {h}");
             }
         }
@@ -249,7 +249,7 @@ fn the_style_row_is_drawn_under_the_colours_with_six_values_and_regions() {
     for s in STYLES {
         assert!(hits.find(Target::AppearanceStyle(s)).is_some(), "{s:?}");
     }
-    let colors_y = hits.find(Target::AppearanceColors(COLORS[0])).unwrap().y;
+    let colors_y = hits.find(Target::AppearanceColors(ModuleColors::ALL[0])).unwrap().y;
     assert_eq!(hits.find(Target::AppearanceStyle(STYLES[0])).unwrap().y, colors_y + 1, "right under Module colours");
     let b = buffer(&a);
     let on = hits.find(Target::AppearanceStyle(BarStyle::Powerline)).unwrap();

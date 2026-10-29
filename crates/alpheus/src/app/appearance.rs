@@ -16,9 +16,6 @@ use alpheus_commun::theme::{Mode, Roles};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The mode chips, in display order.
-pub const MODES: [ModeSetting; 3] = [ModeSetting::Auto, ModeSetting::Dark, ModeSetting::Light];
-
 pub fn mode_label(m: ModeSetting) -> &'static str {
     match m {
         ModeSetting::Auto => "Auto",
@@ -27,34 +24,12 @@ pub fn mode_label(m: ModeSetting) -> &'static str {
     }
 }
 
-/// `theme.toml`'s value for `m`.
-fn mode_value(m: ModeSetting) -> &'static str {
-    match m {
-        ModeSetting::Auto => "auto",
-        ModeSetting::Dark => "dark",
-        ModeSetting::Light => "light",
-    }
-}
-
-/// The module-colours chips, in display order.
-pub const COLORS: [ModuleColors; 4] = [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills];
-
 pub fn colors_label(m: ModuleColors) -> &'static str {
     match m {
         ModuleColors::None => "None",
         ModuleColors::Icons => "Icons",
         ModuleColors::Full => "Full",
         ModuleColors::Pills => "Pills",
-    }
-}
-
-/// `theme.toml`'s value for `m`.
-fn colors_value(m: ModuleColors) -> &'static str {
-    match m {
-        ModuleColors::None => "none",
-        ModuleColors::Icons => "icons",
-        ModuleColors::Full => "full",
-        ModuleColors::Pills => "pills",
     }
 }
 
@@ -279,15 +254,15 @@ impl App {
 
     fn appearance_step(&mut self, delta: i32) {
         let a = &mut self.appearance;
-        let i = MODES.iter().position(|m| *m == a.mode).unwrap_or(0) as i32;
-        a.mode = MODES[(i + delta).clamp(0, MODES.len() as i32 - 1) as usize];
+        let i = ModeSetting::ALL.iter().position(|m| *m == a.mode).unwrap_or(0) as i32;
+        a.mode = ModeSetting::ALL[(i + delta).clamp(0, ModeSetting::ALL.len() as i32 - 1) as usize];
         a.refresh_preview();
     }
 
     fn appearance_step_colors(&mut self, delta: i32) {
         let a = &mut self.appearance;
-        let i = COLORS.iter().position(|m| *m == a.module_colors).unwrap_or(0) as i32;
-        a.module_colors = COLORS[(i + delta).clamp(0, COLORS.len() as i32 - 1) as usize];
+        let i = ModuleColors::ALL.iter().position(|m| *m == a.module_colors).unwrap_or(0) as i32;
+        a.module_colors = ModuleColors::ALL[(i + delta).clamp(0, ModuleColors::ALL.len() as i32 - 1) as usize];
         a.refresh_preview();
     }
 
@@ -348,8 +323,8 @@ impl App {
         let Some(entry) = a.cursor_entry().copied() else { return };
         let on_list = a.focus == Focus::List;
         let theme = (on_list || a.applied != Some(a.cursor)).then_some(entry.key);
-        let mode = (a.focus == Focus::Mode || a.mode != a.applied_mode).then(|| mode_value(a.mode));
-        let colors = (a.focus == Focus::Colors || a.module_colors != a.applied_module_colors).then(|| colors_value(a.module_colors));
+        let mode = (a.focus == Focus::Mode || a.mode != a.applied_mode).then(|| a.mode.name());
+        let colors = (a.focus == Focus::Colors || a.module_colors != a.applied_module_colors).then(|| a.module_colors.name());
         let style = (a.focus == Focus::Style || a.style != a.applied_style).then(|| a.style.name());
         let written = match &a.dir {
             Some(dir) => write_settings(dir, theme, mode, colors, style).map_err(|e| e.to_string()),

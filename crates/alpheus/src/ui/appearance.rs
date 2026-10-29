@@ -6,10 +6,10 @@
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
 use crate::app::App;
-use crate::app::appearance::{COLORS, Focus, MODES, STYLES, colors_label, mode_label, style_label};
+use crate::app::appearance::{Focus, STYLES, colors_label, mode_label, style_label};
 use crate::theme::color;
 use alpheus_commun::theme::contrast::ratio;
-use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
+use alpheus_commun::theme::settings::{BarStyle, ModeSetting, ModuleColors};
 use alpheus_commun::theme::{Mode, Rgb, Roles};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -74,7 +74,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     };
     put(buf, body, body.x, mode_y, "Mode", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
     let mut x = body.x + CHIPS_X;
-    for m in MODES {
+    for m in ModeSetting::ALL {
         let w = put(buf, body, x, mode_y, &format!(" {} ", mode_label(m)), chip(m == ap.mode, ap.focus == Focus::Mode, th));
         hits.push(Rect::new(x, mode_y, w, 1).intersection(body), Target::AppearanceMode(m));
         x = x.saturating_add(w + 1);
@@ -82,7 +82,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     let colors_y = mode_y + 1;
     put(buf, body, body.x, colors_y, "Module colours", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
     let mut x = body.x + CHIPS_X;
-    for m in COLORS {
+    for m in ModuleColors::ALL {
         let w = put(buf, body, x, colors_y, &format!(" {} ", colors_label(m)), chip(m == ap.module_colors, ap.focus == Focus::Colors, th));
         hits.push(Rect::new(x, colors_y, w, 1).intersection(body), Target::AppearanceColors(m));
         x = x.saturating_add(w + 1);

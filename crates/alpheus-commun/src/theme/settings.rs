@@ -20,6 +20,25 @@ pub enum ModeSetting {
     Light,
 }
 
+impl ModeSetting {
+    /// Every mode, in the Theme tab's order.
+    pub const ALL: [ModeSetting; 3] = [ModeSetting::Auto, ModeSetting::Dark, ModeSetting::Light];
+
+    /// Its value in theme.toml.
+    pub fn name(self) -> &'static str {
+        match self {
+            ModeSetting::Auto => "auto",
+            ModeSetting::Dark => "dark",
+            ModeSetting::Light => "light",
+        }
+    }
+
+    /// The mode theme.toml names `name` (exact, lower case), None otherwise.
+    pub fn from_name(name: &str) -> Option<ModeSetting> {
+        ModeSetting::ALL.into_iter().find(|m| m.name() == name)
+    }
+}
+
 /// `theme` in theme.toml.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ThemeSource {
@@ -43,6 +62,26 @@ pub enum ModuleColors {
     /// `bar_bg` or `fg`, whichever contrasts more (shapes spec § 1); under `flat` and
     /// `underline`, as `Full`.
     Pills,
+}
+
+impl ModuleColors {
+    /// Every value, in the Theme tab's order.
+    pub const ALL: [ModuleColors; 4] = [ModuleColors::None, ModuleColors::Icons, ModuleColors::Full, ModuleColors::Pills];
+
+    /// Its value in theme.toml.
+    pub fn name(self) -> &'static str {
+        match self {
+            ModuleColors::None => "none",
+            ModuleColors::Icons => "icons",
+            ModuleColors::Full => "full",
+            ModuleColors::Pills => "pills",
+        }
+    }
+
+    /// The value theme.toml names `name` (exact, lower case), None otherwise.
+    pub fn from_name(name: &str) -> Option<ModuleColors> {
+        ModuleColors::ALL.into_iter().find(|m| m.name() == name)
+    }
 }
 
 /// `style` in theme.toml (shapes spec § 1): the bar's shape.
@@ -179,18 +218,13 @@ fn parse_settings_or(text: &str, source: ThemeSource) -> (ThemeSettings, Vec<Str
                     w.push(format!("{THEME_FILE}: theme must be a string, using {fallback:?}"));
                 }
             },
-            "mode" => match value.as_str() {
-                Some("auto") => s.mode = ModeSetting::Auto,
-                Some("dark") => s.mode = ModeSetting::Dark,
-                Some("light") => s.mode = ModeSetting::Light,
-                _ => w.push(format!("{THEME_FILE}: mode must be \"auto\", \"dark\" or \"light\", got {value}; using \"auto\"")),
+            "mode" => match value.as_str().and_then(ModeSetting::from_name) {
+                Some(mode) => s.mode = mode,
+                None => w.push(format!("{THEME_FILE}: mode must be \"auto\", \"dark\" or \"light\", got {value}; using \"auto\"")),
             },
-            "module_colors" => match value.as_str() {
-                Some("none") => s.module_colors = ModuleColors::None,
-                Some("icons") => s.module_colors = ModuleColors::Icons,
-                Some("full") => s.module_colors = ModuleColors::Full,
-                Some("pills") => s.module_colors = ModuleColors::Pills,
-                _ => w.push(format!(
+            "module_colors" => match value.as_str().and_then(ModuleColors::from_name) {
+                Some(colors) => s.module_colors = colors,
+                None => w.push(format!(
                     "{THEME_FILE}: module_colors must be \"none\", \"icons\", \"full\" or \"pills\", got {value}; using \"icons\""
                 )),
             },
