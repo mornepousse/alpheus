@@ -348,7 +348,7 @@ fn floating_previews_one_rounded_bar_over_what_is_behind() {
     assert_eq!(b[(end + 1, 4)].bg, rgb(p.bar_bg));
     assert_eq!(cell(&b, 4, "n").1, rgb(p.bar_bg), "blocks are not filled without pills");
     assert_eq!(b[(end, 3)].bg, a.theme.bg, "the margin above the bar shows what is behind");
-    // Under pills, only the hued blocks are drawn inside the bar (task 6).
+    // Under pills, only the hued blocks are drawn inside the bar.
     let a = styled("prev-floating-pills", "floating", "pills");
     let b = buffer(&a);
     assert_eq!(cell(&b, 4, "♪").1, rgb(p.hues.blue), "pills: the status block in its hue");

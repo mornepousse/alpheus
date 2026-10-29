@@ -26,7 +26,7 @@ pub struct DisplaysTab {
     pub profiles_path: Option<PathBuf>,
     /// The file loaded at startup was invalid (warning kept): saving would
     /// overwrite it without having been able to read it, refused until Mae
-    /// has fixed it (set by `build_app`, task 11).
+    /// has fixed it (set by `build_app`).
     pub profiles_invalid: bool,
     /// Chip selected in the profile bar; `profiles.len()` designates
     /// "+ Save current".
@@ -823,8 +823,7 @@ impl App {
     fn save_current(&mut self, name: &str, now: Instant) {
         self.overlay = Overlay::None;
         if self.displays.profiles_invalid {
-            // Controller re-check (task 5): the file loaded was invalid —
-            // never overwrite what we couldn't read.
+            // The file loaded was invalid: never overwrite what we couldn't read.
             let msg = "invalid displays.toml: fix it before saving".to_string();
             self.status.error = Some(msg.clone());
             self.toast(msg, true, now);

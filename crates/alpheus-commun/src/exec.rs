@@ -402,7 +402,7 @@ fn read_until(out: &mut ChildStdout, pid: u32, start: Instant, limits: &CaptureL
     // window, and those bytes came after the command's own end anyway.
     let mut draining = false;
     // When the command's exit was last checked: at least every EXIT_CHECK, quiet pipe or not, so a
-    // child it left behind writing on and on cannot keep the read going (final review A1).
+    // child it left behind writing on and on cannot keep the read going.
     let mut checked = Instant::now();
     loop {
         let Some(left) = limits.deadline.checked_sub(start.elapsed()).filter(|d| !d.is_zero()) else {

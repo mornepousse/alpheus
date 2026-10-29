@@ -841,8 +841,7 @@ fn saving_impossible_is_reported() {
 
 #[test]
 fn saving_refused_if_the_file_is_invalid() {
-    // Task 5 (controller re-check): the file loaded was invalid
-    // (warning kept) → never overwrite what we couldn't read.
+    // The file loaded was invalid (warning kept) → never overwrite what we couldn't read.
     let mut a = displays_tab();
     let path = tmp("invalid");
     a.displays.profiles_path = Some(path.clone());

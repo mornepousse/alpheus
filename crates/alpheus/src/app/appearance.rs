@@ -1,13 +1,13 @@
 //! The Appearance tab: choose a theme, the light/dark mode, the module colours and the bar style,
 //! preview them, write theme.toml.
 //! Nothing is computed until the tab is shown (`appearance_open`). Moving the cursor only changes
-//! the preview; Enter writes (`crate::appearance::write_settings`) and reloads the TUI's own theme.
+//! the preview; Enter writes (`crate::theme_file::write_settings`) and reloads the TUI's own theme.
 //! The daemon follows through its inotify reload; the TUI never touches D-Bus.
 
 use super::App;
 use super::action::Action;
-use crate::appearance::{Entry, WALLPAPER, entries, write_settings};
 use crate::theme::Theme;
+use crate::theme_file::{Entry, WALLPAPER, entries, write_settings};
 use alpheus_commun::theme::mode_file::read_mode;
 use alpheus_commun::theme::settings::{
     BarStyle, ModeSetting, ModuleColors, Overrides, ThemeSettings, ThemeSource, effective_mode, load_settings, resolve,

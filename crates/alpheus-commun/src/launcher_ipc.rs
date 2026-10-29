@@ -23,7 +23,7 @@ pub fn socket_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join(SOCKET_NAME)
 }
 
-/// `--dnd`'s word: the bar's do-not-disturb (notifications task 5).
+/// `--dnd`'s word: the bar's do-not-disturb (notifications spec).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DndVerb {
     On,
@@ -124,9 +124,9 @@ pub enum Request {
         lines: Vec<String>,
         flags: DmenuFlags,
     },
-    /// The notifications module's do-not-disturb (notifications task 5): answered Done.
+    /// The notifications module's do-not-disturb (notifications spec): answered Done.
     Dnd(DndVerb),
-    /// Empties the notification history (notifications task 5): answered Done.
+    /// Empties the notification history (notifications spec): answered Done.
     ClearNotifications,
     /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
     /// module off or no backlight (nothing shown).
@@ -334,8 +334,7 @@ impl RequestDecoder {
     }
 
     /// Bytes buffered so far: test-only (the memory-guard tests below),
-    /// never read by the daemon itself (review item M5, final review
-    /// slice 1).
+    /// never read by the daemon itself.
     pub fn buffered(&self) -> usize {
         self.buf.len()
     }

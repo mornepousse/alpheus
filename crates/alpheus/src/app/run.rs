@@ -190,7 +190,7 @@ pub fn parse_options(args: &[String]) -> Result<Options, String> {
 /// the first reads leave.
 pub fn build_app(dir: &Path, tab: Tab, unavailable: Option<&'static str>, now: Instant) -> App {
     let (config, w_config) = Config::load(&dir.join("config.toml"));
-    // The mode the daemon publishes (themes task 6), read only in mode auto; no D-Bus here.
+    // The mode the daemon publishes (read from `$XDG_RUNTIME_DIR/alpheus/mode`), read only in mode auto; no D-Bus here.
     let runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     let (theme, w_theme) = Theme::load(dir, runtime.as_deref());
     let (keymap, w_keys) = match Keymap::from_config(&config.keys) {

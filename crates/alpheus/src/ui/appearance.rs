@@ -256,7 +256,7 @@ fn fill(p: &Roles, style: BarStyle, colors: ModuleColors, b: &Block, i: usize) -
         BarStyle::Flat => None,
         BarStyle::Underline => Some(p.pill_bg),
         BarStyle::Islands | BarStyle::Translucent => Some(pill.unwrap_or(p.pill_bg)),
-        // One bar; under pills only the hued blocks are drawn inside it (task 6).
+        // One bar; under pills only the hued blocks are drawn inside it, as the daemon draws it.
         BarStyle::Floating => {
             if colors == ModuleColors::Pills {
                 b.hue

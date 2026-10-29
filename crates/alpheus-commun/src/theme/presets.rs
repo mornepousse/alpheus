@@ -1,7 +1,7 @@
 //! Compiled-in themes (spec § 2): nine families, each a dark half and (but
 //! for Nord and Dracula) a light half of the 16 roles, taken from the
 //! official palettes. Role choices follow Catppuccin's UI style guide and
-//! map the other families by analogy (plan, task 2). Where an official
+//! map the other families by analogy (themes plan). Where an official
 //! colour failed the contrast test, the nearest passing palette colour is
 //! used and the comment says so. Each half also carries the seven named hues
 //! (spec § 9) from the same palette. About 1.2 KB of read-only data in all.
