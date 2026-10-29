@@ -1,4 +1,4 @@
-//! alpheus — TUI control center (sub-project 1, see docs/CADRAGE.md).
+//! alpheus — TUI control center (sub-project 1, see docs/SCOPE.md).
 //! `exec`, `config`, `backends` and `displays` live in alpheus-commun;
 //! re-exported here so that `crate::displays::…` and `alpheus::backends::…`
 //! stay valid.

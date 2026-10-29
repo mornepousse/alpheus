@@ -17,7 +17,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 23 MB** | bar ≈ 14 MB (live) + swayosd 7.6 MB + swaybg 1.4 MB still borrowed (rows below); ≈ 30 MB before the notifications replaced mako (6.7 MB) on 2026-10-09; ≈ 15 MB once the OSD replaces swayosd, only swaybg (optional) borrowed |
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | bar ≈ 14 MB (live) + swaybg 1.4 MB (optional) borrowed (rows below); swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live bar figure predates several deliveries and is to be re-measured |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
@@ -170,7 +170,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
-| Appearance settings | 🚧 TUI tab, themes 3 | ✅ | ✅ | ❌ | ❌ |
+| Appearance settings | ✅ the TUI's Theme tab: theme, light/dark mode, module colours, bar style, with a preview | ✅ | ✅ | ❌ | ❌ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Settings GUI | ➖ TUI + TOML | ✅ | ✅ | ❌ | ❌ |
@@ -191,12 +191,13 @@ memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
 
 ## What's in the repository
 
-A Cargo workspace of three crates:
+A Cargo workspace of four crates:
 
 | Crate | Role |
 |---|---|
 | `alpheus` | **Control center** as a TUI (ratatui), opened on demand |
 | `alpheus-demon` | **Resident daemon**: the bar, one per screen (layer-shell) |
+| `alpheus-launch` | **Scripting bridge** to the daemon's launcher, notifications, OSD and quick panel (`--toggle`, `--dmenu`, `--dnd`, `--quick`…) |
 | `alpheus-commun` | Shared foundation: command execution, configuration, theme, access to system tools |
 
 The TUI doesn't embed Wayland, the daemon doesn't embed ratatui: a test
@@ -211,14 +212,15 @@ theme, the light/dark mode, the module colours and the bar style, with a preview
 
 | Key | Action |
 |---|---|
-| `1`…`6`, `Tab` / `Shift+Tab` | switch tabs |
+| `1`…`7`, `Tab` / `Shift+Tab` | switch tabs |
 | `Ctrl+P` | command palette (fuzzy search) |
 | `/`, `Ctrl+F` | search a list |
 | `F1`, `?` | help |
 | `Esc` | go back; `q` quits |
 
 `alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`,
-`bluetooth`, `power`, `displays`).
+`bluetooth`, `power`, `displays`, `appearance`; `theme` is accepted for
+`appearance`).
 
 ### The bar (`alpheus-demon`)
 
@@ -262,7 +264,8 @@ of the control center (with the quick panel: the right click on volume, network 
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: the lock screen; the wallpaper (swaybg) is optional.
+The lock screen is paused (the wallpaper, swaybg, is optional): the focus is
+polishing the bar, the launcher, the notifications and the control center.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
@@ -604,7 +607,7 @@ nix develop                  # dev shell: cargo, fonts, sway for tests
 ```
 
 Without Nix, `cargo build --release` is enough for the TUI. The bar looks
-for its fonts in `$ALPHEUS_FONTS` (set at build time by the flake),
+for its fonts in `$ALPHEUS_POLICES` (set at build time by the flake),
 otherwise in the system's.
 
 ## Configure
@@ -690,8 +693,9 @@ peripherals = "always"   # "always" | "low" | "never": peripherals with a real p
 coarse = "low"           # "always" | "low" | "never": peripherals with only a coarse level
 ```
 
-Modules not yet shipped are accepted and ignored: a `bar.toml` written
-today will stay valid.
+An unknown module name in `modules` is an error that makes the whole
+`bar.toml` fall back to its defaults (one warning in the log), like any other
+invalid key.
 
 ## Principles
 
