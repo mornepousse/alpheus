@@ -780,8 +780,10 @@ unknown action or key makes the file invalid.
   bar, and the external commands (`wm-set` and others) alpheus expects.
 - [`docs/cli.md`](docs/cli.md): the command lines of `alpheus`,
   `alpheus-demon` and `alpheus-launch`: verbs, options, exit codes.
-- [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
-- [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+  [`SECURITY.md`](SECURITY.md): how it is built, how to contribute, what it can do to your session.
+- [`docs/SCOPE.md`](docs/SCOPE.md): the original scope (historical): why, budget, guardrails.
+- [`docs/specs/`](docs/specs/README.md): the specifications, with a status index (TUI, Displays tab,
   bar, launcher, tray, themes, media, notifications, OSD).
 - [`docs/plans/`](docs/plans/): the implementation plans.
 
