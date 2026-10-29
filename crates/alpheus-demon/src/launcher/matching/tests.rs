@@ -165,7 +165,6 @@ fn a_hit_that_needs_the_path_ranks_below_an_app_hit() {
     assert_eq!(l.sources(Mode::All, "captures"), [Source::App(0), Source::Entry(0)]);
 }
 
-/// Review Focus 4.
 #[test]
 fn a_query_spanning_the_path_and_the_entry_finds_it() {
     let l = with_entries(&["Captures · Zone", "Affichage · Zoom"]);
@@ -503,7 +502,7 @@ fn an_empty_all_query_reserves_room_for_every_window() {
     assert_eq!(windows_kept, 5, "every window must survive, not get truncated away by the apps ahead of it");
 }
 
-/// Review Focus 4: dmenu lines must not rebuild `everything()`'s old behaviour of
+/// Dmenu lines must not rebuild `everything()`'s old behaviour of
 /// collecting every line before the final truncate — `.take(remaining)` bounds the
 /// `Vec` from the first push, so this is observable on `everything()` alone, before
 /// `rank()`'s `shrink_to_fit()` ever runs (which the test above still needs, for windows).
@@ -538,7 +537,7 @@ impl Lcg {
 /// The optimized path (precomputed `name_rank`, `select_nth_unstable_by` then a partial
 /// sort) must produce exactly the same order as an obviously-correct full sort over the
 /// same hits, even on a large list with heavy ties in score, frecency and name, mixed
-/// case and accents (Review Focus 3: a `fold_cow` bug that mistakes "no ASCII uppercase"
+/// case and accents (a `fold_cow` bug that mistakes "no ASCII uppercase"
 /// for "nothing to fold" must be caught here too — on a tied list is exactly where it
 /// would bite — not only by the small dedicated `fold_cow_matches_fold_key_…` test).
 #[test]

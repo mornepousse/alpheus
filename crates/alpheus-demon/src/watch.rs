@@ -172,7 +172,7 @@ fn arm(fd: &Inotify, dir: &Path) -> Result<On, String> {
     }
 }
 
-/// Starts watching (launch::run, once the loop exists). Any failure: one line, the theme files read
+/// Starts watching (`launch::run`, once the loop exists). Any failure: one line, the theme files read
 /// at startup only, the bar unaffected.
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     let dir = paths::config_dir();
@@ -286,10 +286,10 @@ impl App {
     }
 
     /// Re-reads theme.toml and the colour files and resolves them for the mode in effect (the
-    /// portal's word in mode auto: themes task 6). Every surface is repainted once when the roles
+    /// portal's word in mode auto). Every surface is repainted once when the roles
     /// changed; only warnings not logged at the last resolve are logged. A wallpaper colour file
-    /// that exists but cannot be used (matugen caught mid-write) keeps the roles on screen
-    /// (controller reconciliation 9): the bar never flashes to the default theme on a reload.
+    /// that exists but cannot be used (matugen caught mid-write) keeps the roles on screen:
+    /// the bar never flashes to the default theme on a reload.
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
         let portal = self.portal_mode;
@@ -308,7 +308,7 @@ impl App {
         self.theme_warnings = warnings;
         let shape = shape_change(&self.theme_settings, &settings);
         self.bar.module_colors = settings.module_colors;
-        // The layout's spacing and the placement follow the bar's style (tasks 2 and 6): set before
+        // The layout's spacing and the placement follow the bar's style: set before
         // any repaint or re-placement below.
         self.bar.style = settings.style;
         self.theme_settings = settings;

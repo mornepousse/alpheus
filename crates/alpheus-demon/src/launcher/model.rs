@@ -1,7 +1,7 @@
 //! The launcher's state and every key rule, pure (spec § 2): the query,
 //! the mode (and the prefixes that jump to one), the selection and the
 //! visible window of results, what Enter and Ctrl+Enter activate.
-//! Wayland (task 12) feeds it keys and clicks and applies the `Outcome`;
+//! Wayland feeds it keys and clicks and applies the `Outcome`;
 //! nothing here touches the session.
 
 use crate::compositor::Toplevel;
@@ -96,7 +96,7 @@ pub struct Launcher {
     pub password: bool,
     /// Script mode, `--visible N`: an empty query lists the first N lines only (sources spec § 4).
     pub visible: Option<usize>,
-    /// $PATH directories, in order, for the preview's "full path" of a command (task 12 sets
+    /// $PATH directories, in order, for the preview's "full path" of a command (the host sets
     /// them from the same `ScanEnv` the scan used); empty until then, or if never set — the
     /// preview falls back to naming $PATH alone.
     pub path_dirs: Vec<PathBuf>,

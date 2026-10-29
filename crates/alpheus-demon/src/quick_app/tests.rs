@@ -73,7 +73,7 @@ fn a_follower_ends_with_its_attempt_and_deletes_only_a_failed_new_profile() {
     assert!(f.is_none() && fake.calls().is_empty(), "no profile made: nothing deleted");
 }
 
-/// Fix round 1 (I1): a panel reopened on the Wi-Fi (the network module, `--quick wifi`) while an
+/// A panel reopened on the Wi-Fi (the network module, `--quick wifi`) while an
 /// attempt is followed takes it back and opens the detail at once from the state it carried
 /// (no word of the D-Bus thread is coming: its scope never changed), with its one rescan.
 #[test]
@@ -97,7 +97,7 @@ fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
     assert!(!top.wifi.open && top.wifi.attempt.is_some());
 }
 
-/// Final review B-M1, both orders: a state read for an earlier open (a close's last word, a
+/// Both orders: a state read for an earlier open (a close's last word, a
 /// re-read under the scope before) never reaches the panel, so it neither spends the focus nor
 /// blanks the row; the first state of this open with a device opens the detail. The bus going
 /// down (untagged) still reaches it.
@@ -125,7 +125,7 @@ fn only_a_state_read_for_this_open_reaches_the_panel() {
     assert!(panel_wifi(&mut q, &live, Some(3), Some(wifi_around()), None, t).is_some(), "no tap: nothing to tell apart");
 }
 
-/// Final review B-M2: an attempt whose saved list was unknown when it began can never clean up,
+/// An attempt whose saved list was unknown when it began can never clean up,
 /// so it is not followed after the panel (no rules, reads or timer for nothing).
 #[test]
 fn an_attempt_that_cannot_clean_up_is_not_followed() {
@@ -150,7 +150,7 @@ fn vol(percent: u8, muted: bool) -> Option<Volume> {
     Some(Volume { percent, muted })
 }
 
-/// Controller reconciliation P4: without the `osd` module the sound thread publishes the sink's
+/// Without the `osd` module the sound thread publishes the sink's
 /// volume only, so the bar never heard of the microphone; the state read at open (the panel's
 /// scope) shows it, muted, at once — never a stale or missing Mic row.
 #[test]
@@ -175,7 +175,7 @@ fn the_state_read_at_open_shows_a_microphone_the_bar_never_heard_of() {
     assert!(shown(&live, &q).contains(&Row::Mic), "{:?}", shown(&live, &q));
 }
 
-/// Final review A-I1: pw-dump going while the outputs detail is open empties the panel's list,
+/// pw-dump going while the outputs detail is open empties the panel's list,
 /// so the detail closes and Enter never sends a `set-default` to a dead node id.
 #[test]
 fn a_pw_dump_outage_closes_the_outputs_detail() {
@@ -203,7 +203,7 @@ fn a_pw_dump_outage_closes_the_outputs_detail() {
     assert_eq!(taken_sinks(&mut other), None, "only a sound message carries a list");
 }
 
-/// Final review B-I1: a verb within TOGGLE_DEBOUNCE of a verb's open is ignored; past it, or
+/// A verb within TOGGLE_DEBOUNCE of a verb's open is ignored; past it, or
 /// with the panel opened by a click, it closes the panel.
 #[test]
 fn a_verb_right_after_the_verb_opened_the_panel_is_debounced() {
@@ -274,7 +274,7 @@ fn password_typed(q: &mut Quick, t: Instant) -> (Vec<String>, String) {
     }
 }
 
-/// Fix round 1 (minor 4): the password goes to nmcli's standard input with a newline, never in
+/// The password goes to nmcli's standard input with a newline, never in
 /// its arguments; the field closes. An `Io` error may come after nmcli started: the attempt stays.
 #[test]
 fn the_password_is_handed_on_stdin_and_the_field_closes() {
@@ -297,7 +297,7 @@ fn the_password_is_handed_on_stdin_and_the_field_closes() {
     assert!(q.wifi.field.is_none() && q.wifi.attempt.is_some(), "maybe started: the attempt stays, never retried");
 }
 
-/// Fix round 1 (I1): nmcli not found never started anything: the attempt ends at once (nothing
+/// nmcli not found never started anything: the attempt ends at once (nothing
 /// to follow, no false timeout), and Enter on another network acts.
 #[test]
 fn an_nmcli_never_started_ends_the_attempt_at_once() {
@@ -328,7 +328,7 @@ fn casque() -> Option<crate::system::Headset> {
     Some(crate::system::Headset { device: 61, label: "CasqueBT".into(), active: crate::system::HeadsetMode::HiFi, hifi: 1, mic: 3 })
 }
 
-/// Quick Bluetooth spec § 4 (decision 13): the headset goes to the open panel, never the bar.
+/// Quick Bluetooth spec § 4: the headset goes to the open panel, never the bar.
 #[test]
 fn the_headset_goes_to_the_panel_never_the_bar() {
     let mut bar = Bar::new(BarConfig::default());
@@ -394,7 +394,7 @@ fn bt_scope_follows_the_panel() {
     assert_eq!(bt_scope_for(Some(&q), true), BtScope::Detail);
 }
 
-/// Review Focus 1: BlueZ restarting with the detail open.
+/// BlueZ restarting with the detail open.
 #[test]
 fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
     use crate::bt_app::{adapter_seen, connection_wanted, opens_for};
@@ -413,7 +413,7 @@ fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
     assert!(adapter_seen(&q) && quick::shown(&live, &q).contains(&Row::Bluetooth), "the row back");
 }
 
-/// Review Focus 1, as the D-Bus thread reports it: BlueZ gone reads as a view with no adapter
+/// As the D-Bus thread reports it: BlueZ gone reads as a view with no adapter
 /// (`BtState::Absent`), the bus down as None; either lets the acting connection go before the
 /// panel's orders, a view of an earlier open never does.
 #[test]

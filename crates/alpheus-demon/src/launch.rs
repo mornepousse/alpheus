@@ -55,7 +55,7 @@ pub enum Mail {
     /// own, OR if it has no catalog of its own yet — a reopen racing a
     /// still-running scan (`scan::catalog_is_current`); otherwise a stale
     /// scan from a launcher already closed or already fed, ignored (review
-    /// item M5, final review slice 1: this used to say "ignored unless
+    /// This used to say "ignored unless
     /// generation is the open launcher's", true only for the common case).
     Catalog {
         generation: u64,
@@ -107,7 +107,7 @@ pub fn describe(settings: &ThemeSettings, mode: Scheme) -> String {
 /// clock, stopped during sleep) can lag by a minute; the first focus change
 /// puts the clock right again — and so does the next resources reading,
 /// which needs no user interaction with the compositor at all (B-m4,
-/// review: the clock could otherwise stay stale for up to a minute after
+/// The clock could otherwise stay stale for up to a minute after
 /// resume if nothing compositor-related happens meanwhile). Cheapest
 /// correct option: resources already ticks on its own already-scheduled
 /// timer whenever the module is shown, so this reuses an existing wakeup
@@ -158,8 +158,8 @@ pub fn after_dispatch(target: &mut impl DeferredRedraw) {
     target.flush_osd();
 }
 
-/// Mirrors `DeferredRedraw` for the launcher's windows (task 13, carried
-/// review): `Launcher::set_windows` rebuilds the ranker's per-window facts
+/// Mirrors `DeferredRedraw` for the launcher's windows:
+/// `Launcher::set_windows` rebuilds the ranker's per-window facts
 /// and refilters, so it is not free — a burst of several `Msg::Compositor`
 /// messages in the same `dispatch()` pass (niri can send several at once)
 /// must feed an open launcher at most once, not once per message.
@@ -197,12 +197,12 @@ pub struct Wanted {
     /// them); empty: no D-Bus thread.
     pub dbus: Vec<Domain>,
     pub resources: bool,
-    /// The tray's session-bus connection (tray plan 2); false: no connection, no fd, no timer.
+    /// The tray's session-bus connection; false: no connection, no fd, no timer.
     pub tray: bool,
-    /// The media module's MPRIS players (media task 5): on the tray's connection, or on the bar's
+    /// The media module's MPRIS players: on the tray's connection, or on the bar's
     /// link when the tray is off; false: no connection, no rule, no call.
     pub media: bool,
-    /// The notifications server and the bell (notifications task 5): on the tray's connection, or
+    /// The notifications server and the bell: on the tray's connection, or
     /// on the bar's link when the tray is off; false: no RequestName, no surface, no call.
     pub notifications: bool,
 }
@@ -211,10 +211,10 @@ pub fn wanted(modules: &[ModuleId]) -> Wanted {
     let has = |m: ModuleId| modules.contains(&m);
     let dbus = [
         (ModuleId::Network, Domain::Network),
-        // The quick panel's Wi-Fi row needs NetworkManager's state (quick Wi-Fi decision 3).
+        // The quick panel's Wi-Fi row needs NetworkManager's state.
         (ModuleId::Quick, Domain::Network),
         (ModuleId::Bluetooth, Domain::Bluetooth),
-        // The quick panel's Bluetooth row reads the bar's BtState (quick settings delivery 3, decision 1).
+        // The quick panel's Bluetooth row reads the bar's BtState (quick settings delivery 3).
         (ModuleId::Quick, Domain::Bluetooth),
         (ModuleId::Battery, Domain::Battery),
         (ModuleId::Quick, Domain::Power),
@@ -257,8 +257,8 @@ pub fn resources_period(c: &ResourcesConfig) -> Duration {
 
 impl App {
     /// One message from a source thread, in the order the readers need: the quick panel takes a
-    /// sound message's sink list first (quick task 6), the OSD reads every sound message before the
-    /// bar keeps it (osd task 3: its trigger rules compare it with the last one), the privacy
+    /// sound message's sink list first, the OSD reads every sound message before the
+    /// bar keeps it (its trigger rules compare it with the last one), the privacy
     /// indicators read sound and compositor messages first (privacy spec § 4); then the bar's own
     /// handling, and the panel refreshes if it took something.
     pub(crate) fn on_bar_message(&mut self, mut m: Msg) {
@@ -282,15 +282,15 @@ fn no_session_bus(e: impl std::fmt::Display) -> String {
 }
 
 /// The connection succeeded, but duplicating its fd for the event loop
-/// failed: a different step than `no_session_bus` (fix round, 2026-10-06 —
+/// failed: a different step than `no_session_bus` (2026-10-06 —
 /// the two used to share the same wording, hiding which one actually
 /// failed).
 fn watch_fd_failed(e: impl std::fmt::Display) -> String {
     format!("tray: connected, but could not watch the session bus's fd ({e})")
 }
 
-/// Connects the tray to the session bus (blocking, once: a local socket,
-/// controller decision 2) and puts its fd in the loop — no thread. No session
+/// Connects the tray to the session bus (blocking, once: a local socket)
+/// and puts its fd in the loop — no thread. No session
 /// bus: one log line, the tray stays empty, never retried (spec § 3).
 fn start_tray(state: &mut App, handle: &LoopHandle<'static, App>) {
     let bus = match SessionBus::session() {
@@ -416,7 +416,7 @@ pub fn run() -> i32 {
 }
 
 /// Caps glibc's malloc arenas before any thread starts (startup budget,
-/// 15 MB, step 6): otherwise the sound and D-Bus threads would each
+/// 15 MB): otherwise the sound and D-Bus threads would each
 /// get their own arena, whose freed fragments `release_memory`
 /// (`malloc_trim`) can't always hand back to the system.
 fn limit_malloc_arenas() {
@@ -443,7 +443,7 @@ fn load_settings() -> Loaded {
     for a in &warnings {
         log(a);
     }
-    // No portal yet (themes task 6 follows it once the loop runs): mode auto starts dark.
+    // No portal yet (the portal is followed once the loop runs): mode auto starts dark.
     let (theme_settings, roles, theme_warnings) = theme(&config_dir, None);
     for a in &theme_warnings {
         log(a);
@@ -476,7 +476,8 @@ impl Plan {
 }
 
 /// The daemon's live parts after `build_app`. The field order is the drop order (the loop's handle,
-/// the loop, the queue handle, the connection last).
+/// the loop, the queue handle, the connection, the sender, the app last); `shut_down` drops `state`
+/// explicitly first, before the final flush.
 struct Core {
     handle: LoopHandle<'static, App>,
     event_loop: EventLoop<'static, App>,
@@ -603,7 +604,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
 /// matters (see the comments, and the guardrail on the startup theme).
 fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan) {
     let want = &plan.want;
-    // Hot reload of the theme: one inotify fd, no thread, no timer (themes task 5).
+    // Hot reload of the theme: one inotify fd, no thread, no timer.
     crate::watch::start(state, handle);
     // The camera devices (privacy delivery 2): an inotify fd and one scan, only with `privacy`.
     if plan.privacy {
@@ -620,10 +621,10 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
         state.dnd = crate::state_file::dnd_on(&paths::state_dir());
     }
     state.start_notifications(want.notifications);
-    // The mode file for the TUI (themes task 6): $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
+    // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
     state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
-    // module) when the tray is off (themes task 6, media task 5). Never a second connection, never a
+    // module) when the tray is off. Never a second connection, never a
     // retry.
     state.follow_portal_if_auto();
     // Written now, once the mode is known: dark until the portal answers (then rewritten).

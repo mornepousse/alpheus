@@ -36,9 +36,8 @@ pub(crate) fn launcher_socket_outcome<T, E: std::fmt::Display>(r: Result<T, E>) 
 /// to the allocator as soon as it is consumed (worst case, every one of
 /// `MAX_CONNECTIONS` at once: 32 MiB) — a toggle/close never buffers more
 /// than its tiny header, nothing to release there. A small dmenu line list
-/// is not worth a `malloc_trim` either (it walks the whole heap): task 13
-/// fix round, review item 3 — this used to run after EVERY dmenu request,
-/// whatever its size.
+/// is not worth a `malloc_trim` either (it walks the whole heap): it would otherwise run
+/// after EVERY dmenu request, whatever its size.
 fn releases_memory_once_consumed(request: &Request, buffered: usize) -> bool {
     matches!(request, Request::Dmenu { .. }) && buffered >= RELEASE_AFTER
 }
@@ -53,7 +52,7 @@ fn too_many_connections(inflight: usize) -> bool {
 /// One more connection tracked: the increment half of `watch_connection`'s
 /// inflight bookkeeping, pulled out (alongside `untrack_connection`) so the
 /// count itself — not just the cap check above — is tested without a
-/// socket or calloop (review item M3, final review slice 1).
+/// socket or calloop.
 fn track_connection(inflight: &Cell<usize>) {
     inflight.set(inflight.get() + 1);
 }
@@ -180,19 +179,19 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 *s.borrow_mut() = Some(conn);
                 return Ok(PostAction::Continue);
             }
-            // The notifications verbs (task 5) are answered here, before the launcher's guard: a
+            // The notifications verbs are answered here, before the launcher's guard: a
             // panic in there closes the launcher, and these are not the launcher's.
             Progress::Ready(request @ (Request::Dnd(_) | Request::ClearNotifications)) => {
                 let reply = state.notifications_verb(&request);
                 reply_guarded(conn, &reply);
             }
-            // The OSD's verb (osd task 4): a sysfs read and a pill, answered here like the
+            // The OSD's verb: a sysfs read and a pill, answered here like the
             // notifications verbs, before the launcher's guard.
             Progress::Ready(request @ Request::Osd(_)) => {
                 let reply = state.osd_verb(&request);
                 reply_guarded(conn, &reply);
             }
-            // The quick panel's verb (quick task 7): answered here like the OSD's, before the
+            // The quick panel's verb: answered here like the OSD's, before the
             // launcher's guard.
             Progress::Ready(request @ Request::Quick(_)) => {
                 let reply = state.quick_verb(&request);

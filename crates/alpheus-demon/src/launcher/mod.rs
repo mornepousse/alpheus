@@ -12,7 +12,7 @@ pub mod model;
 pub mod run;
 pub mod scan;
 pub mod socket;
-pub mod socket_glue;
+pub(crate) mod socket_glue;
 pub mod sources;
 pub mod surface;
 pub mod view;

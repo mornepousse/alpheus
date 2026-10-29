@@ -89,7 +89,7 @@ impl App {
                 self.notify_act(|n| n.center_mut().remove(id));
                 log("panel: entry removed");
             }
-            // Task 5's one path: persisted, given to the server, then (notify_act) the bubbles and
+            // The one path: persisted, given to the server, then (notify_act) the bubbles and
             // this panel follow.
             PanelAction::ToggleDnd => {
                 let on = !self.dnd;

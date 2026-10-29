@@ -51,7 +51,7 @@ impl App {
         self.bar.config.modules.contains(&ModuleId::Osd)
     }
 
-    /// Every sound message, before the bar applies it (`launch::run`'s mail callback): the trigger
+    /// Every sound message, before the bar applies it (`App::on_bar_message`): the trigger
     /// rules (`osd::Watch`), then the pill when they say so. Nothing without the module.
     pub(crate) fn osd_sound(&mut self, s: Option<&SoundState>) {
         if !self.osd_enabled() {

@@ -418,7 +418,7 @@ impl Ranker {
         // Commands mode with non-blank text that contains whitespace ("git log") is text the
         // model runs through the shell (model.rs's `primary`/`secondary`), never a command to
         // pick: nothing here would be meaningful to select, so nothing is ranked (Mae's
-        // feedback round, final review). A blank/whitespace-only query ("", "  ") is still the
+        // feedback round). A blank/whitespace-only query ("", "  ") is still the
         // empty-query case below: there is no typed text to run either way (`shell`'s own
         // `trim().is_empty()` check), so it keeps listing every command.
         let mut hits = if q.mode == Mode::Commands && !q.text.trim().is_empty() && q.text.contains(char::is_whitespace) {

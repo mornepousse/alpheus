@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 /// How long a scan `spawn_scan` refused (`WouldBlock`) must have been
 /// running before a reopen shows the "could not scan" message instead of
-/// waiting quietly for it (review item 1): a normal scan finishes well
-/// under this (bounded file counts and depth, task 5); one still going past
+/// waiting quietly for it: a normal scan finishes well
+/// under this (bounded file counts and depth); one still going past
 /// it is more likely stuck (a hung NFS/FUSE mount) than merely slow, and
 /// the daemon's own `REQUEST_DEADLINE` already uses the same order of
 /// magnitude for "too long" elsewhere on this socket.
@@ -98,7 +98,7 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
         (Request::Dmenu { .. }, Some(true)) => (Action::Nothing, Some(Reply::Busy)),
         (Request::Dmenu { prompt, lines, flags }, _) => (Action::OpenScript { prompt, lines, flags }, None),
-        // Not the launcher's (notifications task 5, osd task 4, quick task 7): `watch_connection` answers them
+        // Not the launcher's: `watch_connection` answers them
         // before they could reach here. Answered all the same, never a panic.
         (Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_), _) => {
             (Action::Nothing, Some(Reply::Error("not a launcher request".into())))
@@ -118,7 +118,7 @@ pub fn open_after(open: Option<bool>, action: &Action) -> Option<bool> {
 
 /// A finished scan is for the open launcher if its generation is the open
 /// one's (the normal case), or — a quick reopen while the previous open's
-/// scan is still running (review item 1): `spawn_scan` allows only one scan
+/// scan is still running: `spawn_scan` allows only one scan
 /// at a time, so a reopen whose own attempt was refused (`WouldBlock`,
 /// `launcher_open_apps`) never starts a second one — if the open launcher
 /// has not received a catalog of its own yet, whatever arrives next can
@@ -152,7 +152,7 @@ pub fn entries_are_current(open: Option<(u64, bool)>, script: bool, generation: 
 /// (`running_for`, `None` when no scan is known to be in flight at all).
 /// A quick close-then-reopen while a normal scan is still finishing must
 /// look like nothing happened, not like a failure; one that has run
-/// suspiciously long deserves to say so (review item 1).
+/// suspiciously long deserves to say so.
 pub(crate) fn scan_refusal_is_an_error(kind: io::ErrorKind, running_for: Option<Duration>) -> bool {
     kind != io::ErrorKind::WouldBlock || running_for.is_some_and(|d| d >= SCAN_STUCK_AFTER)
 }
@@ -211,12 +211,12 @@ impl App {
     /// (`Drop` only releases local resources: the client watch), so not
     /// specially guarded against.
     fn launcher_fail(&mut self) {
-        // Take the launcher OUT first, then release the keyboard (final review R2):
+        // Take the launcher OUT first, then release the keyboard:
         // `keyboard_release` is a no-op while `keyboard_wanted()` is true, and that stays true as long
         // as `self.launcher` is `Some` — releasing before the take left the `wl_keyboard`, its keymap
         // and its repeat source resident after a panic closed the launcher. The release must also run
         // when a panic inside `launcher_close` already took the launcher (`None` here).
-        // And after the box is dropped (fix wave A): while it lives, a key down on it (the one
+        // And after the box is dropped: while it lives, a key down on it (the one
         // that panicked) defers the release to a key-up or leave that its dead surface never sends.
         let open = self.launcher.take();
         let was_open = open.is_some();
@@ -250,7 +250,7 @@ impl App {
     fn request_now(&mut self, qh: &QueueHandle<App>, request: Request, conn: Conn) {
         // The connection's own accepted_at, not "now": the open latency the
         // daemon logs (spec § 3) covers request accepted → first frame, not
-        // just the part after this request was fully read (review item 4).
+        // just the part after this request was fully read.
         let requested_at = conn.accepted_at();
         let open = self.launcher.as_ref().map(|o| o.model.is_script());
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
@@ -267,7 +267,7 @@ impl App {
             (action, reply) => {
                 // Answered first: alpheus-launch returns at once, whatever the
                 // opening then costs. `decide` never pairs anything but
-                // OpenScript (matched above) with None (review item 6: this
+                // OpenScript (matched above) with None (this
                 // used to match `reply` with an unreachable `None` arm).
                 conn.reply(&reply.expect("decide: only OpenScript answers None, matched above"));
                 match action {
@@ -313,10 +313,10 @@ impl App {
         };
         // The scan's environment, read once: its $PATH is also the one
         // activation checks programs against (RunContext::path_dirs, via
-        // `open.model.path_dirs` — the single copy, task 13), so the
+        // `open.model.path_dirs` — the single copy), so the
         // launcher never says "found" for a list and "missing" for a
         // launch. Set on the model BEFORE `launcher_open`, which then keeps
-        // it as is for the app launcher (review item 6: this used to read
+        // it as is for the app launcher (this used to read
         // the environment a second time, inside `launcher_open`, only to
         // overwrite it with the same value right back here).
         let env = ScanEnv::from_env(|k| std::env::var_os(k));
@@ -331,7 +331,7 @@ impl App {
         let entries_tx = tx.clone();
         // How long the scan this reopen is about to wait on (if refused) has
         // already been running: computed BEFORE `spawn_scan`, which is the
-        // one call that would start a brand new one (review item 1).
+        // one call that would start a brand new one.
         let running_for = self.scan_started.map(|t| t.elapsed());
         match scan::spawn_scan(
             env,
@@ -414,7 +414,7 @@ impl App {
     }
 
     /// Pushes the compositor's current windows to an open launcher — called
-    /// at most once per `dispatch()` pass (`launch::WindowsFeed`, launch.rs),
+    /// at most once per `dispatch()` pass (`launch::WindowsFeed`),
     /// never once per `Msg::Compositor`: `Launcher::set_windows` is not
     /// cheap, and a burst (e.g. niri) can carry several in one pass.
     pub fn launcher_windows_changed(&mut self) {
@@ -432,7 +432,7 @@ impl App {
         });
     }
 
-    /// Called from launch.rs's loop on a pending dmenu fd becoming readable/hung up.
+    /// Called from the loop (`launcher/socket_glue.rs`) on a pending dmenu fd becoming readable/hung up.
     pub fn launcher_client_check(&mut self) {
         self.launcher_guarded("client", |app| {
             let gone = app.launcher.as_ref().and_then(|o| o.reply.as_ref()).is_some_and(|p| p.hung_up());
@@ -573,7 +573,7 @@ mod tests {
         assert!(!catalog_is_current(None, 3), "closed: nobody to give it to");
     }
 
-    /// Review item 1: closed and reopened (generation 3) while the previous
+    /// Closed and reopened (generation 3) while the previous
     /// open's scan (generation 2) is still running — `spawn_scan` refused a
     /// second one (`WouldBlock`, `launcher_open_apps`), so generation 3 has
     /// no scan of its own in flight. Whatever catalog arrives next is
@@ -661,7 +661,7 @@ mod tests {
         assert!(windows_changed(&[], &a), "windows appearing for the first time: a real change");
     }
 
-    /// Review item 8: this used to only check `scan_failure_message`'s
+    /// This used to only check `scan_failure_message`'s
     /// format string, which says nothing about WHEN a scan refusal is shown
     /// at all. Renamed to be honest about that, kept for the format string
     /// itself; the actual behaviour (box stays open, no retry, shown only

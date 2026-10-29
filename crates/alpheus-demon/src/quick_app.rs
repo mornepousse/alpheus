@@ -25,7 +25,7 @@ use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::Path;
 use std::time::Instant;
 
-/// What `SoundTap::open` read when the panel opens (controller reconciliation P4): its sink list,
+/// What `SoundTap::open` read when the panel opens: its sink list,
 /// returned for the panel, and the rest given to the bar, so a microphone mute the base scope never
 /// published (no `osd` module) shows at once. An empty model (pw-dump starting, or down since the
 /// stream ended) leaves the bar as it is: no level-less row, never a dead PipeWire's volumes. True
@@ -78,7 +78,7 @@ pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)
 
 /// A Wi-Fi state read for `open` belongs to the tap's current open (`current`, from
 /// `WifiTap::snapshot`); one read for an earlier open (a close's last word, a re-read under the
-/// scope before) does not (final review B-M1). Untagged (the system bus down), or with no tap: it
+/// scope before) does not. Untagged (the system bus down), or with no tap: it
 /// does.
 pub(crate) fn wifi_current(open: Option<u64>, current: Option<u64>) -> bool {
     match (open, current) {
@@ -122,7 +122,7 @@ pub(crate) fn panel_bt(
     wifi_current(open, current).then(|| q.follow_bt(live, view, now))
 }
 
-/// A view of this open says BlueZ is no longer there to be reached (Review Focus 1): none (the bus
+/// A view of this open says BlueZ is no longer there to be reached: none (the bus
 /// down, the Bluetooth domain out), or one with no adapter (BlueZ gone: the D-Bus thread reads
 /// `BtState::Absent` between two owners). The acting connection is then let go.
 pub(crate) fn bluez_left(open: Option<u64>, view: Option<&BtView>, current: Option<u64>) -> bool {
@@ -158,7 +158,7 @@ pub struct WifiFollow {
 impl WifiFollow {
     /// The panel closing on `wifi`: its attempt moved out with the state it saw, when it may leave
     /// a new profile behind and could delete it (the saved list known when it began); None
-    /// otherwise (a saved network's attempt goes with the panel; final review B-M2).
+    /// otherwise (a saved network's attempt goes with the panel).
     pub fn leaving(wifi: &mut Wifi) -> Option<WifiFollow> {
         let attempt = wifi.attempt.take_if(|a| a.creates && a.known.is_some())?;
         Some(WifiFollow { attempt, state: wifi.state.take() })
@@ -296,7 +296,7 @@ impl App {
         matches!(self.popup_body(), Some(PopupBody::Quick(_)))
     }
 
-    /// The backlight as the panel shows it: the OSD's device and directory (decision 13), read once.
+    /// The backlight as the panel shows it: the OSD's device and directory, read once.
     fn quick_backlight(&self) -> Option<Backlight> {
         let o = &self.bar.config.osd;
         backlight::named_level(&o.backlight_dir, &o.backlight).map(|(device, percent)| Backlight { device, percent })
@@ -325,7 +325,7 @@ impl App {
 
     /// Toggles the panel: open, it closes (a second click, or the verb again). `anchor`: the clicked
     /// module's cells, the keyboard taken with a grab; None (the verb): under the right end of the
-    /// bar on the focused output, the keyboard taken without one (decision 1).
+    /// bar on the focused output, the keyboard taken without one.
     pub(crate) fn quick_toggle(&mut self, qh: &QueueHandle<App>, anchor: Option<PopupAnchor>, focus: Focus) {
         if self.quick_shown() {
             self.popup_close(if anchor.is_some() { PopupClose::OutsideClick } else { PopupClose::Verb });
@@ -403,8 +403,8 @@ impl App {
     }
 
     /// `alpheus-launch --quick [sound]` (spec § 1), answered before the launcher's guard
-    /// (launch.rs): toggles the panel on the focused output, the keyboard without a grab
-    /// (decision 1); a verb within TOGGLE_DEBOUNCE of the verb's own open is ignored. Done, also
+    /// (`launcher/socket_glue.rs`, `watch_connection`): toggles the panel on the focused output, the keyboard without a grab;
+    /// a verb within TOGGLE_DEBOUNCE of the verb's own open is ignored. Done, also
     /// without the module (nothing opens).
     pub(crate) fn quick_verb(&mut self, request: &Request) -> Reply {
         let Request::Quick(verb) = request else { return Reply::Done };
@@ -492,7 +492,7 @@ impl App {
     /// After anything that may change what the panel shows (a key, a press, a sound or profile
     /// message, a do-not-disturb change, a re-read): fitted, rebuilt and painted (`popup_draw`
     /// commits nothing when the rows did not change), the timer re-synced. Nothing left to show:
-    /// the panel closes (Review Focus 2).
+    /// the panel closes.
     pub(crate) fn quick_refresh(&mut self) {
         if !self.quick_shown() {
             return;
@@ -579,7 +579,7 @@ impl App {
                 app.quick_spawn(argv, what);
             }
         }
-        // The device shown, re-read: one failed read keeps the row (final review A-m2).
+        // The device shown, re-read: one failed read keeps the row.
         let dir = &app.bar.config.osd.backlight_dir;
         let level = due.backlight.then(|| device.as_deref().map_or(Reread::Gone, |d| backlight::reread(dir, d)));
         let states = Toggle::ALL.map(|t| due.toggles[t.index()].then(|| app.quick_toggle_state(t)));
@@ -607,7 +607,7 @@ impl App {
         if follow.is_some() {
             self.wifi_follow = follow;
         }
-        // Review Focus 2: a code question rejected, the pairing cancelled, discovery stopped while
+        // A code question rejected, the pairing cancelled, discovery stopped while
         // the connection still exists (`quick_closed` then unregisters the agent and closes it).
         self.bt_run(leaving);
         for a in waiting {
@@ -643,7 +643,7 @@ impl App {
     /// goes to a followed attempt (Mae's ruling P1). True when the open panel shows what it carries:
     /// the caller refreshes it after the bar took it.
     pub(crate) fn quick_take(&mut self, m: &mut Msg) -> bool {
-        // Both taken always, so the bar never keeps either (decision 13); the headset first: it
+        // Both taken always, so the bar never keeps either; the headset first: it
         // reads `sinks` as the panel-scope marker.
         let (headset, sinks) = (taken_headset(m), taken_sinks(m));
         if let Some(PopupBody::Quick(q)) = self.popup_body_mut() {

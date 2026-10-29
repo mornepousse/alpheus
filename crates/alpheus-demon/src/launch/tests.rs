@@ -7,10 +7,9 @@ use crate::system::*;
 const BEFORE: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
 const AFTER: LocalTime = LocalTime { minute: 47, ..BEFORE };
 
-/// Fix round, 2026-10-06 (reviewer finding 4 on task 11): `watch_fd`
-/// failing after a successful connection used to log the exact same
-/// line as `SessionBus::session()` itself failing, hiding which step
-/// actually broke.
+/// `watch_fd` failing after a successful connection must not log the
+/// same line as `SessionBus::session()` itself failing, which would hide
+/// which step broke.
 #[test]
 fn watch_fd_failing_says_which_step_broke_not_no_session_bus() {
     let connect = no_session_bus(std::io::Error::other("boom"));
@@ -82,7 +81,7 @@ fn only_the_sources_the_modules_need() {
     assert_eq!(
         wanted(&[ModuleId::Quick]).dbus,
         vec![Domain::Network, Domain::Bluetooth, Domain::Power],
-        "the panel's Wi-Fi row (quick Wi-Fi decision 3), the Bluetooth row (delivery 3 decision 1: the bar's BtState) and power profile: read only, on the system bus"
+        "the panel's Wi-Fi row (NetworkManager's state), the Bluetooth row (the bar's BtState) and power profile: read only, on the system bus"
     );
     assert_eq!(
         wanted(&[ModuleId::Quick, ModuleId::Network]).dbus,
@@ -209,7 +208,7 @@ impl DeferredRedraw for Counter {
     }
 }
 
-/// Final review (slice B): a burst of sound messages updates the OSD's model each time but draws
+/// A burst of sound messages updates the OSD's model each time but draws
 /// its pill once, after the pass, whether the bar redraws or not (a microphone flip alone does
 /// not redraw the bar).
 #[test]
@@ -303,7 +302,7 @@ fn settings_absent_or_invalid() {
     let _ = std::fs::remove_dir_all(&d);
 }
 
-/// Themes task 4: the startup theme goes through the shared resolver (load_settings,
+/// The startup theme goes through the shared resolver (load_settings,
 /// effective_mode, resolve) and is described in one line.
 #[test]
 fn the_theme_is_read_resolved_and_described() {

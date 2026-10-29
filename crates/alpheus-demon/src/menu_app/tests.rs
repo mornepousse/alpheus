@@ -1,6 +1,6 @@
 use super::*;
 
-/// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current
+/// A submenu fetch grafts only while the menu's current
 /// selection is still the one it was asked for.
 #[test]
 fn a_submenu_fetch_grafts_only_while_still_selected() {
@@ -10,7 +10,7 @@ fn a_submenu_fetch_grafts_only_while_still_selected() {
     assert!(!submenu_still_selected(None, Some(3)), "nothing was ever asked for");
 }
 
-/// Review requirement 3: a duplicate failed Activate (two quick left clicks on an item without
+/// A duplicate failed Activate (two quick left clicks on an item without
 /// its own Activate, e.g. Steam) must not close and reopen the menu already asked for it.
 #[test]
 fn open_menu_for_the_same_key_already_asked_is_a_no_op() {

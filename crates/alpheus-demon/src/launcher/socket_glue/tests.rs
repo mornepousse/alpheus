@@ -32,8 +32,7 @@ fn max_connections_is_enforced() {
 }
 
 /// The inflight count itself, not just the cap check above: tracked and
-/// released in lockstep, whatever the reason a connection ends (review
-/// item M3, final review slice 1).
+/// released in lockstep, whatever the reason a connection ends.
 #[test]
 fn inflight_is_tracked_and_released_in_lockstep() {
     let inflight = Cell::new(0usize);

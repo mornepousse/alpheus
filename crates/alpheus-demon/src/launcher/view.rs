@@ -46,7 +46,7 @@ impl BoxLayout {
 /// Rows: top frame, modes row (not in Script), input line, `list_rows` results, help line, bottom frame.
 /// columns = BOX_COLUMNS (+ PREVIEW_COLUMNS + 1 when `preview` and the output has room), never more than
 /// output_columns - 2 nor less than MIN_COLUMNS (or the output width if smaller); list_rows =
-/// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (task 12
+/// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (the host
 /// passes `!script`, once per open); `render` always fills a reserved panel with the selected
 /// result (Mae, 2026-10-05 — there is no more toggle to gate it on).
 pub fn layout(output_columns: u16, output_rows: u16, config_rows: u16, script: bool, preview: bool) -> BoxLayout {
@@ -109,7 +109,7 @@ fn input_row(l: &Launcher, b: &BoxLayout, g: &mut Grid) {
     g.write(x, end, " ", Style::ACTIVE);
 }
 
-/// A window's title, or its class when the title is empty — or, Review Focus 3, made only of
+/// A window's title, or its class when the title is empty — or made only of
 /// zero-width characters (a lone bidi mark, a combining mark with nothing to combine with):
 /// `text_width` sees that as nothing to show, where `str::is_empty`/`trim` would not.
 fn window_title(w: &Toplevel) -> &str {
@@ -182,7 +182,7 @@ fn help_text(l: &Launcher) -> &'static str {
 }
 
 /// `wrap`, but kept to at most `budget` lines: the last kept line ends with "…" when more
-/// would have followed (Review Focus 1). Used for the parts of the preview that can grow
+/// would have followed. Used for the parts of the preview that can grow
 /// without bound (a comment, a window title) so what comes after — the actions, the "enter"
 /// hint — is never pushed off the panel and silently dropped.
 fn capped_wrap(text: &str, width: u16, budget: usize) -> Vec<String> {
@@ -204,7 +204,7 @@ fn capped_wrap(text: &str, width: u16, budget: usize) -> Vec<String> {
 /// command its name and path; a script line nothing (script mode reserves no panel, so
 /// `render` never calls this for it). `budget` is how many rows the panel actually has: the
 /// one part that can grow without bound (a comment, a window title) is capped so the fixed
-/// part after it — the actions, the "enter" hint — is never silently pushed off (Review Focus 1).
+/// part after it — the actions, the "enter" hint — is never silently pushed off.
 fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     let Some(hit) = l.selected_hit() else { return out };
@@ -309,7 +309,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     };
     rows.push(g);
     rows.push(blank(b));
-    // The panel is reserved for the whole open (task 12, Mae 2026-10-05: the box never
+    // The panel is reserved for the whole open (Mae 2026-10-05: the box never
     // changes width with the selection) and, once reserved, always shows the selected
     // result (Mae, 2026-10-05, after seeing the real rendering: never blank while one
     // exists — `preview_lines` picks the content, `capped_wrap` keeps it inside `budget`).

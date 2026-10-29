@@ -1,8 +1,8 @@
-//! The notifications module on the bar's side (notifications task 5): where the server starts
+//! The notifications module on the bar's side: where the server starts
 //! (the tray's connection, or the bar's own link), the bell's view, do-not-disturb (the one path
 //! for every change, persisted), Clear all, and the `alpheus-launch` verbs. Runs on the loop, no
-//! thread, no command, no timer. The bubbles (task 6) and the panel (task 7) reach the server
-//! through `App::notify_do` (wayland.rs).
+//! thread, no command, no timer. The bubbles and the panel reach the server
+//! through `App::notify_do` (tray_bridge.rs).
 
 use crate::config::ModuleId;
 use crate::link::{Host, LinkOutput, LinkUser, host};
@@ -130,7 +130,7 @@ impl App {
     }
 
     /// `alpheus-launch --dnd …` / `--clear-notifications`, answered before the launcher's guard
-    /// (launch.rs). Done, even with no session bus (the file is still written); an error when the
+    /// (`launcher/socket_glue.rs`, `watch_connection`). Done, even with no session bus (the file is still written); an error when the
     /// module is not in `modules`.
     pub(crate) fn notifications_verb(&mut self, request: &Request) -> Reply {
         if !self.bar.config.modules.contains(&ModuleId::Notifications) {

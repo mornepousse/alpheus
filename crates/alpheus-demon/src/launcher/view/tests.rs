@@ -74,7 +74,7 @@ fn typed(l: &mut Launcher, text: &str) {
     }
 }
 
-/// Lays out for an output of `columns` × 40 cells, like task 12 does:
+/// Lays out for an output of `columns` × 40 cells, like the launcher host does:
 /// the preview panel reserved for the app launcher, whatever the selection.
 fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Boxed) {
     let b = layout(columns, 40, l.config.rows, l.is_script(), !l.is_script());
@@ -163,8 +163,7 @@ fn panel(rows: &Boxed, b: &BoxLayout) -> Vec<String> {
 
 /// Mae, 2026-10-05, after seeing the real rendering: the box never changes width as the
 /// selection moves, and the panel — once reserved — always shows the selected result; it
-/// is never blank while one exists. `Left`/`Right` (the model's own fix round removed the
-/// toggle they used to drive, along with `Ctrl+Space`) are still recognised keys, now
+/// is never blank while one exists. `Left`/`Right` (the model has no toggle for them to drive, and no `Ctrl+Space`) are still recognised keys,
 /// simply ignored — pressing them changes nothing here either.
 #[test]
 fn the_panel_always_shows_the_selected_result() {
@@ -188,7 +187,7 @@ fn the_panel_always_shows_the_selected_result() {
     assert!(panel(&rows, &b).iter().any(|t| t.contains("File Manager")), "Left no longer blanks it\n{}", snapshot(&rows));
 }
 
-/// Review Focus: via the ranker's window → app link (`matching::app_for_window`) when the
+/// Via the ranker's window → app link (`matching::app_for_window`) when the
 /// window's class names a known app, or the class itself otherwise.
 #[test]
 fn window_preview_names_its_app_via_the_class_link_or_the_class_itself() {
@@ -239,7 +238,7 @@ fn apps_mode_preview_without_actions_still_shows_description_and_binary() {
     insta::assert_snapshot!("apps_preview_no_actions", snapshot(&rows));
 }
 
-/// Review Focus 1: the comment is capped, not the actions — a long comment loses its own
+/// The comment is capped, not the actions — a long comment loses its own
 /// tail (ending with "…") rather than pushing "exec:" and the actions off the panel.
 #[test]
 fn a_long_comment_is_capped_so_the_actions_stay_visible() {
@@ -256,7 +255,7 @@ fn a_long_comment_is_capped_so_the_actions_stay_visible() {
     assert!(text.iter().any(|t| t.trim_end().ends_with('…')), "the comment's cut is marked\n{}", snapshot(&rows));
 }
 
-/// Review Focus 1, the render-level safety net: `capped_wrap` only bounds the one part of
+/// The render-level safety net: `capped_wrap` only bounds the one part of
 /// the preview that can grow without limit (a comment, a title); a *fixed* tail longer
 /// than the panel itself — many `.desktop` Actions at the smallest `rows` configuration —
 /// is not something it caps. `render`'s own check must still mark that cut, not drop it
@@ -276,7 +275,7 @@ fn an_overflowing_fixed_tail_is_marked_not_dropped_silently() {
     assert!(text.iter().any(|t| t.trim_end().ends_with('…')), "the overflow is marked\n{}", snapshot(&rows));
 }
 
-/// Review Focus 5: at the minimum width, a long kind must not overwrite the icon.
+/// At the minimum width, a long kind must not overwrite the icon.
 #[test]
 fn the_kind_column_never_overwrites_the_icon_at_minimum_width() {
     let mut w = windows();
@@ -289,7 +288,7 @@ fn the_kind_column_never_overwrites_the_icon_at_minimum_width() {
     assert_eq!(row.text().chars().nth(1), Some(icon), "the icon must survive the kind column: {:?}", row.text());
 }
 
-/// Review Focus 3: a title made only of zero-width characters (bidi marks here) is as
+/// A title made only of zero-width characters (bidi marks here) is as
 /// empty as `""` would be — it must fall back to the class, like `describe` already does
 /// for a truly empty title.
 #[test]
@@ -303,7 +302,7 @@ fn a_title_made_only_of_zero_width_characters_falls_back_to_the_class() {
     assert!(row.text().contains("Alacritty"), "falls back to the class: {:?}", row.text());
 }
 
-/// Review Focus 6: `s`'s own trailing ellipsis, right at the cut point, must survive —
+/// `s`'s own trailing ellipsis, right at the cut point, must survive —
 /// only the one `tail` itself adds should ever be stripped.
 #[test]
 fn tail_strips_exactly_one_ellipsis_not_the_users_own() {
@@ -311,7 +310,7 @@ fn tail_strips_exactly_one_ellipsis_not_the_users_own() {
     assert_eq!(tail(&s, 5), "……AAA");
 }
 
-/// Review Focus 4: a "word" that displays as nothing must not force a space around it,
+/// A "word" that displays as nothing must not force a space around it,
 /// nor stand as a line on its own.
 #[test]
 fn wrap_skips_zero_width_words() {
@@ -437,7 +436,7 @@ fn hostile_names_never_misalign_the_box() {
             assert!(r.cells().iter().all(|c| !c.ch.is_control() || c.ch == crate::grid::CONT), "{:?}", r.text());
             assert!(!r.text().contains(['\u{2028}', '\u{2029}']), "{:?}", r.text());
         }
-        // Review Focus 2: every field this fixture makes hostile (window class, title and
+        // Every field this fixture makes hostile (window class, title and
         // workspace; command names; action names; app name, generic name and comment; the
         // dmenu prompt and its lines) is covered right here, not only by the six now-redundant
         // single-field tests this replaces.
@@ -492,11 +491,11 @@ fn hit_finds_results_modes_and_the_outside() {
     assert_eq!(hit(&s, &b, 3, 2), Some(Click::Result(0)));
 }
 
-/// Carried requirement (earlier review rounds): every string the view shows must have its
+/// Every string the view shows must have its
 /// control characters (`\n`, `\r`, `\t`, other C0/C1) and bidi override marks neutralised
 /// before a row is shaped — never shown literally, never breaking the row's width. The
 /// mechanism lives in `Grid::write` (controls become spaces; zero-width marks, including
-/// bidi overrides, are dropped). Review Focus 2: `hostile_names_never_misalign_the_box`'s
+/// bidi overrides, are dropped). `hostile_names_never_misalign_the_box`'s
 /// `check` now asserts this too, for every field its fixture makes hostile at once (window
 /// class/title/workspace, command names, action names, app name/generic name/comment, the
 /// dmenu prompt and its lines) — so the six single-field tests this helper used to serve

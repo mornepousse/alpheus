@@ -293,7 +293,7 @@ fn read_sources_after(plan: &SourcePlan, run_sources: fn(&SourcePlan) -> Entries
         log(&format!("launcher sources failed: {}", panic_text(&*p)));
         Entries { sources: plan.sources.clone(), items: Vec::new() }
     });
-    // Cleared before `deliver`, for SCAN_RUNNING's reason (review M1): a reopen racing this delivery.
+    // Cleared before `deliver`, for SCAN_RUNNING's reason: a reopen racing this delivery.
     drop(running);
     deliver(entries);
 }
@@ -330,8 +330,7 @@ fn spawn_with(
             log(&format!("launcher scan failed: {}", panic_text(&*p)));
             Catalog::default()
         });
-        // Cleared BEFORE `deliver`, not after (review item M1, final review
-        // slice 1): `deliver` hands the catalog to the event loop (a channel
+        // Cleared BEFORE `deliver`, not after: `deliver` hands the catalog to the event loop (a channel
         // send), which may already be processed — and so may trigger a
         // reopen that calls `spawn_scan` again — before this thread's own
         // stack unwinds. A reopen racing that delivery must see SCAN_RUNNING

@@ -58,7 +58,7 @@ impl App {
             if shown.len() != self.bar.tray.len() {
                 log(&format!("tray: icons shown: {}", shown.len()));
             }
-            // Fix round 2026-10-06 (main fix): `out.redraw` fires for ANY property of ANY item
+            // `out.redraw` fires for ANY property of ANY item
             // changing (a messenger's unread counter, an icon animating faster than ½ s) — most of
             // which leave the drawn grid untouched. Only an actual display change (`bar.apply`
             // returns true) can possibly have moved or dropped the hovered icon's own zone, so the
@@ -82,7 +82,7 @@ impl App {
             }
             self.menu_end();
         }
-        // Fix round 2026-10-06, requirement 4: close_menu before open_menu — both can land in the
+        // Close_menu before open_menu — both can land in the
         // SAME batch (one incoming message closes the menu stale under it, another opens a new
         // one for a different item), and processing open_menu first would let this close_menu,
         // meant for the OLD request, wrongly end the NEW one `open_menu` just replaced it with.
@@ -104,7 +104,7 @@ impl App {
             }
         }
         if let Some(key) = out.open_menu {
-            // Consumed (final review R2): a late second answer, or one arriving after Escape closed
+            // Consumed: a late second answer, or one arriving after Escape closed
             // the menu, must not open it again from a press that was already used.
             match take_icon_for(&mut self.last_icon, &key) {
                 Some((key, anchor, button)) => self.menu_requested(key, anchor, button),
@@ -120,8 +120,8 @@ impl App {
     }
 
     /// Runs `f` on the media consumer with its connection's outbox, wherever it lives: the one path
-    /// for every media call (a click's control here; the popup's Seeked rule, position reads and pin
-    /// in task 7). Nothing is routed re-entrantly: the tray keeps what the flush drained for its
+    /// for every media call (a click's control here; the popup's Seeked rule, position reads and pin).
+    /// Nothing is routed re-entrantly: the tray keeps what the flush drained for its
     /// deferred idle (`tray_sync` queues it), the link for an idle `link_readable`. With no module, it
     /// is nothing.
     pub(crate) fn mpris_do(&mut self, f: impl FnOnce(&mut Mpris, &mut SessionBus)) {
@@ -157,7 +157,7 @@ impl App {
     /// After any tray callback: the deadline timer follows the pending calls
     /// (none: no timer), and dirty properties ask for one frame callback on
     /// the first configured bar (a commit with no new buffer and one pixel
-    /// of damage), where they are re-read once (controller decision 10).
+    /// of damage), where they are re-read once.
     pub(crate) fn tray_sync(&mut self) {
         if !self.tray_deferred_queued && self.tray.as_ref().is_some_and(Tray::has_deferred) {
             if let Some(handle) = &self.loop_handle {
@@ -197,7 +197,7 @@ impl App {
             return;
         };
         surface.frame(&self.qh, surface.clone());
-        // 1×1 of buffer damage on every compositor (controller decision 10):
+        // 1×1 of buffer damage on every compositor:
         // an undamaged commit may get no frame callback at all (Hyprland) or a
         // throttled one (niri, ≈ 1 s). The attached buffer is not re-sent.
         surface.damage_buffer(0, 0, 1, 1);
@@ -231,12 +231,12 @@ impl App {
     }
 
     /// A gesture at `position` (surface-local, logical) on bar `i`, from button `b`: sent to the
-    /// tray icon there, with that position (decision 4); false when no icon is there (the bar's
+    /// tray icon there, with that position; false when no icon is there (the bar's
     /// own click handling then applies).
     pub(crate) fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture, b: Button) -> bool {
         let Some(key) = self.tray_key_at(i, position.0) else { return false };
-        // Task 17: the icon's cells, where its menu will hang, and the button that pressed it
-        // (fix round 2026-10-06, requirement 2) — read back by `menu_requested` once the menu
+        // The icon's cells, where its menu will hang, and the button that pressed it
+        // — read back by `menu_requested` once the menu
         // actually opens, which may be later (a failed Activate's error answers asynchronously).
         self.last_icon = self.icon_anchor(i, position.0).map(|(k, a)| (k, a, b));
         if let Some(tray) = self.tray.as_mut() {
@@ -259,12 +259,12 @@ impl App {
     }
 }
 
-/// The media consumer wherever it lives (Task 5): on the tray's connection, else on the bar's link.
+/// The media consumer wherever it lives: on the tray's connection, else on the bar's link.
 pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Mpris> {
     tray.and_then(Tray::media).or_else(|| link.and_then(SessionLink::media))
 }
 
-/// The notifications consumer wherever it lives (Task 5): on the tray's connection, else on the
+/// The notifications consumer wherever it lives: on the tray's connection, else on the
 /// bar's link.
 pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Notifications> {
     tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))

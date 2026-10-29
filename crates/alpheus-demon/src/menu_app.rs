@@ -16,7 +16,7 @@ impl App {
     /// that asked for it; the popup opens when the first layout arrives (question 8) — or never,
     /// when 2 s pass first.
     pub(crate) fn menu_requested(&mut self, key: ItemKey, anchor: PopupAnchor, button: Button) {
-        // Review requirement 3: a menu already open, or whose session is already opening, for this
+        // A menu already open, or whose session is already opening, for this
         // icon is untouched — a duplicate failed Activate (two quick left clicks on Steam, each
         // erroring in turn) must not close and reopen the session already in flight for it. Distinct
         // from a second RIGHT click on the same icon (`closes_own_menu`, in the Press arm below),
@@ -29,7 +29,7 @@ impl App {
             self.popup_close(PopupClose::Replaced);
         }
         let opened = self.tray.as_mut().is_some_and(|t| t.open_menu(&key));
-        // Review requirement 1: `open_menu` just sent calls of its own (AddMatch, AboutToShow), each
+        // `open_menu` just sent calls of its own (AddMatch, AboutToShow), each
         // with its own 2 s deadline — re-arm the timer now, not only at the next bus event.
         self.tray_sync();
         if opened {
@@ -56,7 +56,7 @@ impl App {
             };
             m.relayout(layout);
             if let Some(id) = *submenu_wanted {
-                // Review requirement 4, hardened by the fix round (requirement 1): a stale
+                // A stale
                 // asynchronous graft is refused two ways now. `Menu::enter` itself
                 // (`level_alive`, checked against the CURRENT level) catches an id that is no
                 // longer a selectable entry there at all. `submenu_still_selected` catches the
@@ -91,7 +91,7 @@ impl App {
         let (max_columns, max_rows) = self.popup_room(i);
         let Some(layout) = self.tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout) else { return };
         let mut m = Menu::new();
-        m.relayout(layout); // requirement 5: the first entry selected before the popup ever shows
+        m.relayout(layout); // the first entry selected before the popup ever shows
         let (columns, rows) = m.size(layout, max_columns, max_rows);
         m.set_rows(usize::from(rows.saturating_sub(2))); // consistent with render's height (size.1 − 2)
         let grid = m.render(layout, columns, rows);
@@ -129,7 +129,7 @@ impl App {
     /// MenuAction → Tray calls and popup changes (Click: menu_click with the key or press time, then
     /// close Activated; Submenu: menu_submenu, enter when grafted; Close: close_menu + popup_close).
     pub(crate) fn menu_action(&mut self, a: MenuAction, timestamp: u32) {
-        // Fix round 2026-10-06, requirement 1: any of these three actions invalidates a pending
+        // Any of these three actions invalidates a pending
         // submenu fetch (`submenu_wanted`) — a selection move or going back (both Redraw), a
         // DIFFERENT submenu asked for, or an entry run all mean the user is no longer waiting on
         // the one that was asked for before. Left uncleared, a late `LayoutUpdated` (Steam,
@@ -145,14 +145,14 @@ impl App {
                 if let Some(tray) = self.tray.as_mut() {
                     tray.menu_click(id, timestamp);
                 }
-                self.tray_sync(); // requirement 1
+                self.tray_sync();
                 self.popup_close(PopupClose::Activated);
             }
             MenuAction::Submenu(id) => {
                 if let Some(tray) = self.tray.as_mut() {
                     tray.menu_submenu(id);
                 }
-                self.tray_sync(); // requirement 1: re-arms the deadline timer for AboutToShow/GetLayout
+                self.tray_sync(); // re-arms the deadline timer for AboutToShow/GetLayout
                 let App { tray, popup, submenu_wanted, .. } = self;
                 let (Some(layout), Some(PopupBody::Menu(m))) =
                     (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
@@ -170,9 +170,9 @@ impl App {
         }
     }
 
-    /// The menu asked for or shown is over: its D-Bus session too (RemoveMatch, task 6), logged.
+    /// The menu asked for or shown is over: its D-Bus session too (RemoveMatch), logged.
     pub(crate) fn menu_end(&mut self) {
-        // Fix round 2026-10-06, requirement 5: logged whenever there WAS an app-level request —
+        // Logged whenever there WAS an app-level request —
         // even if the router already dropped its own session object first (the stale-path check
         // closes it before ever surfacing `close_menu`): `tray.close_menu()` is harmless once
         // there is nothing left to close, but the request DID end, and used to go unlogged then.
@@ -186,18 +186,18 @@ impl App {
             }
             log("tray: menu session closed");
         }
-        self.tray_sync(); // requirement 1: re-arms the deadline timer after close_menu
+        self.tray_sync(); // re-arms the deadline timer after close_menu
     }
 }
 
-/// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
+/// `open_menu` for the key whose menu is already open, or whose session is
 /// already opening, is a no-op — a duplicate failed Activate (two quick left clicks on an item
 /// without its own Activate, e.g. Steam) must not close and reopen the session already in flight.
 fn already_requested(menu_for: Option<&ItemKey>, key: &ItemKey) -> bool {
     menu_for == Some(key)
 }
 
-/// Fix round 2026-10-06, requirement 1: a submenu fetch (`submenu_wanted`) is worth grafting only
+/// A submenu fetch (`submenu_wanted`) is worth grafting only
 /// if the menu's current selection is still that very id when the layout arrives — any other
 /// action in between (a move, going back, a different submenu chosen) clears `submenu_wanted`
 /// itself (`menu_action`), but `relayout`'s own bookkeeping can also shift the selection without

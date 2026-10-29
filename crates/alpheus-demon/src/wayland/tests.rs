@@ -1,7 +1,7 @@
 use super::*;
 use crate::state::Msg;
 
-/// Task 4 review: the opaque region is sent only when it changes; a region that cannot be made
+/// The opaque region is sent only when it changes; a region that cannot be made
 /// clears the surface's claim (never a stale one over transparent gaps) and is retried later.
 #[test]
 fn a_failed_opaque_region_clears_the_claim_and_is_retried() {
@@ -29,7 +29,7 @@ fn a_failed_opaque_region_clears_the_claim_and_is_retried() {
     assert_eq!(r, Ok(()));
 }
 
-/// Task 5 review: a region that keeps failing is retried on every frame but logged once, until
+/// A region that keeps failing is retried on every frame but logged once, until
 /// it succeeds again.
 #[test]
 fn a_failing_opaque_region_is_logged_once_per_outage() {
@@ -80,7 +80,7 @@ fn closes_only_with_the_opening_button_or_a_right_click() {
     assert!(!closes_own_menu(Some(&a), None, Some(Button::Right), Some(Button::Right)), "elsewhere on the bar: the bar's own action");
 }
 
-/// Fix round 2026-10-06, requirement 3: the compositor may close the popup (`done`) before the
+/// The compositor may close the popup (`done`) before the
 /// press that follows it is delivered — a record of what just closed covers that race.
 #[test]
 fn a_press_right_after_a_race_closed_popup_only_closes_too() {
@@ -177,7 +177,7 @@ fn several_surfaces_the_sum_decides_not_the_largest() {
     assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
 }
 
-/// Fix round, 2026-10-06 (reviewer findings 2/3 on task 11): a surface
+/// A surface
 /// `draw()` skipped (never sized, an allocation failure) or whose
 /// buffers a pool shrink just forgot must never carry the tray's frame
 /// request — the compositor would never fire its callback, blocking
@@ -189,7 +189,7 @@ fn tray_sync_never_picks_a_surface_with_no_attached_buffer() {
     assert!(eligible_for_frame(true, true, false), "configured and holding an attached buffer");
 }
 
-/// Task 6 review: a bar re-placed for a new style holds its old-size buffer until its configure;
+/// A bar re-placed for a new style holds its old-size buffer until its configure;
 /// a frame request committed on it meanwhile would commit that stale buffer under the new
 /// placement.
 #[test]
@@ -197,7 +197,7 @@ fn tray_sync_never_picks_a_bar_waiting_for_its_new_placement() {
     assert!(!eligible_for_frame(true, true, true), "re-placed, its configure not come yet");
 }
 
-/// Task 6 and 7 reviews: the hold ends on any configure except one that clearly answers the
+/// The hold ends on any configure except one that clearly answers the
 /// PREVIOUS placement (its height), so a bar can never freeze. Two quick restyles (floating ->
 /// flat -> floating before any configure) get the answer to the flat one first: it keeps holding,
 /// since painting then would draw a floating bar at the flat size.
@@ -218,7 +218,7 @@ fn only_the_answer_to_the_previous_placement_keeps_holding() {
     assert!(!still_placing(true, 27, previous, 0), "an unexpected height ends the hold");
 }
 
-/// Fix wave A: a compositor that refuses the resize answers every configure at the previous
+/// A compositor that refuses the resize answers every configure at the previous
 /// height. The second configure after a placement ends the hold whatever its height, so the bar
 /// can never stay held.
 #[test]
@@ -231,7 +231,7 @@ fn the_second_configure_after_a_placement_always_ends_the_hold() {
     }
 }
 
-/// Review items M3/M4, final review slice 3: the same check used by
+/// The same check used by
 /// `new_capability`, `remove_capability` and `remove_seat` to tell our
 /// seat apart from any other on a multi-seat session.
 #[test]
@@ -241,7 +241,7 @@ fn tracks_seat_only_matches_the_tracked_one() {
     assert!(!tracks_seat(&None, &1), "no seat tracked at all");
 }
 
-/// Task 15 fix round, CRITICAL: the shared lookup `popup_close`/`popup_output_gone`/`hover_fire`
+/// The shared lookup `popup_close`/`popup_output_gone`/`hover_fire`
 /// (popup.rs) now use to find their bar by surface IDENTITY, never by a `name` that
 /// `update_output` can change, or that two bars could briefly share — generic so this is
 /// testable without a live Wayland connection, a plain integer standing in for a

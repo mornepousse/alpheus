@@ -393,7 +393,7 @@ fn stuck_scan(_: &ScanEnv) -> Catalog {
     Catalog::default()
 }
 
-/// Review item M1, final review slice 1: `SCAN_RUNNING` must be cleared
+/// `SCAN_RUNNING` must be cleared
 /// BEFORE `deliver` runs, not after — simulated here by having `deliver`
 /// itself try to start a second scan, exactly like a reopen racing the
 /// first scan's own delivery. Before the fix, `_running`'s drop was the
@@ -497,7 +497,7 @@ fn stuck_sources(plan: &SourcePlan) -> Entries {
     Entries { sources: plan.sources.clone(), items: vec![] }
 }
 
-/// Review Focus 3: closed and reopened while the first open's sources still run.
+/// Closed and reopened while the first open's sources still run.
 #[test]
 fn one_source_run_at_a_time_and_a_reopen_still_gets_its_apps() {
     let _serial = SPAWNS.lock().unwrap_or_else(|p| p.into_inner());

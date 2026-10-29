@@ -60,7 +60,7 @@ pub fn focus_argv(template: &[String], selector: &str) -> Vec<String> {
 
 /// ["sh", "-c", "--", text], prefixed by `terminal` when Some: typed text
 /// starting with `-` or `+` would otherwise be read by `sh` as an option (a
-/// controller decision, not something `sh` does on its own).
+/// deliberate guard, not something `sh` does on its own).
 pub fn shell_argv(text: &str, terminal: Option<&[String]>) -> Vec<String> {
     let shell = ["sh", "-c", "--", text].map(String::from);
     terminal.unwrap_or(&[]).iter().cloned().chain(shell).collect()
@@ -72,9 +72,8 @@ pub struct RunContext<'a> {
     /// None: history disabled or no state dir.
     pub history_path: Option<&'a Path>,
     /// The `$PATH` the scan used (`ScanEnv::path_dirs`), kept as the single copy on
-    /// `Launcher::path_dirs` and cloned out by the caller for this borrow (review item M5,
-    /// final review slice 1: this used to say "task 12 keeps it in `OpenLauncher`", stale since
-    /// the model, not `OpenLauncher`, became the single source of truth): a program is looked
+    /// `Launcher::path_dirs` and cloned out by the caller for this borrow (the
+    /// model, not `OpenLauncher`, is the single source of truth): a program is looked
     /// up there before it is started.
     pub path_dirs: &'a [PathBuf],
 }

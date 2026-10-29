@@ -183,7 +183,7 @@ impl App {
         self.portal_tried = true;
     }
 
-    /// The portal's word, from either connection: re-resolved and repainted (task 5's hook) only when
+    /// The portal's word, from either connection: re-resolved and repainted only when
     /// the mode in effect changes.
     pub(crate) fn portal_said(&mut self, mode: Mode) {
         let repaint = repaint_needed(self.theme_settings.mode, self.portal_mode, mode);
