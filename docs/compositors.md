@@ -35,7 +35,7 @@ no = not available; "unverified" = reasoned from the code, never run.
 | Order of that list | previous window first, focused last | same | same (Sway's own focus order) | same (a focus history the daemon keeps) | n/a |
 | Screen-capture privacy indicator | yes: PipeWire, plus the compositor's `screencast` events | yes: PipeWire, plus niri's cast events | partial: PipeWire only; a recorder that does not go through PipeWire (wf-recorder) is not seen | partial: PipeWire only, same limit | partial, unverified: PipeWire only |
 | Displays tab (TUI) | yes, through `wm-set outputs` and `wm-set monitor` | no: the tab says "not available under niri" and calls nothing | no: same message for Sway | partial: calls `wm-set`, which must support Mango (the author's `wm-set` does not yet) | unverified: the tab calls `wm-set` as under Hyprland |
-| Keyboard-grab caveat | Hyprland before 0.56.2 (hyprwm/Hyprland#15729): the bar's layer surface is not made keyboard-exclusive while a menu grabs, so keys reach menus through Hyprland's own grab; a click inside the `alpheus-launch --quick` panel may close it | none known | a grabbing popup gets no keyboard unless the bar surface is exclusive: alpheus makes it exclusive during a grab | unverified | unverified |
+| Keyboard-grab caveat | On every Hyprland version the bar stays non-exclusive while a menu grabs (Hyprland hands the grab the keyboard itself). The `alpheus-launch --quick` panel has no grab and makes the bar exclusive; on Hyprland before 0.56.2 (hyprwm/Hyprland#15729) a click inside it may then close it | none known | a grabbing popup gets no keyboard unless the bar surface is exclusive: alpheus makes it exclusive during a grab | unverified | unverified |
 
 Notes.
 
@@ -59,9 +59,10 @@ Notes.
 Commands alpheus runs that **you must provide** (or replace). "Configurable"
 means a key in a config file; the others are hard-wired today.
 
-Every command is run without a shell, as a plain argument vector, with a
-timeout of 2 seconds in the daemon and in the TUI (the launcher's `list`
-sources use 1 s). A missing program is reported in the UI ("<tool> not found" in the tab, or
+Every command is run without a shell, as a plain argument vector. The TUI
+kills a tool call after 2 seconds; the daemon starts its commands detached
+(clicks, the launcher, `[quick]`), so they are not timed, except the launcher's
+`list` sources (1 s). A missing program is reported in the UI ("<tool> not found" in the tab, or
 a log line) and nothing else breaks.
 
 ### `wm-set`
@@ -137,7 +138,7 @@ one object per output, enabled or not:
 | `alpheus-toggle <tab>` (`sound`, `network`, `bluetooth`, `home`) | the bar, on a click on volume, network, Bluetooth or battery | yes: `[actions] open_tab`, `{tab}` replaced | open (or toggle) the TUI at that tab, typically `alpheus --tab <tab>` in a floating terminal. Without the script a click does nothing, so set `open_tab` (for example to `["foot", "--app-id", "alpheus-tui", "-e", "alpheus", "--tab", "{tab}"]`) |
 | `foot -e btop` | the bar, left click on the resources module | yes: `[actions] resources` | any terminal command |
 | `foot` / `foot --hold` | the launcher, for terminal apps (`terminal`, `terminal_hold`) | yes: `launcher.toml` | a terminal that accepts a command after its arguments |
-| `systemd-run --user --scope --quiet --collect -- <command>` | the launcher, to start apps | no (falls back to a detached spawn when it fails) | systemd with a user manager |
+| `systemd-run --user --scope --quiet --collect -- <command>` | the launcher, to start apps | no (falls back to a detached spawn when `systemd-run` is not installed) | systemd with a user manager |
 | `loginctl lock-session`, `systemctl reboot`, `systemctl poweroff` | the quick panel and the ⏻ menu | yes: `[quick] lock`, `reboot`, `poweroff` (empty hides the entry); `logout` is empty by default | any command; reboot and power off ask for confirmation first |
 | `hyprlock` | the TUI's Power tab "Lock" | no | a screen locker started detached (non-Hyprland users: put a `hyprlock` shim on `PATH` that runs yours) |
 | `systemctl suspend`, `reboot`, `poweroff` | the TUI's Power tab | no | systemd |

@@ -19,7 +19,9 @@ There is no `--help`; the usage appears in the error text.
 
 | Exit code | Meaning |
 |---|---|
-| 0 | the TUI ran and ended (`q`, or SIGTERM/SIGHUP, which stop it cleanly) |
+| 0 | ended with `q`, or stopped cleanly by SIGTERM/SIGHUP |
+| 1 | a terminal I/O error |
+| 128 + signal | a stop signal the loop did not honour within 0.3 s (e.g. a closed terminal) |
 | 2 | an unknown option, a missing `--tab` value or an unknown tab name (message on standard error) |
 
 Configuration: `~/.config/alpheus/config.toml`, see the README's

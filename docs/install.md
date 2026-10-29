@@ -57,7 +57,7 @@ cargo build --release          # all three programs, in target/release/
 
 Build-time requirements:
 
-- Rust 1.85 or newer (edition 2024; `rust-version` in the workspace `Cargo.toml`).
+- Rust 1.85 or newer (edition 2024; the `rust-version` in the workspace `Cargo.toml`; no build with exactly 1.85 has been tested).
 - `pkg-config`.
 - The development files of **libdbus-1** (the system-bus connection goes
   through the `dbus` crate, which links libdbus) and **libxkbcommon** (the
@@ -143,12 +143,14 @@ exits 0. After editing `bar.toml`, restart the daemon (theme files reload live).
 
 Autostart `alpheus-demon`, bind a key to `alpheus-launch --toggle`, optionally
 one to `alpheus-launch --quick` (the quick settings panel), and one to the TUI in
-a floating terminal. These snippets are examples to adapt; the key names are
+a floating terminal. These snippets are examples to adapt, and have not been tested against each compositor version; the key names are
 yours. Window-rule syntax changes between compositor versions, so check your
 own version's manual for the floating rule.
 
 `alpheus-launch` exits 3 when the daemon is not running, which lets a bind fall
-back to another launcher: `alpheus-launch --toggle || fuzzel`.
+back to another launcher: `alpheus-launch --toggle; [ $? -eq 3 ] && fuzzel`
+(inside `sh -c '...'` for compositors that do not run a shell). Do not use `||`:
+exit 2 (busy, no answer, protocol error) would open the other launcher too.
 
 ### Hyprland
 

@@ -7,7 +7,8 @@ a problem.
 ## Commands from configuration run as you, unsandboxed
 
 Several settings are commands that alpheus starts as an argument vector (never
-through a shell, except where you write `sh -c` yourself):
+through a shell, except where you write `sh -c` yourself; text you type in the
+launcher and run with Enter goes through `sh -c`, as in a terminal):
 `[workspaces] command`, `[actions]`, `[quick]` (lock, logout, reboot, power
 off, Wi-Fi "More…", the toggles' commands), `launcher.toml`'s `terminal`,
 `focus` and every `[[sources]]` `list` and `run`, and `config.toml`'s
@@ -25,7 +26,7 @@ Program names are resolved through `PATH`; a hostile directory early in your
 `alpheus-launch` talks to the daemon over `$XDG_RUNTIME_DIR/alpheus-launcher.sock`.
 The socket is created with mode 0600 inside the session's runtime directory,
 and the daemon refuses a peer whose uid is not its own. Anything running as you
-can use it (open the launcher, read what a `--dmenu` menu shows, set
+can use it (open the launcher, show a `--dmenu` menu and read what is chosen, set
 do-not-disturb); that is the boundary of the session, not something alpheus
 tries to defend inside.
 

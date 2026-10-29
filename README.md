@@ -615,9 +615,11 @@ otherwise in the system's.
 ## Configure
 
 Everything is optional, under `~/.config/alpheus/`. An invalid file falls
-back to default values with a warning, never a crash: every file rejects
-unknown keys, so a single typo (or an unknown module name) discards that
-whole file. The daemon logs to its standard error.
+back to default values with a warning, never a crash: `bar.toml`,
+`launcher.toml`, `config.toml` and `displays.toml` reject unknown keys, so a
+single typo (or an unknown module name) discards that whole file. `theme.toml`
+is lenient: an unknown key or a bad value is ignored with a warning and the
+rest applies; unknown keys in `colors*.toml` are ignored. The daemon logs to its standard error.
 
 When the files are read: `bar.toml` **once, when the daemon starts** (restart
 `alpheus-demon` after editing it); the theme files (`theme.toml`,
@@ -759,7 +761,8 @@ Action names for `[keys.bindings]`: `quit`, `back`, `help`, `palette`,
 `esc`, `enter`, `space`, `tab`, `backspace`, `up`, `down`, `left`, `right`,
 `pageup`, `pagedown`, `home`, `end`, `f1`…; case does not matter (`ctrl+p`,
 `shift+tab`). A key given to one action is taken away from the others; an
-unknown action or key makes the file invalid.
+unknown action, modifier or key resets all key bindings to their defaults (one
+warning on the status line); the rest of the file still applies.
 
 ## Principles
 

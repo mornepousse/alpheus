@@ -66,8 +66,9 @@ happened*.
   while open.
 - **Configuration.** `bar.toml` is read once at start; the theme files are
   watched by one inotify fd and reloaded live; `launcher.toml` is read at each
-  open. A file with an unknown key or a bad value falls back wholly to the
-  defaults, with one log line.
+  open. `bar.toml` and `launcher.toml` with an unknown key or a bad value fall
+  back wholly to the defaults, with one log line; `theme.toml` ignores only
+  the faulty key.
 
 ### The launcher bridge
 
@@ -83,10 +84,11 @@ bounded `capture`.
 These are guardrails from the scope document, checked mechanically.
 
 1. **No sleep or `dpms` handling.** Locking and blanking stay with an idle
-   daemon; the words are forbidden in the sources.
+   daemon; `dpms` is a forbidden word in the daemon's sources, and the D-Bus
+   sources may not name `Sleep`, `Suspend`, `Hibernate`, `PowerOff` or `Reboot`.
 2. **The compositor is only read.** Each compositor module has a fixed list of
    requests it may write (four for Hyprland, one subscription for niri, three
-   messages for Sway, two `watch` lines and a `poll` for Mango); sockets are
+   messages for Sway, two `watch` lines for Mango); sockets are
    opened only under `src/sources/`. Anything that must change the compositor
    goes through a configured external command (see [compositors.md](compositors.md)).
 3. **Nothing resident without a reason.** A closed launcher owns no thread,
