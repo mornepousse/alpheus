@@ -321,13 +321,9 @@ impl App {
     pub(crate) fn appearance_apply(&mut self, now: Instant) {
         let a = &self.appearance;
         let Some(entry) = a.cursor_entry().copied() else { return };
-        let on_list = a.focus == Focus::List;
-        let theme = (on_list || a.applied != Some(a.cursor)).then_some(entry.key);
-        let mode = (a.focus == Focus::Mode || a.mode != a.applied_mode).then(|| a.mode.name());
-        let colors = (a.focus == Focus::Colors || a.module_colors != a.applied_module_colors).then(|| a.module_colors.name());
-        let style = (a.focus == Focus::Style || a.style != a.applied_style).then(|| a.style.name());
+        let dirty = a.dirty(entry);
         let written = match &a.dir {
-            Some(dir) => write_settings(dir, theme, mode, colors, style).map_err(|e| e.to_string()),
+            Some(dir) => write_settings(dir, &dirty.keys()).map_err(|e| e.to_string()),
             None => Err("no config directory".to_string()),
         };
         if let Err(e) = written {
@@ -336,28 +332,70 @@ impl App {
             self.toast(msg, true, now);
             return;
         }
-        let a = &mut self.appearance;
-        if theme.is_some() {
-            a.applied = Some(a.cursor);
-        }
-        a.applied_mode = a.mode;
-        a.applied_module_colors = a.module_colors;
-        a.applied_style = a.style;
-        a.auto_mode = read_mode(a.runtime.as_deref());
-        a.refresh_preview();
-        if let Some(dir) = a.dir.clone() {
+        self.appearance.commit(&dirty);
+        if let Some(dir) = self.appearance.dir.clone() {
             self.theme = Theme::load(&dir, self.appearance.runtime.as_deref()).0;
         }
         self.status.error = None;
-        let mut msg = format!("Theme: {}, {}", entry.label, mode_label(self.appearance.mode).to_lowercase());
-        if let Some(c) = colors {
-            msg.push_str(&format!(", module colours {c}"));
-        }
-        if let Some(s) = style {
-            msg.push_str(&format!(", style {s}"));
-        }
+        let msg = dirty.message(entry, self.appearance.mode);
         self.status.last = Some(msg.clone());
         self.toast(msg, false, now);
+    }
+}
+
+/// What one Enter writes to theme.toml: a value per setting that has the focus or differs from the
+/// one in effect.
+struct Dirty {
+    theme: Option<&'static str>,
+    mode: Option<&'static str>,
+    colors: Option<&'static str>,
+    style: Option<&'static str>,
+}
+
+impl Dirty {
+    /// The `(key, value)` lines to write, in theme.toml's order.
+    fn keys(&self) -> Vec<(&'static str, &'static str)> {
+        [("theme", self.theme), ("mode", self.mode), ("module_colors", self.colors), ("style", self.style)]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|v| (key, v)))
+            .collect()
+    }
+
+    /// The toast and status line after a successful write of `entry`.
+    fn message(&self, entry: Entry, mode: ModeSetting) -> String {
+        let mut msg = format!("Theme: {}, {}", entry.label, mode_label(mode).to_lowercase());
+        if let Some(c) = self.colors {
+            msg.push_str(&format!(", module colours {c}"));
+        }
+        if let Some(s) = self.style {
+            msg.push_str(&format!(", style {s}"));
+        }
+        msg
+    }
+}
+
+impl AppearanceTab {
+    /// Which settings Enter would write, `entry` being the row under the cursor.
+    fn dirty(&self, entry: Entry) -> Dirty {
+        let on_list = self.focus == Focus::List;
+        Dirty {
+            theme: (on_list || self.applied != Some(self.cursor)).then_some(entry.key),
+            mode: (self.focus == Focus::Mode || self.mode != self.applied_mode).then(|| self.mode.name()),
+            colors: (self.focus == Focus::Colors || self.module_colors != self.applied_module_colors).then(|| self.module_colors.name()),
+            style: (self.focus == Focus::Style || self.style != self.applied_style).then(|| self.style.name()),
+        }
+    }
+
+    /// The write succeeded: what was chosen is now what is in effect.
+    fn commit(&mut self, dirty: &Dirty) {
+        if dirty.theme.is_some() {
+            self.applied = Some(self.cursor);
+        }
+        self.applied_mode = self.mode;
+        self.applied_module_colors = self.module_colors;
+        self.applied_style = self.style;
+        self.auto_mode = read_mode(self.runtime.as_deref());
+        self.refresh_preview();
     }
 }
 
