@@ -509,7 +509,8 @@ fn startup_pss_per_source() {
     let bus = PrivateBus::start("per-source");
     let _workstation = Workstation::serve(&bus);
     let cases = [
-        ("first modules", "\"workspaces\", \"window\", \"clock\""),
+        // The case names are what CLAUDE.md and the README cite next to their figures: keep them.
+        ("plan 1", "\"workspaces\", \"window\", \"clock\""),
         ("+ sound", "\"workspaces\", \"window\", \"volume\", \"clock\""),
         ("+ D-Bus", "\"workspaces\", \"window\", \"network\", \"bluetooth\", \"battery\", \"clock\""),
         ("+ resources", "\"workspaces\", \"window\", \"resources\", \"clock\""),
