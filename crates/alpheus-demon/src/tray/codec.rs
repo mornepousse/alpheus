@@ -13,6 +13,7 @@ use super::{
 };
 use crate::media::Value;
 use crate::notify::{self, Action, Incoming, Urgency};
+use crate::sources::dbus::BUS_DRIVER;
 use crate::sources::dbus::dbusrs_bus::sig;
 /// Moved to `text` (shared with the sound model); kept here for the codec and its callers.
 pub use crate::text::{clean, invisible};
@@ -319,17 +320,15 @@ pub fn signal(m: &Message) -> Signal {
         Signal::ItemChanged { sender: sender.clone(), path: path.clone(), props }
     };
     match (interface.as_str(), member.as_str()) {
-        ("org.freedesktop.DBus", "NameOwnerChanged") if sender != "org.freedesktop.DBus" => Signal::Other,
-        ("org.freedesktop.DBus", "NameOwnerChanged") => match m.read3::<&str, &str, &str>() {
+        (BUS_DRIVER, "NameOwnerChanged") if sender != BUS_DRIVER => Signal::Other,
+        (BUS_DRIVER, "NameOwnerChanged") => match m.read3::<&str, &str, &str>() {
             Ok((name, old, new)) => Signal::NameOwnerChanged { name: name.into(), old: old.into(), new: new.into() },
             Err(_) => Signal::Other,
         },
         // Unicast from the bus driver only: a peer's signal by these names, or a broadcast, is not it.
-        ("org.freedesktop.DBus", "NameAcquired" | "NameLost") if sender != "org.freedesktop.DBus" || m.destination().is_none() => {
-            Signal::Other
-        }
-        ("org.freedesktop.DBus", "NameAcquired") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameAcquired(n.into())),
-        ("org.freedesktop.DBus", "NameLost") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameLost(n.into())),
+        (BUS_DRIVER, "NameAcquired" | "NameLost") if sender != BUS_DRIVER || m.destination().is_none() => Signal::Other,
+        (BUS_DRIVER, "NameAcquired") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameAcquired(n.into())),
+        (BUS_DRIVER, "NameLost") => it.get::<&str>().map_or(Signal::Other, |n| Signal::NameLost(n.into())),
         (ITEM_INTERFACE, "NewTitle") => changed(Prop::Title),
         (ITEM_INTERFACE, "NewIcon") => changed(Prop::IconName),
         (ITEM_INTERFACE, "NewAttentionIcon") => changed(Prop::AttentionIconName),

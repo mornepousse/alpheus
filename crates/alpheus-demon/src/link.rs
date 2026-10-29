@@ -444,9 +444,7 @@ impl App {
             });
         }
         let deadline = self.link.as_ref().and_then(SessionLink::next_deadline);
-        if let Some(handle) = &self.loop_handle {
-            self.link_timer.sync(handle, deadline, App::link_deadline);
-        }
+        self.link_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::link_deadline);
     }
 }
 

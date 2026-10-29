@@ -14,6 +14,7 @@ use super::{
     WATCHER_PATH,
 };
 use crate::media::Control;
+use crate::sources::dbus::BUS_DRIVER;
 /// Re-exported so the notifications consumer (tray/notifications.rs) passes messages through
 /// without naming the dbus crate (guardrails: DBUS_FILES).
 pub use dbus::Message;
@@ -33,7 +34,7 @@ pub const DBUS_NAME_FLAG_DO_NOT_QUEUE: u32 = 4;
 /// RequestName's flags for the notification server: none. It queues behind an owner (mako) instead
 /// of failing, never takes the name from it, and never lets a later client take it from us.
 pub const NOTIFICATIONS_NAME_FLAGS: u32 = 0;
-const DBUS: &str = "org.freedesktop.DBus";
+const DBUS: &str = BUS_DRIVER;
 const DBUS_PATH: &str = "/org/freedesktop/DBus";
 const PROPERTIES: &str = PROPERTIES_INTERFACE;
 

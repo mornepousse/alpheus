@@ -80,7 +80,7 @@ pub(super) fn read_all(bus: &mut dyn Bus, domains: &[Domain], s: &mut SystemStat
 /// must leave "…" (Waiting) even when every domain reads as absent.
 /// Returns what `publish` returned, or `true` (nothing to report) when
 /// skipped; `last` is only updated on an actual, accepted publish.
-pub(super) fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: &mut dyn FnMut(SystemState) -> bool) -> bool {
+fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: &mut dyn FnMut(SystemState) -> bool) -> bool {
     if last.as_ref() == Some(s) {
         return true;
     }
@@ -95,7 +95,7 @@ pub(super) fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState
 /// blanked, never the network domain alone), or when a detail rule could not be removed: the
 /// network domain's outage, so the session ends and the reconnection drops
 /// every rule, the other modules kept meanwhile.
-pub(super) fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
+fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
     match r {
         Ok(w) => {
             s.wifi = w;
@@ -111,7 +111,7 @@ pub(super) fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -
 
 /// A Bluetooth read's result into `s`, as `wifi_into`: the bus going away is a bus outage, any other
 /// error the Bluetooth domain's (the view dropped either way).
-pub(super) fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io::Result<()> {
+fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io::Result<()> {
     match r {
         Ok(v) => {
             s.bt = v;

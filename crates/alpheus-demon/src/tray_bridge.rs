@@ -182,9 +182,7 @@ impl App {
             });
         }
         let deadline = self.tray.as_ref().and_then(Tray::next_deadline);
-        if let Some(handle) = &self.loop_handle {
-            self.tray_timer.sync(handle, deadline, App::tray_deadline);
-        }
+        self.tray_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::tray_deadline);
         if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
             return;
         }

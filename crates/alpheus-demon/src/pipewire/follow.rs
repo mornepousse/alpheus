@@ -29,7 +29,7 @@ pub fn follow_tapped(output: impl Read, base: Scope, tap: &SoundTap, publish: &m
     }
 }
 
-pub(super) fn follow_batches<T: serde::de::DeserializeOwned>(
+fn follow_batches<T: serde::de::DeserializeOwned>(
     output: impl Read,
     base: Scope,
     tap: &SoundTap,

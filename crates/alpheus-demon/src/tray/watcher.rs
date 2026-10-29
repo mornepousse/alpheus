@@ -10,6 +10,7 @@ use super::bus::refusal;
 use super::codec::MAX_SERVICE;
 use super::host::Changes;
 use super::{WATCHER_INTERFACE, WATCHER_PATH};
+use crate::sources::dbus::PROPERTIES;
 use dbus::Message;
 use dbus::strings::{ErrorName, Path};
 use dbus_crossroads::{Crossroads, IfaceBuilder};
@@ -81,7 +82,7 @@ impl Watcher {
     /// Handles one incoming method call; the messages to send back (replies, errors).
     pub fn handle(&mut self, call: Message) -> Vec<Message> {
         let set = call.path().is_some_and(|p| &*p == WATCHER_PATH)
-            && call.interface().is_some_and(|i| &*i == "org.freedesktop.DBus.Properties")
+            && call.interface().is_some_and(|i| &*i == PROPERTIES)
             && call.member().is_some_and(|m| &*m == "Set");
         if !self.serving || set {
             if call.get_no_reply() {

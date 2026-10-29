@@ -58,7 +58,7 @@ pub(super) fn label_of(p: &NodeProps) -> Option<String> {
 
 /// The last entry of subject 0 that sets `key`, or clears every key (a null key): Some(the new
 /// default); None when the array does not mention it.
-pub(super) fn default_of(entries: &[MetaEntry], key: &str) -> Option<Option<String>> {
+fn default_of(entries: &[MetaEntry], key: &str) -> Option<Option<String>> {
     let e = entries.iter().rev().find(|e| e.subject == Some(0) && e.key.as_deref().is_none_or(|k| k == key))?;
     Some(match e.key {
         None => None,
@@ -171,7 +171,7 @@ impl Model {
     }
 
     /// The id of the node of `kind` named `name`: the lowest id when two share it.
-    pub(super) fn resolve_id(&self, kind: Kind, name: &str) -> Option<u32> {
+    fn resolve_id(&self, kind: Kind, name: &str) -> Option<u32> {
         self.nodes.iter().filter(|(_, n)| n.kind == kind && n.name == name).map(|(id, _)| *id).min()
     }
 

@@ -8,7 +8,7 @@ pub(super) fn flag(v: &Option<String>) -> bool {
 }
 
 /// A node as the privacy rules need it (spec § 2); `running` is the node's own state.
-pub(super) fn graph_node(class: &str, running: bool, p: &PrivacyProps) -> GraphNode {
+fn graph_node(class: &str, running: bool, p: &PrivacyProps) -> GraphNode {
     let camera_device = matches!(p.device_api.as_deref(), Some("v4l2" | "libcamera")) || p.media_role.as_deref() == Some("Camera");
     // The app: the first non-empty name, as a person reads it.
     let app = [&p.portal_app_id, &p.application_name, &p.process_binary, &p.node_name]

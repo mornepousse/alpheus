@@ -432,7 +432,8 @@ impl App {
         });
     }
 
-    /// Called from the loop (`launcher/socket_glue.rs`) on a pending dmenu fd becoming readable/hung up.
+    /// Called by the client watch `launcher_watch_client` inserts below, when a dmenu client's fd is
+    /// readable or hung up.
     pub fn launcher_client_check(&mut self) {
         self.launcher_guarded("client", |app| {
             let gone = app.launcher.as_ref().and_then(|o| o.reply.as_ref()).is_some_and(|p| p.hung_up());
