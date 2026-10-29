@@ -19,6 +19,7 @@ pub mod config;
 pub mod deadline;
 pub mod grid;
 pub mod icons;
+pub mod inotify;
 pub mod keys;
 pub mod launch;
 pub mod launcher;

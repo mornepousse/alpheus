@@ -3,14 +3,14 @@
 //! `dev_dir`), and `classify` turns one inotify record into what the glue should do with it. Events
 //! are triggers, never counts: the state shown comes from a scan alone.
 
+use crate::inotify::{Event, Events, Inotify};
 use crate::log::write as log;
 use crate::pipewire::drawable;
 use crate::privacy::Indicator;
-use crate::watch::{Event, Events, add_watch};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -157,7 +157,7 @@ pub(crate) fn classify(ev: &Event, dev_wd: i32) -> Record {
 /// The inotify instance on `dev_dir` and on each of its `video*` nodes: an open or a close of a node
 /// is a trigger, never a count. Nothing under `dev_dir` is ever opened, only watched.
 pub struct CameraWatch {
-    fd: OwnedFd,
+    fd: Inotify,
     dev_dir: PathBuf,
     dev_wd: i32,
     /// Watch descriptor of a node to its name; one entry per distinct watched node.
@@ -171,14 +171,8 @@ pub struct CameraWatch {
 impl CameraWatch {
     /// Watches `dev_dir`, then every `video*` node in it. Err: why `dev_dir` cannot be watched.
     pub fn start(dev_dir: &Path) -> Result<CameraWatch, String> {
-        // SAFETY: inotify_init1 only takes flags; it returns a new descriptor or -1.
-        let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-        if raw < 0 {
-            return Err(format!("inotify unavailable ({})", io::Error::last_os_error()));
-        }
-        // SAFETY: `raw` was just returned by inotify_init1 and belongs to nothing else.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        let dev_wd = add_watch(&fd, dev_dir, DIR_MASK).map_err(|e| format!("cannot watch {} ({e})", dev_dir.display()))?;
+        let fd = Inotify::new()?;
+        let dev_wd = fd.add(dev_dir, DIR_MASK).map_err(|e| format!("cannot watch {} ({e})", dev_dir.display()))?;
         let mut w =
             CameraWatch { fd, dev_dir: dev_dir.to_path_buf(), dev_wd, nodes: HashMap::new(), pending: HashSet::new(), limit_logged: false };
         let entries = fs::read_dir(dev_dir).map_err(|e| format!("cannot list {} ({e})", dev_dir.display()))?;
@@ -193,7 +187,7 @@ impl CameraWatch {
 
     /// A duplicate of the inotify fd for the event loop (the same instance).
     pub fn watch_fd(&self) -> io::Result<OwnedFd> {
-        self.fd.try_clone()
+        self.fd.watch_fd()
     }
 
     /// Distinct video nodes watched.
@@ -204,28 +198,21 @@ impl CameraWatch {
     /// Reads every queued record (until EAGAIN); true when any asks for a scan.
     pub fn drain(&mut self) -> bool {
         let mut trigger = false;
-        let mut buf = [0u8; 4096];
-        loop {
-            // SAFETY: read(2) writes at most `buf.len()` bytes into a buffer this function owns.
-            let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-            // -1: EAGAIN (drained) or an error; 0 never comes from inotify. Either way, done.
-            let Ok(n) = usize::try_from(n) else { break };
-            if n == 0 {
-                break;
-            }
-            for ev in Events(buf.get(..n).unwrap_or_default()) {
-                match classify(&ev, self.dev_wd) {
-                    Record::Trigger => trigger = true,
-                    Record::Appeared(name) => {
-                        self.watch_node(&name);
-                        trigger = true;
-                    }
-                    Record::Gone(name) => {
-                        self.forget(&name);
-                        trigger = true;
-                    }
-                    Record::Ignored => {}
+        let (fd, dev_wd) = (&self.fd, self.dev_wd);
+        let mut records = Vec::new();
+        fd.drain(|chunk| records.extend(Events(chunk).map(|ev| classify(&ev, dev_wd))));
+        for record in records {
+            match record {
+                Record::Trigger => trigger = true,
+                Record::Appeared(name) => {
+                    self.watch_node(&name);
+                    trigger = true;
                 }
+                Record::Gone(name) => {
+                    self.forget(&name);
+                    trigger = true;
+                }
+                Record::Ignored => {}
             }
         }
         trigger
@@ -234,14 +221,13 @@ impl CameraWatch {
     /// Adds the node watch. The kernel returns the same descriptor for the same inode, so a node
     /// already watched is not counted twice; a refusal goes to `pending`.
     fn watch_node(&mut self, name: &str) {
-        match add_watch(&self.fd, &self.dev_dir.join(name), NODE_MASK) {
+        match self.fd.add(&self.dev_dir.join(name), NODE_MASK) {
             Ok(wd) => {
                 self.pending.remove(name);
                 if self.nodes.contains_key(&wd) {
                     self.nodes.insert(wd, name.to_string());
                 } else if self.nodes.len() >= MAX_DEVICE_WATCHES {
-                    // SAFETY: removes the watch just added on this instance.
-                    unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), wd) };
+                    self.fd.rm(wd);
                     if !self.limit_logged {
                         self.limit_logged = true;
                         log(&format!("privacy: device watch limit reached ({MAX_DEVICE_WATCHES})"));
@@ -270,7 +256,6 @@ impl CameraWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::watch::Event;
     use alpheus_commun::temp_path::TempPath;
     use std::fs;
     use std::os::unix::fs::symlink;

@@ -1568,8 +1568,8 @@ fn the_daemon_paints_with_roles_never_the_legacy_palette() {
 }
 
 /// Themes task 5, privacy delivery 2: the config directory and the video devices are only watched,
-/// never written by the daemon; inotify lives in watch.rs (the theme) and camera_dev.rs (the
-/// cameras) alone.
+/// never written by the daemon; inotify lives in inotify.rs (the wrapper), watch.rs (the theme) and
+/// camera_dev.rs (the cameras) alone.
 #[test]
 fn the_theme_and_camera_watches_only_read() {
     let mut found = false;
@@ -1577,7 +1577,7 @@ fn the_theme_and_camera_watches_only_read() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         // camera_dev.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
-        if name == "watch.rs" || name == "camera_dev.rs" {
+        if name == "watch.rs" || name == "camera_dev.rs" || name == "inotify.rs" {
             found |= name == "watch.rs";
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
@@ -1585,7 +1585,7 @@ fn the_theme_and_camera_watches_only_read() {
                 assert!(!prod.contains(never), "{never} in {name}: the config directory and the video devices are read-only to the daemon");
             }
         } else {
-            assert!(!prod.contains("inotify_"), "inotify outside watch.rs and camera_dev.rs: {name}");
+            assert!(!prod.contains("inotify_"), "inotify outside inotify.rs, watch.rs and camera_dev.rs: {name}");
         }
     }
     assert!(found, "watch.rs not found");

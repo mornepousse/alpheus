@@ -6,6 +6,7 @@
 //! appears; when it goes, the watch falls back to the parent. inotify unavailable: one line, and the
 //! theme files are read at startup only. Read-only: nothing here writes to the directory.
 
+use crate::inotify::{Events, Inotify};
 use crate::launch::describe;
 use crate::log::write as log;
 use crate::wayland::App;
@@ -17,9 +18,9 @@ use alpheus_commun::theme::settings::{
 use alpheus_commun::theme::{Mode, Roles};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
 use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode as Trigger, PostAction};
-use std::ffi::{CString, OsStr};
+use std::ffi::OsStr;
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -36,35 +37,6 @@ const DIR_MASK: u32 = libc::IN_CLOSE_WRITE
     | libc::IN_ONLYDIR;
 /// On its parent, while it does not exist: it being created or moved in.
 const PARENT_MASK: u32 = libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ONLYDIR;
-/// `struct inotify_event`'s fixed part: wd, mask, cookie, len, 4 bytes each.
-const HEADER: usize = 16;
-
-/// One inotify record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Event<'a> {
-    pub wd: i32,
-    pub mask: u32,
-    /// The entry's name without its NUL padding; empty for an event on the watched directory itself.
-    pub name: &'a [u8],
-}
-
-/// The records of a read(2) buffer, in order; a truncated tail is dropped (never a panic).
-pub(crate) struct Events<'a>(pub(crate) &'a [u8]);
-
-impl<'a> Iterator for Events<'a> {
-    type Item = Event<'a>;
-
-    fn next(&mut self) -> Option<Event<'a>> {
-        let buf = self.0;
-        let word = |i: usize| buf.get(i..i + 4).and_then(|b| <[u8; 4]>::try_from(b).ok()).map(u32::from_ne_bytes);
-        let (wd, mask, len) = (word(0)? as i32, word(4)?, word(12)? as usize);
-        let raw = buf.get(HEADER..HEADER + len)?;
-        self.0 = buf.get(HEADER + len..).unwrap_or_default();
-        let name = raw.split(|b| *b == 0).next().unwrap_or_default();
-        Some(Event { wd, mask, name })
-    }
-}
-
 /// What the one watch descriptor is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum On {
@@ -128,7 +100,7 @@ pub(crate) fn fresh<'a>(before: &'a [String], now: &'a [String]) -> impl Iterato
 
 /// The inotify instance and its one watch.
 pub(crate) struct ThemeWatch {
-    fd: OwnedFd,
+    fd: Inotify,
     dir: PathBuf,
     on: On,
 }
@@ -136,20 +108,14 @@ pub(crate) struct ThemeWatch {
 impl ThemeWatch {
     /// inotify on `dir`, or on its parent while `dir` does not exist. Err: one line for the log.
     pub(crate) fn start(dir: &Path) -> Result<ThemeWatch, String> {
-        // SAFETY: inotify_init1 only takes flags; it returns a new descriptor or -1.
-        let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
-        if raw < 0 {
-            return Err(format!("inotify unavailable ({})", io::Error::last_os_error()));
-        }
-        // SAFETY: `raw` was just returned by inotify_init1 and belongs to nothing else.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        let fd = Inotify::new()?;
         let on = arm(&fd, dir)?;
         Ok(ThemeWatch { fd, dir: dir.to_path_buf(), on })
     }
 
     /// A duplicate of the inotify fd for the event loop (the same instance: reading either drains both).
     pub(crate) fn watch_fd(&self) -> io::Result<OwnedFd> {
-        self.fd.try_clone()
+        self.fd.watch_fd()
     }
 
     /// Reads every queued record (until EAGAIN) and folds them into one batch; watches anew when
@@ -159,19 +125,11 @@ impl ThemeWatch {
         let name = self.dir.file_name().map(|n| n.as_bytes().to_vec()).unwrap_or_default();
         let dir = self.dir.clone();
         let is_link = move |f: &[u8]| is_symlink(&dir.join(OsStr::from_bytes(f)));
-        let mut buf = [0u8; 4096];
-        loop {
-            // SAFETY: read(2) writes at most `buf.len()` bytes into a buffer this function owns.
-            let n = unsafe { libc::read(self.fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
-            // -1: EAGAIN (drained) or an error; 0 never comes from inotify. Either way, done.
-            let Ok(n) = usize::try_from(n) else { break };
-            if n == 0 {
-                break;
-            }
-            let b = scan(buf.get(..n).unwrap_or_default(), self.on, &name, &is_link);
+        self.fd.drain(|chunk| {
+            let b = scan(chunk, self.on, &name, &is_link);
             batch.theme |= b.theme;
             batch.rearm |= b.rearm;
-        }
+        });
         if batch.rearm {
             self.rearm();
         }
@@ -180,9 +138,7 @@ impl ThemeWatch {
 
     fn rearm(&mut self) {
         if let On::Dir(wd) | On::Parent(wd) = self.on {
-            // SAFETY: removes this instance's own watch; EINVAL (the kernel already dropped it,
-            // IN_IGNORED) is harmless.
-            unsafe { libc::inotify_rm_watch(self.fd.as_raw_fd(), wd) };
+            self.fd.rm(wd);
         }
         self.on = match arm(&self.fd, &self.dir) {
             Ok(on) => on,
@@ -205,22 +161,15 @@ fn symlink_line(dir: &Path) -> Option<String> {
 }
 
 /// The directory, or its parent when the directory does not exist.
-fn arm(fd: &OwnedFd, dir: &Path) -> Result<On, String> {
-    match add_watch(fd, dir, DIR_MASK) {
+fn arm(fd: &Inotify, dir: &Path) -> Result<On, String> {
+    match fd.add(dir, DIR_MASK) {
         Ok(wd) => Ok(On::Dir(wd)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let parent = dir.parent().ok_or_else(|| format!("{} has no parent to wait in", dir.display()))?;
-            add_watch(fd, parent, PARENT_MASK).map(On::Parent).map_err(|e| format!("cannot watch {} ({e})", parent.display()))
+            fd.add(parent, PARENT_MASK).map(On::Parent).map_err(|e| format!("cannot watch {} ({e})", parent.display()))
         }
         Err(e) => Err(format!("cannot watch {} ({e})", dir.display())),
     }
-}
-
-pub(crate) fn add_watch(fd: &OwnedFd, path: &Path, mask: u32) -> io::Result<i32> {
-    let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    // SAFETY: a NUL-terminated path that lives through the call, and this instance's own fd.
-    let wd = unsafe { libc::inotify_add_watch(fd.as_raw_fd(), c.as_ptr(), mask) };
-    if wd < 0 { Err(io::Error::last_os_error()) } else { Ok(wd) }
 }
 
 /// Starts watching (launch::run, once the loop exists). Any failure: one line, the theme files read
@@ -400,6 +349,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inotify::{Event, HEADER};
     use alpheus_commun::theme::settings::THEME_FILE;
 
     #[test]
