@@ -1971,7 +1971,7 @@ fn an_empty_theme_toml_repaints_on_a_new_wallpaper() {
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn a_truncated_theme_toml_keeps_the_style_and_still_reads_a_new_wallpaper() {
-    let (sway, _hypr, mut d, config, behind) = shape_bar("theme-truncated");
+    let (sway, _hypr, mut d, config, behind) = shape_bar("shape-truncated");
     let end = |s: &Ppm| s.at(s.width - 20, MIDDLE);
     std::fs::write(config.join("colors.toml"), wallpaper("#102030")).unwrap();
     write_atomically(&config, "theme.toml", "theme = \"wallpaper\"\nmode = \"dark\"\nstyle = \"islands\"\n");
@@ -5222,4 +5222,27 @@ fn privacy_the_popup_names_a_direct_camera() {
     wait_for_the_privacy_popup_in(&sway, &d, privacy_green(), 52..=60);
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// Each test gives its compositor a name, and the name picks its runtime directory
+/// (`alpheus-it-<pid>-<name>`): two tests sharing one would remove each other's directory and
+/// fight over the same sockets when run in parallel. Not ignored: it only reads this file.
+#[test]
+fn every_test_compositor_has_its_own_name() {
+    // Everything above this test: its own list of starters is not a test's name.
+    let source = include_str!("headless_session.rs").split("fn every_test_compositor_has_its_own_name").next().unwrap_or("");
+    let starters = ["Sway::start(", "tray_bar(", "menu_bar(", "clock_bar(", "theme_bar(", "shape_bar(", "media_daemon("];
+    let mut names = Vec::new();
+    for starter in starters {
+        for (at, _) in source.match_indices(starter) {
+            let rest = &source[at + starter.len()..];
+            if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                names.push(name);
+            }
+        }
+    }
+    assert!(names.len() > 50, "the scan finds the tests' names: {}", names.len());
+    names.sort_unstable();
+    let shared: Vec<_> = names.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
+    assert!(shared.is_empty(), "compositor names used by two tests: {shared:?}");
 }
