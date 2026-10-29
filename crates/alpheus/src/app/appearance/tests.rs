@@ -141,7 +141,7 @@ fn enter_applies_the_theme_and_recolours_the_tui() {
 fn the_mode_row_applies_the_mode_and_only_the_mode() {
     let (mut a, dir) = open("mode", &[("theme.toml", "theme = \"nord\"\n")]);
     to_row(&mut a, 1);
-    assert!(a.appearance.mode_focus, "down past the last theme: the mode row");
+    assert_eq!(a.appearance.focus, Focus::Mode, "down past the last theme: the mode row");
     act(&mut a, Action::Right);
     act(&mut a, Action::Right);
     assert_eq!(a.appearance.mode, ModeSetting::Light);
@@ -152,28 +152,28 @@ fn the_mode_row_applies_the_mode_and_only_the_mode() {
     assert_eq!(theme_toml(&dir), "theme = \"nord\"\nmode = \"light\"\n");
     assert_eq!(a.appearance.applied_mode, ModeSetting::Light);
     act(&mut a, Action::Up);
-    assert!(!a.appearance.mode_focus, "Up: back to the list");
+    assert_eq!(a.appearance.focus, Focus::List, "Up: back to the list");
 }
 
 #[test]
 fn down_past_the_last_theme_walks_the_rows_and_up_comes_back() {
     let (mut a, _dir) = open("rows", &[]);
-    let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus, a.appearance.style_focus);
+    let at = |a: &App| a.appearance.focus;
     act(&mut a, Action::End);
-    assert_eq!(at(&a), (false, false, false), "End stays in the list");
+    assert_eq!(at(&a), Focus::List, "End stays in the list");
     act(&mut a, Action::Down);
-    assert_eq!(at(&a), (true, false, false));
+    assert_eq!(at(&a), Focus::Mode);
     act(&mut a, Action::Down);
-    assert_eq!(at(&a), (false, true, false));
+    assert_eq!(at(&a), Focus::Colors);
     act(&mut a, Action::Down);
-    assert_eq!(at(&a), (false, false, true));
+    assert_eq!(at(&a), Focus::Style);
     act(&mut a, Action::Down);
-    assert_eq!(at(&a), (false, false, true), "Down stops on the last row");
+    assert_eq!(at(&a), Focus::Style, "Down stops on the last row");
     act(&mut a, Action::Up);
-    assert_eq!(at(&a), (false, true, false), "Up walks back one row");
+    assert_eq!(at(&a), Focus::Colors, "Up walks back one row");
     act(&mut a, Action::Up);
     act(&mut a, Action::Up);
-    assert_eq!(at(&a), (false, false, false), "back in the list");
+    assert_eq!(at(&a), Focus::List, "back in the list");
 }
 
 #[test]
@@ -231,9 +231,9 @@ fn the_loaded_style_survives_a_theme_write_and_a_chosen_one_rides_along() {
     act(&mut a, Action::Home); // Wallpaper
     act(&mut a, Action::Activate);
     assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nstyle = \"powerline\"\n", "a theme write leaves the style alone");
-    a.appearance.style_focus = true;
+    a.appearance.focus = Focus::Style;
     act(&mut a, Action::Right); // Powerline -> Floating
-    a.appearance.style_focus = false;
+    a.appearance.focus = Focus::List;
     act(&mut a, Action::Activate); // Enter in the list: the chosen style is applied too
     assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nstyle = \"floating\"\n");
 }
@@ -291,9 +291,9 @@ fn the_loaded_module_colours_survive_a_theme_or_mode_write() {
 #[test]
 fn enter_in_the_list_also_applies_a_mode_that_was_chosen() {
     let (mut a, dir) = open("both", &[]);
-    a.appearance.mode_focus = true;
+    a.appearance.focus = Focus::Mode;
     act(&mut a, Action::Right); // Auto -> Dark
-    a.appearance.mode_focus = false;
+    a.appearance.focus = Focus::List;
     act(&mut a, Action::Activate);
     assert_eq!(theme_toml(&dir), "theme = \"catppuccin\"\nmode = \"dark\"\n");
 }
@@ -374,7 +374,7 @@ fn the_keys_of_the_tab() {
     assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\n");
     key(&mut a, KeyCode::End);
     key(&mut a, KeyCode::Char('h')); // Dvorak down, past the last theme
-    assert!(a.appearance.mode_focus && a.tab == Tab::Appearance);
+    assert!(a.appearance.focus == Focus::Mode && a.tab == Tab::Appearance);
     key(&mut a, KeyCode::Char('n')); // Dvorak right
     assert_eq!(a.appearance.mode, ModeSetting::Dark);
     key(&mut a, KeyCode::Char('+'));

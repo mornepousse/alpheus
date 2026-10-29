@@ -12,6 +12,7 @@ pub use hit::{HitMap, Target};
 
 use crate::app::App;
 use crate::app::action::{Action, Tab};
+use crate::app::appearance::Focus;
 use draw::put;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -105,7 +106,7 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 pairs.push((km.label(Action::Search), "Search"));
             }
             Tab::Power => pairs.push((km.label(Action::Activate), "Activate")),
-            Tab::Appearance if app.appearance.mode_focus || app.appearance.colors_focus || app.appearance.style_focus => {
+            Tab::Appearance if app.appearance.focus != Focus::List => {
                 pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));
             }

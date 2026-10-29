@@ -73,6 +73,36 @@ pub fn style_label(s: BarStyle) -> &'static str {
     }
 }
 
+/// Where the keyboard focus is: the theme list or one of the setting rows below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    List,
+    Mode,
+    Colors,
+    Style,
+}
+
+impl Focus {
+    /// The row below, stopping on the last one.
+    pub fn next(self) -> Focus {
+        match self {
+            Focus::List => Focus::Mode,
+            Focus::Mode => Focus::Colors,
+            Focus::Colors | Focus::Style => Focus::Style,
+        }
+    }
+
+    /// The row above, stopping on the list.
+    pub fn prev(self) -> Focus {
+        match self {
+            Focus::List | Focus::Mode => Focus::List,
+            Focus::Colors => Focus::Mode,
+            Focus::Style => Focus::Colors,
+        }
+    }
+}
+
 pub struct AppearanceTab {
     /// The config directory (theme.toml, colors.toml); None: nothing can be written.
     pub dir: Option<PathBuf>,
@@ -88,20 +118,16 @@ pub struct AppearanceTab {
     pub mode: ModeSetting,
     /// The mode in effect, as theme.toml says.
     pub applied_mode: ModeSetting,
-    /// Keyboard focus is on the mode row.
-    pub mode_focus: bool,
+    /// Where the keyboard focus is (exactly one place).
+    pub focus: Focus,
     /// The module colours chosen (previewed; written by Enter).
     pub module_colors: ModuleColors,
     /// The module colours in effect, as theme.toml says.
     pub applied_module_colors: ModuleColors,
-    /// Keyboard focus is on the module-colours row (never together with `mode_focus`).
-    pub colors_focus: bool,
     /// The bar style chosen (previewed; written by Enter).
     pub style: BarStyle,
     /// The bar style in effect, as theme.toml says.
     pub applied_style: BarStyle,
-    /// Keyboard focus is on the style row (never together with `mode_focus` or `colors_focus`).
-    pub style_focus: bool,
     /// The roles under the cursor, for the chosen mode.
     pub preview: Option<Roles>,
     /// The user's `[colors]` overrides: the preview shows what Enter will produce.
@@ -124,13 +150,11 @@ impl Default for AppearanceTab {
             applied: None,
             mode: ModeSetting::Auto,
             applied_mode: ModeSetting::Auto,
-            mode_focus: false,
+            focus: Focus::List,
             module_colors: ModuleColors::default(),
             applied_module_colors: ModuleColors::default(),
-            colors_focus: false,
             style: BarStyle::default(),
             applied_style: BarStyle::default(),
-            style_focus: false,
             preview: None,
             preview_note: None,
             overrides: Overrides::default(),
@@ -199,13 +223,11 @@ impl App {
         a.cursor = a.applied.unwrap_or(0);
         a.mode = settings.mode;
         a.applied_mode = settings.mode;
-        a.mode_focus = false;
+        a.focus = Focus::List;
         a.module_colors = settings.module_colors;
         a.applied_module_colors = settings.module_colors;
-        a.colors_focus = false;
         a.style = settings.style;
         a.applied_style = settings.style;
-        a.style_focus = false;
         a.auto_mode = read_mode(a.runtime.as_deref());
         a.wallpaper = None;
         a.refresh_preview();
@@ -215,45 +237,32 @@ impl App {
     pub(crate) fn appearance_action(&mut self, a: Action, now: Instant) -> bool {
         let last = self.appearance.entries.len().saturating_sub(1);
         let ap = &mut self.appearance;
-        // Focus: 0 the list, 1 the mode row, 2 the module-colours row, 3 the style row. Up and Down
-        // walk, Down past the last theme reaching the rows; Tab changes tab, as everywhere.
-        let focus = if ap.mode_focus {
-            1
-        } else if ap.colors_focus {
-            2
-        } else if ap.style_focus {
-            3
-        } else {
-            0
-        };
-        let set_focus = |ap: &mut AppearanceTab, f: usize| {
-            ap.mode_focus = f == 1;
-            ap.colors_focus = f == 2;
-            ap.style_focus = f == 3;
-        };
+        // Up and Down walk the list then the rows, Down past the last theme reaching them; Tab
+        // changes tab, as everywhere.
+        let focus = ap.focus;
         match a {
             // Walking past the list chose no theme: the cursor goes back to the one in effect, so
             // the preview shows it and Enter on a row applies that row only.
-            Action::Down if focus == 0 && ap.cursor == last => {
-                set_focus(ap, 1);
+            Action::Down if focus == Focus::List && ap.cursor == last => {
+                ap.focus = Focus::Mode;
                 ap.cursor = ap.applied.unwrap_or(ap.cursor);
                 ap.refresh_preview();
             }
-            Action::Up if focus > 0 => set_focus(ap, focus - 1),
-            Action::Down if focus > 0 => set_focus(ap, (focus + 1).min(3)),
-            Action::PageUp | Action::PageDown | Action::Home | Action::End if focus > 0 => {}
+            Action::Up if focus != Focus::List => ap.focus = focus.prev(),
+            Action::Down if focus != Focus::List => ap.focus = focus.next(),
+            Action::PageUp | Action::PageDown | Action::Home | Action::End if focus != Focus::List => {}
             Action::Up => self.appearance_move(-1),
             Action::Down => self.appearance_move(1),
             Action::PageUp => self.appearance_move(-5),
             Action::PageDown => self.appearance_move(5),
             Action::Home => self.appearance_move(-(last as i32)),
             Action::End => self.appearance_move(last as i32),
-            Action::Left | Action::Decrease if focus == 1 => self.appearance_step(-1),
-            Action::Right | Action::Increase if focus == 1 => self.appearance_step(1),
-            Action::Left | Action::Decrease if focus == 2 => self.appearance_step_colors(-1),
-            Action::Right | Action::Increase if focus == 2 => self.appearance_step_colors(1),
-            Action::Left | Action::Decrease if focus == 3 => self.appearance_step_style(-1),
-            Action::Right | Action::Increase if focus == 3 => self.appearance_step_style(1),
+            Action::Left | Action::Decrease if focus == Focus::Mode => self.appearance_step(-1),
+            Action::Right | Action::Increase if focus == Focus::Mode => self.appearance_step(1),
+            Action::Left | Action::Decrease if focus == Focus::Colors => self.appearance_step_colors(-1),
+            Action::Right | Action::Increase if focus == Focus::Colors => self.appearance_step_colors(1),
+            Action::Left | Action::Decrease if focus == Focus::Style => self.appearance_step_style(-1),
+            Action::Right | Action::Increase if focus == Focus::Style => self.appearance_step_style(1),
             Action::Left | Action::Right | Action::Decrease | Action::Increase => {}
             Action::Activate => self.appearance_apply(now),
             _ => return false,
@@ -292,9 +301,7 @@ impl App {
     /// A click on a theme: selects it; a click on the row already under the cursor applies it.
     pub(crate) fn appearance_click_theme(&mut self, i: usize, now: Instant) {
         let a = &mut self.appearance;
-        a.mode_focus = false;
-        a.colors_focus = false;
-        a.style_focus = false;
+        a.focus = Focus::List;
         if i >= a.entries.len() {
             return;
         }
@@ -309,9 +316,7 @@ impl App {
     /// A click on a mode applies it at once.
     pub(crate) fn appearance_click_mode(&mut self, m: ModeSetting, now: Instant) {
         let a = &mut self.appearance;
-        a.mode_focus = true;
-        a.colors_focus = false;
-        a.style_focus = false;
+        a.focus = Focus::Mode;
         a.mode = m;
         a.refresh_preview();
         self.appearance_apply(now);
@@ -320,9 +325,7 @@ impl App {
     /// A click on a module-colours value applies it at once.
     pub(crate) fn appearance_click_colors(&mut self, m: ModuleColors, now: Instant) {
         let a = &mut self.appearance;
-        a.colors_focus = true;
-        a.mode_focus = false;
-        a.style_focus = false;
+        a.focus = Focus::Colors;
         a.module_colors = m;
         a.refresh_preview();
         self.appearance_apply(now);
@@ -331,9 +334,7 @@ impl App {
     /// A click on a style applies it at once.
     pub(crate) fn appearance_click_style(&mut self, s: BarStyle, now: Instant) {
         let a = &mut self.appearance;
-        a.style_focus = true;
-        a.mode_focus = false;
-        a.colors_focus = false;
+        a.focus = Focus::Style;
         a.style = s;
         self.appearance_apply(now);
     }
@@ -345,11 +346,11 @@ impl App {
     pub(crate) fn appearance_apply(&mut self, now: Instant) {
         let a = &self.appearance;
         let Some(entry) = a.cursor_entry().copied() else { return };
-        let on_list = !a.mode_focus && !a.colors_focus && !a.style_focus;
+        let on_list = a.focus == Focus::List;
         let theme = (on_list || a.applied != Some(a.cursor)).then_some(entry.key);
-        let mode = (a.mode_focus || a.mode != a.applied_mode).then(|| mode_value(a.mode));
-        let colors = (a.colors_focus || a.module_colors != a.applied_module_colors).then(|| colors_value(a.module_colors));
-        let style = (a.style_focus || a.style != a.applied_style).then(|| a.style.name());
+        let mode = (a.focus == Focus::Mode || a.mode != a.applied_mode).then(|| mode_value(a.mode));
+        let colors = (a.focus == Focus::Colors || a.module_colors != a.applied_module_colors).then(|| colors_value(a.module_colors));
+        let style = (a.focus == Focus::Style || a.style != a.applied_style).then(|| a.style.name());
         let written = match &a.dir {
             Some(dir) => write_settings(dir, theme, mode, colors, style).map_err(|e| e.to_string()),
             None => Err("no config directory".to_string()),
