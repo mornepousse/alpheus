@@ -199,15 +199,15 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
-fn source_files() -> Vec<(PathBuf, String)> {
+/// Every `.rs` file under `src/`, `tests.rs` included: for the scans of raw
+/// text, which must also see test code (no real call, no forbidden word).
+fn all_source_files() -> Vec<(PathBuf, String)> {
     fn walk(d: &Path, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(d).unwrap().flatten() {
             let p = e.path();
             if p.is_dir() {
                 walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "rs") && p.file_name().is_some_and(|n| n != "tests.rs") {
-                // `tests.rs` files hold the moved-out `#[cfg(test)] mod tests;`
-                // bodies: test code, not production code to scan.
+            } else if p.extension().is_some_and(|x| x == "rs") {
                 out.push(p);
             }
         }
@@ -221,6 +221,12 @@ fn source_files() -> Vec<(PathBuf, String)> {
             (p, t)
         })
         .collect()
+}
+
+/// The production files: `all_source_files()` without the `tests.rs` files
+/// (the moved-out `#[cfg(test)] mod tests;` bodies).
+fn source_files() -> Vec<(PathBuf, String)> {
+    all_source_files().into_iter().filter(|(p, _)| p.file_name().is_some_and(|n| n != "tests.rs")).collect()
 }
 
 /// Path of `p` relative to `src/` (e.g. `sources/hypr.rs`, or
@@ -282,7 +288,7 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
-    for (p, t) in source_files() {
+    for (p, t) in all_source_files() {
         if let Some(word) = forbidden_word(&t) {
             panic!("\"{word}\" in {}", p.display());
         }
@@ -307,7 +313,7 @@ fn the_daemon_only_reads_from_the_compositor() {
 /// files.
 #[test]
 fn compositor_sockets_opened_only_in_sources() {
-    for (p, t) in source_files() {
+    for (p, t) in all_source_files() {
         let name = relative_path(&p);
         for pattern in [".socket.sock", ".socket2.sock", "UnixStream::connect"] {
             assert!(!t.contains(pattern) || compositor_connection_allowed(&name), "\"{pattern}\" outside src/sources/: {name}");
@@ -1558,7 +1564,7 @@ impl Executor for ArgvSpy {
 /// `Palette` is never named in its sources.
 #[test]
 fn the_daemon_paints_with_roles_never_the_legacy_palette() {
-    let files = source_files();
+    let files = all_source_files();
     for (p, t) in &files {
         assert!(!t.contains("Palette"), "the legacy Palette in {}", relative_path(p));
     }
