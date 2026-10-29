@@ -606,7 +606,9 @@ nix build .#alpheus-demon    # the bar
 nix develop                  # dev shell: cargo, fonts, sway for tests
 ```
 
-Without Nix, `cargo build --release` is enough for the TUI. The bar looks
+Without Nix, `cargo build --release` builds the three programs (the daemon needs
+`pkg-config`, libdbus and libxkbcommon development files; see
+[docs/install.md](docs/install.md)). The bar looks
 for its fonts in `$ALPHEUS_POLICES` (set at build time by the flake),
 otherwise in the system's.
 
@@ -772,6 +774,8 @@ unknown action or key makes the file invalid.
 
 ## Documentation
 
+- [`docs/install.md`](docs/install.md): build and runtime dependencies, a flake
+  input, starting the daemon, key binds for Hyprland, Sway, niri and Mango.
 - [`docs/cli.md`](docs/cli.md): the command lines of `alpheus`,
   `alpheus-demon` and `alpheus-launch`: verbs, options, exit codes.
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
