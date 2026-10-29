@@ -613,7 +613,15 @@ otherwise in the system's.
 ## Configure
 
 Everything is optional, under `~/.config/alpheus/`. An invalid file falls
-back to default values with a warning, never a crash.
+back to default values with a warning, never a crash: every file rejects
+unknown keys, so a single typo (or an unknown module name) discards that
+whole file. The daemon logs to its standard error.
+
+When the files are read: `bar.toml` **once, when the daemon starts** (restart
+`alpheus-demon` after editing it); the theme files (`theme.toml`,
+`colors.toml`, `colors-light.toml`) are **watched and reloaded live**;
+`launcher.toml` is read **at each open** of the launcher; `config.toml` and
+`displays.toml` when the control center starts.
 
 - `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
   per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
@@ -685,6 +693,15 @@ reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
 poweroff = ["systemctl", "poweroff"]
 wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent: launcher.toml's terminal, then nmtui; [] hides it
 
+[actions]
+open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth or battery: {tab} becomes sound, network, bluetooth or home
+resources = ["foot", "-e", "btop"]       # a left click on the resources module
+
+[resources]
+interval = 2         # seconds between two readings of /proc (1 to 60)
+graph = 20           # cells of CPU history (0 to 60; 0: no graph)
+sensor = ""          # an hwmon name or a thermal zone type; "": automatic
+
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
 
@@ -696,6 +713,49 @@ coarse = "low"           # "always" | "low" | "never": peripherals with only a c
 An unknown module name in `modules` is an error that makes the whole
 `bar.toml` fall back to its defaults (one warning in the log), like any other
 invalid key.
+
+The launcher, in `launcher.toml` (defaults shown; `[[sources]]` are described
+under [The launcher](#the-launcher)):
+
+```toml
+terminal = ["foot", "-e"]                        # Terminal=true apps, plain
+terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text on Enter: the terminal stays open
+rows = 10                                        # result rows (3 to 30)
+history = 200                                    # entries kept (0 to 1000; 0: no history file)
+focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
+
+[prefixes]
+commands = ">"       # non-empty, no leading space, neither a prefix of the other
+windows = "w "
+```
+
+`terminal`, `terminal_hold` and `focus` are separate argv lists (program then
+arguments, no shell); switching terminal means setting both of the first two.
+
+The control center, in `config.toml` (defaults shown):
+
+```toml
+[keys]
+dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow keys
+
+[keys.bindings]      # optional: action = ["chord", …], replaces that action's keys
+# palette = ["ctrl+k"]
+
+[commands]           # opened in alpheus's own window (program, then arguments)
+mixer = ["wiremix"]
+network = ["nmtui"]
+bluetooth = ["bluetui"]
+```
+
+Action names for `[keys.bindings]`: `quit`, `back`, `help`, `palette`,
+`search`, `next_tab`, `prev_tab`, `tab_1`…`tab_7`, `left`, `right`, `up`,
+`down`, `page_up`, `page_down`, `home`, `end`, `toggle`, `activate`,
+`decrease`, `increase`. A chord is optional modifiers joined by `+` (`ctrl`,
+`alt`, `shift`) then a key: a single character (`?`, `-`, `+`, `k`…), or
+`esc`, `enter`, `space`, `tab`, `backspace`, `up`, `down`, `left`, `right`,
+`pageup`, `pagedown`, `home`, `end`, `f1`…; case does not matter (`ctrl+p`,
+`shift+tab`). A key given to one action is taken away from the others; an
+unknown action or key makes the file invalid.
 
 ## Principles
 
