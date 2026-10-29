@@ -621,7 +621,7 @@ When the files are read: `bar.toml` **once, when the daemon starts** (restart
 `alpheus-demon` after editing it); the theme files (`theme.toml`,
 `colors.toml`, `colors-light.toml`) are **watched and reloaded live**;
 `launcher.toml` is read **at each open** of the launcher; `config.toml` and
-`displays.toml` when the control center starts.
+`displays.toml` once, when the control center starts (restart it to apply an edit).
 
 - `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
   per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
@@ -696,6 +696,8 @@ wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent
 [actions]
 open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth or battery: {tab} becomes sound, network, bluetooth or home
 resources = ["foot", "-e", "btop"]       # a left click on the resources module
+# {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth and "home" for battery; no other module runs open_tab.
+# With the quick panel (`quick` in modules) a left click on volume, network or Bluetooth opens the panel instead, and open_tab runs on the right click.
 
 [resources]
 interval = 2         # seconds between two readings of /proc (1 to 60)

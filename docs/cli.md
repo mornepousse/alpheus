@@ -40,7 +40,7 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
   daemon logs `alpheus-demon is already running (pid N)` and exits 1. The
   kernel drops the lock if the daemon dies, so nothing stale is left.
 - **Socket.** The launcher's socket is
-  `$XDG_RUNTIME_DIR/alpheus-launcher.sock` (owner-only), which
+  `$XDG_RUNTIME_DIR/alpheus-launcher.sock` (mode 0600, and the daemon refuses any peer whose uid is not its own), which
   `alpheus-launch` talks to.
 - **Signals.** SIGTERM, SIGHUP and SIGINT stop it: the loop ends normally
   (a waiting `--dmenu` gets "cancelled"), and if it does not finish within a
@@ -51,9 +51,12 @@ session with layer-shell (`WAYLAND_DISPLAY` set).
 - **Configuration** is read once at start for `bar.toml`; restart the daemon
   to apply it. Theme files reload live and `launcher.toml` is read at each
   open (see the README's [Configure](../README.md#configure) section).
-- **Exit code.** 0 after a clean stop; 1 when it cannot start (already
-  running, no Wayland session, unusable fonts or signals) or when its event
-  loop fails.
+- **Exit code.** 0 after a clean stop, and also when the compositor ends
+  the session (broken pipe or connection reset on the Wayland socket); 1
+  when it cannot start (already running, no Wayland session, unusable fonts
+  or signals) or when its event loop fails for any other reason, so that a
+  supervisor knows to relaunch it; 128 + signal number when a stop signal
+  is not honoured within the grace period.
 
 ## `alpheus-launch` (scripting bridge to the daemon)
 
