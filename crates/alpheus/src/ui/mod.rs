@@ -108,19 +108,10 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
             Tab::Appearance if app.appearance.mode_focus || app.appearance.colors_focus || app.appearance.style_focus => {
                 pairs.push((format!("{}/{}", km.label(Action::Left), km.label(Action::Right)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));
-                let next = if app.appearance.mode_focus {
-                    "Colours"
-                } else if app.appearance.colors_focus {
-                    "Style"
-                } else {
-                    "Theme"
-                };
-                pairs.push((km.label(Action::NextTab), next));
             }
             Tab::Appearance => {
                 pairs.push((format!("{}/{}", km.label(Action::Up), km.label(Action::Down)), "Choose"));
                 pairs.push((km.label(Action::Activate), "Apply"));
-                pairs.push((km.label(Action::NextTab), "Mode"));
             }
             Tab::Displays => match app.focused() {
                 Some(crate::app::Item::DisplayProfiles) => {

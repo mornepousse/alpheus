@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn light_mode_and_the_focus_on_the_mode_row() {
         let (mut a, _dir) = open("snap-light", &[("theme.toml", "theme = \"gruvbox\"\nmode = \"light\"\n")]);
-        a.on_key_action(Action::NextTab);
+        crate::app::appearance::tests::to_row(&mut a, 1);
         insta::assert_snapshot!("appearance_light", draw(&a, 100, 24).0.join("\n"));
     }
 
@@ -613,16 +613,12 @@ mod tests {
     }
 
     #[test]
-    fn the_footer_names_the_next_stop_of_the_tab_key() {
+    fn the_footer_no_longer_sends_tab_inside_the_tab() {
         let (mut a, _dir) = open("footer", &[]);
         let last = |a: &crate::app::App| draw(a, 100, 24).0[23].clone();
-        assert!(last(&a).contains("Tab Mode"), "{:?}", last(&a));
-        a.on_key_action(Action::NextTab);
-        assert!(last(&a).contains("Tab Colours"), "{:?}", last(&a));
-        a.on_key_action(Action::NextTab);
-        assert!(last(&a).contains("Tab Style"), "{:?}", last(&a));
-        a.on_key_action(Action::NextTab);
-        assert!(last(&a).contains("Tab Theme"), "{:?}", last(&a));
+        assert!(last(&a).contains("Enter Apply") && !last(&a).contains("Tab Mode"), "{:?}", last(&a));
+        crate::app::appearance::tests::to_row(&mut a, 1);
+        assert!(last(&a).contains("Choose") && !last(&a).contains("Tab Colours"), "{:?}", last(&a));
     }
 
     #[test]
@@ -643,7 +639,7 @@ mod tests {
         for m in MODES {
             assert!(hits.find(Target::AppearanceMode(m)).is_some());
         }
-        assert!(rows[23].contains("Enter Apply") && rows[23].contains("Tab Mode"), "{:?}", rows[23]);
+        assert!(rows[23].contains("Enter Apply"), "{:?}", rows[23]);
     }
 
     #[test]

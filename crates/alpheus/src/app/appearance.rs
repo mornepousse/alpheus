@@ -215,8 +215,8 @@ impl App {
     pub(crate) fn appearance_action(&mut self, a: Action, now: Instant) -> bool {
         let last = self.appearance.entries.len().saturating_sub(1);
         let ap = &mut self.appearance;
-        // Focus: 0 the list, 1 the mode row, 2 the module-colours row, 3 the style row. Tab cycles,
-        // Up and Down walk.
+        // Focus: 0 the list, 1 the mode row, 2 the module-colours row, 3 the style row. Up and Down
+        // walk, Down past the last theme reaching the rows; Tab changes tab, as everywhere.
         let focus = if ap.mode_focus {
             1
         } else if ap.colors_focus {
@@ -232,8 +232,13 @@ impl App {
             ap.style_focus = f == 3;
         };
         match a {
-            Action::NextTab => set_focus(ap, (focus + 1) % 4),
-            Action::PrevTab => set_focus(ap, (focus + 3) % 4),
+            // Walking past the list chose no theme: the cursor goes back to the one in effect, so
+            // the preview shows it and Enter on a row applies that row only.
+            Action::Down if focus == 0 && ap.cursor == last => {
+                set_focus(ap, 1);
+                ap.cursor = ap.applied.unwrap_or(ap.cursor);
+                ap.refresh_preview();
+            }
             Action::Up if focus > 0 => set_focus(ap, focus - 1),
             Action::Down if focus > 0 => set_focus(ap, (focus + 1).min(3)),
             Action::PageUp | Action::PageDown | Action::Home | Action::End if focus > 0 => {}
@@ -412,6 +417,14 @@ pub(crate) mod tests {
         a.on_key_action(action);
     }
 
+    /// From the list, down past the last theme onto row `n`: 1 mode, 2 module colours, 3 style.
+    pub fn to_row(a: &mut App, n: usize) {
+        a.on_key_action(Action::End);
+        for _ in 0..n {
+            a.on_key_action(Action::Down);
+        }
+    }
+
     fn rgb(c: Rgb) -> Color {
         Color::Rgb(c.0, c.1, c.2)
     }
@@ -457,9 +470,9 @@ pub(crate) mod tests {
         assert_eq!(a.appearance.preview, Some(preset("catppuccin").unwrap().light.unwrap()));
         act(&mut a, Action::Down);
         assert_eq!(a.appearance.preview, Some(preset("gruvbox").unwrap().light.unwrap()));
-        act(&mut a, Action::NextTab);
+        to_row(&mut a, 1); // back on the theme in effect
         act(&mut a, Action::Right); // Dark: the published mode no longer matters
-        assert_eq!(a.appearance.preview, Some(preset("gruvbox").unwrap().dark));
+        assert_eq!(a.appearance.preview, Some(preset("catppuccin").unwrap().dark));
     }
 
     #[test]
@@ -495,8 +508,7 @@ pub(crate) mod tests {
         act(&mut a, Action::PageDown);
         assert_eq!(a.appearance.cursor, 5);
         act(&mut a, Action::End);
-        act(&mut a, Action::Down);
-        assert_eq!(a.appearance.cursor, 9);
+        assert_eq!(a.appearance.cursor, 9, "the last theme; Down from there reaches the rows");
     }
 
     #[test]
@@ -517,8 +529,8 @@ pub(crate) mod tests {
     #[test]
     fn the_mode_row_applies_the_mode_and_only_the_mode() {
         let (mut a, dir) = open("mode", &[("theme.toml", "theme = \"nord\"\n")]);
-        act(&mut a, Action::NextTab);
-        assert!(a.appearance.mode_focus, "Tab moves to the mode row");
+        to_row(&mut a, 1);
+        assert!(a.appearance.mode_focus, "down past the last theme: the mode row");
         act(&mut a, Action::Right);
         act(&mut a, Action::Right);
         assert_eq!(a.appearance.mode, ModeSetting::Light);
@@ -528,43 +540,59 @@ pub(crate) mod tests {
         act(&mut a, Action::Activate);
         assert_eq!(theme_toml(&dir), "theme = \"nord\"\nmode = \"light\"\n");
         assert_eq!(a.appearance.applied_mode, ModeSetting::Light);
-        act(&mut a, Action::PrevTab);
-        assert!(!a.appearance.mode_focus, "Tab again: back to the list");
+        act(&mut a, Action::Up);
+        assert!(!a.appearance.mode_focus, "Up: back to the list");
     }
 
     #[test]
-    fn tab_walks_the_list_the_mode_the_colours_the_style_rows_and_back() {
-        let (mut a, _dir) = open("tab4", &[]);
+    fn down_past_the_last_theme_walks_the_rows_and_up_comes_back() {
+        let (mut a, _dir) = open("rows", &[]);
         let at = |a: &App| (a.appearance.mode_focus, a.appearance.colors_focus, a.appearance.style_focus);
-        assert_eq!(at(&a), (false, false, false));
-        act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (true, false, false));
-        act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (false, true, false));
-        act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (false, false, true));
-        act(&mut a, Action::NextTab);
-        assert_eq!(at(&a), (false, false, false), "around to the list");
-        act(&mut a, Action::PrevTab);
-        assert_eq!(at(&a), (false, false, true), "backwards: the style row");
-        act(&mut a, Action::Up);
-        assert_eq!(at(&a), (false, true, false), "Up walks back one row");
+        act(&mut a, Action::End);
+        assert_eq!(at(&a), (false, false, false), "End stays in the list");
         act(&mut a, Action::Down);
+        assert_eq!(at(&a), (true, false, false));
+        act(&mut a, Action::Down);
+        assert_eq!(at(&a), (false, true, false));
+        act(&mut a, Action::Down);
+        assert_eq!(at(&a), (false, false, true));
         act(&mut a, Action::Down);
         assert_eq!(at(&a), (false, false, true), "Down stops on the last row");
         act(&mut a, Action::Up);
+        assert_eq!(at(&a), (false, true, false), "Up walks back one row");
         act(&mut a, Action::Up);
         act(&mut a, Action::Up);
-        assert_eq!(at(&a), (false, false, false));
+        assert_eq!(at(&a), (false, false, false), "back in the list");
+    }
+
+    #[test]
+    fn tab_leaves_the_tab_from_the_list_and_from_the_rows() {
+        let (mut a, _dir) = open("tab-leaves", &[]);
+        act(&mut a, Action::NextTab);
+        assert_ne!(a.tab, Tab::Appearance, "Tab: the next tab, as everywhere");
+        a.go_tab(Tab::Appearance, Instant::now());
+        to_row(&mut a, 2);
+        act(&mut a, Action::PrevTab);
+        assert_eq!(a.tab, Tab::Displays, "Shift+Tab from a row: the previous tab");
+    }
+
+    #[test]
+    fn going_down_to_the_rows_puts_the_cursor_back_on_the_theme_in_effect() {
+        let (mut a, dir) = open("rows-cursor", &[("theme.toml", "theme = \"nord\"\n")]);
+        let nord = a.appearance.cursor;
+        to_row(&mut a, 1);
+        assert_eq!(a.appearance.cursor, nord, "walking past the list chose no theme");
+        assert_eq!(a.appearance.preview, Some(preset("nord").unwrap().dark), "the preview shows the theme in effect");
+        act(&mut a, Action::Right);
+        act(&mut a, Action::Activate);
+        assert_eq!(theme_toml(&dir), "theme = \"nord\"\nmode = \"dark\"\n", "Enter on the mode row: the mode only");
     }
 
     #[test]
     fn the_style_row_chooses_with_the_arrows_and_applies_with_enter_writing_only_its_key() {
         let (mut a, dir) = open("style-keys", &[("theme.toml", "# mine\ntheme = \"nord\"\nmode = \"dark\"\nopacity = 0.6\n")]);
         assert_eq!((a.appearance.style, a.appearance.applied_style), (BarStyle::Flat, BarStyle::Flat), "the default");
-        for _ in 0..3 {
-            act(&mut a, Action::NextTab);
-        }
+        to_row(&mut a, 3);
         act(&mut a, Action::Right);
         assert_eq!(a.appearance.style, BarStyle::Islands);
         for _ in 0..9 {
@@ -602,8 +630,7 @@ pub(crate) mod tests {
     #[test]
     fn the_colours_row_offers_pills() {
         let (mut a, dir) = open("pills", &[("theme.toml", "theme = \"nord\"\nmodule_colors = \"full\"\n")]);
-        act(&mut a, Action::NextTab);
-        act(&mut a, Action::NextTab);
+        to_row(&mut a, 2);
         act(&mut a, Action::Right);
         assert_eq!(a.appearance.module_colors, ModuleColors::Pills);
         act(&mut a, Action::Activate);
@@ -618,8 +645,7 @@ pub(crate) mod tests {
             (ModuleColors::Icons, ModuleColors::Icons),
             "the default"
         );
-        act(&mut a, Action::NextTab);
-        act(&mut a, Action::NextTab);
+        to_row(&mut a, 2);
         act(&mut a, Action::Right);
         assert_eq!(a.appearance.module_colors, ModuleColors::Full);
         act(&mut a, Action::Right);
@@ -648,7 +674,7 @@ pub(crate) mod tests {
         act(&mut a, Action::Home); // Wallpaper
         act(&mut a, Action::Activate);
         assert!(theme_toml(&dir).contains("module_colors = \"full\""), "{}", theme_toml(&dir));
-        act(&mut a, Action::NextTab);
+        to_row(&mut a, 1);
         act(&mut a, Action::Right);
         act(&mut a, Action::Activate);
         assert_eq!(theme_toml(&dir), "theme = \"wallpaper\"\nmodule_colors = \"full\"\nmode = \"dark\"\n");
@@ -692,7 +718,7 @@ pub(crate) mod tests {
         act(&mut a, Action::Down);
         act(&mut a, Action::Up);
         assert_eq!(bg(&a), Rgb(0x10, 0x10, 0x10), "cached: the file is not read again on a move");
-        act(&mut a, Action::NextTab);
+        to_row(&mut a, 1);
         act(&mut a, Action::Right); // Auto -> Dark: the same mode in effect, still cached
         assert_eq!(bg(&a), Rgb(0x10, 0x10, 0x10));
         act(&mut a, Action::Right);
@@ -737,17 +763,22 @@ pub(crate) mod tests {
         key(&mut a, KeyCode::Down);
         key(&mut a, KeyCode::Char('t')); // Dvorak up
         assert_eq!(a.appearance.cursor, 2);
-        key(&mut a, KeyCode::Tab);
-        assert!(a.appearance.mode_focus && a.tab == Tab::Appearance, "Tab moves the focus, it does not leave the tab");
+        key(&mut a, KeyCode::Enter);
+        assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\n");
+        key(&mut a, KeyCode::End);
+        key(&mut a, KeyCode::Char('h')); // Dvorak down, past the last theme
+        assert!(a.appearance.mode_focus && a.tab == Tab::Appearance);
         key(&mut a, KeyCode::Char('n')); // Dvorak right
         assert_eq!(a.appearance.mode, ModeSetting::Dark);
         key(&mut a, KeyCode::Char('+'));
         assert_eq!(a.appearance.mode, ModeSetting::Light);
         key(&mut a, KeyCode::Char('-'));
         assert_eq!(a.appearance.mode, ModeSetting::Dark);
-        assert!(!dir.join("theme.toml").exists(), "still nothing written");
         key(&mut a, KeyCode::Enter);
-        assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\nmode = \"dark\"\n", "the theme moved off the one in effect: both are applied");
+        assert_eq!(theme_toml(&dir), "theme = \"gruvbox\"\nmode = \"dark\"\n");
+        key(&mut a, KeyCode::Tab);
+        assert_eq!(a.tab, Tab::Home, "Tab leaves the tab, as everywhere");
+        key(&mut a, KeyCode::Char('7'));
         key(&mut a, KeyCode::Esc);
         assert_eq!(a.tab, Tab::Home, "Esc as in the other tabs");
         key(&mut a, KeyCode::Char('7'));

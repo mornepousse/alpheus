@@ -311,7 +311,7 @@ mod tests {
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
         assert_eq!(a.tab, Tab::Appearance, "Shift+Tab from Home: the last tab");
         press(&mut a, KeyCode::BackTab, KeyModifiers::SHIFT);
-        assert_eq!(a.tab, Tab::Appearance, "on Appearance, Shift+Tab moves the focus instead");
+        assert_eq!(a.tab, Tab::Displays, "on Appearance too, Shift+Tab changes tab");
         c(&mut a, '5');
         assert_eq!(a.tab, Tab::Power);
         c(&mut a, '6');
