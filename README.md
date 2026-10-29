@@ -770,6 +770,8 @@ unknown action or key makes the file invalid.
 
 ## Documentation
 
+- [`docs/cli.md`](docs/cli.md): the command lines of `alpheus`,
+  `alpheus-demon` and `alpheus-launch`: verbs, options, exit codes.
 - [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
 - [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
   bar, launcher, tray, themes, media, notifications, OSD).
