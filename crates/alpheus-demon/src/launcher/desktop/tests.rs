@@ -243,6 +243,28 @@ fn try_exec_needs_its_program() {
 }
 
 #[test]
+fn an_entry_whose_program_is_gone_is_absent() {
+    // An app removed without its .desktop file (a store path collected by the GC, an /opt
+    // directory deleted): its Exec program no longer exists. Absent, not masked, so a valid
+    // entry of the same id in a lower directory still shows.
+    let asked = RefCell::new(Vec::new());
+    let only = |present: &'static str| {
+        let asked = &asked;
+        move |p: &str| {
+            asked.borrow_mut().push(p.to_string());
+            p == present
+        }
+    };
+    let gone = "[Desktop Entry]\nType=Application\nName=Gone\nExec=\"/opt/gone app/bin/gone\" %u\n";
+    assert_eq!(inline(gone, &penv(None, &[], &only("other"))), Err("program not found".to_string()));
+    assert_eq!(asked.borrow().last().map(String::as_str), Some("/opt/gone app/bin/gone"), "the unquoted program");
+    assert!(matches!(inline(gone, &penv(None, &[], &only("/opt/gone app/bin/gone"))), Ok(Verdict::Show(_))));
+    let bare = "[Desktop Entry]\nType=Application\nName=Bare\nExec=gone --flag\n";
+    assert_eq!(inline(bare, &penv(None, &[], &only("other"))), Err("program not found".to_string()));
+    assert!(matches!(inline(bare, &penv(None, &[], &only("gone"))), Ok(Verdict::Show(_))));
+}
+
+#[test]
 fn only_show_in_and_not_show_in() {
     let only = |desktops: &[&str]| verdict("onlyshowin.desktop", &penv(None, &strings(desktops), &any_program));
     assert_eq!(only(&["Hyprland"]), Ok(Verdict::Mask("OnlyShowIn")));

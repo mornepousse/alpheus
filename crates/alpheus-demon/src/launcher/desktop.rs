@@ -95,7 +95,7 @@ pub struct ParseEnv<'a> {
     pub locale: Option<&'a Locale>,
     /// XDG_CURRENT_DESKTOP split on ':'; empty → OnlyShowIn/NotShowIn ignored.
     pub desktops: &'a [String],
-    /// TryExec resolution (absolute path: executable file; bare name: on $PATH).
+    /// TryExec and Exec program resolution (absolute path: executable file; bare name: on $PATH).
     pub has_program: &'a dyn Fn(&str) -> bool,
 }
 
@@ -279,7 +279,7 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &ParseEnv) -> Result<Verdic
     let exec = string(&main, "Exec").ok_or_else(|| "missing Exec".to_string())?;
     let icon = string(&main, "Icon");
     let ctx = ExecContext { name: &name, icon: icon.as_deref(), path };
-    exec_argv(&exec, &ctx).map_err(|BadExec(m)| format!("invalid Exec: {m}"))?;
+    let argv = exec_argv(&exec, &ctx).map_err(|BadExec(m)| format!("invalid Exec: {m}"))?;
     if !env.desktops.is_empty() {
         if main.get("OnlyShowIn").is_some_and(|only| !listed(&list(only), env.desktops)) {
             return Ok(Verdict::Mask("OnlyShowIn"));
@@ -290,6 +290,12 @@ pub fn parse(id: &str, path: &Path, text: &str, env: &ParseEnv) -> Result<Verdic
     }
     if string(&main, "TryExec").is_some_and(|program| !(env.has_program)(&program)) {
         return Ok(Verdict::Mask("TryExec"));
+    }
+    // An app removed without its .desktop file (a store path collected by the GC, an /opt
+    // directory deleted) leaves an Exec program that no longer exists: as if the file were
+    // absent, so a valid entry of the same id in a lower directory still shows.
+    if argv.first().is_some_and(|program| !(env.has_program)(program)) {
+        return Err("program not found".into());
     }
     let mut actions: Vec<DesktopAction> = Vec::new();
     for key in main.get("Actions").map(|a| list(a)).unwrap_or_default() {
