@@ -2154,6 +2154,14 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(matches!((dropped, closed), (Some(d), Some(c)) if d < c), "popup_close must let the quick panel go: {close}");
     let row = popup_ops_row(&quick_app);
     assert!(row.contains("flush: App::quick_flush,") && row.contains("closed: App::quick_closed,"), "the quick panel's row: {row}");
+    // The media popup's and the panel's card's Seeked rule and 1 s tick go when either closes.
+    for name in ["media_app.rs", "panel_app.rs"] {
+        let text = src(name);
+        let row = popup_ops_row(&text);
+        assert!(row.contains("closed: App::media_closed,"), "{name}: the tick must go with the popup: {row}");
+    }
+    let media_closed = function_body(&src("media_app.rs"), "pub(crate) fn media_closed(").to_string();
+    assert!(media_closed.contains("popup_closed(out)") && media_closed.contains("self.media_timer_sync()"), "{media_closed}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
@@ -2376,6 +2384,8 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
     assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync_opt("), "{sync}");
     assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
+    let row = popup_ops_row(&app);
+    assert!(row.contains("flush: no_hook,") && row.contains("closed: no_hook,"), "closing the popup never touches it: {row}");
     // Each message: a change follows `privacy_changed`; anything else still re-syncs the timer, since
     // an indicator going off changes nothing shown yet, only the deadline (without it, the glyph
     // stays lit until the next message).

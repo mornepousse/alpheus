@@ -272,8 +272,8 @@ impl ModulePopup {
 pub(crate) struct PopupOps {
     /// The popup this row is for: its index in `POPUPS`.
     pub kind: ModulePopup,
-    /// A press on its module (`module_popup_at`, wayland.rs): opens it under `anchor`, or closes it
-    /// when it is open. The target is the zone pressed (the quick panel's section).
+    /// A press on its module (`click`, wayland.rs): opens it under `anchor`, or closes it when it
+    /// is open. The target is the zone pressed (the quick panel's section).
     pub toggle: fn(&mut App, &QueueHandle<App>, Anchor, &Target),
     /// A key while it is open.
     pub key: fn(&mut App, Key),
@@ -736,13 +736,23 @@ impl App {
     /// A key while a grabbing popup is open (the launcher is closed).
     pub(crate) fn popup_key(&mut self, k: Key) {
         let Some(body) = self.popup_body() else { return };
-        if let Some(p) = body.module_popup() {
-            return (p.ops().key)(self, k);
-        }
-        // A tooltip takes no key.
-        if let PopupBody::Menu(_) = body {
-            let action = self.menu_with(|m, layout| m.key(k, layout));
-            self.menu_action(action, self.key_time);
+        match body {
+            PopupBody::Menu(_) => {
+                let action = self.menu_with(|m, layout| m.key(k, layout));
+                self.menu_action(action, self.key_time);
+            }
+            PopupBody::Tooltip(_) => {}
+            // The module popups: their own row (`POPUPS`).
+            PopupBody::Calendar(_)
+            | PopupBody::Media(_)
+            | PopupBody::Panel(_)
+            | PopupBody::Quick(_)
+            | PopupBody::Power(_)
+            | PopupBody::Privacy => {
+                if let Some(p) = body.module_popup() {
+                    (p.ops().key)(self, k);
+                }
+            }
         }
     }
 
@@ -763,9 +773,6 @@ impl App {
     /// where no cell is.
     pub(crate) fn popup_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
         let Some(body) = self.popup_body() else { return };
-        if let Some(p) = body.module_popup() {
-            return (p.ops().pointer)(self, cell, kind);
-        }
         match body {
             // One entry per row: the column never matters.
             PopupBody::Menu(_) => {
@@ -787,8 +794,17 @@ impl App {
                     self.popup_close(PopupClose::HoverEnded);
                 }
             }
-            // The module popups: their own rows, above.
-            _ => {}
+            // The module popups: their own row (`POPUPS`).
+            PopupBody::Calendar(_)
+            | PopupBody::Media(_)
+            | PopupBody::Panel(_)
+            | PopupBody::Quick(_)
+            | PopupBody::Power(_)
+            | PopupBody::Privacy => {
+                if let Some(p) = body.module_popup() {
+                    (p.ops().pointer)(self, cell, kind);
+                }
+            }
         }
     }
 
