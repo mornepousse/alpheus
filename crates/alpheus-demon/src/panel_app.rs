@@ -1,17 +1,29 @@
 //! The notification panel's wiring: a left press on the bell toggles it, its actions (the card's
 //! controls, invoking, removing, do-not-disturb, clearing) and its refresh after each change.
 
+use crate::keys::Key;
 use crate::log::write as log;
 use crate::media::Players;
 use crate::media_popup::MediaAction;
 use crate::notify::Center;
 use crate::panel::{self, Panel, PanelAction};
-use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::tray::mpris::Mpris;
 use crate::tray_bridge::{mpris_of, notifications_of};
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
+
+/// The notification panel's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Panel,
+    toggle: |app, qh, anchor, _| app.panel_toggle(qh, anchor),
+    key: App::panel_key,
+    pointer: App::panel_pointer,
+    flush: no_hook,
+    // The card's Seeked rule and tick are the media popup's: they go when the panel closes.
+    closed: App::media_closed,
+};
 
 impl App {
     /// Left press on the bell: toggles the panel under it (a second click closes it). Opening marks
@@ -138,5 +150,26 @@ impl App {
         }
         self.popup_paint(rows);
         self.media_timer_sync();
+    }
+
+    /// ↑ ↓ Home End, Enter, Delete, Escape; the card's keys on the card (spec § 4).
+    fn panel_key(&mut self, k: Key) {
+        let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
+        self.panel_action(action);
+    }
+
+    /// A press acts on its row; the wheel moves the selection, a notch a row, one repaint.
+    fn panel_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
+        match (kind, cell) {
+            (PopupPointer::Press(b), Some(c)) => {
+                let action = self.panel_with(|p, center, players| panel::press(p, center, players, c, b));
+                self.panel_action(action);
+            }
+            (PopupPointer::Scroll(steps), _) => {
+                let action = self.panel_with(|p, center, players| panel::scroll(p, center, players, steps));
+                self.panel_action(action);
+            }
+            _ => {}
+        }
     }
 }
