@@ -17,17 +17,15 @@
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
-use crate::config::ModuleId;
 use crate::grid::Target;
 use crate::keys::{self, Key, Mods};
-use crate::list::{self, Boxed};
+use crate::list::Boxed;
 use crate::log::write as log;
-use crate::media_popup::{self, MediaPopup};
+use crate::media_popup::MediaPopup;
 use crate::painter::{Frame, FrameInk};
-use crate::panel::{self, Panel};
+use crate::panel::Panel;
 use crate::power::Power;
-use crate::power_app;
-use crate::quick::{Quick, QuickAction};
+use crate::quick::Quick;
 use crate::tray::codec::Layout;
 use crate::tray::menu::{Menu, MenuAction};
 use crate::tray::menu_session::MenuSession;
@@ -257,17 +255,51 @@ impl ModulePopup {
     /// The popup a press of `b` on `target` toggles: a left press on its module's zone. `quick`:
     /// the quick module is in `modules` (without it, those three modules keep their own clicks).
     pub fn of(target: &Target, b: Button, quick: bool) -> Option<ModulePopup> {
-        match (target, b) {
-            (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
-            (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
-            (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
-            (Target::Module(ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth), Button::Left) if quick => Some(ModulePopup::Quick),
-            (Target::Module(ModuleId::Power), Button::Left) => Some(ModulePopup::Power),
-            (Target::Module(ModuleId::Privacy), Button::Left) => Some(ModulePopup::Privacy),
-            _ => None,
-        }
+        let (Target::Module(m), Button::Left) = (target, b) else { return None };
+        let spec = m.spec();
+        spec.popup.filter(|_| quick || !spec.popup_needs_quick)
+    }
+
+    /// This popup's row of `POPUPS`.
+    pub(crate) fn ops(self) -> &'static PopupOps {
+        let row = &POPUPS[self as usize];
+        debug_assert_eq!(row.kind, self, "POPUPS out of variant order");
+        row
     }
 }
+
+/// What the generic popup code calls for one module popup; each row lives in its `*_app.rs`.
+pub(crate) struct PopupOps {
+    /// The popup this row is for: its index in `POPUPS`.
+    pub kind: ModulePopup,
+    /// A press on its module (`click`, wayland.rs): opens it under `anchor`, or closes it when it
+    /// is open. The target is the zone pressed (the quick panel's section).
+    pub toggle: fn(&mut App, &QueueHandle<App>, Anchor, &Target),
+    /// A key while it is open.
+    pub key: fn(&mut App, Key),
+    /// The pointer on it, at a cell (column, row) of its rows; None: in the frame's margin.
+    pub pointer: fn(&mut App, Option<(u16, u16)>, PopupPointer),
+    /// `popup_close`, before its body goes: what still needs the body. `no_hook` when nothing does.
+    pub flush: fn(&mut App),
+    /// `popup_close`, once its body is dropped, whatever the reason: its timers and taps let go.
+    /// `no_hook` when it holds none.
+    pub closed: fn(&mut App),
+}
+
+/// The module popups, one row per `ModulePopup` variant, in variant order (a test checks it). A new
+/// popup: its variant, its body in `PopupBody` and `module_popup`, an `OPS` row in its `*_app.rs`,
+/// listed here, and the module's `popup` in `modules.rs`.
+static POPUPS: [PopupOps; 6] = [
+    crate::calendar_app::OPS,
+    crate::media_app::OPS,
+    crate::panel_app::OPS,
+    crate::quick_app::OPS,
+    crate::power_app::OPS,
+    crate::privacy_app::OPS,
+];
+
+/// A row's hook for a popup with nothing to do there.
+pub(crate) fn no_hook(_: &mut App) {}
 
 impl PopupBody {
     /// The module whose click opened this popup, if any.
@@ -633,8 +665,8 @@ impl App {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
         let menu = matches!(self.popup_body(), Some(PopupBody::Menu(_)));
-        // The panel's card follows the same Seeked rule and tick: they go when it closes.
-        let media = self.media_shown() || self.panel_shown();
+        // A module popup's own hooks (its `POPUPS` row): `flush` before its body goes, `closed` after.
+        let kind = self.popup_body().and_then(PopupBody::module_popup);
         // The compositor may deliver `xdg_popup.
         // done` (routed here as Dismissed) before the press that follows it reaches the bar — a
         // record of what just closed, by whom it was opened, and when, lets that next press still
@@ -648,18 +680,16 @@ impl App {
         // The same race for a module's popup (the calendar; the media popup): a left press on
         // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).
         if why == PopupClose::Dismissed
-            && let Some(p) = self.popup_body().and_then(PopupBody::module_popup)
+            && let Some(p) = kind
         {
             self.recently_closed_popup = Some((p, Instant::now()));
         }
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
-        let quick = matches!(self.popup_body(), Some(PopupBody::Quick(_)));
-        if quick {
-            self.quick_flush();
+        if let Some(p) = kind {
+            (p.ops().flush)(self);
         }
-        let power = matches!(self.popup_body(), Some(PopupBody::Power(_)));
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
@@ -669,19 +699,9 @@ impl App {
             self.tooltip_item = None;
         }
         drop(open);
-        if quick {
-            // Whatever the reason: the sound thread back to its own scope, the panel's timer gone.
-            self.quick_closed();
-        }
-        if power {
-            // Whatever the reason: the question's timer goes with the menu (power spec § 4).
-            self.power_closed();
-        }
-        if media {
-            // Whatever the reason (Escape, outside click, restyle, output gone, replaced): the
-            // Seeked rule goes and the tick with it — `media_timer_sync` sees no popup now.
-            self.mpris_do(|m, out| m.popup_closed(out));
-            self.media_timer_sync();
+        if let Some(p) = kind {
+            // Whatever the reason (Escape, outside click, restyle, output gone, replaced).
+            (p.ops().closed)(self);
         }
         if grab {
             // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name`:
@@ -715,62 +735,25 @@ impl App {
 
     /// A key while a grabbing popup is open (the launcher is closed).
     pub(crate) fn popup_key(&mut self, k: Key) {
-        let Some(open) = self.popup.as_ref() else { return };
-        match open.body {
+        let Some(body) = self.popup_body() else { return };
+        match body {
             PopupBody::Menu(_) => {
                 let action = self.menu_with(|m, layout| m.key(k, layout));
                 self.menu_action(action, self.key_time);
             }
-            // ← → change month, Escape closes (spec § 2).
-            PopupBody::Calendar(_) => match k {
-                Key::Left => self.calendar_scroll(-1),
-                Key::Right => self.calendar_scroll(1),
-                Key::Escape => self.popup_close(PopupClose::Escape),
-                _ => {}
-            },
-            // ↑ ↓ ← →, Enter, Escape (spec § 2).
-            PopupBody::Media(_) => {
-                let action = self.media_with(|p, players| media_popup::key(p, players, k));
-                self.media_action(action);
-            }
-            // ↑ ↓ Home End, Enter, Delete, Escape; the card's keys on the card (spec § 4).
-            PopupBody::Panel(_) => {
-                let action = self.panel_with(|p, center, players| panel::key(p, center, players, k));
-                self.panel_action(action);
-            }
-            // ↑ ↓ ← →, Space, Enter, Escape, Home, End (quick spec § 3); the repeat tells a held key.
-            PopupBody::Quick(_) => {
-                let (repeat, now) = (self.key_repeat, Instant::now());
-                let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
-                self.quick_action(action);
-            }
-            // ↑ ↓ Tab Shift+Tab, Enter, Space, Escape (power spec § 2); the repeat tells a held key.
-            PopupBody::Power(_) => {
-                let (repeat, now) = (self.key_repeat, Instant::now());
-                let action = self.power_with(|p| p.key(k, repeat, now));
-                self.power_action(action);
-            }
-            // Not selectable: Escape closes it, every other key does nothing (privacy spec § 5).
-            PopupBody::Privacy => {
-                if k == Key::Escape {
-                    self.popup_close(PopupClose::Escape);
+            PopupBody::Tooltip(_) => {}
+            // The module popups: their own row (`POPUPS`).
+            PopupBody::Calendar(_)
+            | PopupBody::Media(_)
+            | PopupBody::Panel(_)
+            | PopupBody::Quick(_)
+            | PopupBody::Power(_)
+            | PopupBody::Privacy => {
+                if let Some(p) = body.module_popup() {
+                    (p.ops().key)(self, k);
                 }
             }
-            PopupBody::Tooltip(_) => {}
         }
-    }
-
-    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint`
-    /// repositions on a size change.
-    fn calendar_scroll(&mut self, months: i32) {
-        let Some(PopupBody::Calendar(c)) = self.popup_body_mut() else { return };
-        if !c.scroll(months) {
-            return;
-        }
-        let rows = list::padded(&c.render());
-        let month = calendar_month(c);
-        self.popup_paint(rows);
-        log(&format!("calendar shows {month}"));
     }
 
     /// Runs `f` on the open menu and its session's layout; Nothing when either is missing — the
@@ -789,8 +772,8 @@ impl App {
     /// The pointer on the popup, at `cell` (column, row) of its rows; None: in the frame's margin,
     /// where no cell is.
     pub(crate) fn popup_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
-        let Some(open) = self.popup.as_ref() else { return };
-        match open.body {
+        let Some(body) = self.popup_body() else { return };
+        match body {
             // One entry per row: the column never matters.
             PopupBody::Menu(_) => {
                 let content = cell.map(|(_, row)| row);
@@ -805,53 +788,21 @@ impl App {
                 // right click, say), not necessarily the one running an entry inside it.
                 self.menu_action(action, self.popup_press_time);
             }
-            // The wheel changes month.
-            PopupBody::Calendar(_) => {
-                if let PopupPointer::Scroll(steps) = kind {
-                    self.calendar_scroll(steps);
-                }
-            }
-            // A left press on a button or a player does what Enter does; nothing else reacts.
-            PopupBody::Media(_) => {
-                if let (PopupPointer::Press(Button::Left), Some(c)) = (kind, cell) {
-                    let action = self.media_with(|p, players| media_popup::press(p, players, c, media_popup::WIDTH));
-                    self.media_action(action);
-                }
-            }
-            // A press acts on its row; the wheel moves the selection, a notch a row, one repaint.
-            PopupBody::Panel(_) => match (kind, cell) {
-                (PopupPointer::Press(b), Some(c)) => {
-                    let action = self.panel_with(|p, center, players| panel::press(p, center, players, c, b));
-                    self.panel_action(action);
-                }
-                (PopupPointer::Scroll(steps), _) => {
-                    let action = self.panel_with(|p, center, players| panel::scroll(p, center, players, steps));
-                    self.panel_action(action);
-                }
-                _ => {}
-            },
-            // A press acts on its row; the wheel steps a slider or moves the window (quick spec § 3).
-            PopupBody::Quick(_) => {
-                let now = Instant::now();
-                let action = match (kind, cell) {
-                    (PopupPointer::Press(b), Some(c)) => self.quick_with(|q, live| q.press(live, c, b, now)),
-                    (PopupPointer::Scroll(steps), _) => self.quick_with(|q, live| q.scroll(live, cell, steps, now)),
-                    _ => QuickAction::Nothing,
-                };
-                self.quick_action(action);
-            }
-            // One entry per row: hovering selects, a left press activates (power spec § 2).
-            PopupBody::Power(_) => {
-                let now = Instant::now();
-                let action = self.power_with(|p| power_app::pointer(p, cell, kind, now));
-                self.power_action(action);
-            }
-            // Nothing on it reacts: a click or the wheel inside does nothing (privacy spec § 5).
-            PopupBody::Privacy => {}
             // A press on the tooltip dismisses it (nothing in it is clickable).
             PopupBody::Tooltip(_) => {
                 if let PopupPointer::Press(_) = kind {
                     self.popup_close(PopupClose::HoverEnded);
+                }
+            }
+            // The module popups: their own row (`POPUPS`).
+            PopupBody::Calendar(_)
+            | PopupBody::Media(_)
+            | PopupBody::Panel(_)
+            | PopupBody::Quick(_)
+            | PopupBody::Power(_)
+            | PopupBody::Privacy => {
+                if let Some(p) = body.module_popup() {
+                    (p.ops().pointer)(self, cell, kind);
                 }
             }
         }
@@ -1104,6 +1055,37 @@ impl WindowHandler for App {
 mod tests {
     use super::*;
 
+    /// Which hooks run at a close hang on this map: every module body names its popup.
+    #[test]
+    fn every_module_body_names_its_popup_and_the_others_none() {
+        use crate::calendar::Calendar;
+        use crate::clock::LocalTime;
+        use crate::config::{NotificationsConfig, QuickConfig};
+        use crate::media::Players;
+        use crate::notify::Center;
+        use crate::quick::Live;
+        let today = LocalTime { year: 2026, month: 10, day: 5, weekday: 1, hour: 9, minute: 30, second: 0 };
+        let config = QuickConfig::default();
+        let live = Live { sound: None, dnd: None, profile: None, config: &config, bluetooth: None };
+        let center = Center::new(&NotificationsConfig::default(), false);
+        let bodies = [
+            (PopupBody::Calendar(Calendar::new(&today, 1, false)), Some(ModulePopup::Calendar)),
+            (PopupBody::Media(MediaPopup::new(&Players::default())), Some(ModulePopup::Media)),
+            (PopupBody::Panel(Panel::new(&center, None, 40)), Some(ModulePopup::Panel)),
+            (
+                PopupBody::Quick(Box::new(Quick::new(crate::quick::Focus::Top, &live, Vec::new(), None, [None; 2], 40))),
+                Some(ModulePopup::Quick),
+            ),
+            (PopupBody::Power(Power::new(&config).unwrap()), Some(ModulePopup::Power)),
+            (PopupBody::Privacy, Some(ModulePopup::Privacy)),
+            (PopupBody::Menu(Menu::new()), None),
+            (PopupBody::Tooltip("x".into()), None),
+        ];
+        for (body, popup) in bodies {
+            assert_eq!(body.module_popup(), popup);
+        }
+    }
+
     #[test]
     fn only_a_left_press_on_the_clock_toggles_its_popup() {
         use crate::config::ModuleId;
@@ -1173,6 +1155,36 @@ mod tests {
             }
         }
         assert_eq!(PopupBody::Privacy.module_popup(), Some(ModulePopup::Privacy), "a second press only closes it");
+    }
+
+    /// Every variant with the row it must have. The `match` is exhaustive: a variant added to
+    /// `ModulePopup` stops this file compiling until it is listed here, and listed, its row must exist.
+    macro_rules! rows {
+        ($($variant:ident => $index:expr),* $(,)?) => {
+            #[allow(dead_code)]
+            fn row_of(p: ModulePopup) -> usize {
+                match p {
+                    $(ModulePopup::$variant => $index),*
+                }
+            }
+            const LISTED: &[(ModulePopup, usize)] = &[$((ModulePopup::$variant, $index)),*];
+        };
+    }
+
+    rows! { Calendar => 0, Media => 1, Panel => 2, Quick => 3, Power => 4, Privacy => 5 }
+
+    /// `POPUPS` is indexed by `ModulePopup as usize`: one row per variant, in variant order.
+    #[test]
+    fn one_popup_row_per_variant_in_variant_order() {
+        for &(p, i) in LISTED {
+            assert_eq!(p as usize, i, "{p:?}'s discriminant is not its row");
+            assert_eq!(POPUPS.get(i).map(|r| r.kind), Some(p), "{p:?} has no row at {i}");
+            assert_eq!(p.ops().kind, p, "{p:?}");
+        }
+        assert_eq!(LISTED.len(), POPUPS.len(), "a row for no variant, or a variant for no row");
+        for (i, row) in POPUPS.iter().enumerate() {
+            assert_eq!(row.kind as usize, i, "{:?} is not at its own index", row.kind);
+        }
     }
 
     fn under(output: &str, start: u16, end: u16) -> Anchor {

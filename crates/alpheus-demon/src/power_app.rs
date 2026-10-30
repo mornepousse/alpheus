@@ -4,14 +4,26 @@
 //! power-off question is pending, and goes with the menu whatever closes it (`power_closed`).
 
 use crate::actions::Button;
+use crate::keys::Key;
 use crate::log::write as log;
-use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose, PopupPointer};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::power::{Power, PowerAction};
 use crate::session::Session;
 use crate::wayland::App;
 use alpheus_commun::exec::Executor;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
+
+/// The power menu's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Power,
+    toggle: |app, qh, anchor, _| app.power_toggle(qh, anchor),
+    key: App::power_key,
+    pointer: App::power_pointer,
+    flush: no_hook,
+    // Whatever the reason: the question's timer goes with the menu (power spec § 4).
+    closed: App::power_closed,
+};
 
 /// Spawns `s`'s command `argv` (`[quick]`'s, as given), never waiting (power spec § 3). The log
 /// line: "power: <word>", or "power: <word> could not start (<error>)"; never the command itself,
@@ -39,6 +51,20 @@ pub(crate) fn pointer(menu: &mut Power, cell: Option<(u16, u16)>, kind: PopupPoi
 impl App {
     pub(crate) fn power_shown(&self) -> bool {
         matches!(self.popup_body(), Some(PopupBody::Power(_)))
+    }
+
+    /// ↑ ↓ Tab Shift+Tab, Enter, Space, Escape (power spec § 2); the repeat tells a held key.
+    fn power_key(&mut self, k: Key) {
+        let (repeat, now) = (self.key_repeat, Instant::now());
+        let action = self.power_with(|p| p.key(k, repeat, now));
+        self.power_action(action);
+    }
+
+    /// One entry per row: hovering selects, a left press activates (power spec § 2).
+    fn power_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
+        let now = Instant::now();
+        let action = self.power_with(|p| pointer(p, cell, kind, now));
+        self.power_action(action);
     }
 
     /// A left press on the power button: toggles its menu under it (a second press closes it).

@@ -11,10 +11,10 @@
 //! battery, the launcher button, and last the power button); workspaces, the
 //! clock and the notifications bell always stay.
 //!
-//! Groups (shapes spec § 2): consecutive modules of one kind (`group_kind`) make one block, never
-//! across the free space. `flat` and `underline` keep the "│" separators; the block styles put
-//! one blank pad cell inside each end of a block, one blank cell between blocks (powerline's
-//! arrow cell) and two blank cells between the modules of one block. The grid records the
+//! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one
+//! block, never across the free space. `flat` and `underline` keep the "│" separators; the block
+//! styles put one blank pad cell inside each end of a block, one blank cell between blocks
+//! (powerline's arrow cell) and two blank cells between the modules of one block. The grid records the
 //! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
 
 use crate::compositor::{CompositorState, Workspace};
@@ -77,50 +77,6 @@ fn spacing(style: BarStyle) -> Spacing {
     }
 }
 
-/// The block a module belongs to (shapes spec § 2). Media is a block of its own (media spec § 1);
-/// the bell joins the status block.
-pub fn group_kind(m: ModuleId) -> GroupKind {
-    match m {
-        ModuleId::Launcher => GroupKind::Launcher,
-        ModuleId::Workspaces => GroupKind::Workspaces,
-        ModuleId::Window => GroupKind::Title,
-        ModuleId::Media => GroupKind::Media,
-        ModuleId::Volume
-        | ModuleId::Network
-        | ModuleId::Bluetooth
-        | ModuleId::Battery
-        | ModuleId::Notifications
-        | ModuleId::Osd
-        | ModuleId::Quick => GroupKind::Status,
-        ModuleId::Privacy => GroupKind::Privacy,
-        ModuleId::Resources => GroupKind::Resources,
-        ModuleId::Tray => GroupKind::Tray,
-        ModuleId::Clock => GroupKind::Clock,
-        ModuleId::Power => GroupKind::Power,
-    }
-}
-
-/// A module's fixed hue (themes spec § 9; the CPU's orange for resources), None for the modules
-/// without one.
-pub const fn module_hue(m: ModuleId) -> Option<Hue> {
-    match m {
-        ModuleId::Window | ModuleId::Bluetooth | ModuleId::Media => Some(Hue::Purple),
-        ModuleId::Volume => Some(Hue::Blue),
-        ModuleId::Network => Some(Hue::Cyan),
-        ModuleId::Battery => Some(Hue::Green),
-        ModuleId::Resources => Some(Hue::Orange),
-        ModuleId::Launcher
-        | ModuleId::Workspaces
-        | ModuleId::Tray
-        | ModuleId::Notifications
-        | ModuleId::Osd
-        | ModuleId::Quick
-        | ModuleId::Privacy
-        | ModuleId::Clock
-        | ModuleId::Power => None,
-    }
-}
-
 pub(crate) struct Piece {
     pub(crate) text: String,
     pub(crate) style: Style,
@@ -177,7 +133,7 @@ fn workspace_style(w: &Workspace) -> Style {
 
 /// `None` if the compositor knows no workspace at all: no empty segment (no
 /// "│ │"), rather than a segment with no piece.
-fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
+pub(crate) fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
     let pieces = match state {
         Feed::Waiting => vec![piece(" … ", Style::MUTED)],
         Feed::Down => vec![piece(" – ", Style::MUTED)],
@@ -202,7 +158,7 @@ fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
 
 /// `None` with no active window: no empty segment (no "│ <empty> │"),
 /// rather than an empty text piece.
-fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
+pub(crate) fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
     let pieces = match state {
         Feed::Waiting => vec![piece("…", Style::NORMAL)],
         Feed::Down => vec![piece("–", Style::NORMAL)],
@@ -216,7 +172,7 @@ fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
 }
 
 /// The clock is a click zone only when a left click opens the calendar (`[clock] calendar`).
-fn bar_clock(bar: &Bar) -> Segment {
+pub(crate) fn bar_clock(bar: &Bar) -> Segment {
     let pieces = match &bar.clock {
         None => vec![piece("…", Style::MUTED)],
         Some(h) => {
@@ -235,27 +191,7 @@ fn bar_clock(bar: &Bar) -> Segment {
 
 /// A module's segment, or None if it has nothing to show.
 fn segment(bar: &Bar, m: ModuleId, output: &str) -> Option<Segment> {
-    match m {
-        ModuleId::Launcher => Some(segments::launcher()),
-        ModuleId::Workspaces => workspaces(&bar.compositor, output),
-        ModuleId::Window => window(&bar.compositor, bar.module_colors),
-        ModuleId::Clock => Some(bar_clock(bar)),
-        ModuleId::Volume => segments::volume(&bar.sound, bar.module_colors),
-        ModuleId::Network => segments::network(&bar.network, bar.module_colors),
-        ModuleId::Bluetooth => segments::bluetooth(&bar.bluetooth, bar.module_colors),
-        ModuleId::Battery => segments::battery(&bar.battery, &bar.config.battery, bar.module_colors),
-        ModuleId::Resources => segments::resources(&bar.resources, &bar.config.resources, bar.module_colors),
-        ModuleId::Tray => segments::tray(&bar.tray, &bar.config.tray),
-        ModuleId::Media => segments::media(bar.media.as_ref(), bar.module_colors),
-        ModuleId::Notifications => segments::notifications(bar.notifications.as_ref()),
-        // The OSD draws its own surface (osd_surface.rs), never in the bar.
-        ModuleId::Osd => None,
-        // The quick panel is a popup (quick.rs), never a segment.
-        ModuleId::Quick => None,
-        ModuleId::Privacy => segments::privacy(&bar.privacy),
-        // ⏻ alone; none when `[quick]` has no session command (power spec § 1).
-        ModuleId::Power => segments::power(&bar.config.quick),
-    }
+    m.spec().segment.and_then(|f| f(bar, output))
 }
 
 /// The segment the free space goes before when none is elastic: `gap_at` (the absent window
@@ -274,7 +210,7 @@ fn space_before(segs: &[Segment], gap_at: Option<usize>) -> Option<usize> {
 /// True when segment `i` starts a block: the first one, another kind than the one before it, or
 /// right after the free space.
 fn opens_group(segs: &[Segment], i: usize, space: Option<usize>) -> bool {
-    i == 0 || space == Some(i) || group_kind(segs[i - 1].module) != group_kind(segs[i].module)
+    i == 0 || space == Some(i) || segs[i - 1].module.spec().group != segs[i].module.spec().group
 }
 
 /// Cells between segment `i - 1` and segment `i` (`i > 0`), the free space aside.
@@ -380,7 +316,7 @@ pub(crate) fn lay_out_styled(segs: &[Segment], columns: u16, gap_at: Option<usiz
             {
                 record_block(&mut g, Group { kind, start, end: text_end.saturating_add(pad), hue });
             }
-            open = Some((group_kind(s.module), x, if s.withhold_hue { None } else { module_hue(s.module) }));
+            open = Some((s.module.spec().group, x, if s.withhold_hue { None } else { s.module.spec().hue }));
             x = x.saturating_add(pad);
         }
         let limit = if s.elastic { x.saturating_add(free).min(end) } else { end };

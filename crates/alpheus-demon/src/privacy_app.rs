@@ -3,8 +3,9 @@
 //! `Privacy::deadline` whether the popup is open or not, and the popup, opened by a left press on
 //! the module, follows what is shown and closes once nothing is.
 
+use crate::keys::Key;
 use crate::log::write as log;
-use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, no_hook};
 use crate::state::Msg;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -28,9 +29,28 @@ pub(crate) fn after_change(shown_empty: bool, open: bool) -> Follow {
     }
 }
 
+/// The privacy popup's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Privacy,
+    toggle: |app, qh, anchor, _| app.privacy_toggle(qh, anchor),
+    key: App::privacy_key,
+    // Nothing on it reacts: a click or the wheel inside does nothing (privacy spec § 5).
+    pointer: |_, _, _| {},
+    flush: no_hook,
+    // Its off-delay's timer is the bar's (`privacy_timer`), never the popup's.
+    closed: no_hook,
+};
+
 impl App {
     pub(crate) fn privacy_shown(&self) -> bool {
         matches!(self.popup_body(), Some(PopupBody::Privacy))
+    }
+
+    /// Not selectable: Escape closes it, every other key does nothing (privacy spec § 5).
+    fn privacy_key(&mut self, k: Key) {
+        if k == Key::Escape {
+            self.popup_close(PopupClose::Escape);
+        }
     }
 
     /// A left press on the module: toggles its popup under it (a second press closes it).

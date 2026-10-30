@@ -17,7 +17,6 @@ use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
-use crate::quick::Focus;
 use crate::state::Bar;
 use crate::tray::ItemKey;
 use crate::tray::hover::{self, Hover, HoverChange};
@@ -981,14 +980,7 @@ impl App {
     /// calling here): the same press must not reopen it (`toggles_launcher`).
     fn click(&mut self, qh: &QueueHandle<Self>, i: usize, x: f64, b: Button, launcher_was_open: bool) {
         if let Some((popup, anchor, target)) = self.module_popup_at(i, x, b) {
-            match popup {
-                ModulePopup::Calendar => self.calendar_toggle(qh, anchor),
-                ModulePopup::Media => self.media_toggle(qh, anchor),
-                ModulePopup::Panel => self.panel_toggle(qh, anchor),
-                ModulePopup::Quick => self.quick_toggle(qh, Some(anchor), Focus::of(&target)),
-                ModulePopup::Power => self.power_toggle(qh, anchor),
-                ModulePopup::Privacy => self.privacy_toggle(qh, anchor),
-            }
+            (popup.ops().toggle)(self, qh, anchor, &target);
             return;
         }
         let e = self.surfaces[i].scale;

@@ -1222,3 +1222,52 @@ fn the_headset_row_shows_under_the_volume_only_with_a_headset() {
     q.fit(&l);
     assert_eq!(q.selected, Row::Brightness, "its row gone: the next one below");
 }
+
+/// Every variant with the row it must have. The `match` is exhaustive: a variant added to `Row`
+/// stops this file compiling until it is listed here, and listed, its table row must exist.
+macro_rules! rows {
+    ($($variant:ident => $index:expr),* $(,)?) => {
+        #[allow(dead_code)]
+        fn row_of(r: Row) -> usize {
+            match r {
+                $(Row::$variant => $index),*
+            }
+        }
+        const LISTED: &[(Row, usize)] = &[$((Row::$variant, $index)),*];
+    };
+}
+
+rows! {
+    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Mic => 5, Dnd => 6,
+    Profile => 7, KeepAwake => 8, NightLight => 9, Session => 10,
+}
+
+/// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
+#[test]
+fn one_spec_per_row_in_variant_order() {
+    for &(r, i) in LISTED {
+        assert_eq!(r as usize, i, "{r:?}'s discriminant is not its index");
+        assert_eq!(ROWS.get(i).map(|s| s.row), Some(r), "{r:?} has no entry at {i}");
+    }
+    assert_eq!(LISTED.len(), ROWS.len(), "an entry for no variant, or a variant for no entry");
+    let names: Vec<&str> = ROWS.iter().map(|s| s.name).collect();
+    assert_eq!(
+        names,
+        ["volume", "headset", "brightness", "wifi", "bluetooth", "mic", "dnd", "profile", "keep-awake", "night-light", "session"]
+    );
+    let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
+    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2]);
+}
+
+/// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
+#[test]
+fn a_pending_toggle_reread_is_the_deadline_whichever_toggle() {
+    let w = World::full();
+    let at = Instant::now() + Duration::from_millis(300);
+    for t in Toggle::ALL {
+        let mut q = quick(&w, Focus::Top);
+        assert_eq!(q.deadline(), None, "{t:?}: nothing pending");
+        q.reread_toggles[t.index()] = Some(at);
+        assert_eq!(q.deadline(), Some(at), "{t:?}");
+    }
+}

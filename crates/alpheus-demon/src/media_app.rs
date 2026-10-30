@@ -2,16 +2,28 @@
 //! refreshed after each host output, and the 1 s tick (`media_timer`) armed only while the popup
 //! (or the panel's card) shows and the active player plays.
 
+use crate::actions::Button;
+use crate::keys::Key;
 use crate::log::write as log;
 use crate::media::{MediaView, Players};
 use crate::media_popup::{self, MediaAction, MediaPopup};
-use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
 use crate::state::Msg;
 use crate::tray::mpris::Mpris;
 use crate::tray_bridge::mpris_of;
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::Instant;
+
+/// The media popup's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Media,
+    toggle: |app, qh, anchor, _| app.media_toggle(qh, anchor),
+    key: App::media_key,
+    pointer: App::media_pointer,
+    flush: no_hook,
+    closed: App::media_closed,
+};
 
 impl App {
     /// The media module's view from either connection. The bars repaint only when what they show
@@ -145,5 +157,27 @@ impl App {
         app.media_timer.fired();
         app.media_popup_refresh();
         app.panel_refresh();
+    }
+
+    /// ↑ ↓ ← →, Enter, Escape (spec § 2).
+    fn media_key(&mut self, k: Key) {
+        let action = self.media_with(|p, players| media_popup::key(p, players, k));
+        self.media_action(action);
+    }
+
+    /// A left press on a button or a player does what Enter does; nothing else reacts.
+    fn media_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
+        if let (PopupPointer::Press(Button::Left), Some(c)) = (kind, cell) {
+            let action = self.media_with(|p, players| media_popup::press(p, players, c, media_popup::WIDTH));
+            self.media_action(action);
+        }
+    }
+
+    /// The media popup or the panel (its card follows the same Seeked rule and tick) went, whatever
+    /// closed it (`popup_close`): the Seeked rule goes and the tick with it — `media_timer_sync` sees
+    /// no popup now.
+    pub(crate) fn media_closed(&mut self) {
+        self.mpris_do(|m, out| m.popup_closed(out));
+        self.media_timer_sync();
     }
 }

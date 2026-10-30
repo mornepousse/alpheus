@@ -88,6 +88,7 @@ impl Focus {
     }
 }
 
+/// The declaration order is the panel's top-to-bottom order (and `ROWS`' index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Volume,
@@ -107,45 +108,19 @@ pub enum Row {
 }
 
 impl Row {
-    /// Top to bottom (spec § 2): also the order a selection falls back along when its row goes.
-    pub const ORDER: [Row; 11] = [
-        Row::Volume,
-        Row::Headset,
-        Row::Brightness,
-        Row::Wifi,
-        Row::Bluetooth,
-        Row::Mic,
-        Row::Dnd,
-        Row::Profile,
-        Row::KeepAwake,
-        Row::NightLight,
-        Row::Session,
-    ];
+    /// Its table row (`ROWS` is indexed by the variant).
+    fn spec(self) -> &'static RowSpec {
+        &ROWS[self as usize]
+    }
 
     /// For the log line "quick shown (rows: …)".
     pub fn name(self) -> &'static str {
-        match self {
-            Row::Volume => "volume",
-            Row::Headset => "headset",
-            Row::Brightness => "brightness",
-            Row::Wifi => "wifi",
-            Row::Bluetooth => "bluetooth",
-            Row::Mic => "mic",
-            Row::Dnd => "dnd",
-            Row::Profile => "profile",
-            Row::KeepAwake => "keep-awake",
-            Row::NightLight => "night-light",
-            Row::Session => "session",
-        }
+        self.spec().name
     }
 
     /// Its block: the sliders, the toggles, the session buttons (a 1 px line between two).
     fn group(self) -> u8 {
-        match self {
-            Row::Volume | Row::Headset | Row::Brightness => 0,
-            Row::Session => 2,
-            _ => 1,
-        }
+        self.spec().group
     }
 }
 
@@ -299,7 +274,7 @@ pub enum Question {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Due {
     pub backlight: bool,
-    pub toggles: [bool; 2],
+    pub toggles: [bool; Toggle::ALL.len()],
     pub redraw: bool,
     pub run: Vec<QuickAction>,
     /// A Wi-Fi connection failed at this tick (the 20 s timeout): why, for the log.
@@ -426,7 +401,7 @@ pub struct Quick {
     pub headset: Option<Headset>,
     pub backlight: Option<Backlight>,
     /// Keep awake, night light: on, off, or unknown (`·`).
-    pub toggles: [Option<bool>; 2],
+    pub toggles: [Option<bool>; Toggle::ALL.len()],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
     pub confirm: Option<(Question, Instant)>,
     /// The volume shown and sent while its slider moves (fix S1), and the default sink's node it
@@ -440,7 +415,7 @@ pub struct Quick {
     pub volume_settle: Option<Instant>,
     pub brightness_settle: Option<Instant>,
     /// When to re-read each toggle's state.
-    pub reread_toggles: [Option<Instant>; 2],
+    pub reread_toggles: [Option<Instant>; Toggle::ALL.len()],
     /// The first line shown, and the rows the panel may take under its bar.
     pub top: usize,
     pub room: u16,
@@ -464,26 +439,79 @@ fn default_sink(sinks: &[Sink]) -> Option<u32> {
     sinks.iter().find(|s| s.default).or(sinks.first()).map(|s| s.id)
 }
 
+/// One row of the panel's table.
+struct RowSpec {
+    /// The variant this row is for; also its index (a test pins it).
+    row: Row,
+    /// For the log line "quick shown (rows: …)".
+    name: &'static str,
+    /// Its block: the sliders, the toggles, the session buttons (a 1 px line between two).
+    group: u8,
+    /// Whether it shows (spec § 2): a row whose tool, hardware or command is missing does not.
+    present: fn(&Live, &Quick) -> bool,
+    /// Draws it, `selected` for the band.
+    draw: fn(&mut Grid, &Live, &Quick, bool),
+}
+
+/// Every row, top to bottom (spec § 2): also the order a selection falls back along when its row
+/// goes. A test pins each entry's `row` to its index. Adding a row:
+/// - a toggle with no configuration (like the microphone or do-not-disturb): a `Row` variant at its
+///   place, one entry here (its `draw_mark` for a ●/○ state), its Space/Enter arm in `Quick::act`;
+/// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
+///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
+///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
+const ROWS: [RowSpec; 11] = [
+    RowSpec {
+        row: Row::Volume,
+        name: "volume",
+        group: 0,
+        present: |live, _| live.sound.is_some_and(|s| s.sink.is_some()),
+        draw: draw_volume,
+    },
+    RowSpec { row: Row::Headset, name: "headset", group: 0, present: |_, q| q.headset.is_some(), draw: draw_headset },
+    RowSpec { row: Row::Brightness, name: "brightness", group: 0, present: |_, q| q.backlight.is_some(), draw: draw_brightness },
+    RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
+    RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
+    RowSpec { row: Row::Mic, name: "mic", group: 1, present: |live, _| live.sound.is_some_and(|s| s.source.is_some()), draw: draw_mic },
+    RowSpec {
+        row: Row::Dnd,
+        name: "dnd",
+        group: 1,
+        present: |live, _| live.dnd.is_some(),
+        draw: |g, live, _, selected| draw_mark(g, BELL, "Do not disturb", live.dnd, selected),
+    },
+    RowSpec {
+        row: Row::Profile,
+        name: "profile",
+        group: 1,
+        present: |live, _| live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
+        draw: draw_profile,
+    },
+    RowSpec {
+        row: Row::KeepAwake,
+        name: "keep-awake",
+        group: 1,
+        present: |live, _| !live.config.keep_awake.toggle.is_empty(),
+        draw: |g, _, q, selected| draw_mark(g, KEEP_AWAKE, "Keep awake", q.toggles[Toggle::KeepAwake.index()], selected),
+    },
+    RowSpec {
+        row: Row::NightLight,
+        name: "night-light",
+        group: 1,
+        present: |live, _| !live.config.night_light.toggle.is_empty(),
+        draw: |g, _, q, selected| draw_mark(g, NIGHT_LIGHT, "Night light", q.toggles[Toggle::NightLight.index()], selected),
+    },
+    RowSpec { row: Row::Session, name: "session", group: 2, present: |live, _| session::any_configured(live.config), draw: session_row },
+];
+
 /// Whether `r` shows (spec § 2): a row whose tool, hardware or command is missing does not.
 fn present(r: Row, live: &Live, q: &Quick) -> bool {
-    match r {
-        Row::Volume => live.sound.is_some_and(|s| s.sink.is_some()),
-        Row::Headset => q.headset.is_some(),
-        Row::Brightness => q.backlight.is_some(),
-        Row::Wifi => q.wifi.shows(),
-        Row::Bluetooth => Bt::shows(live.bluetooth),
-        Row::Mic => live.sound.is_some_and(|s| s.source.is_some()),
-        Row::Dnd => live.dnd.is_some(),
-        Row::Profile => live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
-        Row::KeepAwake => !live.config.keep_awake.toggle.is_empty(),
-        Row::NightLight => !live.config.night_light.toggle.is_empty(),
-        Row::Session => session::any_configured(live.config),
-    }
+    (r.spec().present)(live, q)
 }
 
 /// The rows shown, top to bottom.
 pub fn shown(live: &Live, q: &Quick) -> Vec<Row> {
-    Row::ORDER.into_iter().filter(|r| present(*r, live, q)).collect()
+    ROWS.iter().map(|s| s.row).filter(|r| present(*r, live, q)).collect()
 }
 
 /// The lines drawn: the rows with a separator between two blocks; in the detail, its header, a
@@ -514,7 +542,14 @@ pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
 
 impl Quick {
     /// At open: the row `focus` asks for, else the first one shown.
-    pub fn new(focus: Focus, live: &Live, sinks: Vec<Sink>, backlight: Option<Backlight>, toggles: [Option<bool>; 2], room: u16) -> Quick {
+    pub fn new(
+        focus: Focus,
+        live: &Live,
+        sinks: Vec<Sink>,
+        backlight: Option<Backlight>,
+        toggles: [Option<bool>; Toggle::ALL.len()],
+        room: u16,
+    ) -> Quick {
         let mut q = Quick {
             selected: Row::Volume,
             button: Session::Lock,
@@ -531,7 +566,7 @@ impl Quick {
             brightness: Pace::default(),
             volume_settle: None,
             brightness_settle: None,
-            reread_toggles: [None; 2],
+            reread_toggles: [None; Toggle::ALL.len()],
             top: 0,
             kept_at: None,
             room,
@@ -608,11 +643,11 @@ impl Quick {
         }
         let rows = shown(live, self);
         if !rows.contains(&self.selected) {
-            let at = Row::ORDER.iter().position(|r| *r == self.selected).unwrap_or(0);
-            let below = Row::ORDER[at..].iter().find(|r| rows.contains(r));
-            let above = Row::ORDER[..at].iter().rev().find(|r| rows.contains(r));
-            if let Some(r) = below.or(above) {
-                self.selected = *r;
+            let at = self.selected as usize;
+            let below = ROWS[at..].iter().find(|s| rows.contains(&s.row));
+            let above = ROWS[..at].iter().rev().find(|s| rows.contains(&s.row));
+            if let Some(s) = below.or(above) {
+                self.selected = s.row;
             }
         }
         let drawn = self.buttons(live);
@@ -945,13 +980,12 @@ impl Quick {
             self.brightness.until,
             self.volume_settle,
             self.brightness_settle,
-            self.reread_toggles[0],
-            self.reread_toggles[1],
             self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
             self.bt.deadline(),
         ]
         .into_iter()
+        .chain(self.reread_toggles)
         .flatten()
         .min()
     }
@@ -1261,47 +1295,55 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
 }
 
 fn draw(g: &mut Grid, row: Row, live: &Live, q: &Quick) {
-    let selected = q.selected == row;
-    match row {
-        Row::Volume => {
-            if let Some(v) = live.sound.and_then(|s| s.sink) {
-                let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
-                slider(g, volume_glyph(v), v, q.sinks.len() >= 2, selected);
-            }
-        }
-        Row::Headset => {
-            if let Some(h) = &q.headset {
-                let mode = if h.active == HeadsetMode::HiFi { "‹ Hi-Fi ›" } else { "‹ Mic ›" };
-                text_row(g, None, &h.label, mode, Style::NORMAL, selected);
-            }
-        }
-        Row::Brightness => {
-            if let Some(b) = &q.backlight {
-                slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
-            }
-        }
-        Row::Wifi => text_row(g, Some(q.wifi.glyph()), "Wi-Fi", &format!("{} ›", q.wifi.value()), Style::NORMAL, selected),
-        Row::Bluetooth => {
-            if let Some(s) = live.bluetooth {
-                text_row(g, Some(q.bt.glyph(s)), "Bluetooth", &format!("{} ›", q.bt.value(s)), Style::NORMAL, selected);
-            }
-        }
-        Row::Mic => {
-            if let Some(v) = live.sound.and_then(|s| s.source) {
-                let (glyph, word, style) = if v.muted { (MIC_OFF, "muted", Style::WARN) } else { (MIC_ON, "live", Style::NORMAL) };
-                text_row(g, Some(glyph), "Microphone", word, style, selected);
-            }
-        }
-        Row::Dnd => text_row(g, Some(BELL), "Do not disturb", mark(live.dnd), mark_style(live.dnd), selected),
-        Row::Profile => {
-            if let Some(p) = live.profile.and_then(|p| p.active) {
-                text_row(g, Some(PROFILE), "Power profile", &format!("{} ›", p.label()), Style::NORMAL, selected);
-            }
-        }
-        Row::KeepAwake => text_row(g, Some(KEEP_AWAKE), "Keep awake", mark(q.toggles[0]), mark_style(q.toggles[0]), selected),
-        Row::NightLight => text_row(g, Some(NIGHT_LIGHT), "Night light", mark(q.toggles[1]), mark_style(q.toggles[1]), selected),
-        Row::Session => session_row(g, live, q, selected),
+    (row.spec().draw)(g, live, q, q.selected == row);
+}
+
+fn draw_volume(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
+    if let Some(v) = live.sound.and_then(|s| s.sink) {
+        let v = Volume { percent: q.volume_level.unwrap_or(v.percent), ..v };
+        slider(g, volume_glyph(v), v, q.sinks.len() >= 2, selected);
     }
+}
+
+fn draw_headset(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    if let Some(h) = &q.headset {
+        let mode = if h.active == HeadsetMode::HiFi { "‹ Hi-Fi ›" } else { "‹ Mic ›" };
+        text_row(g, None, &h.label, mode, Style::NORMAL, selected);
+    }
+}
+
+fn draw_brightness(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    if let Some(b) = &q.backlight {
+        slider(g, BRIGHTNESS, Volume { percent: b.percent, muted: false }, false, selected);
+    }
+}
+
+fn draw_wifi(g: &mut Grid, _: &Live, q: &Quick, selected: bool) {
+    text_row(g, Some(q.wifi.glyph()), "Wi-Fi", &format!("{} ›", q.wifi.value()), Style::NORMAL, selected);
+}
+
+fn draw_bluetooth(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
+    if let Some(s) = live.bluetooth {
+        text_row(g, Some(q.bt.glyph(s)), "Bluetooth", &format!("{} ›", q.bt.value(s)), Style::NORMAL, selected);
+    }
+}
+
+fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
+    if let Some(v) = live.sound.and_then(|s| s.source) {
+        let (glyph, word, style) = if v.muted { (MIC_OFF, "muted", Style::WARN) } else { (MIC_ON, "live", Style::NORMAL) };
+        text_row(g, Some(glyph), "Microphone", word, style, selected);
+    }
+}
+
+fn draw_profile(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
+    if let Some(p) = live.profile.and_then(|p| p.active) {
+        text_row(g, Some(PROFILE), "Power profile", &format!("{} ›", p.label()), Style::NORMAL, selected);
+    }
+}
+
+/// A row with a ●/○/· state on the right.
+fn draw_mark(g: &mut Grid, glyph: char, label: &str, on: Option<bool>, selected: bool) {
+    text_row(g, Some(glyph), label, mark(on), mark_style(on), selected);
 }
 
 /// A toggle's state: ● on, ○ off, · unknown (spec § 2, § 4).

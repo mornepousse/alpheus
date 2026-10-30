@@ -9,9 +9,11 @@
 
 use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
+use crate::grid::Target;
+use crate::keys::Key;
 use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
-use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
 use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
@@ -287,6 +289,18 @@ pub(crate) fn quick_spawn_secret(exec: &dyn Executor, q: &mut Quick, argv: &[Str
     }
 }
 
+/// The quick panel's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Quick,
+    toggle: App::quick_toggle_at,
+    key: App::quick_key,
+    pointer: App::quick_pointer,
+    // The slider levels still waiting for their window are sent before the body goes.
+    flush: App::quick_flush,
+    // Whatever the reason: the sound thread back to its own scope, the panel's timer gone.
+    closed: App::quick_closed,
+};
+
 impl App {
     pub(crate) fn quick_enabled(&self) -> bool {
         self.bar.config.modules.contains(&ModuleId::Quick)
@@ -321,6 +335,30 @@ impl App {
             .or_else(|| self.surfaces.iter().find(|s| s.configured))?;
         let columns = s.last.as_ref().map_or(1, |g| g.width()).max(1);
         Some(PopupAnchor { output: s.name.clone(), start: columns - 1, end: columns })
+    }
+
+    /// A press on the volume, network or Bluetooth module: the panel under it, on that module's
+    /// section.
+    fn quick_toggle_at(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor, target: &Target) {
+        self.quick_toggle(qh, Some(anchor), Focus::of(target));
+    }
+
+    /// ↑ ↓ ← →, Space, Enter, Escape, Home, End (quick spec § 3); the repeat tells a held key.
+    fn quick_key(&mut self, k: Key) {
+        let (repeat, now) = (self.key_repeat, Instant::now());
+        let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
+        self.quick_action(action);
+    }
+
+    /// A press acts on its row; the wheel steps a slider or moves the window (quick spec § 3).
+    fn quick_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
+        let now = Instant::now();
+        let action = match (kind, cell) {
+            (PopupPointer::Press(b), Some(c)) => self.quick_with(|q, live| q.press(live, c, b, now)),
+            (PopupPointer::Scroll(steps), _) => self.quick_with(|q, live| q.scroll(live, cell, steps, now)),
+            _ => QuickAction::Nothing,
+        };
+        self.quick_action(action);
     }
 
     /// Toggles the panel: open, it closes (a second click, or the verb again). `anchor`: the clicked

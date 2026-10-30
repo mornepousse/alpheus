@@ -774,6 +774,13 @@ fn function_body<'a>(text: &'a str, signature: &str) -> &'a str {
     panic!("{signature}: body never closes");
 }
 
+/// A `*_app.rs`'s row of `popup::POPUPS`: its `OPS` const, up to its closing `};`.
+fn popup_ops_row(text: &str) -> &str {
+    let at = text.find("pub(crate) const OPS: PopupOps = PopupOps {").expect("a popup row");
+    let end = text[at..].find("\n};").expect("a row ends");
+    &text[at..at + end]
+}
+
 #[test]
 fn function_body_extracts_the_brace_matched_body() {
     let text = "fn a() { 1 }\nfn b() {\n    if true { 2 } else { 3 }\n}\n";
@@ -2139,10 +2146,22 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, quick_app, notify_app) = (src("popup.rs"), src("quick_app.rs"), src("notify_app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
-    assert!(close.contains("self.quick_closed()"), "popup_close must let the quick panel go: {close}");
-    // Fix S1: a slider level still waiting for its window is sent before the panel's body goes.
-    let (flush, take) = (close.find("self.quick_flush()"), close.find("self.popup.take()"));
+    // Fix S1: a slider level still waiting for its window is sent before the panel's body goes:
+    // the row's `flush` runs before the take, its `closed` once the body is dropped.
+    let (flush, take) = (close.find("(p.ops().flush)(self)"), close.find("self.popup.take()"));
     assert!(matches!((flush, take), (Some(f), Some(t)) if f < t), "popup_close flushes the sliders first: {close}");
+    let (dropped, closed) = (close.find("drop(open)"), close.find("(p.ops().closed)(self)"));
+    assert!(matches!((dropped, closed), (Some(d), Some(c)) if d < c), "popup_close must let the quick panel go: {close}");
+    let row = popup_ops_row(&quick_app);
+    assert!(row.contains("flush: App::quick_flush,") && row.contains("closed: App::quick_closed,"), "the quick panel's row: {row}");
+    // The media popup's and the panel's card's Seeked rule and 1 s tick go when either closes.
+    for name in ["media_app.rs", "panel_app.rs"] {
+        let text = src(name);
+        let row = popup_ops_row(&text);
+        assert!(row.contains("closed: App::media_closed,"), "{name}: the tick must go with the popup: {row}");
+    }
+    let media_closed = function_body(&src("media_app.rs"), "pub(crate) fn media_closed(").to_string();
+    assert!(media_closed.contains("popup_closed(out)") && media_closed.contains("self.media_timer_sync()"), "{media_closed}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
     assert!(tick.contains("due.run") && tick.contains("quick_spawn("), "the tick sends the levels that waited: {tick}");
     let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
@@ -2293,7 +2312,9 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
     let (popup, power_app) = (src("popup.rs"), src("power_app.rs"));
     let close = function_body(&popup, "pub fn popup_close(");
-    assert!(close.contains("self.power_closed()"), "popup_close must let the power menu's timer go: {close}");
+    assert!(close.contains("(p.ops().closed)(self)"), "popup_close must let a module popup's hooks run: {close}");
+    let row = popup_ops_row(&power_app);
+    assert!(row.contains("closed: App::power_closed,"), "popup_close must let the power menu's timer go: {row}");
     let closed = function_body(&power_app, "pub(crate) fn power_closed(");
     assert!(closed.contains("power_timer.sync_opt(") && closed.contains("None"), "{closed}");
     let tick = function_body(&power_app, "pub(crate) fn power_tick(");
@@ -2307,11 +2328,11 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     assert_eq!(session.matches(".spawn(").count(), 1, "{session}");
     assert!(!session.contains("spawn_with_input") && !session.contains("actions::run"), "{session}");
     assert_eq!(power_app.matches("spawn_session(").count(), 2, "defined once, called once: {power_app}");
-    // A held Enter acts once (power spec § 2): the menu's key arm hands the keyboard's own repeat
+    // A held Enter acts once (power spec § 2): the menu's key hook hands the keyboard's own repeat
     // flag to the model, never a constant.
-    let key = function_body(&popup, "pub(crate) fn popup_key(");
-    let arm = key.split("PopupBody::Power(_) =>").nth(1).and_then(|a| a.split("PopupBody::").next()).unwrap_or_default();
-    assert!(arm.contains("self.key_repeat") && arm.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {arm}");
+    assert!(row.contains("key: App::power_key,"), "{row}");
+    let key = function_body(&power_app, "fn power_key(");
+    assert!(key.contains("self.key_repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
 }
 
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
@@ -2363,6 +2384,8 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
     assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync_opt("), "{sync}");
     assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
+    let row = popup_ops_row(&app);
+    assert!(row.contains("flush: no_hook,") && row.contains("closed: no_hook,"), "closing the popup never touches it: {row}");
     // Each message: a change follows `privacy_changed`; anything else still re-syncs the timer, since
     // an indicator going off changes nothing shown yet, only the deadline (without it, the glyph
     // stays lit until the next message).
