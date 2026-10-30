@@ -32,15 +32,39 @@ fn copy_tree(from: &Path, to: &Path) {
     }
 }
 
+/// `<root>/bin` holding an executable per name: the entries' programs, since an entry whose
+/// program is not on the path is absent.
+fn programs(root: &Path, names: &[&str]) -> PathBuf {
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    for n in names {
+        executable(&bin.join(n));
+    }
+    bin
+}
+
 /// The fixture trees in a temporary dir, plus a symlinked file (made here:
-/// a symlink committed to git is fragile across checkouts and archives).
+/// a symlink committed to git is fragile across checkouts and archives), with the
+/// programs their entries (and the tests' own) name on the path.
 fn tree(name: &str) -> (TempDir, ScanEnv) {
     let r = temp(name);
     copy_tree(Path::new(FIXTURES), &r);
     symlink(r.join("elsewhere/linked.desktop"), r.join("user/applications/org.example.Linked.desktop")).unwrap();
+    let names = [
+        "example-browser",
+        "example-mail",
+        "example-player",
+        "example-settings",
+        "example-terminal",
+        "linked-app",
+        "zeta-notes",
+        "huge",
+        "locked",
+        "x",
+    ];
     let env = ScanEnv {
         app_dirs: vec![r.join("user/applications"), r.join("system/applications")],
-        path_dirs: vec![],
+        path_dirs: vec![programs(&r, &names)],
         locale: None,
         desktops: vec![],
     };
@@ -181,7 +205,7 @@ fn two_aliases_to_the_same_subdirectory_give_a_stable_id() {
     // dependency on readdir order would likely show up as the wrong id picked.
     symlink(&real, apps_dir.join("zzz-alias")).unwrap();
     symlink(&real, apps_dir.join("aaa-alias")).unwrap();
-    let env = ScanEnv { app_dirs: vec![apps_dir], path_dirs: vec![], locale: None, desktops: vec![] };
+    let env = ScanEnv { app_dirs: vec![apps_dir], path_dirs: vec![programs(&r, &["aliased-app"])], locale: None, desktops: vec![] };
     assert_eq!(ids(&scan_apps(&env)), ["aaa-alias-app.desktop"], "the alphabetically-first alias claims the id");
 }
 
@@ -213,7 +237,9 @@ fn the_catalog_is_capped() {
         let text = format!("[Desktop Entry]\nType=Application\nName=App {i}\nExec=app-{i}\n");
         fs::write(apps_dir.join(format!("app-{i}.desktop")), text).unwrap();
     }
-    let env = ScanEnv { app_dirs: vec![apps_dir], path_dirs: vec![], locale: None, desktops: vec![] };
+    let names: Vec<String> = (0..8).map(|i| format!("app-{i}")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let env = ScanEnv { app_dirs: vec![apps_dir], path_dirs: vec![programs(&r.join("progs"), &names)], locale: None, desktops: vec![] };
     assert_eq!(scan_apps_capped(&env, 5, MAX_FILES_PER_DIR).len(), 5);
     assert_eq!(scan_apps(&env).len(), 8);
     let bin = r.join("bin");
