@@ -175,7 +175,7 @@ fn accept_returns_none_when_nobody_waits() {
     assert!(not_blocking(|| server.accept().unwrap()).is_none(), "EAGAIN is not an error");
 }
 
-/// Review item M3, final review slice 1: `Server::accept` is wired to
+/// `Server::accept` is wired to
 /// `peer_allowed` through `accept_with`, which lets a test fake a
 /// mismatched peer uid without a second real uid to connect from (`peer_uid`
 /// itself calls `getsockopt(SO_PEERCRED)`, unfakeable here).

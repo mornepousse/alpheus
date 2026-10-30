@@ -1,7 +1,7 @@
 //! The daemon's side of the launcher socket (`launcher_ipc::socket_path`,
 //! in $XDG_RUNTIME_DIR): owner-only (0600 and the peer's uid checked), read
 //! without ever blocking, every request bounded by `launcher_ipc`'s limits
-//! and by `REQUEST_DEADLINE`. Pure of calloop: launch.rs registers the file
+//! and by `REQUEST_DEADLINE`. Pure of calloop: socket_glue.rs registers the file
 //! descriptors and calls `accept`/`read`/`reply`; host.rs keeps a dmenu
 //! client's `Pending` until the answer.
 //!
@@ -63,7 +63,7 @@ fn describe(e: &IpcError) -> String {
         // a truncated request simply reads as `Progress::Pending`, waiting
         // for more bytes, until EOF turns it into `Malformed` above. Kept so
         // the match stays exhaustive if `feed` ever learns to detect a
-        // truncated request itself (review item M5, final review slice 1).
+        // truncated request itself.
         IpcError::Truncated => "truncated request".to_string(),
     }
 }
@@ -153,8 +153,7 @@ impl Server {
     /// `accept` with the peer's uid lookup and our own uid injected: lets a
     /// test exercise the refusal path with a fake, mismatched peer, without
     /// a second real uid to connect from (`peer_uid` itself calls
-    /// `getsockopt(SO_PEERCRED)`, unfakeable from inside a test) — review
-    /// item M3, final review slice 1.
+    /// `getsockopt(SO_PEERCRED)`, unfakeable from inside a test).
     pub fn accept_with(&self, peer_uid_fn: impl Fn(&UnixStream) -> io::Result<u32>, our_uid: u32) -> io::Result<Option<Conn>> {
         let stream = match self.listener.accept() {
             Ok((s, _)) => s,
@@ -164,7 +163,7 @@ impl Server {
                 return Ok(None);
             }
             // Anything else (EMFILE, ENFILE, ENOBUFS…) stays pending: the
-            // caller pauses the listener (launch.rs, `drain_listener`).
+            // caller pauses the listener (socket_glue.rs, `drain_listener`).
             Err(e) => return Err(e),
         };
         match peer_uid_fn(&stream) {
@@ -238,8 +237,7 @@ impl Conn {
     /// When this connection was accepted: the latency the daemon logs
     /// (spec § 3, "open latency < 20 ms") starts here, not once the request
     /// has been read — a slow or large request must count against the
-    /// budget too, not be hidden by starting the clock late (task 13 fix
-    /// round, review item 4).
+    /// budget too, not be hidden by starting the clock late.
     pub fn accepted_at(&self) -> Instant {
         self.accepted_at
     }
@@ -285,11 +283,11 @@ impl Pending {
     /// which only raises POLLRDHUP and makes reads return 0) is NOT a
     /// hang-up: that client still waits for its answer.
     pub fn hung_up(&self) -> bool {
-        let mut p = libc::pollfd { fd: self.stream.as_raw_fd(), events: 0, revents: 0 };
-        // SAFETY: poll(2) on one valid pollfd owned by this frame, timeout 0
-        // (never blocks); the fd stays open for the whole call.
-        let r = unsafe { libc::poll(&mut p, 1, 0) };
-        r > 0 && p.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+        let mut fds = [libc::pollfd { fd: self.stream.as_raw_fd(), events: 0, revents: 0 }];
+        // Timeout 0: never blocks.
+        let ready = crate::sys::poll(&mut fds, 0).is_ok_and(|r| r > 0);
+        let [p] = fds;
+        ready && p.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
     }
 
     pub fn reply(self, r: &Reply) {
@@ -317,7 +315,7 @@ mod tests {
         assert!(!peer_allowed(1001, 1000));
     }
 
-    /// Review item 4: `accepted_at` must be the moment the connection was
+    /// `accepted_at` must be the moment the connection was
     /// taken, fixed from then on — not recomputed later (e.g. once the
     /// request has been read). The daemon's open-latency log (spec § 3)
     /// relies on it covering "request accepted → first frame" in full,
@@ -342,7 +340,7 @@ mod tests {
         assert_eq!(alpheus_commun::launcher_ipc::decode_reply(&bytes).unwrap(), Reply::Cancelled);
     }
 
-    /// The contract task 2's review relied on: a reply closes the
+    /// The contract callers rely on: a reply closes the
     /// connection right there, not whenever the last handle to the fd
     /// happens to drop. Proven with a genuinely independent duplicate of
     /// the server's fd kept alive past the call: with `close()`/`Drop`

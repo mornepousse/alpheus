@@ -38,7 +38,7 @@ pub(crate) fn pointer(menu: &mut Power, cell: Option<(u16, u16)>, kind: PopupPoi
 
 impl App {
     pub(crate) fn power_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Power(_)))
+        matches!(self.popup_body(), Some(PopupBody::Power(_)))
     }
 
     /// A left press on the power button: toggles its menu under it (a second press closes it).
@@ -58,7 +58,7 @@ impl App {
 
     /// `f` on the open menu; Nothing when it is not open.
     pub(crate) fn power_with(&mut self, f: impl FnOnce(&mut Power) -> PowerAction) -> PowerAction {
-        match self.popup.as_mut().map(|p| &mut p.body) {
+        match self.popup_body_mut() {
             Some(PopupBody::Power(p)) => f(p),
             _ => PowerAction::Nothing,
         }
@@ -86,7 +86,7 @@ impl App {
     /// The open menu repainted (`popup_draw` commits nothing when its rows did not change), its
     /// timer re-synced.
     fn power_refresh(&mut self) {
-        let rows = match self.popup.as_ref().map(|p| &p.body) {
+        let rows = match self.popup_body() {
             Some(PopupBody::Power(p)) => p.render(),
             _ => return,
         };
@@ -96,13 +96,11 @@ impl App {
 
     /// The timer follows the pending question's end; none without one (power spec § 4).
     pub(crate) fn power_timer_sync(&mut self) {
-        let at = match self.popup.as_ref().map(|p| &p.body) {
+        let at = match self.popup_body() {
             Some(PopupBody::Power(p)) => p.deadline(),
             _ => None,
         };
-        if let Some(handle) = self.loop_handle.clone() {
-            self.power_timer.sync(&handle, at, App::power_tick);
-        }
+        self.power_timer.sync_opt(self.loop_handle.as_ref(), at, App::power_tick);
     }
 
     /// The timer fired (calloop callback; its source is dropped): the question's 3 s are up.
@@ -114,9 +112,7 @@ impl App {
 
     /// The menu went, whatever closed it (`popup_close`): its timer goes too.
     pub(crate) fn power_closed(&mut self) {
-        if let Some(handle) = self.loop_handle.clone() {
-            self.power_timer.sync(&handle, None, App::power_tick);
-        }
+        self.power_timer.sync_opt(self.loop_handle.as_ref(), None, App::power_tick);
     }
 }
 

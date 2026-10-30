@@ -83,17 +83,8 @@ impl Stream {
 /// Blocks until one of the two connections is readable or hung up. No timeout: no wake-up at rest.
 fn wait(streams: &[Stream; 2]) -> io::Result<[bool; 2]> {
     let mut fds = streams.each_ref().map(|s| libc::pollfd { fd: s.socket.as_raw_fd(), events: libc::POLLIN, revents: 0 });
-    loop {
-        // SAFETY: `fds` is a live array of two `pollfd` for the whole call, its length given with it.
-        let r = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
-        if r >= 0 {
-            return Ok(fds.map(|f| f.revents != 0));
-        }
-        let e = io::Error::last_os_error();
-        if e.kind() != io::ErrorKind::Interrupted {
-            return Err(e);
-        }
-    }
+    crate::sys::poll(&mut fds, -1)?;
+    Ok(fds.map(|f| f.revents != 0))
 }
 
 pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
@@ -290,7 +281,7 @@ mod tests {
         assert_eq!(rx.recv_timeout(DELAY).unwrap().toplevels.len(), 4);
     }
 
-    /// Review Focus 1 (spec § 2): Mango rewrites every client's geometry on a move; nothing the
+    /// Spec § 2: Mango rewrites every client's geometry on a move; nothing the
     /// bar shows changed, nothing is published.
     #[test]
     fn a_new_snapshot_is_published_only_when_the_state_changes() {

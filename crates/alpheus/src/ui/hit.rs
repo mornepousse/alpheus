@@ -33,7 +33,7 @@ pub enum Target {
     },
     PanelCancel,
     PanelApply,
-    /// A row of the Appearance theme list (index into `appearance::entries()`).
+    /// A row of the Appearance theme list (index into `theme_file::entries()`).
     AppearanceTheme(usize),
     /// A chip of the Appearance mode row.
     AppearanceMode(ModeSetting),

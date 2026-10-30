@@ -10,7 +10,7 @@
 use super::bt::BtTap;
 use super::props::{Objects, Prop, Props};
 use super::wifi::{self, WifiTap};
-use super::{Bus, Domain, Signal, UPOWER, bluez, network, upower};
+use super::{BUS_DRIVER, BUS_DRIVER_PATH, Bus, Domain, OBJECT_MANAGER, PROPERTIES, Signal, UPOWER, bluez, network, upower};
 use crate::system::SavedWifi;
 use dbus::Message;
 use dbus::arg::{ArgType, Iter};
@@ -23,8 +23,6 @@ use std::os::fd::RawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
-const DBUS: &str = "org.freedesktop.DBus";
-const DBUS_PATH: &str = "/org/freedesktop/DBus";
 /// A service that doesn't answer blocks this thread at most this long.
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 /// The most dictionaries kept from an `aa{sv}` (power-profiles-daemon offers three profiles).
@@ -74,9 +72,9 @@ impl Method {
 
     fn interface(self) -> &'static str {
         match self {
-            Method::GetNameOwner | Method::AddMatch | Method::RemoveMatch => DBUS,
-            Method::GetAll => "org.freedesktop.DBus.Properties",
-            Method::GetManagedObjects => "org.freedesktop.DBus.ObjectManager",
+            Method::GetNameOwner | Method::AddMatch | Method::RemoveMatch => BUS_DRIVER,
+            Method::GetAll => PROPERTIES,
+            Method::GetManagedObjects => OBJECT_MANAGER,
             Method::EnumerateDevices => UPOWER,
             Method::GetDevices => network::INTERFACE,
             Method::ListConnections => wifi::SETTINGS,
@@ -101,7 +99,7 @@ pub const MATCH_RULES: [(Domain, &str); 13] = [
     ),
     (
         Domain::Battery,
-        // Narrowed to the device objects (M5, review): UPower's own root
+        // Narrowed to the device objects: UPower's own root
         // object never sends PropertiesChanged the bar would read. This
         // still matches BAT0 and the line power supplies — a path_namespace
         // can't exclude a few device names — so `Signal::domain` drops
@@ -492,11 +490,11 @@ impl DbusRsBus {
     fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
         let bus = DbusRsBus { channel, wake: None, wake_bt: None };
         for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
-            bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(rule))?;
+            bus.call(BUS_DRIVER, BUS_DRIVER_PATH, Method::AddMatch, Some(rule))?;
         }
         // Not tied to one Domain: a resume re-reads every domain in `domains`.
         if !domains.is_empty() {
-            bus.call(DBUS, DBUS_PATH, Method::AddMatch, Some(LOGIN1_RULE))?;
+            bus.call(BUS_DRIVER, BUS_DRIVER_PATH, Method::AddMatch, Some(LOGIN1_RULE))?;
         }
         Ok(bus)
     }
@@ -533,7 +531,7 @@ impl DbusRsBus {
 
 impl Bus for DbusRsBus {
     fn owner(&mut self, service: &str) -> io::Result<Option<String>> {
-        match self.call(DBUS, DBUS_PATH, Method::GetNameOwner, Some(service)) {
+        match self.call(BUS_DRIVER, BUS_DRIVER_PATH, Method::GetNameOwner, Some(service)) {
             Ok(m) => m.read1::<&str>().map(|s| Some(s.to_string())).map_err(|e| unexpected(&e.to_string())),
             // NameHasNoOwner: nobody runs it — and asking the bus driver
             // never starts it.
@@ -568,7 +566,7 @@ impl Bus for DbusRsBus {
 
     fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()> {
         let m = if add { Method::AddMatch } else { Method::RemoveMatch };
-        self.call(DBUS, DBUS_PATH, m, Some(rule)).map(|_| ())
+        self.call(BUS_DRIVER, BUS_DRIVER_PATH, m, Some(rule)).map(|_| ())
     }
 
     fn next_signal(&mut self) -> io::Result<Signal> {
@@ -608,14 +606,7 @@ impl Bus for DbusRsBus {
                 fds[n] = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 n += 1;
             }
-            // SAFETY: poll(2) reads and fills the first `n` pollfd above, owned here for the whole call.
-            if unsafe { libc::poll(fds.as_mut_ptr(), n as libc::nfds_t, -1) } < 0 {
-                let e = io::Error::last_os_error();
-                if e.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(e);
-            }
+            crate::sys::poll(&mut fds[..n], -1)?;
             if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
                 return Err(closed());
             }

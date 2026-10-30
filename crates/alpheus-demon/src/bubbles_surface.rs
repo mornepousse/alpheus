@@ -14,7 +14,8 @@ use crate::painter::FrameInk;
 use crate::popup::box_size;
 use crate::state::Feed;
 use crate::tray::notifications::Notifications;
-use crate::wayland::{App, notifications_of, pick_buffer};
+use crate::tray_bridge::notifications_of;
+use crate::wayland::{App, pick_buffer};
 use smithay_client_toolkit::compositor::Region;
 use smithay_client_toolkit::reexports::client::Connection;
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
@@ -106,7 +107,7 @@ impl Closes {
 
 impl App {
     /// The one path for a change made on the App's side (a bubble clicked or expired, do-not-disturb,
-    /// Clear all; the panel, task 7): `notify_do` (signals sent, the view and bubbles deferred to the
+    /// Clear all; the panel): `notify_do` (signals sent, the view and bubbles deferred to the
     /// host's next output), then the bubbles and the open panel follow.
     pub(crate) fn notify_act(&mut self, f: impl FnOnce(&mut Notifications)) {
         self.notify_do(f);
@@ -445,9 +446,7 @@ impl App {
     /// the name not held).
     pub(crate) fn bubble_timer_sync(&mut self) {
         let deadline = notifications_of(self.tray.as_ref(), self.link.as_ref()).filter(|n| n.held()).and_then(|n| n.center().next_expiry());
-        if let Some(handle) = self.loop_handle.clone() {
-            self.bubble_timer.sync(&handle, deadline, App::bubble_expire);
-        }
+        self.bubble_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::bubble_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never

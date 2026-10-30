@@ -2,7 +2,7 @@
 //! cells, today inverted like the active workspace, the first day of the
 //! week from the locale's LC_TIME, optional ISO week numbers. English like
 //! the clock (question 3); only the weeks of the shown month (4 to 6 rows). No events, nothing kept:
-//! the popup (task 18) builds a `Calendar` at each open and drops it.
+//! the popup builds a `Calendar` at each open and drops it.
 
 use crate::clock::{LocalTime, MONTHS, SHORT_DAYS};
 use crate::grid::{Grid, Style, text_width};
@@ -125,7 +125,7 @@ fn is_c_locale(name: &str) -> bool {
 }
 
 // glibc's langinfo.h, LC_TIME = 2: _NL_ITEM(LC_TIME, index) = (2 << 16) | index
-// (checked against glibc 2.44's header, tray plan 2 task 12; the libc crate
+// (checked against glibc 2.44's header; the libc crate
 // does not define these three).
 /// `_NL_TIME_WEEK_1STDAY`: an integer YYYYMMDD in the pointer's place.
 const NL_TIME_WEEK_1STDAY: libc::nl_item = 0x20066;
@@ -136,7 +136,7 @@ const NL_LOCALE_NAME_TIME: libc::nl_item = 0x2ffff;
 
 /// The locale's first day (LC_TIME, read like `setlocale(LC_ALL, "")` would:
 /// LC_ALL, LC_TIME, LANG), through newlocale/nl_langinfo_l/freelocale:
-/// thread-safe, no global locale changed (controller decision 11). glibc
+/// thread-safe, no global locale changed. glibc
 /// keeps the locale archive mapped after this first call to `newlocale(…,
 /// "")` — later calls only touch the handful of pages this locale's data
 /// lives on, not a fresh load of the archive. Monday for C/POSIX or when

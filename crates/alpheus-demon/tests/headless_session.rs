@@ -165,7 +165,7 @@ fn the_system_bus_address_is_honoured() {
     let _hypr2 = FakeHyprland::start(&sway2.runtime, SIGNATURE);
     let d2 = start_daemon_with(&sway2, &DaemonOptions { system_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d2.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d2.log());
-    // A bounded poll (I3 carry-over, tray plan 1 review), not a flat sleep:
+    // A bounded poll, not a flat sleep:
     // fails as soon as "source down" shows up, rather than only finding out
     // after waiting out a fixed delay.
     let t = std::time::Instant::now();
@@ -294,7 +294,7 @@ fn dmenu_round_trip_and_cancel() {
     assert_eq!((code, out.as_str()), (EXIT_CANCELLED, ""));
     assert!(d.wait_for("launcher closed (escape)", DELAY), "{:?}", d.log());
     // Each close by a key (Return, then Escape) released the keyboard, though the key was still
-    // down: its focus, the launcher's box, died with it (fix round 1 of media task 7).
+    // down: its focus, the launcher's box, died with it.
     assert!(d.wait_for_count("keyboard released", 2, DELAY), "the keyboard stayed bound at rest: {:?}", d.log());
     // Free text with no lines (tools-menu's "Cible (IP / hôte)"): Enter returns what was typed.
     let menu = script(&sway, &["--dmenu", "--prompt", "Target"], "");
@@ -464,7 +464,7 @@ fn output_unplugged_while_the_launcher_is_open() {
 }
 
 /// No sway needed: a runtime dir with no daemon in it. Exit 3, not 2: only
-/// "unreachable" makes shell-ctl and tools-menu fall back to fuzzel (task 15).
+/// "unreachable" makes shell-ctl and tools-menu fall back to fuzzel.
 #[test]
 fn alpheus_launch_exits_3_when_the_daemon_is_absent() {
     let dir = std::env::temp_dir().join(format!("alpheus-no-daemon-{}", std::process::id()));
@@ -539,7 +539,7 @@ fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
     let activate = nimbus.wait_call("Activate", DELAY);
     assert_eq!(activate.as_deref(), Some("org.kde.StatusNotifierItem.Activate(12, 10)"), "at the press position: {:?}", d.log());
     // The horizontal wheel over the icon: one notch right, one Scroll(-120, horizontal) — Plasma's
-    // actual convention (decision 4, fixed in `tray_horizontal`: qtbase negates the horizontal
+    // actual convention (fixed in `tray_horizontal`: qtbase negates the horizontal
     // value120 before Plasma re-exposes it, so right is -120, left is +120; vertical is unaffected).
     sway.scroll(FIRST_ICON.0, FIRST_ICON.1, "right", 1);
     let scroll = nimbus.wait_call("Scroll", DELAY);
@@ -547,7 +547,7 @@ fn a_fake_app_shows_in_the_tray_and_a_left_click_activates_it() {
     std::thread::sleep(Duration::from_millis(300));
     let scrolls = nimbus.calls().iter().filter(|c| c.contains(".Scroll(")).count();
     assert_eq!(scrolls, 1, "one notch, one Scroll: {:?}", nimbus.calls());
-    // A burst of signals: dirty, one frame callback, one re-read (decision 10).
+    // A burst of signals: dirty, one frame callback, one re-read.
     let reads = || nimbus.calls().iter().filter(|c| c.ends_with("Get(org.kde.StatusNotifierItem, IconName)")).count();
     assert_eq!(reads(), 1, "the first Get only: {:?}", nimbus.calls());
     nimbus.set("IconName", Value::Str("nimbus-busy".into()));
@@ -663,7 +663,7 @@ fn no_timer_while_the_pointer_is_elsewhere() {
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
-/// Task 15 fix round, from the task 16 review: opening the launcher used to close an open
+/// Opening the launcher used to close an open
 /// tooltip (`popup_close(Launcher)`) without also cancelling `Hover` — `Hover.over` kept naming
 /// the same tray item, and since `Hover::moved` compares only the item (never a surface), resting
 /// on that SAME icon afterwards was wrongly seen as "still on it" and never re-armed the timer.
@@ -688,7 +688,7 @@ fn opening_the_launcher_lets_the_same_tooltip_show_again_after() {
     assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
 }
 
-/// Task 15 fix round, from the task 16 review: an output going away used to close its tooltip
+/// An output going away used to close its tooltip
 /// (`popup_output_gone`) without also cancelling `Hover` — the SAME staleness as above, reached
 /// from a bar removal instead of the launcher opening. Fixed: `popup_output_gone` now cancels the
 /// hover too.
@@ -710,7 +710,7 @@ fn an_unplugged_output_lets_the_same_tooltip_show_again_once_restored() {
     assert!(d.wait_for_count("tooltip shown", 2, DELAY), "{:?}", d.log());
 }
 
-/// Fix round 2026-10-06 (main fix): `tray_output` used to cancel the hover unconditionally on
+/// `tray_output` used to cancel the hover unconditionally on
 /// every `out.redraw`, which fires for ANY property changing on ANY item — a messenger's "3
 /// unread" becoming "4 unread" closed (or never armed) the tooltip even though nothing about the
 /// hovered icon's OWN position changed. `ToolTip` here never affects which letter/glyph is drawn
@@ -732,7 +732,7 @@ fn a_hovered_items_tooltip_text_changing_does_not_close_it() {
     assert_eq!(d.count("tooltip shown"), 1, "still the same tooltip, not reopened: {:?}", d.log());
 }
 
-/// Fix round 2026-10-06 (main fix): an icon animating faster than the ½ s delay (`NewIcon` signals
+/// An icon animating faster than the ½ s delay (`NewIcon` signals
 /// a few tens of milliseconds apart) used to cancel the pending hover on every single one of them
 /// — since the pointer never moves again on its own, the timer was gone for good and the tooltip
 /// never showed. `IconName` changing never moves the hovered icon's zone either (one item, one
@@ -756,7 +756,7 @@ fn an_animating_icon_still_gets_its_tooltip_after_half_a_second() {
     assert!(t.elapsed() >= Duration::from_millis(450), "not before ½ s: {:?}", t.elapsed());
 }
 
-/// Item 4 of the 2026-10-06 fix round: `[tray] tooltips = false` arms no timer at all, even
+/// `[tray] tooltips = false` arms no timer at all, even
 /// resting right on an icon — no wake-up of the loop, no "tooltip" log line ever.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -778,7 +778,7 @@ fn tooltips_false_gives_no_timer_and_no_tooltip() {
     assert!(d.log().iter().all(|l| !l.contains("tooltip")), "{:?}", d.log());
 }
 
-/// Item 4 of the 2026-10-06 fix round: a press on the bar, even away from the hovered icon, closes
+/// A press on the bar, even away from the hovered icon, closes
 /// a shown tooltip (already true via the `Press` arm's `hover.cancel()`; exercised headlessly here).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -792,7 +792,7 @@ fn a_press_on_the_bar_closes_a_shown_tooltip() {
     assert!(d.wait_for("popup closed (hover ended)", DELAY), "{:?}", d.log());
 }
 
-/// Item 4 of the 2026-10-06 fix round: the hovered item's application quitting (its
+/// The hovered item's application quitting (its
 /// StatusNotifierItem disappearing from the bus) closes its shown tooltip as `ItemGone`, not
 /// `HoverEnded` (already true via `tooltip_item_gone`; exercised headlessly here).
 #[test]
@@ -807,7 +807,7 @@ fn the_hovered_item_vanishing_closes_its_tooltip() {
     assert!(d.wait_for("popup closed (item gone)", DELAY), "{:?}", d.log());
 }
 
-// ---- Menus wired end to end (task 17) ----
+// ---- Menus wired end to end ----
 
 /// The id of the entry labelled `label` (mnemonic underscores aside) in a fake menu.
 fn entry_id(menu: &FakeMenu, label: &str) -> i32 {
@@ -836,7 +836,7 @@ fn menu_bar(name: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon, FakeItem) {
     (bus, sway, hypr, d, item)
 }
 
-/// Keys typed after wtype's keyboard appeared (fact check 5: the bar's surface takes it).
+/// Keys typed after wtype's keyboard appeared (the bar's surface takes it).
 fn keys(sway: &Sway, names: &[&str]) {
     let mut args = vec!["-s", "300"];
     for n in names {
@@ -1004,7 +1004,7 @@ fn hushed_item(bus: &PrivateBus, menu_after: Option<Duration>) {
 
 /// An item with a `Menu` and no `ItemIsMenu` (so a left click first tries Activate): a `Peer`
 /// whose `Activate` is refused only after `delay`, but whose dbusmenu answers at once (one entry,
-/// "Item") so a menu that does open shows right away — review fix round requirement 7: the delay
+/// "Item") so a menu that does open shows right away — the delay
 /// is wide enough to click elsewhere on the bar before the error reply, and so the late
 /// `open_menu`, lands.
 fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
@@ -1062,7 +1062,7 @@ fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
     });
 }
 
-/// Fix round 2026-10-06, requirement 7: a press on the bar that hits no icon drops `last_icon` —
+/// A press on the bar that hits no icon drops `last_icon` —
 /// a failed Activate answered late, for the icon pressed earlier, must open nothing once the user
 /// has since clicked elsewhere.
 #[test]
@@ -1170,7 +1170,7 @@ fn a_second_right_click_closes_the_menu() {
     assert!(d.wait_for_count("menu shown", 2, DELAY), "a third right click opens it again: {:?}", d.log());
 }
 
-/// Task 17 fix-round review: a press that itself closes the menu leaves no "closed recently"
+/// A press that itself closes the menu leaves no "closed recently"
 /// record (only a compositor `done` arriving ahead of the press does) — a quick right click right
 /// after closing reopens the menu instead of being swallowed.
 #[test]
@@ -1206,7 +1206,7 @@ fn a_menu_answering_after_2_s_is_not_shown() {
     assert_eq!(d.count("popup closed"), 0, "no popup ever opened: {:?}", d.log());
 }
 
-/// Review requirement 2: the session bus dying while a menu is shown must close that popup (never
+/// The session bus dying while a menu is shown must close that popup (never
 /// leave the bar stuck `Exclusive`, holding Mae's keyboard for good).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
@@ -1219,7 +1219,7 @@ fn a_dead_session_bus_closes_an_open_menu() {
     assert!(d.wait_for("tray: the session bus closed", DELAY), "{:?}", d.log());
 }
 
-/// Review requirement 7: the item's Menu path changing under an open menu (a duplicate
+/// The item's Menu path changing under an open menu (a duplicate
 /// registration re-reading it, router.rs) closes it just like the item leaving. A duplicate
 /// registration only re-reads Menu for a unique-name item (`Spec::qt()`, like
 /// `a_duplicate_registration_closes_the_open_menu_if_its_path_changed` at the router level): a
@@ -1240,7 +1240,7 @@ fn the_menu_closes_when_its_path_changes_under_it() {
     assert!(d.wait_for("menu shown", DELAY), "{:?}", d.log());
     item.set("Menu", Value::Path("/OtherMenu".into()));
     item.register();
-    // Fix round 2026-10-06, requirement 5: the item is still here — only its Menu moved — so this
+    // The item is still here — only its Menu moved — so this
     // must never be logged as "timeout", and the session itself still ends (and says so), even
     // though the router already dropped its own session object as part of noticing the move.
     assert!(d.wait_for("popup closed (menu moved)", DELAY), "{:?}", d.log());
@@ -1330,7 +1330,7 @@ fn calendar_false_opens_nothing() {
     assert!(log.iter().filter(|l| !l.contains("appearance:")).all(|l| !l.contains("calendar") && !l.contains("popup")), "{log:?}");
 }
 
-/// Requirement 3 of the review: a click elsewhere on the bar closes the calendar (an outside
+/// A click elsewhere on the bar closes the calendar (an outside
 /// click), and the loop stays at rest afterwards — nothing the calendar armed is left.
 #[test]
 #[ignore = "headless sway (nix develop)"]
@@ -1480,7 +1480,7 @@ fn a_tray_menu_replaces_the_calendar() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// The bar alone with its clock: its left edge is plain background (themes task 5).
+/// The bar alone with its clock: its left edge is plain background.
 const CLOCK_BAR: &str = "modules = [\"clock\"]\n";
 /// A pixel of the bar's plain background on HEADLESS-1, far from the clock.
 const BAR_BACKGROUND: (u32, u32) = (2, 2);
@@ -1576,7 +1576,7 @@ fn writing_theme_toml_repaints_the_bar_in_the_new_bar_bg() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
-/// Shapes task 3, end to end: a style set at startup reaches the painter, and the opaque region the
+/// End to end: a style set at startup reaches the painter, and the opaque region the
 /// bar now sends is accepted (a bad one would end the client). Under underline the bar's last row is
 /// the border line; above it, the margin stays on bar_bg.
 #[test]
@@ -1668,7 +1668,7 @@ fn an_open_calendar_is_repainted_too() {
     assert!(sway.wait_for_screen("HEADLESS-1", repainted), "the open calendar repainted: {:?}", d.log());
 }
 
-/// Review Focus 1 and controller reconciliation 9: matugen caught mid-write. A truncated
+/// A colour file caught mid-write (matugen). A truncated
 /// colors.toml keeps the colours on screen (one line, no flash of the default theme); the full
 /// file then repaints once, in its own colours.
 #[test]
@@ -1716,7 +1716,7 @@ fn wait_until(ok: impl Fn() -> bool) -> bool {
     false
 }
 
-/// Shapes task 7: a bar on catppuccin dark holding only the clock, at the left edge. Also returns
+/// A bar on catppuccin dark holding only the clock, at the left edge. Also returns
 /// what the compositor draws where the bar's right end will be, read BEFORE the bar exists: what a
 /// transparent pixel there must show (grim drops alpha, and there is no swaybg in these tests).
 fn shape_bar(name: &str) -> (Sway, FakeHyprland, Daemon, PathBuf, [u8; 3]) {
@@ -1787,7 +1787,7 @@ fn floating_moves_the_bar_down_by_its_margin_and_back() {
     // that never repainted after its new configure would still show its old flat buffer at (6, 6).
     let floating = |s: &Ppm| first_row(s) == Some(6) && (0..6).all(|y| s.at(s.width / 2, y) == Some(behind)) && s.at(6, 6) == Some(behind);
     assert!(sway.wait_for_screen("HEADLESS-1", floating), "{:?}", d.log());
-    // Reconciliation 5: the exclusive zone is the bar height and the compositor adds the 6 px
+    // The exclusive zone is the bar height and the compositor adds the 6 px
     // top margin, so tiled windows start at 6 + 22, just under the floating bar.
     assert!(wait_until(|| sway.workspace_y() == Some(28)), "floating: windows start at 6 + 22: {:?}", sway.workspace_y());
     write_atomically(&config, "theme.toml", "theme = \"catppuccin\"\nmode = \"dark\"\nstyle = \"flat\"\n");
@@ -1797,7 +1797,7 @@ fn floating_moves_the_bar_down_by_its_margin_and_back() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
-/// Review Focus 1: the calendar hangs from the bar's surface; a switch to floating moves and resizes
+/// The calendar hangs from the bar's surface; a switch to floating moves and resizes
 /// that surface, so the calendar is closed first, and opens again on the moved bar.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -1828,7 +1828,7 @@ fn a_switch_to_floating_closes_a_popup_hanging_from_the_bar() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
-/// Review Focus 5: an invalid style is one warning and `flat`, with one repaint; reading the same
+/// An invalid style is one warning and `flat`, with one repaint; reading the same
 /// file again repeats neither the warning nor the reload.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -1853,7 +1853,7 @@ fn an_invalid_style_warns_once_and_falls_back_to_flat() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar carries on");
 }
 
-/// The mode file the TUI reads (themes task 6), or None.
+/// The mode file the TUI reads, or None.
 fn mode_file(sway: &Sway) -> Option<String> {
     std::fs::read_to_string(sway.runtime.join("alpheus/mode")).ok()
 }
@@ -1909,7 +1909,7 @@ fn a_fixed_mode_without_the_tray_never_opens_the_session_bus() {
 
 /// The bar turns light (pixel-checked) and the mode file follows. The switch from mode = "dark" to
 /// "auto" in theme.toml starts the portal at once: `follow_portal_if_auto` runs after the new
-/// settings are stored (controller reconciliation 5).
+/// settings are stored.
 #[test]
 #[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
 fn switching_to_auto_turns_the_bar_light_and_the_mode_file_follows() {
@@ -2159,7 +2159,7 @@ fn without_the_media_module_nothing_touches_the_players() {
     assert_eq!(d.count("media:"), 0, "{:?}", d.log());
 }
 
-/// Review Focus: the private session bus dying — the media module goes away, nothing spins.
+/// The private session bus dying — the media module goes away, nothing spins.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn a_dead_session_bus_takes_the_media_module_away_and_nothing_spins() {
@@ -2332,11 +2332,11 @@ fn wakeups_over_seeked(d: &Daemon, player: &FakePlayer) -> u64 {
 fn the_media_popup_opens_on_a_left_click_and_escape_closes_it() {
     let (_bus, sway, _hypr, d, _players) = media_bar("media-open", 1, &[]);
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
-    // Controller reconciliation 10: the fake track's title and artist, as the popup draws them.
+    // The fake track's title and artist, as the popup draws them.
     assert!(d.wait_for("media popup shown: Paper Lanterns — Marlowe Vane", DELAY), "{:?}", d.log());
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
-    // On sway the release waits for Escape's key-up on the bar's surface (fix wave A).
+    // On sway the release waits for Escape's key-up on the bar's surface.
     assert!(d.wait_for_count("keyboard released", 1, DELAY), "the keyboard stayed bound at rest: {:?}", d.log());
     sway.click(MEDIA_AT.0, MEDIA_AT.1, "button1");
     assert!(d.wait_for_count("media popup shown", 2, DELAY), "opens again: {:?}", d.log());
@@ -2393,7 +2393,7 @@ fn a_bar_removed_while_escape_is_down_releases_the_keyboard() {
 }
 
 /// The 1 s tick: never with the popup closed (0 wake-ups at rest with a player playing), every
-/// second while it is open and the player plays, gone again once the player pauses (Review Focus).
+/// second while it is open and the player plays, gone again once the player pauses.
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
 fn the_tick_runs_only_while_the_popup_is_open_and_the_player_plays() {
@@ -2454,7 +2454,7 @@ fn the_popup_moves_to_the_next_player_then_closes_when_none_is_left() {
 }
 
 /// A player chosen in the popup takes the bar too: the pin changes the active player with no
-/// D-Bus signal, and the bar's media cells repaint (fix wave A: the view is no longer rebuilt at
+/// D-Bus signal, and the bar's media cells repaint (the view is no longer rebuilt at
 /// every popup refresh, the pin hands it over itself).
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
@@ -2474,7 +2474,7 @@ fn a_player_chosen_in_the_popup_takes_the_bar() {
     assert_eq!(d.count("popup closed"), 0, "the pin keeps the popup open: {:?}", d.log());
 }
 
-/// Review Focus: the popup open on one output while the bars restyle. Every bar shares one
+/// The popup open on one output while the bars restyle. Every bar shares one
 /// placement, so a switch to floating moves the popup's own bar too: it closes once, by its own
 /// parent's identity, with its timer and Seeked rule gone. A style change that keeps the placement
 /// leaves it open and ticking.
@@ -2505,12 +2505,12 @@ fn a_restyle_closes_the_media_popup_on_the_second_output_once() {
     assert!(wakeups_over_5_s(&d) >= 4, "and keeps ticking");
 }
 
-// ---- The bell (notifications task 5) ----
+// ---- The bell ----
 
 const BELL_BAR: &str = "modules = [\"notifications\", \"clock\"]\n";
 /// Inside the bell on a bar whose first module is `notifications` (cell 1, ≈ 8.4 px a cell): the
 /// status block starts at the left edge when there is no workspace or window module, as the tray's
-/// icon at (12, 10) does in the tray tests. Task 7 reuses it.
+/// icon at (12, 10) does in the tray tests.
 const BELL_AT: (u32, u32) = (12, 10);
 
 /// The bell alone on the bar (or `modules`), on a private session bus; `before` runs on the bus
@@ -2679,7 +2679,7 @@ fn the_bells_middle_click_toggles_do_not_disturb() {
     assert!(!file.exists(), "off: no file");
 }
 
-// ---- The bubbles (notifications task 6) ----
+// ---- The bubbles ----
 
 /// Waits (10 s at most) until `org.freedesktop.Notifications` has an owner on `bus`: the daemon serves.
 fn wait_for_the_server(bus: &PrivateBus) {
@@ -2912,7 +2912,7 @@ fn no_wakeup_at_rest_after_the_bubbles_expire_or_under_a_sticky_one() {
     assert_eq!(sticky, 0, "a sticky bubble arms no timer ({sticky} wake-ups)");
 }
 
-/// Review Focus: the focused output changes while a bubble shows. The bubble stays where it is until
+/// The focused output changes while a bubble shows. The bubble stays where it is until
 /// the stack changes; then the stack moves to the focused output.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -2940,7 +2940,7 @@ fn the_bubbles_stay_put_when_the_focus_moves_until_the_stack_changes() {
     assert!(sway.wait_for_screen("HEADLESS-2", |s| bubble_box(s, 3).is_none()), "and only there");
 }
 
-/// Review Focus: the output holding the bubbles is unplugged. They come back on another output (the
+/// The output holding the bubbles is unplugged. They come back on another output (the
 /// compositor's choice: the fixture's focused output is the one gone) and still answer.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -2958,8 +2958,8 @@ fn an_unplugged_output_holding_the_bubbles_brings_them_back_elsewhere() {
     assert!(client.wait_heard(&Heard::Closed(id, 2)), "the bubble still answers: {:?}", d.log());
 }
 
-/// Review Focus: 4 bubbles shown and more waiting (4 here: 8 critical ones, the most that stay live,
-/// fix wave A). Dismissing the top one shows the next waiting one, and the hit map follows the new
+/// 4 bubbles shown and more waiting (4 here: 8 critical ones, the most that stay live).
+/// Dismissing the top one shows the next waiting one, and the hit map follows the new
 /// stack.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -2987,7 +2987,7 @@ fn four_shown_four_waiting_a_dismissal_shows_the_next() {
     );
 }
 
-/// Review Focus: the scale changes between 1 and 2 under a bubble. It is drawn again at the new
+/// The scale changes between 1 and 2 under a bubble. It is drawn again at the new
 /// scale, twice as wide in pixels, and back.
 #[test]
 #[ignore = "headless sway, dbus-daemon and grim (nix develop)"]
@@ -3009,7 +3009,7 @@ fn a_bubble_follows_the_scale_from_1_to_2_and_back() {
     assert!(sway.wait_for_screen("HEADLESS-1", |s| bubble_box(s, 3).is_some_and(|(_, l, r)| (r - l).abs_diff(w1) <= 4)), "and back");
 }
 
-/// Constraints, Lightness (after task 2's review): the timer follows every live bubble with a finite
+/// Constraints, Lightness: the timer follows every live bubble with a finite
 /// timeout, hidden by do-not-disturb or not. A bubble hidden by DND, then replaced with a 2 s
 /// timeout, closes on time with reason 1, and never shows up later past its time.
 #[test]
@@ -3033,7 +3033,7 @@ fn under_dnd_a_hidden_replaced_bubble_still_expires_on_time() {
     assert_eq!(d.count("bubbles surface on"), 1, "never shown again once past its time: {:?}", d.log());
 }
 
-/// Task 5's review: do-not-disturb reaches the bell through the tray's connection too.
+/// Do-not-disturb reaches the bell through the tray's connection too.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn with_the_tray_dnd_from_alpheus_launch_updates_the_bell() {
@@ -3046,7 +3046,7 @@ fn with_the_tray_dnd_from_alpheus_launch_updates_the_bell() {
     assert!(sway.runtime.join("state/alpheus/dnd").exists());
 }
 
-/// Task 5's review, then fix wave A: with no session bus there is no server, but the bell is drawn
+/// With no session bus there is no server, but the bell is drawn
 /// muted ("not serving"), so its middle click still toggles do-not-disturb; every change is saved,
 /// logged and shown (the crossed bell).
 #[test]
@@ -3070,7 +3070,7 @@ fn without_a_session_bus_the_bell_is_muted_and_still_toggles_dnd() {
     assert_eq!(d.count("bell: serving"), 0, "never serving: {:?}", d.log());
 }
 
-// ---- The panel (notifications task 7) ----
+// ---- The panel ----
 
 /// The bell at the bar's left edge, the media module after it, the clock.
 const PANEL_BAR: &str = "modules = [\"notifications\", \"media\", \"clock\"]\n";
@@ -3137,7 +3137,7 @@ fn the_bell_opens_the_panel_with_the_card_and_the_history() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// Review Focus: the panel is open when a notification arrives. Its rows show it at once, and it
+/// The panel is open when a notification arrives. Its rows show it at once, and it
 /// counts as read: the bell shows no count while the panel shows it.
 #[test]
 #[ignore = "headless sway, dbus-daemon and wtype (nix develop)"]
@@ -3270,7 +3270,7 @@ fn no_card_marks_read(name: &str, modules: &str) {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// OSD task 1: the `Fifo` fake prints the initial dump, then each array a test sends, in order, and
+/// The `Fifo` fake prints the initial dump, then each array a test sends, in order, and
 /// once killed nothing is left reading the pipe (it `exec`s its `cat`: the daemon's PDEATHSIG
 /// reaches it).
 #[test]
@@ -3322,7 +3322,7 @@ fn the_fifo_fake_pw_dump_prints_the_initial_dump_then_each_send() {
     assert_eq!(left.err().and_then(|e| e.raw_os_error()), Some(libc::ENXIO), "nothing reads the pipe once the fake is gone");
 }
 
-/// The harness's guards (final review, slice B): a `GroupChild` the test reaped is never signalled
+/// The harness's guards: a `GroupChild` the test reaped is never signalled
 /// again (its pid may be reused); one never waited for is killed with its group and reaped on drop.
 /// A `TempDir` is removed on drop.
 #[test]
@@ -3358,7 +3358,7 @@ fn a_pw_dump_send_above_pipe_buf_fails_clearly() {
     pw_dump_send(Path::new("/nonexistent-alpheus-it"), &"x".repeat(4096));
 }
 
-// ---- The OSD (osd plan, tasks 3 and 4). The fake pw-dump is `Fifo`; the backlight a fake tree
+// ---- The OSD (osd plan). The fake pw-dump is `Fifo`; the backlight a fake tree
 // under the test's runtime directory, never /sys. ----
 
 /// The OSD's tests' bar: the volume (its sound source), the OSD, the clock. `extra`: more `[osd]`
@@ -3577,7 +3577,7 @@ fn osd_no_wakeup_at_rest_before_or_after_a_pill() {
     assert_eq!(after, 0, "the pill gone: no timer left ({after} wake-ups): {:?}", d.log());
 }
 
-/// OSD task 3: without `osd` in `modules`, the OSD is never fed: no baseline, no pill, though the
+/// Without `osd` in `modules`, the OSD is never fed: no baseline, no pill, though the
 /// volume module's sound reaches the bar (its gauge repainted: the messages did get through).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
@@ -3820,7 +3820,7 @@ fn quick_panel(s: &Ppm) -> Vec<[u8; 3]> {
     (y0 - 11..y1 + 11).flat_map(|y| (x0..x1).map(move |x| (x, y))).filter_map(|(x, y)| s.at(x, y)).collect()
 }
 
-/// Controller reconciliation P4: without the `osd` module the sound thread never publishes a
+/// Without the `osd` module the sound thread never publishes a
 /// microphone mute alone; the panel reads the state at open, so a mute made while it was closed
 /// shows at the next open, never the stale row.
 #[test]
@@ -3919,11 +3919,11 @@ fn quick_drawn_on_the_right(s: &Ppm) -> bool {
     (29..51).any(|y| (s.width / 2..s.width).any(|x| s.at(x, y) == Some(accent)))
 }
 
-/// Quick spec § 1, decision 1: `alpheus-launch --quick sound` opens the panel under the bar's
+/// Quick spec § 1: `alpheus-launch --quick sound` opens the panel under the bar's
 /// right end at the volume row; its keys work without a grab; Escape closes it and gives the
 /// keyboard back; the verb again closes an open one; nothing stays awake. The bar's keyboard
 /// interactivity is read from sway's seat focus: 0 while the bar holds the keyboard (Exclusive),
-/// back on the workspace once it is None again (Task 6 review: `Input::Keys`' reset on close).
+/// back on the workspace once it is None again (`Input::Keys`' reset on close).
 #[test]
 #[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
 fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
@@ -3961,7 +3961,7 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
 /// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb that really toggles.
 const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// Final review B-I1: Hyprland re-fires a press bind, so two verbs back to back are one key press:
+/// Hyprland re-fires a press bind, so two verbs back to back are one key press:
 /// the second is debounced and the panel stays open; a third, past the window, closes it.
 #[test]
 #[ignore = "headless sway, dbus-daemon (nix develop)"]
@@ -4043,7 +4043,7 @@ fn wait_for_the_profile(nm: &FakeNetworkManager, n: usize) -> bool {
     read
 }
 
-/// No SSID of the fixture in the daemon's log (decision 9).
+/// No SSID of the fixture in the daemon's log.
 fn no_ssid_logged(d: &Daemon) -> bool {
     !d.log().iter().any(|l| ["Maison-Test", "Bureau-Test", "Cafe-Libre"].iter().any(|s| l.contains(s)))
 }
@@ -4202,7 +4202,7 @@ fn quick_wifi_closed_during_a_failing_new_network_attempt_still_deletes_its_prof
     assert_eq!(rest_over_5_s(&d), 0, "ended: the timer and the follower gone");
 }
 
-/// Mae's ruling P1, fix round 1 (I1): the panel reopened from the network module while an attempt
+/// Mae's ruling: the panel reopened from the network module while an attempt
 /// is followed takes it back and opens the detail at once (its rescan), with no second attempt and
 /// no word to the D-Bus thread (the tap stays on the detail: nothing removed, nothing re-read).
 /// The attempt then times out in the reopened panel: one failure line, one delete.
@@ -4857,7 +4857,7 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
-// ---- The privacy indicators (privacy plan, task 6). The fake pw-dump is `Fifo`, the batches
+// ---- The privacy indicators (privacy plan). The fake pw-dump is `Fifo`, the batches
 // synthetic (`capture_delta`); wpctl a fake recorder; the compositor the fake Hyprland. ----
 
 /// The bar's height in px (default font): the glyphs are looked for above it.
@@ -5047,7 +5047,7 @@ fn privacy_left_click_lists_the_app_and_middle_click_mutes() {
     assert_eq!(d.count("privacy popup shown"), 1, "the middle click opens nothing: {:?}", d.log());
 }
 
-/// Privacy spec § 4, § 5 (Review Focus 4): the open popup stays through the off-delay, a capture
+/// Privacy spec § 4, § 5: the open popup stays through the off-delay, a capture
 /// back within it keeps it open, and once the capture ends for good it closes with
 /// "nothing captured" no sooner than the delay; then nothing wakes (the timer went with it).
 #[test]
@@ -5169,7 +5169,7 @@ fn privacy_a_camera_opened_directly_shows_then_goes() {
     assert!(gone.is_some_and(|t| t <= Duration::from_millis(1500)), "gone within 1.5 s: {gone:?} {:?}", d.log());
 }
 
-/// Review Focus 2: a camera held before the daemon starts lights at once, with no event.
+/// A camera held before the daemon starts lights at once, with no event.
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn privacy_a_camera_held_before_start_shows() {
@@ -5179,7 +5179,7 @@ fn privacy_a_camera_held_before_start_shows() {
     wait_for_the_glyph(&sway, &d, privacy_green());
 }
 
-/// Review Focus 4: an open and close with nobody holding the node lights nothing, whatever the scan
+/// An open and close with nobody holding the node lights nothing, whatever the scan
 /// timing (after the 300 ms debounce, and past it).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]

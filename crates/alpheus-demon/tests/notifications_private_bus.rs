@@ -277,7 +277,7 @@ fn mako_disconnecting_hands_the_name_over_too() {
     assert!(client.notify(&Note::new("Fictional", "hello")).is_ok_and(|id| id < MAKO_FIRST_ID));
 }
 
-/// Review Focus: mako restarting while alpheus holds the name. Real mako asks through sd-bus,
+/// Mako restarting while alpheus holds the name. Real mako asks through sd-bus,
 /// which adds DO_NOT_QUEUE: it is refused (EXISTS) and exits ("File exists"); alpheus keeps the
 /// name, nothing changes for the clients and the bell never dims.
 #[test]
@@ -371,7 +371,7 @@ fn close_reasons_are_expired_dismissed_and_closed_by_call() {
     assert_eq!(client.heard_within(QUIET), Vec::<Heard>::new(), "and no signal");
 }
 
-/// Review Focus: CloseNotification on an id that is only in the history (its bubble expired): the
+/// CloseNotification on an id that is only in the history (its bubble expired): the
 /// empty reply, no second NotificationClosed, no timer, and the server carries on.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -388,7 +388,7 @@ fn close_notification_on_an_id_only_in_the_history_is_empty_and_silent() {
     assert!(client.notify(&Note::new("Fictional", "next")).is_ok_and(|next| next > id), "the server carries on");
 }
 
-/// Review Focus: ActionInvoked is a broadcast. A client listening on one connection hears the
+/// ActionInvoked is a broadcast. A client listening on one connection hears the
 /// action of a notification another connection sent; a late click on a replaced bubble (stale
 /// revision) sends nothing; a resident notification stays after its action.
 #[test]
@@ -600,7 +600,7 @@ fn the_trays_watcher_still_serves_while_notifications_are_queued() {
     assert_eq!(watcher_property(&client, "ProtocolVersion").read1::<Variant<i32>>().unwrap().0, 0, "the watcher still serves");
 }
 
-/// Review Focus: the watcher and the notifications server on one connection, calls interleaved
+/// The watcher and the notifications server on one connection, calls interleaved
 /// in one burst from one client; each gets its own correct reply, in any order.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -679,7 +679,7 @@ fn a_dead_bus_takes_the_notifications_away_with_the_tray() {
     });
 }
 
-/// Task 4's review: a bubble expiring on the tray's connection (the pump is its timer) is broadcast
+/// A bubble expiring on the tray's connection (the pump is its timer) is broadcast
 /// as NotificationClosed(id, 1): `Tray::notifications_do` sends what `act` made.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -727,7 +727,7 @@ impl NameRequests {
     }
 }
 
-/// Task 4's review: `start_notifications` asks for the name exactly once, even called twice, on
+/// `start_notifications` asks for the name exactly once, even called twice, on
 /// the tray's connection and on the bar's link alike.
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
@@ -751,7 +751,7 @@ fn start_notifications_requests_the_name_once_even_called_twice() {
     assert!(notifications.iter().all(|s| !s.is_empty()) && notifications[0] != notifications[1], "{seen:?}");
 }
 
-// ---- On the bar's own link (task 5) ----
+// ---- On the bar's own link ----
 
 struct LinkDriver {
     link: SessionLink,

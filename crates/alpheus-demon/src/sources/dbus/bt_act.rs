@@ -6,6 +6,7 @@
 //! auto-start off: nothing outside the list can reach BlueZ, and no call can start it. Answers are
 //! matched by reply serial; the read connection (`bt.rs`) stays read only.
 
+use super::{BLUEZ, BUS_DRIVER, BUS_DRIVER_PATH, PROPERTIES};
 use crate::pipewire::drawable;
 use dbus::Message;
 use dbus::arg::Variant;
@@ -17,10 +18,6 @@ use std::io;
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::time::Duration;
 
-const BLUEZ: &str = "org.bluez";
-const BUS_DRIVER: &str = "org.freedesktop.DBus";
-const BUS_DRIVER_PATH: &str = "/org/freedesktop/DBus";
-const PROPERTIES: &str = "org.freedesktop.DBus.Properties";
 const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
 const AGENT_MANAGER: &str = "org.bluez.AgentManager1";
@@ -845,7 +842,7 @@ mod tests {
         }
     }
 
-    /// Fix round 1 (spec § 6): a `NoReply` is a remote error only while the same unique name still
+    /// Spec § 6: a `NoReply` is a remote error only while the same unique name still
     /// owns `org.bluez`; gone or replaced, the action ends silently.
     #[test]
     fn a_no_reply_is_gone_unless_the_same_owner_is_still_there() {

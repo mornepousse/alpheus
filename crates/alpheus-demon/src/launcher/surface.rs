@@ -158,7 +158,7 @@ pub(crate) fn pool_size(frame_bytes: usize, outputs: usize) -> usize {
 /// equality and never panic — computed by the caller BEFORE any guard runs,
 /// so a panic inside launcher code can never make a bar surface's own
 /// configure/scale/closed event look like "handled here, skip the bar"
-/// (task 13 fix round, review item 2: `wayland.rs` used to decide ownership
+/// (`wayland.rs` used to decide ownership
 /// from the guarded call's own result, `.unwrap_or(true)`).
 pub(crate) fn owns_surface(open: bool, is_box: bool, is_scrim: bool) -> bool {
     open && (is_box || is_scrim)
@@ -215,8 +215,7 @@ pub(crate) fn resized_layout(
 /// since the failed attempt may still have allocated scratch (the ranker's
 /// matrices, a catalog); `release` (`crate::memory::release_memory`,
 /// malloc_trim) runs LAST, so it actually sees those pages freed instead of
-/// running while `model` still holds them (review item M1, final review
-/// slice 3: this used to call `release_memory` BEFORE `model` was dropped).
+/// running while `model` still holds them.
 /// Pulled out so the order itself is tested, without a real pool, model or
 /// `Pending`.
 pub(crate) fn pool_failure_order(reply: impl FnOnce(), drop_model: impl FnOnce(), release: impl FnOnce()) {
@@ -228,8 +227,8 @@ pub(crate) fn pool_failure_order(reply: impl FnOnce(), drop_model: impl FnOnce()
 /// Whether a newly announced output should get a scrim of its own: only
 /// while the launcher is open (closed: nothing to catch a click outside
 /// of) AND only with `wp_viewporter` (`make_scrim`'s own early return
-/// already covers it, this is the decision pulled out in front of it) —
-/// review item M5, final review slice 3. Pulled out so it is tested without
+/// already covers it, this is the decision pulled out in front of it).
+/// Pulled out so it is tested without
 /// a real output or viewporter.
 pub(crate) fn adds_scrim(open: bool, has_viewporter: bool) -> bool {
     open && has_viewporter
@@ -276,8 +275,8 @@ pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
 /// layer as the box — not `Layer::Top`, which Hyprland draws BENEATH a
 /// fullscreen window (Mae, 2026-10-05: she plays fullscreen games on
 /// Hyprland). A scrim on Top would then never see a click at all, silently
-/// breaking "click outside" the moment a game is focused — review item M2,
-/// final review slice 3. Pulled out as its own function so the choice is a
+/// breaking "click outside" the moment a game is focused.
+/// Pulled out as its own function so the choice is a
 /// tested value, not just a literal buried in `make_scrim`.
 fn scrim_layer() -> Layer {
     Layer::Overlay
@@ -393,8 +392,8 @@ impl App {
         self.popup_close(PopupClose::Launcher);
         // A failed Activate answered after the launcher opened must not open a menu over it.
         self.last_icon = None;
-        // A tooltip's hover tracking must not survive it (task 15 fix round, from the task 16
-        // review): left alone, `Hover.over` would still name whatever icon it was armed on, and a
+        // A tooltip's hover tracking must not survive it:
+        // left alone, `Hover.over` would still name whatever icon it was armed on, and a
         // later motion that never truly left it would wrongly look like "still on the same icon",
         // never re-arming.
         let c = self.hover.cancel();
@@ -421,8 +420,7 @@ impl App {
         // `RunContext`). For the app launcher, `launcher_open_apps`
         // (host.rs) already set it, on `model`, from the one `ScanEnv` it
         // reads for the scan itself — read a second time here, it would
-        // just be overwritten with the same value a few lines later (task
-        // 13 fix round, review item 6). A script menu runs nothing through
+        // just be overwritten with the same value a few lines later. A script menu runs nothing through
         // $PATH: reset to empty, cheaply (no environment read).
         if model.is_script() {
             model.path_dirs = open_path_dirs(true, |k| std::env::var_os(k));
@@ -450,8 +448,8 @@ impl App {
                 return;
             }
         };
-        // Scrims created BEFORE the box (Mae, 2026-10-05 — review item M2,
-        // final review slice 3): both now live on `scrim_layer()`, the SAME
+        // Scrims created BEFORE the box (Mae, 2026-10-05):
+        // both now live on `scrim_layer()`, the SAME
         // layer as the box, instead of the scrims' former `Layer::Top` —
         // Hyprland draws the Top layer BENEATH a fullscreen window, so a
         // scrim there would never catch a click while Mae is in a
@@ -641,14 +639,14 @@ impl App {
                 let App { launcher, exec, .. } = self;
                 let Some(open) = launcher.as_mut() else { return };
                 // Cloned out: `perform` needs `&mut open.model`, which the
-                // single source of truth (`Launcher::path_dirs`, task 13)
+                // single source of truth (`Launcher::path_dirs`)
                 // would otherwise keep borrowed immutably for `ctx`.
                 let path_dirs = open.model.path_dirs.clone();
                 let ctx = RunContext {
                     exec: exec.as_ref(),
                     spawner: open.spawner,
                     history_path: open.history_path.as_deref(),
-                    // The scan's $PATH: a program missing from it is reported in the box (task 10).
+                    // The scan's $PATH: a program missing from it is reported in the box.
                     path_dirs: &path_dirs,
                 };
                 match run::perform(&mut open.model, a, &ctx) {
@@ -918,7 +916,7 @@ mod tests {
         assert_eq!(hit(0.0, 0.0).and_then(|(c, r)| view::hit(&l, &b, c, r)), None);
     }
 
-    /// Mae's review: inside a size the compositor imposed (495 × 330), the box's cells fit in what the
+    /// Inside a size the compositor imposed (495 × 330), the box's cells fit in what the
     /// frame leaves and the rest of the room is shared evenly: the same margin on both sides.
     #[test]
     fn an_imposed_size_leaves_even_margins() {
@@ -934,7 +932,7 @@ mod tests {
         assert!(content.0 + 2 * frame1().side <= size.0 && content.1 + frame1().top + frame1().bottom <= size.1, "never past the size");
     }
 
-    /// Review item M1, final review slice 3: `release_memory` must run only
+    /// `release_memory` must run only
     /// after `model` is already gone, not before — otherwise malloc_trim
     /// sees nothing new to give back.
     #[test]
@@ -948,7 +946,7 @@ mod tests {
         );
     }
 
-    /// Review item M2, final review slice 3: the scrims must share the
+    /// The scrims must share the
     /// box's layer (Overlay), not Top — Hyprland draws Top beneath a
     /// fullscreen window, which would let a click through to the game
     /// instead of closing the launcher.
@@ -957,7 +955,7 @@ mod tests {
         assert_eq!(scrim_layer(), Layer::Overlay);
     }
 
-    /// Review item M5, final review slice 3: a hot-plugged output only gets
+    /// A hot-plugged output only gets
     /// a scrim while the launcher is actually open, and only with
     /// `wp_viewporter` available.
     #[test]
@@ -1036,11 +1034,10 @@ mod tests {
         assert_eq!(history_path_for(&off, state), None, "history = 0: never read, never written");
     }
 
-    /// `Launcher::path_dirs`, GONE deviation from the brief (`preview_visible` and the toggle it
-    /// drove are gone): the model's doc already says task 12 sets `path_dirs` from the same
+    /// `Launcher::path_dirs`: the model's doc already says the host sets `path_dirs` from the same
     /// `ScanEnv` the scan uses, so the command preview shows the full path from the very first
     /// frame, before the scan itself has even delivered a catalog. The directory walk stays
-    /// async (`scan::scan`, a short-lived thread, task 13): only `ScanEnv::from_env` — reading
+    /// async (`scan::scan`, a short-lived thread): only `ScanEnv::from_env` — reading
     /// $PATH, no filesystem walk — runs synchronously at open.
     #[test]
     fn open_path_dirs_uses_the_scan_s_path_for_the_app_launcher_only() {
@@ -1053,7 +1050,7 @@ mod tests {
         assert_eq!(open_path_dirs(true, var), Vec::<PathBuf>::new(), "a script menu runs nothing: no $PATH needed");
     }
 
-    /// Task 13 fix round, review item 2: ownership of a surface event is
+    /// Ownership of a surface event is
     /// decided from `open`/`is_box`/`is_scrim` alone — computed outside any
     /// guard — never from whether launcher code then panics.
     #[test]

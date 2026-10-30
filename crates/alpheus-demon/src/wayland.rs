@@ -1,39 +1,27 @@
 //! Wayland: one layer-shell surface (Top layer, anchored at the top,
 //! exclusive zone) per screen, tracked live; a pointer for clicks and the
 //! wheel. Nothing else is asked of the compositor. Redraw only when a
-//! screen's grid changes. The tray's session-bus callbacks land here too
-//! (`tray_output`): its icons, its gestures, its frame-coalesced re-reads.
+//! screen's grid changes. The tray's session-bus callbacks (`tray_output`) live in
+//! `tray_bridge.rs`.
 
 use crate::actions::{self, Button, Wheel};
 use crate::bubbles_surface::{Closes, OpenBubbles};
-use crate::calendar::{Calendar, locale_first_day};
-use crate::clock::LocalTime;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
 use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::link::SessionLink;
-use crate::media::{MediaView, Players};
-use crate::media_popup::{self, MediaAction, MediaPopup};
-use crate::notify::Center;
 use crate::osd::Osd;
 use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
-use crate::panel::{self, Panel, PanelAction};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
 use crate::quick::Focus;
-use crate::state::{Bar, Msg};
-use crate::tray::bus::SessionBus;
+use crate::state::Bar;
+use crate::tray::ItemKey;
 use crate::tray::hover::{self, Hover, HoverChange};
-use crate::tray::menu::{Menu, MenuAction};
-use crate::tray::menu_session::MenuSession;
-use crate::tray::mpris::Mpris;
-use crate::tray::notifications::Notifications;
-use crate::tray::router::{Tray, TrayOutput};
-use crate::tray::{Gesture, ItemKey, icons};
+use crate::tray::router::Tray;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Roles;
 use alpheus_commun::theme::settings::ThemeSettings;
@@ -126,8 +114,7 @@ fn log_name(name: &str, output: &wl_output::WlOutput) -> String {
 /// Whether `seat` is the one the bar tracks (`App::seat`): the same check
 /// repeated in `new_capability`, `remove_capability` and `remove_seat` — on
 /// a multi-seat session, only a change on OUR seat is ours to react to, a
-/// capability lost or gained on another seat is not (review items M3/M4,
-/// final review slice 3). Generic over `PartialEq`, like `should_restore`
+/// capability lost or gained on another seat is not. Generic over `PartialEq`, like `should_restore`
 /// below: a `wl_seat::WlSeat` cannot be instantiated outside a real
 /// connection, so this stays testable without Wayland.
 pub(crate) fn tracks_seat<T: PartialEq>(tracked: &Option<T>, seat: &T) -> bool {
@@ -222,13 +209,13 @@ fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPla
 /// configured, and currently holding at least one attached buffer from the
 /// live pool — never one `draw()` skipped (not yet sized, an allocation
 /// failure) or whose buffers a pool shrink (`shrink_pool_if_needed`) just
-/// forgot (fix round, 2026-10-06: `s.last` alone can stay stale across a
+/// forgot (2026-10-06: `s.last` alone can stay stale across a
 /// shrink, while `s.buffers` correctly empties with it). Picking an
 /// ineligible surface would mean the compositor never fires a frame
 /// callback (nothing attached to repaint), blocking `tray_frame_pending`
 /// forever. Nor a bar waiting for the configure of a new placement (`Surface.placing`): its
 /// attached buffer has the old size, and the commit would show it under the new placement.
-fn eligible_for_frame(configured: bool, has_buffer: bool, placing: bool) -> bool {
+pub(crate) fn eligible_for_frame(configured: bool, has_buffer: bool, placing: bool) -> bool {
     configured && has_buffer && !placing
 }
 
@@ -285,7 +272,7 @@ fn new_buffer(pool: &mut SlotPool, width: u32, height: u32) -> Result<Buffer, St
 /// unit-testable without a live Wayland connection: a `wl_surface::WlSurface`, like
 /// `wl_output::WlOutput`, cannot be built outside one (see `should_restore`'s own comment) — tests
 /// stand in with plain integers instead, same idiom. Shared by `index`, `popup_close`'s and
-/// `hover_fire`'s own parent lookups (popup.rs; task 15 fix round, CRITICAL).
+/// `hover_fire`'s own parent lookups (popup.rs).
 pub(crate) fn position_by<T, U: PartialEq>(items: &[T], key: impl Fn(&T) -> &U, target: &U) -> Option<usize> {
     items.iter().position(|i| key(i) == target)
 }
@@ -344,7 +331,7 @@ pub(crate) struct Surface {
     pub(crate) placement: Placement,
     /// A new placement was asked and its configure has not come yet: nothing is painted meanwhile
     /// (spec § 4), since a buffer of the old size would not match.
-    placing: bool,
+    pub(crate) placing: bool,
     /// The surface height of the placement before the latest one: a configure of that height
     /// answers an earlier request, and keeps the hold (`still_placing`).
     placed_from: u32,
@@ -362,7 +349,7 @@ pub(crate) struct Surface {
     /// after a resize whose old buffers no longer match, or once
     /// invalidated by a pool recreation (`shrink_pool_if_needed`: a buffer
     /// only belongs to the pool that created it).
-    buffers: Vec<(Buffer, u32, u32)>,
+    pub(crate) buffers: Vec<(Buffer, u32, u32)>,
     /// The opaque region last sent (logical px, `painter::opaque_rects`): sent again only when it
     /// changes. Empty before the first draw.
     opaque: Vec<Rect>,
@@ -385,9 +372,9 @@ pub struct App {
     pub bar: Bar,
     /// The 16 colour roles every surface paints with (themes spec § 1).
     pub(crate) roles: Roles,
-    /// theme.toml as last read: its mode decides whether the portal matters (themes task 6).
+    /// theme.toml as last read: its mode decides whether the portal matters.
     pub(crate) theme_settings: ThemeSettings,
-    /// The portal's color-scheme once it answered (themes task 6); None: no word yet, or no portal
+    /// The portal's color-scheme once it answered; None: no word yet, or no portal
     /// (mode auto is then dark).
     pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
     /// The resolver's warnings at the last resolve: a reload logs only new ones.
@@ -442,29 +429,29 @@ pub struct App {
     pub(crate) link_tried: bool,
     /// `follow_portal_if_auto` already acted: never a second attempt.
     pub(crate) portal_tried: bool,
-    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes (themes task 6); None: unset, nothing written.
+    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes; None: unset, nothing written.
     pub(crate) mode_runtime: Option<std::path::PathBuf>,
     /// The mode last written to it; None: not yet.
     pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
     /// The last write failure logged: the same one is not logged again.
     pub(crate) mode_error: Option<String>,
-    /// Do-not-disturb (notifications task 5): loaded at startup, changed only by `set_dnd`.
+    /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
     pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
     pub(crate) tray_deferred_queued: bool,
     /// An idle callback is queued to route what waits in a bus's `ready` with no fd event to
-    /// announce it: answers a flush drained, or that the settle rounds left after a burst (fix wave
-    /// A). One per connection, the tray's and the link's.
+    /// announce it: answers a flush drained, or that the settle rounds left after a burst.
+    /// One per connection, the tray's and the link's.
     pub(crate) tray_ready_queued: bool,
     pub(crate) link_ready_queued: bool,
     /// The horizontal wheel, for tray icons only.
     pub(crate) hwheel: Wheel,
     /// The last button press (serial, time, surface-local position): Activate's
-    /// coordinates, the popup grab (task 15).
+    /// coordinates, the popup grab.
     pub(crate) last_press: Option<(u32, u32, (f64, f64))>,
-    /// The last press's time ON THE OPEN POPUP's surface (fix round 2026-10-06, requirement 6):
+    /// The last press's time ON THE OPEN POPUP's surface:
     /// never `last_press`, which is the bar's own — a mouse click inside a menu running an entry
     /// sends dbusmenu's `Event` with THIS time, not the click that asked the popup to open.
     pub(crate) popup_press_time: u32,
@@ -509,7 +496,7 @@ pub struct App {
     pub(crate) osd_open: Option<OpenOsd>,
     /// The pill's hide timer: armed only while it shows.
     pub(crate) osd_timer: DeadlineTimer,
-    /// The quick panel's timer (quick task 6): armed only while the panel is open and a re-read
+    /// The quick panel's timer: armed only while the panel is open and a re-read
     /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
     /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
     /// question (quick delivery 3); closed, only for an attempt still followed (`wifi_follow`, Mae's
@@ -550,7 +537,7 @@ pub struct App {
     /// Wi-Fi stays read for it until it ends. None at rest.
     pub(crate) wifi_follow: Option<crate::quick_app::WifiFollow>,
     /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
-    /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again (final review).
+    /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again.
     pub(crate) quick_verb_opened: Option<Instant>,
     /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
     pub(crate) key_repeat: bool,
@@ -572,13 +559,13 @@ pub struct App {
     /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
     pub(crate) menu_asked_at: Option<Instant>,
     /// The icon, the closing button and the time of the menu last closed by `xdg_popup.done`
-    /// (`PopupClose::Dismissed`; fix round 2026-10-06, requirement 3): a compositor may deliver `xdg_popup.done`
+    /// (`PopupClose::Dismissed`): a compositor may deliver `xdg_popup.done`
     /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
     /// menu`) would let that very press reopen what it just closed — a record of it, consulted
     /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
     pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
-    /// popup, task 7): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
+    /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
     pub(crate) recently_closed_popup: Option<(ModulePopup, Instant)>,
     /// Whether the bar's layer surface goes `Exclusive` while a grabbing popup is open
     /// (`popup::bar_exclusive_during_grab`): decided once at startup from the compositor.
@@ -586,8 +573,7 @@ pub struct App {
     /// The bar surface `hover.over`'s icon was last seen on, set by `hover_moved` (which knows the
     /// exact surface `i`); `hover_fire` locates it by this IDENTITY, never by re-deriving the bar
     /// from `Anchor::output` — a name that `update_output` can change, or that two bars could
-    /// briefly share, in the ≤ ½ s between arming and firing (task 15 fix round, from the task 16
-    /// review). Cleared whenever `Hover` itself cancels (`hover_apply`'s `Cancel` arm).
+    /// briefly share, in the ≤ ½ s between arming and firing. Cleared whenever `Hover` itself cancels (`hover_apply`'s `Cancel` arm).
     hover_surface: Option<wl_surface::WlSurface>,
     /// Raised by a `Msg::Compositor` message, consumed once per
     /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
@@ -599,8 +585,7 @@ pub struct App {
     /// was started; `None` once it has delivered. Lets a refusal while
     /// reopening (`host::launcher_open_apps`) tell a quick reopen (wait
     /// quietly, adopt that scan's result) from one that has run
-    /// suspiciously long (show the message after all) — task 13 fix round,
-    /// review item 1.
+    /// suspiciously long (show the message after all).
     pub(crate) scan_started: Option<Instant>,
     /// `draw`'s room for a bar's opaque rects, swapped with the surface's when they differ: no
     /// allocation once both have held a bar's rects.
@@ -772,7 +757,7 @@ impl App {
         let info = self.outputs.info(&output);
         let name = info.as_ref().and_then(|i| i.name.clone()).unwrap_or_default();
         let scale = info.map(|i| i.scale_factor).unwrap_or(1);
-        // The bar's style (reconciliation 2): set from theme.toml at startup and on reload (task 7).
+        // The bar's style: set from theme.toml at startup and on reload.
         let placement = Placement::for_style(self.bar.style, self.bar.config.height);
         let surface = self.compositor.create_surface(qh);
         let layer = self.layers.create_layer_surface(qh, surface, Layer::Top, Some("alpheus-bar"), Some(&output));
@@ -803,7 +788,7 @@ impl App {
     /// restore the bar onto it (see `closed`) if it still exists.
     fn remove(&mut self, i: usize) -> wl_output::WlOutput {
         // A popup hanging from this bar goes first (its parent must outlive it): by this surface's
-        // IDENTITY (task 15 fix round, CRITICAL), never its `name` — `update_output` can rename it,
+        // IDENTITY, never its `name` — `update_output` can rename it,
         // or another bar could share the name for a moment, and the wrong popup (or none) would
         // react, leaving a bar stuck `Exclusive`.
         let surface = self.surfaces[i].layer.wl_surface().clone();
@@ -869,12 +854,12 @@ impl App {
     }
 
     /// Re-places every bar for the bar's current `style` (themes delivery 2, spec § 4). Called after
-    /// a theme reload (task 7). A bar whose `Placement` changes (a switch to or from floating) gets
+    /// a theme reload. A bar whose `Placement` changes (a switch to or from floating) gets
     /// its new margin, size, exclusive zone and input region, and paints again only on the
     /// compositor's configure (its size always changes, so that configure always comes). A no-op for
     /// a bar already placed right, so it can be called on every reload.
     ///
-    /// Review Focus 1: a popup (menu, tooltip, calendar) is anchored to its bar's surface at the old
+    /// A popup (menu, tooltip, calendar) is anchored to its bar's surface at the old
     /// size; it is closed before that bar moves, never left hanging from a stale geometry. The
     /// launcher is its own layer surface, not anchored to a bar: it stays open.
     pub(crate) fn apply_bar_placement(&mut self) {
@@ -900,7 +885,7 @@ impl App {
     }
 
     /// A reload changed the bar's shape (shapes spec § 4).
-    /// - To or from `floating`, every bar is re-placed first (`apply_bar_placement`, task 6): margin,
+    /// - To or from `floating`, every bar is re-placed first (`apply_bar_placement`): margin,
     ///   size, exclusive zone, input region, an open popup on a moved bar closed; each moved bar
     ///   holds its paint until its configure (`Surface.placing`).
     /// - Then every surface is repainted once: the bars that may paint, an open popup, the
@@ -979,244 +964,6 @@ impl App {
         s.last = Some(grid);
     }
 
-    /// The media module's view from either connection. The bars repaint only when what they show
-    /// changes (`Bar::apply`), and one line marks the module appearing or going.
-    pub(crate) fn media_view(&mut self, view: Option<MediaView>) {
-        let (before, after) = (self.bar.media.is_some(), view.is_some());
-        if self.bar.apply(Msg::Media(view)) {
-            self.dirty = true;
-        }
-        if before != after {
-            log(if after { "media: shown" } else { "media: hidden" });
-        }
-    }
-
-    /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
-    /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
-    /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
-    /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
-    pub(crate) fn tray_output(&mut self, out: TrayOutput) {
-        if let Some(mode) = out.appearance {
-            self.portal_said(mode);
-        }
-        if out.bus_closed {
-            log("tray: the session bus closed; the tray stays empty");
-            if self.tray.as_ref().is_some_and(|t| t.media().is_some()) {
-                log("media: the session bus closed");
-            }
-            if self.tray.as_ref().is_some_and(|t| t.notifications().is_some()) {
-                log("notifications: the session bus closed");
-            }
-            self.tray = None;
-        }
-        if let Some(view) = out.media {
-            self.media_view(view);
-        }
-        if let Some(view) = out.notifications {
-            self.notify_view(view);
-        }
-        if out.bubbles {
-            self.bubbles_sync();
-        }
-        if out.redraw || out.bus_closed {
-            // The hovered item leaving the tray closes its tooltip outright (ItemGone), whatever
-            // else changed; checked first, independent of the grid below.
-            self.tooltip_item_gone();
-            let shown = match &self.tray {
-                Some(t) => icons::icons(t.items(), &self.bar.config.tray.icons),
-                None => Vec::new(),
-            };
-            if shown.len() != self.bar.tray.len() {
-                log(&format!("tray: icons shown: {}", shown.len()));
-            }
-            // Fix round 2026-10-06 (main fix): `out.redraw` fires for ANY property of ANY item
-            // changing (a messenger's unread counter, an icon animating faster than ½ s) — most of
-            // which leave the drawn grid untouched. Only an actual display change (`bar.apply`
-            // returns true) can possibly have moved or dropped the hovered icon's own zone, so the
-            // hover (armed, or already shown as a tooltip) is cancelled then, and only if
-            // `hover_target_moved` confirms THAT zone is the one that changed — an unrelated icon
-            // changing elsewhere leaves it alone.
-            let changed = self.bar.apply(Msg::Tray(shown));
-            if changed {
-                self.dirty = true;
-                if self.hover_target_moved() {
-                    let c = self.hover.cancel();
-                    self.hover_apply(c);
-                }
-            }
-        }
-        if out.bus_closed && self.menu_for.is_some() {
-            // The session went with the bus (the tray is already dropped): a menu shown closes, a
-            // request still waiting dies.
-            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
-                self.popup_close(PopupClose::ItemGone);
-            }
-            self.menu_end();
-        }
-        // Fix round 2026-10-06, requirement 4: close_menu before open_menu — both can land in the
-        // SAME batch (one incoming message closes the menu stale under it, another opens a new
-        // one for a different item), and processing open_menu first would let this close_menu,
-        // meant for the OLD request, wrongly end the NEW one `open_menu` just replaced it with.
-        if out.close_menu && self.menu_for.is_some() {
-            let gone = self.menu_for.as_ref().is_some_and(|(k, _)| self.tray.as_ref().is_none_or(|t| t.item(k).is_none()));
-            let why = if gone {
-                PopupClose::ItemGone
-            } else if out.menu_path_changed {
-                PopupClose::MenuMoved
-            } else {
-                PopupClose::Timeout
-            };
-            if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
-                self.popup_close(why);
-            } else {
-                // Never shown (no layout within 2 s, question 8): nothing to close but the request.
-                self.menu_end();
-                log(&format!("tray: menu not shown ({})", why.text()));
-            }
-        }
-        if let Some(key) = out.open_menu {
-            // Consumed (final review R2): a late second answer, or one arriving after Escape closed
-            // the menu, must not open it again from a press that was already used.
-            match take_icon_for(&mut self.last_icon, &key) {
-                Some((key, anchor, button)) => self.menu_requested(key, anchor, button),
-                None => log("tray: a menu was asked for an icon no longer under the pointer"),
-            }
-        }
-        if out.menu_changed {
-            self.menu_layout_changed();
-        }
-        self.media_popup_refresh();
-        self.panel_refresh();
-        self.tray_sync();
-    }
-
-    /// Runs `f` on the media consumer with its connection's outbox, wherever it lives: the one path
-    /// for every media call (a click's control here; the popup's Seeked rule, position reads and pin
-    /// in task 7). Nothing is routed re-entrantly: the tray keeps what the flush drained for its
-    /// deferred idle (`tray_sync` queues it), the link for an idle `link_readable`. With no module, it
-    /// is nothing.
-    pub(crate) fn mpris_do(&mut self, f: impl FnOnce(&mut Mpris, &mut SessionBus)) {
-        if let Some(tray) = self.tray.as_mut().filter(|t| t.media().is_some()) {
-            tray.media_do(f);
-            self.tray_sync();
-            return;
-        }
-        let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
-        link.media_do(f);
-        // What the flush drained is routed from an idle (`link_sync`).
-        self.link_sync();
-    }
-
-    /// Runs `f` on the notifications server wherever it lives, the one path for every change the bar
-    /// makes (the bubbles' timer and clicks, the panel, the verbs, do-not-disturb). Its signals leave
-    /// at once; its view and bubbles come back through an idle callback (the tray's deferred output,
-    /// the link's `has_ready`, both queued by their `*_sync`), never re-entrantly. With no server,
-    /// nothing.
-    pub(crate) fn notify_do(&mut self, f: impl FnOnce(&mut Notifications)) {
-        if let Some(tray) = self.tray.as_mut().filter(|t| t.notifications().is_some()) {
-            tray.notifications_do(f);
-            // The one prompt delivery of the tray's deferred view and bubbles (the idle `tray_sync`
-            // queues): without it they would wait for the next event on the tray's connection.
-            self.tray_sync();
-            return;
-        }
-        let Some(link) = self.link.as_mut().filter(|l| l.notifications().is_some()) else { return };
-        link.notifications_do(f);
-        self.link_sync();
-    }
-
-    /// After any tray callback: the deadline timer follows the pending calls
-    /// (none: no timer), and dirty properties ask for one frame callback on
-    /// the first configured bar (a commit with no new buffer and one pixel
-    /// of damage), where they are re-read once (controller decision 10).
-    fn tray_sync(&mut self) {
-        if !self.tray_deferred_queued && self.tray.as_ref().is_some_and(Tray::has_deferred) {
-            if let Some(handle) = &self.loop_handle {
-                self.tray_deferred_queued = true;
-                handle.insert_idle(|app| {
-                    app.tray_deferred_queued = false;
-                    let Some(tray) = app.tray.as_mut() else { return };
-                    let out = tray.take_deferred();
-                    app.tray_output(out);
-                });
-            }
-        }
-        // Answers left in `ready` (a burst past the settle rounds): no fd event will come for them.
-        if !self.tray_ready_queued
-            && self.tray.as_ref().is_some_and(Tray::has_ready)
-            && let Some(handle) = &self.loop_handle
-        {
-            self.tray_ready_queued = true;
-            handle.insert_idle(|app| {
-                app.tray_ready_queued = false;
-                app.tray_readable();
-            });
-        }
-        let deadline = self.tray.as_ref().and_then(Tray::next_deadline);
-        if let Some(handle) = &self.loop_handle {
-            self.tray_timer.sync(handle, deadline, App::tray_deadline);
-        }
-        if self.tray_frame_pending.is_some() || !self.tray.as_ref().is_some_and(Tray::wants_frame) {
-            return;
-        }
-        let Some(surface) = self
-            .surfaces
-            .iter()
-            .find(|s| eligible_for_frame(s.configured, !s.buffers.is_empty(), s.placing))
-            .map(|s| s.layer.wl_surface().clone())
-        else {
-            return;
-        };
-        surface.frame(&self.qh, surface.clone());
-        // 1×1 of buffer damage on every compositor (controller decision 10):
-        // an undamaged commit may get no frame callback at all (Hyprland) or a
-        // throttled one (niri, ≈ 1 s). The attached buffer is not re-sent.
-        surface.damage_buffer(0, 0, 1, 1);
-        surface.commit();
-        self.tray_frame_pending = Some(surface);
-    }
-
-    /// The session bus's fd is readable (calloop callback).
-    pub(crate) fn tray_readable(&mut self) {
-        let Some(tray) = self.tray.as_mut() else { return };
-        let out = tray.on_readable();
-        self.tray_output(out);
-    }
-
-    /// The deadline timer fired (calloop callback; its source is dropped).
-    pub(crate) fn tray_deadline(app: &mut App, now: Instant) {
-        app.tray_timer.fired();
-        let Some(tray) = app.tray.as_mut() else { return };
-        let out = tray.on_deadline(now);
-        app.tray_output(out);
-    }
-
-    /// The tray icon under `x` on bar `i`, if any.
-    fn tray_key_at(&mut self, i: usize, x: f64) -> Option<ItemKey> {
-        let e = self.surfaces[i].scale;
-        let col = painter::column_under(x, e, self.fonts.advance(e));
-        match self.surfaces[i].last.as_ref()?.target_at(col)? {
-            Target::TrayItem(key) => Some(key.clone()),
-            _ => None,
-        }
-    }
-
-    /// A gesture at `position` (surface-local, logical) on bar `i`, from button `b`: sent to the
-    /// tray icon there, with that position (decision 4); false when no icon is there (the bar's
-    /// own click handling then applies).
-    fn tray_gesture_at(&mut self, i: usize, position: (f64, f64), g: Gesture, b: Button) -> bool {
-        let Some(key) = self.tray_key_at(i, position.0) else { return false };
-        // Task 17: the icon's cells, where its menu will hang, and the button that pressed it
-        // (fix round 2026-10-06, requirement 2) — read back by `menu_requested` once the menu
-        // actually opens, which may be later (a failed Activate's error answers asynchronously).
-        self.last_icon = self.icon_anchor(i, position.0).map(|(k, a)| (k, a, b));
-        if let Some(tray) = self.tray.as_mut() {
-            let out = tray.gesture(&key, g, (position.0 as i32, position.1 as i32));
-            self.tray_output(out);
-        }
-        true
-    }
-
     /// The module popup a press of `b` at `x` on bar `i` toggles, its module's cells (its anchor),
     /// and the zone's target (the quick panel's section).
     fn module_popup_at(&mut self, i: usize, x: f64, b: Button) -> Option<(ModulePopup, PopupAnchor, Target)> {
@@ -1227,273 +974,6 @@ impl App {
         let zone = s.last.as_ref()?.zone_at(column)?;
         let popup = ModulePopup::of(&zone.target, b, quick)?;
         Some((popup, PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end }, zone.target.clone()))
-    }
-
-    /// Left press on the clock zone: toggles the calendar under it (a second click closes it).
-    pub(crate) fn calendar_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
-        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Calendar(_))) {
-            self.popup_close(PopupClose::OutsideClick);
-            return;
-        }
-        // The locale's first day, read at each open (decision 11): never at startup, nothing kept
-        // while closed.
-        let calendar = Calendar::new(&LocalTime::now().0, locale_first_day(), self.bar.config.clock.week_numbers);
-        let rows = crate::list::padded(&calendar.render());
-        let month = crate::popup::calendar_month(&calendar);
-        let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Calendar(calendar), columns, height, Input::Grab) {
-            self.popup_paint(rows);
-            log(&format!("calendar shown {month}"));
-        }
-    }
-
-    /// Left press on the media module: toggles its popup under it (a second click closes it).
-    pub(crate) fn media_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
-        if self.media_shown() {
-            self.popup_close(PopupClose::OutsideClick);
-            return;
-        }
-        let now = Instant::now();
-        let built =
-            mpris_of(self.tray.as_ref(), self.link.as_ref()).map(Mpris::players).filter(|p| p.shown().next().is_some()).map(|players| {
-                let popup = MediaPopup::new(players);
-                let rows = media_popup::rows(players, &popup, now, media_popup::WIDTH);
-                let heading = media_popup::heading(players, &rows);
-                (popup, rows, heading)
-            });
-        let Some((popup, rows, heading)) = built else { return };
-        let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Media(popup), columns, height, Input::Grab) {
-            self.popup_paint(rows);
-            self.mpris_do(|m, out| m.popup_opened(out));
-            self.media_timer_sync();
-            // What it shows on top, as drawn (controller reconciliation 10: the headless tests read it).
-            log(&format!("media popup shown: {heading}"));
-        }
-    }
-
-    pub(crate) fn media_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Media(_)))
-    }
-
-    /// `f` on the open media popup and the players; Nothing when either is missing.
-    pub(crate) fn media_with(&mut self, f: impl FnOnce(&mut MediaPopup, &Players) -> MediaAction) -> MediaAction {
-        let App { tray, link, popup, .. } = self;
-        match (mpris_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
-            (Some(m), Some(PopupBody::Media(p))) => f(p, m.players()),
-            _ => MediaAction::Nothing,
-        }
-    }
-
-    pub(crate) fn media_action(&mut self, action: MediaAction) {
-        match action {
-            MediaAction::Nothing => {}
-            MediaAction::Redraw => self.media_popup_refresh(),
-            MediaAction::Close => self.popup_close(PopupClose::Escape),
-            // The player answers with PropertiesChanged, which repaints; the refresh shows the
-            // selection the press moved.
-            MediaAction::Control(c) => {
-                self.mpris_do(|m, out| m.control(out, c));
-                self.media_popup_refresh();
-            }
-            MediaAction::Pin(name) => {
-                self.media_pin(&name);
-                self.media_popup_refresh();
-            }
-        }
-    }
-
-    /// Pins `name` (the media popup's or the panel's card). A pin changes the active player with no
-    /// D-Bus traffic to carry the bar's view: it is taken here, at once (the one place it changes
-    /// outside an output).
-    fn media_pin(&mut self, name: &str) {
-        let mut change = None;
-        self.mpris_do(|m, out| {
-            m.pin(name);
-            m.resync_active(out);
-            change = m.take_view_change();
-        });
-        if let Some(view) = change {
-            self.media_view(view);
-        }
-    }
-
-    /// After anything that may change what the popup shows (a host's output, a tick, a key): the
-    /// rows rebuilt and painted (`popup_draw` commits nothing when they did not change), the tick
-    /// re-synced. The bar's view is not rebuilt here (once a tick, per output): the outputs carry
-    /// it (`take_view_change`), and the pin takes it itself.
-    /// No player shown any more, or no host: the popup closes (player gone). Popup closed: only
-    /// the timer is synced (to none).
-    pub(crate) fn media_popup_refresh(&mut self) {
-        if !self.media_shown() {
-            self.media_timer_sync();
-            return;
-        }
-        let now = Instant::now();
-        let rows = {
-            let App { tray, link, popup, .. } = &mut *self;
-            match (mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players), popup.as_mut().map(|o| &mut o.body)) {
-                (Some(players), Some(PopupBody::Media(p))) if players.shown().next().is_some() => {
-                    p.fit(players);
-                    Some(media_popup::rows(players, p, now, media_popup::WIDTH))
-                }
-                _ => None,
-            }
-        };
-        let Some(rows) = rows else {
-            self.popup_close(PopupClose::PlayerGone);
-            return;
-        };
-        self.popup_paint(rows);
-        self.media_timer_sync();
-    }
-
-    /// The tick follows `media_popup::player_tick`: armed only while the popup is open (or the panel
-    /// showing its card) and the active player plays, its position known, before the end of its track; removed otherwise. An armed
-    /// tick still ahead is kept (`next_deadline`).
-    pub(crate) fn media_timer_sync(&mut self) {
-        let now = Instant::now();
-        let open = self.media_shown() || self.panel_shown();
-        let due = mpris_of(self.tray.as_ref(), self.link.as_ref())
-            .and_then(|m| m.players().active())
-            .and_then(|p| media_popup::player_tick(open, p, now));
-        let at = media_popup::next_deadline(due, self.media_timer.deadline(), now);
-        if let Some(handle) = self.loop_handle.clone() {
-            self.media_timer.sync(&handle, at, App::media_tick);
-        }
-    }
-
-    /// The tick fired (calloop callback; its source is dropped).
-    pub(crate) fn media_tick(app: &mut App, _: Instant) {
-        app.media_timer.fired();
-        app.media_popup_refresh();
-        app.panel_refresh();
-    }
-
-    /// Left press on the bell: toggles the panel under it (a second click closes it). Opening marks
-    /// everything read (spec § 4); the card's Seeked rule and tick start as the media popup's do.
-    pub(crate) fn panel_toggle(&mut self, qh: &QueueHandle<App>, anchor: PopupAnchor) {
-        if self.panel_shown() {
-            self.popup_close(PopupClose::OutsideClick);
-            return;
-        }
-        let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else { return };
-        let room = self.popup_room(i).1.saturating_sub(1);
-        let now = Instant::now();
-        let built = {
-            let App { tray, link, .. } = &*self;
-            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-            notifications_of(tray.as_ref(), link.as_ref()).map(|n| {
-                let mut p = Panel::new(n.center(), players, room);
-                panel::scroll_into_view(&mut p, n.center(), players);
-                let rows = panel::rows(n.center(), players, &p, now, crate::tray::notifications::minute_now());
-                let card = panel::items(n.center(), players).first() == Some(&panel::Item::Card);
-                (p, rows, card)
-            })
-        };
-        // No consumer (no session bus): nothing to show.
-        let Some((p, rows, card)) = built else { return };
-        let entries = p.entries;
-        let (columns, height) = rows.cells();
-        if self.popup_open(qh, anchor, PopupBody::Panel(p), columns, height, Input::Grab) {
-            self.popup_paint(rows);
-            // Only once it shows: a refused open leaves the count on the bell.
-            self.notify_do(|n| n.center_mut().mark_read());
-            self.mpris_do(|m, out| m.popup_opened(out));
-            self.media_timer_sync();
-            log(&format!("panel shown (entries: {entries}, card: {})", if card { "yes" } else { "no" }));
-        }
-    }
-
-    pub(crate) fn panel_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Panel(_)))
-    }
-
-    /// `f` on the open panel, the notifications center and the players; Nothing when the panel or the
-    /// consumer is missing.
-    pub(crate) fn panel_with(&mut self, f: impl FnOnce(&mut Panel, &Center, Option<&Players>) -> PanelAction) -> PanelAction {
-        let App { tray, link, popup, .. } = self;
-        let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-        match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
-            (Some(n), Some(PopupBody::Panel(p))) => f(p, n.center(), players),
-            _ => PanelAction::Nothing,
-        }
-    }
-
-    /// A panel action: the card's go as the media popup's; the notifications' through `notify_act`
-    /// (signals sent, the bell and the bubbles follow, the panel repainted).
-    pub(crate) fn panel_action(&mut self, action: PanelAction) {
-        match action {
-            PanelAction::Nothing => {}
-            PanelAction::Redraw => self.panel_refresh(),
-            PanelAction::Close => self.popup_close(PopupClose::Escape),
-            PanelAction::Media(m) => match m {
-                MediaAction::Nothing => {}
-                MediaAction::Redraw => self.panel_refresh(),
-                MediaAction::Close => self.popup_close(PopupClose::Escape),
-                MediaAction::Control(c) => {
-                    self.mpris_do(|m, out| m.control(out, c));
-                    self.panel_refresh();
-                }
-                MediaAction::Pin(name) => {
-                    self.media_pin(&name);
-                    self.panel_refresh();
-                }
-            },
-            PanelAction::Invoke(id, revision, _) => self.notify_activate(id, revision),
-            PanelAction::Remove(id) => {
-                self.notify_act(|n| n.center_mut().remove(id));
-                log("panel: entry removed");
-            }
-            // Task 5's one path: persisted, given to the server, then (notify_act) the bubbles and
-            // this panel follow.
-            PanelAction::ToggleDnd => {
-                let on = !self.dnd;
-                self.set_dnd(on);
-                log(&format!("panel: do not disturb {}", if on { "on" } else { "off" }));
-            }
-            PanelAction::Clear => {
-                self.clear_notifications();
-                log("panel: cleared");
-            }
-        }
-    }
-
-    /// After anything that may change what the panel shows (a host's output, a tick, a key, a
-    /// notification action): whatever arrived is marked read while it shows (spec § 4), the window
-    /// follows the selection, the rows are rebuilt and painted (`popup_draw` commits nothing when they
-    /// did not change), and the card's tick re-synced. The consumer gone (its bus closed): the panel
-    /// closes.
-    pub(crate) fn panel_refresh(&mut self) {
-        if !self.panel_shown() {
-            return;
-        }
-        if notifications_of(self.tray.as_ref(), self.link.as_ref()).is_some_and(|n| n.center().view(n.held()).unread > 0) {
-            self.notify_do(|n| n.center_mut().mark_read());
-        }
-        let now = Instant::now();
-        let built = {
-            let App { tray, link, popup, .. } = &mut *self;
-            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-            match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|o| &mut o.body)) {
-                (Some(n), Some(PopupBody::Panel(p))) => {
-                    panel::scroll_into_view(p, n.center(), players);
-                    let before = p.entries;
-                    p.entries = n.center().history().count();
-                    Some((panel::rows(n.center(), players, p, now, crate::tray::notifications::minute_now()), before, p.entries))
-                }
-                _ => None,
-            }
-        };
-        let Some((rows, before, after)) = built else {
-            self.popup_close(PopupClose::ItemGone);
-            return;
-        };
-        if before != after {
-            log(&format!("panel: entries {after}"));
-        }
-        self.popup_paint(rows);
-        self.media_timer_sync();
     }
 
     /// `launcher_was_open`: whether the launcher was open right before this
@@ -1577,7 +1057,7 @@ fn closes_own_menu(menu_shown_for: Option<&ItemKey>, pressed_icon: Option<&ItemK
     menu_shown_for.is_some() && menu_shown_for == pressed_icon && b.is_some() && (b == Some(Button::Right) || b == opened_by)
 }
 
-/// Fix round 2026-10-06, requirement 3 (Hyprland/niri hardening): a compositor may deliver `xdg_
+/// A compositor may deliver `xdg_
 /// popup.done` (closing the popup: `PopupClose::Dismissed`) before the press that follows it reaches
 /// the bar — by then `closes_own_menu` sees no menu open at all and would let this very press
 /// reopen what it just closed. `record` (the icon whose menu this was, the button that opened it,
@@ -1604,43 +1084,9 @@ fn closed_by_done(record: &mut Option<(ModulePopup, Instant)>, pressed: Option<M
     }
 }
 
-/// The media consumer wherever it lives (Task 5): on the tray's connection, else on the bar's link.
-pub(crate) fn mpris_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Mpris> {
-    tray.and_then(Tray::media).or_else(|| link.and_then(SessionLink::media))
-}
-
-/// The notifications consumer wherever it lives (Task 5): on the tray's connection, else on the
-/// bar's link.
-pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a SessionLink>) -> Option<&'a Notifications> {
-    tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))
-}
-
-/// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
-/// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
-fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
-    last.take().filter(|(k, _, _)| k == key)
-}
-
-/// Review requirement 3: `open_menu` for the key whose menu is already open, or whose session is
-/// already opening, is a no-op — a duplicate failed Activate (two quick left clicks on an item
-/// without its own Activate, e.g. Steam) must not close and reopen the session already in flight.
-fn already_requested(menu_for: Option<&ItemKey>, key: &ItemKey) -> bool {
-    menu_for == Some(key)
-}
-
-/// Fix round 2026-10-06, requirement 1: a submenu fetch (`submenu_wanted`) is worth grafting only
-/// if the menu's current selection is still that very id when the layout arrives — any other
-/// action in between (a move, going back, a different submenu chosen) clears `submenu_wanted`
-/// itself (`menu_action`), but `relayout`'s own bookkeeping can also shift the selection without
-/// going through it (an entry dropped from the menu, say); this is the last check before grafting.
-fn submenu_still_selected(wanted: Option<i32>, selected: Option<i32>) -> bool {
-    wanted.is_some() && wanted == selected
-}
-
 impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, surface: &wl_surface::WlSurface, f: i32) {
-        // Ownership decided first, outside any guard (task 13 fix round,
-        // review item 2): a panic inside `launcher_scale` must never make a
+        // Ownership decided first, outside any guard: a panic inside `launcher_scale` must never make a
         // BAR surface's own scale change look handled.
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("scale", |app| app.launcher_scale(surface, f));
@@ -1724,8 +1170,7 @@ impl OutputHandler for App {
 
 impl LayerShellHandler for App {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
-        // Ownership decided first, outside any guard (task 13 fix round,
-        // review item 2): same reasoning as `scale_factor_changed`. Checked
+        // Ownership decided first, outside any guard: same reasoning as `scale_factor_changed`. Checked
         // before the bar's own restore logic below even gets a chance to
         // read: a launcher surface never goes through it.
         if self.launcher_owns_surface(layer.wl_surface()) {
@@ -1776,8 +1221,7 @@ impl LayerShellHandler for App {
     }
 
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
-        // Ownership decided first, outside any guard (task 13 fix round,
-        // review item 2): same reasoning as `scale_factor_changed`.
+        // Ownership decided first, outside any guard: same reasoning as `scale_factor_changed`.
         if self.launcher_owns_surface(layer.wl_surface()) {
             self.launcher_guarded("configure", |app| app.launcher_configured(layer.wl_surface(), c.new_size));
             return;
@@ -1868,7 +1312,7 @@ impl SeatHandler for App {
             // The seat itself is gone, not just one of its capabilities: any
             // keyboard bound through it (the launcher's, a grabbing popup's,
             // while open) goes with it — `remove_capability` alone never
-            // fires for this case (review item M3, final review slice 3).
+            // fires for this case.
             self.keyboard_lost();
         }
     }
@@ -1892,13 +1336,13 @@ impl PointerHandler for App {
                 if let (PointerEventKind::Enter { .. }, Some(p)) = (&ev.kind, &self.pointer) {
                     let _ = p.set_cursor(conn, CursorIcon::Default);
                 }
-                // Fix round 2026-10-06, requirement 6: THIS press's own time — never the bar's
+                // THIS press's own time — never the bar's
                 // `last_press`, the click that asked the popup to open — so a mouse click running
                 // a menu entry sends dbusmenu's `Event` with the click's own timestamp.
                 if let PointerEventKind::Press { time, .. } = &ev.kind {
                     self.popup_press_time = *time;
                 }
-                // The popup's OWN wheel accumulator (task 15 fix round), never the bar's
+                // The popup's OWN wheel accumulator, never the bar's
                 // `self.wheel`: a notch half-scrolled on the bar must not carry into a menu, or
                 // the other way around.
                 let kind = self.popup.as_mut().and_then(|open| popup_pointer_kind(&mut open.wheel, &ev.kind));
@@ -1929,7 +1373,7 @@ impl PointerHandler for App {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
-                    // Fix round 2026-10-06, requirement 7: a press that hits no icon drops
+                    // A press that hits no icon drops
                     // `last_icon` — a failed Activate answered late, for whatever icon was
                     // pressed before this one, must not open a menu once the user has pressed
                     // elsewhere on the bar meanwhile.
@@ -1937,18 +1381,17 @@ impl PointerHandler for App {
                         self.last_icon = None;
                     }
                     let b = actions::button(*button);
-                    let menu_shown_for = match self.popup.as_ref().map(|p| &p.body) {
+                    let menu_shown_for = match self.popup_body() {
                         Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
                         _ => None,
                     };
                     let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
                         || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
                     // A press on the bar is delivered to it even while one of its popups grabs
-                    // the pointer (same client, fact check 5): it is a click outside that popup —
+                    // the pointer (same client): it is a click outside that popup —
                     // except a module popup's own second click: its toggle closes it.
                     let pressed_popup = b.and_then(|b| self.module_popup_at(i, ev.position.0, b)).map(|(p, _, _)| p);
-                    let toggles_own_popup =
-                        pressed_popup.is_some() && pressed_popup == self.popup.as_ref().and_then(|o| o.body.module_popup());
+                    let toggles_own_popup = pressed_popup.is_some() && pressed_popup == self.popup_body().and_then(PopupBody::module_popup);
                     if self.popup.is_some() {
                         // Where the compositor delivered it: a press meant for the popup but handed
                         // to the bar (seen on Hyprland) shows here, at a row below the bar's own.
@@ -1962,7 +1405,7 @@ impl PointerHandler for App {
                     if self.menu_for.is_some() {
                         self.menu_end();
                     }
-                    // Requirement 3: consumed by a matching press, and just as irrelevant to any
+                    // Consumed by a matching press, and just as irrelevant to any
                     // other one — never reused by a later, unrelated press. Cleared AFTER the
                     // close above: a close this press performs itself needs no record (only a
                     // compositor `done` arriving ahead of the press does), else a quick reopen
@@ -2045,12 +1488,12 @@ impl App {
         let tooltips = self.bar.config.tray.tooltips && !busy;
         let e = self.surfaces[i].scale;
         let column = painter::column_under(x, e, self.fonts.advance(e));
-        // Borrowed from `self.surfaces[i]` (fix round 2026-10-06, item 2): resting on the same
+        // Borrowed from `self.surfaces[i]`: resting on the same
         // icon allocates nothing, `Hover::moved` only clones the key and the output name on Arm.
         let found = self.surfaces[i].last.as_ref().and_then(|g| hover::over(tooltips, g, column));
         let c = self.hover.moved(found, &self.surfaces[i].name, Instant::now());
         if matches!(c, HoverChange::Arm(_)) {
-            // This surface's own identity, known here precisely (task 15 fix round, from the task
+            // This surface's own identity, known here precisely (from the task
             // 16 review): `hover_fire`, run later by its timer, must find the SAME bar back by
             // this, never by re-deriving it from a name that could have changed meanwhile.
             self.hover_surface = Some(self.surfaces[i].layer.wl_surface().clone());
@@ -2060,7 +1503,7 @@ impl App {
 
     /// Arm: the timer at that instant (a tooltip shown for another icon goes); Cancel: no timer, no tooltip.
     pub(crate) fn hover_apply(&mut self, c: HoverChange) {
-        let tooltip_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Tooltip(_)));
+        let tooltip_shown = matches!(self.popup_body(), Some(PopupBody::Tooltip(_)));
         let deadline = match c {
             HoverChange::Nothing => return,
             HoverChange::Arm(at) => Some(at),
@@ -2072,13 +1515,11 @@ impl App {
         if tooltip_shown {
             self.popup_close(PopupClose::HoverEnded);
         }
-        if let Some(handle) = self.loop_handle.clone() {
-            self.hover_timer.sync(&handle, deadline, App::hover_fire);
-        }
+        self.hover_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::hover_fire);
     }
 
     /// The tooltip's item left the tray: its tooltip goes.
-    fn tooltip_item_gone(&mut self) {
+    pub(crate) fn tooltip_item_gone(&mut self) {
         let Some(open) = self.popup.as_ref() else { return };
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
@@ -2098,12 +1539,12 @@ impl App {
 
     /// True when the item `Hover` is tracking (armed, or already shown as a tooltip) lost its
     /// zone, or moved to different columns, in the grid `self.bar` would now paint for the
-    /// surface it was armed on (fix round 2026-10-06, main fix) — found by `hover_surface`'s
-    /// IDENTITY, never `anchor.output`'s name (it can change meanwhile, see the task 15 fix
-    /// round). An unrelated icon changing elsewhere never moves THIS one's zone, so this stays
+    /// surface it was armed on — found by `hover_surface`'s
+    /// IDENTITY, never `anchor.output`'s name (it can change meanwhile). An unrelated icon changing elsewhere never moves THIS one's
+    /// zone, so this stays
     /// false then — the whole point of only cancelling here, not on every redraw. Nothing
     /// tracked: never "moved".
-    fn hover_target_moved(&self) -> bool {
+    pub(crate) fn hover_target_moved(&self) -> bool {
         let Some((key, anchor)) = self.hover.target() else { return false };
         let Some(surface) = self.hover_surface.as_ref() else { return false };
         let Some(i) = self.index(surface) else { return true }; // the bar surface itself is gone
@@ -2123,7 +1564,7 @@ impl App {
             return;
         }
         let Some(text) = app.tray.as_ref().and_then(|t| t.item(&key)).and_then(|i| i.tooltip_text()).map(str::to_owned) else { return };
-        // By `hover_surface`'s IDENTITY (task 15 fix round, from the task 16 review), never by
+        // By `hover_surface`'s IDENTITY, never by
         // re-deriving the bar from `anchor.output`: up to ½ s has passed since `hover_moved` armed
         // this, time enough for `update_output` to rename it, or for the name to be briefly shared.
         let Some(surface) = app.hover_surface.clone() else { return };
@@ -2148,112 +1589,6 @@ impl App {
 }
 
 impl App {
-    /// The tray icon under `x` on bar `i`, and its cells.
-    fn icon_anchor(&mut self, i: usize, x: f64) -> Option<(ItemKey, PopupAnchor)> {
-        let e = self.surfaces[i].scale;
-        let column = painter::column_under(x, e, self.fonts.advance(e));
-        let s = &self.surfaces[i];
-        let zone = s.last.as_ref()?.zone_at(column)?;
-        match &zone.target {
-            Target::TrayItem(key) => Some((key.clone(), PopupAnchor { output: s.name.clone(), start: zone.start, end: zone.end })),
-            _ => None,
-        }
-    }
-
-    /// The item's menu: remembered anchor (the clicked icon's zone on that output) and the button
-    /// that asked for it; the popup opens when the first layout arrives (question 8) — or never,
-    /// when 2 s pass first.
-    pub(crate) fn menu_requested(&mut self, key: ItemKey, anchor: PopupAnchor, button: Button) {
-        // Review requirement 3: a menu already open, or whose session is already opening, for this
-        // icon is untouched — a duplicate failed Activate (two quick left clicks on Steam, each
-        // erroring in turn) must not close and reopen the session already in flight for it. Distinct
-        // from a second RIGHT click on the same icon (`closes_own_menu`, in the Press arm below),
-        // which does close it (Mae's decision).
-        if already_requested(self.menu_for.as_ref().map(|(k, _)| k), &key) {
-            return;
-        }
-        // One menu at a time: a menu shown goes (its session is replaced by the new one).
-        if matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_))) {
-            self.popup_close(PopupClose::Replaced);
-        }
-        let opened = self.tray.as_mut().is_some_and(|t| t.open_menu(&key));
-        // Review requirement 1: `open_menu` just sent calls of its own (AddMatch, AboutToShow), each
-        // with its own 2 s deadline — re-arm the timer now, not only at the next bus event.
-        self.tray_sync();
-        if opened {
-            self.menu_for = Some((key, anchor));
-            self.menu_opened_by = Some(button);
-            self.submenu_wanted = None;
-            self.menu_asked_at = Some(Instant::now());
-        } else {
-            // A request still waiting for an earlier layout does not outlive this one.
-            self.menu_end();
-            log("tray: no menu for this item");
-        }
-    }
-
-    /// The session's layout changed: the first one opens the popup, later ones patch it.
-    fn menu_layout_changed(&mut self) {
-        let menu_shown = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
-        if menu_shown {
-            let App { tray, popup, submenu_wanted, .. } = self;
-            let (Some(layout), Some(PopupBody::Menu(m))) =
-                (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
-            else {
-                return;
-            };
-            m.relayout(layout);
-            if let Some(id) = *submenu_wanted {
-                // Review requirement 4, hardened by the fix round (requirement 1): a stale
-                // asynchronous graft is refused two ways now. `Menu::enter` itself
-                // (`level_alive`, checked against the CURRENT level) catches an id that is no
-                // longer a selectable entry there at all. `submenu_still_selected` catches the
-                // narrower case `level_alive` cannot see: the id IS still a valid entry of this
-                // level, but the user has since moved the selection elsewhere (a hover, a scroll)
-                // without leaving the level — Steam and Electron re-emit `LayoutUpdated` often
-                // enough that a late graft can otherwise jump into "More" long after the user
-                // looked elsewhere.
-                if submenu_still_selected(Some(id), m.selected()) {
-                    if m.enter(id, layout) {
-                        *submenu_wanted = None;
-                    }
-                } else {
-                    *submenu_wanted = None; // stale: the user moved away first, nothing to graft
-                }
-            }
-            self.menu_repaint();
-            return;
-        }
-        let Some((key, anchor)) = self.menu_for.clone() else { return };
-        // Mae: at most 2 s from the request to the menu — each call has its own 2 s, so a layout can
-        // land later than that; it opens nothing then.
-        if self.menu_asked_at.is_some_and(|t| t.elapsed() > crate::tray::bus::TIMEOUT) {
-            self.menu_end();
-            log("tray: menu not shown (timeout)");
-            return;
-        }
-        let Some(i) = self.surfaces.iter().position(|s| s.name == anchor.output) else {
-            self.menu_end();
-            return;
-        };
-        let (max_columns, max_rows) = self.popup_room(i);
-        let Some(layout) = self.tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout) else { return };
-        let mut m = Menu::new();
-        m.relayout(layout); // requirement 5: the first entry selected before the popup ever shows
-        let (columns, rows) = m.size(layout, max_columns, max_rows);
-        m.set_rows(usize::from(rows.saturating_sub(2))); // consistent with render's height (size.1 − 2)
-        let grid = m.render(layout, columns, rows);
-        let qh = self.qh.clone();
-        let (columns, rows) = grid.cells();
-        if self.popup_open(&qh, anchor, PopupBody::Menu(m), columns, rows, Input::Grab) {
-            self.popup_paint(grid);
-            log(&format!("menu shown for {}{}", key.owner, key.path));
-        } else {
-            self.menu_end();
-            log("tray: the menu could not open");
-        }
-    }
-
     /// Cells a popup may take under bar `i`: its columns, and the output's rows below the bar.
     pub(crate) fn popup_room(&self, i: usize) -> (u16, u16) {
         let s = &self.surfaces[i];
@@ -2262,89 +1597,6 @@ impl App {
         let output_height = self.outputs.info(&s.output).and_then(|o| o.logical_size).map_or(720, |(_, h)| h.max(1) as u32);
         let rows = (output_height / height).saturating_sub(1).min(u16::MAX as u32) as u16;
         (columns, rows)
-    }
-
-    /// The menu re-rendered at its current level (the popup resized when its size changed).
-    fn menu_repaint(&mut self) {
-        // The bar by the popup's parent SURFACE (identity), like `popup_close`: its output's name can
-        // change (`update_output`) or be shared by two bars while the menu is open.
-        let Some(i) = self.popup.as_ref().and_then(|p| position_by(&self.surfaces, |s| s.layer.wl_surface(), p.parent_surface())) else {
-            return;
-        };
-        let (max_columns, max_rows) = self.popup_room(i);
-        let App { tray, popup, .. } = self;
-        let (Some(layout), Some(PopupBody::Menu(m))) =
-            (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
-        else {
-            return;
-        };
-        let (columns, rows) = m.size(layout, max_columns, max_rows);
-        m.set_rows(usize::from(rows.saturating_sub(2)));
-        let grid = m.render(layout, columns, rows);
-        self.popup_paint(grid);
-    }
-
-    /// MenuAction → Tray calls and popup changes (Click: menu_click with the key or press time, then
-    /// close Activated; Submenu: menu_submenu, enter when grafted; Close: close_menu + popup_close).
-    pub(crate) fn menu_action(&mut self, a: MenuAction, timestamp: u32) {
-        // Fix round 2026-10-06, requirement 1: any of these three actions invalidates a pending
-        // submenu fetch (`submenu_wanted`) — a selection move or going back (both Redraw), a
-        // DIFFERENT submenu asked for, or an entry run all mean the user is no longer waiting on
-        // the one that was asked for before. Left uncleared, a late `LayoutUpdated` (Steam,
-        // Electron re-emit it often) could otherwise graft it in long after the user moved on.
-        if matches!(a, MenuAction::Redraw | MenuAction::Submenu(_) | MenuAction::Click(_)) {
-            self.submenu_wanted = None;
-        }
-        match a {
-            MenuAction::Nothing => {}
-            MenuAction::Redraw => self.menu_repaint(),
-            MenuAction::Close => self.popup_close(PopupClose::Escape),
-            MenuAction::Click(id) => {
-                if let Some(tray) = self.tray.as_mut() {
-                    tray.menu_click(id, timestamp);
-                }
-                self.tray_sync(); // requirement 1
-                self.popup_close(PopupClose::Activated);
-            }
-            MenuAction::Submenu(id) => {
-                if let Some(tray) = self.tray.as_mut() {
-                    tray.menu_submenu(id);
-                }
-                self.tray_sync(); // requirement 1: re-arms the deadline timer for AboutToShow/GetLayout
-                let App { tray, popup, submenu_wanted, .. } = self;
-                let (Some(layout), Some(PopupBody::Menu(m))) =
-                    (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
-                else {
-                    return;
-                };
-                if m.enter(id, layout) {
-                    *submenu_wanted = None;
-                    self.menu_repaint();
-                } else {
-                    // Fetched lazily (AboutToShow, GetLayout): entered when grafted (menu_changed).
-                    *submenu_wanted = Some(id);
-                }
-            }
-        }
-    }
-
-    /// The menu asked for or shown is over: its D-Bus session too (RemoveMatch, task 6), logged.
-    pub(crate) fn menu_end(&mut self) {
-        // Fix round 2026-10-06, requirement 5: logged whenever there WAS an app-level request —
-        // even if the router already dropped its own session object first (the stale-path check
-        // closes it before ever surfacing `close_menu`): `tray.close_menu()` is harmless once
-        // there is nothing left to close, but the request DID end, and used to go unlogged then.
-        let had_one = self.menu_for.take().is_some();
-        self.menu_opened_by = None;
-        self.submenu_wanted = None;
-        self.menu_asked_at = None;
-        if had_one {
-            if let Some(tray) = self.tray.as_mut() {
-                tray.close_menu();
-            }
-            log("tray: menu session closed");
-        }
-        self.tray_sync(); // requirement 1: re-arms the deadline timer after close_menu
     }
 }
 
@@ -2394,410 +1646,4 @@ impl crate::launch::WindowsFeed for App {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Task 4 review: the opaque region is sent only when it changes; a region that cannot be made
-    /// clears the surface's claim (never a stale one over transparent gaps) and is retried later.
-    #[test]
-    fn a_failed_opaque_region_clears_the_claim_and_is_retried() {
-        let rect = |x: i32| Rect { x, y: 0, width: 10, height: 22 };
-        let (mut sent, mut wanted) = (vec![rect(0)], vec![rect(5)]);
-        let (mut set, mut cleared) = (0, 0);
-        let r = send_opaque(&mut sent, &mut wanted, |_| Err("no region"), || cleared += 1);
-        assert_eq!(r, Err("no region"), "the error is handed back for the log");
-        assert_eq!(cleared, 1, "the stale claim is withdrawn");
-        assert!(sent.is_empty(), "nothing recorded as sent");
-        let r = send_opaque(
-            &mut sent,
-            &mut wanted,
-            |rs: &[Rect]| {
-                assert_eq!(rs, &[rect(5)]);
-                set += 1;
-                Ok::<(), &str>(())
-            },
-            || cleared += 1,
-        );
-        assert_eq!((r, set, cleared), (Ok(()), 1, 1), "the next frame retries and sends it");
-        assert_eq!(sent, vec![rect(5)]);
-        wanted = vec![rect(5)];
-        let r =
-            send_opaque(&mut sent, &mut wanted, |_| -> Result<(), &str> { panic!("unchanged: not sent again") }, || panic!("unchanged"));
-        assert_eq!(r, Ok(()));
-    }
-
-    /// Task 5 review: a region that keeps failing is retried on every frame but logged once, until
-    /// it succeeds again.
-    #[test]
-    fn a_failing_opaque_region_is_logged_once_per_outage() {
-        let mut failing = false;
-        assert!(first_failure(&mut failing, true), "the first failure is logged");
-        assert!(!first_failure(&mut failing, true), "the retries are not");
-        assert!(!first_failure(&mut failing, true));
-        assert!(!first_failure(&mut failing, false), "a success logs nothing");
-        assert!(first_failure(&mut failing, true), "a new outage is logged again");
-    }
-
-    /// Spec § 4: a bar re-placed for a new style waits for the compositor's configure before it
-    /// paints again (its buffer must match the new size).
-    #[test]
-    fn a_bar_waiting_for_its_new_placement_is_not_drawn() {
-        assert!(drawable(true, 800, false));
-        assert!(!drawable(true, 800, true), "re-placed: the configure paints");
-        assert!(!drawable(false, 800, false), "never configured");
-        assert!(!drawable(true, 0, false), "no width yet");
-    }
-
-    /// Final review R2: the press remembered for an Activate answer is spent by the first answer
-    /// that uses it; a second (late) answer, or one for another icon, finds nothing.
-    #[test]
-    fn the_remembered_press_is_consumed_by_the_menu_it_opens() {
-        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-        let press = |n: u32| Some((key(n), PopupAnchor { output: "DP-1".into(), start: 3, end: 5 }, Button::Left));
-        let mut last = press(1);
-        assert!(take_icon_for(&mut last, &key(1)).is_some(), "the first answer opens the menu");
-        assert!(last.is_none(), "and spends the press");
-        assert!(take_icon_for(&mut last, &key(1)).is_none(), "a late second answer opens nothing");
-        let mut last = press(1);
-        assert!(take_icon_for(&mut last, &key(2)).is_none(), "another icon's answer opens nothing");
-        assert!(last.is_none(), "and the stale press is gone too");
-    }
-
-    #[test]
-    fn a_launcher_button_click_toggles_unless_this_press_just_closed_it() {
-        assert_eq!(decide_click(true, false), ClickDecision::ToggleLauncher);
-        assert_eq!(decide_click(true, true), ClickDecision::Nothing, "the same press that closed it as a click outside must not reopen it");
-        assert_eq!(decide_click(false, true), ClickDecision::RunBarAction, "elsewhere on the bar: its own action");
-        assert_eq!(decide_click(false, false), ClickDecision::RunBarAction);
-    }
-
-    /// Mae (2026-10-06): a click with the button that opened the menu, or a right click whatever
-    /// opened it, on the icon whose menu is shown closes that menu and does nothing else.
-    #[test]
-    fn closes_only_with_the_opening_button_or_a_right_click() {
-        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-        let (a, b) = (key(1), key(2));
-        // Opened by a right click (the common case): a right click closes it; a left click does
-        // not — it is left to run as its own gesture (Activate), after the popup still closes as
-        // a plain click outside.
-        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right), Some(Button::Right)), "right closes its own menu");
-        assert!(!closes_own_menu(Some(&a), Some(&a), Some(Button::Left), Some(Button::Right)), "left: not the opening button");
-        // Opened by a left click (Steam: ItemIsMenu, or a refused Activate): the SAME left click
-        // closes it too — no new Activate, no flicker.
-        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Left), Some(Button::Left)), "left closes a menu it opened");
-        // A right click always closes it, whatever opened it.
-        assert!(closes_own_menu(Some(&a), Some(&a), Some(Button::Right), Some(Button::Left)), "right always closes it");
-        assert!(!closes_own_menu(Some(&a), Some(&b), Some(Button::Right), Some(Button::Right)), "another icon: its menu opens");
-        assert!(!closes_own_menu(None, Some(&a), Some(Button::Right), Some(Button::Right)), "no menu shown: it opens");
-        assert!(!closes_own_menu(Some(&a), None, Some(Button::Right), Some(Button::Right)), "elsewhere on the bar: the bar's own action");
-    }
-
-    /// Fix round 2026-10-06, requirement 3: the compositor may close the popup (`done`) before the
-    /// press that follows it is delivered — a record of what just closed covers that race.
-    #[test]
-    fn a_press_right_after_a_race_closed_popup_only_closes_too() {
-        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-        let (a, b) = (key(1), key(2));
-        let t0 = Instant::now();
-        let record = (a.clone(), Button::Right, t0);
-        assert!(closed_recently(Some(&record), Some(&a), Some(Button::Right), t0), "right: the closing rule's button");
-        assert!(closed_recently(Some(&record), Some(&a), Some(Button::Right), t0 + Duration::from_millis(100)), "still within the window");
-        assert!(!closed_recently(Some(&record), Some(&a), Some(Button::Right), t0 + RECENT_CLOSE_WINDOW), "window elapsed");
-        assert!(!closed_recently(Some(&record), Some(&b), Some(Button::Right), t0), "a different icon: its own press");
-        assert!(!closed_recently(Some(&record), Some(&a), Some(Button::Left), t0), "left, but it was opened and closed by right");
-        assert!(!closed_recently(None, Some(&a), Some(Button::Right), t0), "no record: nothing to race against");
-        let left_opened = (a.clone(), Button::Left, t0);
-        assert!(closed_recently(Some(&left_opened), Some(&a), Some(Button::Left), t0), "the same button that opened it");
-    }
-
-    #[test]
-    fn a_press_on_a_module_right_after_its_popup_was_done_does_not_reopen_it() {
-        use crate::popup::ModulePopup::Calendar;
-        let t0 = Instant::now();
-        let mut rec = Some((Calendar, t0));
-        assert!(closed_by_done(&mut rec, Some(Calendar), t0 + Duration::from_millis(50)), "within the window: only closes");
-        assert!(rec.is_none(), "consumed");
-        let mut rec = Some((Calendar, t0));
-        assert!(!closed_by_done(&mut rec, Some(Calendar), t0 + Duration::from_millis(400)), "400 ms later: reopens");
-        let mut rec = Some((Calendar, t0));
-        assert!(!closed_by_done(&mut rec, None, t0), "another press (no module popup) clears it");
-        assert!(rec.is_none());
-        assert!(!closed_by_done(&mut rec, Some(Calendar), t0), "the cleared record no longer swallows a press");
-        assert!(!closed_by_done(&mut None, Some(Calendar), t0), "no record: opens");
-        let mut rec = Some((Calendar, t0));
-        assert!(!closed_by_done(&mut rec, Some(Calendar), t0 + RECENT_CLOSE_WINDOW), "the window's very end: elapsed, reopens");
-        assert!(
-            !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Media), t0),
-            "a calendar record does not swallow a media press"
-        );
-        assert!(
-            !closed_by_done(&mut Some((Calendar, t0)), Some(crate::popup::ModulePopup::Panel), t0),
-            "a calendar record does not swallow a bell press"
-        );
-    }
-
-    /// Fix round 2026-10-06, requirement 1: a submenu fetch grafts only while the menu's current
-    /// selection is still the one it was asked for.
-    #[test]
-    fn a_submenu_fetch_grafts_only_while_still_selected() {
-        assert!(submenu_still_selected(Some(3), Some(3)), "still on it: graft it in");
-        assert!(!submenu_still_selected(Some(3), Some(7)), "selection moved elsewhere: drop it");
-        assert!(!submenu_still_selected(Some(3), None), "nothing selected any more: drop it");
-        assert!(!submenu_still_selected(None, Some(3)), "nothing was ever asked for");
-    }
-
-    /// Review requirement 3: a duplicate failed Activate (two quick left clicks on an item without
-    /// its own Activate, e.g. Steam) must not close and reopen the menu already asked for it.
-    #[test]
-    fn open_menu_for_the_same_key_already_asked_is_a_no_op() {
-        let key = |n: u32| ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
-        let (a, b) = (key(1), key(2));
-        assert!(already_requested(Some(&a), &a), "the same icon: a duplicate failed Activate changes nothing");
-        assert!(!already_requested(Some(&a), &b), "a different icon: its own menu still opens");
-        assert!(!already_requested(None, &a), "nothing asked yet: opens normally");
-    }
-
-    #[test]
-    fn buffer_size_accounts_for_scale() {
-        assert_eq!(buffer_size(100, 22, 1), 100 * 22 * 4);
-        assert_eq!(buffer_size(100, 22, 2), 200 * 44 * 4);
-        assert_eq!(buffer_size(100, 22, 0), 100 * 22 * 4, "scale 0 treated as 1");
-    }
-
-    #[test]
-    fn pool_already_at_floor_without_surfaces_nothing_to_do() {
-        assert_eq!(target_pool(POOL_FLOOR, &[]), None);
-        assert_eq!(target_pool(POOL_FLOOR / 2, &[]), None, "already under the floor: no needless recreation");
-    }
-
-    #[test]
-    fn no_more_surfaces_returns_to_floor() {
-        // A large screen (3840 logical px, scale 2) grew the pool well past
-        // the floor; once unplugged, no surface remains: the pool must
-        // return to the floor, not stay at its peak size forever.
-        assert_eq!(target_pool(4 * 1024 * 1024, &[]), Some(POOL_FLOOR));
-    }
-
-    #[test]
-    fn slight_oversize_leaves_the_pool_as_is() {
-        // A pool that just doubled to fit a screen must not be recreated at
-        // the slightest reduction (churn): only a clear gap
-        // (POOL_OVERSIZE_FACTOR) triggers a recreation.
-        let need = 676_480; // ~3840×44×4 (wide screen, scale 2)
-        assert_eq!(target_pool(need * 2, &[need]), None);
-        assert_eq!(target_pool(need * POOL_OVERSIZE_FACTOR, &[need]), None, "right at the factor: not clear yet");
-    }
-
-    #[test]
-    fn clear_oversize_recreates_smaller() {
-        let need = 676_480;
-        let target = target_pool(need * POOL_OVERSIZE_FACTOR + 1, &[need]);
-        assert_eq!(target, Some(need * 2), "{target:?}");
-        assert!(target.unwrap() < need * POOL_OVERSIZE_FACTOR, "clearly smaller than before");
-    }
-
-    #[test]
-    fn several_surfaces_the_sum_decides_not_the_largest() {
-        // The pool holds EVERY surface's buffer at once (one per screen): it
-        // needs room for their SUM, not just the largest — otherwise three
-        // equally large screens would never all fit their buffers at the
-        // same time in a pool sized for just one.
-        let (small, large) = (10_000, 676_480);
-        let sum = small + large;
-        assert_eq!(target_pool(sum * POOL_OVERSIZE_FACTOR, &[small, large]), None, "right at the sum's factor: not clear yet");
-        let target = target_pool(sum * POOL_OVERSIZE_FACTOR + 1, &[small, large]);
-        assert_eq!(target, Some(sum * 2));
-        assert!(target.unwrap() >= sum, "the recreated pool must hold every buffer at once, at least");
-    }
-
-    /// Fix round, 2026-10-06 (reviewer findings 2/3 on task 11): a surface
-    /// `draw()` skipped (never sized, an allocation failure) or whose
-    /// buffers a pool shrink just forgot must never carry the tray's frame
-    /// request — the compositor would never fire its callback, blocking
-    /// every later re-read.
-    #[test]
-    fn tray_sync_never_picks_a_surface_with_no_attached_buffer() {
-        assert!(
-            !eligible_for_frame(true, false, false),
-            "configured, but nothing attached (draw() skipped it, or a pool shrink forgot it)"
-        );
-        assert!(!eligible_for_frame(false, true, false), "not configured yet: no commit belongs to it either");
-        assert!(eligible_for_frame(true, true, false), "configured and holding an attached buffer");
-    }
-
-    /// Task 6 review: a bar re-placed for a new style holds its old-size buffer until its configure;
-    /// a frame request committed on it meanwhile would commit that stale buffer under the new
-    /// placement.
-    #[test]
-    fn tray_sync_never_picks_a_bar_waiting_for_its_new_placement() {
-        assert!(!eligible_for_frame(true, true, true), "re-placed, its configure not come yet");
-    }
-
-    /// Task 6 and 7 reviews: the hold ends on any configure except one that clearly answers the
-    /// PREVIOUS placement (its height), so a bar can never freeze. Two quick restyles (floating ->
-    /// flat -> floating before any configure) get the answer to the flat one first: it keeps holding,
-    /// since painting then would draw a floating bar at the flat size.
-    #[test]
-    fn only_the_answer_to_the_previous_placement_keeps_holding() {
-        use alpheus_commun::theme::settings::BarStyle;
-        let flat = Placement::for_style(BarStyle::Flat, 22).surface_height;
-        let floating = Placement::for_style(BarStyle::Floating, 22).surface_height;
-        assert_ne!(flat, floating, "the check bites only if the two placements differ in height");
-        // floating -> flat -> floating: the placement before the latest one is flat.
-        let previous = flat;
-        assert!(still_placing(true, flat, previous, 0), "the answer to the first restyle (flat) keeps holding");
-        assert!(!still_placing(true, floating, previous, 0), "the answer to the latest one ends the hold");
-        assert!(!still_placing(true, 0, previous, 0), "a size left to the client (0) ends the hold");
-        assert!(!still_placing(false, flat, previous, 0), "not placing: nothing to end");
-        // A compositor that clamps or rounds the height (25 or 27 for 26) must never freeze the bar.
-        assert!(!still_placing(true, 25, previous, 0), "an unexpected height ends the hold");
-        assert!(!still_placing(true, 27, previous, 0), "an unexpected height ends the hold");
-    }
-
-    /// Fix wave A: a compositor that refuses the resize answers every configure at the previous
-    /// height. The second configure after a placement ends the hold whatever its height, so the bar
-    /// can never stay held.
-    #[test]
-    fn the_second_configure_after_a_placement_always_ends_the_hold() {
-        use alpheus_commun::theme::settings::BarStyle;
-        let previous = Placement::for_style(BarStyle::Flat, 22).surface_height;
-        assert!(still_placing(true, previous, previous, 0), "the first, at the previous height: holds");
-        for answered in [1, 2, u8::MAX] {
-            assert!(!still_placing(true, previous, previous, answered), "after {answered} configure(s): the hold ends");
-        }
-    }
-
-    /// Review items M3/M4, final review slice 3: the same check used by
-    /// `new_capability`, `remove_capability` and `remove_seat` to tell our
-    /// seat apart from any other on a multi-seat session.
-    #[test]
-    fn tracks_seat_only_matches_the_tracked_one() {
-        assert!(tracks_seat(&Some(1), &1), "the tracked seat");
-        assert!(!tracks_seat(&Some(1), &2), "a different seat");
-        assert!(!tracks_seat(&None, &1), "no seat tracked at all");
-    }
-
-    /// Task 15 fix round, CRITICAL: the shared lookup `popup_close`/`popup_output_gone`/`hover_fire`
-    /// (popup.rs) now use to find their bar by surface IDENTITY, never by a `name` that
-    /// `update_output` can change, or that two bars could briefly share — generic so this is
-    /// testable without a live Wayland connection, a plain integer standing in for a
-    /// `wl_surface::WlSurface` (see `should_restore`'s own comment, same reasoning for
-    /// `wl_output::WlOutput`).
-    #[test]
-    fn position_by_goes_by_the_projected_identity_never_a_shared_name() {
-        // Two entries share the "name" "": only the identity (the second element) tells them apart.
-        let items = [("", 10), ("", 20), ("other", 30)];
-        assert_eq!(position_by(&items, |(_, id)| id, &20), Some(1));
-        assert_eq!(position_by(&items, |(_, id)| id, &10), Some(0));
-        assert_eq!(position_by(&items, |(_, id)| id, &99), None, "no match: already gone");
-    }
-
-    #[test]
-    fn log_text_readable_fallback_for_an_unnamed_output() {
-        assert_eq!(log_text("HDMI-A-1", 7), "HDMI-A-1");
-        assert_eq!(log_text("", 7), "an output with no name (id 7)");
-    }
-
-    #[test]
-    fn should_restore_if_the_output_is_still_known() {
-        // wl_output::WlOutput cannot be instantiated outside a real Wayland
-        // connection (see the comment on `should_restore`): plain integers
-        // stand in for output ids in this test, the function being generic
-        // over `PartialEq`.
-        assert!(should_restore(&2, [1, 2, 3].into_iter()), "still in the list: to be restored");
-        assert!(!should_restore(&5, [1, 2, 3].into_iter()), "no longer in the list: really unplugged");
-        assert!(!should_restore(&1, std::iter::empty::<i32>()), "no output known at all anymore");
-    }
-
-    #[test]
-    fn plan_buffer_resizes_when_none_yet() {
-        assert_eq!(plan_buffer(&[], (100, 22)), BufferPlan::Resize);
-    }
-
-    #[test]
-    fn plan_buffer_reuses_the_one_free_buffer() {
-        assert_eq!(plan_buffer(&[((100, 22), false)], (100, 22)), BufferPlan::Reuse(0));
-    }
-
-    #[test]
-    fn plan_buffer_grows_when_the_only_buffer_is_busy() {
-        // The whole point of double-buffering: a single buffer is always
-        // busy right up to the moment a new one replaces it (see
-        // `BufferPlan`'s doc) — this must grow to a second, not stall.
-        assert_eq!(plan_buffer(&[((100, 22), true)], (100, 22)), BufferPlan::Grow);
-    }
-
-    #[test]
-    fn plan_buffer_reuses_whichever_of_two_is_free() {
-        assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), false)], (100, 22)), BufferPlan::Reuse(1));
-        assert_eq!(plan_buffer(&[((100, 22), false), ((100, 22), true)], (100, 22)), BufferPlan::Reuse(0));
-    }
-
-    #[test]
-    fn plan_buffer_grows_when_both_of_two_are_busy() {
-        assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), true)], (100, 22)), BufferPlan::Grow);
-    }
-
-    #[test]
-    fn plan_buffer_resizes_on_a_size_change_whatever_the_busy_state() {
-        // Wrong size: every previous buffer is useless either way, free or busy.
-        assert_eq!(plan_buffer(&[((100, 22), false)], (120, 22)), BufferPlan::Resize);
-        assert_eq!(plan_buffer(&[((100, 22), true)], (120, 22)), BufferPlan::Resize);
-        assert_eq!(plan_buffer(&[((100, 22), false), ((100, 22), true)], (120, 22)), BufferPlan::Resize);
-    }
-
-    #[test]
-    fn should_restore_once_bounds_repeated_closures() {
-        // Still known, never yet restored: to be restored.
-        assert!(should_restore_once(&2, &[], [1, 2, 3].into_iter()));
-        // Already restored (in `pending`), no configure received since: a
-        // compositor that closed its surface in a loop must NOT be restored
-        // a second time as long as the first one hasn't succeeded.
-        assert!(!should_restore_once(&2, &[2], [1, 2, 3].into_iter()));
-        // No longer known at all: never to be restored, even absent from `pending`.
-        assert!(!should_restore_once(&5, &[], [1, 2, 3].into_iter()));
-    }
-
-    #[test]
-    fn pending_restores_keeps_only_still_known_outputs() {
-        // 2 is still known at after-dispatch time: restored. 1 no longer
-        // is (its `output_destroyed`, in the same batch, already ran): the
-        // hot-plug race this fixes — left alone, no extra remove+place.
-        assert_eq!(pending_restores(&[1, 2], [2, 3].into_iter()), vec![2]);
-    }
-
-    #[test]
-    fn pending_restores_empty_when_nothing_marked() {
-        assert_eq!(pending_restores::<i32>(&[], [1, 2, 3].into_iter()), Vec::<i32>::new());
-    }
-
-    #[test]
-    fn pending_restores_empty_when_none_of_the_marked_outputs_survived() {
-        // Every output marked for restore by `closed` turned out to be
-        // truly gone by the time the batch finished: nothing restored.
-        assert_eq!(pending_restores(&[5, 6], [1, 2, 3].into_iter()), Vec::<i32>::new());
-    }
-
-    #[test]
-    fn pending_restores_preserves_the_marked_order() {
-        assert_eq!(pending_restores(&[3, 1, 2], [1, 2, 3].into_iter()), vec![3, 1, 2]);
-    }
-
-    /// The bar paints with its own style and module colours and the theme's opacity, over the
-    /// grid's blocks: what `draw` hands `paint_bar`.
-    #[test]
-    fn a_bar_paints_with_its_style_its_module_colours_and_the_theme_opacity() {
-        use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
-        let mut bar = Bar::new(crate::config::BarConfig::default());
-        bar.apply(Msg::Compositor(Some(crate::compositor::example())));
-        bar.style = BarStyle::Underline;
-        bar.module_colors = ModuleColors::Pills;
-        let settings =
-            ThemeSettings { opacity: 0.55, style: BarStyle::Islands, module_colors: ModuleColors::None, ..ThemeSettings::default() };
-        let grid = bar.grid("HDMI-A-1", 100);
-        assert!(!grid.groups().is_empty());
-        let bg = bar_background(&bar, &settings, &grid);
-        assert_eq!((bg.style, bg.opacity, bg.module_colors), (BarStyle::Underline, 0.55, ModuleColors::Pills), "the bar's, not the file's");
-        assert_eq!(bg.groups, grid.groups());
-    }
-}
+mod tests;

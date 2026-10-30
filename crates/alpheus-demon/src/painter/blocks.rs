@@ -38,11 +38,11 @@ const fn hued_modules() -> usize {
 /// Logical px cap of an island's corner radius (spec § 3).
 const ISLAND_RADIUS_CAP: u32 = 8;
 
-/// Logical px between an island block and the bar's top and bottom edges (reconciliation 4, the
+/// Logical px between an island block and the bar's top and bottom edges (the
 /// mockup): with the radius formula, a block on the default 22 px bar is a pill.
 pub(crate) const ISLAND_INSET: u32 = 2;
 
-/// Task 3's fill (`background::fill_rect`), under the name the block passes use.
+/// The plain fill (`background::fill_rect`), under the name the block passes use.
 pub(crate) use crate::background::fill_rect as fill_px;
 
 /// The pills text colours over the cells [start, end) of one block: `ink` for normal text, `muted`
@@ -59,8 +59,8 @@ pub(crate) fn opaque(c: Rgb) -> Px {
     premultiplied(c, 0xff)
 }
 
-/// `translucent`'s `opacity` as the alpha `background::premultiplied` takes (reconciliation 12:
-/// one premultiply helper): round(opacity × 255), clamped; a value that is not a number is opaque.
+/// `translucent`'s `opacity` as the alpha `background::premultiplied` takes (one
+/// premultiply helper): round(opacity × 255), clamped; a value that is not a number is opaque.
 pub(crate) fn opacity_alpha(opacity: f32) -> u8 {
     if opacity.is_nan() {
         return 0xff;
@@ -198,7 +198,7 @@ pub(crate) fn round_block(
     }
     for cy in 0..r {
         for cx in 0..r {
-            // Task 3's mask, top-left quarter; the other three corners mirror it.
+            // The corner mask, top-left quarter; the other three corners mirror it.
             let (outer, inner) = (mask.outer_at(cx, cy), mask.inner_at(cx, cy));
             for (xx, yy) in [(x.0 + cx, y.0 + cy), (x.1 - 1 - cx, y.0 + cy), (x.0 + cx, y.1 - 1 - cy), (x.1 - 1 - cx, y.1 - 1 - cy)] {
                 if xx >= width || yy >= height {
@@ -221,9 +221,9 @@ pub(crate) fn round_block(
 /// at `opacity`):
 /// - the whole band `outside`;
 /// - each group a plain block in `pill_bg`, or its hue under pills, in the rows `island_y` gives
-///   (inset 2 logical px top and bottom, reconciliation 4).
+///   (inset 2 logical px top and bottom).
 ///
-/// The cell backgrounds then go in those rows only (ruling 11), and `round_islands` rounds and
+/// The cell backgrounds then go in those rows only, and `round_islands` rounds and
 /// borders the blocks before the glyphs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn background(px: &mut [u8], width: u32, height: u32, scale: i32, advance: f32, roles: &Roles, bg: &Background, outside: Px) {
@@ -235,7 +235,7 @@ pub(crate) fn background(px: &mut [u8], width: u32, height: u32, scale: i32, adv
 }
 
 /// Edges pass of `islands` and `translucent`, over the cell backgrounds and under the glyphs (no
-/// glyph pixel is ever erased, ruling 11): each block's corners rounded to the island radius
+/// glyph pixel is ever erased): each block's corners rounded to the island radius
 /// (cached mask per radius and scale), and a 1 logical px border in `border_over` its fill.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn round_islands(
@@ -265,7 +265,7 @@ mod tests {
     use super::*;
     use crate::grid::Hue;
 
-    /// Reconciliation 12: one premultiply helper (`background::premultiplied`, a `u8` alpha); the
+    /// One premultiply helper (`background::premultiplied`, a `u8` alpha); the
     /// opacity becomes that alpha rounded to nearest.
     #[test]
     fn opacity_becomes_an_alpha_rounded_to_nearest() {
@@ -387,7 +387,7 @@ mod tests {
         assert_eq!(island_radius(0), 0);
     }
 
-    /// Reconciliation 4: island blocks are inset 2 logical px top and bottom; never past the middle.
+    /// Island blocks are inset 2 logical px top and bottom; never past the middle.
     #[test]
     fn island_rows_are_inset_two_logical_px() {
         assert_eq!(island_y(22, 1), (2, 20));

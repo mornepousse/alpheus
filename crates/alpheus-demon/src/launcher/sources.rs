@@ -197,7 +197,6 @@ mod tests {
         assert_eq!(split("Wi-Fi·Off"), (None, "Wi-Fi·Off"), "a middle dot without its spaces is text");
     }
 
-    /// Review Focus 1.
     #[test]
     fn split_handles_odd_separators() {
         assert_eq!(split("Captures · "), (None, "Captures · "), "nothing after the last separator: the whole line");

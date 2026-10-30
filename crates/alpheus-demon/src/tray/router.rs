@@ -49,16 +49,16 @@ pub struct TrayOutput {
     pub menu_changed: bool,
     /// The open menu must close (2 s without an answer, its item gone).
     pub close_menu: bool,
-    /// `close_menu` is for its item's `Menu` path moving under it (a duplicate registration,
-    /// fix round 2026-10-06), never a real timeout — the wiring must not log it as one.
+    /// `close_menu` is for its item's `Menu` path moving under it (a duplicate registration),
+    /// never a real timeout — the wiring must not log it as one.
     pub menu_path_changed: bool,
     /// The session bus closed: the tray is empty for good (the wiring logs once and drops the Tray).
     pub bus_closed: bool,
-    /// The portal's color-scheme changed (themes task 6, `mode = "auto"`): the wiring re-resolves.
+    /// The portal's color-scheme changed (`mode = "auto"`): the wiring re-resolves.
     pub appearance: Option<Mode>,
-    /// The media module's view changed (media task 4): Some(None) hides it, Some(Some(v)) shows v.
+    /// The media module's view changed: Some(None) hides it, Some(Some(v)) shows v.
     pub media: Option<Option<MediaView>>,
-    /// The notifications server's view changed (notifications task 4): the bell repaints.
+    /// The notifications server's view changed: the bell repaints.
     pub notifications: Option<NotifyView>,
     /// The bubbles to show changed (shown, replaced, expired, all gone): the wiring re-syncs them.
     pub bubbles: bool,
@@ -124,11 +124,11 @@ pub struct Tray {
     /// (`open_menu`, `menu_*`, `close_menu`): merged into the next output, or taken with
     /// `take_deferred`.
     deferred: TrayOutput,
-    /// The portal's color-scheme, followed on this same connection (themes task 6); None unless asked.
+    /// The portal's color-scheme, followed on this same connection; None unless asked.
     appearance: Option<Appearance>,
-    /// The MPRIS consumer on this same connection (media task 4); None unless asked.
+    /// The MPRIS consumer on this same connection; None unless asked.
     media: Option<Mpris>,
-    /// The notifications server on this same connection (notifications task 4); None unless asked.
+    /// The notifications server on this same connection; None unless asked.
     notifications: Option<Notifications>,
 }
 
@@ -188,7 +188,7 @@ impl Tray {
 
     /// Runs `f` on the media consumer with this connection (a control, the popup's Seeked rule and
     /// position reads, a pin): flushed, and what the flush drained kept for `take_deferred`, as
-    /// `menu_click` does — never routed re-entrantly (`App::mpris_do`, task 6, is its one caller).
+    /// `menu_click` does — never routed re-entrantly (`App::mpris_do` is its one caller).
     pub fn media_do(&mut self, f: impl FnOnce(&mut Mpris, &mut SessionBus)) {
         if let Some(media) = self.media.as_mut() {
             f(media, &mut self.bus);
@@ -215,7 +215,7 @@ impl Tray {
 
     /// Runs `f` on the notifications server (an expiry, a click, the panel, a verb): its signals sent
     /// and flushed, its view and bubbles kept for `take_deferred`, never routed re-entrantly
-    /// (`App::notify_do`, task 5, is its one caller).
+    /// (`App::notify_do` is its one caller).
     pub fn notifications_do(&mut self, f: impl FnOnce(&mut Notifications)) {
         if let Some(n) = self.notifications.as_mut() {
             f(n);
@@ -391,7 +391,7 @@ impl Tray {
             }
         }
         // Its item gone (its application left), or its path stale (a duplicate registration
-        // re-read Menu and it changed or disappeared — host.rs, fix round 2026-10-06): the menu
+        // re-read Menu and it changed or disappeared — host.rs): the menu
         // closes. No StatusNotifierItem signal exists for Menu, so this is the only place that
         // notices; checked once per batch, not per event.
         if let Some(m) = self.menu.as_ref() {
@@ -473,8 +473,7 @@ impl Tray {
                     self.host.register(&entry, "", &mut self.bus);
                 }
             }
-            // An error reply from an item with a menu (Steam has no Activate): its menu instead
-            // (decision 5).
+            // An error reply from an item with a menu (Steam has no Activate): its menu instead.
             (Some(Own::Activate(key)), r) if self.host.opens_menu_after_activate(&key, &r) => {
                 return TrayOutput { open_menu: Some(key), ..TrayOutput::default() };
             }
@@ -510,9 +509,9 @@ impl Tray {
     fn signal(&mut self, m: &Message) -> TrayOutput {
         let s = codec::signal(m);
         let sender = m.sender().map(|s| s.to_string()).unwrap_or_default();
-        // MPRIS names, Player properties and Seeked (media task 4) are the consumer's, never the host's.
+        // MPRIS names, Player properties and Seeked are the consumer's, never the host's.
         // Every other NameOwnerChanged (the watcher's name, items' owners) goes on as before.
-        // NameAcquired / NameLost for org.freedesktop.Notifications (notifications task 4); the
+        // NameAcquired / NameLost for org.freedesktop.Notifications; the
         // watcher's own NameAcquired goes on as before.
         if let Some(n) = self.notifications.as_mut()
             && n.signal(&s)
@@ -622,7 +621,7 @@ impl Tray {
     }
 
     fn inbound_call(&mut self, m: Message) {
-        // The Notifications path first (notifications task 4): served while the name is held,
+        // The Notifications path first: served while the name is held,
         // refused otherwise; refused too when the module is off, as any path we do not serve. Its
         // signals (NotificationClosed for a CloseNotification) leave right after the reply.
         if notifications::serves(&m) {
@@ -645,7 +644,7 @@ impl Tray {
             self.bus.send_message(r);
         }
         // `Host::add` refuses a registration naming our own unique name, checked on the resolved
-        // owner (an earlier review): moved there from an early check once made here, so it also
+        // owner: moved there from an early check once made here, so it also
         // covers an entry of another watcher's list and that watcher's ItemRegistered signal
         // (`follow`/`signal` below call `register` the very same way) — not only a direct
         // RegisterStatusNotifierItem naming us, the only path this router-level check used to see.

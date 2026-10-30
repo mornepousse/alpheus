@@ -29,7 +29,7 @@ pub const EXIT_ERROR: i32 = 2;
 /// code on which callers (`shell-ctl launcher`, `tools-menu`) fall back to fuzzel.
 pub const EXIT_UNREACHABLE: i32 = 3;
 /// toggle/close: give up waiting for "done" after this. (Client side; the daemon's
-/// own `socket::REPLY_TIMEOUT`, task 11, bounds its reply writes.)
+/// own `socket::REPLY_TIMEOUT` bounds its reply writes, so a stuck client cannot hold the daemon.)
 pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 
 const USAGE: &str = "\
@@ -95,19 +95,9 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--toggle" => choose(&mut mode, Invocation::Toggle)?,
             "--close" => choose(&mut mode, Invocation::Close)?,
             "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() })?,
-            "--dnd" => {
-                let value = it.next().ok_or_else(|| "--dnd needs on, off or toggle".to_string())?;
-                let value = utf8(value)?;
-                let verb = DndVerb::parse(value).ok_or_else(|| format!("--dnd takes on, off or toggle, not {value:?}"))?;
-                choose(&mut mode, Invocation::Dnd(verb))?
-            }
+            "--dnd" => choose(&mut mode, Invocation::Dnd(verb_arg(&mut it, "--dnd", "on, off or toggle", DndVerb::parse)?))?,
             "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
-            "--osd" => {
-                let value = it.next().ok_or_else(|| "--osd needs brightness".to_string())?;
-                let value = utf8(value)?;
-                let verb = OsdVerb::parse(value).ok_or_else(|| format!("--osd takes brightness, not {value:?}"))?;
-                choose(&mut mode, Invocation::Osd(verb))?
-            }
+            "--osd" => choose(&mut mode, Invocation::Osd(verb_arg(&mut it, "--osd", "brightness", OsdVerb::parse)?))?,
             "--quick" => {
                 // The one optional word: taken only when it is one of QuickVerb's.
                 let verb = match it.peek().and_then(|a| a.to_str()).and_then(QuickVerb::parse) {
@@ -200,6 +190,17 @@ fn ignored(name: &'static str, value: &str, dmenu_only: &mut Option<&'static str
     }
     dmenu_only.get_or_insert(name);
     Ok(())
+}
+
+/// The word after `--dnd` or `--osd`: one of `words` (as `parse` knows them), else a usage message.
+fn verb_arg<'a, T>(
+    it: &mut impl Iterator<Item = &'a OsString>,
+    flag: &str,
+    words: &str,
+    parse: fn(&str) -> Option<T>,
+) -> Result<T, String> {
+    let value = utf8(it.next().ok_or_else(|| format!("{flag} needs {words}"))?)?;
+    parse(value).ok_or_else(|| format!("{flag} takes {words}, not {value:?}"))
 }
 
 fn utf8(arg: &OsString) -> Result<&str, String> {
@@ -341,20 +342,29 @@ fn read_lines(stdin: &mut dyn Read, numbered: bool) -> Result<(Vec<String>, Vec<
     Ok((lines, positions))
 }
 
+/// One line on stderr; the exit code for a plain failure.
+fn fail(stderr: &mut dyn Write, m: &str) -> i32 {
+    let _ = writeln!(stderr, "alpheus-launch: {m}");
+    EXIT_ERROR
+}
+
+/// A daemon that does not know `what` (an upgrade not followed by a restart): exit 3, so a caller
+/// may fall back to another menu.
+fn daemon_too_old(stderr: &mut dyn Write, what: &str, refusal: &str) -> i32 {
+    fail(stderr, &format!("alpheus-demon does not know {what} yet (restart it after the upgrade): {refusal}"));
+    EXIT_UNREACHABLE
+}
+
 /// The whole program, injectable: returns the exit code.
 /// dmenu: reads stdin (at most MAX_DMENU_BYTES + 1 bytes; more → EXIT_ERROR before connecting),
 /// lossy UTF-8, split_lines; Chosen(s) → prints s + '\n', EXIT_OK; Cancelled → EXIT_CANCELLED;
 /// Busy → stderr "another menu is already open", EXIT_ERROR; Done for toggle/close → EXIT_OK;
 /// NotRunning → stderr "… not running …", EXIT_UNREACHABLE; any other failure → EXIT_ERROR.
 pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
-    let mut fail = |m: &str| {
-        let _ = writeln!(stderr, "alpheus-launch: {m}");
-        EXIT_ERROR
-    };
     // `--index`: the stdin position of each line sent (empty lines are not sent but counted).
     let mut positions = Vec::new();
     let request = match parse_args(args) {
-        Err(m) => return fail(&format!("{m} (see --help)")),
+        Err(m) => return fail(stderr, &format!("{m} (see --help)")),
         Ok(Invocation::Help) => {
             return if stdout.write_all(USAGE.as_bytes()).and_then(|()| stdout.flush()).is_ok() { EXIT_OK } else { EXIT_ERROR };
         }
@@ -371,19 +381,24 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
                 positions = p;
                 Request::Dmenu { prompt, lines: if flags.password { Vec::new() } else { lines }, flags }
             }
-            Err(m) => return fail(&m),
+            Err(m) => return fail(stderr, &m),
         },
     };
-    let reply = match exchange(socket, &request) {
-        Ok(r) => r,
+    match exchange(socket, &request) {
+        Ok(reply) => reply_to_exit(&request, reply, &positions, stdout, stderr),
         Err(ClientError::NotRunning(m)) => {
-            fail(&m);
-            return EXIT_UNREACHABLE;
+            fail(stderr, &m);
+            EXIT_UNREACHABLE
         }
-        Err(ClientError::Protocol(m)) => return fail(&m),
-    };
+        Err(ClientError::Protocol(m)) => fail(stderr, &m),
+    }
+}
+
+/// What the daemon's `reply` to `request` means for the person: the output and the exit code.
+/// `positions` are the stdin positions of the lines sent, for `--index`.
+fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32 {
     let mut print = |text: &str| if writeln!(stdout, "{text}").and_then(|()| stdout.flush()).is_ok() { EXIT_OK } else { EXIT_ERROR };
-    match (&request, reply) {
+    match (request, reply) {
         (Request::Dmenu { flags, .. }, Reply::Chosen(mut line)) if !flags.index => {
             let code = print(&line);
             if flags.password {
@@ -395,44 +410,42 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         (Request::Dmenu { flags, .. }, Reply::Index(None)) if flags.index => print("-1"),
         (Request::Dmenu { flags, .. }, Reply::Index(Some(i))) if flags.index => match positions.get(i) {
             Some(position) => print(&position.to_string()),
-            None => fail(&format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
+            None => fail(stderr, &format!("unexpected answer from alpheus-demon: line {i} of {}", positions.len())),
         },
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
         (
             Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_),
             Reply::Done,
         ) => EXIT_OK,
-        (_, Reply::Busy) => fail("another menu is already open"),
-        (Request::Dmenu { flags, .. }, Reply::Error(m)) if refuses_flags(&m, flags) => {
-            let flag = if flags.visible.is_some() {
-                "--visible"
-            } else if flags.index {
-                "--index"
-            } else {
-                "--password"
-            };
-            fail(&format!("alpheus-demon does not know {flag} yet (restart it after the upgrade): {m}"));
-            EXIT_UNREACHABLE
-        }
-        (Request::Quick(_), Reply::Error(m)) if m == OLD_QUICK_REFUSAL => {
-            fail(&format!("alpheus-demon does not know --quick yet (restart it after the upgrade): {m}"));
-            EXIT_UNREACHABLE
-        }
-        (Request::Quick(QuickVerb::Wifi), Reply::Error(m)) if m == OLD_QUICK_WIFI_REFUSAL => {
-            fail(&format!("alpheus-demon does not know --quick wifi yet (restart it after the upgrade): {m}"));
-            EXIT_UNREACHABLE
-        }
-        (Request::Quick(QuickVerb::Bluetooth), Reply::Error(m)) if m == OLD_QUICK_BLUETOOTH_REFUSAL => {
-            fail(&format!("alpheus-demon does not know --quick bluetooth yet (restart it after the upgrade): {m}"));
-            EXIT_UNREACHABLE
-        }
-        (_, Reply::Error(m)) => fail(&format!("alpheus-demon: {m}")),
+        (_, Reply::Busy) => fail(stderr, "another menu is already open"),
+        (_, Reply::Error(m)) => match too_old_for(request, &m) {
+            Some(what) => daemon_too_old(stderr, what, &m),
+            None => fail(stderr, &format!("alpheus-demon: {m}")),
+        },
         // Never the chosen text itself: with --password, it is the secret.
         (_, Reply::Chosen(mut line)) => {
             wipe(&mut line);
-            fail("unexpected answer from alpheus-demon: a chosen line")
+            fail(stderr, "unexpected answer from alpheus-demon: a chosen line")
         }
-        (_, other) => fail(&format!("unexpected answer from alpheus-demon: {other:?}")),
+        (_, other) => fail(stderr, &format!("unexpected answer from alpheus-demon: {other:?}")),
+    }
+}
+
+/// What `request` asks that a daemon answering `error` is too old to know, if `error` is such a
+/// refusal: the flag or word, for the message.
+fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
+    match request {
+        Request::Dmenu { flags, .. } if refuses_flags(error, flags) => Some(if flags.visible.is_some() {
+            "--visible"
+        } else if flags.index {
+            "--index"
+        } else {
+            "--password"
+        }),
+        Request::Quick(verb) => {
+            OLD_QUICK.iter().find(|(only, refusal, _)| refusal == &error && only.is_none_or(|v| v == *verb)).map(|(_, _, what)| *what)
+        }
+        _ => None,
     }
 }
 
@@ -447,14 +460,17 @@ const OLD_DAEMON_REFUSAL: &str = "malformed request: unknown request \"dmenu\"";
 
 /// What a daemon that knows `--index`/`--password` but not `--visible` answers it.
 const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visible\"";
-/// What a daemon older than `--quick` answers it (`socket::describe` of an unknown request): exit 3,
-/// as for the other verbs, so a key bound to it can fall back.
-const OLD_QUICK_REFUSAL: &str = "malformed request: unknown request \"quick\"";
-/// What a daemon of quick settings delivery 1 answers `--quick wifi` (`parse_header`'s unknown quick
-/// word): exit 3, so a key bound to it can fall back.
-const OLD_QUICK_WIFI_REFUSAL: &str = "malformed request: unknown quick word \"wifi\"";
-/// What a daemon of quick settings delivery 2 answers `--quick bluetooth`: exit 3, as for `wifi`.
-const OLD_QUICK_BLUETOOTH_REFUSAL: &str = "malformed request: unknown quick word \"bluetooth\"";
+/// What a daemon too old for `--quick`, or for one of its words, answers (`socket::describe` of an
+/// unknown request, `parse_header`'s unknown quick word): the verb it concerns (None: any), the
+/// refusal and the name for the message. Exit 3, as for the other verbs, so a key bound to it can
+/// fall back. A new word adds a row, nothing else.
+const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 3] = [
+    (None, "malformed request: unknown request \"quick\"", "--quick"),
+    // Quick settings delivery 1's daemon.
+    (Some(QuickVerb::Wifi), "malformed request: unknown quick word \"wifi\"", "--quick wifi"),
+    // Delivery 2's daemon.
+    (Some(QuickVerb::Bluetooth), "malformed request: unknown quick word \"bluetooth\"", "--quick bluetooth"),
+];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest
 /// refusal for any flagged request, and the `visible` word's own for a request with `--visible`.

@@ -320,6 +320,7 @@ mod tests {
 
     // ── Appearance tab ───────────────────────────────────────────────
 
+    use crate::app::appearance::Focus;
     use crate::app::appearance::tests::open;
     use alpheus_commun::theme::settings::ModeSetting;
 
@@ -342,7 +343,7 @@ mod tests {
         let (x, y) = center(&a, Target::AppearanceMode(ModeSetting::Light));
         click(&mut a, x, y);
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmode = \"light\"\n");
-        assert!(a.appearance.mode_focus && a.appearance.applied_mode == ModeSetting::Light);
+        assert!(a.appearance.focus == Focus::Mode && a.appearance.applied_mode == ModeSetting::Light);
     }
 
     #[test]
@@ -352,7 +353,7 @@ mod tests {
         let (x, y) = center(&a, Target::AppearanceColors(ModuleColors::Full));
         click(&mut a, x, y);
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nmodule_colors = \"full\"\n");
-        assert!(a.appearance.colors_focus && !a.appearance.mode_focus);
+        assert!(a.appearance.focus == Focus::Colors);
         assert_eq!(a.appearance.applied_module_colors, ModuleColors::Full);
     }
 
@@ -363,7 +364,7 @@ mod tests {
         let (x, y) = center(&a, Target::AppearanceStyle(BarStyle::Powerline));
         click(&mut a, x, y);
         assert_eq!(std::fs::read_to_string(dir.join("theme.toml")).unwrap(), "theme = \"nord\"\nstyle = \"powerline\"\n");
-        assert!(a.appearance.style_focus && !a.appearance.mode_focus && !a.appearance.colors_focus);
+        assert!(a.appearance.focus == Focus::Style);
         assert_eq!(a.appearance.applied_style, BarStyle::Powerline);
         // The rightmost chip is reachable even at 80 columns (`center` draws 80×24).
         let (x, y) = center(&a, Target::AppearanceStyle(BarStyle::Translucent));

@@ -122,7 +122,7 @@ pub enum Target {
     },
     /// A whole system module (volume, network…): `actions` decides by button.
     Module(ModuleId),
-    /// One tray icon: its gestures go to the application (task 10), never a command.
+    /// One tray icon: its gestures go to the application, never a command.
     TrayItem(ItemKey),
 }
 
@@ -476,7 +476,7 @@ mod tests {
         assert_eq!(g.cells()[2].ch, CONT);
         let mut g = Grid::empty(8);
         g.write(0, 8, "a\tb\nc\u{1b}[e\u{301}", Style::NORMAL);
-        // Since task 10b, the decomposed "e" + combining accent is
+        // The decomposed "e" + combining accent is
         // recomposed to NFC ("é") before writing, like the rest of the text.
         assert_eq!(g.text(), "a b c [é", "controls as spaces, decomposed accent recomposed");
         assert_eq!(text_width("🦀日a"), 5);

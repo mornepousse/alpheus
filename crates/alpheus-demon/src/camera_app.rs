@@ -104,7 +104,7 @@ impl App {
 mod tests {
     use super::*;
 
-    /// A scan that changed nothing shown must still sync the off-delay (review focus 4: a pending
+    /// A scan that changed nothing shown must still sync the off-delay (a pending
     /// off arms delivery 1's timer); one that changed something redraws.
     #[test]
     fn an_unchanged_scan_still_syncs_the_off_delay() {

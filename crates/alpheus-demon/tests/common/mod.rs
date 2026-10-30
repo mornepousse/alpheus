@@ -302,7 +302,7 @@ impl FakeHyprland {
 
     /// Makes `output` the focused monitor in `j/monitors` (the others unfocused). Each fixture monitor
     /// sits on a line of its own. The test then writes a `focusedmon` event, so the daemon reads it
-    /// again (notifications Review Focus).
+    /// again.
     pub fn focus(&self, output: &str) {
         let mut m = self.monitors.lock().unwrap();
         let name = format!("\"name\": \"{output}\"");
@@ -1107,7 +1107,7 @@ impl PrivateBus {
     /// Starts `program` as a dbus-daemon would be, and waits for its
     /// readiness line (the printed address). Ok: it is ready. Err: the
     /// child's pid and whatever it printed instead — the child is already
-    /// killed and reaped by then (I3 carry-over, tray plan 1 review): a bare
+    /// killed and reaped by then: a bare
     /// `.unwrap()`/`assert!` after spawning used to panic with the child
     /// still running, leaked (nothing yet holds a `PrivateBus` whose `Drop`
     /// would otherwise catch it). `program` lets a test exercise this
@@ -1149,8 +1149,8 @@ impl PrivateBus {
         Err((pid, line))
     }
 
-    /// Test-only entry point for `spawn_program`'s failure path (I3
-    /// carry-over, tray plan 1 review): see its doc comment.
+    /// Test-only entry point for `spawn_program`'s failure path: see its doc
+    /// comment.
     pub fn spawn_never_ready_for_test(program: &str, directory: &Path, address: &str) -> Result<Child, (i32, String)> {
         Self::spawn_program(program, directory, address)
     }

@@ -51,7 +51,7 @@ impl App {
         self.bar.config.modules.contains(&ModuleId::Osd)
     }
 
-    /// Every sound message, before the bar applies it (`launch::run`'s mail callback): the trigger
+    /// Every sound message, before the bar applies it (`App::on_bar_message`): the trigger
     /// rules (`osd::Watch`), then the pill when they say so. Nothing without the module.
     pub(crate) fn osd_sound(&mut self, s: Option<&SoundState>) {
         if !self.osd_enabled() {
@@ -308,9 +308,7 @@ impl App {
     /// The hide timer follows the pill's deadline: armed only while it shows (spec § 3).
     pub(crate) fn osd_timer_sync(&mut self) {
         let deadline = self.osd.deadline();
-        if let Some(handle) = self.loop_handle.clone() {
-            self.osd_timer.sync(&handle, deadline, App::osd_expire);
-        }
+        self.osd_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never

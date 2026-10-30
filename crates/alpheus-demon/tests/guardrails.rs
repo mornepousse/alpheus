@@ -199,7 +199,9 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
-fn source_files() -> Vec<(PathBuf, String)> {
+/// Every `.rs` file under `src/`, `tests.rs` included: for the scans of raw
+/// text, which must also see test code (no real call, no forbidden word).
+fn all_source_files() -> Vec<(PathBuf, String)> {
     fn walk(d: &Path, out: &mut Vec<PathBuf>) {
         for e in std::fs::read_dir(d).unwrap().flatten() {
             let p = e.path();
@@ -219,6 +221,12 @@ fn source_files() -> Vec<(PathBuf, String)> {
             (p, t)
         })
         .collect()
+}
+
+/// The production files: `all_source_files()` without the `tests.rs` files
+/// (the moved-out `#[cfg(test)] mod tests;` bodies).
+fn source_files() -> Vec<(PathBuf, String)> {
+    all_source_files().into_iter().filter(|(p, _)| p.file_name().is_some_and(|n| n != "tests.rs")).collect()
 }
 
 /// Path of `p` relative to `src/` (e.g. `sources/hypr.rs`, or
@@ -280,7 +288,7 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
 
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
-    for (p, t) in source_files() {
+    for (p, t) in all_source_files() {
         if let Some(word) = forbidden_word(&t) {
             panic!("\"{word}\" in {}", p.display());
         }
@@ -305,7 +313,7 @@ fn the_daemon_only_reads_from_the_compositor() {
 /// files.
 #[test]
 fn compositor_sockets_opened_only_in_sources() {
-    for (p, t) in source_files() {
+    for (p, t) in all_source_files() {
         let name = relative_path(&p);
         for pattern in [".socket.sock", ".socket2.sock", "UnixStream::connect"] {
             assert!(!t.contains(pattern) || compositor_connection_allowed(&name), "\"{pattern}\" outside src/sources/: {name}");
@@ -319,8 +327,7 @@ fn compositor_sockets_opened_only_in_sources() {
 /// scrims and the box now share the Overlay layer (`surface::scrim_layer`);
 /// within one layer, wlr-layer-shell stacks surfaces by creation order, so
 /// the box must be created AFTER its scrims, not before, or it ends up
-/// stacked beneath them instead of above (review item M2, final review
-/// slice 3). No fake layer-shell exists to exercise the real stacking end to
+/// stacked beneath them instead of above. No fake layer-shell exists to exercise the real stacking end to
 /// end, so this checks the one thing that would actually regress it: the two
 /// calls swapped back.
 #[test]
@@ -353,11 +360,11 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
     }
 }
 
-/// Review item M6, final review slice 3: every seat/keyboard entry point
+/// Every seat/keyboard entry point
 /// that can reach launcher code goes through `launcher_guarded` — a panic
 /// there must close the launcher, never take the bar down with it.
 ///
-/// Task 15 (popups) moved the keyboard out of `OpenLauncher` into `App`,
+/// The keyboard moved out of `OpenLauncher` into `App`,
 /// shared with a grabbing popup: `new_capability`/`remove_capability`/
 /// `remove_seat` (wayland.rs) now call the shared `keyboard_acquire`/
 /// `keyboard_lost` (popup.rs), which only touch Wayland/seat state, not the
@@ -389,7 +396,7 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     assert!(leave.contains("launcher_guarded("), "leave must guard its launcher call: {leave}");
 }
 
-/// Task 15 fix round, minor (e): `press_key`/`repeat_key` (the `KeyboardHandler` trait methods)
+/// `press_key`/`repeat_key` (the `KeyboardHandler` trait methods)
 /// and the repeat closure bound by `keyboard_acquire` must all route through `key_event` — the
 /// one place that guards the launcher branch — never call the launcher directly themselves; and
 /// `keyboard_acquire`/`keyboard_lost`, which only touch Wayland/seat state, must call no launcher
@@ -417,7 +424,7 @@ fn keyboard_entry_points_go_through_key_event_and_bind_no_launcher_call() {
     }
 }
 
-/// Task 15 fix round, CRITICAL: `popup_close`/`popup_output_gone` (popup.rs) must reset their
+/// `popup_close`/`popup_output_gone` (popup.rs) must reset their
 /// parent bar's `Exclusive` keyboard interactivity by its stored SURFACE IDENTITY (`OpenPopup`'s
 /// own `parent` field), never by a bar's `name` — changed after the fact by `update_output`, or
 /// briefly shared by two bars — or the wrong bar (or none) gets reset, left stuck holding Mae's
@@ -441,7 +448,7 @@ fn popup_close_and_output_gone_find_their_parent_by_identity_never_by_name() {
     );
 }
 
-/// Task 15 fix round, from the task 16 review: `hover_fire` (wayland.rs) used to re-locate its bar
+/// `hover_fire` (wayland.rs) used to re-locate its bar
 /// by `s.name == anchor.output` — the same stale-name problem as above, reached from the tooltip's
 /// own deferred timer (up to ½ s after `hover_moved` armed it) instead of an output going away.
 /// Fixed by carrying the surface's identity from `hover_moved`, which knows the exact surface,
@@ -461,9 +468,9 @@ fn hover_fire_finds_its_bar_by_surface_identity_never_by_name() {
 /// `launcher_fail` must take the launcher out of `self` FIRST, drop its box, then release the
 /// keyboard, then early-return on "nothing was open". `keyboard_release` is a no-op while
 /// `keyboard_wanted()` holds, which it does as long as `self.launcher` is `Some`: releasing before
-/// the take (the order task 15 locked in, final review R2) left the keyboard, its keymap and its
+/// the take left the keyboard, its keymap and its
 /// repeat source resident after a panic closed the launcher. While the box lives, a key down on it
-/// defers the release to a key-up its dead surface never sends (media fix wave A): released after
+/// defers the release to a key-up its dead surface never sends: released after
 /// the box is dropped (the guarded close consumes it). And the release must precede the early
 /// return, for a panic inside `launcher_close` that already took the launcher. No `wl_keyboard`
 /// can be built without a compositor, so the order is checked in the source.
@@ -499,20 +506,20 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     }
     let retire = function_body(&popup, "fn keyboard_retire(");
     assert!(retire.contains("self.retired_keyboards.hold(k)"), "keyboard_retire must hold it: {retire}");
-    let run = function_body(&launch, "pub fn run(");
+    let run = function_body(&launch, "fn main_loop(");
     let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
     let drain = run.find("state.retired_keyboards.drain()").expect("the loop must drain the retired keyboards");
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
 }
 
-/// Panel fix round 1: opening the panel marks everything read (spec § 4), but only once it shows:
+/// Opening the panel marks everything read (spec § 4), but only once it shows:
 /// a `popup_open` that refuses (no shared buffer, no positioner) must leave the count on the bell.
 /// Those refusals need a failing compositor or allocator, so the order is checked in the source.
 #[test]
 fn the_panel_marks_read_only_after_it_opened() {
     let files = source_files();
-    let wayland = production_code(&files.iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs").1);
-    let body = function_body(&wayland, "pub(crate) fn panel_toggle(");
+    let panel_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "panel_app.rs").expect("panel_app.rs").1);
+    let body = function_body(&panel_app, "pub(crate) fn panel_toggle(");
     let open = body.find("self.popup_open(").expect("panel_toggle opens a popup");
     let read = body.find("mark_read()").expect("panel_toggle marks read");
     let shown = body.find("\"panel shown (entries").expect("panel_toggle logs the shown panel");
@@ -522,7 +529,7 @@ fn the_panel_marks_read_only_after_it_opened() {
     assert!(read < shown, "marked read inside the shown branch, before `panel shown`: {body}");
 }
 
-/// Media fix wave A: the settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
+/// The settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
 /// idle read. libdbus's flush reads only when its write has to wait, so no private bus builds that
@@ -531,20 +538,20 @@ fn the_panel_marks_read_only_after_it_opened() {
 fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (link, wayland) = (src("link.rs"), src("wayland.rs"));
+    let (link, bridge) = (src("link.rs"), src("tray_bridge.rs"));
     for (body, ready, read) in [
         (function_body(&link, "pub(crate) fn link_sync("), "SessionLink::has_ready", "app.link_readable()"),
-        (function_body(&wayland, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
+        (function_body(&bridge, "fn tray_sync("), "Tray::has_ready", "app.tray_readable()"),
     ] {
         let (at, idle) = (body.find(ready), body.find("insert_idle"));
         assert!(at.is_some() && idle.is_some(), "{ready} must queue an idle: {body}");
         assert!(body[idle.unwrap_or(0)..].contains(read), "the idle must read: {read}: {body}");
     }
-    let mpris_do = function_body(&wayland, "pub(crate) fn mpris_do(");
+    let mpris_do = function_body(&bridge, "pub(crate) fn mpris_do(");
     assert!(mpris_do.contains("self.link_sync()") && mpris_do.contains("self.tray_sync()"), "mpris_do ends in the syncs: {mpris_do}");
 }
 
-/// Final review R2: three small orderings no fake Wayland surface can exercise. `menu_repaint`
+/// Three small orderings no fake Wayland surface can exercise. `menu_repaint`
 /// finds its bar by the popup's parent SURFACE (never an output name); `launcher_open` drops the
 /// remembered tray press (`last_icon`), so a late failed Activate cannot open a menu over the
 /// launcher; and the bar's keyboard interactivity is only reset where `popup_open` set it
@@ -553,8 +560,8 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (wayland, popup, surface) = (src("wayland.rs"), src("popup.rs"), src("launcher/surface.rs"));
-    let repaint = function_body(&wayland, "fn menu_repaint(");
+    let (menu_app, popup, surface) = (src("menu_app.rs"), src("popup.rs"), src("launcher/surface.rs"));
+    let repaint = function_body(&menu_app, "fn menu_repaint(");
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
     assert!(repaint.contains("position_by"), "menu_repaint must find its bar by the popup's parent surface: {repaint}");
     let open = function_body(&surface, "pub fn launcher_open(");
@@ -570,7 +577,7 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     );
 }
 
-/// Task 15 fix round, from the task 16 review: an output removal (`popup_output_gone`) and the
+/// An output removal (`popup_output_gone`) and the
 /// launcher opening (`launcher_open`) both close any open popup, but neither used to cancel
 /// `Hover` too — left alone, `Hover.over` keeps naming the same icon, and `Hover::moved` (keyed
 /// only on the item, never a surface) then wrongly sees "still on it" and never re-arms the
@@ -591,7 +598,7 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
     assert!(launcher_open.contains("hover.cancel()"), "launcher_open must also cancel a stale hover: {launcher_open}");
 }
 
-/// Fix round 2026-10-06, item 3: `tooltip_item_gone` (wayland.rs) relies on a Tooltip popup
+/// `tooltip_item_gone` (wayland.rs) relies on a Tooltip popup
 /// always being paired with `tooltip_item` — set together in `hover_fire`, so it must be cleared
 /// together too, in `popup_close`, whatever the closing reason (hover ended, a press, a replaced
 /// popup…), or a later redraw's check would read a stale key left behind by an earlier tooltip.
@@ -651,10 +658,10 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// so it is an exhaustive-match tripwire — a new `Request` variant stops
 /// THIS FILE compiling until the match below (and the review that goes with
 /// it) is updated, before it could ever reach the socket unexamined (review
-/// item M6, final review slice 1: renamed from
+/// Renamed from
 /// `the_socket_accepts_exactly_three_requests`, which claimed to test the
 /// socket's own behaviour when it only guards this match's exhaustiveness).
-/// The notifications verbs (task 5) are answered in `watch_connection` before
+/// The notifications verbs are answered in `watch_connection` before
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
@@ -783,7 +790,7 @@ fn production_code_strips_each_item_following_cfg_test() {
 /// A brace-less item (`sources/dbus/mod.rs`'s `#[cfg(test)] pub mod fake;`,
 /// pointing at a separate file) ends at its `;`: `find('{')` must not run
 /// past it into some later, unrelated item's brace, which would wrongly
-/// strip every real item in between along with it (A-m3, review).
+/// strip every real item in between along with it.
 #[test]
 fn production_code_ends_a_brace_less_item_at_its_semicolon() {
     let text = "#[cfg(test)]\npub mod fake;\nfn real_code() {}\nfn also_real() {}\n";
@@ -833,30 +840,30 @@ fn the_only_stream_is_pw_dump_monitor() {
 fn nothing_resident_while_the_launcher_is_closed() {
     const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
     const ALLOWED: &[(&str, &str, usize)] = &[
-        // The bar's clock and resources timers; the launcher's request
-        // deadline, armed per connection and removed once it is read; the
+        // The bar's clock and resources timers.
+        ("launch.rs", "Timer::", 2),
+        // The launcher's request deadline, armed per connection and removed once it is read; the
         // listener's resume, armed only after an accept() error.
-        ("launch.rs", "Timer::", 4),
+        ("launcher/socket_glue.rs", "Timer::", 2),
         // DeadlineTimer::default() and Timer::from_deadline: the tray's call
-        // timeout, armed only while a call is pending (task 1; wired into
-        // the loop at task 11).
+        // timeout, armed only while a call is pending.
         ("deadline.rs", "Timer::", 2),
         // The bar's signal guard.
         ("launch.rs", "thread::Builder", 1),
-        // The launcher's listening socket (its fd: the one thing at rest),
-        // one watch per connection being read, and the tray's session-bus fd
-        // (task 11; only inserted when "tray" is in modules and a session
-        // bus answers — an unused module costs nothing at runtime, but the
-        // call itself is still in the source).
-        ("launch.rs", "Generic::new", 3),
-        // The tray's DeadlineTimer (task 11), armed only while calls are pending; the tooltip's
-        // (task 16), armed only while the pointer rests on a tray icon; the bar's session link's
-        // (media task 5, `link_timer`), armed only while one of its calls is pending — the portal's
-        // ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
-        // (bar step 5, task 7), armed only while that popup is open and its player plays; the
-        // notification bubbles' expiry (notifications task 6), armed only while a live bubble (shown,
-        // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer (osd task 3), armed
-        // only while the pill shows; the quick panel's (quick task 6), armed only while it is open and
+        // The launcher's listening socket (its fd: the one thing at rest) and
+        // one watch per connection being read.
+        ("launcher/socket_glue.rs", "Generic::new", 2),
+        // The tray's session-bus fd (only inserted when "tray" is in modules and a
+        // session bus answers — an unused module costs nothing at runtime, but the call itself is
+        // still in the source).
+        ("launch.rs", "Generic::new", 1),
+        // The tray's DeadlineTimer, armed only while calls are pending; the tooltip's, armed only
+        // while the pointer rests on a tray icon; the bar's session link's (`link_timer`), armed only while one of its
+        // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
+        // armed only while that popup is open and its player plays; the
+        // notification bubbles' expiry, armed only while a live bubble (shown,
+        // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer, armed
+        // only while the pill shows; the quick panel's, armed only while it is open and
         // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
         // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
         // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
@@ -867,7 +874,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("wayland.rs", "Timer::", 10),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
-        // The theme's inotify fd (themes task 5): readable only when theme.toml or a colour file
+        // The theme's inotify fd: readable only when theme.toml or a colour file
         // changes; `drain` reads it to EAGAIN, so it never wakes the loop at rest.
         ("watch.rs", "Generic::new", 1),
         // The camera watch's inotify fd (privacy delivery 2): readable only on an open, close,
@@ -877,7 +884,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // Bluetooth detail is open or a call is in flight, removed with it; readable only when BlueZ
         // answers or calls the agent.
         ("bt_app.rs", "Generic::new", 1),
-        // The bar's own session link (themes task 6, media task 5): only when the tray module is off
+        // The bar's own session link: only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
         // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
         // armed only while one of its calls is pending.
@@ -1055,7 +1062,7 @@ fn the_bluetooth_connection_acts_only_through_act_method() {
         "\"DeactivateConnection\"",
         "\"GetSecrets\"",
         "\"Enable\"",
-        // Final review: a message is addressed by `build` alone (`Message::new_method_call`'s
+        // A message is addressed by `build` alone (`Message::new_method_call`'s
         // arguments), never re-aimed afterwards; no call may start BlueZ; no error but `answer`'s.
         "set_auto_start(true)",
         "set_destination(",
@@ -1087,7 +1094,7 @@ fn the_bluetooth_connection_serves_only_the_agent() {
     assert!(screen.find("ACCESS_DENIED") < screen.find("UNKNOWN_METHOD"), "the sender is checked first");
 }
 
-/// The tray's D-Bus (spec § 3, controller decisions 1 and 3): dbus-crossroads
+/// The tray's D-Bus (spec § 3): dbus-crossroads
 /// in the watcher only; one place builds a call, from the typed allowlist;
 /// no libdbus session lookup (it could autolaunch `dbus-launch`); no
 /// blocking call nor `RefArg` decoding; the only names ever requested are the
@@ -1129,8 +1136,8 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         // private method under tray/ may be named `method_call` either — its definition
         // (`fn method_call(`) and every call site (`self.method_call(`) are substring matches too,
         // failing this guardrail even though the method has nothing to do with building a
-        // `dbus::Message` (task 5's router dispatch method is named `inbound_call`, not
-        // `method_call`, for exactly this reason — see its task 5 report).
+        // `dbus::Message` (the router's dispatch method is named `inbound_call`, not
+        // `method_call`, for exactly this reason).
         for pattern in ["method_call(", "call_with_args("] {
             built.extend(std::iter::repeat_n(name.clone(), prod.matches(pattern).count()));
         }
@@ -1173,7 +1180,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
     );
 }
 
-/// The portal (themes task 6): exactly two members, `ReadOne` (a call, one setting) and
+/// The portal: exactly two members, `ReadOne` (a call, one setting) and
 /// `SettingChanged` (a signal, through one narrowed rule). Read-only, never starting it, built only by
 /// `bus::message`; `appearance.rs` never names the dbus crate.
 #[test]
@@ -1207,7 +1214,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// bar's loop, never on a thread of their own, and never run a command
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
-/// Files named before they exist (later tasks) are checked once they do.
+/// Files named before they exist are checked once they do.
 const NO_THREAD_NOR_COMMAND: [&str; 41] = [
     "tray/",
     "media.rs",
@@ -1273,9 +1280,8 @@ fn the_tray_spawns_no_thread() {
 /// Whether `text` names the crate `krate`: as a path root (`dbus::…`,
 /// including the explicit absolute form `::dbus::…`), an `extern crate`
 /// declaration, or a `use … as` rename — never as a module further down
-/// someone else's path (`sources::dbus::…`, `dbusrs_bus::…`) (fix round,
-/// review item 5: `::dbus::`, `use dbus as`, `extern crate dbus` were
-/// previously missed).
+/// someone else's path (`sources::dbus::…`, `dbusrs_bus::…`); `::dbus::`, `use dbus as`
+/// and `extern crate dbus` count too.
 fn uses_crate(text: &str, krate: &str) -> bool {
     let ident = |c: char| c == '_' || c.is_alphanumeric();
     // A path root: nothing identifier-like precedes it — except the
@@ -1554,20 +1560,20 @@ impl Executor for ArgvSpy {
     }
 }
 
-/// Themes task 4: the daemon paints with the 16 roles only. Task 1's temporary 7-colour
-/// `Palette` (deleted by task 7) is never named in its sources.
+/// The daemon paints with the 16 roles only. The old 7-colour
+/// `Palette` is never named in its sources.
 #[test]
 fn the_daemon_paints_with_roles_never_the_legacy_palette() {
-    let files = source_files();
+    let files = all_source_files();
     for (p, t) in &files {
         assert!(!t.contains("Palette"), "the legacy Palette in {}", relative_path(p));
     }
     assert!(files.len() > 20, "the daemon's sources were not found");
 }
 
-/// Themes task 5, privacy delivery 2: the config directory and the video devices are only watched,
-/// never written by the daemon; inotify lives in watch.rs (the theme) and camera_dev.rs (the
-/// cameras) alone.
+/// Privacy delivery 2: the config directory and the video devices are only watched,
+/// never written by the daemon; inotify lives in inotify.rs (the wrapper), watch.rs (the theme) and
+/// camera_dev.rs (the cameras) alone.
 #[test]
 fn the_theme_and_camera_watches_only_read() {
     let mut found = false;
@@ -1575,7 +1581,7 @@ fn the_theme_and_camera_watches_only_read() {
         let name = relative_path(&p);
         let prod = production_code(&t);
         // camera_dev.rs (privacy delivery 2) holds the second inotify instance, on /dev's video nodes.
-        if name == "watch.rs" || name == "camera_dev.rs" {
+        if name == "watch.rs" || name == "camera_dev.rs" || name == "inotify.rs" {
             found |= name == "watch.rs";
             for never in
                 ["fs::write", "create_dir", "OpenOptions", "remove_file", "remove_dir", "fs::rename", "set_permissions", "File::create"]
@@ -1583,13 +1589,15 @@ fn the_theme_and_camera_watches_only_read() {
                 assert!(!prod.contains(never), "{never} in {name}: the config directory and the video devices are read-only to the daemon");
             }
         } else {
-            assert!(!prod.contains("inotify_"), "inotify outside watch.rs and camera_dev.rs: {name}");
+            for raw in ["inotify_", "Inotify::new", "inotify::"] {
+                assert!(!prod.contains(raw), "inotify ({raw}) outside inotify.rs, watch.rs and camera_dev.rs: {name}");
+            }
         }
     }
     assert!(found, "watch.rs not found");
 }
 
-/// The theme is resolved once more after everything it depends on is up (final review): after the
+/// The theme is resolved once more after everything it depends on is up: after the
 /// watch is armed (a file written between the first read and the watch would be missed for the
 /// whole session), and after `start_tray` and `follow_portal_if_auto` (earlier, the portal start
 /// sees no bus and gives up for good).
@@ -1600,12 +1608,12 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
     let last = at("state.theme_changed();");
     assert_eq!(prod.matches("state.theme_changed();").count(), 1);
-    for before in ["crate::watch::start(", "start_tray(&mut state", "state.follow_portal_if_auto();", "state.publish_mode();"] {
+    for before in ["crate::watch::start(", "start_tray(state, handle)", "state.follow_portal_if_auto();", "state.publish_mode();"] {
         assert!(at(before) < last, "{before} must come before the startup re-resolve");
     }
 }
 
-/// No panic in the notification server's production code (notifications fix wave A): its model,
+/// No panic in the notification server's production code: its model,
 /// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
 /// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
 #[test]
@@ -1740,7 +1748,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         q
     };
     let t = Instant::now();
-    // Mae (M1): a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
+    // Mae: a second activation counts only from CONFIRM_AFTER on; past COALESCE too.
     let later = t + quick::CONFIRM_AFTER.max(quick::COALESCE);
     let mut calls: Vec<String> = Vec::new();
     let mut record = |a: QuickAction| {
@@ -1862,7 +1870,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         Some(BtView { adapter: Some(BtAdapter { path: "/org/bluez/hci0".into(), powered: false, blocked: true }), ..BtView::default() });
     q.selected = quick::Row::Bluetooth;
     record(q.key(&bt_off, Key::Char(' '), false, t));
-    // Fix S1's paced paths (final review A-m4): a second slider key inside the window waits; the
+    // Fix S1's paced paths: a second slider key inside the window waits; the
     // window's end (`due`) or the panel closing (`flush`) sends it. Each path is driven on its own.
     let line = |a: &QuickAction| match a {
         QuickAction::Run { argv, .. } | QuickAction::RunAndClose { argv, .. } => Some(argv.join(" ")),
@@ -1914,7 +1922,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@" | "@DEFAULT_AUDIO_SOURCE@", "toggle"] => true,
             ["wpctl", "set-default", id] => ["99", "122"].contains(id),
             ["wpctl", "set-profile", id, idx] => *id == "61" && ["1", "3"].contains(idx),
-            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae (M2): never below 1 %
+            ["brightnessctl", "--class=backlight", "--device=intel_backlight", "set", n] => percent(n, 1), // Mae: never below 1 %
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
             ["nmcli", "device", "wifi", "rescan"] => true,
@@ -1977,7 +1985,7 @@ fn the_quick_panel_has_no_panicking_path() {
     }
 }
 
-/// Quick Bluetooth spec § 5, Review Focus 1-2: the acting connection goes with the panel and is
+/// Quick Bluetooth spec § 5: the acting connection goes with the panel and is
 /// let go without a call when BlueZ goes.
 #[test]
 fn the_bluetooth_connection_goes_with_the_panel() {
@@ -1996,7 +2004,7 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(take.contains("taken_bt(") && take.contains("snapshot()") && take.contains("wifi_current("), "{take}");
     let (dropped, panel) = (take.find("self.bt_drop()"), take.find("panel_bt("));
     assert!(matches!((dropped, panel), (Some(d), Some(p)) if d < p), "BlueZ gone: dropped before the panel's orders: {take}");
-    // Task 3's carry: the headset is read before the sink list, which marks a panel-scope message.
+    // The headset is read before the sink list, which marks a panel-scope message.
     let (headset, sinks) = (take.find("taken_headset("), take.find("taken_sinks("));
     assert!(matches!((headset, sinks), (Some(h), Some(s)) if h < s), "the headset before the sinks: {take}");
     let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
@@ -2008,13 +2016,13 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(drop.contains(".remove(") && !drop.contains(".close()"), "no UnregisterAgent to a gone owner: {drop}");
     // Spec § 6: a call in flight ends without `failed` (its answer can no longer come).
     assert!(drop.contains("ActError::Gone"), "the panel's action ends silently: {drop}");
-    // Fix round 1: a connection lost under us is reopened by the syncs once per open, not forever.
+    // A connection lost under us is reopened by the syncs once per open, not forever.
     let readable = function_body(&bt_app, "pub(crate) fn bt_readable(");
     assert!(readable.contains("self.bt_note_lost()") && readable.contains("self.bt_let_go()"), "{readable}");
-    // Final review: a `Gone` on a live connection (a stale owner) lets it go, counted as a loss.
+    // A `Gone` on a live connection (a stale owner) lets it go, counted as a loss.
     let stale = readable.find("stale_owner(").expect("bt_readable reads a stale owner");
     assert!(readable[stale..].find("self.bt_let_go()").is_some(), "{readable}");
-    // Final review: no action taken inside a batch (it may run orders that read again, nested), and
+    // No action taken inside a batch (it may run orders that read again, nested), and
     // nothing of a batch handled once its connection went.
     let batch = function_body(&readable[readable.find("for event in events").expect("the batch")..], "for event in events");
     for nested in ["self.quick_action(", "self.bt_answer(", "self.bt_drop()", "self.bt_run(", "self.bt_readable()"] {
@@ -2142,7 +2150,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     // followed (then it stays on that attempt's deadline only).
     assert!(
         closed.contains(".close()")
-            && closed.contains("quick_timer.sync(")
+            && closed.contains("quick_timer.sync_opt(")
             && closed.contains("self.wifi_follow.as_ref().map(WifiFollow::deadline)"),
         "{closed}"
     );
@@ -2158,7 +2166,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     }
     let take = function_body(&quick_app, "pub(crate) fn quick_take(");
     assert!(take.contains("taken_wifi(") && take.contains("panel_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
-    // Final review B-M1: only a state read for the tap's current open reaches the panel or the follower.
+    // Only a state read for the tap's current open reaches the panel or the follower.
     let panel = function_body(&quick_app, "pub(crate) fn panel_wifi(");
     assert!(panel.contains("wifi_current(") && panel.contains("follow_wifi("), "{panel}");
     assert!(take.contains("wifi_current(") && take.contains("snapshot()"), "{take}");
@@ -2287,7 +2295,7 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("self.power_closed()"), "popup_close must let the power menu's timer go: {close}");
     let closed = function_body(&power_app, "pub(crate) fn power_closed(");
-    assert!(closed.contains("power_timer.sync(") && closed.contains("None"), "{closed}");
+    assert!(closed.contains("power_timer.sync_opt(") && closed.contains("None"), "{closed}");
     let tick = function_body(&power_app, "pub(crate) fn power_tick(");
     let (fired, due) = (tick.find(".fired()"), tick.find(".due("));
     assert!(matches!((fired, due), (Some(f), Some(d)) if f < d), "the dropped source forgotten first: {tick}");
@@ -2326,7 +2334,7 @@ fn the_keyboards_own_repeat_is_told_from_a_press() {
 fn the_privacy_module_has_no_panicking_path() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let pipewire = src("pipewire.rs");
+    let pipewire = src("pipewire/graph.rs");
     let mut texts = vec![src("privacy.rs"), src("privacy_app.rs")];
     for f in ["fn flag(", "fn graph_node(", "pub fn apply_privacy(", "fn track(", "fn bound(", "fn bound_line(", "fn held("] {
         texts.push(function_body(&pipewire, f).to_string());
@@ -2353,11 +2361,11 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     assert!(changed.contains("self.privacy_timer_sync()"), "the timer follows every change: {changed}");
     assert!(changed.contains("self.dirty = true"), "the bar's redraw flag, drawn after the pass: {changed}");
     let sync = function_body(&app, "pub(crate) fn privacy_timer_sync(");
-    assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync("), "{sync}");
+    assert!(sync.contains("self.bar.privacy.deadline()") && sync.contains("privacy_timer.sync_opt("), "{sync}");
     assert!(!function_body(&popup, "pub fn popup_close(").contains("privacy_timer"), "the popup never owns it");
     // Each message: a change follows `privacy_changed`; anything else still re-syncs the timer, since
     // an indicator going off changes nothing shown yet, only the deadline (without it, the glyph
-    // stays lit until the next message: Task 6's stuck-lit bug).
+    // stays lit until the next message).
     let feed = function_body(&app, "pub(crate) fn privacy_feed(");
     let (at, changed, other, synced) = (
         feed.find("self.bar.privacy_at(m, Instant::now())"),
@@ -2371,7 +2379,7 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     );
     // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
     let launch = src("launch.rs");
-    let (fed, kept) = (launch.find("state.privacy_feed(&m)"), launch.find("on_message(state, m,"));
+    let (fed, kept) = (launch.find("self.privacy_feed(&m)"), launch.find("on_message(self, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 
@@ -2411,7 +2419,7 @@ fn the_camera_watch_opens_nothing_under_dev() {
     assert!(reads > 0, "the comm read was not found: the check is hollow");
 }
 
-/// Privacy delivery 2 (review focus 4): the debounce's timer is forgotten first, and a scan that
+/// Privacy delivery 2: the debounce's timer is forgotten first, and a scan that
 /// changes nothing still syncs the off-delay's timer (a pending off arms it).
 #[test]
 fn the_camera_tick_fires_before_scanning() {
@@ -2447,7 +2455,7 @@ fn the_camera_logs_name_no_process() {
     assert!(logs >= 3, "the log lines were not found: the check is hollow");
 }
 
-/// Final review: the panel's Bluetooth row draws as the bar's module, from the same glyphs
+/// The panel's Bluetooth row draws as the bar's module, from the same glyphs
 /// (`segments::BLUETOOTH`, `segments::BLUETOOTH_CONNECTED`), never a copy of them.
 #[test]
 fn the_bluetooth_row_reuses_the_modules_glyphs() {

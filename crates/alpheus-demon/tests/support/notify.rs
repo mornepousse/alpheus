@@ -1,5 +1,5 @@
-//! A fake notification client and a fake mako on a `PrivateBus`, for the tests only (notifications
-//! plan task 4). Raw D-Bus, never the daemon's code: the names are written out here on purpose, as a
+//! A fake notification client and a fake mako on a `PrivateBus`, for the tests only (notifications).
+//! Raw D-Bus, never the daemon's code: the names are written out here on purpose, as a
 //! cross-check of the daemon's constants. Fictional applications and texts only.
 //!
 //! `FakeClient` is a plain `Peer` driven by the test thread: blocking calls (`Notify`,

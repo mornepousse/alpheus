@@ -41,14 +41,14 @@ pub enum Msg {
         state: Option<WifiState>,
     },
     /// The quick panel's Bluetooth (quick settings delivery 3), only while it is open: the panel's
-    /// (quick_app takes it, Task 8), never kept by the bar. `state` None: the panel closed, BlueZ
+    /// (quick_app takes it), never kept by the bar. `state` None: the panel closed, BlueZ
     /// gone or the system bus down. `open`: as `Wifi`'s (`BtTap::snapshot`).
     Bt {
         open: Option<u64>,
         state: Option<BtView>,
     },
     Resources(Sample),
-    /// The tray's shown items, rebuilt whole by the wiring (task 11).
+    /// The tray's shown items, rebuilt whole by the wiring.
     Tray(Vec<TrayIcon>),
     /// What the media module shows; None: no player, or every player stopped (media spec § 1).
     Media(Option<MediaView>),
@@ -85,18 +85,25 @@ pub struct Bar {
     pub style: BarStyle,
 }
 
-/// Puts `v` in `slot` (None: down); true if it changed.
-fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
-    let n = match v {
-        Some(x) => Feed::Ready(x),
-        None => Feed::Down,
-    };
-    if *slot == n {
+/// Puts `v` in `slot`; true if it changed.
+fn set_if_changed<T: PartialEq>(slot: &mut T, v: T) -> bool {
+    if *slot == v {
         false
     } else {
-        *slot = n;
+        *slot = v;
         true
     }
+}
+
+/// Puts `v` in `slot` (None: down); true if it changed.
+fn update<T: PartialEq>(slot: &mut Feed<T>, v: Option<T>) -> bool {
+    set_if_changed(
+        slot,
+        match v {
+            Some(x) => Feed::Ready(x),
+            None => Feed::Down,
+        },
+    )
 }
 
 /// What the bar draws of the sound: the sink's volume, or the source's state ("…", "–"); None
@@ -175,14 +182,7 @@ impl Bar {
                 self.compositor = new;
                 redraw
             }
-            Msg::Clock(h) => {
-                if self.clock == Some(h) {
-                    false
-                } else {
-                    self.clock = Some(h);
-                    true
-                }
-            }
+            Msg::Clock(h) => set_if_changed(&mut self.clock, Some(h)),
             Msg::Sound(s) => {
                 // The sink list is the open quick panel's (`quick_take` moved it there): never kept here.
                 let s = s.map(|s| SoundState { sinks: None, ..s });
@@ -205,30 +205,9 @@ impl Bar {
             Msg::Wifi { .. } => false,
             Msg::Bt { .. } => false,
             Msg::Resources(s) => self.resources.push(s),
-            Msg::Tray(icons) => {
-                if self.tray == icons {
-                    false
-                } else {
-                    self.tray = icons;
-                    true
-                }
-            }
-            Msg::Media(view) => {
-                if self.media == view {
-                    false
-                } else {
-                    self.media = view;
-                    true
-                }
-            }
-            Msg::Notifications(view) => {
-                if self.notifications == Some(view) {
-                    false
-                } else {
-                    self.notifications = Some(view);
-                    true
-                }
-            }
+            Msg::Tray(icons) => set_if_changed(&mut self.tray, icons),
+            Msg::Media(view) => set_if_changed(&mut self.media, view),
+            Msg::Notifications(view) => set_if_changed(&mut self.notifications, Some(view)),
         }
     }
 }
@@ -312,6 +291,15 @@ mod tests {
     }
 
     #[test]
+    fn set_if_changed_stores_and_reports_only_a_change() {
+        let mut slot = 1;
+        assert!(!set_if_changed(&mut slot, 1), "same value: nothing changed");
+        assert!(set_if_changed(&mut slot, 2));
+        assert_eq!(slot, 2, "the new value is kept");
+        assert!(!set_if_changed(&mut slot, 2));
+    }
+
+    #[test]
     fn messages_and_changes() {
         let mut b = Bar::new(BarConfig::default());
         assert_eq!(b.compositor, Feed::Waiting);
@@ -388,7 +376,7 @@ mod tests {
         assert!(!b.apply(Msg::Bt { open: None, state: None }));
     }
 
-    /// OSD task 1: the bar draws the sink only. A microphone or label change is kept (the OSD reads
+    /// The bar draws the sink only. A microphone or label change is kept (the OSD reads
     /// it from the same message) but redraws nothing.
     #[test]
     fn a_microphone_or_label_change_alone_does_not_redraw_the_bar() {
@@ -407,7 +395,7 @@ mod tests {
         assert!(b.apply(Msg::Sound(None)), "down: redraw");
     }
 
-    /// OSD task 3: with the OSD on and the volume module off, the bar draws no sound at all, so no
+    /// With the OSD on and the volume module off, the bar draws no sound at all, so no
     /// sound message re-lays it out (the OSD alone keeps pw-dump running).
     #[test]
     fn without_the_volume_module_a_sound_change_never_redraws_the_bar() {

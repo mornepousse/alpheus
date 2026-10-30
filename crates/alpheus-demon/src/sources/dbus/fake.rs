@@ -68,7 +68,7 @@ pub struct FakeBus {
     /// (`io::ErrorKind::UnexpectedEof`, as `dbusrs_bus::error` maps
     /// `Disconnected`): distinct from `failing` (a service that just times
     /// out), to prove a domain's own read failing this way is tagged
-    /// `Outage::Bus`, not `Outage::Domain` (I2 carry-over, tray plan 1).
+    /// `Outage::Bus`, not `Outage::Domain`.
     pub disconnecting: BTreeSet<String>,
     pub bluez: Objects,
     pub devices: Vec<String>,

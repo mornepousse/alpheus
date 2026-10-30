@@ -30,7 +30,7 @@ pub const APPEARANCE_NAMESPACE: &str = "org.freedesktop.appearance";
 pub const COLOR_SCHEME_KEY: &str = "color-scheme";
 pub const DEFAULT_ITEM_PATH: &str = "/StatusNotifierItem";
 /// The properties interface: `Get`, `GetAll`, `PropertiesChanged`.
-pub const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
+pub const PROPERTIES_INTERFACE: &str = crate::sources::dbus::PROPERTIES;
 /// MPRIS (media spec § 3): every player's object, its root and player interfaces.
 pub const MPRIS_PATH: &str = "/org/mpris/MediaPlayer2";
 pub const MPRIS_INTERFACE: &str = "org.mpris.MediaPlayer2";

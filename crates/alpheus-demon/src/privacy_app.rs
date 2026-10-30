@@ -30,7 +30,7 @@ pub(crate) fn after_change(shown_empty: bool, open: bool) -> Follow {
 
 impl App {
     pub(crate) fn privacy_shown(&self) -> bool {
-        matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Privacy))
+        matches!(self.popup_body(), Some(PopupBody::Privacy))
     }
 
     /// A left press on the module: toggles its popup under it (a second press closes it).
@@ -79,9 +79,7 @@ impl App {
     /// The timer follows the earliest pending off; none without one (privacy spec § 4).
     pub(crate) fn privacy_timer_sync(&mut self) {
         let at = self.bar.privacy.deadline();
-        if let Some(handle) = self.loop_handle.clone() {
-            self.privacy_timer.sync(&handle, at, App::privacy_tick);
-        }
+        self.privacy_timer.sync_opt(self.loop_handle.as_ref(), at, App::privacy_tick);
     }
 
     /// The timer fired (calloop callback; its source is dropped): what is due goes off.
@@ -99,7 +97,7 @@ impl App {
 mod tests {
     use super::*;
 
-    /// Privacy spec § 5 (Review Focus 4): while open, the popup follows `shown`; once it is empty
+    /// Privacy spec § 5: while open, the popup follows `shown`; once it is empty
     /// (the off-delay passed) it closes; closed, nothing is opened.
     #[test]
     fn the_popup_closes_when_nothing_is_captured_after_the_delay() {

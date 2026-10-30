@@ -1,4 +1,4 @@
-//! A fake MPRIS player on a `PrivateBus`, for the tests only (media plan task 4).
+//! A fake MPRIS player on a `PrivateBus`, for the tests only.
 //!
 //! It owns `org.mpris.MediaPlayer2.<suffix>`, allowing replacement, so that a second fake can take
 //! the name over in ONE `NameOwnerChanged(name, old, new)`. That is how a restart through a
@@ -10,7 +10,7 @@
 //! `Seeked`.
 //!
 //! It is one `Peer` served by its own thread, like support/portal.rs. It speaks raw D-Bus and never
-//! uses the daemon's code; its names are written out here on purpose, as a cross-check of Task 3's
+//! uses the daemon's code; its names are written out here on purpose, as a cross-check of the daemon's
 //! constants. Fictional players and tracks only.
 
 use super::{Peer, PrivateBus};
@@ -335,13 +335,12 @@ impl FakePlayer {
         let _ = self.commands.send(Command::Seeked(us));
     }
 
-    /// Changes PlaybackStatus and signals it (media task 7).
+    /// Changes PlaybackStatus and signals it.
     pub fn set_status(&self, status: &str) {
         self.set("PlaybackStatus", text(status));
     }
 
-    /// A new track, signalled with its value: `title` by `artist`, `length_us` long, its own trackid
-    /// (media tasks 7 and 8).
+    /// A new track, signalled with its value: `title` by `artist`, `length_us` long, its own trackid.
     pub fn set_track(&self, title: &str, artist: &str, length_us: i64) {
         self.set(
             "Metadata",

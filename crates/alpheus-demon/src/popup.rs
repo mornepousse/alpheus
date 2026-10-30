@@ -5,11 +5,11 @@
 //! drawn as rows of cells into a pool of its own. One at a time; everything
 //! lives in `OpenPopup` and is dropped whole on close (nothing kept). What a
 //! popup shows (`PopupBody`) and how it reacts is filled by the tooltip, the
-//! menu and the calendar (tasks 16–18); this module is the Wayland side.
+//! menu and the calendar; this module is the Wayland side.
 //!
 //! The keyboard is shared with the launcher: bound while the launcher or a
 //! grabbing popup needs it, released once neither does. Headless sway 1.12
-//! (fact check 5) gives no keyboard focus to a grabbing popup whose parent
+//! gives no keyboard focus to a grabbing popup whose parent
 //! layer surface has `KeyboardInteractivity::None`: the bar's layer surface
 //! on that output is made `Exclusive` (committed before the popup is
 //! created) while a grabbing popup is open, and keys arrive on the bar's
@@ -143,14 +143,14 @@ pub enum PopupClose {
     Replaced,
     ItemGone,
     Timeout,
-    /// Its item's `Menu` path moved under it (a duplicate registration, fix round 2026-10-06):
+    /// Its item's `Menu` path moved under it (a duplicate registration):
     /// never a real timeout, so it gets its own, honestly-named reason.
     MenuMoved,
     Launcher,
-    /// A tooltip: the pointer left its icon (task 16).
+    /// A tooltip: the pointer left its icon.
     HoverEnded,
     /// Its bar was re-placed for a new style (to or from floating): the popup's anchor and size no
-    /// longer match (shapes Review Focus 1).
+    /// longer match.
     Restyled,
     /// The media popup: no player left to show (spec § 2), or the connection hosting them went.
     PlayerGone,
@@ -193,7 +193,7 @@ pub fn is_hyprland<'a>(mut interfaces: impl Iterator<Item = &'a str>) -> bool {
 
 /// Whether the bar's layer surface must go `Exclusive` while one of its popups grabs.
 ///
-/// sway (fact check 5) gives a grabbing popup of a layer surface no keyboard unless that layer
+/// sway gives a grabbing popup of a layer surface no keyboard unless that layer
 /// surface is `Exclusive`. Hyprland is the other way round: it hands the grab the keyboard by
 /// itself, and before 0.56.2 (hyprwm/Hyprland#15729) an `Exclusive` layer surface swallows the
 /// hit test of its own popups, so every click inside the menu is taken for a click outside and
@@ -202,7 +202,7 @@ pub fn bar_exclusive_during_grab(on_hyprland: bool) -> bool {
     !on_hyprland
 }
 
-/// How a popup takes input (quick spec § 1, decision 1).
+/// How a popup takes input (quick spec § 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Input {
     /// A tooltip: neither a grab nor the keyboard.
@@ -215,11 +215,12 @@ pub enum Input {
     Keys,
 }
 
-/// What a popup shows (filled by tasks 16–18); dropped whole on close.
+/// What a popup shows: a tray item's menu, its hover tooltip, or one of the module popups
+/// (`ModulePopup`); dropped whole on close.
 pub enum PopupBody {
     Menu(Menu),
     Calendar(Calendar),
-    /// One row of text (task 16).
+    /// One row of text.
     Tooltip(String),
     /// The media module's popup (title, time, buttons, players).
     Media(MediaPopup),
@@ -234,16 +235,17 @@ pub enum PopupBody {
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
-/// module's popup. It is the anchor's and the press race's single source of truth (wayland.rs
+/// popup, the notifications panel, the quick settings panel, the ⏻ power menu, the privacy
+/// popup. It is the anchor's and the press race's single source of truth (wayland.rs
 /// `module_popup_at`, `closed_by_done`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModulePopup {
     Calendar,
-    /// The media module's popup (media task 7).
+    /// The media module's popup.
     Media,
-    /// The bell's panel (notifications task 7).
+    /// The bell's panel.
     Panel,
-    /// The quick settings panel: the volume, network and Bluetooth modules (quick task 6).
+    /// The quick settings panel: the volume, network and Bluetooth modules.
     Quick,
     /// The ⏻ power menu: the power button (power spec § 1).
     Power,
@@ -443,7 +445,7 @@ impl App {
     /// `Tooltip` neither. false when the output's bar is not configured.
     pub fn popup_open(&mut self, qh: &QueueHandle<App>, anchor: Anchor, body: PopupBody, columns: u16, rows: u16, input: Input) -> bool {
         let (grab, keyed) = (input != Input::Tooltip, input == Input::Keys);
-        // Every refusal first (moved above the launcher/popup closes below, task 15 fix round:
+        // Every refusal first (moved above the launcher/popup closes below:
         // `SlotPool::new` and `XdgPositioner::new` can fail too, and must refuse here, before
         // anything already shown is torn down): a popup that cannot open closes neither the
         // launcher nor the popup already shown.
@@ -562,7 +564,7 @@ impl App {
     /// and asks the compositor to reposition it (xdg_wm_base ≥ 3) or just updates `size` for the
     /// next buffer (older compositors); true: a reposition was requested, its `configure` paints —
     /// the caller must not draw now. Shared by `popup_paint` (the cell count changed) and
-    /// `popup_scale` (task 15 fix round: the SAME cell count can still occupy a slightly different
+    /// `popup_scale` (the SAME cell count can still occupy a slightly different
     /// pixel size at a different scale — the font's physical advance does not always scale
     /// exactly — so a scale change must recompute the placement too, not just redraw in place).
     fn popup_reposition(&mut self, cells: (u16, u16)) -> bool {
@@ -630,10 +632,10 @@ impl App {
     pub fn popup_close(&mut self, why: PopupClose) {
         // A menu's D-Bus session ends with its popup — except when a new menu replaces it (the tray
         // already swapped the session); a menu still being fetched dies with the launcher opening.
-        let menu = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Menu(_)));
+        let menu = matches!(self.popup_body(), Some(PopupBody::Menu(_)));
         // The panel's card follows the same Seeked rule and tick: they go when it closes.
         let media = self.media_shown() || self.panel_shown();
-        // Fix round 2026-10-06 (hardening, requirement 3): the compositor may deliver `xdg_popup.
+        // The compositor may deliver `xdg_popup.
         // done` (routed here as Dismissed) before the press that follows it reaches the bar — a
         // record of what just closed, by whom it was opened, and when, lets that next press still
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
@@ -643,25 +645,25 @@ impl App {
                 self.recently_closed_menu = Some((key, button, Instant::now()));
             }
         }
-        // The same race for a module's popup (the calendar; the media popup, task 7): a left press on
+        // The same race for a module's popup (the calendar; the media popup): a left press on
         // its module right after a compositor `done` only closes (wayland.rs `closed_by_done`).
         if why == PopupClose::Dismissed
-            && let Some(p) = self.popup.as_ref().and_then(|o| o.body.module_popup())
+            && let Some(p) = self.popup_body().and_then(PopupBody::module_popup)
         {
             self.recently_closed_popup = Some((p, Instant::now()));
         }
         if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
             self.menu_end();
         }
-        let quick = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Quick(_)));
+        let quick = matches!(self.popup_body(), Some(PopupBody::Quick(_)));
         if quick {
             self.quick_flush();
         }
-        let power = matches!(self.popup.as_ref().map(|p| &p.body), Some(PopupBody::Power(_)));
+        let power = matches!(self.popup_body(), Some(PopupBody::Power(_)));
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
         // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
-        // that no longer exists (fix round 2026-10-06, item 3) — `tooltip_item_gone` (wayland.rs)
+        // that no longer exists — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
         if matches!(open.body, PopupBody::Tooltip(_)) {
             self.tooltip_item = None;
@@ -682,8 +684,8 @@ impl App {
             self.media_timer_sync();
         }
         if grab {
-            // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name` (task
-            // 15 fix round, CRITICAL): a name can change after the fact (`update_output`) or be
+            // By the parent's surface IDENTITY, never by `anchor.output` or a bar's `name`:
+            // a name can change after the fact (`update_output`) or be
             // shared for a moment by two bars, and the wrong bar — or none — would stay stuck
             // `Exclusive`, holding Mae's keyboard.
             // Only if `popup_open` set it (`exclusive_during_grab`: not on Hyprland, unless keyed).
@@ -701,12 +703,14 @@ impl App {
         crate::memory::release_memory();
     }
 
-    pub fn popup(&self) -> Option<&OpenPopup> {
-        self.popup.as_ref()
+    /// The open popup's body, if any.
+    pub(crate) fn popup_body(&self) -> Option<&PopupBody> {
+        self.popup.as_ref().map(|p| &p.body)
     }
 
-    pub fn popup_mut(&mut self) -> Option<&mut OpenPopup> {
-        self.popup.as_mut()
+    /// The open popup's body, mutably.
+    pub(crate) fn popup_body_mut(&mut self) -> Option<&mut PopupBody> {
+        self.popup.as_mut().map(|p| &mut p.body)
     }
 
     /// A key while a grabbing popup is open (the launcher is closed).
@@ -756,9 +760,10 @@ impl App {
         }
     }
 
-    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint` repositions on a size change.
+    /// The calendar shows `months` later (earlier when negative), repainted: its height follows the month's weeks, `popup_paint`
+    /// repositions on a size change.
     fn calendar_scroll(&mut self, months: i32) {
-        let Some(PopupBody::Calendar(c)) = self.popup.as_mut().map(|p| &mut p.body) else { return };
+        let Some(PopupBody::Calendar(c)) = self.popup_body_mut() else { return };
         if !c.scroll(months) {
             return;
         }
@@ -770,8 +775,8 @@ impl App {
 
     /// Runs `f` on the open menu and its session's layout; Nothing when either is missing — the
     /// session ended under it (its item gone, its path moved, a call timed out), which `tray_
-    /// output` has already closed and logged with the right reason (fix round 2026-10-06,
-    /// requirement 5): a fabricated `MenuAction::Close` here would make `menu_action` log it again,
+    /// output` has already closed and logged with the right reason: a fabricated `MenuAction::Close` here would make `menu_action`
+    /// log it again,
     /// wrongly, as "escape".
     fn menu_with(&mut self, f: impl FnOnce(&mut Menu, &Layout) -> MenuAction) -> MenuAction {
         let App { tray, popup, .. } = self;
@@ -795,7 +800,7 @@ impl App {
                     (PopupPointer::Scroll(steps), _) => self.menu_with(|m, l| m.scroll(steps, l)),
                     _ => MenuAction::Nothing,
                 };
-                // Fix round 2026-10-06, requirement 6: the popup's OWN last press, never the
+                // The popup's OWN last press, never the
                 // bar's `last_press` — that one is the click that asked the popup to open (a
                 // right click, say), not necessarily the one running an entry inside it.
                 self.menu_action(action, self.popup_press_time);
@@ -867,7 +872,7 @@ impl App {
         true
     }
 
-    /// Closes the open popup if it hangs from `parent` (a bar about to be re-placed, shapes task 6).
+    /// Closes the open popup if it hangs from `parent` (a bar about to be re-placed).
     pub(crate) fn popup_close_if_parent(&mut self, parent: &wl_surface::WlSurface, why: PopupClose) {
         if self.popup.as_ref().is_some_and(|p| &p.parent == parent) {
             self.popup_close(why);
@@ -875,14 +880,14 @@ impl App {
     }
 
     /// The popup's parent bar surface goes (output unplugged, surface closed): the popup goes
-    /// first — compared by surface IDENTITY (task 15 fix round, CRITICAL), never by `anchor.output`
+    /// first — compared by surface IDENTITY, never by `anchor.output`
     /// or a bar's `name`, both of which can go stale (see `popup_close`).
     pub(crate) fn popup_output_gone(&mut self, parent: &wl_surface::WlSurface) {
         if self.popup.as_ref().is_some_and(|p| &p.parent == parent) {
             self.popup_close(PopupClose::OutputGone);
         }
-        // A tooltip's hover tracking must not survive the bar it was armed on going away (task 15
-        // fix round, from the task 16 review): left alone, `Hover.over` would still name the same
+        // A tooltip's hover tracking must not survive the bar it was armed on going away:
+        // left alone, `Hover.over` would still name the same
         // icon once the bar (or another showing it) comes back, and `Hover::moved` — keyed only on
         // the item, never the surface — would then wrongly see "still on it", never re-arming.
         let c = self.hover.cancel();
@@ -899,7 +904,7 @@ impl App {
             open.scale = factor;
             open.last = None;
             let cells = open.cells;
-            // Through `popup_paint`'s own resize path (task 15 fix round): the placement must be
+            // Through `popup_paint`'s own resize path: the placement must be
             // recomputed at the new scale, not just redrawn at the old one.
             if !self.popup_reposition(cells) {
                 self.popup_draw();
@@ -1110,7 +1115,7 @@ mod tests {
         }
         assert_eq!(ModulePopup::of(&Target::Module(ModuleId::Volume), Button::Left, false), None);
         assert_eq!(PopupBody::Tooltip("x".into()).module_popup(), None, "a tooltip belongs to no module");
-        // The media module's left press toggles its own popup (media task 7); its middle button and
+        // The media module's left press toggles its own popup; its middle button and
         // wheel are controls, never a popup.
         let media = Target::Module(ModuleId::Media);
         assert_eq!(ModulePopup::of(&media, Button::Left, false), Some(ModulePopup::Media));
@@ -1122,7 +1127,7 @@ mod tests {
     }
 
     /// Quick spec § 1: with the module, a left press on the volume, the network or Bluetooth
-    /// toggles the panel (one popup for the three, decision 2); the right press is the TUI tab's;
+    /// toggles the panel (one popup for the three); the right press is the TUI tab's;
     /// the battery keeps its click.
     #[test]
     fn a_left_press_on_volume_network_or_bluetooth_toggles_the_quick_panel() {
@@ -1291,7 +1296,7 @@ mod tests {
     /// A popup closed by a key press (Escape, Enter on an entry) must not release the keyboard
     /// while that key is down: SCTK's repeat timer stops only on its release or a leave, and on
     /// sway or niri the focused surface is the bar's own, which never dies — released early, the
-    /// key repeated at the compositor's rate forever (media task 7, found by the tick test).
+    /// key repeated at the compositor's rate forever.
     #[test]
     fn the_keyboard_goes_only_once_its_keys_are_up() {
         const SHIFT: u32 = 42;

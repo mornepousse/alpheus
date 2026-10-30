@@ -5,6 +5,18 @@
 use std::ffi::OsString;
 use std::path::PathBuf;
 
+/// The XDG variable `name` when it holds an absolute path; unset, empty or relative: None, as the
+/// XDG Base Directory spec requires. (Environment injected, like the `_from` functions below.)
+pub(crate) fn xdg_abs(var: impl Fn(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {
+    var(name).map(PathBuf::from).filter(|p| p.is_absolute())
+}
+
+/// $XDG_CONFIG_HOME/alpheus, else ~/.config/alpheus, else .config/alpheus.
+///
+/// Unlike `state_dir` and `runtime_dir`, this does NOT go through `xdg_abs`: a relative (or empty)
+/// $XDG_CONFIG_HOME is honoured as is today, and the TUI and the daemon both rely on finding the
+/// same directory. Applying the spec's "absolute only" rule here would be a behaviour change for
+/// anyone who sets one; that is Mae's decision, not a cleanup's.
 pub fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -19,11 +31,9 @@ pub fn runtime_dir() -> PathBuf {
 
 /// `runtime_dir` with the environment injected. An empty or relative
 /// $XDG_RUNTIME_DIR is ignored, as the XDG Base Directory spec requires
-/// (review item M2, final review slice 1 — same rule as `state_dir_from`).
+/// (the same rule as `state_dir_from`).
 fn runtime_dir_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+    xdg_abs(var, "XDG_RUNTIME_DIR")
         // SAFETY: getuid(2) cannot fail.
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })))
 }
@@ -36,9 +46,7 @@ pub fn state_dir() -> PathBuf {
 /// `state_dir` with the environment injected. An empty or relative
 /// $XDG_STATE_HOME is ignored, as the XDG Base Directory spec requires.
 fn state_dir_from(var: impl Fn(&str) -> Option<OsString>) -> PathBuf {
-    var("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+    xdg_abs(&var, "XDG_STATE_HOME")
         .or_else(|| var("HOME").map(|h| PathBuf::from(h).join(".local/state")))
         .unwrap_or_else(|| PathBuf::from(".local/state"))
         .join("alpheus")
@@ -51,6 +59,14 @@ mod tests {
 
     fn vars(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
         move |k: &str| pairs.iter().find(|(n, _)| *n == k).map(|(_, v)| OsString::from(*v))
+    }
+
+    #[test]
+    fn xdg_abs_keeps_only_absolute_paths() {
+        assert_eq!(xdg_abs(vars(&[("X", "/a/b")]), "X"), Some(PathBuf::from("/a/b")));
+        assert_eq!(xdg_abs(vars(&[("X", "a/b")]), "X"), None, "relative");
+        assert_eq!(xdg_abs(vars(&[("X", "")]), "X"), None, "empty");
+        assert_eq!(xdg_abs(vars(&[]), "X"), None, "unset");
     }
 
     #[test]

@@ -51,6 +51,13 @@ impl DeadlineTimer {
         }
     }
 
+    /// `sync` when the loop handle exists (before the loop is built there is nothing to arm).
+    pub fn sync_opt<D: 'static>(&mut self, handle: Option<&LoopHandle<'static, D>>, deadline: Option<Instant>, fire: fn(&mut D, Instant)) {
+        if let Some(handle) = handle {
+            self.sync(handle, deadline, fire);
+        }
+    }
+
     #[cfg(test)]
     fn armed_count(&self) -> u32 {
         self.armed

@@ -1,13 +1,14 @@
 ---
 source: crates/alpheus/src/ui/appearance.rs
+assertion_line: 529
 expression: "draw(&a, 100, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
                                                                                                     
- Theme                           Preview — Gruvbox, light                                           
-     Wallpaper (matugen)         ┌────────────────────────────────────────────┐                     
+ Theme                           Preview — Wallpaper (matugen), dark                                
+ ❯ ● Wallpaper (matugen)         ┌────────────────────────────────────────────┐                     
      Catppuccin                  │ 1  2  3! notes.md ♪ 84% ≈ ▮ 15% ▤ 6G 14:05 │                     
- ❯ ● Gruvbox                     └────────────────────────────────────────────┘                     
+     Gruvbox                     └────────────────────────────────────────────┘                     
      Tokyo Night                                                                                    
      Rosé Pine                   ┌────────────┐                                                     
      Everforest                  │ Open       │                                                     
@@ -25,4 +26,4 @@ expression: "draw(&a, 100, 24).0.join(\"\\n\")"
                                                                                                     
                                                                                                     
  Theme · ready                                                                                      
- F1 Help  Ctrl+P Palette  Esc Back  q Quit  ←/→ Choose  Enter Apply  Tab Colours
+ F1 Help  Ctrl+P Palette  Esc Back  q Quit  ↑/↓ Choose  Enter Apply

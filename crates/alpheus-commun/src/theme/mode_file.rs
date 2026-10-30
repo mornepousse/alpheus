@@ -14,7 +14,7 @@ pub const MODE_FILE: &str = "mode";
 /// $XDG_RUNTIME_DIR, absolute only. Unset, empty or relative: None, so nothing is written or read
 /// (never `paths::runtime_dir`'s /run/user/<uid> guess).
 pub fn runtime_from(var: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    var("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute())
+    crate::paths::xdg_abs(var, "XDG_RUNTIME_DIR")
 }
 
 /// `runtime/alpheus/mode`.
