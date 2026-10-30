@@ -101,6 +101,7 @@ pub fn parse_outputs(json: &str) -> BResult<Vec<Output>> {
                 modes: r.modes.iter().filter_map(|m| Mode::parse(m)).collect(),
                 name: r.name,
                 description: r.description,
+                compositor_description: String::new(),
                 displaylink: r.displaylink,
                 active,
             })

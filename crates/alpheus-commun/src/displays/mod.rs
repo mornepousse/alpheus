@@ -1,7 +1,6 @@
 //! Displays: shared types (mode, scale, an output's setting) and
-//! application plans (a sequence of `wm-set` calls). No call happens here:
-//! the backend (`backends::displays`) runs the plans, geometry and
-//! profiles compute them.
+//! application plans. No call happens here: the daemon reads the outputs
+//! and applies the changes; geometry and profiles compute them.
 
 pub mod geometry;
 pub mod profiles;
@@ -112,13 +111,25 @@ pub struct Active {
 pub struct Output {
     /// Connector: "DVI-I-1" (can change from one plug-in to another).
     pub name: String,
-    /// Brand, model, serial number: stable, used as an identifier.
+    /// Stable identity: `make model serial` (empty parts left out), else the
+    /// compositor's description. Profiles match screens on it.
     pub description: String,
+    /// The head's own `description`, kept so profiles saved with it still
+    /// match (empty when unknown).
+    pub compositor_description: String,
     /// Real modes, in Hyprland's order.
     pub modes: Vec<Mode>,
     pub displaylink: bool,
     /// `None`: disabled output.
     pub active: Option<Active>,
+}
+
+impl Output {
+    /// Whether a profile's stored string names this output: its identity or
+    /// the compositor's description.
+    pub fn is(&self, key: &str) -> bool {
+        key == self.description || (!self.compositor_description.is_empty() && key == self.compositor_description)
+    }
 }
 
 /// Short name drawn from a description: its first word (the brand).
@@ -273,6 +284,7 @@ pub mod testing {
         Output {
             name: name.into(),
             description: desc.into(),
+            compositor_description: String::new(),
             modes: vec![m],
             displaylink: false,
             active: Some(Active { mode: m, x, y, scale: Scale::ONE, transform: 0 }),
@@ -280,7 +292,14 @@ pub mod testing {
     }
 
     pub fn off(name: &str, desc: &str) -> Output {
-        Output { name: name.into(), description: desc.into(), modes: vec![mode(1920, 1080, 60)], displaylink: false, active: None }
+        Output {
+            name: name.into(),
+            description: desc.into(),
+            compositor_description: String::new(),
+            modes: vec![mode(1920, 1080, 60)],
+            displaylink: false,
+            active: None,
+        }
     }
 
     pub const INTERNAL: &str = "Interne Dalle 0x0001";
@@ -462,6 +481,15 @@ mod tests {
         assert!(!screen_lost(&plan, &without_bravo), "untouched output: not \"lost\"");
         let off: Vec<Output> = before.iter().map(|o| Output { active: None, ..o.clone() }).collect();
         assert!(screen_lost(&plan, &off), "no output active any more");
+    }
+
+    #[test]
+    fn is_matches_identity_or_compositor_description() {
+        let mut o = on("DP-1", "Acme Panel S1", 1920, 1080, 0, 0);
+        assert!(o.is("Acme Panel S1") && !o.is("Acme Panel"));
+        assert!(!o.is(""), "an empty compositor description matches nothing");
+        o.compositor_description = "Acme Panel".into();
+        assert!(o.is("Acme Panel S1") && o.is("Acme Panel") && !o.is("Other"));
     }
 
     #[test]
