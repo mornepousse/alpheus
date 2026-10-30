@@ -154,46 +154,36 @@ pub enum Action {
 }
 
 impl Action {
-    /// Every action; the `GoTab` ones, one per tab, follow `PrevTab`.
-    pub const ALL: [Action; 19 + TABS.len()] = {
-        const BEFORE: [Action; 7] =
-            [Action::Quit, Action::Back, Action::Help, Action::Palette, Action::Search, Action::NextTab, Action::PrevTab];
-        const AFTER: [Action; 12] = [
-            Action::Left,
-            Action::Right,
-            Action::Up,
-            Action::Down,
-            Action::PageUp,
-            Action::PageDown,
-            Action::Home,
-            Action::End,
-            Action::Toggle,
-            Action::Activate,
-            Action::Decrease,
-            Action::Increase,
-        ];
-        let mut all = [Action::Quit; 19 + TABS.len()];
-        let mut n = 0;
-        let mut i = 0;
-        while i < BEFORE.len() {
-            all[n] = BEFORE[i];
-            n += 1;
-            i += 1;
-        }
-        i = 0;
-        while i < TABS.len() {
-            all[n] = Action::GoTab(TABS[i].tab);
-            n += 1;
-            i += 1;
-        }
-        i = 0;
-        while i < AFTER.len() {
-            all[n] = AFTER[i];
-            n += 1;
-            i += 1;
-        }
-        all
-    };
+    /// Every action. One `GoTab` per tab, right after `PrevTab`, in tab
+    /// order (a test checks the list against `Tab::ALL`).
+    pub const ALL: [Action; 26] = [
+        Action::Quit,
+        Action::Back,
+        Action::Help,
+        Action::Palette,
+        Action::Search,
+        Action::NextTab,
+        Action::PrevTab,
+        Action::GoTab(Tab::Home),
+        Action::GoTab(Tab::Sound),
+        Action::GoTab(Tab::Network),
+        Action::GoTab(Tab::Bluetooth),
+        Action::GoTab(Tab::Power),
+        Action::GoTab(Tab::Displays),
+        Action::GoTab(Tab::Appearance),
+        Action::Left,
+        Action::Right,
+        Action::Up,
+        Action::Down,
+        Action::PageUp,
+        Action::PageDown,
+        Action::Home,
+        Action::End,
+        Action::Toggle,
+        Action::Activate,
+        Action::Decrease,
+        Action::Increase,
+    ];
 
     pub fn name(self) -> String {
         match self {
@@ -319,8 +309,9 @@ mod tests {
     #[test]
     fn one_go_tab_action_per_tab_in_tab_order() {
         let go: Vec<Tab> = Action::ALL.iter().filter_map(|a| if let Action::GoTab(t) = a { Some(*t) } else { None }).collect();
-        assert_eq!(go, Tab::ALL);
-        assert_eq!(Action::ALL.len(), 19 + Tab::ALL.len());
+        assert_eq!(go, Tab::ALL, "Action::ALL needs exactly one GoTab per tab, in tab order");
+        let first = Action::ALL.iter().position(|a| *a == Action::PrevTab).unwrap() + 1;
+        assert!(Action::ALL[first..first + Tab::ALL.len()].iter().all(|a| matches!(a, Action::GoTab(_))), "GoTab entries follow PrevTab");
     }
 
     #[test]
