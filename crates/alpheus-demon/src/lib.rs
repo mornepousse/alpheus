@@ -1,4 +1,4 @@
-//! alpheus-demon — resident daemon (sub-project 2 of the framing document,
+//! alpheus-demon — resident daemon (sub-project 2 of docs/SCOPE.md,
 //! spec docs/specs/2026-10-04-alpheus-demon-barre-design.md). A pure state
 //! (`state::Bar`) changed by messages, sources that send them, a grid of
 //! cells drawn by cosmic-text into a layer-shell surface per screen.

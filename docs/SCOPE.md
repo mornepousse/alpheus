@@ -1,3 +1,12 @@
+> **Historical document.** This is the original scope, written on 2026-10-02
+> before any code existed, and kept as the record of why the project exists
+> and what its guardrails are. Its breakdown and targets have since been
+> overtaken (four compositors instead of two, the daemon is far lighter than
+> the 30-50 MB first aimed at, sub-project 3's integration lives outside this
+> repository). For what alpheus is today, read the [README](../README.md); for
+> how it is built, [ARCHITECTURE](ARCHITECTURE.md); for the per-feature design
+> record, [`specs/`](specs/README.md).
+
 # alpheus — overall scope
 
 Date: 2026-10-02 · Author: Mae · Designed in session with Claude from

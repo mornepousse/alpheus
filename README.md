@@ -17,7 +17,7 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 
 | Shell | Toolkit | Resident memory | What it covers |
 |---|---|---:|---|
-| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 23 MB** | bar ≈ 14 MB (live) + swayosd 7.6 MB + swaybg 1.4 MB still borrowed (rows below); ≈ 30 MB before the notifications replaced mako (6.7 MB) on 2026-10-09; ≈ 15 MB once the OSD replaces swayosd, only swaybg (optional) borrowed |
+| **alpheus** (today, hybrid mode) | Rust, no toolkit | **≈ 15 MB** (to be re-measured) | bar ≈ 14 MB (live) + swaybg 1.4 MB (optional) borrowed (rows below); swayosd (7.6 MB) is no longer used since the OSD replaced it, and mako (6.7 MB) since the notifications did; the live bar figure predates several deliveries and is to be re-measured |
 | **alpheus** (target, everything replaced) | Rust, no toolkit | **≤ 120 MB budget** | bar, launcher, notifications, OSD, wallpaper |
 | waybar + mako + swayosd + swaybg | GTK / C | ≈ 55 MB (see the note below) | bar, notifications, OSD, wallpaper |
 | HyprPanel | GJS | ≈ 151 MB | bar, notifications, OSD (Hyprland only) |
@@ -170,7 +170,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
 | Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
-| Appearance settings | 🚧 TUI tab, themes 3 | ✅ | ✅ | ❌ | ❌ |
+| Appearance settings | ✅ the TUI's Theme tab: theme, light/dark mode, module colours, bar style, with a preview | ✅ | ✅ | ❌ | ❌ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Lock screen | 💭 | ✅ | ✅ | ❌ | ❌ |
 | Settings GUI | ➖ TUI + TOML | ✅ | ✅ | ❌ | ❌ |
@@ -191,12 +191,13 @@ memory measured on the author's laptop. ⁴ No Mango backend found in Noctalia
 
 ## What's in the repository
 
-A Cargo workspace of three crates:
+A Cargo workspace of four crates:
 
 | Crate | Role |
 |---|---|
 | `alpheus` | **Control center** as a TUI (ratatui), opened on demand |
 | `alpheus-demon` | **Resident daemon**: the bar, one per screen (layer-shell) |
+| `alpheus-launch` | **Scripting bridge** to the daemon's launcher, notifications, OSD and quick panel (`--toggle`, `--dmenu`, `--dnd`, `--quick`…) |
 | `alpheus-commun` | Shared foundation: command execution, configuration, theme, access to system tools |
 
 The TUI doesn't embed Wayland, the daemon doesn't embed ratatui: a test
@@ -211,14 +212,15 @@ theme, the light/dark mode, the module colours and the bar style, with a preview
 
 | Key | Action |
 |---|---|
-| `1`…`6`, `Tab` / `Shift+Tab` | switch tabs |
+| `1`…`7`, `Tab` / `Shift+Tab` | switch tabs |
 | `Ctrl+P` | command palette (fuzzy search) |
 | `/`, `Ctrl+F` | search a list |
 | `F1`, `?` | help |
 | `Esc` | go back; `q` quits |
 
 `alpheus --tab <name>` opens directly on a tab (`home`, `sound`, `network`,
-`bluetooth`, `power`, `displays`).
+`bluetooth`, `power`, `displays`, `appearance`; `theme` is accepted for
+`appearance`).
 
 ### The bar (`alpheus-demon`)
 
@@ -262,7 +264,8 @@ of the control center (with the quick panel: the right click on volume, network 
 are tracked live. On a narrow screen, secondary modules disappear;
 workspaces and the clock remain.
 
-Coming next: the lock screen; the wallpaper (swaybg) is optional.
+The lock screen is paused (the wallpaper, swaybg, is optional): the focus is
+polishing the bar, the launcher, the notifications and the control center.
 
 At rest the bar never wakes up except for its timers (the clock, and the
 resources every 2 s when shown): measured 0 wake-ups at rest, ≈ 8.0 MB
@@ -603,14 +606,26 @@ nix build .#alpheus-demon    # the bar
 nix develop                  # dev shell: cargo, fonts, sway for tests
 ```
 
-Without Nix, `cargo build --release` is enough for the TUI. The bar looks
-for its fonts in `$ALPHEUS_FONTS` (set at build time by the flake),
+Without Nix, `cargo build --release` builds the three programs (the daemon needs
+`pkg-config`, libdbus and libxkbcommon development files; see
+[docs/install.md](docs/install.md)). The bar looks
+for its fonts in `$ALPHEUS_POLICES` (set at build time by the flake),
 otherwise in the system's.
 
 ## Configure
 
 Everything is optional, under `~/.config/alpheus/`. An invalid file falls
-back to default values with a warning, never a crash.
+back to default values with a warning, never a crash: `bar.toml`,
+`launcher.toml`, `config.toml` and `displays.toml` reject unknown keys, so a
+single typo (or an unknown module name) discards that whole file. `theme.toml`
+is lenient: an unknown key or a bad value is ignored with a warning and the
+rest applies; unknown keys in `colors*.toml` are ignored. The daemon logs to its standard error.
+
+When the files are read: `bar.toml` **once, when the daemon starts** (restart
+`alpheus-demon` after editing it); the theme files (`theme.toml`,
+`colors.toml`, `colors-light.toml`) are **watched and reloaded live**;
+`launcher.toml` is read **at each open** of the launcher; `config.toml` and
+`displays.toml` once, when the control center starts (restart it to apply an edit).
 
 - `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
   per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
@@ -682,6 +697,17 @@ reboot = ["systemctl", "reboot"]           # reboot and power off ask once more
 poweroff = ["systemctl", "poweroff"]
 wifi_more = ["foot", "-e", "nmtui"]        # More… in the Wi-Fi detail; absent: launcher.toml's terminal, then nmtui; [] hides it
 
+[actions]
+open_tab = ["alpheus-toggle", "{tab}"]   # a click on volume, network, Bluetooth or battery: {tab} becomes sound, network, bluetooth or home
+resources = ["foot", "-e", "btop"]       # a left click on the resources module
+# {tab} is "sound" for volume, "network" for network, "bluetooth" for Bluetooth and "home" for battery; no other module runs open_tab.
+# With the quick panel (`quick` in modules) a left click on volume, network or Bluetooth opens the panel instead, and open_tab runs on the right click.
+
+[resources]
+interval = 2         # seconds between two readings of /proc (1 to 60)
+graph = 20           # cells of CPU history (0 to 60; 0: no graph)
+sensor = ""          # an hwmon name or a thermal zone type; "": automatic
+
 [workspaces]
 command = ["wm-set", "workspace", "{workspace}", "{output}"]
 
@@ -690,8 +716,53 @@ peripherals = "always"   # "always" | "low" | "never": peripherals with a real p
 coarse = "low"           # "always" | "low" | "never": peripherals with only a coarse level
 ```
 
-Modules not yet shipped are accepted and ignored: a `bar.toml` written
-today will stay valid.
+An unknown module name in `modules` is an error that makes the whole
+`bar.toml` fall back to its defaults (one warning in the log), like any other
+invalid key.
+
+The launcher, in `launcher.toml` (defaults shown; `[[sources]]` are described
+under [The launcher](#the-launcher)):
+
+```toml
+terminal = ["foot", "-e"]                        # Terminal=true apps, plain
+terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text on Enter: the terminal stays open
+rows = 10                                        # result rows (3 to 30)
+history = 200                                    # entries kept (0 to 1000; 0: no history file)
+focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
+
+[prefixes]
+commands = ">"       # non-empty, no leading space, neither a prefix of the other
+windows = "w "
+```
+
+`terminal`, `terminal_hold` and `focus` are separate argv lists (program then
+arguments, no shell); switching terminal means setting both of the first two.
+
+The control center, in `config.toml` (defaults shown):
+
+```toml
+[keys]
+dvorak_nav = true    # d/h/t/n also move left/down/up/right, beside the arrow keys
+
+[keys.bindings]      # optional: action = ["chord", …], replaces that action's keys
+# palette = ["ctrl+k"]
+
+[commands]           # opened in alpheus's own window (program, then arguments)
+mixer = ["wiremix"]
+network = ["nmtui"]
+bluetooth = ["bluetui"]
+```
+
+Action names for `[keys.bindings]`: `quit`, `back`, `help`, `palette`,
+`search`, `next_tab`, `prev_tab`, `tab_1`…`tab_7`, `left`, `right`, `up`,
+`down`, `page_up`, `page_down`, `home`, `end`, `toggle`, `activate`,
+`decrease`, `increase`. A chord is optional modifiers joined by `+` (`ctrl`,
+`alt`, `shift`) then a key: a single character (`?`, `-`, `+`, `k`…), or
+`esc`, `enter`, `space`, `tab`, `backspace`, `up`, `down`, `left`, `right`,
+`pageup`, `pagedown`, `home`, `end`, `f1`…; case does not matter (`ctrl+p`,
+`shift+tab`). A key given to one action is taken away from the others; an
+unknown action, modifier or key resets all key bindings to their defaults (one
+warning on the status line); the rest of the file still applies.
 
 ## Principles
 
@@ -706,8 +777,16 @@ today will stay valid.
 
 ## Documentation
 
-- [`docs/SCOPE.md`](docs/SCOPE.md): why, budget, guardrails, breakdown.
-- [`docs/specs/`](docs/specs/): the specifications (TUI, Displays tab,
+- [`docs/install.md`](docs/install.md): build and runtime dependencies, a flake
+  input, starting the daemon, key binds for Hyprland, Sway, niri and Mango.
+- [`docs/compositors.md`](docs/compositors.md): what each compositor gives the
+  bar, and the external commands (`wm-set` and others) alpheus expects.
+- [`docs/cli.md`](docs/cli.md): the command lines of `alpheus`,
+  `alpheus-demon` and `alpheus-launch`: verbs, options, exit codes.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+  [`SECURITY.md`](SECURITY.md): how it is built, how to contribute, what it can do to your session.
+- [`docs/SCOPE.md`](docs/SCOPE.md): the original scope (historical): why, budget, guardrails.
+- [`docs/specs/`](docs/specs/README.md): the specifications, with a status index (TUI, Displays tab,
   bar, launcher, tray, themes, media, notifications, OSD).
 - [`docs/plans/`](docs/plans/): the implementation plans.
 
