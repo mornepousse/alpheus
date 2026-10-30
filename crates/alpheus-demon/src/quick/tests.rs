@@ -1257,6 +1257,17 @@ fn one_spec_per_row_in_variant_order() {
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
     assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2]);
-    let toggles: Vec<Row> = ROWS.iter().filter(|s| s.toggle.is_some()).map(|s| s.row).collect();
-    assert_eq!(toggles, [Row::Mic, Row::Dnd, Row::KeepAwake, Row::NightLight]);
+}
+
+/// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
+#[test]
+fn a_pending_toggle_reread_is_the_deadline_whichever_toggle() {
+    let w = World::full();
+    let at = Instant::now() + Duration::from_millis(300);
+    for t in Toggle::ALL {
+        let mut q = quick(&w, Focus::Top);
+        assert_eq!(q.deadline(), None, "{t:?}: nothing pending");
+        q.reread_toggles[t.index()] = Some(at);
+        assert_eq!(q.deadline(), Some(at), "{t:?}");
+    }
 }

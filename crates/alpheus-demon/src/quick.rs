@@ -88,6 +88,7 @@ impl Focus {
     }
 }
 
+/// The declaration order is the panel's top-to-bottom order (and `ROWS`' index).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Row {
     Volume,
@@ -273,7 +274,7 @@ pub enum Question {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Due {
     pub backlight: bool,
-    pub toggles: [bool; 2],
+    pub toggles: [bool; Toggle::ALL.len()],
     pub redraw: bool,
     pub run: Vec<QuickAction>,
     /// A Wi-Fi connection failed at this tick (the 20 s timeout): why, for the log.
@@ -400,7 +401,7 @@ pub struct Quick {
     pub headset: Option<Headset>,
     pub backlight: Option<Backlight>,
     /// Keep awake, night light: on, off, or unknown (`·`).
-    pub toggles: [Option<bool>; 2],
+    pub toggles: [Option<bool>; Toggle::ALL.len()],
     /// "Reboot? ⏎" (or "Power off? ⏎") until that instant.
     pub confirm: Option<(Question, Instant)>,
     /// The volume shown and sent while its slider moves (fix S1), and the default sink's node it
@@ -414,7 +415,7 @@ pub struct Quick {
     pub volume_settle: Option<Instant>,
     pub brightness_settle: Option<Instant>,
     /// When to re-read each toggle's state.
-    pub reread_toggles: [Option<Instant>; 2],
+    pub reread_toggles: [Option<Instant>; Toggle::ALL.len()],
     /// The first line shown, and the rows the panel may take under its bar.
     pub top: usize,
     pub room: u16,
@@ -450,15 +451,15 @@ struct RowSpec {
     present: fn(&Live, &Quick) -> bool,
     /// Draws it, `selected` for the band.
     draw: fn(&mut Grid, &Live, &Quick, bool),
-    /// What Space and Enter do, for a row that is only that (the microphone, do-not-disturb and
-    /// the configured toggles); the others take their keys in `Quick::act`.
-    toggle: Option<fn(&mut Quick, &Live, Instant) -> QuickAction>,
 }
 
 /// Every row, top to bottom (spec § 2): also the order a selection falls back along when its row
-/// goes. Adding a toggle row: a `Row` variant, one entry here (and its `draw_*` if it is not a
-/// `draw_mark`), and, if it is a configured one, a `Toggle` variant and its `QuickConfig` field.
-/// A test pins each entry's `row` to its index.
+/// goes. A test pins each entry's `row` to its index. Adding a row:
+/// - a toggle with no configuration (like the microphone or do-not-disturb): a `Row` variant at its
+///   place, one entry here (its `draw_mark` for a ●/○ state), its Space/Enter arm in `Quick::act`;
+/// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
+///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
+///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
 const ROWS: [RowSpec; 11] = [
     RowSpec {
         row: Row::Volume,
@@ -466,41 +467,18 @@ const ROWS: [RowSpec; 11] = [
         group: 0,
         present: |live, _| live.sound.is_some_and(|s| s.sink.is_some()),
         draw: draw_volume,
-        toggle: None,
     },
-    RowSpec { row: Row::Headset, name: "headset", group: 0, present: |_, q| q.headset.is_some(), draw: draw_headset, toggle: None },
-    RowSpec {
-        row: Row::Brightness,
-        name: "brightness",
-        group: 0,
-        present: |_, q| q.backlight.is_some(),
-        draw: draw_brightness,
-        toggle: None,
-    },
-    RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi, toggle: None },
-    RowSpec {
-        row: Row::Bluetooth,
-        name: "bluetooth",
-        group: 1,
-        present: |live, _| Bt::shows(live.bluetooth),
-        draw: draw_bluetooth,
-        toggle: None,
-    },
-    RowSpec {
-        row: Row::Mic,
-        name: "mic",
-        group: 1,
-        present: |live, _| live.sound.is_some_and(|s| s.source.is_some()),
-        draw: draw_mic,
-        toggle: Some(|_, _, _| run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute")),
-    },
+    RowSpec { row: Row::Headset, name: "headset", group: 0, present: |_, q| q.headset.is_some(), draw: draw_headset },
+    RowSpec { row: Row::Brightness, name: "brightness", group: 0, present: |_, q| q.backlight.is_some(), draw: draw_brightness },
+    RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
+    RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
+    RowSpec { row: Row::Mic, name: "mic", group: 1, present: |live, _| live.sound.is_some_and(|s| s.source.is_some()), draw: draw_mic },
     RowSpec {
         row: Row::Dnd,
         name: "dnd",
         group: 1,
         present: |live, _| live.dnd.is_some(),
         draw: |g, live, _, selected| draw_mark(g, BELL, "Do not disturb", live.dnd, selected),
-        toggle: Some(|_, _, _| QuickAction::ToggleDnd),
     },
     RowSpec {
         row: Row::Profile,
@@ -508,32 +486,22 @@ const ROWS: [RowSpec; 11] = [
         group: 1,
         present: |live, _| live.profile.is_some_and(|p| p.active.is_some() && !p.offered.is_empty()),
         draw: draw_profile,
-        toggle: None,
     },
     RowSpec {
         row: Row::KeepAwake,
         name: "keep-awake",
         group: 1,
         present: |live, _| !live.config.keep_awake.toggle.is_empty(),
-        draw: |g, _, q, selected| draw_mark(g, KEEP_AWAKE, "Keep awake", q.toggles[0], selected),
-        toggle: Some(|q, live, now| q.toggle(live, Toggle::KeepAwake, now)),
+        draw: |g, _, q, selected| draw_mark(g, KEEP_AWAKE, "Keep awake", q.toggles[Toggle::KeepAwake.index()], selected),
     },
     RowSpec {
         row: Row::NightLight,
         name: "night-light",
         group: 1,
         present: |live, _| !live.config.night_light.toggle.is_empty(),
-        draw: |g, _, q, selected| draw_mark(g, NIGHT_LIGHT, "Night light", q.toggles[1], selected),
-        toggle: Some(|q, live, now| q.toggle(live, Toggle::NightLight, now)),
+        draw: |g, _, q, selected| draw_mark(g, NIGHT_LIGHT, "Night light", q.toggles[Toggle::NightLight.index()], selected),
     },
-    RowSpec {
-        row: Row::Session,
-        name: "session",
-        group: 2,
-        present: |live, _| session::any_configured(live.config),
-        draw: |g, live, q, selected| session_row(g, live, q, selected),
-        toggle: None,
-    },
+    RowSpec { row: Row::Session, name: "session", group: 2, present: |live, _| session::any_configured(live.config), draw: session_row },
 ];
 
 /// Whether `r` shows (spec § 2): a row whose tool, hardware or command is missing does not.
@@ -574,7 +542,14 @@ pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
 
 impl Quick {
     /// At open: the row `focus` asks for, else the first one shown.
-    pub fn new(focus: Focus, live: &Live, sinks: Vec<Sink>, backlight: Option<Backlight>, toggles: [Option<bool>; 2], room: u16) -> Quick {
+    pub fn new(
+        focus: Focus,
+        live: &Live,
+        sinks: Vec<Sink>,
+        backlight: Option<Backlight>,
+        toggles: [Option<bool>; Toggle::ALL.len()],
+        room: u16,
+    ) -> Quick {
         let mut q = Quick {
             selected: Row::Volume,
             button: Session::Lock,
@@ -591,7 +566,7 @@ impl Quick {
             brightness: Pace::default(),
             volume_settle: None,
             brightness_settle: None,
-            reread_toggles: [None; 2],
+            reread_toggles: [None; Toggle::ALL.len()],
             top: 0,
             kept_at: None,
             room,
@@ -782,9 +757,6 @@ impl Quick {
     /// Space, Enter and ← → on a row (spec § 3).
     fn act(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
         let step = live.config.step;
-        if let (Some(toggle), Key::Char(' ') | Key::Enter) = (self.selected.spec().toggle, k) {
-            return toggle(self, live, now);
-        }
         match (self.selected, k) {
             (Row::Headset, Key::Char(' ') | Key::Enter | Key::Left | Key::Right) => self.switch_headset(),
             (Row::Volume, Key::Right) => self.volume(live, Level::Up(step), now),
@@ -800,7 +772,11 @@ impl Quick {
                 a
             }
             (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
+            (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
+            (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
             (Row::Profile, Key::Enter) => cycle(live),
+            (Row::KeepAwake, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::KeepAwake, now),
+            (Row::NightLight, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::NightLight, now),
             (Row::Session, Key::Left) => self.move_button(live, -1),
             (Row::Session, Key::Right) => self.move_button(live, 1),
             (Row::Session, Key::Enter) => self.activate(live, self.button, now),
@@ -1004,13 +980,12 @@ impl Quick {
             self.brightness.until,
             self.volume_settle,
             self.brightness_settle,
-            self.reread_toggles[0],
-            self.reread_toggles[1],
             self.confirm.as_ref().map(|(_, at)| *at),
             self.wifi.deadline(),
             self.bt.deadline(),
         ]
         .into_iter()
+        .chain(self.reread_toggles)
         .flatten()
         .min()
     }

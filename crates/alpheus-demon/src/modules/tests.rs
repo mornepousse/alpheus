@@ -61,3 +61,13 @@ fn needs_combine_and_test_by_flag() {
     assert_eq!(Needs::of(&[]), Needs::NONE);
     assert_eq!(Needs::of(&[ModuleId::Volume, ModuleId::Tray]), n);
 }
+
+/// `ModuleSpec::name` is the word bar.toml spells (serde's `lowercase` on `ModuleId`).
+#[test]
+fn names_are_the_bar_toml_spelling() {
+    for spec in &MODULES {
+        let cfg =
+            crate::config::BarConfig::from_text(&format!("modules = [\"{}\"]", spec.name)).unwrap_or_else(|e| panic!("{}: {e}", spec.name));
+        assert_eq!(cfg.modules, [spec.id], "{}", spec.name);
+    }
+}

@@ -1,7 +1,8 @@
-//! Every per-module fact of the bar, one row of `MODULES` per `ModuleId`, in `ModuleId::ALL`'s
-//! order (a test pins each row's `id` to its index). Adding a module: a `ModuleId` variant
+//! Every per-module fact of the bar, one row of `MODULES` per `ModuleId`, in `ModuleId`'s
+//! declaration order (a test pins each row's `id` to its index). Adding a module: a `ModuleId` variant
 //! (config.rs), one row here, and, if it can be dropped on a narrow bar, its place in
-//! `layout::REMOVAL`; its segment function lives with the others (`segments.rs`).
+//! `layout::REMOVAL`; its segment function lives with the others (`segments.rs`). A module with a
+//! popup also needs a row of `popup::POPUPS`; one with a new source, a `Needs` flag (`launch::wanted`).
 //!
 //! Left as `match`es because their arms hold logic, not data: `actions::module_command` (the
 //! clicks, which read the configuration), `actions::media_control` (a button to a player call).

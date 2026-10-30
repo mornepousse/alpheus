@@ -1055,6 +1055,37 @@ impl WindowHandler for App {
 mod tests {
     use super::*;
 
+    /// Which hooks run at a close hang on this map: every module body names its popup.
+    #[test]
+    fn every_module_body_names_its_popup_and_the_others_none() {
+        use crate::calendar::Calendar;
+        use crate::clock::LocalTime;
+        use crate::config::{NotificationsConfig, QuickConfig};
+        use crate::media::Players;
+        use crate::notify::Center;
+        use crate::quick::Live;
+        let today = LocalTime { year: 2026, month: 10, day: 5, weekday: 1, hour: 9, minute: 30, second: 0 };
+        let config = QuickConfig::default();
+        let live = Live { sound: None, dnd: None, profile: None, config: &config, bluetooth: None };
+        let center = Center::new(&NotificationsConfig::default(), false);
+        let bodies = [
+            (PopupBody::Calendar(Calendar::new(&today, 1, false)), Some(ModulePopup::Calendar)),
+            (PopupBody::Media(MediaPopup::new(&Players::default())), Some(ModulePopup::Media)),
+            (PopupBody::Panel(Panel::new(&center, None, 40)), Some(ModulePopup::Panel)),
+            (
+                PopupBody::Quick(Box::new(Quick::new(crate::quick::Focus::Top, &live, Vec::new(), None, [None; 2], 40))),
+                Some(ModulePopup::Quick),
+            ),
+            (PopupBody::Power(Power::new(&config).unwrap()), Some(ModulePopup::Power)),
+            (PopupBody::Privacy, Some(ModulePopup::Privacy)),
+            (PopupBody::Menu(Menu::new()), None),
+            (PopupBody::Tooltip("x".into()), None),
+        ];
+        for (body, popup) in bodies {
+            assert_eq!(body.module_popup(), popup);
+        }
+    }
+
     #[test]
     fn only_a_left_press_on_the_clock_toggles_its_popup() {
         use crate::config::ModuleId;
