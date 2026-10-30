@@ -185,8 +185,8 @@ fn launcher_button_on_every_output_and_dropped_last() {
 /// absent when `[quick]`'s four session commands are all empty.
 #[test]
 fn the_power_button_is_its_own_block_with_no_hue_removed_last_and_hidden_without_commands() {
-    assert_eq!(group_kind(ModuleId::Power), GroupKind::Power);
-    assert_eq!(module_hue(ModuleId::Power), None, "neutral, like the bell");
+    assert_eq!(ModuleId::Power.spec().group, GroupKind::Power);
+    assert_eq!(ModuleId::Power.spec().hue, None, "neutral, like the bell");
     assert_eq!(REMOVAL.last(), Some(&ModuleId::Power), "after every other removable module");
     let power = Target::Module(ModuleId::Power);
     let g = bar().grid("HDMI-A-1", 100);
@@ -569,8 +569,8 @@ fn with_mic(mut b: Bar) -> Bar {
 
 #[test]
 fn privacy_is_its_own_block_with_no_hue_removed_just_before_power() {
-    assert_eq!(group_kind(ModuleId::Privacy), GroupKind::Privacy);
-    assert_eq!(module_hue(ModuleId::Privacy), None, "its glyphs carry their own hues");
+    assert_eq!(ModuleId::Privacy.spec().group, GroupKind::Privacy);
+    assert_eq!(ModuleId::Privacy.spec().hue, None, "its glyphs carry their own hues");
     assert_eq!(REMOVAL[REMOVAL.len() - 2..], [ModuleId::Privacy, ModuleId::Power]);
 }
 
@@ -799,5 +799,5 @@ fn the_quick_module_draws_nothing_in_the_bar() {
             assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{style:?}, {width} cells");
         }
     }
-    assert_eq!(module_hue(ModuleId::Quick), None);
+    assert_eq!(ModuleId::Quick.spec().hue, None);
 }

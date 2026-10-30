@@ -79,13 +79,7 @@ fn wpctl(args: &[&str]) -> Vec<String> {
 
 /// TUI tab opened by a left click on a module (alpheus `--tab`).
 fn tab(m: ModuleId) -> Option<&'static str> {
-    match m {
-        ModuleId::Volume => Some("sound"),
-        ModuleId::Network => Some("network"),
-        ModuleId::Bluetooth => Some("bluetooth"),
-        ModuleId::Battery => Some("home"),
-        _ => None,
-    }
+    m.spec().tab
 }
 
 /// The TUI tab of `m`, through `[actions] open_tab`.

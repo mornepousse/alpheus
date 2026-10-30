@@ -34,6 +34,7 @@ pub mod media_app;
 pub mod media_popup;
 pub mod memory;
 pub mod menu_app;
+pub mod modules;
 pub mod nonblocking;
 pub mod notify;
 pub mod notify_app;

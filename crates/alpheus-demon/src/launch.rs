@@ -12,6 +12,7 @@ use crate::launcher::socket_glue::{launcher_socket_outcome, watch_launcher_socke
 use crate::launcher::sources::Entries;
 use crate::launcher::surface::CloseReason;
 use crate::lock;
+use crate::modules::Needs;
 use crate::nonblocking::NonBlocking;
 use crate::painter::Fonts;
 use crate::pipewire::Scope;
@@ -208,47 +209,39 @@ pub struct Wanted {
 }
 
 pub fn wanted(modules: &[ModuleId]) -> Wanted {
-    let has = |m: ModuleId| modules.contains(&m);
+    let needs = Needs::of(modules);
+    // In this order, whichever modules ask: with the network module and the panel both, the
+    // network domain is read once.
     let dbus = [
-        (ModuleId::Network, Domain::Network),
-        // The quick panel's Wi-Fi row needs NetworkManager's state.
-        (ModuleId::Quick, Domain::Network),
-        (ModuleId::Bluetooth, Domain::Bluetooth),
-        // The quick panel's Bluetooth row reads the bar's BtState (quick settings delivery 3).
-        (ModuleId::Quick, Domain::Bluetooth),
-        (ModuleId::Battery, Domain::Battery),
-        (ModuleId::Quick, Domain::Power),
+        (Needs::NETWORK, Domain::Network),
+        (Needs::BLUETOOTH, Domain::Bluetooth),
+        (Needs::BATTERY, Domain::Battery),
+        (Needs::POWER_PROFILE, Domain::Power),
     ]
     .into_iter()
-    .filter(|(m, _)| has(*m))
+    .filter(|(n, _)| needs.contains(*n))
     .map(|(_, d)| d)
-    // With the network module and the panel both, the network domain is read once.
-    .fold(Vec::new(), |mut v, d| {
-        if !v.contains(&d) {
-            v.push(d);
-        }
-        v
-    });
+    .collect();
     Wanted {
-        sound: has(ModuleId::Volume) || has(ModuleId::Osd) || has(ModuleId::Quick) || has(ModuleId::Privacy),
+        sound: needs.contains(Needs::SOUND),
         dbus,
-        resources: has(ModuleId::Resources),
-        tray: has(ModuleId::Tray),
-        media: has(ModuleId::Media),
-        notifications: has(ModuleId::Notifications),
+        resources: needs.contains(Needs::RESOURCES),
+        tray: needs.contains(Needs::TRAY),
+        media: needs.contains(Needs::MEDIA),
+        notifications: needs.contains(Needs::NOTIFICATIONS),
     }
 }
 
 /// Whether the camera devices are watched: only with the `privacy` module (no inotify instance,
 /// no timer and no scan otherwise).
 pub fn camera_wanted(modules: &[ModuleId]) -> bool {
-    modules.contains(&ModuleId::Privacy)
+    Needs::of(modules).contains(Needs::CAMERA)
 }
 
 /// What the sound source publishes for: without the `osd` module, the bar's sink volume alone (a
 /// microphone or a label change wakes nothing).
 pub fn sound_scope(modules: &[ModuleId]) -> Scope {
-    if modules.contains(&ModuleId::Osd) { Scope::Osd } else { Scope::Bar }
+    if Needs::of(modules).contains(Needs::OSD_SCOPE) { Scope::Osd } else { Scope::Bar }
 }
 
 pub fn resources_period(c: &ResourcesConfig) -> Duration {

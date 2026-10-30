@@ -101,45 +101,20 @@ pub enum ModuleId {
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 16] = [
-        ModuleId::Launcher,
-        ModuleId::Workspaces,
-        ModuleId::Window,
-        ModuleId::Media,
-        ModuleId::Privacy,
-        ModuleId::Volume,
-        ModuleId::Network,
-        ModuleId::Bluetooth,
-        ModuleId::Battery,
-        ModuleId::Resources,
-        ModuleId::Tray,
-        ModuleId::Notifications,
-        ModuleId::Osd,
-        ModuleId::Quick,
-        ModuleId::Clock,
-        ModuleId::Power,
-    ];
+    /// Every module, in `modules::MODULES`' order (the default bar, left to right).
+    pub const ALL: [ModuleId; crate::modules::COUNT] = {
+        let mut all = [ModuleId::Launcher; crate::modules::COUNT];
+        let mut i = 0;
+        while i < all.len() {
+            all[i] = crate::modules::MODULES[i].id;
+            i += 1;
+        }
+        all
+    };
 
     /// Name in bar.toml.
     pub fn name(self) -> &'static str {
-        match self {
-            ModuleId::Launcher => "launcher",
-            ModuleId::Workspaces => "workspaces",
-            ModuleId::Window => "window",
-            ModuleId::Media => "media",
-            ModuleId::Privacy => "privacy",
-            ModuleId::Volume => "volume",
-            ModuleId::Network => "network",
-            ModuleId::Bluetooth => "bluetooth",
-            ModuleId::Battery => "battery",
-            ModuleId::Resources => "resources",
-            ModuleId::Tray => "tray",
-            ModuleId::Notifications => "notifications",
-            ModuleId::Osd => "osd",
-            ModuleId::Quick => "quick",
-            ModuleId::Clock => "clock",
-            ModuleId::Power => "power",
-        }
+        self.spec().name
     }
 }
 

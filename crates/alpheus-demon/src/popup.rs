@@ -17,7 +17,6 @@
 
 use crate::actions::{Button, Wheel};
 use crate::calendar::Calendar;
-use crate::config::ModuleId;
 use crate::grid::Target;
 use crate::keys::{self, Key, Mods};
 use crate::list::{self, Boxed};
@@ -257,15 +256,9 @@ impl ModulePopup {
     /// The popup a press of `b` on `target` toggles: a left press on its module's zone. `quick`:
     /// the quick module is in `modules` (without it, those three modules keep their own clicks).
     pub fn of(target: &Target, b: Button, quick: bool) -> Option<ModulePopup> {
-        match (target, b) {
-            (Target::Module(ModuleId::Clock), Button::Left) => Some(ModulePopup::Calendar),
-            (Target::Module(ModuleId::Media), Button::Left) => Some(ModulePopup::Media),
-            (Target::Module(ModuleId::Notifications), Button::Left) => Some(ModulePopup::Panel),
-            (Target::Module(ModuleId::Volume | ModuleId::Network | ModuleId::Bluetooth), Button::Left) if quick => Some(ModulePopup::Quick),
-            (Target::Module(ModuleId::Power), Button::Left) => Some(ModulePopup::Power),
-            (Target::Module(ModuleId::Privacy), Button::Left) => Some(ModulePopup::Privacy),
-            _ => None,
-        }
+        let (Target::Module(m), Button::Left) = (target, b) else { return None };
+        let spec = m.spec();
+        spec.popup.filter(|_| quick || !spec.popup_needs_quick)
     }
 }
 

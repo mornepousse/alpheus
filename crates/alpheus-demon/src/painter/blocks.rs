@@ -8,7 +8,7 @@ use super::{Background, color};
 use crate::background::{CornerMask, MaskCache, cell_edge, premultiplied};
 use crate::config::ModuleId;
 use crate::grid::{Group, Style, Tint};
-use crate::layout::module_hue;
+
 use alpheus_commun::theme::contrast::ratio;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use alpheus_commun::theme::{Rgb, Roles};
@@ -20,14 +20,14 @@ pub(crate) type Px = [u8; 4];
 pub(crate) const CLEAR: Px = [0, 0, 0, 0];
 
 /// The pills inks `pill_inks` keeps, on the stack: one per hued module. A block's hue is its first
-/// module's (`layout::module_hue`) and bar.toml rejects a duplicate module, so a bar never has more
+/// module's (`ModuleSpec::hue`) and bar.toml rejects a duplicate module, so a bar never has more
 /// hued blocks than hued modules. Counted from the modules, a module given a hue later grows it.
 pub(crate) const MAX_BLOCKS: usize = hued_modules();
 
 const fn hued_modules() -> usize {
     let (mut n, mut i) = (0, 0);
     while i < ModuleId::ALL.len() {
-        if module_hue(ModuleId::ALL[i]).is_some() {
+        if ModuleId::ALL[i].spec().hue.is_some() {
             n += 1;
         }
         i += 1;
@@ -368,7 +368,7 @@ mod tests {
         use crate::grid::GroupKind;
         let roles = Roles::default();
         let groups: Vec<Group> = (0u16..)
-            .zip(ModuleId::ALL.iter().filter_map(|&m| module_hue(m)))
+            .zip(ModuleId::ALL.iter().filter_map(|&m| m.spec().hue))
             .map(|(i, hue)| Group { kind: GroupKind::Status, start: 2 * i, end: 2 * i + 1, hue: Some(hue) })
             .collect();
         assert!(groups.len() >= 6, "the hued modules: {}", groups.len());
