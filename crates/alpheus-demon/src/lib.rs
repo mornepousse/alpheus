@@ -40,6 +40,7 @@ pub mod notify;
 pub mod notify_app;
 pub mod osd;
 pub mod osd_surface;
+pub mod outputs;
 pub mod painter;
 pub mod panel;
 pub mod panel_app;
