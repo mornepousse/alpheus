@@ -1,15 +1,37 @@
 use super::*;
 use crate::grid::GroupKind;
 
+/// Every variant with the row it must have. The `match` is exhaustive: a variant added to
+/// `ModuleId` stops this file compiling until it is listed here, and listed, its row must exist.
+macro_rules! rows {
+    ($($variant:ident => $index:expr),* $(,)?) => {
+        #[allow(dead_code)]
+        fn row_of(m: ModuleId) -> usize {
+            match m {
+                $(ModuleId::$variant => $index),*
+            }
+        }
+        const LISTED: &[(ModuleId, usize)] = &[$((ModuleId::$variant, $index)),*];
+    };
+}
+
+rows! {
+    Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Volume => 5, Network => 6,
+    Bluetooth => 7, Battery => 8, Resources => 9, Tray => 10, Notifications => 11, Osd => 12,
+    Quick => 13, Clock => 14, Power => 15,
+}
+
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
 #[test]
 fn one_row_per_module_in_variant_order() {
+    for &(m, i) in LISTED {
+        assert_eq!(m as usize, i, "{m:?}'s discriminant is not its row");
+        assert_eq!(MODULES.get(i).map(|r| r.id), Some(m), "{m:?} has no row at {i}");
+    }
+    assert_eq!(LISTED.len(), MODULES.len(), "a row for no variant, or a variant for no row");
     for (i, spec) in MODULES.iter().enumerate() {
         assert_eq!(spec.id as usize, i, "{} is not at its own index", spec.name);
-        assert_eq!(ModuleId::ALL[i], spec.id);
-        assert_eq!(spec.id.spec().name, spec.name);
     }
-    assert_eq!(ModuleId::Power as usize + 1, MODULES.len(), "the last variant ends the table");
 }
 
 #[test]

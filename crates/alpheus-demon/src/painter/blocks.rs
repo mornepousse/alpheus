@@ -8,7 +8,6 @@ use super::{Background, color};
 use crate::background::{CornerMask, MaskCache, cell_edge, premultiplied};
 use crate::config::ModuleId;
 use crate::grid::{Group, Style, Tint};
-
 use alpheus_commun::theme::contrast::ratio;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use alpheus_commun::theme::{Rgb, Roles};

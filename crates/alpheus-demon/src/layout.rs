@@ -11,10 +11,10 @@
 //! battery, the launcher button, and last the power button); workspaces, the
 //! clock and the notifications bell always stay.
 //!
-//! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one block, never
-//! across the free space. `flat` and `underline` keep the "│" separators; the block styles put
-//! one blank pad cell inside each end of a block, one blank cell between blocks (powerline's
-//! arrow cell) and two blank cells between the modules of one block. The grid records the
+//! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one
+//! block, never across the free space. `flat` and `underline` keep the "│" separators; the block
+//! styles put one blank pad cell inside each end of a block, one blank cell between blocks
+//! (powerline's arrow cell) and two blank cells between the modules of one block. The grid records the
 //! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
 
 use crate::compositor::{CompositorState, Workspace};
