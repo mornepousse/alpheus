@@ -170,3 +170,102 @@ fn modes_that_round_to_the_same_hz_are_listed_once_in_head_order() {
     let h = head("DP-1", vec![m(1920, 1080, 59_940, false), m(1280, 720, 60_000, false), m(1920, 1080, 60_000, true)], Some(0));
     assert_eq!(to_output(&h).modes, vec![want(1920, 1080, 60), want(1280, 720, 60)]);
 }
+
+#[test]
+fn an_enabled_head_with_an_unknown_mode_stays_enabled() {
+    let mut a = sixty();
+    a.current = None;
+    a.x = 40;
+    let b = head("DP-2", vec![m(2560, 1440, 144_000, true)], Some(0));
+    let t = targets(&[a.clone(), b.clone()], &[]).unwrap();
+    assert_eq!(t[0].state, Some((KEEP, 40, 0, 1.0, 0)));
+    assert!(is_noop(&[a.clone(), b], &t));
+    // Not "all off" when the only enabled head has no known mode.
+    assert!(targets(std::slice::from_ref(&a), &[]).is_ok());
+    // A stale index is the same as an unknown mode.
+    a.current = Some(99);
+    assert_eq!(targets(std::slice::from_ref(&a), &[]).unwrap()[0].state.unwrap().0, KEEP);
+}
+
+#[test]
+fn a_current_just_above_the_cap_is_still_lowered() {
+    let mut h = dock();
+    h.modes.push(m(1920, 1080, 120_400, false));
+    h.current = Some(4);
+    assert_eq!(over_cap(&h), Some(1));
+    // Alone of its size: any size, the preferred first.
+    let mut lone = dock();
+    lone.modes = vec![m(1920, 1080, 120_400, false), m(1280, 720, 60_000, true), m(1024, 768, 75_000, false)];
+    lone.current = Some(0);
+    assert_eq!(over_cap(&lone), Some(1));
+    // A stale index does not panic.
+    lone.current = Some(9);
+    assert_eq!(over_cap(&lone), None);
+}
+
+#[test]
+fn the_cap_is_exactly_120_000_mhz() {
+    assert_eq!(DISPLAYLINK_MAX_MHZ, 120_000);
+    let mut h = dock();
+    h.modes = vec![m(1920, 1080, 120_000, false), m(1920, 1080, 120_001, false)];
+    h.current = Some(0);
+    let out = to_output(&h);
+    assert_eq!(out.modes, vec![want(1920, 1080, 120)]);
+    h.current = Some(1);
+    assert_eq!(over_cap(&h), Some(0));
+    assert_eq!(
+        over_cap(&{
+            let mut x = h.clone();
+            x.current = Some(0);
+            x
+        }),
+        None
+    );
+}
+
+#[test]
+fn the_fallback_prefers_the_preferred_mode_over_the_larger_one() {
+    let mut h = dock();
+    h.modes = vec![m(3840, 2160, 144_000, false), m(2560, 1440, 60_000, false), m(1280, 720, 60_000, true)];
+    h.current = Some(0);
+    assert_eq!(resolve_mode(&h, want(3840, 2160, 144)), Some(2));
+    h.modes[2].preferred = false;
+    assert_eq!(resolve_mode(&h, want(3840, 2160, 144)), Some(1));
+}
+
+#[test]
+fn noop_fails_on_every_field() {
+    let mut h = sixty();
+    h.modes.push(m(1280, 720, 60_000, false));
+    h.x = 10;
+    h.y = 20;
+    h.transform = 1;
+    let base = (0, 10, 20, 1.0, 1);
+    let check = |state: Option<(usize, i32, i32, f64, u8)>| is_noop(std::slice::from_ref(&h), &[Target { name: "DP-1".into(), state }]);
+    assert!(check(Some(base)));
+    assert!(!check(Some((2, 10, 20, 1.0, 1))));
+    assert!(!check(Some((0, 10, 21, 1.0, 1))));
+    assert!(!check(Some((0, 10, 20, 1.0, 2))));
+    assert!(!check(None));
+    assert!(check(Some((0, 10, 20, 1.004, 1))));
+    assert!(!check(Some((0, 10, 20, 1.006, 1))));
+    let mut off = h.clone();
+    off.enabled = false;
+    off.current = None;
+    assert!(!is_noop(&[off.clone()], &[Target { name: "DP-1".into(), state: Some(base) }]));
+    assert!(is_noop(&[off], &[Target { name: "DP-1".into(), state: None }]));
+}
+
+#[test]
+fn odd_values_are_sanitised() {
+    assert_eq!(hz(i32::MAX), 2_147_484);
+    assert_eq!(hz(-5), 0);
+    assert_eq!((hz(59_499), hz(59_500), hz(59_940)), (59, 60, 60));
+    let mut h = sixty();
+    h.scale = f64::NAN;
+    h.transform = 9;
+    assert_eq!(targets(std::slice::from_ref(&h), &[]).unwrap()[0].state, Some((0, 0, 0, 1.0, 0)));
+    let mut bad = sixty();
+    bad.modes.push(m(-1920, 1080, 60_000, false));
+    assert_eq!(to_output(&bad).modes, vec![want(1920, 1080, 60)]);
+}

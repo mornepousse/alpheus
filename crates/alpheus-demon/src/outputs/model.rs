@@ -55,7 +55,28 @@ impl Head {
 
 /// Millihertz to whole Hz, rounded.
 pub fn hz(mhz: i32) -> u32 {
-    ((mhz + 500) / 1000).max(0) as u32
+    ((i64::from(mhz) + 500) / 1000).clamp(0, i64::from(u32::MAX)) as u32
+}
+
+/// Whether a mode has a usable size; negative sizes (garbage from the
+/// compositor) are ignored everywhere.
+fn sane(m: &HeadMode) -> bool {
+    m.width > 0 && m.height > 0
+}
+
+/// Highest mode under the DisplayLink cap: of `size` if any, else (any size)
+/// the preferred one, else the largest area, then the highest rate.
+fn lowered(head: &Head, size: (i32, i32)) -> Option<usize> {
+    let under = |(_, m): &(usize, &HeadMode)| sane(m) && m.mhz <= DISPLAYLINK_MAX_MHZ;
+    let sized = head.modes.iter().enumerate().filter(under).filter(|(_, m)| (m.width, m.height) == size);
+    if let Some((i, _)) = sized.max_by_key(|(_, m)| m.mhz) {
+        return Some(i);
+    }
+    let any = || head.modes.iter().enumerate().filter(under);
+    any()
+        .find(|(_, m)| m.preferred)
+        .or_else(|| any().max_by_key(|(_, m)| (i64::from(m.width) * i64::from(m.height), m.mhz)))
+        .map(|(i, _)| i)
 }
 
 fn to_mode(m: &HeadMode) -> Mode {
@@ -67,18 +88,9 @@ fn to_mode(m: &HeadMode) -> Mode {
 /// DisplayLink cap, the highest mode under it (of that size, else of any
 /// size, the preferred first).
 pub fn resolve_mode(head: &Head, want: Mode) -> Option<usize> {
-    let same_size = |m: &HeadMode| m.width as u32 == want.width && m.height as u32 == want.height;
+    let same_size = |m: &HeadMode| sane(m) && m.width as u32 == want.width && m.height as u32 == want.height;
     if head.displaylink && i64::from(want.refresh) * 1000 > i64::from(DISPLAYLINK_MAX_MHZ) {
-        let under = |(_, m): &(usize, &HeadMode)| m.mhz <= DISPLAYLINK_MAX_MHZ;
-        let sized = head.modes.iter().enumerate().filter(under).filter(|(_, m)| same_size(m));
-        if let Some((i, _)) = sized.max_by_key(|(_, m)| m.mhz) {
-            return Some(i);
-        }
-        let any = || head.modes.iter().enumerate().filter(under);
-        return any()
-            .find(|(_, m)| m.preferred)
-            .or_else(|| any().max_by_key(|(_, m)| (i64::from(m.width) * i64::from(m.height), m.mhz)))
-            .map(|(i, _)| i);
+        return lowered(head, (want.width as i32, want.height as i32));
     }
     let mut hits = head
         .modes
@@ -98,11 +110,12 @@ pub fn resolve_mode(head: &Head, want: Mode) -> Option<usize> {
 /// For a DisplayLink head whose current mode is over the cap: the mode to
 /// lower it to.
 pub fn over_cap(head: &Head) -> Option<usize> {
-    let cur = &head.modes[head.current?];
+    let cur = head.modes.get(head.current?)?;
     if !head.capped(cur) {
         return None;
     }
-    resolve_mode(head, Mode { width: cur.width as u32, height: cur.height as u32, refresh: hz(cur.mhz) })
+    // Straight to the cap branch: a rate of 120.0 to 120.5 Hz rounds to 120.
+    lowered(head, (cur.width, cur.height))
 }
 
 /// The head as the shared model: modes in head order, one per `Mode`, the
@@ -110,7 +123,7 @@ pub fn over_cap(head: &Head) -> Option<usize> {
 /// of them.
 pub fn to_output(head: &Head) -> Output {
     let mut modes: Vec<Mode> = Vec::new();
-    for m in head.modes.iter().filter(|m| !head.capped(m)) {
+    for m in head.modes.iter().filter(|m| sane(m) && !head.capped(m)) {
         let m = to_mode(m);
         if !modes.contains(&m) {
             modes.push(m);
@@ -133,12 +146,26 @@ pub fn to_output(head: &Head) -> Output {
     }
 }
 
-/// Desired state of one head: (mode index, x, y, scale, transform);
-/// `None` = disabled.
+/// Mode index of an enabled head whose mode is unknown: it is left as it is.
+/// The applier must not send a mode for it, and `is_noop` takes it as
+/// unchanged. Its other fields are the head's own, sanitised.
+pub const KEEP: usize = usize::MAX;
+
+/// Desired state of one head: (mode index or `KEEP`, x, y, scale,
+/// transform); `None` = disabled. A scale that is not finite and positive
+/// reads as 1.0 and a transform above 7 as 0.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     pub name: String,
     pub state: Option<(usize, i32, i32, f64, u8)>,
+}
+
+fn sane_scale(s: f64) -> f64 {
+    if s.is_finite() && s > 0.0 { s } else { 1.0 }
+}
+
+fn sane_transform(t: u8) -> u8 {
+    if t > 7 { 0 } else { t }
 }
 
 /// Every head's target: its step if any, else what it is now.
@@ -151,10 +178,13 @@ pub fn targets(heads: &[Head], steps: &[Step]) -> Result<Vec<Target>, String> {
         let state = match steps.iter().rev().find(|s| s.output == h.name) {
             Some(Step { active: Some(a), .. }) => {
                 let i = resolve_mode(h, a.mode).ok_or_else(|| format!("{}: no such mode", h.name))?;
-                Some((i, a.x, a.y, a.scale.as_f64(), a.transform))
+                Some((i, a.x, a.y, sane_scale(a.scale.as_f64()), sane_transform(a.transform)))
             }
             Some(_) => None,
-            None => h.current.filter(|_| h.enabled).map(|c| (c, h.x, h.y, h.scale, h.transform)),
+            None => h.enabled.then(|| {
+                let mode = h.current.filter(|&c| c < h.modes.len()).unwrap_or(KEEP);
+                (mode, h.x, h.y, sane_scale(h.scale), sane_transform(h.transform))
+            }),
         };
         out.push(Target { name: h.name.clone(), state });
     }
@@ -169,10 +199,14 @@ pub fn is_noop(heads: &[Head], targets: &[Target]) -> bool {
     heads.len() == targets.len()
         && heads.iter().all(|h| {
             let Some(t) = targets.iter().find(|t| t.name == h.name) else { return false };
-            match (&t.state, h.enabled, h.current) {
-                (None, false, _) => true,
-                (Some((i, x, y, s, tr)), true, Some(c)) => {
-                    *i == c && *x == h.x && *y == h.y && *tr == h.transform && (s - h.scale).abs() <= SCALE_TOLERANCE
+            match (&t.state, h.enabled) {
+                (None, false) => true,
+                (Some((i, x, y, s, tr)), true) => {
+                    (*i == KEEP || Some(*i) == h.current)
+                        && *x == h.x
+                        && *y == h.y
+                        && *tr == sane_transform(h.transform)
+                        && (s - sane_scale(h.scale)).abs() <= SCALE_TOLERANCE
                 }
                 _ => false,
             }
