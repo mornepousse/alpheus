@@ -3,7 +3,6 @@
 //! is returned as soon as it's read; a burst of slider changes is coalesced
 //! (only the last one counts).
 
-use super::action::Tab;
 use crate::backends::{AudioStatus, BResult, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
 use crate::displays::{Output, Plan};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -33,20 +32,6 @@ impl Domain {
         Domain::Audio,
         Domain::Displays,
     ];
-}
-
-/// Domains shown by a tab (the slowest last).
-pub fn domains(tab: Tab) -> &'static [Domain] {
-    match tab {
-        Tab::Home => {
-            &[Domain::Volume, Domain::Brightness, Domain::Dnd, Domain::KeepAwake, Domain::Profiles, Domain::Network, Domain::Bluetooth]
-        }
-        Tab::Sound => &[Domain::Audio],
-        Tab::Network => &[Domain::Network],
-        Tab::Bluetooth => &[Domain::Bluetooth],
-        Tab::Power | Tab::Appearance => &[],
-        Tab::Displays => &[Domain::Displays],
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +208,7 @@ pub fn spawn(b: Backends) -> (Sender<Request>, Receiver<Update>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::action::Tab;
     use crate::exec::fake::FakeExecutor;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -233,11 +219,11 @@ mod tests {
 
     #[test]
     fn domains_per_tab() {
-        assert_eq!(domains(Tab::Home).len(), 7);
-        assert_eq!(domains(Tab::Sound), &[Domain::Audio]);
-        assert_eq!(domains(Tab::Displays), &[Domain::Displays]);
-        assert!(domains(Tab::Power).is_empty());
-        assert!(domains(Tab::Appearance).is_empty());
+        assert_eq!(Tab::Home.domains().len(), 7);
+        assert_eq!(Tab::Sound.domains(), &[Domain::Audio]);
+        assert_eq!(Tab::Displays.domains(), &[Domain::Displays]);
+        assert!(Tab::Power.domains().is_empty());
+        assert!(Tab::Appearance.domains().is_empty());
     }
 
     #[test]
@@ -380,7 +366,7 @@ mod tests {
         let f = Arc::new(FakeExecutor::with_delay(Duration::from_millis(300)));
         let (tx, rx) = spawn(backends(&f));
         let t = Instant::now();
-        tx.send(Request::Refresh(domains(Tab::Home).to_vec())).unwrap();
+        tx.send(Request::Refresh(Tab::Home.domains().to_vec())).unwrap();
         assert!(t.elapsed() < Duration::from_millis(50));
         // The first domain arrives without waiting for the other six.
         assert!(matches!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), Update::Volume(Err(_))));
