@@ -10,7 +10,7 @@ fn later(ms: u64) -> Instant {
 fn startup_requests_home() {
     let mut a = app();
     assert_eq!(a.tab, Tab::Home);
-    assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
+    assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Home.domains().to_vec())]);
     assert_eq!(a.data.volume, Loadable::Loading);
 }
 
@@ -295,7 +295,7 @@ fn successful_action() {
     a.on_update(Update::Done(Op::SetWifi(false), Ok(())), Instant::now());
     assert_eq!(a.toasts[0].text, "Wi-Fi: off");
     assert_eq!(a.status.last.as_deref(), Some("Wi-Fi: off"));
-    assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
+    assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Home.domains().to_vec())]);
     a.on_update(Update::Done(Op::SetDefault(116), Ok(())), Instant::now());
     assert_eq!(a.toasts[1].text, "Output: CasqueBT");
     a.on_update(Update::Done(Op::SetDefault(113), Ok(())), Instant::now());
@@ -324,7 +324,7 @@ fn failed_action() {
 fn tick_refreshes_home_every_second() {
     let mut a = ready_app();
     a.on_tick(later(1100));
-    assert_eq!(a.take_requests(), vec![Request::Refresh(domains(Tab::Home).to_vec())]);
+    assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Home.domains().to_vec())]);
     a.on_tick(later(1500));
     assert!(a.take_requests().is_empty());
 }

@@ -138,7 +138,7 @@ fn default_keys(a: Action, dvorak: bool) -> Vec<&'static str> {
         Action::Search => vec!["/", "ctrl+f"],
         Action::NextTab => vec!["tab"],
         Action::PrevTab => vec!["shift+tab"],
-        Action::GoTab(t) => vec![["1", "2", "3", "4", "5", "6", "7"][t.index()]],
+        Action::GoTab(t) => super::tab::digit(t.index()).into_iter().collect(),
         Action::Left => vec!["left"],
         Action::Right => vec!["right"],
         Action::Up => vec!["up"],

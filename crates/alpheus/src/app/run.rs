@@ -345,7 +345,7 @@ mod tests {
         let dir = std::env::temp_dir().join("alpheus-tab-no-config");
         let mut a = build_app(&dir, Tab::Sound, None, Instant::now());
         assert_eq!(a.tab, Tab::Sound);
-        assert_eq!(a.take_requests(), vec![Request::Refresh(worker::domains(Tab::Sound).to_vec())]);
+        assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Sound.domains().to_vec())]);
     }
 
     /// Spec § 4: under Sway or niri the Displays tab calls nothing, opening on it included
@@ -359,7 +359,7 @@ mod tests {
             assert_eq!(a.take_requests(), vec![], "{name}");
         }
         let mut a = build_app(&dir, Tab::Displays, None, Instant::now());
-        assert_eq!(a.take_requests(), vec![Request::Refresh(worker::domains(Tab::Displays).to_vec())], "elsewhere: read");
+        assert_eq!(a.take_requests(), vec![Request::Refresh(Tab::Displays.domains().to_vec())], "elsewhere: read");
     }
 
     #[test]

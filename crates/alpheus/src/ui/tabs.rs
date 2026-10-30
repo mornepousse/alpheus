@@ -36,7 +36,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
         Vec::new()
     };
     let rows = rows(app, map.len());
-    let label_w: u16 = if app.tab == Tab::Sound { 34 } else { 20 };
+    let label_w = app.tab.spec().label_width;
     let focus_row = rows.iter().position(|r| matches!(r, Row::Item(i) if *i == app.focus)).unwrap_or(0);
     let h = usize::from(body.height);
     let offset = if focus_row >= h { focus_row + 1 - h } else { 0 };

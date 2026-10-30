@@ -10,6 +10,7 @@ mod input;
 pub mod keymap;
 mod mouse;
 pub mod run;
+pub mod tab;
 pub mod worker;
 
 use crate::backends::{AudioNode, AudioStatus, BResult, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume, brightness};
@@ -24,7 +25,7 @@ use keymap::Keymap;
 use ratatui::layout::Rect;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use worker::{Domain, Op, Request, Update, domains};
+use worker::{Domain, Op, Request, Update};
 
 /// Slider step (-/+ keys, scroll wheel).
 pub const STEP: i32 = 5;
@@ -32,16 +33,6 @@ pub const STEP: i32 = 5;
 pub const TOAST_TTL: Duration = Duration::from_secs(3);
 /// A failed domain is re-read at most once per this period.
 pub const FAILED_RETRY: Duration = Duration::from_secs(15);
-
-/// Refresh period of the visible tab: Home every second, Sound/Network/
-/// Bluetooth/Displays every 2 s, Power never (nothing to read).
-pub fn refresh_period(tab: Tab) -> Option<Duration> {
-    match tab {
-        Tab::Home => Some(Duration::from_secs(1)),
-        Tab::Sound | Tab::Network | Tab::Bluetooth | Tab::Displays => Some(Duration::from_secs(2)),
-        Tab::Power | Tab::Appearance => None,
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Loadable<T> {
@@ -439,14 +430,15 @@ impl App {
     pub fn on_tick(&mut self, now: Instant) {
         self.toasts.retain(|t| t.until > now);
         self.displays_tick(now);
-        let Some(period) = refresh_period(self.tab) else { return };
+        let Some(period) = self.tab.refresh() else { return };
         let due = now.duration_since(self.last_refresh) >= period;
         // A failed domain is not probed on the normal tick: a broken tool
         // (shell-ctl reports every one of its failures) must not be
         // relaunched every second. It's re-read at most every 15 s, and on
         // entering the tab or after an action.
         let ds: Vec<Domain> =
-            domains(self.tab)
+            self.tab
+                .domains()
                 .iter()
                 .copied()
                 .filter(|d| {
@@ -488,7 +480,7 @@ impl App {
     }
 
     fn refresh_tab(&mut self, now: Instant) {
-        self.push_refresh(domains(self.tab).to_vec(), now);
+        self.push_refresh(self.tab.domains().to_vec(), now);
         self.last_refresh = now;
     }
 

@@ -1,8 +1,11 @@
 //! Vocabulary of the application: tabs, keyboard intents (Action), business
 //! effects (Command), external tools, palette entries.
 
+use super::tab::{TABS, TabSpec};
+use super::worker::Domain;
 use super::{ToggleId, toggle_label};
 use crate::backends::PowerAction;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
@@ -16,22 +19,29 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [Tab::Home, Tab::Sound, Tab::Network, Tab::Bluetooth, Tab::Power, Tab::Displays, Tab::Appearance];
+    /// Every tab, in tab order (derived from `TABS`).
+    pub const ALL: [Tab; TABS.len()] = {
+        let mut all = [Tab::Home; TABS.len()];
+        let mut i = 0;
+        while i < TABS.len() {
+            all[i] = TABS[i].tab;
+            i += 1;
+        }
+        all
+    };
+
+    /// The tab's row in `TABS`.
+    pub fn spec(self) -> &'static TabSpec {
+        &TABS[self.index()]
+    }
 
     pub fn title(self) -> &'static str {
-        match self {
-            Tab::Home => "Home",
-            Tab::Sound => "Sound",
-            Tab::Network => "Network",
-            Tab::Bluetooth => "BT",
-            Tab::Power => "Power",
-            Tab::Displays => "Displays",
-            Tab::Appearance => "Theme",
-        }
+        self.spec().title
     }
 
     pub fn index(self) -> usize {
-        Tab::ALL.iter().position(|t| *t == self).unwrap_or(0)
+        // The enum is `repr`-ordered like `TABS` (checked by a test).
+        self as usize
     }
 
     pub fn next(self) -> Tab {
@@ -44,28 +54,28 @@ impl Tab {
 
     /// Tabs whose list is filtered with "/".
     pub fn searchable(self) -> bool {
-        matches!(self, Tab::Sound | Tab::Network | Tab::Bluetooth)
+        self.spec().searchable
     }
 
     /// Tab name on the command line (`alpheus --tab <name>`).
     pub fn slug(self) -> &'static str {
-        match self {
-            Tab::Home => "home",
-            Tab::Sound => "sound",
-            Tab::Network => "network",
-            Tab::Bluetooth => "bluetooth",
-            Tab::Power => "power",
-            Tab::Displays => "displays",
-            Tab::Appearance => "appearance",
-        }
+        self.spec().slug
+    }
+
+    /// Refresh period while the tab is visible.
+    pub fn refresh(self) -> Option<Duration> {
+        self.spec().refresh
+    }
+
+    /// Domains the tab shows.
+    pub fn domains(self) -> &'static [Domain] {
+        self.spec().domains
     }
 
     /// Tab named `name`, case- and accent-insensitive.
     pub fn from_slug(name: &str) -> Option<Tab> {
         let n = crate::fuzzy::fold_str(name.trim());
-        // "theme" is the tab's title; "appearance" stays its long name.
-        let n = if n == "theme" { "appearance".to_string() } else { n };
-        Tab::ALL.into_iter().find(|t| t.slug() == n)
+        TABS.iter().find(|s| s.slug == n || s.aliases.contains(&n.as_str())).map(|s| s.tab)
     }
 }
 
@@ -144,6 +154,8 @@ pub enum Action {
 }
 
 impl Action {
+    /// Every action. One `GoTab` per tab, right after `PrevTab`, in tab
+    /// order (a test checks the list against `Tab::ALL`).
     pub const ALL: [Action; 26] = [
         Action::Quit,
         Action::Back,
@@ -292,6 +304,14 @@ mod tests {
         assert_eq!(Action::GoTab(Tab::Appearance).name(), "tab_7");
         assert_eq!(Action::PageUp.name(), "page_up");
         assert_eq!(Action::from_name("fly"), None);
+    }
+
+    #[test]
+    fn one_go_tab_action_per_tab_in_tab_order() {
+        let go: Vec<Tab> = Action::ALL.iter().filter_map(|a| if let Action::GoTab(t) = a { Some(*t) } else { None }).collect();
+        assert_eq!(go, Tab::ALL, "Action::ALL needs exactly one GoTab per tab, in tab order");
+        let first = Action::ALL.iter().position(|a| *a == Action::PrevTab).unwrap() + 1;
+        assert!(Action::ALL[first..first + Tab::ALL.len()].iter().all(|a| matches!(a, Action::GoTab(_))), "GoTab entries follow PrevTab");
     }
 
     #[test]
