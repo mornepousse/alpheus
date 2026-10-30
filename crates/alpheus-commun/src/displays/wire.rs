@@ -11,8 +11,6 @@ use super::{Active, Mode, Output, Scale, Step};
 pub const MAX_OUTPUTS_BODY: usize = 64 * 1024;
 pub const MAX_OUTPUTS: usize = 16;
 pub const MAX_MODES: usize = 256;
-/// Longest text field, in characters, once cleaned.
-const MAX_TEXT: usize = 128;
 
 /// What the daemon says of its displays module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,9 +79,10 @@ pub struct Snapshot {
     pub trial: TrialState,
 }
 
-/// Control characters (tabs and newlines included) become spaces; at most `MAX_TEXT` characters.
+/// Control characters (tabs and newlines included) become spaces; the length is kept whole, so an
+/// identity read back from the wire still matches the daemon's.
 fn clean(s: &str) -> String {
-    s.chars().take(MAX_TEXT).map(|c| if c.is_control() { ' ' } else { c }).collect()
+    s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
 }
 
 fn active_field(a: &Option<Active>) -> String {
@@ -93,28 +92,55 @@ fn active_field(a: &Option<Active>) -> String {
     }
 }
 
+/// The snapshot as text. Past `MAX_OUTPUTS_BODY` it never drops an output while a mode can go
+/// instead: modes leave from the end of the longest list first. Only when no mode is left and the
+/// names alone are still too long do the last outputs go.
 pub fn encode_snapshot(s: &Snapshot) -> String {
-    let mut out = format!("status {}\n", s.status.word());
-    out.push_str(&match s.trial {
+    let mut head = format!("status {}\n", s.status.word());
+    head.push_str(&match s.trial {
         TrialState::None => "trial none\n".to_string(),
         TrialState::Open { seconds_left } => format!("trial open {seconds_left}\n"),
         TrialState::Ended(e) => format!("trial ended {}\n", e.word()),
     });
-    for o in s.outputs.iter().take(MAX_OUTPUTS) {
-        let modes: Vec<String> = o.modes.iter().take(MAX_MODES).map(Mode::to_string).collect();
-        let line = format!(
-            "output\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            clean(&o.name),
-            clean(&o.description),
-            clean(&o.compositor_description),
-            u8::from(o.displaylink),
-            active_field(&o.active),
-            modes.join(","),
-        );
-        if out.len() + line.len() > MAX_OUTPUTS_BODY {
-            break;
+    // Per output: the line without its modes, and the modes' text.
+    let mut rows: Vec<(String, Vec<String>)> = s
+        .outputs
+        .iter()
+        .take(MAX_OUTPUTS)
+        .map(|o| {
+            let fixed = format!(
+                "output\t{}\t{}\t{}\t{}\t{}\t",
+                clean(&o.name),
+                clean(&o.description),
+                clean(&o.compositor_description),
+                u8::from(o.displaylink),
+                active_field(&o.active),
+            );
+            (fixed, o.modes.iter().take(MAX_MODES).map(Mode::to_string).collect())
+        })
+        .collect();
+    // A line is its fixed part, its modes joined by ',' and '\n'.
+    let line_len = |(fixed, modes): &(String, Vec<String>)| fixed.len() + modes.iter().map(|m| m.len() + 1).sum::<usize>().max(1);
+    let mut total = head.len() + rows.iter().map(line_len).sum::<usize>();
+    while total > MAX_OUTPUTS_BODY {
+        let longest = rows.iter().enumerate().filter(|(_, r)| !r.1.is_empty()).max_by_key(|(_, r)| r.1.len()).map(|(i, _)| i);
+        match longest {
+            Some(i) => {
+                let gone = rows[i].1.pop().map_or(0, |m| m.len() + 1);
+                // The last mode has no ',' before it, but the line keeps its '\n'.
+                total -= if rows[i].1.is_empty() { gone - 1 } else { gone };
+            }
+            None => match rows.pop() {
+                Some(r) => total -= line_len(&r),
+                None => break,
+            },
         }
-        out.push_str(&line);
+    }
+    let mut out = head;
+    for (fixed, modes) in &rows {
+        out.push_str(fixed);
+        out.push_str(&modes.join(","));
+        out.push('\n');
     }
     out
 }
@@ -386,9 +412,25 @@ mod tests {
         let steps: Vec<Step> = (0..40).map(|i| Step { output: format!("DP-{i}"), active: None }).collect();
         assert_eq!(decode_desired(&encode_desired(&steps)).unwrap().len(), MAX_OUTPUTS);
         assert!(decode_desired(&"step\tA\toff\n".repeat(MAX_OUTPUTS + 1)).is_err());
-        // A long text field is cut.
+        // A long identity is kept whole.
         let mut s = sample();
-        s.outputs[0].description = "é".repeat(1000);
-        assert_eq!(decode_snapshot(&encode_snapshot(&s)).unwrap().outputs[0].description.chars().count(), MAX_TEXT);
+        s.outputs[0].description = "é".repeat(200);
+        s.outputs[0].compositor_description = "c".repeat(300);
+        s.outputs[0].name = "n".repeat(150);
+        assert_eq!(decode_snapshot(&encode_snapshot(&s)), Ok(s));
+        // Over the cap, modes go from the longest list, every output line stays.
+        let mut full = sample();
+        full.outputs = (0..MAX_OUTPUTS).map(|i| output(&format!("DP-{i}"), &"i".repeat(600), None, false)).collect();
+        for (i, o) in full.outputs.iter_mut().enumerate() {
+            o.compositor_description = "c".repeat(600);
+            o.modes = (0..MAX_MODES as u32).map(|k| mode(7680, 4320, 100 + k % 100 + i as u32 % 2)).collect();
+        }
+        let text = encode_snapshot(&full);
+        assert!(text.len() <= MAX_OUTPUTS_BODY && text.len() > MAX_OUTPUTS_BODY - 64, "{} bytes", text.len());
+        let back = decode_snapshot(&text).unwrap();
+        assert_eq!(back.outputs.len(), MAX_OUTPUTS, "no output dropped");
+        assert!(back.outputs.iter().all(|o| o.description.len() == 600 && !o.modes.is_empty() && o.modes.len() < MAX_MODES));
+        let counts: Vec<usize> = back.outputs.iter().map(|o| o.modes.len()).collect();
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1, "the longest lists lose first: {counts:?}");
     }
 }
