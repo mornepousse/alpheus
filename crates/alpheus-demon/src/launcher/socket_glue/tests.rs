@@ -2,6 +2,11 @@ use super::*;
 use alpheus_commun::launcher_ipc::DmenuFlags;
 
 #[test]
+fn the_displays_verbs_are_refused_as_off_for_now() {
+    assert_eq!(displays_verb(), Reply::Error("displays are off in bar.toml".into()));
+}
+
+#[test]
 fn a_socket_bind_failure_is_logged_and_the_bar_runs_without_a_launcher() {
     assert_eq!(launcher_socket_outcome(Ok::<_, &str>(5)), (Some(5), None));
     assert_eq!(

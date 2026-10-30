@@ -100,9 +100,17 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Dmenu { prompt, lines, flags }, _) => (Action::OpenScript { prompt, lines, flags }, None),
         // Not the launcher's: `watch_connection` answers them
         // before they could reach here. Answered all the same, never a panic.
-        (Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_), _) => {
-            (Action::Nothing, Some(Reply::Error("not a launcher request".into())))
-        }
+        (
+            Request::Dnd(_)
+            | Request::ClearNotifications
+            | Request::Osd(_)
+            | Request::Quick(_)
+            | Request::Outputs
+            | Request::OutputsTry(_)
+            | Request::OutputsKeep
+            | Request::OutputsRevert,
+            _,
+        ) => (Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
     }
 }
 
@@ -504,6 +512,10 @@ mod tests {
             (Request::ClearNotifications, Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::Osd(OsdVerb::Brightness), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::Quick(QuickVerb::Sound), Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::Outputs, None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::OutputsTry(String::new()), Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::OutputsKeep, None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::OutputsRevert, Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
         ];
         for (request, open, action, reply) in rows {
             let label = format!("{request:?} while {open:?}");

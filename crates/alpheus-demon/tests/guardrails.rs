@@ -675,6 +675,10 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
+            Request::Outputs => "outputs",
+            Request::OutputsTry(_) => "outputs-try",
+            Request::OutputsKeep => "outputs-keep",
+            Request::OutputsRevert => "outputs-revert",
         }
     }
     let all = [
@@ -685,8 +689,27 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
+        Request::Outputs,
+        Request::OutputsTry(String::new()),
+        Request::OutputsKeep,
+        Request::OutputsRevert,
     ];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd", "quick"]);
+    assert_eq!(
+        all.iter().map(verb).collect::<Vec<_>>(),
+        [
+            "toggle",
+            "close",
+            "dmenu",
+            "dnd",
+            "clear-notifications",
+            "osd",
+            "quick",
+            "outputs",
+            "outputs-try",
+            "outputs-keep",
+            "outputs-revert"
+        ]
+    );
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each

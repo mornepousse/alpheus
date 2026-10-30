@@ -5,8 +5,12 @@
 //! known, so a hostile or broken client can never make the daemon buffer
 //! more than `MAX_HEADER + MAX_PROMPT + MAX_DMENU_BYTES` bytes.
 
+use crate::displays::wire::MAX_OUTPUTS_BODY;
 use std::fmt;
+use std::io::{self, ErrorKind, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 pub const SOCKET_NAME: &str = "alpheus-launcher.sock";
 pub const MAGIC: &str = "alpheus-launcher/1";
@@ -18,6 +22,12 @@ pub const MAX_DMENU_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_LINES: usize = 100_000;
 /// `error` reply text, one line.
 pub const MAX_ERROR: usize = 512;
+
+/// How long a client waits for the answer to every request but dmenu (which waits for the person).
+pub const REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+/// `outputs-try` is answered once the compositor has answered the configuration (the daemon's
+/// watchdog is 5 s).
+pub const OUTPUTS_TRY_TIMEOUT: Duration = Duration::from_secs(7);
 
 pub fn socket_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join(SOCKET_NAME)
@@ -134,6 +144,45 @@ pub enum Request {
     /// The quick settings panel (quick spec § 1): toggled, at the volume row with `sound`. Answered
     /// Done, also with the module off (nothing opens).
     Quick(QuickVerb),
+    /// The Displays tab (displays protocol spec): the snapshot of the heads, answered
+    /// `Reply::Outputs`.
+    Outputs,
+    /// Tries a desired state (`displays::wire::encode_desired`): answered Done once applied, Error
+    /// when refused.
+    OutputsTry(String),
+    /// Keeps the trial that is open: answered Done.
+    OutputsKeep,
+    /// Reverts the trial that is open: answered Done.
+    OutputsRevert,
+}
+
+impl Request {
+    /// The word a daemon older than the displays verbs refuses this request by, if it is one of
+    /// them: the header decoder of such a daemon reports the verb as an unknown request.
+    pub fn displays_word(&self) -> Option<&'static str> {
+        match self {
+            Request::Outputs => Some("outputs"),
+            Request::OutputsTry(_) => Some("outputs-try"),
+            Request::OutputsKeep => Some("outputs-keep"),
+            Request::OutputsRevert => Some("outputs-revert"),
+            _ => None,
+        }
+    }
+
+    /// Whether `error` is what a daemon from before the displays verbs answers this request:
+    /// "the daemon is too old for displays".
+    pub fn refused_as_unknown_displays_verb(&self, error: &str) -> bool {
+        self.displays_word().is_some_and(|w| error == format!("malformed request: unknown request \"{w}\""))
+    }
+
+    /// How long a client waits for the reply: None for dmenu, which waits for the person.
+    pub fn reply_timeout(&self) -> Option<Duration> {
+        match self {
+            Request::Dmenu { .. } => None,
+            Request::OutputsTry(_) => Some(OUTPUTS_TRY_TIMEOUT),
+            _ => Some(REPLY_TIMEOUT),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,6 +199,8 @@ pub enum Reply {
     /// dmenu refused: another dmenu is already open.
     Busy,
     Error(String),
+    /// `outputs`: the encoded snapshot (`displays::wire::encode_snapshot`).
+    Outputs(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +226,8 @@ impl fmt::Display for IpcError {
 ///   "alpheus-launcher/1 dnd on|off|toggle\n" | "alpheus-launcher/1 clear-notifications\n"
 ///   "alpheus-launcher/1 osd brightness\n"
 ///   "alpheus-launcher/1 quick\n" | "alpheus-launcher/1 quick sound\n"
+///   "alpheus-launcher/1 outputs\n" | "alpheus-launcher/1 outputs-keep\n" | "alpheus-launcher/1 outputs-revert\n"
+///   "alpheus-launcher/1 outputs-try <body_len>\n" <body bytes>
 ///   "alpheus-launcher/1 dmenu <prompt_len|-> <body_len>[ index][ password][ visible <N>]\n" <prompt bytes> <body bytes>
 /// body = lines joined by '\n' (no trailing '\n'). The flag words (`DmenuFlags`) are optional,
 /// each at most once and in this order: a client that sends none is read as before, so the
@@ -198,6 +251,14 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
             Some(w) => format!("{MAGIC} quick {w}\n").into_bytes(),
             None => format!("{MAGIC} quick\n").into_bytes(),
         },
+        Request::Outputs => format!("{MAGIC} outputs\n").into_bytes(),
+        Request::OutputsKeep => format!("{MAGIC} outputs-keep\n").into_bytes(),
+        Request::OutputsRevert => format!("{MAGIC} outputs-revert\n").into_bytes(),
+        Request::OutputsTry(body) => {
+            let mut out = format!("{MAGIC} outputs-try {}\n", body.len()).into_bytes();
+            out.extend_from_slice(body.as_bytes());
+            out
+        }
         Request::Dmenu { prompt, lines, flags } => {
             let body = lines.join("\n");
             let prompt_len = prompt.as_ref().map_or_else(|| "-".to_string(), |p| p.len().to_string());
@@ -223,6 +284,10 @@ enum Header {
     ClearNotifications,
     Osd(OsdVerb),
     Quick(QuickVerb),
+    Outputs,
+    OutputsTry { body: usize },
+    OutputsKeep,
+    OutputsRevert,
 }
 
 /// Incremental decoder (the daemon reads without blocking).
@@ -287,6 +352,9 @@ impl RequestDecoder {
                     // Bounded by the header check; the pages are only touched as the body arrives.
                     self.buf.reserve_exact(prompt.unwrap_or(0) + body);
                 }
+                if let Header::OutputsTry { body } = h {
+                    self.buf.reserve_exact(body);
+                }
                 self.header = Some(h);
                 bytes = &bytes[end + 1..];
                 h
@@ -323,6 +391,18 @@ impl RequestDecoder {
                 let lines = body.split('\n').filter(|l| !l.is_empty()).map(str::to_string).collect();
                 Ok(Some(Request::Dmenu { prompt, lines, flags }))
             }
+            Header::OutputsTry { body } => {
+                if self.buf.len() + bytes.len() > body {
+                    return Err(IpcError::Malformed("bytes after the request".into()));
+                }
+                self.buf.extend_from_slice(bytes);
+                if self.buf.len() < body {
+                    return Ok(None);
+                }
+                self.done = true;
+                let data = std::mem::take(&mut self.buf);
+                Ok(Some(Request::OutputsTry(text(data, "outputs body")?)))
+            }
             bare => {
                 if !bytes.is_empty() {
                     return Err(IpcError::Malformed("bytes after the request".into()));
@@ -349,7 +429,10 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::ClearNotifications => Some(Request::ClearNotifications),
         Header::Osd(v) => Some(Request::Osd(v)),
         Header::Quick(v) => Some(Request::Quick(v)),
-        Header::Dmenu { .. } => None,
+        Header::Outputs => Some(Request::Outputs),
+        Header::OutputsKeep => Some(Request::OutputsKeep),
+        Header::OutputsRevert => Some(Request::OutputsRevert),
+        Header::Dmenu { .. } | Header::OutputsTry { .. } => None,
     }
 }
 
@@ -372,6 +455,16 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["quick"] => Ok(Header::Quick(QuickVerb::Top)),
         ["quick", word] => {
             QuickVerb::parse(word).map(Header::Quick).ok_or_else(|| IpcError::Malformed(format!("unknown quick word {:?}", cut(word))))
+        }
+        ["outputs"] => Ok(Header::Outputs),
+        ["outputs-keep"] => Ok(Header::OutputsKeep),
+        ["outputs-revert"] => Ok(Header::OutputsRevert),
+        ["outputs-try", len] => {
+            let body = number(len, "outputs body length")?;
+            if body > MAX_OUTPUTS_BODY {
+                return Err(IpcError::TooLarge("outputs body"));
+            }
+            Ok(Header::OutputsTry { body })
         }
         ["dmenu", prompt, body, flags @ ..] => {
             let prompt = if *prompt == "-" { None } else { Some(number(prompt, "prompt length")?) };
@@ -427,7 +520,7 @@ fn cut(s: &str) -> String {
     s.chars().take(64).collect()
 }
 
-/// "done\n" | "chosen <len>\n<bytes>" | "index <n>\n" | "index -\n" | "cancelled\n" | "busy\n" | "error <text>\n"
+/// "done\n" | "chosen <len>\n<bytes>" | "outputs <len>\n<bytes>" | "index <n>\n" | "index -\n" | "cancelled\n" | "busy\n" | "error <text>\n"
 pub fn encode_reply(r: &Reply) -> Vec<u8> {
     match r {
         Reply::Done => b"done\n".to_vec(),
@@ -441,6 +534,11 @@ pub fn encode_reply(r: &Reply) -> Vec<u8> {
         Reply::Index(Some(i)) => format!("index {i}\n").into_bytes(),
         Reply::Index(None) => b"index -\n".to_vec(),
         Reply::Error(t) => format!("error {}\n", one_line(t)).into_bytes(),
+        Reply::Outputs(s) => {
+            let mut out = format!("outputs {}\n", s.len()).into_bytes();
+            out.extend_from_slice(s.as_bytes());
+            out
+        }
     }
 }
 
@@ -484,6 +582,17 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, IpcError> {
             }
             alone(Reply::Index(Some(n)))
         }
+        Some(("outputs", len)) => {
+            let n = number(len, "outputs length")?;
+            if n > MAX_OUTPUTS_BODY {
+                return Err(IpcError::TooLarge("outputs body"));
+            }
+            match rest.len().cmp(&n) {
+                std::cmp::Ordering::Less => Err(IpcError::Truncated),
+                std::cmp::Ordering::Greater => Err(IpcError::Malformed("bytes after the reply".into())),
+                std::cmp::Ordering::Equal => Ok(Reply::Outputs(text(rest.to_vec(), "outputs body")?)),
+            }
+        }
         Some(("chosen", len)) => {
             let n = number(len, "chosen length")?;
             if n > MAX_DMENU_BYTES {
@@ -496,6 +605,89 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, IpcError> {
             }
         }
         Some((verb, _)) => Err(IpcError::Malformed(format!("unknown reply {:?}", cut(verb)))),
+    }
+}
+
+/// Connects, sends `request`, waits for the reply: one total deadline of `timeout`. A missing
+/// socket or a refused connection keeps its kind (`NotFound`, `ConnectionRefused`: the daemon is
+/// not running), a silent daemon is `TimedOut`, anything unreadable `InvalidData`; the message of
+/// each is the one the client prints.
+pub fn exchange(socket: &Path, request: &Request, timeout: Duration) -> io::Result<Reply> {
+    exchange_waiting(socket, request, Some(timeout))
+}
+
+/// `exchange` with the wait chosen by the caller: None waits for the person, as long as it takes
+/// (`Request::reply_timeout`: dmenu). The write side is never shut down after sending: the daemon
+/// reads a hang-up as "the client went away" and would close a waiting dmenu. The total deadline is
+/// not a per-read allowance that a daemon trickling one byte at a time could restart forever.
+pub fn exchange_waiting(socket: &Path, request: &Request, timeout: Option<Duration>) -> io::Result<Reply> {
+    let mut stream = UnixStream::connect(socket).map_err(|e| match e.kind() {
+        kind @ (ErrorKind::NotFound | ErrorKind::ConnectionRefused) => {
+            io::Error::new(kind, format!("alpheus-demon is not running (no launcher socket at {})", socket.display()))
+        }
+        kind => io::Error::new(kind, format!("cannot reach the launcher socket {}: {e}", socket.display())),
+    })?;
+    stream.set_write_timeout(timeout).map_err(|e| io::Error::new(e.kind(), format!("socket setup failed: {e}")))?;
+    let deadline = timeout.map(|t| Instant::now() + t);
+    let sent = stream.write_all(&encode_request(request));
+    let mut answer = Vec::new();
+    let read = read_reply(&mut stream, &mut answer, deadline);
+    let reply = answer_of(sent, read, &answer, timeout);
+    // The reply's bytes held the typed password: overwritten before they are freed.
+    if matches!(request, Request::Dmenu { flags, .. } if flags.password) {
+        zero(&mut answer);
+    }
+    reply
+}
+
+/// The reply in `answer`, or why there is none.
+fn answer_of(sent: io::Result<()>, read: io::Result<()>, answer: &[u8], timeout: Option<Duration>) -> io::Result<Reply> {
+    // A daemon that refuses early (request too large) answers before we finished sending.
+    if let Ok(reply) = decode_reply(answer) {
+        return Ok(reply);
+    }
+    if let Err(e) = sent {
+        return Err(io::Error::new(e.kind(), format!("cannot send the request: {e}")));
+    }
+    match read {
+        Err(e) if e.kind() == ErrorKind::TimedOut => {
+            let secs = timeout.map_or(0, |t| t.as_secs());
+            Err(io::Error::new(ErrorKind::TimedOut, format!("no answer from alpheus-demon within {secs} s")))
+        }
+        Err(e) => Err(io::Error::new(e.kind(), format!("cannot read the answer: {e}"))),
+        Ok(()) => {
+            decode_reply(answer).map_err(|e| io::Error::new(ErrorKind::InvalidData, format!("unexpected answer from alpheus-demon: {e}")))
+        }
+    }
+}
+
+/// Reads the reply into `answer`, bounded to `MAX_HEADER + MAX_DMENU_BYTES + 1` bytes (enough to
+/// tell an oversized or malformed answer apart without ever reading an unbounded stream). With a
+/// `deadline`, the whole loop is given up on as a single total budget: the remaining time is
+/// recomputed before every read.
+fn read_reply(stream: &mut UnixStream, answer: &mut Vec<u8>, deadline: Option<Instant>) -> io::Result<()> {
+    const BOUND: usize = MAX_HEADER + MAX_DMENU_BYTES + 1;
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        if answer.len() >= BOUND {
+            return Ok(());
+        }
+        if let Some(dl) = deadline {
+            let remaining = dl.checked_duration_since(Instant::now()).filter(|d| !d.is_zero());
+            let Some(remaining) = remaining else {
+                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
+            };
+            stream.set_read_timeout(Some(remaining))?;
+        }
+        let want = chunk.len().min(BOUND - answer.len());
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) => return Ok(()),
+            Ok(n) => answer.extend_from_slice(&chunk[..n]),
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 

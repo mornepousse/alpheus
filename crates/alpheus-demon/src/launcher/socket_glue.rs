@@ -197,6 +197,11 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 let reply = state.quick_verb(&request);
                 reply_guarded(conn, &reply);
             }
+            // The displays verbs: answered here, before the launcher's guard, as the quick
+            // panel's. Not wired to the output controller yet.
+            Progress::Ready(Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert) => {
+                reply_guarded(conn, &displays_verb());
+            }
             Progress::Ready(request) => {
                 // A dmenu request may have buffered up to 4 MiB: once it
                 // reached RELEASE_AFTER, give the pages back as soon as it
@@ -247,6 +252,11 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
         Ok(t) => deadline.set(Some(t)),
         Err(e) => log(&format!("launcher socket: deadline timer: {}", e.error)),
     }
+}
+
+/// What the daemon answers a displays verb: the module is not wired yet, which reads as off.
+fn displays_verb() -> Reply {
+    Reply::Error("displays are off in bar.toml".into())
 }
 
 #[cfg(test)]

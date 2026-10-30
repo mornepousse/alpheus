@@ -4,6 +4,7 @@
 
 pub mod geometry;
 pub mod profiles;
+pub mod wire;
 
 use std::fmt;
 
