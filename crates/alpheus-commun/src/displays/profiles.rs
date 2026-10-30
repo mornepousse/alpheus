@@ -245,21 +245,37 @@ pub fn from_outputs(name: &str, outs: &[Output]) -> Profile {
 }
 
 /// How a profile's screens map onto the plugged-in outputs.
-enum Assignment {
-    /// One entry per profile screen: the output index, `None` when absent.
-    Resolved(Vec<Option<usize>>),
-    /// A screen fits several outputs and its connector hint cannot choose.
-    Ambiguous,
+struct Assignment {
+    /// One entry per profile screen: the output index, `None` when absent
+    /// or when the screen is `tied`.
+    found: Vec<Option<usize>>,
+    /// The screen fits several outputs and its connector hint cannot choose
+    /// (identical screens): it is satisfied, but never guessed.
+    tied: Vec<bool>,
+}
+
+impl Assignment {
+    fn has_tie(&self) -> bool {
+        self.tied.contains(&true)
+    }
+
+    /// Every screen is plugged in (a tied one counts, its outputs being free).
+    fn complete(&self) -> bool {
+        self.found.iter().zip(&self.tied).all(|(f, t)| f.is_some() || *t)
+    }
 }
 
 /// Resolves each screen to an output by `Output::is`; when several outputs
 /// satisfy it (identical screens), the connector hint picks the one it
-/// names, otherwise the whole assignment is ambiguous (never a guess). An
-/// output already taken by an earlier screen is not offered again.
+/// names, otherwise the screen is tied (never a guess), and the others keep
+/// resolving. An output already taken is not offered again. Screens are
+/// taken in file order, so a tie can persist where a later hint would have
+/// settled it: conservative, never a swap.
 fn assign(p: &Profile, outs: &[Output]) -> Assignment {
     let mut taken = vec![false; outs.len()];
     let mut found = Vec::with_capacity(p.screens.len());
-    for s in &p.screens {
+    let mut tied = vec![false; p.screens.len()];
+    for (k, s) in p.screens.iter().enumerate() {
         let fits: Vec<usize> = (0..outs.len()).filter(|&i| !taken[i] && outs[i].is(&s.description)).collect();
         let pick = match fits.as_slice() {
             [] => None,
@@ -268,7 +284,10 @@ fn assign(p: &Profile, outs: &[Output]) -> Assignment {
                 let hinted: Vec<usize> = fits.iter().copied().filter(|&i| s.connector.as_deref() == Some(outs[i].name.as_str())).collect();
                 match hinted.as_slice() {
                     [one] => Some(*one),
-                    _ => return Assignment::Ambiguous,
+                    _ => {
+                        tied[k] = true;
+                        None
+                    }
                 }
             }
         };
@@ -277,7 +296,13 @@ fn assign(p: &Profile, outs: &[Output]) -> Assignment {
         }
         found.push(pick);
     }
-    Assignment::Resolved(found)
+    // A tied screen whose outputs the later screens took is not satisfiable.
+    for (k, s) in p.screens.iter().enumerate() {
+        if tied[k] && !(0..outs.len()).any(|i| !taken[i] && outs[i].is(&s.description)) {
+            tied[k] = false;
+        }
+    }
+    Assignment { found, tied }
 }
 
 /// Result of looking for the profile that fits the plugged-in screens.
@@ -296,10 +321,9 @@ pub fn match_profile<'p>(profiles: &'p [Profile], outs: &[Output]) -> ProfileMat
         if p.screens.len() != outs.len() {
             continue;
         }
-        match assign(p, outs) {
-            Assignment::Ambiguous => return ProfileMatch::Ambiguous,
-            Assignment::Resolved(found) if found.iter().all(Option::is_some) => return ProfileMatch::Matches(p),
-            Assignment::Resolved(_) => {}
+        let a = assign(p, outs);
+        if a.complete() {
+            return if a.has_tie() { ProfileMatch::Ambiguous } else { ProfileMatch::Matches(p) };
         }
     }
     ProfileMatch::NoMatch
@@ -321,11 +345,29 @@ pub struct ProfilePlan {
 /// leave no screen active, or if the geometry refuses.
 pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String> {
     let labels = short_names(outs);
-    let found = match assign(p, outs) {
-        Assignment::Resolved(f) => f,
-        Assignment::Ambiguous => return Err("two screens look the same".into()),
-    };
+    let assignment = assign(p, outs);
+    if assignment.has_tie() {
+        return Err("two screens look the same".into());
+    }
+    let found = assignment.found;
     let connected = |d: &str| outs.iter().any(|o| o.is(d));
+    // A reference names an output by a profile string: the identity, an
+    // older compositor description, even for an output outside the profile.
+    // Several outputs can share it (twins): only the single profile screen
+    // holding that string, through its hint, can say which.
+    let reference_to = |r: &str| -> Result<String, String> {
+        let fits: Vec<usize> = (0..outs.len()).filter(|&i| outs[i].is(r)).collect();
+        match fits.as_slice() {
+            [one] => Ok(format!("#{one}")),
+            _ => {
+                let named: Vec<usize> = (0..p.screens.len()).filter(|&k| p.screens[k].description == r).collect();
+                match named.as_slice() {
+                    [k] => found[*k].map(|i| format!("#{i}")).ok_or_else(|| "two screens look the same".to_string()),
+                    _ => Err("two screens look the same".to_string()),
+                }
+            }
+        }
+    };
     let absent: Vec<String> =
         p.screens.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|(s, _)| short_from_description(&s.description)).collect();
     // The profile screen standing for output `i`; its string is the
@@ -336,7 +378,8 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
     // Target setting of each enabled output: mode, scale, rotation.
     let mut settings: Vec<Option<(Mode, Scale, u8)>> = Vec::new();
     for (i, (o, label)) in outs.iter().zip(&labels).enumerate() {
-        let id = in_profile(i).map_or_else(|| o.description.clone(), |s| s.description.clone());
+        // Distinct per output, so twins never share an identifier.
+        let id = format!("#{i}");
         let off = Screen { id, label: label.clone(), enabled: false, size: (0, 0), placement: Placement::Origin };
         let (screen, setting) = match in_profile(i) {
             Some(s) if s.enabled => {
@@ -349,6 +392,8 @@ pub fn plan_profile(p: &Profile, outs: &[Output]) -> Result<ProfilePlan, String>
                         }
                         placement = Placement::Origin;
                         has_origin = true;
+                    } else if let Placement::Relative { relation, align, .. } = placement {
+                        placement = Placement::Relative { relation, reference: reference_to(reference)?, align };
                     }
                 }
                 let size = logical_size(mode, s.scale, s.transform);
@@ -698,5 +743,78 @@ placement = { x = 0, y = 0 }
         assert_eq!(p.screens[0].description, "Acme Panel S9", "identity, not the compositor description");
         assert_eq!(p.screens[0].connector.as_deref(), Some("DP-4"));
         assert_eq!(p.screens[1].connector.as_deref(), Some("DP-5"), "also for a disabled screen");
+    }
+
+    #[test]
+    fn a_tie_only_ends_the_search_for_a_profile_that_otherwise_fits() {
+        let twin = "Acme Panel";
+        let outs =
+            [on("DP-1", twin, 1920, 1080, 0, 0), on("DP-2", twin, 1920, 1080, 1920, 0), on("HDMI-1", "Acme TV", 1920, 1080, 3840, 0)];
+        let laptop = profile("A", vec![screen(twin, None, 0), screen(twin, None, 1920), screen(INTERNAL, None, 3840)]);
+        let tv = profile("B", vec![screen(twin, Some("DP-1"), 0), screen(twin, Some("DP-2"), 1920), screen("Acme TV", None, 3840)]);
+        assert!(matches!(match_profile(&[laptop, tv], &outs), ProfileMatch::Matches(p) if p.name == "B"));
+    }
+
+    #[test]
+    fn an_empty_key_matches_nothing() {
+        let o = off("DP-1", "");
+        assert!(!o.is(""));
+    }
+
+    #[test]
+    fn a_reference_to_a_twin_needs_a_single_hinted_screen() {
+        let twin = "Acme Panel";
+        let outs =
+            [on("DP-1", twin, 1920, 1080, 0, 0), on("DP-2", twin, 1920, 1080, 1920, 0), on("HDMI-1", "Acme TV", 1920, 1080, 3840, 0)];
+        let mut tv = screen("Acme TV", None, 0);
+        tv.placement = Placement::Relative { relation: Relation::RightOf, reference: twin.into(), align: Align::Start };
+        // Both twins are in the profile: the reference cannot say which.
+        let both = profile("Both", vec![screen(twin, Some("DP-1"), 0), screen(twin, Some("DP-2"), 1920), tv.clone()]);
+        assert_eq!(plan_profile(&both, &outs).unwrap_err(), "two screens look the same");
+        // Absolute twins still get distinct ids and their own places.
+        let abs = profile("Abs", vec![screen(twin, Some("DP-1"), 0), screen(twin, Some("DP-2"), 1920), screen("Acme TV", None, 3840)]);
+        assert!(plan_profile(&abs, &outs).is_ok());
+        // One twin in the profile, with its hint: the reference resolves to it.
+        let mut far = outs[0].clone();
+        far.active.as_mut().unwrap().x = 5000;
+        let outs2 = [far, outs[1].clone()];
+        let mut other = screen("Acme Other", None, 0);
+        other.placement = Placement::Relative { relation: Relation::RightOf, reference: twin.into(), align: Align::Start };
+        let one = profile("One", vec![screen(twin, Some("DP-2"), 0), other]);
+        let mut outs3 = outs2.to_vec();
+        outs3.push(on("HDMI-2", "Acme Other", 1920, 1080, 0, 0));
+        let plan = plan_profile(&one, &outs3).unwrap().plan;
+        let at = |n: &str| plan.steps.iter().find(|s| s.output == n).and_then(|s| s.active.as_ref()).map(|a| a.x);
+        assert_eq!(at("HDMI-2"), Some(1920), "right of DP-2 (the hinted twin)");
+    }
+
+    #[test]
+    fn an_old_profile_places_by_old_descriptions() {
+        let mut a = on("DP-1", "Acme Panel S1", 1920, 1080, 5, 5);
+        a.compositor_description = "Acme Panel".into();
+        let mut b = on("DP-2", "Acme Other S2", 1920, 1080, 9, 9);
+        b.compositor_description = "Acme Other".into();
+        let mut second = screen("Acme Other", None, 0);
+        second.placement = Placement::Relative { relation: Relation::RightOf, reference: "Acme Panel".into(), align: Align::Start };
+        let mut first = screen("Acme Panel", None, 0);
+        first.placement = Placement::Origin;
+        let p = profile("Old", vec![first, second]);
+        let plan = plan_profile(&p, &[a, b]).unwrap().plan;
+        let at = |n: &str| plan.steps.iter().find(|s| s.output == n).and_then(|s| s.active.as_ref()).map(|a| (a.x, a.y));
+        assert_eq!((at("DP-1"), at("DP-2")), (Some((0, 0)), Some((1920, 0))));
+    }
+
+    #[test]
+    fn a_reference_may_name_an_output_outside_the_profile_by_its_old_description() {
+        let mut a = on("DP-1", "Acme Panel S1", 1920, 1080, 0, 0);
+        a.compositor_description = "Acme Panel".into();
+        let mut out = on("DP-2", "Acme Out S2", 1920, 1080, 0, 0);
+        out.compositor_description = "Acme Out".into();
+        let mut inside = screen("Acme Panel S1", None, 0);
+        inside.placement = Placement::Relative { relation: Relation::RightOf, reference: "Acme Out".into(), align: Align::Start };
+        let p = profile("P", vec![inside]);
+        let plan = plan_profile(&p, &[a, out]).unwrap().plan;
+        let at = |n: &str| plan.steps.iter().find(|s| s.output == n).and_then(|s| s.active.as_ref()).map(|a| a.x);
+        assert_eq!(at("DP-1"), Some(1920), "right of the untouched out-of-profile screen at x = 0");
     }
 }

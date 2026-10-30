@@ -128,7 +128,7 @@ impl Output {
     /// Whether a profile's stored string names this output: its identity or
     /// the compositor's description.
     pub fn is(&self, key: &str) -> bool {
-        key == self.description || (!self.compositor_description.is_empty() && key == self.compositor_description)
+        !key.is_empty() && (key == self.description || key == self.compositor_description)
     }
 }
 
