@@ -226,7 +226,7 @@ impl Controller {
         }
         self.ended = None;
         let before = self.remember(self.current());
-        Ok(self.send(t, Purpose::Try { before }, 0, now))
+        Ok(self.send(t, Purpose::Try { before }, 0, now + WATCHDOG, now))
     }
 
     pub fn keep(&mut self, now: Instant) -> Vec<Action> {
@@ -343,7 +343,7 @@ impl Controller {
     }
 
     /// Sends `targets`, or succeeds at once when they change nothing.
-    fn send(&mut self, targets: Vec<Target>, purpose: Purpose, resends: u8, now: Instant) -> Vec<Action> {
+    fn send(&mut self, targets: Vec<Target>, purpose: Purpose, resends: u8, watchdog: Instant, now: Instant) -> Vec<Action> {
         // The last screen: never a configuration with none enabled.
         if targets.iter().all(|t| t.state.is_none()) {
             return Vec::new();
@@ -357,15 +357,7 @@ impl Controller {
             vec![Action::Send(self.generation, targets.clone())]
         };
         let targets = self.remember(targets);
-        self.flight = Some(Flight {
-            generation: self.generation,
-            purpose,
-            targets,
-            watchdog: now + WATCHDOG,
-            resends,
-            done_since: false,
-            resend: false,
-        });
+        self.flight = Some(Flight { generation: self.generation, purpose, targets, watchdog, resends, done_since: false, resend: false });
         if noop {
             return self.answer(Answer::Applied, true, now);
         }
@@ -382,7 +374,8 @@ impl Controller {
             self.flight = Some(f);
             return self.answer(Answer::Refused, true, now);
         }
-        self.send(targets, f.purpose, f.resends + 1, now)
+        // The first send's watchdog stands: a client's own wait does not restart.
+        self.send(targets, f.purpose, f.resends + 1, f.watchdog, now)
     }
 
     /// The compositor's answer (`succeeded` or a refusal), or ours for a
@@ -470,7 +463,7 @@ impl Controller {
     /// `before` on the heads still there; the others stay as they are.
     fn restore(&mut self, before: &[Kept], now: Instant) -> Vec<Action> {
         let targets = self.placed(before);
-        self.send(targets, Purpose::Revert, 0, now)
+        self.send(targets, Purpose::Revert, 0, now + WATCHDOG, now)
     }
 
     /// Once nothing is in flight and no trial is open: a changed identity
@@ -505,7 +498,7 @@ impl Controller {
                 ProfileMatch::Matches(p) => {
                     match plan_profile(p, &outs).ok().and_then(|pp| targets(&self.heads, &pp.plan.steps).ok()) {
                         // A refusal is remembered: `evaluated` holds this set.
-                        Some(t) => return self.send(t, Purpose::Auto, 0, now),
+                        Some(t) => return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now),
                         None => out.push(Action::LogProfile(p.name.clone())),
                     }
                 }
@@ -532,7 +525,7 @@ impl Controller {
             }
         }
         if !out.is_empty() {
-            out.extend(self.send(targets, Purpose::Cap, 0, now));
+            out.extend(self.send(targets, Purpose::Cap, 0, now + WATCHDOG, now));
         }
         out
     }

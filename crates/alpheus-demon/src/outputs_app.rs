@@ -6,7 +6,9 @@
 
 use crate::config::{DisplaysConfig, ModuleId};
 use crate::deadline::DeadlineTimer;
+use crate::launcher::host::guarded;
 use crate::launcher::socket::{Conn, Pending};
+use crate::launcher::socket_glue::reply_guarded;
 use crate::log::write as log;
 use crate::outputs::control::{Action, Controller, Event, ReplyTo};
 use crate::outputs::model::{Head, Target, to_output};
@@ -83,16 +85,21 @@ impl OutputsApp {
         self.wlr.abandon(self.controller.in_flight());
     }
 
-    /// One displays verb: answered now, or (a try) its client kept until the compositor answers.
-    fn verb(&mut self, request: &Request, conn: Conn, qh: &QueueHandle<App>, handle: Option<&LoopHandle<'static, App>>) {
+    /// One displays verb: its reply now, or None for a try whose client is kept until the
+    /// compositor answers.
+    fn verb(&mut self, request: &Request, qh: &QueueHandle<App>) -> Option<Reply> {
         let now = Instant::now();
-        let OutputsApp { controller, wlr, client, .. } = self;
-        match verb(controller, request, now, &mut |g, t| wlr.send(g, t, qh).is_ok()) {
-            Some(reply) => conn.reply(&reply),
-            None => client.wait(conn.into_pending(), handle),
-        }
+        let OutputsApp { controller, wlr, .. } = self;
+        let reply = verb(controller, request, now, &mut |g, t| wlr.send(g, t, qh).is_ok());
         self.wlr.abandon(self.controller.in_flight());
+        reply
     }
+}
+
+/// A displays verb behind the error boundary of the other verbs: a panic (a hostile body, a
+/// bug) answers `internal error` and never takes the bar down.
+fn verb_guarded(f: impl FnOnce() -> Option<Reply>) -> Option<Reply> {
+    guarded("displays verb", f).unwrap_or_else(|| Some(Reply::Error("internal error".into())))
 }
 
 /// Runs the controller's actions; `send` builds and sends one configuration (false: it could
@@ -187,6 +194,9 @@ impl TryClient {
     /// that cannot be made is not logged (only the spec's fixed lines are): a client gone is then
     /// noticed at its answer, the watchdog's at the latest.
     pub(crate) fn wait(&mut self, pending: Pending, handle: Option<&LoopHandle<'static, App>>) {
+        // One try at a time: the controller refuses a second, and this one is told so
+        // rather than dropped without a word.
+        self.answer(Reply::Error("another change is in progress".into()));
         self.unwatch();
         if let Some(handle) = handle
             && let Ok(fd) = pending.fd().try_clone_to_owned()
@@ -292,9 +302,14 @@ impl App {
     pub(crate) fn displays_verb(&mut self, request: &Request, conn: Conn) {
         let module_on = self.bar.config.modules.contains(&ModuleId::Displays);
         let (qh, handle) = (self.qh.clone(), self.loop_handle.clone());
-        match self.displays.as_mut() {
-            Some(d) => d.verb(request, conn, &qh, handle.as_ref()),
-            None => conn.reply(&unavailable(module_on)),
+        let reply = match self.displays.as_mut() {
+            Some(d) => verb_guarded(|| d.verb(request, &qh)),
+            None => Some(unavailable(module_on)),
+        };
+        match (reply, self.displays.as_mut()) {
+            (Some(reply), _) => reply_guarded(conn, &reply),
+            (None, Some(d)) => d.client.wait(conn.into_pending(), handle.as_ref()),
+            (None, None) => reply_guarded(conn, &unavailable(module_on)),
         }
         self.displays_sync();
     }
@@ -701,6 +716,30 @@ placement = { x = 0, y = 0 }
         assert_eq!(decode_reply(&bytes).unwrap(), Reply::Error("the compositor refused this configuration".into()));
         assert!(!client.waiting());
         assert!(!client.answer(Reply::Done), "answered once");
+    }
+
+    #[test]
+    fn a_second_waiting_client_answers_the_first_as_busy() {
+        let mut client = TryClient::default();
+        let (first, mut first_peer) = Pending::pair();
+        let (second, mut second_peer) = Pending::pair();
+        client.wait(first, None);
+        client.wait(second, None);
+        let mut bytes = Vec::new();
+        first_peer.read_to_end(&mut bytes).unwrap();
+        assert_eq!(decode_reply(&bytes).unwrap(), Reply::Error("another change is in progress".into()));
+        assert!(client.waiting(), "the newer one waits");
+        assert!(client.answer(Reply::Done));
+        let mut bytes = Vec::new();
+        second_peer.read_to_end(&mut bytes).unwrap();
+        assert_eq!(decode_reply(&bytes).unwrap(), Reply::Done);
+    }
+
+    #[test]
+    fn a_panicking_verb_answers_internal_error() {
+        assert_eq!(verb_guarded(|| panic!("boom")), Some(Reply::Error("internal error".into())));
+        assert_eq!(verb_guarded(|| Some(Reply::Done)), Some(Reply::Done));
+        assert_eq!(verb_guarded(|| None), None, "a try kept for the compositor stays kept");
     }
 
     #[test]

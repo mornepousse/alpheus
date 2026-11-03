@@ -377,6 +377,21 @@ fn cancelled_is_retried_three_times() {
 }
 
 #[test]
+fn a_resend_keeps_the_first_sends_watchdog() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0)], t0);
+    c.try_(&[move_to("DP-1", 10)], t0).unwrap();
+    assert!(c.on_event(cancelled(&c), t0 + ms(3000)).is_empty());
+    let a = c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(3100));
+    assert_eq!(sends(&a).len(), 1, "re-sent");
+    assert_eq!(c.next_deadline(), Some(t0 + WATCHDOG), "the first send's deadline, not the re-send's");
+    assert!(c.tick(&|| Vec::new(), t0 + WATCHDOG - ms(1)).is_empty());
+    let a = c.tick(&|| Vec::new(), t0 + WATCHDOG);
+    assert_eq!(logs(&a), vec!["displays: no answer from the compositor"]);
+    assert_eq!(replies(&a), vec![Ok(())], "possibly applied: the try is answered");
+}
+
+#[test]
 fn a_cancel_after_its_done_resends_at_once() {
     let t0 = Instant::now();
     let mut c = settled(vec![alpha(0)], t0);

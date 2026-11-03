@@ -99,7 +99,7 @@ fn guarded_progress(read: impl FnOnce() -> Progress) -> Progress {
 }
 
 /// A reply behind the error boundary (the encoder is launcher code too).
-fn reply_guarded(conn: Conn, r: &Reply) {
+pub(crate) fn reply_guarded(conn: Conn, r: &Reply) {
     let _ = guarded("socket reply", move || conn.reply(r));
 }
 

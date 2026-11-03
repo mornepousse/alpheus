@@ -5371,7 +5371,10 @@ fn a_try_reverts_at_the_deadline() {
 }
 
 /// Displays protocol spec, the TUI's errors: a mode the screen does not have is refused,
-/// `the compositor refused this configuration`, and nothing changes.
+/// `the compositor refused this configuration`, and nothing changes. The refusal comes from the
+/// controller (the screen has no such mode, so nothing is sent); a real compositor `failed` is
+/// covered by the controller's unit tests only: headless sway refuses nothing the controller
+/// lets through.
 #[test]
 #[ignore = "headless sway (nix develop)"]
 fn a_refused_configuration_answers_refused() {
@@ -5417,11 +5420,11 @@ fn hotplug_applies_the_matching_profile_once() {
     let s = snapshot_until(&sway, &d, placed);
     // An apply logs nothing (the spec's fixed lines): a second evaluation would show as the
     // loop waking each debounce, with no request on the socket meanwhile.
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(100));
     let before = d.main_thread_wakeups();
     thread::sleep(Duration::from_secs(2));
     let wakeups = d.main_thread_wakeups() - before;
-    assert!(wakeups <= 2, "{wakeups} wake-ups of the loop in 2 s once applied");
+    assert_eq!(wakeups, 0, "{wakeups} wake-ups of the loop in 2 s once applied");
     assert_eq!(outputs_snapshot(&sway, &d, 2..=2), s, "unchanged 2 s later");
     let lines: Vec<String> = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect();
     assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
