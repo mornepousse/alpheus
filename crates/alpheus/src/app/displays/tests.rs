@@ -77,7 +77,7 @@ fn locked_until_a_fresh_read() {
     let (mut a, plan) = applied(t0);
     // Read taken during the trial: it shows the tried settings.
     read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 15 }, t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     assert_eq!(sent(&mut a), vec![Op::RevertDisplays]);
     // The data is still that of the rejected trial: nothing should go out.
     a.toggle_output("HDMI-A-1", t0);
@@ -101,7 +101,7 @@ fn locked_until_a_fresh_read() {
 
     // Keep before any read: same lock.
     let (mut a, _) = applied(t0);
-    a.keep_answer(true, t0);
+    a.keep_answer(true);
     assert_eq!(a.displays.trial, None);
     assert_eq!(sent(&mut a), vec![Op::KeepDisplays]);
     a.toggle_output("HDMI-A-1", t0);
@@ -121,7 +121,7 @@ fn locked_until_a_fresh_read() {
 fn locked_while_the_daemon_is_busy() {
     let t0 = Instant::now();
     let (mut a, plan) = applied(t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
     a.take_requests();
     read(&mut a, applied_outputs(&plan), TrialState::Busy, t0);
@@ -155,7 +155,7 @@ fn locked_while_the_daemon_is_busy() {
 fn a_dropped_read_still_tells_the_end() {
     let t0 = Instant::now();
     let (mut a, plan) = applied(t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     assert_eq!(sent(&mut a), vec![Op::RevertDisplays]);
     // The revert is still pending: this read's outputs are dropped, its end is not.
     read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), t0);
@@ -172,7 +172,7 @@ fn cancel_while_applying() {
     let mut a = displays_tab();
     a.apply_display_profile("Bureau", t0);
     let plan = sent_trial(&mut a);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     assert_eq!(sent(&mut a), vec![Op::RevertDisplays], "Cancel while applying: the revert follows the try");
     assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
     a.on_update(Update::Done(Op::TryDisplays(plan), Ok(())), t0);
@@ -306,11 +306,11 @@ fn automatic_rollback_after_fifteen_seconds() {
 fn cancel_and_keep() {
     let t0 = Instant::now();
     let (mut a, _) = applied(t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     assert_eq!(sent(&mut a), vec![Op::RevertDisplays], "Cancel: reverted right away");
     assert!(!a.trial_open());
     let (mut a, _) = applied(t0);
-    a.keep_answer(true, t0);
+    a.keep_answer(true);
     assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
     assert_eq!(sent(&mut a), vec![Op::KeepDisplays]);
     assert!(!a.trial_open(), "kept: nothing to revert on close");
@@ -323,7 +323,7 @@ fn keep_waits_for_the_apply() {
     let mut a = displays_tab();
     a.apply_display_profile("Bureau", Instant::now());
     a.take_requests();
-    a.keep_answer(true, Instant::now());
+    a.keep_answer(true);
     assert!(a.displays.trial.is_some(), "not applied yet: Keep has no effect");
 }
 
@@ -353,7 +353,7 @@ fn an_ended_trial_closes_the_keep_box() {
     // The last end read is the one told: a cancelled trial whose revert the compositor refused.
     let t0 = Instant::now();
     let (mut a, plan) = applied(t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
     read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), t0);
     read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Refused), t0);
@@ -361,7 +361,7 @@ fn an_ended_trial_closes_the_keep_box() {
     assert_eq!(toasted(&a, "Displays: the compositor refused this configuration"), 1);
     // Kept: told at once, the daemon's report of it not again.
     let (mut a, plan) = applied(t0);
-    a.keep_answer(true, t0);
+    a.keep_answer(true);
     a.on_update(Update::Done(Op::KeepDisplays, Ok(())), t0);
     read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Kept), t0);
     assert_eq!(toasted(&a, "Displays: settings kept"), 1);
@@ -375,16 +375,41 @@ fn an_ended_trial_closes_the_keep_box() {
 fn revert_impossible_is_reported() {
     let t0 = Instant::now();
     let (mut a, _) = applied(t0);
-    a.keep_answer(false, t0);
+    a.keep_answer(false);
     a.take_requests();
     a.on_update(Update::Done(Op::RevertDisplays, Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
     assert_eq!(a.status.error.as_deref(), Some("Displays: rollback impossible: the alpheus daemon is not running"));
     let (mut a, _) = applied(t0);
-    a.keep_answer(true, t0);
+    a.keep_answer(true);
     a.take_requests();
     a.on_update(Update::Done(Op::KeepDisplays, Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
     assert_eq!(a.status.error.as_deref(), Some("Displays: keep failed: the alpheus daemon is not running"));
     assert_eq!(toasted(&a, "Displays: keep failed: the alpheus daemon is not running"), 1);
+}
+
+/// Final re-review M2: a keep or a revert the daemon answers with "no trial" (it restarted): one
+/// informational toast, nothing told before the answer.
+#[test]
+fn keep_or_revert_after_a_daemon_restart_says_so_once() {
+    use alpheus_commun::displays::wire::ERROR_NO_TRIAL;
+    let t0 = Instant::now();
+    for (keep, op) in [(true, Op::KeepDisplays), (false, Op::RevertDisplays)] {
+        let (mut a, _) = applied(t0);
+        a.toasts.clear();
+        a.keep_answer(keep);
+        assert!(a.toasts.is_empty(), "{op:?}: nothing told before the answer: {:?}", a.toasts);
+        a.on_update(Update::Done(op.clone(), Err(BackendError::Daemon(ERROR_NO_TRIAL.into()))), t0);
+        let told: Vec<_> = a.toasts.iter().map(|t| (t.text.as_str(), t.error)).collect();
+        assert_eq!(told, vec![("Displays: the daemon restarted; its trial ended", false)], "{op:?}");
+        assert_eq!(a.status.error, None, "{op:?}");
+        assert_eq!(a.status.last.as_deref(), Some("Displays: the daemon restarted; its trial ended"), "{op:?}");
+    }
+    // Kept: told once the daemon answered.
+    let (mut a, _) = applied(t0);
+    a.keep_answer(true);
+    assert_eq!(toasted(&a, "Displays: settings kept"), 0);
+    a.on_update(Update::Done(Op::KeepDisplays, Ok(())), t0);
+    assert_eq!(toasted(&a, "Displays: settings kept"), 1);
 }
 
 #[test]
@@ -873,7 +898,7 @@ fn no_trial_in_the_daemon_closes_the_keep_box() {
     let (mut a, _) = applied(t0);
     read(&mut a, machine(), TrialState::None, t0);
     assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
-    assert_eq!(toasted(&a, "Displays: nothing changed"), 1);
+    assert_eq!(toasted(&a, "Displays: the trial ended"), 1);
     assert!(no_do(&mut a), "nothing to revert");
     a.on_tick(later(t0, 20_000));
     assert!(no_do(&mut a), "no revert at the deadline either");
@@ -885,7 +910,7 @@ fn no_trial_in_the_daemon_closes_the_keep_box() {
     read(&mut a, machine(), TrialState::None, t0);
     a.on_update(Update::Done(Op::TryDisplays(plan.clone()), Ok(())), t0);
     assert!(a.displays.trial.is_some() && matches!(a.overlay, Overlay::Keep(_)));
-    assert_eq!(toasted(&a, "Displays: nothing changed"), 0);
+    assert_eq!(toasted(&a, "Displays: the trial ended"), 0);
     // Answered: the daemon's open trial keeps it too.
     read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 14 }, t0);
     assert!(a.displays.trial.is_some() && matches!(a.overlay, Overlay::Keep(_)));
@@ -922,5 +947,5 @@ fn no_trial_read_guards() {
     a.send_op(Op::RevertDisplays);
     a.displays_read(none(), t0);
     assert!(a.displays.trial.is_some(), "an action in flight");
-    assert_eq!(toasted(&a, "Displays: nothing changed"), 0);
+    assert_eq!(toasted(&a, "Displays: the trial ended"), 0);
 }

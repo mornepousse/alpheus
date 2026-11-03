@@ -15,6 +15,8 @@ pub const MAX_MODES: usize = 256;
 pub const ERROR_OFF: &str = "displays are off in bar.toml";
 /// A displays verb's error when the compositor has no output manager, or stopped it.
 pub const ERROR_NO_MANAGER: &str = "the compositor has no output management";
+/// A keep or a revert to a daemon that never took a try: it restarted, the trial is lost.
+pub const ERROR_NO_TRIAL: &str = "no trial in progress (the daemon restarted)";
 
 /// What the daemon says of its displays module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

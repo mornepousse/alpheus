@@ -290,7 +290,7 @@ mod tests {
             _ => None,
         });
         a.on_update(Update::Done(tried.expect("a try sent"), Ok(())), t0);
-        a.keep_answer(true, t0);
+        a.keep_answer(true);
         revert_on_close(&a, &fake);
         assert!(fake.calls().is_empty(), "no trial, or kept: {:?}", fake.calls());
     }
@@ -327,7 +327,7 @@ mod tests {
             _ => None,
         });
         a.on_update(Update::Done(tried.expect("a try sent"), Ok(())), t0);
-        a.keep_answer(true, t0);
+        a.keep_answer(true);
         let (tx, rx, log) = worker(Duration::from_millis(50));
         let fake = FakeDisplays::default();
         close(&mut a, &tx, &rx, &fake, CLOSE_WAIT);

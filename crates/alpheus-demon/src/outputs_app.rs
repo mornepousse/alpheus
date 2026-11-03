@@ -1,6 +1,7 @@
 //! The displays' wiring (displays spec § 1): the output manager bound by `outputs::wlr`, its
 //! events turned into the controller's, the controller's actions run, and one `DeadlineTimer`
-//! following `Controller::next_deadline` (the debounce, the watchdog or the trial; none at rest).
+//! following `Controller::next_deadline` (the debounce, the watchdog, the trial or the retry of a
+//! profile the 3-a-minute limit skipped; none at rest).
 //! DisplayLink heads are told from `[displays] drm_dir`, read once per new head name, never
 //! watched, nothing opened under /dev. Logs only the spec's fixed lines.
 
@@ -15,7 +16,7 @@ use crate::outputs::model::{Head, Target, to_output};
 use crate::outputs::wlr::Wlr;
 use crate::wayland::App;
 use alpheus_commun::displays::profiles::{self, Profile};
-use alpheus_commun::displays::wire::{ERROR_NO_MANAGER, ERROR_OFF, Snapshot, Status, decode_desired, encode_snapshot};
+use alpheus_commun::displays::wire::{ERROR_NO_MANAGER, ERROR_NO_TRIAL, ERROR_OFF, Snapshot, Status, decode_desired, encode_snapshot};
 use alpheus_commun::launcher_ipc::{Reply, Request};
 use alpheus_commun::paths;
 use alpheus_commun::theme::settings::MAX_FILE;
@@ -40,8 +41,6 @@ const LOG_INVALID_FILE: &str = "displays: displays.toml invalid";
 const MAX_LOGGED_NAME: usize = 64;
 /// A displays.toml parsed past this many bytes hands its parse's peak back to the system.
 const RELEASE_AFTER: usize = 8 * 1024;
-/// A keep or a revert to a daemon that never took a try: it restarted, the trial is lost.
-const NO_TRIAL: &str = "no trial in progress (the daemon restarted)";
 
 /// The output manager, its controller and their timer; on the app only with `displays` in
 /// `modules` and a compositor that has the manager.
@@ -162,7 +161,7 @@ pub(crate) fn verb(
             }
         }
         // Since the daemon started, no try: a trial it held before is lost (never "done").
-        Request::OutputsKeep | Request::OutputsRevert if !controller.trial_seen() => return Some(Reply::Error(NO_TRIAL.into())),
+        Request::OutputsKeep | Request::OutputsRevert if !controller.trial_seen() => return Some(Reply::Error(ERROR_NO_TRIAL.into())),
         Request::OutputsKeep => controller.keep(now),
         Request::OutputsRevert => controller.revert(now),
         _ => return Some(Reply::Error("not a displays verb".into())),

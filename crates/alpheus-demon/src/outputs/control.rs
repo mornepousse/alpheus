@@ -153,6 +153,9 @@ pub struct Controller {
     auto_applies: Vec<(Vec<String>, Instant)>,
     /// The skip lines logged in the last `AUTO_WINDOW` (identity set, when).
     auto_skips: Vec<(Vec<String>, Instant)>,
+    /// A profile skipped by the limit: evaluated again when the window of its set's oldest apply
+    /// ends, if the set is unchanged and nothing flies. Not `debounce` (a send clears that).
+    auto_retry: Option<Instant>,
 }
 
 impl Controller {
@@ -172,6 +175,7 @@ impl Controller {
             trial_seen: false,
             auto_applies: Vec::new(),
             auto_skips: Vec::new(),
+            auto_retry: None,
         }
     }
 
@@ -216,6 +220,7 @@ impl Controller {
                 self.heads = heads;
                 if self.identities() != ids {
                     self.changed = true;
+                    self.auto_retry = None;
                 }
                 self.stale = None;
                 if let Some(f) = &mut self.flight {
@@ -325,13 +330,20 @@ impl Controller {
         if self.debounce.take_if(|d| now >= *d).is_some() {
             out.extend(self.evaluate(profiles, now));
         }
+        if self.auto_retry.take_if(|r| now >= *r).is_some()
+            && !self.busy()
+            && !self.changed
+            && self.evaluated.as_ref() == Some(&self.identities())
+        {
+            out.extend(self.evaluate(profiles, now));
+        }
         out
     }
 
-    /// The earliest deadline armed: watchdog, the wait for a `done`, trial
-    /// or debounce.
+    /// The earliest deadline armed: watchdog, the wait for a `done`, trial,
+    /// debounce or the retry of a skipped profile.
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.flight.as_ref().map(|f| f.watchdog), self.stale, self.trial.as_ref().map(|t| t.deadline), self.debounce]
+        [self.flight.as_ref().map(|f| f.watchdog), self.stale, self.trial.as_ref().map(|t| t.deadline), self.debounce, self.auto_retry]
             .into_iter()
             .flatten()
             .min()
@@ -596,6 +608,7 @@ impl Controller {
         self.evaluated = Some(self.identities());
         self.changed = false;
         self.lowered.clear();
+        self.auto_retry = None;
         let mut out = Vec::new();
         if self.auto {
             let profiles = profiles();
@@ -609,6 +622,7 @@ impl Controller {
                             if self.skip_line_due(now) {
                                 out.push(Action::Log(LOG_TOO_MANY));
                             }
+                            self.auto_retry = self.oldest_apply().map(|at| at + AUTO_WINDOW);
                         }
                         // A refusal is remembered: `evaluated` holds this set.
                         Some(t) => {
@@ -636,6 +650,12 @@ impl Controller {
         self.auto_skips.retain(fresh);
         let ids = self.evaluated.as_ref();
         self.auto_applies.iter().filter(|(s, _)| Some(s) == ids).count() >= MAX_AUTO_APPLIES
+    }
+
+    /// When the evaluated set's oldest remembered apply was sent.
+    fn oldest_apply(&self) -> Option<Instant> {
+        let ids = self.evaluated.as_ref();
+        self.auto_applies.iter().filter(|(s, _)| Some(s) == ids).map(|(_, at)| *at).min()
     }
 
     /// The skip line, once per window for this set.

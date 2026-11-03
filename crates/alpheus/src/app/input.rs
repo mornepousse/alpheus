@@ -29,7 +29,7 @@ impl App {
             Overlay::Confirm(_) => return self.key_confirm(e),
             Overlay::Palette(_) => return self.key_palette(e, now),
             Overlay::Help => return self.key_help(e),
-            Overlay::Keep(_) => return self.key_keep(e, now),
+            Overlay::Keep(_) => return self.key_keep(e),
             Overlay::Panel(_) => return self.key_panel(e, now),
             Overlay::SaveProfile(_) => return self.key_save(e, now),
             Overlay::None => {}
@@ -72,14 +72,14 @@ impl App {
 
     /// "Keep these settings?": ← Cancel, → Keep, Esc cancels; "q" closes
     /// alpheus, and closing asks the daemon to revert the trial.
-    fn key_keep(&mut self, e: KeyEvent, now: Instant) {
+    fn key_keep(&mut self, e: KeyEvent) {
         let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
         match action {
             Some(Action::Quit) => self.should_quit = true,
-            Some(Action::Back) => self.keep_answer(false, now),
+            Some(Action::Back) => self.keep_answer(false),
             Some(Action::Activate) => {
                 let keep = matches!(self.overlay, Overlay::Keep(k) if k.keep_focused);
-                self.keep_answer(keep, now);
+                self.keep_answer(keep);
             }
             Some(a @ (Action::Left | Action::Right | Action::NextTab | Action::PrevTab)) => {
                 if let Overlay::Keep(k) = &mut self.overlay {

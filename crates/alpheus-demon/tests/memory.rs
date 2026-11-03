@@ -2466,12 +2466,18 @@ fn displays_pss_after_trials() {
 }
 
 /// A displays.toml placing the plugged head `Headless output <n>` (the headless backend's counter)
-/// left of HEADLESS-1 (described `first`), and HEADLESS-1 alone at the origin: the plug and the
-/// unplug each apply a profile. Two profiles, a real file's size: the file is read at each debounce
-/// end, so its parse's own heap peak stays out of what the cycles measure.
+/// left of HEADLESS-1 (described `first`), and HEADLESS-1 alone where that left it. The plug
+/// applies a profile, each time a real one: the plugged head is a new screen, so each plug is a
+/// new set of screens, never held back by the limit of 3 automatic applies per set per minute.
+/// The unplug brings back the same set, {HEADLESS-1}, every cycle (more than 3 a minute): its
+/// profile matches but is already shown, so it is evaluated, never sent nor counted, and nothing
+/// is logged. (A profile moving HEADLESS-1 back to the origin would be skipped from the 4th cycle
+/// of a minute, and retried only when the minute ends.) Two profiles, a real file's size: the
+/// file is read at each debounce end, so its parse's own heap peak stays out of what the cycles
+/// measure.
 fn hotplug_profiles(first: &str, n: usize) -> String {
     format!(
-        "[[profile]]\nname = \"Alone\"\n[[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+        "[[profile]]\nname = \"Alone\"\n[[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n\
          [[profile]]\nname = \"Desk\"\n\
          [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
          [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
@@ -2479,7 +2485,7 @@ fn hotplug_profiles(first: &str, n: usize) -> String {
 }
 
 /// The `n`th hotplug cycle: one screen plugged, its profile applied, then unplugged and HEADLESS-1
-/// back at the origin. The backend's counter, in the plugged head's description, runs two ahead
+/// left alone where the profile put it (the lone profile, already shown, sends nothing). The backend's counter, in the plugged head's description, runs two ahead
 /// (HEADLESS-1 is `Headless output 1`, the first plugged one `Headless output 3`).
 fn hotplug(sway: &Sway, d: &Daemon, first: &str, n: usize) {
     std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(first, n + 2)).unwrap();
@@ -2494,7 +2500,9 @@ fn hotplug(sway: &Sway, d: &Daemon, first: &str, n: usize) {
     let plugged = s.outputs.iter().find(|o| o.name != "HEADLESS-1").expect("the plugged head").name.clone();
     sway.command(&format!("output {plugged} unplug"));
     snapshot_until(sway, d, |s| {
-        s.outputs.len() == 1 && s.trial == TrialState::None && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
+        s.outputs.len() == 1
+            && s.trial == TrialState::None
+            && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (1920, 0))
     });
 }
 
@@ -2503,7 +2511,7 @@ const HOTPLUG_CYCLES: usize = 61;
 const HOTPLUG_STEP: usize = 20;
 
 /// Displays protocol spec § 7: PSS idle, after one hotplug cycle (a screen plugged, its profile
-/// applied, unplugged, the lone profile applied), then every 20 more, up to 60; then no wake-up at
+/// applied, unplugged, the lone profile evaluated, already shown), then every 20 more, up to 60; then no wake-up at
 /// rest after the last one (its debounce and watchdog inside the window). Bounded on what the
 /// daemon keeps, the shm pools left out: 20 cycles ≤ +128 KB, and the next 20 ≤ +32 KB (levelled
 /// off). The shm pools are printed only: a bar's pool grows to fit its largest buffer, and SCTK's
@@ -2553,6 +2561,9 @@ fn displays_pss_after_hotplug_cycles() {
     loop {
         away_from_the_minute(REST + Duration::from_secs(5));
         hotplug(&sway, &d, &first, HOTPLUG_CYCLES + extra);
+        // The unplug's evaluation (its 500 ms debounce) sends nothing, the lone profile being
+        // already shown, so no snapshot shows it: waited out before the rest window.
+        std::thread::sleep(Duration::from_secs(1));
         if fits_the_minute(REST) {
             break;
         }

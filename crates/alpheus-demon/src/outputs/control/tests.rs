@@ -1250,6 +1250,52 @@ fn a_profile_is_applied_at_most_three_times_a_minute() {
     assert_eq!(sends(&cycle(t0 + ms(60_000))).len(), 1);
 }
 
+/// Final re-review I1: a profile skipped by the limit is evaluated again once the window of its
+/// set's oldest apply ends (that evaluation counts as an apply); a set change drops the retry.
+#[test]
+fn a_skipped_profile_is_retried_when_the_window_ends() {
+    let t0 = Instant::now();
+    let src = Source::new(SIDE_BY_SIDE);
+    let profiles = || src.get();
+    // Four cycles of a dock reconnecting: three applies, the fourth skipped; the oldest apply's time.
+    let burst = |c: &mut Controller| {
+        let mut oldest = None;
+        for i in 0..4 {
+            let at = t0 + ms(2000 * i);
+            c.on_event(Event::Done(vec![alpha(1920)]), at);
+            c.tick(&profiles, at + DEBOUNCE);
+            c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), at + ms(1000));
+            let a = c.tick(&profiles, at + ms(1000) + DEBOUNCE);
+            oldest.get_or_insert(at + ms(1000) + DEBOUNCE);
+            if c.in_flight().is_some() {
+                c.on_event(failed(c), at + ms(1600));
+            }
+            assert_eq!(sends(&a).len(), usize::from(i < 3), "cycle {i}: {a:?}");
+        }
+        oldest.unwrap()
+    };
+    let mut c = Controller::new(true);
+    let retry = burst(&mut c) + Duration::from_secs(60);
+    assert_eq!(c.next_deadline(), Some(retry));
+    assert!(c.tick(&profiles, retry - ms(1)).is_empty());
+    let a = c.tick(&profiles, retry);
+    assert_eq!(sends(&a).len(), 1, "{a:?}");
+    c.on_event(failed(&c), retry + ms(10));
+    assert_eq!(c.next_deadline(), None, "retried once");
+    // The set changed before the window ended: no retry.
+    let mut c = Controller::new(true);
+    let retry = burst(&mut c) + Duration::from_secs(60);
+    c.on_event(Event::Done(vec![alpha(1920)]), t0 + ms(9000));
+    c.tick(&profiles, t0 + ms(9000) + DEBOUNCE);
+    assert_eq!(c.next_deadline(), None);
+    assert!(sends(&c.tick(&profiles, retry)).is_empty());
+    // A try flying when the window ends: no retry over it.
+    let mut c = Controller::new(true);
+    let retry = burst(&mut c) + Duration::from_secs(60);
+    c.try_(&[move_to("DP-1", 100)], retry - ms(100)).unwrap();
+    assert!(sends(&c.tick(&profiles, retry)).is_empty());
+}
+
 /// Final review A-M3: without displays.toml (or with no profile in it) nothing is logged.
 #[test]
 fn no_profile_at_all_logs_nothing() {

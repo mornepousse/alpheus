@@ -6,7 +6,7 @@
 
 use super::worker::{Domain, Op};
 use super::{App, Loadable, Overlay};
-use crate::backends::BResult;
+use crate::backends::{BResult, BackendError};
 use crate::displays::geometry::{Align, GeoError, Placement, Relation, Screen, deduce, logical_size, resolve};
 use crate::displays::profiles::{self, Profile, from_outputs, placed, plan_profile};
 use crate::displays::wire::{Snapshot, Status, TrialEnd, TrialState};
@@ -21,7 +21,7 @@ pub const KEEP_DELAY: Duration = Duration::from_secs(15);
 pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
 
 /// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
-use alpheus_commun::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_OFF as OFF};
+use alpheus_commun::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_NO_TRIAL as NO_TRIAL, ERROR_OFF as OFF};
 
 /// Tab state outside the data read.
 #[derive(Debug, Default)]
@@ -409,8 +409,13 @@ impl App {
         }
         self.displays.trial = None;
         self.close_keep();
-        self.status.last = Some("Displays: nothing changed".into());
-        self.toast("Displays: nothing changed".into(), false, now);
+        self.inform("Displays: the trial ended", now);
+    }
+
+    /// An informational line: the status bar and one toast.
+    fn inform(&mut self, msg: &str, now: Instant) {
+        self.status.last = Some(msg.into());
+        self.toast(msg.into(), false, now);
     }
 
     fn tell_end(&mut self, end: TrialEnd, now: Instant) {
@@ -451,6 +456,11 @@ impl App {
                 let msg = format!("Displays: {e}");
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
+            }
+            (Op::KeepDisplays, Ok(())) => self.inform("Displays: settings kept", now),
+            // The daemon restarted: the trial it held is gone, nothing to keep or roll back.
+            (Op::KeepDisplays | Op::RevertDisplays, Err(BackendError::Daemon(e))) if e == NO_TRIAL => {
+                self.inform("Displays: the daemon restarted; its trial ended", now);
             }
             (op, Err(e)) => {
                 let msg = match op {
@@ -523,13 +533,12 @@ impl App {
 
     /// Keep (only once applied) or Cancel (roll back, also while applying: the revert follows
     /// the try in the worker's queue).
-    pub(crate) fn keep_answer(&mut self, keep: bool, now: Instant) {
+    pub(crate) fn keep_answer(&mut self, keep: bool) {
         if keep {
             if self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some()) {
                 self.displays.trial = None;
                 self.close_keep();
-                self.status.last = Some("Displays: settings kept".into());
-                self.toast("Displays: settings kept".into(), false, now);
+                // "Settings kept" once the daemon answers (it may have restarted).
                 self.end_trial(true);
             }
         } else if self.displays.trial.take().is_some() {
