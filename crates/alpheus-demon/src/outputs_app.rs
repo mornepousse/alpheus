@@ -694,6 +694,13 @@ placement = { x = 0, y = 0 }
             assert!(c.on_event(Event::Done(vec![applied, moded("DP-2", 1920)]), now).is_empty());
             assert_eq!(verb(&mut c, &request, now, &mut sent.ok()), Some(Reply::Done), "{request:?}");
             assert_eq!(sent.0.len(), 1 + sends, "{request:?}: the state from before sent back, or nothing");
+            if sends == 1 {
+                // The end is reported once the compositor showed the state from before.
+                assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Busy);
+                let answer = c.on_event(Event::Succeeded(sent.0[1].0), now);
+                execute(&mut c, answer, now, &mut sent.ok());
+                c.on_event(Event::Done(vec![moded("DP-1", 0), moded("DP-2", 1920)]), now);
+            }
             assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Ended(end));
         }
         let now = Instant::now();

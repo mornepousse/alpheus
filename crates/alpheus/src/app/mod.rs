@@ -329,7 +329,12 @@ impl App {
     pub fn on_update(&mut self, u: Update, now: Instant) {
         if let Some(d) = update_domain(&u) {
             if self.is_pending(d) {
-                return; // stale read: an action on this domain is in progress
+                // Stale read: an action on this domain is in progress. A displays trial's end
+                // is reported once, so it is still told; only the outputs are dropped.
+                if let Update::Displays(Ok(s)) = u {
+                    self.trial_read(s.trial, now);
+                }
+                return;
             }
         }
         match u {

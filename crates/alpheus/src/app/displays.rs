@@ -43,9 +43,9 @@ pub struct DisplaysTab {
     pub told: Option<TrialEnd>,
     /// Profile requested from the palette: applied on the next read.
     pub queued_profile: Option<String>,
-    /// A plan has answered and no fresh read has arrived yet: the known
-    /// outputs may be those of a rejected trial, so nothing is planned on
-    /// top of them.
+    /// A plan has answered and no fresh read has arrived yet, or the last read said the daemon
+    /// is busy or reported an end: the known outputs may be those of a rejected trial, so
+    /// nothing is planned on top of them until a read with no trial (or an open one).
     pub awaiting_read: bool,
 }
 
@@ -338,8 +338,9 @@ impl App {
             return;
         };
         // Read that comes after any answer (reads in flight during a change are discarded): a
-        // reliable base going forward.
-        self.displays.awaiting_read = false;
+        // reliable base going forward, unless a configuration still flies or its end was just
+        // reported (the outputs may predate the compositor's `done`).
+        self.displays.awaiting_read = matches!(snapshot.trial, TrialState::Busy | TrialState::Ended(_));
         if let Overlay::Panel(p) = &self.overlay {
             if !outs.iter().any(|o| o.name == p.output) {
                 let msg = format!("Displays: {} unplugged, setting abandoned", p.output);
@@ -348,16 +349,22 @@ impl App {
             }
         }
         self.displays.profile_sel = self.displays.profile_sel.min(self.displays.profiles.len());
-        if let Some(name) = self.displays.queued_profile.take() {
-            self.apply_display_profile(&name, now);
+        // A queued profile waits for the unlock.
+        if !self.displays.awaiting_read {
+            if let Some(name) = self.displays.queued_profile.take() {
+                self.apply_display_profile(&name, now);
+            }
         }
     }
 
     /// The daemon's trial: its seconds left bring the countdown forward; an end closes the Keep
-    /// box and is told once.
-    fn trial_read(&mut self, state: TrialState, now: Instant) {
+    /// box and is told once. Also fed by a read dropped while an action is pending: an end is
+    /// reported once.
+    pub(super) fn trial_read(&mut self, state: TrialState, now: Instant) {
         match state {
             TrialState::None => self.displays.told = None,
+            // A configuration with the compositor: an end, if any, comes after it.
+            TrialState::Busy => {}
             TrialState::Open { seconds_left } => {
                 if let Some(t) = &mut self.displays.trial {
                     if let Some(deadline) = t.deadline {
@@ -423,6 +430,7 @@ impl App {
             (op, Err(e)) => {
                 let msg = match op {
                     Op::RevertDisplays => format!("Displays: rollback impossible: {e}"),
+                    Op::KeepDisplays => format!("Displays: keep failed: {e}"),
                     _ => format!("Displays: {e}"),
                 };
                 self.status.error = Some(msg.clone());

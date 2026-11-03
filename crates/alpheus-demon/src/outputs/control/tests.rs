@@ -519,10 +519,11 @@ fn no_answer_counts_as_possibly_applied_and_the_trial_still_reverts() {
     let sent = sends(&a);
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
-    assert_eq!(c.trial_state(t0 + ms(20_001)), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(t0 + ms(20_001)), TrialState::Busy);
     // The revert is answered and lands: nothing is held any more.
     c.on_event(ok(&c), t0 + ms(20_100));
     c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(20_110));
+    assert_eq!(c.trial_state(t0 + ms(20_110)), TrialState::Ended(TrialEnd::Reverted));
     assert_eq!(c.next_deadline(), None);
     assert!(c.try_(&[move_to("DP-1", 5)], t0 + ms(20_200)).is_ok());
 }
@@ -554,8 +555,11 @@ fn the_trial_reverts_at_the_deadline_without_the_tui() {
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
     assert_eq!(target(sent[0], "DP-2").state, Some((0, 1920, 0, 1.0, 0)));
-    assert_eq!(c.trial_state(deadline), TrialState::Ended(TrialEnd::Reverted));
-    assert_eq!(c.trial_state(deadline), TrialState::None);
+    assert_eq!(c.trial_state(deadline), TrialState::Busy);
+    c.on_event(ok(&c), deadline + ms(10));
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), deadline + ms(20));
+    assert_eq!(c.trial_state(deadline + ms(20)), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(deadline + ms(20)), TrialState::None);
 }
 
 #[test]
@@ -564,11 +568,12 @@ fn revert_restores_the_state_from_before() {
     let mut c = trial_open(t0);
     let a = c.revert(t0 + ms(1000));
     assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
-    assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Ended(TrialEnd::Reverted));
     // Without a trial, keep and revert do nothing.
     c.on_event(ok(&c), t0 + ms(1100));
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(1110));
     assert!(c.revert(t0 + ms(1200)).is_empty());
     assert!(c.keep(t0 + ms(1200)).is_empty());
+    assert_eq!(c.trial_state(t0 + ms(1200)), TrialState::Ended(TrialEnd::Reverted));
     assert_eq!(c.trial_state(t0 + ms(1200)), TrialState::None);
 }
 
@@ -616,7 +621,7 @@ fn a_lost_screen_reverts_the_rest() {
     assert_eq!(sent[0].len(), 2);
     assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
     assert_eq!(target(sent[0], "DP-3").state, Some((0, 5000, 0, 1.0, 0)));
-    assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Ended(TrialEnd::ScreenLost));
+    assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Busy, "the end waits for the restore");
     // The changed screens wait for the revert's answer: only its watchdog is armed.
     assert_eq!(c.next_deadline(), Some(t0 + ms(1000) + WATCHDOG));
 }
@@ -805,7 +810,7 @@ fn the_first_done_after_the_answer_is_what_was_applied() {
     // The safety net holds: it reverts at the deadline.
     let a = c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL);
     assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
-    assert_eq!(c.trial_state(t0 + ms(10) + TRIAL), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(t0 + ms(10) + TRIAL), TrialState::Busy, "until the restore lands");
 }
 
 #[test]
@@ -979,4 +984,109 @@ fn the_flight_is_known_until_answered_or_given_up() {
     c.try_(&[move_to("DP-1", 10)], t0).unwrap();
     c.on_event(failed(&c), t0 + ms(1));
     assert_eq!(c.in_flight(), None, "answered");
+}
+
+/// Fix round (stale snapshot): an end is reported only once the compositor showed it; until
+/// then the trial reads Busy, and the end is not consumed.
+#[test]
+fn an_end_waits_for_the_compositor() {
+    let t0 = Instant::now();
+    let mut c = trial_open(t0);
+    let a = c.revert(t0 + ms(1000));
+    assert_eq!(sends(&a).len(), 1);
+    assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Busy, "the restore flies");
+    assert_eq!(c.trial_state(t0 + ms(1001)), TrialState::Busy, "Busy does not consume the end");
+    c.on_event(ok(&c), t0 + ms(1100));
+    assert_eq!(c.trial_state(t0 + ms(1100)), TrialState::Busy, "answered, its done not yet read");
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(1110));
+    assert_eq!(c.trial_state(t0 + ms(1110)), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(t0 + ms(1110)), TrialState::None);
+
+    // The deadline's revert and a lost screen too.
+    let mut c = trial_open(t0);
+    c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL);
+    assert_eq!(c.trial_state(t0 + ms(10) + TRIAL), TrialState::Busy);
+    c.on_event(ok(&c), t0 + ms(20) + TRIAL);
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(30) + TRIAL);
+    assert_eq!(c.trial_state(t0 + ms(30) + TRIAL), TrialState::Ended(TrialEnd::Reverted));
+    let mut c = trial_open(t0);
+    c.on_event(Event::Done(vec![alpha(100)]), t0 + ms(1000));
+    assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Busy);
+    c.on_event(ok(&c), t0 + ms(1100));
+    c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(1110));
+    assert_eq!(c.trial_state(t0 + ms(1110)), TrialState::Ended(TrialEnd::ScreenLost));
+
+    // A profile applied on hotplug reads Busy too, with no end to report after it.
+    let src = Source::new(SIDE_BY_SIDE);
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(500), bravo(0)]), t0);
+    assert_eq!(sends(&c.tick(&|| src.get(), t0 + DEBOUNCE)).len(), 1);
+    assert_eq!(c.trial_state(t0 + DEBOUNCE), TrialState::Busy);
+    c.on_event(ok(&c), t0 + ms(600));
+    assert_eq!(c.trial_state(t0 + ms(600)), TrialState::Busy);
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(610));
+    assert_eq!(c.trial_state(t0 + ms(610)), TrialState::None);
+}
+
+/// Fix round (close during a try's flight): a revert asked while the try flies reverts as soon
+/// as its trial would open, even on heads that do not show the try yet.
+#[test]
+fn a_revert_asked_while_the_try_flies_reverts_once_it_lands() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    assert!(c.revert(t0 + ms(1)).is_empty(), "nothing to revert yet");
+    assert_eq!(c.trial_state(t0 + ms(1)), TrialState::Busy);
+    // Answered before its done: the heads still show the state from before.
+    let a = c.on_event(ok(&c), t0 + ms(10));
+    assert_eq!(replies(&a), vec![Ok(())]);
+    let sent = sends(&a);
+    assert_eq!(sent.len(), 1, "the state from before sent at once: {a:?}");
+    assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
+    assert_eq!(c.trial_state(t0 + ms(10)), TrialState::Busy);
+    c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(15));
+    c.on_event(ok(&c), t0 + ms(20));
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(25));
+    assert_eq!(c.trial_state(t0 + ms(25)), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(t0 + ms(25)), TrialState::None);
+    assert_eq!(c.next_deadline(), None, "no trial left open");
+
+    // Unanswered: the watchdog's possibly-applied trial is reverted at once.
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    c.revert(t0 + ms(1));
+    let a = c.tick(&|| Vec::new(), t0 + WATCHDOG);
+    assert_eq!(replies(&a), vec![Ok(())]);
+    assert_eq!(sends(&a).len(), 1, "{a:?}");
+    assert_eq!(c.next_deadline(), Some(t0 + WATCHDOG + WATCHDOG), "only the revert's watchdog");
+
+    // A refused try opens nothing and the revert asked goes with it.
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    c.revert(t0 + ms(1));
+    let a = c.on_event(failed(&c), t0 + ms(10));
+    assert!(sends(&a).is_empty());
+    assert_eq!(c.trial_state(t0 + ms(10)), TrialState::None);
+    assert_eq!(c.next_deadline(), None);
+}
+
+/// A keep asked while the try flies keeps once it lands; a revert asked as well wins.
+#[test]
+fn a_keep_asked_while_the_try_flies_keeps_once_it_lands() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    assert!(c.keep(t0 + ms(1)).is_empty());
+    let a = c.on_event(ok(&c), t0 + ms(10));
+    assert_eq!(replies(&a), vec![Ok(())]);
+    assert!(sends(&a).is_empty());
+    c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(15));
+    assert_eq!(c.trial_state(t0 + ms(15)), TrialState::Ended(TrialEnd::Kept));
+    assert_eq!(c.next_deadline(), None, "no trial deadline");
+
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    c.revert(t0 + ms(1));
+    c.keep(t0 + ms(2));
+    assert_eq!(sends(&c.on_event(ok(&c), t0 + ms(10))).len(), 1, "the revert wins");
 }

@@ -90,8 +90,12 @@ fn locked_until_a_fresh_read() {
     a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
     a.toggle_output("HDMI-A-1", t0);
     assert!(no_do(&mut a), "answered, but not read since");
-    // Fresh read: the restored state becomes the new base.
+    // The end read: told, but its outputs may still be the tried ones.
     read(&mut a, machine(), TrialState::Ended(TrialEnd::Reverted), t0);
+    a.toggle_output("HDMI-A-1", t0);
+    assert!(no_do(&mut a), "an end read is not yet a fresh base");
+    // Fresh read with no trial: the restored state becomes the new base.
+    read(&mut a, machine(), TrialState::None, t0);
     a.toggle_output("HDMI-A-1", t0);
     assert_eq!(sent_trial(&mut a).steps, vec![Step { output: "HDMI-A-1".into(), active: None }]);
 
@@ -105,6 +109,59 @@ fn locked_until_a_fresh_read() {
     assert_eq!(a.toasts.last().map(|t| t.text.as_str()), Some("Displays: waiting for a fresh read"));
     a.on_update(Update::Done(Op::KeepDisplays, Ok(())), t0);
     read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Kept), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::None, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    sent_trial(&mut a);
+}
+
+/// Fix round (stale snapshot): the daemon answers a revert once it is sent, and its snapshot
+/// shows the restored screens only after the compositor's `done`. Busy, then the end, keep the
+/// tab locked; only a read with no trial unlocks it.
+#[test]
+fn locked_while_the_daemon_is_busy() {
+    let t0 = Instant::now();
+    let (mut a, plan) = applied(t0);
+    a.keep_answer(false, t0);
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
+    a.take_requests();
+    read(&mut a, applied_outputs(&plan), TrialState::Busy, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    a.apply_display_profile("Laptop seul", t0);
+    assert!(no_do(&mut a), "Busy: the outputs may be the tried ones");
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1);
+    a.toggle_output("HDMI-A-1", t0);
+    assert!(no_do(&mut a), "the end read: still locked");
+    read(&mut a, machine(), TrialState::None, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    assert_eq!(sent_trial(&mut a).steps, vec![Step { output: "HDMI-A-1".into(), active: None }]);
+
+    // A change this tab never asked (a profile on hotplug): Busy locks too, and a queued
+    // profile waits for the unlock instead of being dropped.
+    let mut a = displays_tab();
+    read(&mut a, machine(), TrialState::Busy, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    assert!(no_do(&mut a));
+    a.displays.queued_profile = Some("Bureau".into());
+    read(&mut a, machine(), TrialState::Busy, t0);
+    assert!(no_do(&mut a));
+    read(&mut a, machine(), TrialState::None, t0);
+    assert!(matches!(sent(&mut a).as_slice(), [Op::TryDisplays(_)]), "the queued profile, once unlocked");
+}
+
+/// Fix round: a read dropped while a displays action is pending still tells its trial (the
+/// daemon reports an end once).
+#[test]
+fn a_dropped_read_still_tells_the_end() {
+    let t0 = Instant::now();
+    let (mut a, plan) = applied(t0);
+    a.keep_answer(false, t0);
+    assert_eq!(sent(&mut a), vec![Op::RevertDisplays]);
+    // The revert is still pending: this read's outputs are dropped, its end is not.
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1);
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
+    read(&mut a, machine(), TrialState::None, t0);
     a.toggle_output("HDMI-A-1", t0);
     sent_trial(&mut a);
 }
@@ -128,6 +185,7 @@ fn cancel_while_applying() {
     assert_eq!(toasted(&a, "Displays: previous settings restored"), 1, "told by the daemon's report");
     read(&mut a, machine(), TrialState::Ended(TrialEnd::Reverted), t0);
     assert_eq!(toasted(&a, "Displays: previous settings restored"), 1, "the same end: told once");
+    read(&mut a, machine(), TrialState::None, t0);
     a.toggle_output("HDMI-A-1", t0);
     sent_trial(&mut a);
 }
@@ -204,7 +262,7 @@ fn profile_applied_with_countdown() {
     assert_eq!(t.deadline, None, "no countdown before the answer");
     assert_eq!(t.summary[0], "Alpha: 1920×1080@60, scale 1.0, 0°, position 0, 0");
     assert_eq!(t.summary[2], "Laptop: off");
-    assert!(a.trial_open(), "closing while applying: reverted");
+    assert!(a.trial_open(), "closing while applying: the daemon reverts it once it lands");
     a.on_update(Update::Done(Op::TryDisplays(plan), Ok(())), t0);
     let t = a.displays.trial.clone().unwrap();
     assert_eq!((t.deadline, t.remaining), (Some(t0 + KEEP_DELAY), 15));
@@ -325,7 +383,8 @@ fn revert_impossible_is_reported() {
     a.keep_answer(true, t0);
     a.take_requests();
     a.on_update(Update::Done(Op::KeepDisplays, Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
-    assert_eq!(a.status.error.as_deref(), Some("Displays: the alpheus daemon is not running"));
+    assert_eq!(a.status.error.as_deref(), Some("Displays: keep failed: the alpheus daemon is not running"));
+    assert_eq!(toasted(&a, "Displays: keep failed: the alpheus daemon is not running"), 1);
 }
 
 #[test]

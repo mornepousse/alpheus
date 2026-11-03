@@ -63,8 +63,9 @@ enum Purpose {
     Auto,
     /// The DisplayLink 120 Hz rule.
     Cap,
-    /// A trial asked by the TUI; `before` is what to restore.
-    Try { before: Vec<Kept> },
+    /// A trial asked by the TUI; `before` is what to restore. `asked`: a keep or a revert
+    /// received while it flies, run as soon as its trial opens (a revert wins).
+    Try { before: Vec<Kept>, asked: Option<TrialEnd> },
     /// The end of a trial, restoring the state from before.
     Revert,
 }
@@ -226,10 +227,14 @@ impl Controller {
         }
         self.ended = None;
         let before = self.remember(self.current());
-        Ok(self.send(t, Purpose::Try { before }, 0, now + WATCHDOG, now))
+        Ok(self.send(t, Purpose::Try { before, asked: None }, 0, now + WATCHDOG, now))
     }
 
     pub fn keep(&mut self, now: Instant) -> Vec<Action> {
+        if let Some(asked) = self.asked() {
+            asked.get_or_insert(TrialEnd::Kept);
+            return Vec::new();
+        }
         if self.trial.take().is_none() {
             return Vec::new();
         }
@@ -238,9 +243,21 @@ impl Controller {
     }
 
     pub fn revert(&mut self, now: Instant) -> Vec<Action> {
+        if let Some(asked) = self.asked() {
+            *asked = Some(TrialEnd::Reverted);
+            return Vec::new();
+        }
         let Some(t) = self.trial.take() else { return Vec::new() };
         self.end(TrialEnd::Reverted);
-        self.restore(&t.before, now)
+        self.restore(&t, now)
+    }
+
+    /// What a try in flight will do once its trial opens.
+    fn asked(&mut self) -> Option<&mut Option<TrialEnd>> {
+        match &mut self.flight {
+            Some(Flight { purpose: Purpose::Try { asked, .. }, .. }) => Some(asked),
+            _ => None,
+        }
     }
 
     /// Runs whatever deadline passed. `profiles` is read only when the
@@ -250,16 +267,17 @@ impl Controller {
         if let Some(f) = self.flight.take_if(|f| now >= f.watchdog) {
             out.push(Action::Log(LOG_NO_ANSWER));
             // Possibly applied: a trial still opens, so it can be reverted.
-            if let Purpose::Try { before } = f.purpose {
+            if let Purpose::Try { before, asked } = f.purpose {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
                 out.extend(self.open_trial(before, f.targets, false, f.done_since, now));
+                out.extend(self.run_asked(asked, now));
             }
             out.extend(self.settle(false, true, now));
         }
         self.stale.take_if(|s| now >= *s);
         if let Some(t) = self.trial.take_if(|t| now >= t.deadline) {
             self.end(TrialEnd::Reverted);
-            out.extend(self.restore(&t.before, now));
+            out.extend(self.restore(&t, now));
         }
         if self.debounce.take_if(|d| now >= *d).is_some() {
             out.extend(self.evaluate(profiles, now));
@@ -276,11 +294,15 @@ impl Controller {
             .min()
     }
 
-    /// The trial for the TUI; an end is reported once.
+    /// The trial for the TUI; an end is reported once, after the compositor showed it: while a
+    /// configuration flies or the heads predate its answer, Busy (the end kept).
     pub fn trial_state(&mut self, now: Instant) -> TrialState {
         if let Some(t) = &self.trial {
             let left = t.deadline.saturating_duration_since(now).as_millis().div_ceil(1000);
             return TrialState::Open { seconds_left: left as u32 };
+        }
+        if self.flight.is_some() || self.stale.is_some() {
+            return TrialState::Busy;
         }
         self.ended.take().map_or(TrialState::None, TrialState::Ended)
     }
@@ -344,12 +366,25 @@ impl Controller {
 
     /// Sends `targets`, or succeeds at once when they change nothing.
     fn send(&mut self, targets: Vec<Target>, purpose: Purpose, resends: u8, watchdog: Instant, now: Instant) -> Vec<Action> {
+        self.send_as(targets, purpose, false, resends, watchdog, now)
+    }
+
+    /// `send`; with `force`, sent even when the heads already show it.
+    fn send_as(
+        &mut self,
+        targets: Vec<Target>,
+        purpose: Purpose,
+        force: bool,
+        resends: u8,
+        watchdog: Instant,
+        now: Instant,
+    ) -> Vec<Action> {
         // The last screen: never a configuration with none enabled.
         if targets.iter().all(|t| t.state.is_none()) {
             return Vec::new();
         }
         self.debounce = None;
-        let noop = is_noop(&self.heads, &targets);
+        let noop = !force && is_noop(&self.heads, &targets);
         let sent = if noop {
             Vec::new()
         } else {
@@ -393,9 +428,10 @@ impl Controller {
             self.stale = Some(now + WATCHDOG);
         }
         match f.purpose {
-            Purpose::Try { before } if ok => {
+            Purpose::Try { before, asked } if ok => {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
                 out.extend(self.open_trial(before, f.targets, true, f.done_since, now));
+                out.extend(self.run_asked(asked, now));
             }
             Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(reply))),
             // The screens did not come back: the TUI must not say they did.
@@ -422,6 +458,15 @@ impl Controller {
         out
     }
 
+    /// A keep or a revert asked while the try flew, on the trial it opened (unless a lost screen
+    /// already ended it).
+    fn run_asked(&mut self, asked: Option<TrialEnd>, now: Instant) -> Vec<Action> {
+        let Some(how) = asked else { return Vec::new() };
+        let Some(t) = self.trial.take() else { return Vec::new() };
+        self.end(how);
+        if how == TrialEnd::Reverted { self.restore(&t, now) } else { Vec::new() }
+    }
+
     /// The trial's own screens, as the heads now report them, become what
     /// was applied (a screen plugged meanwhile is not part of it).
     fn adopt(&mut self) {
@@ -444,7 +489,7 @@ impl Controller {
         if self.lost(&t.applied) {
             let t = self.trial.take().expect("checked above");
             self.end(TrialEnd::ScreenLost);
-            return self.restore(&t.before, now);
+            return self.restore(&t, now);
         }
         if !judge {
             return Vec::new();
@@ -460,10 +505,12 @@ impl Controller {
         Vec::new()
     }
 
-    /// `before` on the heads still there; the others stay as they are.
-    fn restore(&mut self, before: &[Kept], now: Instant) -> Vec<Action> {
-        let targets = self.placed(before);
-        self.send(targets, Purpose::Revert, 0, now + WATCHDOG, now)
+    /// The trial's state from before on the heads still there; the others stay as they are.
+    /// Sent even when the heads already show it while they may predate the trial's change (not
+    /// adopted yet): that change can still land.
+    fn restore(&mut self, t: &Trial, now: Instant) -> Vec<Action> {
+        let targets = self.placed(&t.before);
+        self.send_as(targets, Purpose::Revert, !t.adopted, 0, now + WATCHDOG, now)
     }
 
     /// Once nothing is in flight and no trial is open: a changed identity

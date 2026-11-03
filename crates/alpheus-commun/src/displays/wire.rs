@@ -65,6 +65,10 @@ impl TrialEnd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrialState {
     None,
+    /// A configuration is with the compositor (a try, a revert, a keep's cap, a profile), or its
+    /// answer came and the heads reported do not show it yet: the snapshot's outputs may be
+    /// stale, and an end waits for it.
+    Busy,
     /// A trial is waiting for Keep or Revert.
     Open {
         seconds_left: u32,
@@ -99,6 +103,7 @@ pub fn encode_snapshot(s: &Snapshot) -> String {
     let mut head = format!("status {}\n", s.status.word());
     head.push_str(&match s.trial {
         TrialState::None => "trial none\n".to_string(),
+        TrialState::Busy => "trial busy\n".to_string(),
         TrialState::Open { seconds_left } => format!("trial open {seconds_left}\n"),
         TrialState::Ended(e) => format!("trial ended {}\n", e.word()),
     });
@@ -221,6 +226,7 @@ pub fn decode_snapshot(body: &str) -> Result<Snapshot, String> {
     let status = status.strip_prefix("status ").and_then(|w| Status::ALL.into_iter().find(|s| s.word() == w)).ok_or("unknown status")?;
     let trial = match trial.strip_prefix("trial ").map(|t| t.split(' ').collect::<Vec<_>>()).as_deref() {
         Some(["none"]) => TrialState::None,
+        Some(["busy"]) => TrialState::Busy,
         Some(["open", s]) => TrialState::Open { seconds_left: number(s, "seconds left")? },
         Some(["ended", w]) => TrialState::Ended(TrialEnd::ALL.into_iter().find(|e| e.word() == *w).ok_or("unknown trial word")?),
         _ => return Err("unknown trial line".into()),
@@ -297,8 +303,9 @@ mod tests {
         let s = sample();
         assert_eq!(decode_snapshot(&encode_snapshot(&s)), Ok(s));
         for status in Status::ALL {
-            for trial in
-                [TrialState::None, TrialState::Open { seconds_left: 0 }].into_iter().chain(TrialEnd::ALL.into_iter().map(TrialState::Ended))
+            for trial in [TrialState::None, TrialState::Busy, TrialState::Open { seconds_left: 0 }]
+                .into_iter()
+                .chain(TrialEnd::ALL.into_iter().map(TrialState::Ended))
             {
                 let s = Snapshot { status, outputs: vec![], trial };
                 assert_eq!(decode_snapshot(&encode_snapshot(&s)), Ok(s.clone()), "{s:?}");
@@ -370,6 +377,8 @@ mod tests {
             "status ready\ntrial open x\n",
             "status ready\ntrial ended nobody\n",
             "status ready\ntrial later\n",
+            "status ready\ntrial busy 3\n",
+            "status ready\ntrial busy\tx\n",
         ] {
             assert!(decode_snapshot(bad).is_err(), "{bad:?}");
         }
