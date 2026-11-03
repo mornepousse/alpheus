@@ -99,8 +99,12 @@ struct Flight {
     targets: Vec<Kept>,
     watchdog: Instant,
     resends: u8,
-    /// A `done` arrived since it was sent.
+    /// A `done` arrived since it was sent (a `cancelled` after it is about those heads).
     done_since: bool,
+    /// Sent while the heads were stale: the next `done` reports the earlier change, not this one.
+    behind: bool,
+    /// A `done` that may report this configuration arrived (not the one it was behind).
+    own_done: bool,
     /// `cancelled`: send it again on the next `done`.
     resend: bool,
 }
@@ -186,6 +190,11 @@ impl Controller {
                         return self.resend(now);
                     }
                     f.done_since = true;
+                    if f.behind {
+                        f.behind = false;
+                    } else {
+                        f.own_done = true;
+                    }
                     return Vec::new();
                 }
                 let mut out = self.check_trial(true, now);
@@ -269,7 +278,7 @@ impl Controller {
             // Possibly applied: a trial still opens, so it can be reverted.
             if let Purpose::Try { before, asked } = f.purpose {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
-                out.extend(self.open_trial(before, f.targets, false, f.done_since, now));
+                out.extend(self.open_trial(before, f.targets, false, f.own_done, now));
                 out.extend(self.run_asked(asked, now));
             }
             out.extend(self.settle(false, true, now));
@@ -392,7 +401,18 @@ impl Controller {
             vec![Action::Send(self.generation, targets.clone())]
         };
         let targets = self.remember(targets);
-        self.flight = Some(Flight { generation: self.generation, purpose, targets, watchdog, resends, done_since: false, resend: false });
+        let behind = self.stale.is_some();
+        self.flight = Some(Flight {
+            generation: self.generation,
+            purpose,
+            targets,
+            watchdog,
+            resends,
+            done_since: false,
+            behind,
+            own_done: false,
+            resend: false,
+        });
         if noop {
             return self.answer(Answer::Applied, true, now);
         }
@@ -424,13 +444,13 @@ impl Controller {
         if !ok {
             out.push(Action::Log(log));
         }
-        if ok && !fresh && !f.done_since {
+        if ok && !fresh && !f.own_done {
             self.stale = Some(now + WATCHDOG);
         }
         match f.purpose {
             Purpose::Try { before, asked } if ok => {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
-                out.extend(self.open_trial(before, f.targets, true, f.done_since, now));
+                out.extend(self.open_trial(before, f.targets, true, f.own_done, now));
                 out.extend(self.run_asked(asked, now));
             }
             Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(reply))),
@@ -438,7 +458,7 @@ impl Controller {
             Purpose::Revert if !ok => self.ended = Some(TrialEnd::Refused),
             _ => {}
         }
-        out.extend(self.settle(false, fresh || f.done_since, now));
+        out.extend(self.settle(false, fresh || f.own_done, now));
         out
     }
 

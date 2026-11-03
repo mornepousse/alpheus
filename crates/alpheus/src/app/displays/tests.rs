@@ -812,3 +812,54 @@ fn placement_labels_text() {
 pub(crate) fn recorded_outputs() -> Vec<Output> {
     crate::displays::wire::decode_snapshot(include_str!("../../../tests/fixtures/outputs-snapshot.txt")).unwrap().outputs
 }
+
+/// Fix round 2: a profile picked from the palette while the daemon is busy waits at most 10 s;
+/// past that it is dropped with a word, on the next tick or read, never applied unasked later.
+#[test]
+fn a_queued_profile_expires() {
+    let t0 = Instant::now();
+    // Dropped on a tick.
+    let mut a = ready_app();
+    a.run_command(Command::ApplyDisplayProfile("Bureau".into()), t0);
+    a.take_requests();
+    read(&mut a, machine(), TrialState::Busy, t0);
+    a.on_tick(later(t0, 9_000));
+    assert!(a.displays.queued_profile.is_some(), "not yet");
+    a.on_tick(later(t0, 10_000));
+    assert_eq!(a.displays.queued_profile, None);
+    assert_eq!(toasted(&a, "Displays: profile not applied (busy)"), 1);
+    read(&mut a, machine(), TrialState::None, later(t0, 10_100));
+    assert!(no_do(&mut a), "never applied after it expired");
+    // Dropped on a read, with no tick in between.
+    let mut a = ready_app();
+    a.run_command(Command::ApplyDisplayProfile("Bureau".into()), t0);
+    a.take_requests();
+    read(&mut a, machine(), TrialState::Busy, t0);
+    read(&mut a, machine(), TrialState::None, later(t0, 11_000));
+    assert!(no_do(&mut a));
+    assert_eq!(toasted(&a, "Displays: profile not applied (busy)"), 1);
+    // Within the 10 s, applied once unlocked.
+    let mut a = ready_app();
+    a.run_command(Command::ApplyDisplayProfile("Bureau".into()), t0);
+    a.take_requests();
+    read(&mut a, machine(), TrialState::Busy, t0);
+    a.on_tick(later(t0, 5_000));
+    read(&mut a, machine(), TrialState::None, later(t0, 9_000));
+    assert!(matches!(sent(&mut a).as_slice(), [Op::TryDisplays(_)]));
+}
+
+/// Fix round 2: leaving the Displays tab drops a queued profile (no word: Mae moved on).
+#[test]
+fn leaving_the_tab_drops_a_queued_profile() {
+    let t0 = Instant::now();
+    let mut a = ready_app();
+    a.run_command(Command::ApplyDisplayProfile("Bureau".into()), t0);
+    read(&mut a, machine(), TrialState::Busy, t0);
+    a.go_tab(Tab::Home, t0);
+    assert_eq!(a.displays.queued_profile, None);
+    a.go_tab(Tab::Displays, t0);
+    a.take_requests();
+    read(&mut a, machine(), TrialState::None, t0);
+    assert!(no_do(&mut a), "not applied on coming back");
+    assert_eq!(toasted(&a, "Displays: profile not applied (busy)"), 0);
+}

@@ -16,6 +16,9 @@ use std::time::{Duration, Instant};
 
 /// Delay before the daemon rolls back to the previous settings.
 pub const KEEP_DELAY: Duration = Duration::from_secs(15);
+/// How long a profile picked from the palette waits for the tab to unlock: one watchdog and a
+/// refresh. Past that it is dropped, never applied unasked much later.
+pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
 
 /// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
 const OFF: &str = "displays are off in bar.toml";
@@ -41,8 +44,10 @@ pub struct DisplaysTab {
     /// The end last told (Keep, or a report): the same end reported again is not told twice, a
     /// different one is (a revert the compositor refused). None once the daemon reports no trial.
     pub told: Option<TrialEnd>,
-    /// Profile requested from the palette: applied on the next read.
+    /// Profile requested from the palette: applied on the next read that unlocks the tab.
     pub queued_profile: Option<String>,
+    /// When the queued profile is dropped (`QUEUED_PROFILE_WAIT` after it was asked).
+    pub queued_until: Option<Instant>,
     /// A plan has answered and no fresh read has arrived yet, or the last read said the daemon
     /// is busy or reported an end: the known outputs may be those of a rejected trial, so
     /// nothing is planned on top of them until a read with no trial (or an open one).
@@ -318,6 +323,7 @@ impl App {
     /// The daemon's snapshot (or why there is none): the outputs, how its trial stands, then a
     /// profile requested from the palette, the panel of an unplugged output.
     pub(crate) fn displays_read(&mut self, r: BResult<Snapshot>, now: Instant) {
+        self.queued_expiry(now);
         let snapshot = match r {
             Ok(s) => s,
             Err(e) => {
@@ -444,6 +450,7 @@ impl App {
     /// Countdown: remaining seconds; at the deadline the box closes and the daemon, which rolls
     /// back on its own, is asked to as well.
     pub(crate) fn displays_tick(&mut self, now: Instant) {
+        self.queued_expiry(now);
         let Some(t) = &mut self.displays.trial else { return };
         let Some(deadline) = t.deadline else { return };
         if now < deadline {
@@ -454,6 +461,15 @@ impl App {
         self.close_keep();
         self.toast("Displays: time's up, rolling back to the previous settings".into(), false, now);
         self.end_trial(false);
+    }
+
+    /// A queued profile that waited too long is dropped, with a word.
+    fn queued_expiry(&mut self, now: Instant) {
+        if self.displays.queued_profile.is_some() && self.displays.queued_until.is_some_and(|u| now >= u) {
+            self.displays.queued_profile = None;
+            self.displays.queued_until = None;
+            self.toast("Displays: profile not applied (busy)".into(), true, now);
+        }
     }
 
     // ── Trial ────────────────────────────────────────────────────────

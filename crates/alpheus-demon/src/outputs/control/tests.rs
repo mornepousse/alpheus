@@ -1090,3 +1090,48 @@ fn a_keep_asked_while_the_try_flies_keeps_once_it_lands() {
     c.keep(t0 + ms(2));
     assert_eq!(sends(&c.on_event(ok(&c), t0 + ms(10))).len(), 1, "the revert wins");
 }
+
+/// Fix round 2: a revert sent before the try's own `done` (the heads stale) is not answered by
+/// that `done`. A compositor that cancels the revert on it: re-sent with the state from before,
+/// then Busy until the restore's own `done`.
+#[test]
+fn a_revert_sent_on_stale_heads_cancelled_by_the_tries_done_is_resent() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    c.on_event(ok(&c), t0 + ms(10));
+    let g2 = sent_gen(&c.revert(t0 + ms(20)));
+    assert!(c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(30)).is_empty());
+    let a = c.on_event(Event::Cancelled(g2), t0 + ms(40));
+    let sent = sends(&a);
+    assert_eq!(sent.len(), 1, "re-sent at once: {a:?}");
+    assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
+    assert_eq!(c.trial_state(t0 + ms(40)), TrialState::Busy);
+    c.on_event(ok(&c), t0 + ms(50));
+    assert_eq!(c.trial_state(t0 + ms(50)), TrialState::Busy, "its own done not read yet");
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(60));
+    assert_eq!(c.trial_state(t0 + ms(60)), TrialState::Ended(TrialEnd::Reverted));
+    assert_eq!(c.trial_state(t0 + ms(60)), TrialState::None);
+}
+
+/// Fix round 2: a compositor that does not cancel. The try's `done`, arriving after the revert
+/// was sent, is not the revert's: its `succeeded` leaves the tab Busy until its own `done`, and
+/// the cap does not run on the tried layout.
+#[test]
+fn a_revert_sent_on_stale_heads_waits_for_its_own_done() {
+    let t0 = Instant::now();
+    let mut at_120 = dock(1920);
+    at_120.current = Some(1);
+    let mut c = settled(vec![alpha(0), at_120.clone()], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    c.on_event(ok(&c), t0 + ms(10));
+    assert_eq!(sends(&c.revert(t0 + ms(20))).len(), 1);
+    // The try's done: the compositor also put the dock back at 144 Hz.
+    assert!(c.on_event(Event::Done(vec![alpha(100), dock(1920)]), t0 + ms(30)).is_empty());
+    let a = c.on_event(ok(&c), t0 + ms(40));
+    assert!(sends(&a).is_empty(), "no cap on the tried layout: {a:?}");
+    assert_eq!(c.trial_state(t0 + ms(40)), TrialState::Busy);
+    // The revert's own done.
+    c.on_event(Event::Done(vec![alpha(0), at_120]), t0 + ms(50));
+    assert_eq!(c.trial_state(t0 + ms(50)), TrialState::Ended(TrialEnd::Reverted));
+}

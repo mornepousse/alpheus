@@ -471,6 +471,10 @@ impl App {
 
     pub fn go_tab(&mut self, t: Tab, now: Instant) {
         if t != self.tab {
+            if self.tab == Tab::Displays {
+                // Mae moved on: a profile still waiting is not applied behind her back.
+                self.displays.queued_profile = None;
+            }
             self.tab = t;
             self.focus = 0;
             self.search = Search::default();
@@ -565,6 +569,7 @@ impl App {
                 // Applied on the next read: never on a stale state.
                 self.go_tab(Tab::Displays, now);
                 self.displays.queued_profile = Some(name);
+                self.displays.queued_until = Some(now + displays::QUEUED_PROFILE_WAIT);
             }
         }
     }
