@@ -19,7 +19,7 @@ pub struct ProfileScreen {
     /// Required for an active screen.
     pub mode: Option<Mode>,
     pub scale: Scale,
-    /// Hyprland rotation 0-7 (as in `wm-set monitor`).
+    /// Rotation 0-7 (`wl_output_transform`).
     pub transform: u8,
     pub placement: Placement,
 }

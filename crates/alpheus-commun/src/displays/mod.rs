@@ -8,8 +8,7 @@ pub mod wire;
 
 use std::fmt;
 
-/// Display mode, refresh rate rounded to an integer as in `wm-set outputs`:
-/// "1920x1080@60".
+/// Display mode, refresh rate rounded to the hertz: "1920x1080@60".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Mode {
     pub width: u32,
@@ -39,7 +38,7 @@ impl Mode {
     }
 }
 
-/// Shape expected by `wm-set monitor`: "1920x1080@60".
+/// The wire's and the profiles' shape: "1920x1080@60".
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}x{}@{}", self.width, self.height, self.refresh)
@@ -70,15 +69,10 @@ impl Scale {
         f64::from(self.0) / 1000.0
     }
 
-    /// `wm-set` argument: "1", "1.25", "1.2".
-    pub fn arg(self) -> String {
-        let (whole, frac) = (self.0 / 1000, self.0 % 1000);
-        if frac == 0 { whole.to_string() } else { format!("{whole}.{frac:03}").trim_end_matches('0').to_string() }
-    }
-
-    /// Displayed label: "1.0", "1.25".
+    /// Displayed label: "1.0", "1.25", "1.2".
     pub fn label(self) -> String {
-        if self.0 % 1000 == 0 { format!("{}.0", self.0 / 1000) } else { self.arg() }
+        let (whole, frac) = (self.0 / 1000, self.0 % 1000);
+        if frac == 0 { format!("{whole}.0") } else { format!("{whole}.{frac:03}").trim_end_matches('0').to_string() }
     }
 
     /// Next step (`dir` > 0) or previous one, clamped to [0.5; 3]. A scale
@@ -113,7 +107,7 @@ pub struct Active {
     pub transform: u8,
 }
 
-/// An output known to the compositor (`wm-set outputs`).
+/// An output known to the compositor (the daemon's snapshot).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Output {
     /// Connector: "DVI-I-1" (can change from one plug-in to another).
@@ -170,53 +164,24 @@ pub fn active_count(outs: &[Output]) -> usize {
     outs.iter().filter(|o| o.active.is_some()).count()
 }
 
-/// A `wm-set` call: set (`Some`) or disable (`None`) an output.
+/// One output's change: set (`Some`) or disable (`None`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Step {
     pub output: String,
     pub active: Option<Active>,
 }
 
-impl Step {
-    /// `wm-set` arguments: `monitor <output> <mode> <XxY> <scale>
-    /// <rotation>` or `monitor-disable <output>`.
-    pub fn args(&self) -> Vec<String> {
-        match &self.active {
-            Some(a) => vec![
-                "monitor".into(),
-                self.output.clone(),
-                a.mode.to_string(),
-                format!("{}x{}", a.x, a.y),
-                a.scale.arg(),
-                a.transform.to_string(),
-            ],
-            None => vec!["monitor-disable".into(), self.output.clone()],
-        }
-    }
-}
-
-/// Sequence of `wm-set` calls, run in order: stopped at the first failure
-/// for a trial, best-effort for a rollback.
+/// A change of the outputs, described step by step (previews, the Keep
+/// box's list of what changes); the daemon applies it as one configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Plan {
     pub steps: Vec<Step>,
 }
 
-/// Activations first, deactivations after: never a moment without a screen.
+/// Activations first, deactivations after, as the Keep box lists them.
 fn ordered(mut steps: Vec<Step>) -> Plan {
     steps.sort_by_key(|s| s.active.is_none()); // stable sort: order is kept
     Plan { steps }
-}
-
-/// Rank of an output in a rollback: internal panel, ordinary, DisplayLink.
-fn undo_rank(o: &Output) -> u8 {
-    if o.name.starts_with("eDP") {
-        0
-    } else if o.displaylink {
-        2
-    } else {
-        1
-    }
 }
 
 impl Plan {
@@ -231,48 +196,9 @@ impl Plan {
         ordered(steps)
     }
 
-    /// Plan that gives back to the outputs touched by `plan` their setting from `before`.
-    /// Order (decision D2): activations first, deactivations after; within
-    /// each, the internal panel (eDP-*), then the ordinary outputs, then
-    /// the DisplayLink ones — the safest output is turned back on first.
-    pub fn undo(before: &[Output], plan: &Plan) -> Plan {
-        let mut outs: Vec<&Output> = plan.steps.iter().filter_map(|s| before.iter().find(|o| o.name == s.output)).collect();
-        outs.sort_by_key(|o| (o.active.is_none(), undo_rank(o))); // stable sort
-        Plan { steps: outs.into_iter().map(|o| Step { output: o.name.clone(), active: o.active.clone() }).collect() }
-    }
-
     pub fn touches(&self, output: &str) -> bool {
         self.steps.iter().any(|s| s.output == output)
     }
-
-    /// This plan's steps whose output is still present in `now`, in the same order.
-    pub fn restricted_to(&self, now: &[Output]) -> Plan {
-        let steps = self.steps.iter().filter(|s| now.iter().any(|o| o.name == s.output)).cloned().collect();
-        Plan { steps }
-    }
-}
-
-/// Was a screen lost during a trial? Yes if an output touched by the plan
-/// has disappeared, or if no output is active any more (decision D1): a
-/// rollback is then needed for whatever remains.
-pub fn screen_lost(plan: &Plan, now: &[Output]) -> bool {
-    active_count(now) == 0 || plan.steps.iter().any(|s| !now.iter().any(|o| o.name == s.output))
-}
-
-/// Did the screens change outside alpheus during a trial? Yes if an output
-/// appeared or disappeared (dock), or if an output the plan does not touch
-/// changed setting (monitor-toggle…). Touched outputs do not count:
-/// Hyprland can set them slightly differently from what was asked.
-pub fn changed_elsewhere(before: &[Output], plan: &Plan, now: &[Output]) -> bool {
-    let names = |v: &[Output]| {
-        let mut n: Vec<String> = v.iter().map(|o| o.name.clone()).collect();
-        n.sort();
-        n
-    };
-    if names(before) != names(now) {
-        return true;
-    }
-    now.iter().filter(|o| !plan.touches(&o.name)).any(|o| before.iter().any(|b| b.name == o.name && b.active != o.active))
 }
 
 /// Test helpers, shared with the TUI's tests (`testing` feature, enabled
@@ -340,7 +266,7 @@ mod tests {
         assert_eq!(Mode::parse("0x0@0"), None, "disabled output");
         assert_eq!(Mode::parse("1280x720@0"), Some(mode(1280, 720, 0)), "a refresh the compositor does not know");
         assert_eq!(Mode::parse("1920x1080"), None);
-        assert_eq!(Mode::parse("1920x1080@59.93"), None, "already rounded by wm-set");
+        assert_eq!(Mode::parse("1920x1080@59.93"), None, "already rounded to the hertz");
         assert_eq!(mode(1920, 1080, 60).to_string(), "1920x1080@60");
         assert_eq!(mode(1920, 1080, 60).label(), "1920×1080@60");
         assert_eq!(mode(1280, 720, 0).to_string(), "1280x720@0", "the wire keeps the unknown refresh");
@@ -353,9 +279,8 @@ mod tests {
         assert_eq!(Scale::from_f64(1.333333), Some(Scale(1333)));
         assert_eq!(Scale::from_f64(0.0), None);
         assert_eq!(Scale::from_f64(f64::NAN), None);
-        assert_eq!(Scale(1000).arg(), "1");
-        assert_eq!(Scale(1250).arg(), "1.25");
-        assert_eq!(Scale(1200).arg(), "1.2");
+        assert_eq!(Scale(1250).label(), "1.25");
+        assert_eq!(Scale(1200).label(), "1.2");
         assert_eq!(Scale(1000).label(), "1.0");
         assert_eq!(Scale(1500).label(), "1.5");
     }
@@ -390,15 +315,6 @@ mod tests {
     }
 
     #[test]
-    fn wm_set_arguments() {
-        let a = Active { mode: mode(1920, 1080, 60), x: 213, y: 0, scale: Scale(1250), transform: 1 };
-        let s = Step { output: "DVI-I-1".into(), active: Some(a) };
-        assert_eq!(s.args(), vec!["monitor", "DVI-I-1", "1920x1080@60", "213x0", "1.25", "1"]);
-        let s = Step { output: "eDP-1".into(), active: None };
-        assert_eq!(s.args(), vec!["monitor-disable", "eDP-1"]);
-    }
-
-    #[test]
     fn plan_between_two_states_activations_first() {
         let cur = machine();
         let moved = Active { x: 0, ..cur[1].active.clone().unwrap() };
@@ -411,86 +327,6 @@ mod tests {
         let p = Plan::between(&cur, &target);
         assert_eq!(p.steps, vec![Step { output: "DVI-I-1".into(), active: Some(moved) }, Step { output: "eDP-1".into(), active: None },]);
         assert!(p.touches("eDP-1") && !p.touches("HDMI-A-1"));
-    }
-
-    #[test]
-    fn reverse_plan() {
-        let before = machine();
-        let p = Plan { steps: vec![Step { output: "HDMI-A-1".into(), active: None }, Step { output: "eDP-1".into(), active: None }] };
-        let u = Plan::undo(&before, &p);
-        assert_eq!(
-            u.steps,
-            vec![
-                Step { output: "eDP-1".into(), active: before[0].active.clone() },
-                Step { output: "HDMI-A-1".into(), active: before[2].active.clone() },
-            ],
-            "internal panel first"
-        );
-        // An output off before the trial is turned off again, after the activations.
-        let before = vec![off("DP-3", ALPHA), on("eDP-1", INTERNAL, 2560, 1600, 0, 0)];
-        let p = Plan {
-            steps: vec![Step { output: "DP-3".into(), active: before[1].active.clone() }, Step { output: "eDP-1".into(), active: None }],
-        };
-        let u = Plan::undo(&before, &p);
-        assert_eq!(u.steps[0].output, "eDP-1");
-        assert_eq!(u.steps[1], Step { output: "DP-3".into(), active: None });
-    }
-
-    #[test]
-    fn reverse_plan_internal_panel_then_others_then_displaylink() {
-        // Decision D2: the rollback first turns on the internal panel (the
-        // safest), then the ordinary outputs, then the DisplayLink ones.
-        let before = machine(); // eDP-1, DVI-I-1 (DisplayLink), HDMI-A-1
-        let off_step = |n: &str| Step { output: n.into(), active: None };
-        let p = Plan { steps: vec![off_step("DVI-I-1"), off_step("HDMI-A-1"), off_step("eDP-1")] };
-        let u = Plan::undo(&before, &p);
-        assert_eq!(u.steps.iter().map(|s| s.output.as_str()).collect::<Vec<_>>(), vec!["eDP-1", "HDMI-A-1", "DVI-I-1"]);
-        // A deactivation stays after every activation, even that of the
-        // internal panel: never a moment without a screen.
-        let mut dl = on("DVI-I-1", ALPHA, 1920, 1080, 0, 0);
-        dl.displaylink = true;
-        let before = vec![dl, off("eDP-1", INTERNAL)];
-        let p = Plan { steps: vec![Step { output: "eDP-1".into(), active: before[0].active.clone() }, off_step("DVI-I-1")] };
-        let u = Plan::undo(&before, &p);
-        assert_eq!(u.steps, vec![Step { output: "DVI-I-1".into(), active: before[0].active.clone() }, off_step("eDP-1"),]);
-    }
-
-    #[test]
-    fn external_change() {
-        let before = machine();
-        let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] };
-        let mut now = before.clone();
-        now[0].active = None; // expected effect of the plan
-        assert!(!changed_elsewhere(&before, &plan, &now));
-        now[0].active = Some(Active { scale: Scale(1250), ..before[0].active.clone().unwrap() });
-        assert!(!changed_elsewhere(&before, &plan, &now), "touched output: set differently, not \"elsewhere\"");
-        let mut now2 = now.clone();
-        now2[1].active = None; // monitor-toggle turned Alpha off
-        assert!(changed_elsewhere(&before, &plan, &now2));
-        let mut now3 = now.clone();
-        now3.pop(); // Bravo unplugged
-        assert!(changed_elsewhere(&before, &plan, &now3));
-        let mut now4 = now.clone();
-        now4.push(off("DP-3", "Charlie Modèle 3 SERIE0003")); // dock plugged in
-        assert!(changed_elsewhere(&before, &plan, &now4));
-    }
-
-    #[test]
-    fn screen_lost_during_a_trial() {
-        let before = machine();
-        let plan = Plan {
-            steps: vec![Step { output: "DVI-I-1".into(), active: None }, Step { output: "eDP-1".into(), active: before[0].active.clone() }],
-        };
-        assert!(!screen_lost(&plan, &before));
-        let mut without_alpha = before.clone();
-        without_alpha.remove(1);
-        assert!(screen_lost(&plan, &without_alpha), "touched output disappeared");
-        assert_eq!(plan.restricted_to(&without_alpha).steps, vec![plan.steps[1].clone()]);
-        let mut without_bravo = before.clone();
-        without_bravo.remove(2);
-        assert!(!screen_lost(&plan, &without_bravo), "untouched output: not \"lost\"");
-        let off: Vec<Output> = before.iter().map(|o| Output { active: None, ..o.clone() }).collect();
-        assert!(screen_lost(&plan, &off), "no output active any more");
     }
 
     #[test]
