@@ -392,9 +392,30 @@ impl Controller {
 
     fn open_trial(&mut self, before: Vec<Kept>, applied: Vec<Kept>, confirmed: bool, done_since: bool, now: Instant) -> Vec<Action> {
         self.trial = Some(Trial { before, applied, deadline: now + TRIAL, confirmed, adopted: false });
-        // A screen may have gone while it waited; its state is not judged
-        // yet (that `done` may predate our change).
-        if done_since { self.check_trial(false, now) } else { Vec::new() }
+        if !done_since {
+            return Vec::new();
+        }
+        // A screen may have gone while it waited. A `done` that no longer
+        // shows the state from before carried our result: adopted now, so
+        // the next `done` is judged. One still showing it may predate our
+        // change: the next `done` is adopted instead.
+        let out = self.check_trial(false, now);
+        if self.trial.as_ref().is_some_and(|t| !self.shows(&t.before)) {
+            self.adopt();
+        }
+        out
+    }
+
+    /// The trial's own screens, as the heads now report them, become what
+    /// was applied (a screen plugged meanwhile is not part of it).
+    fn adopt(&mut self) {
+        let Some(t) = &self.trial else { return };
+        let on = assign(&self.heads, &t.applied);
+        let ours = self.heads.iter().zip(on).filter(|(_, k)| k.is_some()).map(|(h, _)| now_target(h)).collect();
+        let applied = self.remember(ours);
+        let t = self.trial.as_mut().expect("checked above");
+        t.applied = applied;
+        t.adopted = true;
     }
 
     /// A trial against the heads: a lost screen reverts the rest. With
@@ -414,13 +435,7 @@ impl Controller {
         }
         if !t.adopted {
             if t.confirmed || !self.shows(&t.before) {
-                // The trial's own screens only: one plugged meanwhile is not part of it.
-                let on = assign(&self.heads, &t.applied);
-                let ours = self.heads.iter().zip(on).filter(|(_, k)| k.is_some()).map(|(h, _)| now_target(h)).collect();
-                let applied = self.remember(ours);
-                let t = self.trial.as_mut().expect("checked above");
-                t.applied = applied;
-                t.adopted = true;
+                self.adopt();
             }
         } else if !self.shows(&t.applied) {
             self.trial = None;

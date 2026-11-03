@@ -615,6 +615,9 @@ fn a_done_before_the_answer_is_not_a_change_elsewhere() {
     c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(5));
     c.on_event(ok(&c), t0 + ms(10));
     assert!(matches!(c.trial_state(t0 + ms(10)), TrialState::Open { .. }));
+    // Our change, reported next: still ours.
+    assert!(c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(20)).is_empty());
+    assert!(matches!(c.trial_state(t0 + ms(20)), TrialState::Open { .. }));
 }
 
 #[test]
@@ -918,4 +921,19 @@ fn a_resend_with_no_screen_left_on_is_refused() {
     assert!(sends(&a).is_empty());
     assert_eq!(replies(&a), vec![Err("the compositor refused this configuration")]);
     assert_eq!(c.trial_state(t0 + ms(20)), TrialState::None);
+}
+
+#[test]
+fn our_result_reported_before_the_answer_is_adopted() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    // Our result's `done` comes first, then the answer.
+    assert!(c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(5)).is_empty());
+    c.on_event(ok(&c), t0 + ms(10));
+    // Another tool moves Bravo: not ours, never reverted.
+    let a = c.on_event(Event::Done(vec![alpha(100), bravo(3000)]), t0 + ms(2000));
+    assert!(sends(&a).is_empty());
+    assert_eq!(c.trial_state(t0 + ms(2000)), TrialState::Ended(TrialEnd::ChangedElsewhere));
+    assert!(sends(&c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL)).is_empty());
 }
