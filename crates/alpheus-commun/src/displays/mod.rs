@@ -18,13 +18,14 @@ pub struct Mode {
 }
 
 impl Mode {
-    /// "1920x1080@60"; `None` if unreadable or zero (a disabled output can
-    /// report "0x0@0").
+    /// "1920x1080@60"; `None` if unreadable or of zero size (a disabled
+    /// output can report "0x0@0"). A refresh of 0 is one the compositor does
+    /// not know (the protocol's 0 mHz: headless and virtual outputs).
     pub fn parse(s: &str) -> Option<Mode> {
         let (size, hz) = s.trim().split_once('@')?;
         let (w, h) = size.split_once('x')?;
         let m = Mode { width: w.parse().ok()?, height: h.parse().ok()?, refresh: hz.parse().ok()? };
-        (m.width > 0 && m.height > 0 && m.refresh > 0).then_some(m)
+        (m.width > 0 && m.height > 0).then_some(m)
     }
 
     /// Displayed label: "1920×1080@60".
@@ -332,6 +333,7 @@ mod tests {
         assert_eq!(Mode::parse("1920x1080@60"), Some(mode(1920, 1080, 60)));
         assert_eq!(Mode::parse(" 2560x1600@60\n"), Some(mode(2560, 1600, 60)));
         assert_eq!(Mode::parse("0x0@0"), None, "disabled output");
+        assert_eq!(Mode::parse("1280x720@0"), Some(mode(1280, 720, 0)), "a refresh the compositor does not know");
         assert_eq!(Mode::parse("1920x1080"), None);
         assert_eq!(Mode::parse("1920x1080@59.93"), None, "already rounded by wm-set");
         assert_eq!(mode(1920, 1080, 60).to_string(), "1920x1080@60");

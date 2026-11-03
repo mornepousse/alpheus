@@ -308,6 +308,11 @@ mod tests {
         let mut bare = sample();
         bare.outputs[2].modes.clear();
         assert_eq!(decode_snapshot(&encode_snapshot(&bare)), Ok(bare));
+        // A refresh the compositor does not know (0 mHz: headless and virtual outputs).
+        let mut virt = sample();
+        virt.outputs[0].modes = vec![Mode { width: 1280, height: 720, refresh: 0 }];
+        virt.outputs[0].active.as_mut().unwrap().mode = Mode { width: 1280, height: 720, refresh: 0 };
+        assert_eq!(decode_snapshot(&encode_snapshot(&virt)), Ok(virt));
     }
 
     #[test]
