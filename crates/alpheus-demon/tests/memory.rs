@@ -2436,11 +2436,21 @@ fn displays_pss_after_trials() {
     for n in 0..19 {
         trial(&sway, &d, n % 2 == 0);
     }
-    // The last trial ends the run: its 15 s deadline and the watchdog fall inside the rest window.
+    // The last trial ends the run: its 15 s deadline and the watchdog fall inside the rest window,
+    // which must not cross the minute (the clock's tick); a trial overrunning on a loaded machine
+    // is followed by one more.
     const REST: Duration = Duration::from_secs(16);
-    away_from_the_minute(REST + Duration::from_secs(3));
-    trial(&sway, &d, false);
-    displays_rest(&d, REST, "after 21 trials");
+    let mut extra = 0;
+    loop {
+        away_from_the_minute(REST + Duration::from_secs(3));
+        trial(&sway, &d, false);
+        if fits_the_minute(REST) {
+            break;
+        }
+        extra += 1;
+        assert!(extra < 3, "the minute's tick always too close to the window");
+    }
+    displays_rest(&d, REST, "after the last trial");
     let (cycled, cycled_shm) = d.pss_and_shm_kb(); // settled by the rest window
     let (first_own, cycled_own) = (first - first_shm, cycled - cycled_shm);
     eprintln!(
@@ -2450,31 +2460,29 @@ fn displays_pss_after_trials() {
     eprintln!("displays smaps once kept (KB): {first_smaps}; after the trials: {}", smaps_breakdown(&d));
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
     assert!(first <= idle + 512, "kept {first} KB vs idle {idle} KB: more than 512 KB — report, never raise");
-    // A moved screen has its bar re-placed: the bar's pool may hold one more buffer (+110 KB in
-    // one run of three, 2026-11-03), so the pools get their own, looser bound, as for hotplug.
+    // The shm pools are printed only (`displays_pss_after_hotplug_cycles` says why): a moved screen
+    // has its bar drawn again, its pool holding one buffer or two (110 or 220 KB) as it happens.
     assert!(cycled_own <= first_own + 128, "cycled {cycled_own} KB vs {first_own} KB without the pools: 20 trials must keep nothing");
-    assert!(cycled_shm <= first_shm + 256, "the pools cycled {cycled_shm} KB vs {first_shm} KB: more than a bar's buffers");
 }
 
-/// A displays.toml placing a plugged head (`Headless output <n>`, the headless backend's counter)
-/// left of HEADLESS-1 (described `first`), and HEADLESS-1 alone at the origin: every plug and every
-/// unplug applies a profile.
-fn hotplug_profiles(first: &str) -> String {
-    let mut text = format!(
-        "[[profile]]\nname = \"Alone\"\n[[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 0, y = 0 }}\n"
-    );
-    for n in 2..=40 {
-        text.push_str(&format!(
-            "[[profile]]\nname = \"Desk {n}\"\n\
-             [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
-             [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
-        ));
-    }
-    text
+/// A displays.toml placing the plugged head `Headless output <n>` (the headless backend's counter)
+/// left of HEADLESS-1 (described `first`), and HEADLESS-1 alone at the origin: the plug and the
+/// unplug each apply a profile. Two profiles, a real file's size: the file is read at each debounce
+/// end, so its parse's own heap peak stays out of what the cycles measure.
+fn hotplug_profiles(first: &str, n: usize) -> String {
+    format!(
+        "[[profile]]\nname = \"Alone\"\n[[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+         [[profile]]\nname = \"Desk\"\n\
+         [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+         [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
+    )
 }
 
-/// One screen plugged, its profile applied, then unplugged and HEADLESS-1 back at the origin.
-fn hotplug(sway: &Sway, d: &Daemon) {
+/// The `n`th hotplug cycle: one screen plugged, its profile applied, then unplugged and HEADLESS-1
+/// back at the origin. The backend's counter, in the plugged head's description, runs two ahead
+/// (HEADLESS-1 is `Headless output 1`, the first plugged one `Headless output 3`).
+fn hotplug(sway: &Sway, d: &Daemon, first: &str, n: usize) {
+    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(first, n + 2)).unwrap();
     sway.command("create_output");
     let s = snapshot_until(sway, d, |s| {
         s.outputs.len() == 2
@@ -2490,12 +2498,18 @@ fn hotplug(sway: &Sway, d: &Daemon) {
     });
 }
 
+/// Cycles in `displays_pss_after_hotplug_cycles`: one, then the readings every `HOTPLUG_STEP` after it.
+const HOTPLUG_CYCLES: usize = 61;
+const HOTPLUG_STEP: usize = 20;
+
 /// Displays protocol spec § 7: PSS idle, after one hotplug cycle (a screen plugged, its profile
-/// applied, unplugged, the lone profile applied), then after 20 more; then no wake-up at rest after
-/// the last one (its debounce and watchdog inside the window). The bar's own shm pool grows with a
-/// plugged 1920 px screen's bar and stays at its largest (with no displays module, the same cycles
-/// took the pool's PSS from 168 to 344 KB and kept it there from 20 to 50 cycles, measured
-/// 2026-11-03): left out of the bound on what the daemon keeps, the pools get their own, looser one.
+/// applied, unplugged, the lone profile applied), then every 20 more, up to 60; then no wake-up at
+/// rest after the last one (its debounce and watchdog inside the window). Bounded on what the
+/// daemon keeps, the shm pools left out: 20 cycles ≤ +128 KB, and the next 20 ≤ +32 KB (levelled
+/// off). The shm pools are printed only: a bar's pool grows to fit its largest buffer, and SCTK's
+/// `RawPool::resize` maps the grown file again, so the pool's PSS counts the pages touched through
+/// the new mapping, not its capacity — 0 right after a resize, then whatever the 1920 px and the
+/// 1280 px bars drew since (84 to 220 KB measured).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn displays_pss_after_hotplug_cycles() {
@@ -2503,30 +2517,49 @@ fn displays_pss_after_hotplug_cycles() {
     let bus = PrivateBus::start("displays-plug");
     let (sway, _hypr, d) = start("displays-plug", 1, &bus, None, Some(DISPLAYS_BAR), PwDump::Silent);
     let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
-    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(&first)).unwrap();
+    // The start-up evaluation (no displays.toml yet) logs its line first: none may follow.
+    assert!(d.wait_for("displays: no profile for these screens", DELAY), "{:?}", d.log());
+    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(&first, 3)).unwrap();
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
     let quiet = d.log().len();
-    hotplug(&sway, &d);
+    hotplug(&sway, &d, &first, 1);
     std::thread::sleep(TRAY_SETTLE);
-    let ((once, once_shm), once_smaps) = (d.pss_and_shm_kb(), smaps_breakdown(&d));
-    for _ in 0..19 {
-        hotplug(&sway, &d);
+    let mut readings = vec![(1, d.pss_and_shm_kb())];
+    let once_smaps = smaps_breakdown(&d);
+    for n in 2..HOTPLUG_CYCLES {
+        hotplug(&sway, &d, &first, n);
+        if n % HOTPLUG_STEP == 1 {
+            std::thread::sleep(TRAY_SETTLE);
+            readings.push((n, d.pss_and_shm_kb()));
+        }
     }
+    // The last cycle ends the run: the rest window must not cross the minute (the clock's tick);
+    // a cycle overrunning on a loaded machine is followed by one more.
     const REST: Duration = Duration::from_secs(10);
-    away_from_the_minute(REST + Duration::from_secs(5));
-    hotplug(&sway, &d);
-    displays_rest(&d, REST, "after 21 hotplug cycles");
-    let (cycled, cycled_shm) = d.pss_and_shm_kb(); // settled by the rest window
-    let (idle_own, once_own, cycled_own) = (idle - idle_shm, once - once_shm, cycled - cycled_shm);
+    let mut extra = 0;
+    loop {
+        away_from_the_minute(REST + Duration::from_secs(5));
+        hotplug(&sway, &d, &first, HOTPLUG_CYCLES + extra);
+        if fits_the_minute(REST) {
+            break;
+        }
+        extra += 1;
+        assert!(extra < 3, "the minute's tick always too close to the window");
+    }
+    displays_rest(&d, REST, "after the last hotplug cycle");
+    readings.push((HOTPLUG_CYCLES + extra, d.pss_and_shm_kb())); // settled by the rest window
+    let own: Vec<(usize, u64)> = readings.iter().map(|&(n, (total, shm))| (n, total - shm)).collect();
     eprintln!(
-        "displays hotplug PSS (KB): {idle} idle, {once} after one cycle, {cycled} after 20 more; without the shm pools: \
-         {idle_own} idle, {once_own} once, {cycled_own} cycled; the pools: {idle_shm} idle, {once_shm} once, {cycled_shm} cycled"
+        "displays hotplug PSS (KB): {idle} idle ({} without the shm pools, pools {idle_shm}); after n cycles (n, total, pools): {readings:?}; \
+         without the pools: {own:?}",
+        idle - idle_shm
     );
-    eprintln!("displays smaps after one cycle (KB): {once_smaps}; after 20 more: {}", smaps_breakdown(&d));
+    eprintln!("displays smaps after one cycle (KB): {once_smaps}; after the last: {}", smaps_breakdown(&d));
     let applied = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect::<Vec<_>>();
     assert!(applied.is_empty(), "every profile applied, nothing refused: {applied:?}");
+    let (once, once_own, own_20, own_40) = (readings[0].1.0, own[0].1, own[1].1, own[2].1);
     assert!(once <= idle + 512, "one cycle {once} KB vs idle {idle} KB: more than 512 KB — report, never raise");
-    assert!(cycled_own <= once_own + 128, "cycled {cycled_own} KB vs {once_own} KB without the pools: 20 hotplug cycles must keep nothing");
-    assert!(cycled_shm <= once_shm + 256, "the pools cycled {cycled_shm} KB vs {once_shm} KB: more than the largest bar's buffers");
+    assert!(own_20 <= once_own + 128, "{own_20} KB after 20 more cycles vs {once_own} KB without the pools: hotplug must keep nothing");
+    assert!(own_40 <= own_20 + 32, "{own_40} KB after 40 cycles vs {own_20} KB after 20, without the pools: still growing");
 }

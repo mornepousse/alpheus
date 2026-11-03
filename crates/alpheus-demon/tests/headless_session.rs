@@ -5353,6 +5353,8 @@ fn hotplug_applies_the_matching_profile_once() {
     // No module that refreshes on its own (resources every 2 s): the loop rests between events.
     let d = displays_daemon_with(&sway, Some("modules = [\"workspaces\", \"displays\"]\n"));
     let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
+    // The start-up evaluation (no displays.toml yet) logs its line before `quiet` is taken.
+    assert!(d.wait_for("displays: no profile for these screens", DELAY), "{:?}", d.log());
     // The plugged head's description carries a counter of the headless backend: one profile per
     // value it may take, the same placement in each (only the set that is there matches).
     let profiles: String = (2..=9)
@@ -5369,13 +5371,26 @@ fn hotplug_applies_the_matching_profile_once() {
     sway.command("create_output");
     let placed = |s: &Snapshot| {
         s.outputs.len() == 2
+            && s.trial == TrialState::None
             && output(s, "HEADLESS-2").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
             && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (1920, 0))
     };
     let s = snapshot_until(&sway, &d, placed);
     // An apply logs nothing (the spec's fixed lines): a second evaluation would show as the
-    // loop waking each debounce, with no request on the socket meanwhile.
-    thread::sleep(Duration::from_millis(100));
+    // loop waking each debounce, with no request on the socket meanwhile. The snapshot request
+    // and the apply's last events settle first: no wake-up for 300 ms.
+    let quiet_since = |d: &Daemon| {
+        let (start, mut last, mut since) = (Instant::now(), d.main_thread_wakeups(), Instant::now());
+        while since.elapsed() < Duration::from_millis(300) {
+            assert!(start.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+            thread::sleep(Duration::from_millis(20));
+            let now = d.main_thread_wakeups();
+            if now != last {
+                (last, since) = (now, Instant::now());
+            }
+        }
+    };
+    quiet_since(&d);
     let before = d.main_thread_wakeups();
     thread::sleep(Duration::from_secs(2));
     let wakeups = d.main_thread_wakeups() - before;
