@@ -17,9 +17,12 @@
 
 mod common;
 
+use alpheus_commun::displays::wire::{self, TrialState};
+use alpheus_commun::displays::{Active, Step};
 use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::presets::preset;
 use common::bluez::FakeBluez;
+use common::displays::{displays, output, outputs_snapshot, snapshot_until};
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
@@ -2325,4 +2328,205 @@ fn camera_scan_duration() {
     let (wide_median, wide_max) = scan_times(&fake_proc(&root, &dev, 500, 20), &dev);
     eprintln!("camera scan of 500 processes x 20 descriptors (not asserted): median {wide_median:?}, max {wide_max:?}");
     assert!(median <= Duration::from_millis(10), "median {median:?} > 10 ms: report to the controller");
+}
+
+/// Every module that rests (no resources: they tick by design), the displays module left out.
+macro_rules! resting_modules {
+    () => {
+        "\"launcher\", \"workspaces\", \"window\", \"volume\", \"network\", \"bluetooth\", \"battery\", \"clock\""
+    };
+}
+
+/// The displays trials' and hotplug's bar: nothing that ticks, so the loop rests between events.
+const DISPLAYS_BAR: &str = "modules = [\"workspaces\", \"window\", \"displays\", \"clock\"]\n";
+
+/// No loop-thread and no whole-daemon wake-up, no spin, in `rest` from now (the caller keeps the
+/// window away from the minute: the clock is the only timer left).
+fn displays_rest(d: &Daemon, rest: Duration, what: &str) {
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(rest);
+    assert_no_spin(d.cpu_ticks() - ticks, rest, what);
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest {what} ({rest:?}): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups {what}: a debounce, watchdog or trial timer left armed");
+    assert_eq!(delta, 0, "{delta} wake-ups of the daemon {what}");
+}
+
+/// Displays protocol spec § 7: the module on at start, with 1 and 3 headless outputs (their heads
+/// and modes read), against the same bar without it on this build (the base has no module: its
+/// one-time cost is `startup_pss_per_source`'s `everything`, back to back); then no wake-up at rest.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn displays_pss_at_start() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("displays-start");
+    let _workstation = Workstation::serve(&bus);
+    let off = concat!("modules = [", resting_modules!(), "]\n");
+    let on = concat!("modules = [", resting_modules!(), ", \"displays\"]\n");
+    let mut report = Vec::new();
+    for outputs in [1, 3] {
+        let mut kb = [0u64; 2];
+        for (i, toml) in [off, on].iter().enumerate() {
+            let (sway, _hypr, d) = start(&format!("displays-start-{outputs}-{i}"), outputs, &bus, None, Some(toml), PwDump::Silent);
+            if i == 1 {
+                outputs_snapshot(&sway, &d, outputs as usize..=outputs as usize); // the heads and their modes read
+            }
+            std::thread::sleep(TRAY_SETTLE);
+            kb[i] = d.pss_kb();
+            if i == 1 {
+                const REST: Duration = Duration::from_secs(5);
+                away_from_the_minute(REST + Duration::from_secs(1));
+                displays_rest(&d, REST, &format!("at start on {outputs} output(s)"));
+            }
+        }
+        report.push((outputs, kb[0], kb[1]));
+    }
+    eprintln!("displays PSS at start (outputs, off KB, on KB): {report:?}");
+    for (outputs, off, on) in report {
+        assert!(on < STARTUP_MAX_KB, "{on} KB >= 15 MB — report to Mae, never raise");
+        assert!(on <= off + 512, "{outputs} output(s): on {on} KB vs off {off} KB: more than 512 KB — report, never raise");
+    }
+}
+
+/// `outputs-try` of HEADLESS-2 moved to `x`, the rest of it as it is.
+fn try_x(s: &wire::Snapshot, x: i32) -> Request {
+    let active = output(s, "HEADLESS-2").active.clone().expect("enabled");
+    Request::OutputsTry(wire::encode_desired(&[Step { output: "HEADLESS-2".into(), active: Some(Active { x, ..active }) }]))
+}
+
+/// HEADLESS-2's x in `s`.
+fn x_of(s: &wire::Snapshot) -> i32 {
+    output(s, "HEADLESS-2").active.as_ref().expect("enabled").x
+}
+
+/// One trial on HEADLESS-2, moved 100 px right, then kept or reverted; returns once the daemon's
+/// snapshot shows the outcome with no trial left.
+fn trial(sway: &Sway, d: &Daemon, keep: bool) {
+    let before = outputs_snapshot(sway, d, 2..=2);
+    let (from, to) = (x_of(&before), x_of(&before) + 100);
+    assert_eq!(displays(sway, &try_x(&before, to)), Reply::Done, "{:?}", d.log());
+    snapshot_until(sway, d, |s| x_of(s) == to && matches!(s.trial, TrialState::Open { .. }));
+    let end = if keep { Request::OutputsKeep } else { Request::OutputsRevert };
+    assert_eq!(displays(sway, &end), Reply::Done, "{:?}", d.log());
+    let x = if keep { to } else { from };
+    snapshot_until(sway, d, |s| x_of(s) == x && s.trial == TrialState::None);
+}
+
+/// Displays protocol spec § 7: PSS idle, one trial open, once kept, then after 20 more trials (kept
+/// and reverted in turn; a timed-out one would take 15 s each); then no wake-up at rest in the
+/// 16 s after the last one, its 15 s deadline included.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn displays_pss_after_trials() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("displays-trials");
+    let (sway, _hypr, d) = start("displays-trials", 2, &bus, None, Some(DISPLAYS_BAR), PwDump::Silent);
+    let before = outputs_snapshot(&sway, &d, 2..=2);
+    std::thread::sleep(TRAY_SETTLE);
+    let idle = d.pss_kb();
+    let to = x_of(&before) + 100;
+    assert_eq!(displays(&sway, &try_x(&before, to)), Reply::Done, "{:?}", d.log());
+    snapshot_until(&sway, &d, |s| x_of(s) == to && matches!(s.trial, TrialState::Open { .. }));
+    let open = d.pss_kb();
+    assert_eq!(displays(&sway, &Request::OutputsKeep), Reply::Done, "{:?}", d.log());
+    snapshot_until(&sway, &d, |s| s.trial == TrialState::None);
+    std::thread::sleep(TRAY_SETTLE);
+    let ((first, first_shm), first_smaps) = (d.pss_and_shm_kb(), smaps_breakdown(&d));
+    for n in 0..19 {
+        trial(&sway, &d, n % 2 == 0);
+    }
+    // The last trial ends the run: its 15 s deadline and the watchdog fall inside the rest window.
+    const REST: Duration = Duration::from_secs(16);
+    away_from_the_minute(REST + Duration::from_secs(3));
+    trial(&sway, &d, false);
+    displays_rest(&d, REST, "after 21 trials");
+    let (cycled, cycled_shm) = d.pss_and_shm_kb(); // settled by the rest window
+    let (first_own, cycled_own) = (first - first_shm, cycled - cycled_shm);
+    eprintln!(
+        "displays trials PSS (KB): {idle} idle, {open} with a trial open, {first} once kept, {cycled} after 20 more trials; \
+         without the shm pools: {first_own} once kept, {cycled_own} cycled; the pools: {first_shm} once kept, {cycled_shm} cycled"
+    );
+    eprintln!("displays smaps once kept (KB): {first_smaps}; after the trials: {}", smaps_breakdown(&d));
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    assert!(first <= idle + 512, "kept {first} KB vs idle {idle} KB: more than 512 KB — report, never raise");
+    // A moved screen has its bar re-placed: the bar's pool may hold one more buffer (+110 KB in
+    // one run of three, 2026-11-03), so the pools get their own, looser bound, as for hotplug.
+    assert!(cycled_own <= first_own + 128, "cycled {cycled_own} KB vs {first_own} KB without the pools: 20 trials must keep nothing");
+    assert!(cycled_shm <= first_shm + 256, "the pools cycled {cycled_shm} KB vs {first_shm} KB: more than a bar's buffers");
+}
+
+/// A displays.toml placing a plugged head (`Headless output <n>`, the headless backend's counter)
+/// left of HEADLESS-1 (described `first`), and HEADLESS-1 alone at the origin: every plug and every
+/// unplug applies a profile.
+fn hotplug_profiles(first: &str) -> String {
+    let mut text = format!(
+        "[[profile]]\nname = \"Alone\"\n[[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 0, y = 0 }}\n"
+    );
+    for n in 2..=40 {
+        text.push_str(&format!(
+            "[[profile]]\nname = \"Desk {n}\"\n\
+             [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+             [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
+        ));
+    }
+    text
+}
+
+/// One screen plugged, its profile applied, then unplugged and HEADLESS-1 back at the origin.
+fn hotplug(sway: &Sway, d: &Daemon) {
+    sway.command("create_output");
+    let s = snapshot_until(sway, d, |s| {
+        s.outputs.len() == 2
+            && s.trial == TrialState::None
+            && s.outputs
+                .iter()
+                .all(|o| o.active.as_ref().is_some_and(|a| (a.x, a.y) == if o.name == "HEADLESS-1" { (1920, 0) } else { (0, 0) }))
+    });
+    let plugged = s.outputs.iter().find(|o| o.name != "HEADLESS-1").expect("the plugged head").name.clone();
+    sway.command(&format!("output {plugged} unplug"));
+    snapshot_until(sway, d, |s| {
+        s.outputs.len() == 1 && s.trial == TrialState::None && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
+    });
+}
+
+/// Displays protocol spec § 7: PSS idle, after one hotplug cycle (a screen plugged, its profile
+/// applied, unplugged, the lone profile applied), then after 20 more; then no wake-up at rest after
+/// the last one (its debounce and watchdog inside the window). The bar's own shm pool grows with a
+/// plugged 1920 px screen's bar and stays at its largest (with no displays module, the same cycles
+/// took the pool's PSS from 168 to 344 KB and kept it there from 20 to 50 cycles, measured
+/// 2026-11-03): left out of the bound on what the daemon keeps, the pools get their own, looser one.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn displays_pss_after_hotplug_cycles() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("displays-plug");
+    let (sway, _hypr, d) = start("displays-plug", 1, &bus, None, Some(DISPLAYS_BAR), PwDump::Silent);
+    let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
+    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(&first)).unwrap();
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let quiet = d.log().len();
+    hotplug(&sway, &d);
+    std::thread::sleep(TRAY_SETTLE);
+    let ((once, once_shm), once_smaps) = (d.pss_and_shm_kb(), smaps_breakdown(&d));
+    for _ in 0..19 {
+        hotplug(&sway, &d);
+    }
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST + Duration::from_secs(5));
+    hotplug(&sway, &d);
+    displays_rest(&d, REST, "after 21 hotplug cycles");
+    let (cycled, cycled_shm) = d.pss_and_shm_kb(); // settled by the rest window
+    let (idle_own, once_own, cycled_own) = (idle - idle_shm, once - once_shm, cycled - cycled_shm);
+    eprintln!(
+        "displays hotplug PSS (KB): {idle} idle, {once} after one cycle, {cycled} after 20 more; without the shm pools: \
+         {idle_own} idle, {once_own} once, {cycled_own} cycled; the pools: {idle_shm} idle, {once_shm} once, {cycled_shm} cycled"
+    );
+    eprintln!("displays smaps after one cycle (KB): {once_smaps}; after 20 more: {}", smaps_breakdown(&d));
+    let applied = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect::<Vec<_>>();
+    assert!(applied.is_empty(), "every profile applied, nothing refused: {applied:?}");
+    assert!(once <= idle + 512, "one cycle {once} KB vs idle {idle} KB: more than 512 KB — report, never raise");
+    assert!(cycled_own <= once_own + 128, "cycled {cycled_own} KB vs {once_own} KB without the pools: 20 hotplug cycles must keep nothing");
+    assert!(cycled_shm <= once_shm + 256, "the pools cycled {cycled_shm} KB vs {once_shm} KB: more than the largest bar's buffers");
 }

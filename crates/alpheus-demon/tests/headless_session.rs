@@ -7,12 +7,13 @@ mod common;
 
 use alpheus_commun::displays::wire::{self, Snapshot, Status, TrialEnd, TrialState};
 use alpheus_commun::displays::{Active, Mode, Scale, Step};
-use alpheus_commun::launcher_ipc::{self, DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_demon::quick::{BAR, BAR_START};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::bluez::{FakeBluez, device_path};
+use common::displays::{displays, output, outputs_snapshot, snapshot_until};
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
@@ -5255,32 +5256,6 @@ fn privacy_the_popup_names_a_direct_camera() {
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
 }
 
-/// One displays verb on this test's daemon, with the wait the TUI uses (`reply_timeout`).
-fn displays(sway: &Sway, request: &Request) -> Reply {
-    launcher_ipc::exchange_waiting(&socket_path(&sway.runtime), request, request.reply_timeout())
-        .unwrap_or_else(|e| panic!("{request:?}: {e:?}"))
-}
-
-/// The daemon's snapshot, once it read a number of heads in `n`.
-fn outputs_snapshot(sway: &Sway, d: &Daemon, n: std::ops::RangeInclusive<usize>) -> Snapshot {
-    let mut last = None;
-    let start = Instant::now();
-    while start.elapsed() < DELAY {
-        match displays(sway, &Request::Outputs) {
-            Reply::Outputs(body) => {
-                let s = wire::decode_snapshot(&body).unwrap_or_else(|e| panic!("{e}: {body:?}"));
-                if n.contains(&s.outputs.len()) {
-                    return s;
-                }
-                last = Some(s);
-            }
-            other => panic!("outputs: {other:?} {:?}", d.log()),
-        }
-        thread::sleep(Duration::from_millis(50));
-    }
-    panic!("{n:?} heads never read: {last:?} {:?}", d.log());
-}
-
 /// A daemon on `sway`, reading it as its compositor, displays on (the default modules).
 fn displays_daemon(sway: &Sway) -> Daemon {
     displays_daemon_with(sway, None)
@@ -5307,30 +5282,10 @@ fn outputs_are_read_from_the_protocol() {
     assert!(s.outputs.iter().all(|o| o.active.is_some()), "both on: {s:?}");
 }
 
-/// The output named `name` in `s`.
-fn output<'s>(s: &'s Snapshot, name: &str) -> &'s alpheus_commun::displays::Output {
-    s.outputs.iter().find(|o| o.name == name).unwrap_or_else(|| panic!("no {name}: {s:?}"))
-}
-
 /// `outputs-try` of `name` as it is, at scale `scale` (thousandths).
 fn try_scale(s: &Snapshot, name: &str, scale: u32) -> Request {
     let active = output(s, name).active.clone().expect("enabled");
     Request::OutputsTry(wire::encode_desired(&[Step { output: name.into(), active: Some(Active { scale: Scale(scale), ..active }) }]))
-}
-
-/// The daemon's snapshot until `ok` holds (DELAY at most).
-fn snapshot_until(sway: &Sway, d: &Daemon, ok: impl Fn(&Snapshot) -> bool) -> Snapshot {
-    let mut last = None;
-    let start = Instant::now();
-    while start.elapsed() < DELAY {
-        let s = outputs_snapshot(sway, d, 0..=16);
-        if ok(&s) {
-            return s;
-        }
-        last = Some(s);
-        thread::sleep(Duration::from_millis(50));
-    }
-    panic!("never: {last:?} {:?}", d.log());
 }
 
 /// Displays protocol spec, the trial: a try answers done once the compositor applied it, the
