@@ -18,7 +18,7 @@ pub mod sound;
 
 pub use bluetooth::{Bluetooth, BluetoothCtl, BtDevice, BtStatus};
 pub use brightness::{Brightness, BrightnessCtl};
-pub use displays::{Displays, WmSetDisplays};
+pub use displays::{DaemonDisplays, Displays};
 pub use energy::{Energy, PowerProfiles, Profiles};
 pub use network::{Connection, NetStatus, Network, NmCli};
 pub use notifications::{Notifications, ShellCtl};
@@ -43,13 +43,9 @@ pub enum BackendError {
     Timeout {
         tool: String,
     },
-    /// Display rollback applied best-effort: outputs whose step failed,
-    /// with their error, and outputs left on because the others could not
-    /// be turned back on (their deactivation was never attempted).
-    Incomplete {
-        failures: Vec<(String, BackendError)>,
-        kept: Vec<String>,
-    },
+    /// What the alpheus daemon answered, or why it could not be asked: a
+    /// sentence shown as it is (displays).
+    Daemon(String),
 }
 
 impl fmt::Display for BackendError {
@@ -58,14 +54,7 @@ impl fmt::Display for BackendError {
             BackendError::Missing { tool } => write!(f, "{tool} not found"),
             BackendError::Timeout { tool } => write!(f, "{tool} is not responding"),
             BackendError::Unparsable { tool, detail } => write!(f, "unreadable output from {tool}: {detail}"),
-            BackendError::Incomplete { failures, kept } => {
-                let list: Vec<String> = failures
-                    .iter()
-                    .map(|(out, e)| format!("{out} ({e})"))
-                    .chain(kept.iter().map(|out| format!("{out} (left on: incomplete rollback)")))
-                    .collect();
-                write!(f, "incomplete rollback: {}", list.join(", "))
-            }
+            BackendError::Daemon(text) => f.write_str(text),
             BackendError::Failed { tool, code, stderr } => {
                 let first = stderr.lines().next().unwrap_or("").trim();
                 match code {
@@ -123,17 +112,18 @@ pub struct Backends {
 }
 
 impl Backends {
-    /// v1 backends (command-line tools). `runtime_dir` = $XDG_RUNTIME_DIR.
+    /// v1 backends (command-line tools; the displays through the daemon's
+    /// socket in `runtime_dir` = $XDG_RUNTIME_DIR).
     pub fn system(exec: Arc<dyn Executor>, runtime_dir: PathBuf) -> Self {
         Backends {
             sound: Arc::new(WpctlSound::new(exec.clone())),
             brightness: Arc::new(BrightnessCtl::new(exec.clone())),
             network: Arc::new(NmCli::new(exec.clone())),
             bluetooth: Arc::new(BluetoothCtl::new(exec.clone())),
-            energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir)),
+            energy: Arc::new(PowerProfiles::new(exec.clone(), runtime_dir.clone())),
             notifications: Arc::new(ShellCtl::new(exec.clone())),
-            power: Arc::new(SessionPower::new(exec.clone())),
-            displays: Arc::new(WmSetDisplays::new(exec)),
+            power: Arc::new(SessionPower::new(exec)),
+            displays: Arc::new(DaemonDisplays::new(crate::launcher_ipc::socket_path(&runtime_dir))),
         }
     }
 }
@@ -156,6 +146,7 @@ mod tests {
         assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: Some(1), stderr: "".into() }), "nmcli failed (code 1)");
         assert_eq!(m(BackendError::Failed { tool: "nmcli".into(), code: None, stderr: "".into() }), "nmcli failed");
         assert_eq!(m(unparsable("wpctl", "missing section")), "unreadable output from wpctl: missing section");
+        assert_eq!(m(BackendError::Daemon("the alpheus daemon is not running".into())), "the alpheus daemon is not running");
     }
 
     #[test]
@@ -176,7 +167,8 @@ mod tests {
     #[test]
     fn system_wires_each_domain_to_its_tool() {
         let f = std::sync::Arc::new(FakeExecutor::new());
-        let b = Backends::system(f.clone(), std::env::temp_dir());
+        let dir = crate::temp_path::TempPath::new("backends-system");
+        let b = Backends::system(f.clone(), dir.to_path_buf());
         let _ = b.sound.volume();
         let _ = b.brightness.get();
         let _ = b.network.status();
@@ -184,8 +176,9 @@ mod tests {
         let _ = b.energy.profiles();
         let _ = b.notifications.dnd();
         let _ = b.power.perform(PowerAction::Suspend);
-        let _ = b.displays.outputs();
+        // The displays ask the daemon's socket in the runtime directory, never a command.
+        assert_eq!(b.displays.snapshot(), Err(displays::NOT_RUNNING.to_string()));
         let progs: Vec<String> = f.calls().iter().map(|c| c.split(' ').next().unwrap().to_string()).collect();
-        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl", "wm-set"]);
+        assert_eq!(progs, vec!["wpctl", "brightnessctl", "nmcli", "bluetoothctl", "powerprofilesctl", "shell-ctl", "systemctl"]);
     }
 }

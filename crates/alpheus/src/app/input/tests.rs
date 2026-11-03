@@ -230,18 +230,22 @@ fn applied(a: &mut App) {
 }
 
 fn rollback_sent(a: &mut App) -> bool {
-    a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::ApplyDisplays { undo: None, .. })))
+    a.take_requests().iter().any(|r| matches!(r, Request::Do(Op::RevertDisplays)))
+}
+
+/// A fresh read of the daemon's snapshot.
+fn reread(a: &mut App) {
+    let snapshot = crate::app::testing::ready(crate::displays::testing::machine());
+    a.on_update(super::super::worker::Update::Displays(Ok(snapshot)), Instant::now());
+    a.take_requests();
 }
 
 /// The worker answers the rollback, then a fresh read arrives.
 fn rollback_applied_and_reread(a: &mut App) {
     let r = a.take_requests();
-    let Some(Request::Do(op)) = r.into_iter().find(|q| matches!(q, Request::Do(Op::ApplyDisplays { undo: None, .. }))) else {
-        panic!("expected a rollback")
-    };
-    a.on_update(super::super::worker::Update::Done(op, Ok(())), Instant::now());
-    a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
-    a.take_requests();
+    assert!(r.contains(&Request::Do(Op::RevertDisplays)), "expected a rollback: {r:?}");
+    a.on_update(super::super::worker::Update::Done(Op::RevertDisplays, Ok(())), Instant::now());
+    reread(a);
 }
 
 #[test]
@@ -251,7 +255,7 @@ fn profiles_from_the_keyboard() {
     k(&mut a, KeyCode::Right);
     k(&mut a, KeyCode::Enter); // Bureau
     assert!(matches!(a.overlay, Overlay::Keep(_)));
-    assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::TryDisplays(_))]));
 }
 
 #[test]
@@ -270,8 +274,8 @@ fn keep_these_settings_from_the_keyboard() {
     k(&mut a, KeyCode::Enter);
     assert_eq!(a.displays.trial, None);
     assert!(!rollback_sent(&mut a), "kept");
-    a.on_update(super::super::worker::Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
-    a.take_requests();
+    a.on_update(super::super::worker::Update::Done(Op::KeepDisplays, Ok(())), Instant::now());
+    reread(&mut a);
     c(&mut a, ' ');
     applied(&mut a);
     k(&mut a, KeyCode::Esc);
@@ -279,14 +283,14 @@ fn keep_these_settings_from_the_keyboard() {
 }
 
 #[test]
-fn q_during_the_trial_closes_and_leaves_the_rollback_for_exit() {
+fn q_during_the_trial_closes_and_leaves_the_revert_for_exit() {
     let mut a = displays_tab();
     k(&mut a, KeyCode::Down);
     c(&mut a, ' ');
     applied(&mut a);
     c(&mut a, 'q');
     assert!(a.should_quit);
-    assert!(a.exit_undo().is_some(), "the exit cleanup will undo the trial");
+    assert!(a.trial_open(), "closing will revert the trial");
 }
 
 #[test]
@@ -303,15 +307,13 @@ fn panel_from_the_keyboard() {
     k(&mut a, KeyCode::Enter); // to Apply
     k(&mut a, KeyCode::Enter); // applies
     assert!(matches!(a.overlay, Overlay::Keep(_)));
-    assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::ApplyDisplays { undo: Some(_), .. })]));
+    assert!(matches!(a.take_requests().as_slice(), [Request::Do(Op::TryDisplays(_))]));
 }
 
 #[test]
 fn mode_search_from_the_keyboard() {
     let mut a = displays_tab();
-    a.data.displays = super::super::Loadable::Ready(
-        crate::backends::displays::parse_outputs(include_str!("../../../tests/fixtures/wm-set-outputs.json")).unwrap(),
-    );
+    a.data.displays = super::super::Loadable::Ready(crate::app::displays::tests::recorded_outputs());
     k(&mut a, KeyCode::Down);
     k(&mut a, KeyCode::Down); // Alpha
     k(&mut a, KeyCode::Enter);

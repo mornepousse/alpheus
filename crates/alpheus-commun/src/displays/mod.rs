@@ -28,9 +28,14 @@ impl Mode {
         (m.width > 0 && m.height > 0).then_some(m)
     }
 
-    /// Displayed label: "1920×1080@60".
+    /// Displayed label: "1920×1080@60"; "1280×720" for a refresh the
+    /// compositor does not know.
     pub fn label(&self) -> String {
-        format!("{}×{}@{}", self.width, self.height, self.refresh)
+        if self.refresh == 0 {
+            format!("{}×{}", self.width, self.height)
+        } else {
+            format!("{}×{}@{}", self.width, self.height, self.refresh)
+        }
     }
 }
 
@@ -338,6 +343,8 @@ mod tests {
         assert_eq!(Mode::parse("1920x1080@59.93"), None, "already rounded by wm-set");
         assert_eq!(mode(1920, 1080, 60).to_string(), "1920x1080@60");
         assert_eq!(mode(1920, 1080, 60).label(), "1920×1080@60");
+        assert_eq!(mode(1280, 720, 0).to_string(), "1280x720@0", "the wire keeps the unknown refresh");
+        assert_eq!(mode(1280, 720, 0).label(), "1280×720", "shown without a rate");
     }
 
     #[test]

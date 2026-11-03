@@ -132,10 +132,6 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
         }
         Tab::Appearance => {}
         Tab::Displays => {
-            if let Some(name) = app.displays.unavailable {
-                rows.push(Row::Text(format!("Displays: not available under {name} yet")));
-                return rows;
-            }
             rows.push(Row::Item(0));
             rows.push(Row::Blank);
             match &app.data.displays {

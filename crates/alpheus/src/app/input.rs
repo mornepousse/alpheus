@@ -71,7 +71,7 @@ impl App {
     }
 
     /// "Keep these settings?": ← Cancel, → Keep, Esc cancels; "q" closes
-    /// alpheus, and the exit cleanup undoes the trial.
+    /// alpheus, and closing asks the daemon to revert the trial.
     fn key_keep(&mut self, e: KeyEvent, now: Instant) {
         let action = if e.code == KeyCode::Esc { Some(Action::Back) } else { self.keymap.lookup(&e) };
         match action {

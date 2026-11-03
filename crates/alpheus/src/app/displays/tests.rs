@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::action::{Command, Tab};
-use crate::app::testing::ready_app;
+use crate::app::testing::{ready, ready_app};
 use crate::app::worker::{Domain, Request, Update};
 use crate::app::{Item, Loadable};
 use crate::backends::BackendError;
@@ -19,32 +19,38 @@ fn displays_tab() -> App {
     a
 }
 
-/// The sent trial: (plan, reverse plan).
-fn sent_trial(a: &mut App) -> (Plan, Plan) {
-    match a.take_requests().as_slice() {
-        [Request::Do(Op::ApplyDisplays { plan, undo: Some(u) })] => (plan.clone(), u.clone()),
-        r => panic!("expected a trial: {r:?}"),
+/// The daemon's snapshot of `outputs` with its trial as `trial`, read at `now`.
+fn read(a: &mut App, outputs: Vec<Output>, trial: TrialState, now: Instant) {
+    a.on_update(Update::Displays(Ok(Snapshot { trial, ..ready(outputs) })), now);
+}
+
+/// The actions sent to the worker (reads left out), emptying the box.
+fn sent(a: &mut App) -> Vec<Op> {
+    a.take_requests()
+        .into_iter()
+        .filter_map(|r| match r {
+            Request::Do(op) => Some(op),
+            Request::Refresh(_) => None,
+        })
+        .collect()
+}
+
+/// The plan sent to the daemon to try.
+fn sent_trial(a: &mut App) -> Plan {
+    match sent(a).as_slice() {
+        [Op::TryDisplays(plan)] => plan.clone(),
+        r => panic!("expected a try: {r:?}"),
     }
 }
 
-fn sent_undo(a: &mut App) -> Plan {
-    let r = a.take_requests();
-    r.iter()
-        .find_map(|q| match q {
-            Request::Do(Op::ApplyDisplays { plan, undo: None }) => Some(plan.clone()),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("expected a rollback: {r:?}"))
-}
-
-/// "Bureau" trial sent and applied at `t0`: countdown started.
-fn applied(t0: Instant) -> (App, Plan, Plan) {
+/// "Bureau" tried and answered at `t0`: countdown started.
+fn applied(t0: Instant) -> (App, Plan) {
     let mut a = displays_tab();
     a.apply_display_profile("Bureau", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo.clone()) }, Ok(())), t0);
+    let plan = sent_trial(&mut a);
+    a.on_update(Update::Done(Op::TryDisplays(plan.clone()), Ok(())), t0);
     a.take_requests();
-    (a, plan, undo)
+    (a, plan)
 }
 
 /// The outputs as `plan` leaves them (matching read).
@@ -58,89 +64,98 @@ fn applied_outputs(plan: &Plan) -> Vec<Output> {
 }
 
 fn no_do(a: &mut App) -> bool {
-    !a.take_requests().iter().any(|r| matches!(r, Request::Do(_)))
+    sent(a).is_empty()
+}
+
+fn toasted(a: &App, text: &str) -> usize {
+    a.toasts.iter().filter(|t| t.text == text).count()
 }
 
 #[test]
 fn locked_until_a_fresh_read() {
     let t0 = Instant::now();
-    let (mut a, plan, undo) = applied(t0);
+    let (mut a, plan) = applied(t0);
     // Read taken during the trial: it shows the tried settings.
-    a.on_update(Update::Displays(Ok(applied_outputs(&plan))), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 15 }, t0);
     a.keep_answer(false, t0);
-    assert_eq!(sent_undo(&mut a), undo);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: undo.clone(), undo: None }, Ok(())), t0);
-    assert_eq!(a.displays.undoing, None);
+    assert_eq!(sent(&mut a), vec![Op::RevertDisplays]);
     // The data is still that of the rejected trial: nothing should go out.
     a.toggle_output("HDMI-A-1", t0);
     a.apply_display_profile("Laptop seul", t0);
     assert!(no_do(&mut a), "no setting on a stale read");
     assert_eq!(a.displays.trial, None);
     // Only the fresh read is missing: the message says so.
-    assert!(a.toasts.iter().any(|t| t.text == "Displays: waiting for a fresh read"));
-    assert!(!a.toasts.iter().any(|t| t.text == "Displays: a change is already in progress"));
-    // Fresh read: the restored state becomes the new base, and the new rollback.
-    a.on_update(Update::Displays(Ok(machine())), t0);
+    assert!(toasted(&a, "Displays: waiting for a fresh read") > 0);
+    assert_eq!(toasted(&a, "Displays: a change is already in progress"), 0);
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
     a.toggle_output("HDMI-A-1", t0);
-    let (p, u) = sent_trial(&mut a);
-    assert_eq!(u, Plan::undo(&machine(), &p));
-    assert_eq!(a.displays.trial.as_ref().unwrap().before, machine());
+    assert!(no_do(&mut a), "answered, but not read since");
+    // Fresh read: the restored state becomes the new base.
+    read(&mut a, machine(), TrialState::Ended(TrialEnd::Reverted), t0);
+    a.toggle_output("HDMI-A-1", t0);
+    assert_eq!(sent_trial(&mut a).steps, vec![Step { output: "HDMI-A-1".into(), active: None }]);
 
     // Keep before any read: same lock.
-    let (mut a, _, _) = applied(t0);
+    let (mut a, _) = applied(t0);
     a.keep_answer(true, t0);
     assert_eq!(a.displays.trial, None);
+    assert_eq!(sent(&mut a), vec![Op::KeepDisplays]);
     a.toggle_output("HDMI-A-1", t0);
     assert!(no_do(&mut a), "kept but not read yet");
     assert_eq!(a.toasts.last().map(|t| t.text.as_str()), Some("Displays: waiting for a fresh read"));
-    a.on_update(Update::Displays(Ok(applied_outputs(&plan))), t0);
+    a.on_update(Update::Done(Op::KeepDisplays, Ok(())), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Kept), t0);
     a.toggle_output("HDMI-A-1", t0);
-    let (_, u) = sent_trial(&mut a);
-    assert_eq!(u, Plan::undo(&applied_outputs(&plan), &Plan { steps: vec![Step { output: "HDMI-A-1".into(), active: None }] }));
+    sent_trial(&mut a);
 }
 
 #[test]
-fn cancel_before_the_response_then_success() {
+fn cancel_while_applying() {
     let t0 = Instant::now();
     let mut a = displays_tab();
     a.apply_display_profile("Bureau", t0);
-    let (plan, undo) = sent_trial(&mut a);
+    let plan = sent_trial(&mut a);
     a.keep_answer(false, t0);
-    assert_eq!(sent_undo(&mut a), undo, "Cancel while applying: rollback right away");
-    a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo.clone()) }, Ok(())), t0);
+    assert_eq!(sent(&mut a), vec![Op::RevertDisplays], "Cancel while applying: the revert follows the try");
+    assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
+    a.on_update(Update::Done(Op::TryDisplays(plan), Ok(())), t0);
     assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None), "the trial does not come back");
-    assert_eq!(a.exit_undo(), Some(undo.clone()), "the in-flight rollback is still pending");
     a.on_tick(later(t0, 20_000));
-    assert!(no_do(&mut a), "no second rollback at the deadline");
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: undo, undo: None }, Ok(())), t0);
-    assert_eq!(a.exit_undo(), None);
-    a.on_update(Update::Displays(Ok(machine())), t0);
-    a.take_requests();
+    assert!(no_do(&mut a), "no second revert at the deadline");
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 0, "answered at once, before the compositor");
+    read(&mut a, machine(), TrialState::Ended(TrialEnd::Reverted), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1, "told by the daemon's report");
+    read(&mut a, machine(), TrialState::Ended(TrialEnd::Reverted), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1, "the same end: told once");
     a.toggle_output("HDMI-A-1", t0);
     sent_trial(&mut a);
 }
 
+/// The daemon's refusals and the daemon gone: the box closes on its words, nothing is reverted
+/// (nothing was applied).
 #[test]
-fn cancel_before_the_response_then_failure() {
-    let t0 = Instant::now();
-    let mut a = displays_tab();
-    a.apply_display_profile("Bureau", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.keep_answer(false, t0);
-    assert_eq!(sent_undo(&mut a), undo);
-    let e = BackendError::Timeout { tool: "wm-set".into() };
-    a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo.clone()) }, Err(e)), t0);
-    assert_eq!(sent_undo(&mut a), undo, "second rollback sent");
-    assert_eq!(a.displays.trial, None);
-    for _ in 0..2 {
-        a.on_update(Update::Done(Op::ApplyDisplays { plan: undo.clone(), undo: None }, Ok(())), t0);
+fn a_refused_try_closes_the_box_with_the_daemons_words() {
+    for e in [
+        "another change is in progress",
+        "refused: no screen would stay on",
+        "the compositor refused this configuration",
+        "no answer from the compositor",
+        "displays are off in bar.toml",
+        "the daemon is too old for displays",
+        "the alpheus daemon is not running",
+    ] {
+        let t0 = Instant::now();
+        let mut a = displays_tab();
+        a.apply_display_profile("Bureau", t0);
+        let plan = sent_trial(&mut a);
+        a.on_update(Update::Done(Op::TryDisplays(plan), Err(BackendError::Daemon(e.into()))), t0);
+        assert!(no_do(&mut a), "{e}: nothing reverted");
+        assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None), "{e}");
+        let msg = format!("Displays: {e}");
+        assert_eq!(a.status.error.as_deref(), Some(msg.as_str()));
+        assert_eq!(toasted(&a, &msg), 1);
     }
-    assert_eq!(a.displays.undoing, None);
-    assert_eq!(a.exit_undo(), None);
-    a.on_update(Update::Displays(Ok(machine())), t0);
-    a.take_requests();
-    a.toggle_output("HDMI-A-1", t0);
-    sent_trial(&mut a);
 }
 
 #[test]
@@ -154,26 +169,25 @@ fn tab_items() {
     );
 }
 
-/// Under Sway, as under niri, the tab calls nothing (no read, no trial, no profile), so
-/// `wm-set` is never run (`wm-set outputs` refuses there).
+/// The daemon's status: off and no manager show its words; ready with no output yet (before the
+/// compositor's first `done`) is an empty list, not an error.
 #[test]
-fn under_sway_or_niri_the_tab_calls_nothing() {
-    for name in ["Sway", "niri"] {
-        let mut a = ready_app();
-        a.displays.unavailable = Some(name);
-        a.go_tab(Tab::Displays, Instant::now());
-        assert!(a.take_requests().is_empty(), "{name}");
-        assert!(a.items().is_empty(), "{name}");
-        a.on_tick(Instant::now() + Duration::from_secs(30));
-        assert!(a.take_requests().is_empty(), "{name}: not even on tick");
-        assert!(!a.palette_matches().iter().any(|(l, _)| l.starts_with("Display profile")), "{name}");
-        a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
-        assert_eq!(a.displays.queued_profile, None, "{name}");
-        a.take_requests();
-        a.toggle_output("HDMI-A-1", Instant::now());
-        assert!(a.take_requests().is_empty(), "{name}: not even toggling an output");
-        assert_eq!(a.displays.trial, None, "{name}");
+fn the_daemons_status_shows_its_words() {
+    let t0 = Instant::now();
+    for (status, expected) in [
+        (Status::Off, Loadable::Failed("displays are off in bar.toml".into())),
+        (Status::NoManager, Loadable::Failed("the compositor has no output management".into())),
+        (Status::Ready, Loadable::Ready(Vec::new())),
+    ] {
+        let mut a = displays_tab();
+        a.displays.queued_profile = Some("Bureau".into());
+        a.on_update(Update::Displays(Ok(Snapshot { status, outputs: Vec::new(), trial: TrialState::None })), t0);
+        assert_eq!(a.data.displays, expected);
+        assert!(no_do(&mut a), "nothing tried on {status:?}");
     }
+    let mut a = displays_tab();
+    a.on_update(Update::Displays(Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
+    assert_eq!(a.data.displays, Loadable::Failed("the alpheus daemon is not running".into()));
 }
 
 #[test]
@@ -182,52 +196,68 @@ fn profile_applied_with_countdown() {
     let t0 = Instant::now();
     a.displays.profile_sel = 1; // Bureau
     a.profile_bar_activate(t0);
-    let (plan, undo) = sent_trial(&mut a);
+    let plan = sent_trial(&mut a);
     assert_eq!(plan.steps.iter().map(|s| s.output.as_str()).collect::<Vec<_>>(), vec!["DVI-I-1", "HDMI-A-1", "eDP-1"]);
-    assert_eq!(undo, Plan::undo(&machine(), &plan));
     assert_eq!(a.overlay, Overlay::Keep(Keep { keep_focused: false }), "focus on Cancel");
     let t = a.displays.trial.clone().unwrap();
     assert_eq!(t.title, "Profile \"Bureau\"");
-    assert_eq!(t.deadline, None, "no countdown before the response");
+    assert_eq!(t.deadline, None, "no countdown before the answer");
     assert_eq!(t.summary[0], "Alpha: 1920×1080@60, scale 1.0, 0°, position 0, 0");
     assert_eq!(t.summary[2], "Laptop: off");
-    assert_eq!(a.exit_undo(), Some(undo.clone()), "closing while applying: rollback");
-    a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo) }, Ok(())), t0);
+    assert!(a.trial_open(), "closing while applying: reverted");
+    a.on_update(Update::Done(Op::TryDisplays(plan), Ok(())), t0);
     let t = a.displays.trial.clone().unwrap();
     assert_eq!((t.deadline, t.remaining), (Some(t0 + KEEP_DELAY), 15));
     assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])], "re-read after applying");
 }
 
+/// The countdown runs on the tab's clock between reads; the daemon's seconds left bring it
+/// forward, never back.
+#[test]
+fn the_countdown_follows_the_daemon() {
+    let t0 = Instant::now();
+    let (mut a, plan) = applied(t0);
+    a.on_tick(later(t0, 5_200));
+    assert_eq!(a.displays.trial.as_ref().unwrap().remaining, 10);
+    read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 8 }, later(t0, 5_200));
+    assert_eq!(a.displays.trial.as_ref().unwrap().remaining, 8, "the daemon is ahead: brought forward");
+    a.on_tick(later(t0, 6_200));
+    assert_eq!(a.displays.trial.as_ref().unwrap().remaining, 7, "then the tab's own clock");
+    read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 12 }, later(t0, 6_200));
+    assert_eq!(a.displays.trial.as_ref().unwrap().remaining, 7, "never pushed back");
+    assert!(no_do(&mut a));
+}
+
 #[test]
 fn automatic_rollback_after_fifteen_seconds() {
     let t0 = Instant::now();
-    let (mut a, _, undo) = applied(t0);
+    let (mut a, plan) = applied(t0);
     a.on_tick(later(t0, 5_200));
     assert_eq!(a.displays.trial.as_ref().unwrap().remaining, 10);
-    assert!(a.take_requests().iter().all(|r| matches!(r, Request::Refresh(_))), "nothing is rolled back before 15 s");
+    assert!(no_do(&mut a), "nothing is rolled back before 15 s");
     a.on_tick(later(t0, 15_000));
-    assert_eq!(sent_undo(&mut a), undo);
-    assert_eq!(a.overlay, Overlay::None);
-    assert_eq!(a.displays.trial, None);
-    assert_eq!(a.exit_undo(), Some(undo.clone()), "unanswered rollback: redone on close");
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: undo, undo: None }, Ok(())), later(t0, 15_100));
-    assert_eq!(a.exit_undo(), None);
-    assert!(a.toasts.iter().any(|t| t.text == "Displays: previous settings restored"));
+    assert_eq!(sent(&mut a), vec![Op::RevertDisplays], "the daemon reverts on its own; asked as well");
+    assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
+    assert_eq!(toasted(&a, "Displays: time's up, rolling back to the previous settings"), 1);
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), later(t0, 15_100));
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), later(t0, 15_200));
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1);
 }
 
 #[test]
 fn cancel_and_keep() {
     let t0 = Instant::now();
-    let (mut a, _, undo) = applied(t0);
+    let (mut a, _) = applied(t0);
     a.keep_answer(false, t0);
-    assert_eq!(sent_undo(&mut a), undo, "Cancel: rollback right away");
-    let (mut a, _, _) = applied(t0);
+    assert_eq!(sent(&mut a), vec![Op::RevertDisplays], "Cancel: reverted right away");
+    assert!(!a.trial_open());
+    let (mut a, _) = applied(t0);
     a.keep_answer(true, t0);
     assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
-    assert!(a.take_requests().is_empty(), "Keep reapplies nothing");
-    assert_eq!(a.exit_undo(), None, "kept: nothing to undo on close");
+    assert_eq!(sent(&mut a), vec![Op::KeepDisplays]);
+    assert!(!a.trial_open(), "kept: nothing to revert on close");
     a.on_tick(later(t0, 20_000));
-    assert!(a.take_requests().iter().all(|r| matches!(r, Request::Refresh(_))));
+    assert!(no_do(&mut a));
 }
 
 #[test]
@@ -239,210 +269,69 @@ fn keep_waits_for_the_apply() {
     assert!(a.displays.trial.is_some(), "not applied yet: Keep has no effect");
 }
 
+/// The daemon ended the trial (its 2 s refresh): the box closes with how, and nothing is sent.
 #[test]
-fn failure_mid_plan_rolls_back_right_away() {
-    let mut a = displays_tab();
-    let t0 = Instant::now();
-    a.apply_display_profile("Bureau", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    let e = BackendError::Failed { tool: "wm-set".into(), code: Some(1), stderr: "Hyprland refused \"eval …\": boom\n".into() };
-    a.on_update(Update::Done(Op::ApplyDisplays { plan, undo: Some(undo.clone()) }, Err(e)), t0);
-    assert_eq!(sent_undo(&mut a), undo);
-    assert_eq!(a.overlay, Overlay::None);
-    assert_eq!(
-        a.status.error.as_deref(),
-        Some("Displays: wm-set failed (code 1): Hyprland refused \"eval …\": boom — rolling back to the previous settings")
-    );
-}
-
-#[test]
-fn rollback_impossible_is_reported() {
-    let mut a = displays_tab();
-    let e = BackendError::Timeout { tool: "wm-set".into() };
-    a.displays.undoing = Some(Plan::default());
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
-    assert_eq!(a.status.error.as_deref(), Some("Displays: rollback impossible: wm-set is not responding"));
-    assert_eq!(a.displays.undoing, None);
-}
-
-#[test]
-fn incomplete_rollback_is_reported() {
-    let mut a = displays_tab();
-    let e =
-        BackendError::Incomplete { failures: vec![("DVI-I-1".into(), BackendError::Timeout { tool: "wm-set".into() })], kept: Vec::new() };
-    a.displays.undoing = Some(Plan::default());
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: Plan::default(), undo: None }, Err(e)), Instant::now());
-    assert_eq!(a.status.error.as_deref(), Some("Displays: incomplete rollback: DVI-I-1 (wm-set is not responding)"));
-    assert_eq!(a.displays.undoing, None);
-}
-
-#[test]
-fn external_change_closes_without_reapplying_anything() {
-    let t0 = Instant::now();
-    let (mut a, plan, _) = applied(t0);
-    // Read matching the trial: the dialog stays.
-    a.on_update(Update::Displays(Ok(applied_outputs(&plan))), t0);
-    assert!(a.displays.trial.is_some());
-    // Dock plugged in next to it (an output the trial doesn't touch):
-    // the dialog closes, no rollback sent.
-    let mut read = applied_outputs(&plan);
-    read.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert_eq!(a.displays.trial, None);
-    assert_eq!(a.overlay, Overlay::None);
-    assert!(a.toasts.iter().any(|t| t.text == "Displays changed elsewhere"));
-    assert!(no_do(&mut a), "nothing is reapplied");
-    assert_eq!(a.exit_undo(), None);
-
-    // An untouched output unplugged (the trial only turns Bravo off): same thing.
-    let mut a = displays_tab();
-    a.toggle_output("HDMI-A-1", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
-    a.take_requests();
-    let mut read = applied_outputs(&plan);
-    read.retain(|o| o.name != "DVI-I-1");
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert_eq!(a.displays.trial, None);
-    assert_eq!(a.status.last.as_deref(), Some("Displays changed elsewhere"));
-    assert!(no_do(&mut a), "nothing is reapplied");
-}
-
-const SCREEN_LOST: &str = "Screen lost during the trial: rolling back to the previous state";
-
-#[test]
-fn touched_screen_lost_rolls_back_on_the_outputs_still_present() {
-    // Decision D1: Bureau tried (laptop panel off, Alpha and Bravo on),
-    // then Alpha (DVI-I-1) disappears.
-    let t0 = Instant::now();
-    let (mut a, plan, undo) = applied(t0);
-    let mut read = applied_outputs(&plan);
-    read.retain(|o| o.name != "DVI-I-1");
-    a.on_update(Update::Displays(Ok(read)), t0);
-    let rollback = sent_undo(&mut a);
-    let expected: Vec<Step> = undo.steps.iter().filter(|s| s.output != "DVI-I-1").cloned().collect();
-    assert_eq!(rollback.steps, expected, "reverse plan restricted to the outputs still present");
-    assert_eq!(rollback.steps[0], Step { output: "eDP-1".into(), active: machine()[0].active.clone() }, "panel turned back on");
-    assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
-    assert_eq!(a.exit_undo(), Some(rollback), "in-flight rollback: redone on close");
-    assert_eq!(a.status.error.as_deref(), Some(SCREEN_LOST));
-    assert!(a.toasts.iter().any(|t| t.text == SCREEN_LOST));
-}
-
-#[test]
-fn no_active_screen_left_rolls_back() {
-    // Every output present, none active: full rollback.
-    let t0 = Instant::now();
-    let (mut a, plan, undo) = applied(t0);
-    let mut read = applied_outputs(&plan);
-    for o in &mut read {
-        o.active = None;
+fn an_ended_trial_closes_the_keep_box() {
+    for (end, text, error) in [
+        (TrialEnd::ScreenLost, "Screen lost during the trial: rolling back to the previous state", true),
+        (TrialEnd::ChangedElsewhere, "Displays changed elsewhere", false),
+        (TrialEnd::Refused, "Displays: the compositor refused this configuration", true),
+        (TrialEnd::NoAnswer, "Displays: no answer from the compositor", true),
+        (TrialEnd::Reverted, "Displays: previous settings restored", false),
+        (TrialEnd::Kept, "Displays: settings kept", false),
+    ] {
+        let t0 = Instant::now();
+        let (mut a, plan) = applied(t0);
+        read(&mut a, applied_outputs(&plan), TrialState::Ended(end), t0);
+        assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None), "{end:?}");
+        assert!(!a.trial_open());
+        assert_eq!(toasted(&a, text), 1, "{end:?}");
+        assert_eq!(a.toasts.last().map(|t| t.error), Some(error), "{end:?}");
+        assert!(no_do(&mut a), "{end:?}: nothing sent");
+        a.on_tick(later(t0, 20_000));
+        assert!(no_do(&mut a), "{end:?}: no revert at the deadline");
     }
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert_eq!(sent_undo(&mut a), undo);
-    assert_eq!(a.displays.trial, None);
-    assert_eq!(a.status.error.as_deref(), Some(SCREEN_LOST));
 
-    // A trial that only turns Bravo off, then the other two turn off
-    // elsewhere: nothing on any more, Bravo is turned back on.
-    let mut a = displays_tab();
-    a.toggle_output("HDMI-A-1", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo.clone()) }, Ok(())), t0);
-    a.take_requests();
-    let mut read = applied_outputs(&plan);
-    read[0].active = None;
-    read[1].active = None;
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert_eq!(sent_undo(&mut a), undo);
-    assert_eq!(undo.steps, vec![Step { output: "HDMI-A-1".into(), active: machine()[2].active.clone() }]);
-}
-
-const NOTHING_TO_RESTORE: &str = "Screen lost during the trial: nothing to restore";
-
-#[test]
-fn touched_screen_renamed_within_the_same_read() {
-    // Alpha reappears right away under another connector (DVI-I-1 →
-    // DVI-I-2): the touched output has disappeared, roll back on what's left.
+    // The last end read is the one told: a cancelled trial whose revert the compositor refused.
     let t0 = Instant::now();
-    let (mut a, plan, undo) = applied(t0);
-    let mut read = applied_outputs(&plan);
-    read[1].name = "DVI-I-2".into();
-    a.on_update(Update::Displays(Ok(read)), t0);
-    let rollback = sent_undo(&mut a);
-    let expected: Vec<Step> = undo.steps.iter().filter(|s| s.output != "DVI-I-1").cloned().collect();
-    assert_eq!(rollback.steps, expected);
-    assert!(!rollback.touches("DVI-I-2"), "the new connector is not touched");
-    assert_eq!(a.status.error.as_deref(), Some(SCREEN_LOST));
+    let (mut a, plan) = applied(t0);
+    a.keep_answer(false, t0);
+    a.on_update(Update::Done(Op::RevertDisplays, Ok(())), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Reverted), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Refused), t0);
+    assert_eq!(toasted(&a, "Displays: previous settings restored"), 1);
+    assert_eq!(toasted(&a, "Displays: the compositor refused this configuration"), 1);
+    // Kept: told at once, the daemon's report of it not again.
+    let (mut a, plan) = applied(t0);
+    a.keep_answer(true, t0);
+    a.on_update(Update::Done(Op::KeepDisplays, Ok(())), t0);
+    read(&mut a, applied_outputs(&plan), TrialState::Ended(TrialEnd::Kept), t0);
+    assert_eq!(toasted(&a, "Displays: settings kept"), 1);
+    // A trial this tab never tried (another alpheus): told nothing.
+    let mut a = displays_tab();
+    read(&mut a, machine(), TrialState::Ended(TrialEnd::ScreenLost), t0);
+    assert!(a.toasts.is_empty() && a.status.error.is_none(), "{:?}", a.toasts);
 }
 
 #[test]
-fn lost_screen_never_an_unneeded_shutdown_or_the_last_one() {
+fn revert_impossible_is_reported() {
     let t0 = Instant::now();
-    // Bravo off, the trial turns it on; then everything turns off
-    // elsewhere: the rollback would only contain "turn Bravo off",
-    // already off.
-    let mut a = displays_tab();
-    let mut outs = machine();
-    outs[2].active = None;
-    a.data.displays = Loadable::Ready(outs);
-    a.toggle_output("HDMI-A-1", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    assert!(undo.steps.iter().all(|s| s.active.is_none()));
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+    let (mut a, _) = applied(t0);
+    a.keep_answer(false, t0);
     a.take_requests();
-    let mut read = applied_outputs(&plan);
-    for o in &mut read {
-        o.active = None;
-    }
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert!(no_do(&mut a), "no unneeded shutdown");
-    assert_eq!((a.displays.trial.clone(), a.displays.undoing.clone()), (None, None));
-    assert_eq!(a.status.error.as_deref(), Some(NOTHING_TO_RESTORE));
-
-    // Panel off and Alpha on; the trial swaps them, then Alpha
-    // disappears: turning the panel off would leave everything dark,
-    // nothing is sent.
-    let mut a = displays_tab();
-    let mut outs = machine();
-    outs.truncate(2);
-    let previous = outs[0].active.take();
-    a.data.displays = Loadable::Ready(outs);
-    let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: previous }, Step { output: "DVI-I-1".into(), active: None }] };
-    a.start_trial("swap".into(), plan.clone(), Vec::new(), t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
+    a.on_update(Update::Done(Op::RevertDisplays, Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
+    assert_eq!(a.status.error.as_deref(), Some("Displays: rollback impossible: the alpheus daemon is not running"));
+    let (mut a, _) = applied(t0);
+    a.keep_answer(true, t0);
     a.take_requests();
-    let mut read = applied_outputs(&plan);
-    read.truncate(1); // only the panel remains, on
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert!(no_do(&mut a), "the last output still on is never turned off");
-    assert_eq!(a.status.error.as_deref(), Some(NOTHING_TO_RESTORE));
-}
-
-#[test]
-fn touched_screen_lost_with_nothing_to_restore() {
-    // The trial only turns Alpha off, which disappears: the other
-    // outputs weren't touched, nothing to send, the dialog closes.
-    let t0 = Instant::now();
-    let mut a = displays_tab();
-    a.toggle_output("DVI-I-1", t0);
-    let (plan, undo) = sent_trial(&mut a);
-    a.on_update(Update::Done(Op::ApplyDisplays { plan: plan.clone(), undo: Some(undo) }, Ok(())), t0);
-    a.take_requests();
-    let mut read = applied_outputs(&plan);
-    read.retain(|o| o.name != "DVI-I-1");
-    a.on_update(Update::Displays(Ok(read)), t0);
-    assert!(no_do(&mut a), "no empty plan sent");
-    assert_eq!((a.displays.trial.clone(), a.displays.undoing.clone()), (None, None));
-    assert_eq!(a.overlay, Overlay::None);
-    assert_eq!(a.status.error.as_deref(), Some(NOTHING_TO_RESTORE));
+    a.on_update(Update::Done(Op::KeepDisplays, Err(BackendError::Daemon("the alpheus daemon is not running".into()))), t0);
+    assert_eq!(a.status.error.as_deref(), Some("Displays: the alpheus daemon is not running"));
 }
 
 #[test]
 fn no_other_change_during_the_trial() {
     let t0 = Instant::now();
-    let (mut a, _, _) = applied(t0);
+    let (mut a, _) = applied(t0);
     a.toggle_output("eDP-1", t0);
     a.apply_display_profile("Laptop seul", t0);
     a.open_panel("eDP-1", t0);
@@ -480,7 +369,7 @@ fn last_active_screen_protected() {
 fn toggling_an_output() {
     let mut a = displays_tab();
     a.toggle_output("eDP-1", Instant::now());
-    let (plan, _) = sent_trial(&mut a);
+    let plan = sent_trial(&mut a);
     assert_eq!(plan.steps, vec![Step { output: "eDP-1".into(), active: None }], "the others don't move");
     // An off output turns on to the right of the rightmost one (Bravo ends at 4053).
     let mut a = displays_tab();
@@ -488,7 +377,7 @@ fn toggling_an_output() {
     outs.push(off("DP-3", "Charlie Modèle 3 SERIE0003"));
     a.data.displays = Loadable::Ready(outs);
     a.toggle_output("DP-3", Instant::now());
-    let (plan, _) = sent_trial(&mut a);
+    let plan = sent_trial(&mut a);
     assert_eq!(
         plan.steps,
         vec![Step {
@@ -504,8 +393,8 @@ fn palette_profile_applied_on_the_next_read() {
     a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
     assert_eq!(a.tab, Tab::Displays);
     assert_eq!(a.take_requests(), vec![Request::Refresh(vec![Domain::Displays])], "read first, nothing applied yet");
-    a.on_update(Update::Displays(Ok(machine())), Instant::now());
-    let (plan, _) = sent_trial(&mut a);
+    read(&mut a, machine(), TrialState::None, Instant::now());
+    let plan = sent_trial(&mut a);
     assert!(plan.touches("DVI-I-1"));
     assert_eq!(a.displays.queued_profile, None);
 }
@@ -515,10 +404,10 @@ fn queued_profile_dropped_if_the_read_fails() {
     let mut a = ready_app();
     a.run_command(Command::ApplyDisplayProfile("Bureau".into()), Instant::now());
     a.take_requests();
-    a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
+    a.on_update(Update::Displays(Err(BackendError::Daemon("the alpheus daemon is not running".into()))), Instant::now());
     assert_eq!(a.displays.queued_profile, None);
     // A successful read much later applies nothing.
-    a.on_update(Update::Displays(Ok(machine())), Instant::now());
+    read(&mut a, machine(), TrialState::None, Instant::now());
     assert!(no_do(&mut a), "profile dropped along with the failed read");
     assert_eq!(a.displays.trial, None);
 }
@@ -594,7 +483,7 @@ fn scaling_the_origin_neighbors_follow() {
     assert_eq!(plan.steps[1].active.as_ref().map(|a| (a.x, a.y)), Some((1749, 0)), "Bravo follows Alpha");
     a.panel_apply(Instant::now());
     assert_eq!(a.displays.trial.as_ref().unwrap().title, "Adjusting Alpha");
-    assert_eq!(sent_trial(&mut a).0, plan);
+    assert_eq!(sent_trial(&mut a), plan);
 }
 
 #[test]
@@ -664,8 +553,7 @@ fn rotation_and_scale() {
 #[test]
 fn mode_search() {
     let mut a = displays_tab();
-    a.data.displays =
-        Loadable::Ready(crate::backends::displays::parse_outputs(include_str!("../../../tests/fixtures/wm-set-outputs.json")).unwrap());
+    a.data.displays = Loadable::Ready(recorded_outputs());
     a.open_panel("DVI-I-1", Instant::now());
     assert_eq!(a.panel_modes(&panel(&a)).len(), 26);
     a.panel_query(|q| q.push_str("1280"));
@@ -685,7 +573,7 @@ fn panel_of_an_unplugged_output() {
     let without: Vec<Output> = machine().into_iter().filter(|o| o.name != "HDMI-A-1").collect();
     a.data.displays = Loadable::Ready(without.clone());
     assert_eq!(a.panel_preview(&p), Err("output unplugged".into()));
-    a.on_update(Update::Displays(Ok(without)), Instant::now());
+    read(&mut a, without, TrialState::None, Instant::now());
     assert_eq!(a.overlay, Overlay::None);
     assert!(a.toasts.iter().any(|t| t.text == "Displays: HDMI-A-1 unplugged, setting abandoned"));
 }
@@ -715,7 +603,7 @@ fn space_on_an_off_screen_the_others_do_not_move() {
     let mut a = displays_tab();
     a.data.displays = Loadable::Ready(without_laptop());
     a.toggle_output("eDP-1", Instant::now());
-    let (plan, _) = sent_trial(&mut a);
+    let plan = sent_trial(&mut a);
     assert_eq!(
         plan.steps,
         vec![Step {
@@ -859,4 +747,9 @@ fn placement_labels_text() {
     assert_eq!(placement_labels(&machine()), vec!["position 0, 1080", "origin", "right of Alpha"]);
     let outs = vec![on("DP-1", ALPHA, 1920, 1080, 0, 0), on("DP-2", BRAVO, 800, 600, 560, 1080), off("DP-3", "Charlie 3")];
     assert_eq!(placement_labels(&outs), vec!["origin", "below Alpha, centered", ""]);
+}
+
+/// The machine's outputs as the daemon's snapshot gives them (anonymised: descriptions replaced).
+pub(crate) fn recorded_outputs() -> Vec<Output> {
+    crate::displays::wire::decode_snapshot(include_str!("../../../tests/fixtures/outputs-snapshot.txt")).unwrap().outputs
 }

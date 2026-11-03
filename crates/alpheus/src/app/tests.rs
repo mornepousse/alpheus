@@ -26,12 +26,13 @@ fn updates() {
 #[test]
 fn display_read_ignored_during_a_setting() {
     let mut a = ready_app();
-    a.on_update(Update::Displays(Ok(Vec::new())), Instant::now());
+    use crate::app::testing::ready;
+    a.on_update(Update::Displays(Ok(ready(Vec::new()))), Instant::now());
     assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
-    a.send_op(Op::ApplyDisplays { plan: crate::displays::Plan::default(), undo: None });
-    a.on_update(Update::Displays(Ok(crate::displays::testing::machine())), Instant::now());
+    a.send_op(Op::TryDisplays(crate::displays::Plan::default()));
+    a.on_update(Update::Displays(Ok(ready(crate::displays::testing::machine()))), Instant::now());
     assert_eq!(a.data.displays, Loadable::Ready(Vec::new()), "stale read ignored");
-    a.on_update(Update::Displays(Err(BackendError::Missing { tool: "wm-set".into() })), Instant::now());
+    a.on_update(Update::Displays(Err(BackendError::Daemon("the alpheus daemon is not running".into()))), Instant::now());
     assert_eq!(a.data.displays, Loadable::Ready(Vec::new()));
 }
 

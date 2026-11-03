@@ -221,20 +221,34 @@ fn last_screen_greyed_out() {
     assert!(draw(&a, 100, 28).0.join("\n").contains("[■] only on"));
 }
 
+/// Under any compositor the tab shows what the daemon says, as it says it: its absence, a daemon
+/// too old, its status; the profiles stay visible.
 #[test]
-fn displays_under_sway_or_niri_or_loading_or_failed() {
-    for name in ["Sway", "niri"] {
+fn daemon_absent_shows_its_message() {
+    use crate::app::testing::FakeDisplays;
+    use crate::app::worker::{Domain, fetch};
+    use crate::displays::wire::{Snapshot, Status, TrialState};
+    use std::sync::Arc;
+    let dir = alpheus_commun::temp_path::TempPath::new("ui-daemon-absent");
+    let mut b = crate::backends::Backends::system(Arc::new(crate::exec::fake::FakeExecutor::new()), dir.to_path_buf());
+    let fake = Arc::new(FakeDisplays::default());
+    b.displays = fake.clone();
+    let off = |status| Ok(Snapshot { status, outputs: Vec::new(), trial: TrialState::None });
+    for (answer, shown) in [
+        (Err("the alpheus daemon is not running".to_string()), "✗ the alpheus daemon is not running"),
+        (Err("the daemon is too old for displays".to_string()), "✗ the daemon is too old for displays"),
+        (off(Status::Off), "✗ displays are off in bar.toml"),
+        (off(Status::NoManager), "✗ the compositor has no output management"),
+    ] {
+        *fake.snapshot.lock().unwrap() = answer;
         let mut a = displays_tab();
-        a.displays.unavailable = Some(name);
-        let all = draw(&a, 80, 24).0.join("\n");
-        assert!(all.contains(&format!("Displays: not available under {name} yet")), "{all}");
-        assert!(!all.contains("[ Bureau ]"), "nothing else on the tab");
+        a.on_update(fetch(&b, Domain::Displays), Instant::now());
+        let all = draw(&a, 100, 24).0.join("\n");
+        assert!(all.contains(shown), "{shown}:\n{all}");
+        assert!(all.contains("[ Bureau ]"), "the profiles stay visible");
+        assert!(!all.contains("1 Laptop"), "no output listed");
     }
     let mut a = displays_tab();
-    a.data.displays = Loadable::Failed("wm-set failed (code 1): unknown subcommand: outputs".into());
-    let all = draw(&a, 100, 24).0.join("\n");
-    assert!(all.contains("✗ wm-set failed (code 1): unknown subcommand: outputs"), "{all}");
-    assert!(all.contains("[ Bureau ]"), "the profiles stay visible");
     a.data.displays = Loadable::Loading;
     assert!(draw(&a, 80, 24).0.join("\n").contains('…'));
 }

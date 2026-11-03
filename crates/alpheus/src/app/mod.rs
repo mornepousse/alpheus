@@ -182,7 +182,7 @@ fn op_label(op: &Op) -> String {
         Op::ToggleKeepAwake { .. } => toggle_label(ToggleId::KeepAwake).into(),
         Op::SetProfile(_) => "Energy profile".into(),
         Op::Power(a) => a.label().into(),
-        Op::ApplyDisplays { .. } => "Displays".into(),
+        Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => "Displays".into(),
     }
 }
 
@@ -264,22 +264,6 @@ impl App {
         app
     }
 
-    /// Under Sway or niri (`name`) the Displays tab calls nothing: a read of the displays already
-    /// queued (opening on that tab) is dropped too.
-    pub fn set_displays_unavailable(&mut self, name: Option<&'static str>) {
-        self.displays.unavailable = name;
-        if name.is_none() {
-            return;
-        }
-        for r in &mut self.requests {
-            if let Request::Refresh(ds) = r {
-                ds.retain(|d| *d != Domain::Displays);
-            }
-        }
-        self.requests.retain(|r| !matches!(r, Request::Refresh(ds) if ds.is_empty()));
-        self.last_read.remove(&Domain::Displays);
-    }
-
     /// Requests to forward to the worker (empties the box).
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
@@ -357,11 +341,8 @@ impl App {
             Update::KeepAwake(r) => self.data.keep_awake = r.into(),
             Update::Profiles(r) => self.data.profiles = r.into(),
             Update::Audio(r) => self.data.audio = r.into(),
-            Update::Displays(r) => {
-                self.data.displays = r.into();
-                self.displays_read(now);
-            }
-            Update::Done(op @ Op::ApplyDisplays { .. }, r) => {
+            Update::Displays(r) => self.displays_read(r, now),
+            Update::Done(op @ (Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays), r) => {
                 self.op_answered(&op);
                 self.displays_done(op, r, now);
             }
@@ -414,7 +395,7 @@ impl App {
             Op::ToggleKeepAwake { now_on } => onoff(ToggleId::KeepAwake, *now_on),
             Op::SetProfile(p) => format!("Profile: {}", profile_label(p)),
             Op::Power(a) => a.label().to_string(),
-            Op::ApplyDisplays { .. } => return None,
+            Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => return None,
         })
     }
 
@@ -452,10 +433,7 @@ impl App {
     }
 
     /// Requests a re-read of `ds` and records the time, domain by domain.
-    fn push_refresh(&mut self, mut ds: Vec<Domain>, now: Instant) {
-        if self.displays.unavailable.is_some() {
-            ds.retain(|d| *d != Domain::Displays); // under Sway or niri, the tab calls nothing
-        }
+    fn push_refresh(&mut self, ds: Vec<Domain>, now: Instant) {
         if ds.is_empty() {
             return;
         }
@@ -521,7 +499,6 @@ impl App {
             }
             Tab::Power => PowerAction::ALL.iter().map(|a| Item::Button(Command::Power(*a))).collect(),
             Tab::Appearance => Vec::new(),
-            Tab::Displays if self.displays.unavailable.is_some() => Vec::new(),
             Tab::Displays => {
                 std::iter::once(Item::DisplayProfiles).chain(self.outputs().iter().map(|o| Item::Output(o.name.clone()))).collect()
             }
@@ -582,9 +559,7 @@ impl App {
             Command::ApplyDisplayProfile(name) => {
                 // Applied on the next read: never on a stale state.
                 self.go_tab(Tab::Displays, now);
-                if self.displays.unavailable.is_none() {
-                    self.displays.queued_profile = Some(name);
-                }
+                self.displays.queued_profile = Some(name);
             }
         }
     }
@@ -723,8 +698,7 @@ impl App {
             _ => "",
         };
         let profiles = self.data.profiles.ready().map(|p| p.available.clone()).unwrap_or_default();
-        let display_profiles: Vec<String> =
-            if self.displays.unavailable.is_some() { Vec::new() } else { self.displays.profiles.iter().map(|p| p.name.clone()).collect() };
+        let display_profiles: Vec<String> = self.displays.profiles.iter().map(|p| p.name.clone()).collect();
         let entries = palette_entries(&profiles, &display_profiles);
         let labels: Vec<&str> = entries.iter().map(|(l, _)| l.as_str()).collect();
         fuzzy::rank(query, &labels).into_iter().map(|i| entries[i].clone()).collect()
@@ -796,6 +770,62 @@ impl App {
 #[cfg(test)]
 pub(crate) mod testing {
     use super::*;
+    use crate::backends::Displays;
+    use crate::displays::Step;
+    use crate::displays::wire::{Snapshot, Status, TrialState};
+    use std::sync::Mutex;
+
+    /// The daemon's displays, answered from memory: what the tab asks is recorded.
+    pub struct FakeDisplays {
+        pub snapshot: Mutex<Result<Snapshot, String>>,
+        /// The answer to a try, a keep or a revert.
+        pub answer: Mutex<Result<(), String>>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl Default for FakeDisplays {
+        fn default() -> Self {
+            let snapshot = Snapshot { status: Status::Ready, outputs: crate::displays::testing::machine(), trial: TrialState::None };
+            FakeDisplays { snapshot: Mutex::new(Ok(snapshot)), answer: Mutex::new(Ok(())), calls: Mutex::default() }
+        }
+    }
+
+    impl FakeDisplays {
+        /// "snapshot", "try <output>,<output>", "keep", "revert".
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+
+        fn call(&self, c: String) -> Result<(), String> {
+            self.calls.lock().unwrap().push(c);
+            self.answer.lock().unwrap().clone()
+        }
+    }
+
+    impl Displays for FakeDisplays {
+        fn snapshot(&self) -> Result<Snapshot, String> {
+            self.calls.lock().unwrap().push("snapshot".into());
+            self.snapshot.lock().unwrap().clone()
+        }
+
+        fn try_(&self, steps: &[Step]) -> Result<(), String> {
+            self.call(format!("try {}", steps.iter().map(|s| s.output.as_str()).collect::<Vec<_>>().join(",")))
+        }
+
+        fn keep(&self) -> Result<(), String> {
+            self.call("keep".into())
+        }
+
+        fn revert(&self) -> Result<(), String> {
+            self.call("revert".into())
+        }
+    }
+
+    /// The daemon's snapshot of `outputs`, no trial.
+    pub fn ready(outputs: Vec<Output>) -> Snapshot {
+        Snapshot { status: Status::Ready, outputs, trial: TrialState::None }
+    }
+
     use crate::backends::{BtDevice, Connection};
 
     pub fn app() -> App {

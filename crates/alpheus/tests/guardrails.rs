@@ -4,7 +4,7 @@
 
 use alpheus::app::worker::{Domain, Op, fetch, perform};
 use alpheus::backends::{Backends, NodeRef, PowerAction};
-use alpheus::displays::{Active, Mode, Plan, Scale, Step};
+use alpheus::displays::{Plan, Step};
 use alpheus::exec::fake::FakeExecutor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +15,10 @@ const ALLOWED: [&str; 10] =
 #[test]
 fn every_launched_command_is_on_the_allowlist() {
     let fake = Arc::new(FakeExecutor::new());
-    let b = Backends::system(fake.clone(), std::env::temp_dir());
+    // The displays ask the daemon's socket in the runtime directory: one that does not exist here,
+    // so they reach no daemon (never the session's), and run no command.
+    let runtime = std::env::temp_dir().join(format!("alpheus-guardrails-{}-no-runtime", std::process::id()));
+    let b = Backends::system(fake.clone(), runtime);
     for d in Domain::ALL {
         let _ = fetch(&b, d);
     }
@@ -32,30 +35,17 @@ fn every_launched_command_is_on_the_allowlist() {
         Op::SetDnd(false),
         Op::ToggleKeepAwake { now_on: true },
         Op::SetProfile("balanced".into()),
-        // A plan stops at the first failure (here, every call fails): one
-        // step per plan, so every command line gets checked.
-        Op::ApplyDisplays {
-            plan: Plan {
-                steps: vec![Step {
-                    output: "HDMI-A-1".into(),
-                    active: Some(Active {
-                        mode: Mode { width: 1920, height: 1080, refresh: 60 },
-                        x: 0,
-                        y: 0,
-                        scale: Scale::ONE,
-                        transform: 0,
-                    }),
-                }],
-            },
-            undo: None,
-        },
-        Op::ApplyDisplays { plan: Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] }, undo: None },
+        Op::TryDisplays(Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] }),
+        Op::KeepDisplays,
+        Op::RevertDisplays,
     ];
     for op in ops.into_iter().chain(PowerAction::ALL.map(Op::Power)) {
         let _ = perform(&b, &op);
     }
     let calls = fake.calls();
-    assert!(calls.len() >= 20, "{calls:?}");
+    // 24 calls today; the floor drops by the three `wm-set` calls the displays no longer make
+    // (`outputs`, `monitor`, `monitor-disable`): 20 → 17.
+    assert!(calls.len() >= 17, "{calls:?}");
     for c in &calls {
         let prog = c.split(' ').next().unwrap();
         assert!(ALLOWED.contains(&prog), "command off the list: {c}");
@@ -64,10 +54,8 @@ fn every_launched_command_is_on_the_allowlist() {
             assert!(["systemctl suspend", "systemctl reboot", "systemctl poweroff"].contains(&c.as_str()), "{c}");
         }
         if prog == "wm-set" {
-            // Leaving the session, reading and adjusting the displays: nothing else.
-            let ok =
-                c == "wm-set exit" || c == "wm-set outputs" || c.starts_with("wm-set monitor ") || c.starts_with("wm-set monitor-disable ");
-            assert!(ok, "wm-set subcommand off the list: {c}");
+            // Leaving the session, nothing else: the displays go through the daemon.
+            assert_eq!(c, "wm-set exit", "wm-set subcommand off the list");
         }
     }
 }
