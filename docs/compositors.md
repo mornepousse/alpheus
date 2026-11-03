@@ -1,9 +1,12 @@
 # Compositors and external commands
 
-alpheus never writes to a compositor. It only **reads** each compositor's own
-socket for state, and every action that must reach a compositor (switching a
-workspace, focusing a window, changing a monitor, logging out) goes through an
-external command that you provide. This page lists what each compositor gives
+alpheus never writes to a compositor's socket. It only **reads** each
+compositor's own socket for state, and every action that must reach a
+compositor (switching a workspace, focusing a window, logging out) goes through
+an external command that you provide. One exception: the daemon changes the
+screens' layout itself through the Wayland protocol `zwlr_output_configuration_v1`
+(`outputs/wlr.rs`; the Displays tab and screen profiles, below), never output
+power management, never `dpms`. This page lists what each compositor gives
 the bar, and exactly which commands alpheus runs and what it expects of them.
 
 ## Detection
@@ -24,7 +27,8 @@ workspaces would be.
 ## Support matrix
 
 Legend: yes = implemented and covered by tests; partial = see the note;
-no = not available; "unverified" = reasoned from the code, never run.
+no = not available; "unverified" = reasoned from the code, never run (for the
+Displays row: the protocol code is shared, but only Sway's was run, headless).
 
 | Feature | Hyprland | niri | Sway | Mango | Other layer-shell |
 |---|---|---|---|---|---|
@@ -34,7 +38,7 @@ no = not available; "unverified" = reasoned from the code, never run.
 | Launcher's windows list and focus | yes: `address:0x…` selectors | yes: `id:N` | yes: `id:<con_id>` | yes: `id:<client id>` | no: the list is empty |
 | Order of that list | previous window first, focused last | same | same (Sway's own focus order) | same (a focus history the daemon keeps) | n/a |
 | Screen-capture privacy indicator | yes: PipeWire, plus the compositor's `screencast` events | yes: PipeWire, plus niri's cast events | partial: PipeWire only; a recorder that does not go through PipeWire (wf-recorder) is not seen | partial: PipeWire only, same limit | partial, unverified: PipeWire only |
-| Displays tab (TUI) and profiles on hotplug | yes: through `zwlr_output_manager_v1`, in the daemon | same | same | same | yes if the compositor implements `zwlr_output_manager_v1`; otherwise the tab says "the compositor has no output management" |
+| Displays tab (TUI) and profiles on hotplug | yes, unverified: through `zwlr_output_manager_v1`, in the daemon | yes, unverified: same | yes: same, tested against a headless Sway | yes, unverified: same | unverified: works if the compositor implements `zwlr_output_manager_v1`; otherwise the tab says "the compositor has no output management" |
 | Keyboard-grab caveat | On every Hyprland version the bar stays non-exclusive while a menu grabs (Hyprland hands the grab the keyboard itself). The `alpheus-launch --quick` panel has no grab and makes the bar exclusive; on Hyprland before 0.56.2 (hyprwm/Hyprland#15729) a click inside it may then close it | none known | a grabbing popup gets no keyboard unless the bar surface is exclusive: alpheus makes it exclusive during a grab | unverified | unverified |
 
 Notes.
@@ -42,7 +46,13 @@ Notes.
 - Sway and Mango were added last. They are covered by tests against recorded
   Mango captures and a headless Sway, and the daemon's memory and wake-up
   tests run under both. The author's daily trial under them is still pending,
-  so treat them as less proven than Hyprland and niri.
+  so treat them as less proven than Hyprland and niri. That does not apply to
+  the Displays row, the other way round: Sway is the one compositor its tests
+  run against.
+- A configuration the Displays tab or a profile applied lasts until the
+  compositor reloads its own: Sway keeps it until `swaymsg reload`, niri and
+  Hyprland lose it on a config reload. The daemon re-applies a matching profile
+  only when the screens change, not on a compositor reload.
 - On any compositor the bar also needs layer-shell, and its menus need
   xdg-shell popups. The notification bubbles, the OSD and the launcher are
   layer-shell surfaces on the Overlay layer (above a fullscreen window).
@@ -67,7 +77,8 @@ a log line) and nothing else breaks.
 
 ### `wm-set`
 
-A single script is the one place where compositor-specific writes live. The
+A single script is the one place where compositor-specific writes live (the
+screens' layout aside: the daemon sets it through the output protocol, below). The
 repository does not ship it (the author's lives in a private configuration), so
 here is the contract. Write one for your compositor, or point the configurable
 commands at your own tools.
