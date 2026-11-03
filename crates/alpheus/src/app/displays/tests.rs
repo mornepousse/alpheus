@@ -863,3 +863,64 @@ fn leaving_the_tab_drops_a_queued_profile() {
     assert!(no_do(&mut a), "not applied on coming back");
     assert_eq!(toasted(&a, "Displays: profile not applied (busy)"), 0);
 }
+
+/// Final review (B-M1): the daemon reports no trial while this tab counts down (it restarted, or
+/// the trial ended unseen): the box closes, nothing to keep or revert. A read before the daemon
+/// answered the try is no such report.
+#[test]
+fn no_trial_in_the_daemon_closes_the_keep_box() {
+    let t0 = Instant::now();
+    let (mut a, _) = applied(t0);
+    read(&mut a, machine(), TrialState::None, t0);
+    assert_eq!((a.displays.trial.clone(), a.overlay.clone()), (None, Overlay::None));
+    assert_eq!(toasted(&a, "Displays: nothing changed"), 1);
+    assert!(no_do(&mut a), "nothing to revert");
+    a.on_tick(later(t0, 20_000));
+    assert!(no_do(&mut a), "no revert at the deadline either");
+
+    // The try not answered yet: a read with no trial predates it, the box stays.
+    let mut a = displays_tab();
+    a.apply_display_profile("Bureau", t0);
+    let plan = sent_trial(&mut a);
+    read(&mut a, machine(), TrialState::None, t0);
+    a.on_update(Update::Done(Op::TryDisplays(plan.clone()), Ok(())), t0);
+    assert!(a.displays.trial.is_some() && matches!(a.overlay, Overlay::Keep(_)));
+    assert_eq!(toasted(&a, "Displays: nothing changed"), 0);
+    // Answered: the daemon's open trial keeps it too.
+    read(&mut a, applied_outputs(&plan), TrialState::Open { seconds_left: 14 }, t0);
+    assert!(a.displays.trial.is_some() && matches!(a.overlay, Overlay::Keep(_)));
+}
+
+/// Final review (B-M2): another alpheus's trial open in the daemon locks this tab until a read
+/// reports no trial.
+#[test]
+fn another_trial_open_locks_the_tab() {
+    let t0 = Instant::now();
+    let mut a = displays_tab();
+    read(&mut a, machine(), TrialState::Open { seconds_left: 12 }, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    a.apply_display_profile("Bureau", t0);
+    assert!(no_do(&mut a), "another trial is open");
+    assert_eq!(a.displays.trial, None);
+    read(&mut a, machine(), TrialState::None, t0);
+    a.toggle_output("HDMI-A-1", t0);
+    assert_eq!(sent_trial(&mut a).steps, vec![Step { output: "HDMI-A-1".into(), active: None }]);
+}
+
+/// B-M1's guards, each on its own (the app drops a read while an action is pending, so both
+/// cases are reached here by hand): a try not answered yet, and an action of this tab's in flight,
+/// keep the box on a read with no trial.
+#[test]
+fn no_trial_read_guards() {
+    let t0 = Instant::now();
+    let none = || Ok(Snapshot { trial: TrialState::None, ..ready(machine()) });
+    let (mut a, _) = applied(t0);
+    a.displays.trial.as_mut().unwrap().deadline = None;
+    a.displays_read(none(), t0);
+    assert!(a.displays.trial.is_some(), "the try not answered");
+    let (mut a, _) = applied(t0);
+    a.send_op(Op::RevertDisplays);
+    a.displays_read(none(), t0);
+    assert!(a.displays.trial.is_some(), "an action in flight");
+    assert_eq!(toasted(&a, "Displays: nothing changed"), 0);
+}

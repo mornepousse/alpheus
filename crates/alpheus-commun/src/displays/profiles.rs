@@ -665,13 +665,13 @@ placement = { x = 0, y = 0 }
         Profile { name: name.into(), screens }
     }
 
-    const LENOVO: &str = "Lenovo Group Limited LEN T24i-10";
+    const OLD_DESCRIPTION: &str = "Acme Corporation ACM ALPHA-10";
 
     #[test]
     fn an_old_profile_matches_by_compositor_description() {
-        let mut o = on("DP-1", "Lenovo Group Limited LEN T24i-10 V1234", 1920, 1080, 0, 0);
-        o.compositor_description = LENOVO.into();
-        let profiles = vec![profile("Old", vec![screen(LENOVO, None, 0)])];
+        let mut o = on("DP-1", "Acme Corporation ACM ALPHA-10 V1234", 1920, 1080, 0, 0);
+        o.compositor_description = OLD_DESCRIPTION.into();
+        let profiles = vec![profile("Old", vec![screen(OLD_DESCRIPTION, None, 0)])];
         assert!(matches!(match_profile(&profiles, std::slice::from_ref(&o)), ProfileMatch::Matches(p) if p.name == "Old"));
         // plan_profile resolves the same way: nothing absent.
         assert!(plan_profile(&profiles[0], &[o]).unwrap().absent.is_empty());

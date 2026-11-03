@@ -4,7 +4,7 @@
 //! its own (displays protocol spec); the tab shows its countdown, sends Keep
 //! or Cancel, and learns from the 2 s refresh how a trial ended.
 
-use super::worker::Op;
+use super::worker::{Domain, Op};
 use super::{App, Loadable, Overlay};
 use crate::backends::BResult;
 use crate::displays::geometry::{Align, GeoError, Placement, Relation, Screen, deduce, logical_size, resolve};
@@ -49,7 +49,7 @@ pub struct DisplaysTab {
     pub queued_until: Option<Instant>,
     /// A plan has answered and no fresh read has arrived yet, or the last read said the daemon
     /// is busy or reported an end: the known outputs may be those of a rejected trial, so
-    /// nothing is planned on top of them until a read with no trial (or an open one).
+    /// nothing is planned on top of them until a read with no trial (or this tab's own open one).
     pub awaiting_read: bool,
 }
 
@@ -338,6 +338,7 @@ impl App {
             Status::NoManager => Loadable::Failed(NO_MANAGER.into()),
         };
         self.trial_read(snapshot.trial, now);
+        self.trial_gone(snapshot.trial, now);
         let Some(outs) = self.data.displays.ready().cloned() else {
             self.displays.queued_profile = None;
             return;
@@ -345,7 +346,12 @@ impl App {
         // Read that comes after any answer (reads in flight during a change are discarded): a
         // reliable base going forward, unless a configuration still flies or its end was just
         // reported (the outputs may predate the compositor's `done`).
-        self.displays.awaiting_read = matches!(snapshot.trial, TrialState::Busy | TrialState::Ended(_));
+        // Another alpheus's trial open: its screens may be rolled back, wait for its end too.
+        self.displays.awaiting_read = match snapshot.trial {
+            TrialState::Busy | TrialState::Ended(_) => true,
+            TrialState::Open { .. } => self.displays.trial.is_none(),
+            TrialState::None => false,
+        };
         if let Overlay::Panel(p) = &self.overlay {
             if !outs.iter().any(|o| o.name == p.output) {
                 let msg = format!("Displays: {} unplugged, setting abandoned", p.output);
@@ -391,6 +397,20 @@ impl App {
                 self.displays.told = Some(end);
             }
         }
+    }
+
+    /// A fresh read (no action of this tab's in flight) with no trial in the daemon while this
+    /// tab counts down an answered try: the daemon restarted, or the trial ended unseen. The box
+    /// closes; there is nothing left to keep or revert.
+    fn trial_gone(&mut self, state: TrialState, now: Instant) {
+        let answered = self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some());
+        if state != TrialState::None || !answered || self.is_pending(Domain::Displays) {
+            return;
+        }
+        self.displays.trial = None;
+        self.close_keep();
+        self.status.last = Some("Displays: nothing changed".into());
+        self.toast("Displays: nothing changed".into(), false, now);
     }
 
     fn tell_end(&mut self, end: TrialEnd, now: Instant) {

@@ -50,7 +50,8 @@ fn the_foundation_carries_no_display_dependency() {
 fn the_tui_does_not_carry_wayland() {
     let f = closure(&graph(), "alpheus");
     assert!(f.contains("alpheus-commun") && f.contains("ratatui"), "{f:?}");
-    for forbidden in ["wayland-client", "smithay-client-toolkit", "cosmic-text"] {
+    // The displays tab talks to the daemon over its socket: no output protocol, no launch client.
+    for forbidden in ["wayland-client", "smithay-client-toolkit", "cosmic-text", "wayland-protocols-wlr", "alpheus-launch"] {
         assert!(!f.contains(forbidden), "the TUI pulls in {forbidden}");
     }
 }

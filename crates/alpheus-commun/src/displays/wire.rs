@@ -295,8 +295,8 @@ mod tests {
             status: Status::Ready,
             outputs: vec![
                 output("eDP-1", "Laptop panel", Some(active(mode(2560, 1600, 165), 0, 0, 1250, 0)), false),
-                output("DVI-I-1", "Lenovo LEN T24i", Some(active(mode(1920, 1080, 60), -1920, 120, 1000, 3)), true),
-                output("HDMI-A-1", "Dell U2415", None, false),
+                output("DVI-I-1", "Acme ALPHA", Some(active(mode(1920, 1080, 60), -1920, 120, 1000, 3)), true),
+                output("HDMI-A-1", "Acme BRAVO", None, false),
             ],
             trial: TrialState::Open { seconds_left: 12 },
         }
@@ -335,7 +335,7 @@ mod tests {
                 "status ready",
                 "trial open 12",
                 "output\teDP-1\tLaptop panel\tLaptop panel (compositor)\t0\t2560x1600@165 0 0 1250 0\t1920x1080@60,1280x720@60",
-                "output\tDVI-I-1\tLenovo LEN T24i\tLenovo LEN T24i (compositor)\t1\t1920x1080@60 -1920 120 1000 3\t1920x1080@60,1280x720@60",
+                "output\tDVI-I-1\tAcme ALPHA\tAcme ALPHA (compositor)\t1\t1920x1080@60 -1920 120 1000 3\t1920x1080@60,1280x720@60",
             ]
         );
         assert!(text.contains("\toff\t1920x1080@60,1280x720@60\n"));

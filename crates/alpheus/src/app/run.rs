@@ -5,7 +5,7 @@
 use super::App;
 use super::action::Tab;
 use super::keymap::Keymap;
-use super::worker::{self, Request, Update};
+use super::worker::{self, Domain, Request, Update};
 use crate::backends::{Backends, Displays};
 use crate::config::Config;
 use crate::displays::profiles;
@@ -40,6 +40,28 @@ fn revert_on_close(app: &App, displays: &dyn Displays) {
     if app.trial_open() {
         let _ = displays.revert();
     }
+}
+
+/// How long closing waits for a displays action still in the worker (a Keep pressed just before
+/// quitting, a try not answered yet) before deciding on the revert.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+/// Closing: what the app queued goes to the worker; a displays action still in flight is waited
+/// for, at most `wait`, so a Keep reaches the daemon and a try is not overtaken by the revert;
+/// then a trial still open is reverted.
+fn close(app: &mut App, tx: &Sender<Request>, rx: &Receiver<Update>, displays: &dyn Displays, wait: Duration) {
+    for r in app.take_requests() {
+        let _ = tx.send(r);
+    }
+    let deadline = Instant::now() + wait;
+    while app.is_pending(Domain::Displays) {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else { break };
+        match rx.recv_timeout(left) {
+            Ok(u) => app.on_update(u, Instant::now()),
+            Err(_) => break, // out of time, or the worker gone
+        }
+    }
+    revert_on_close(app, displays);
 }
 
 /// Starts the guard thread. Window closed (SIGHUP): crossterm can spin
@@ -163,7 +185,7 @@ fn event_loop(
 ) -> io::Result<()> {
     loop {
         if should_exit(&app, &STOP_REQUESTED) {
-            revert_on_close(&app, displays);
+            close(&mut app, tx, rx, displays, CLOSE_WAIT);
             return Ok(()); // the Cleanup guard restores the terminal and kills the tools
         }
         for r in app.take_requests() {
@@ -172,7 +194,7 @@ fn event_loop(
         let mut hits = ui::HitMap::default();
         terminal.draw(|f| hits = ui::render(f, &app))?;
         if app.should_quit {
-            revert_on_close(&app, displays);
+            close(&mut app, tx, rx, displays, CLOSE_WAIT);
             return Ok(());
         }
         if let Some(ext) = app.take_external() {
@@ -202,7 +224,7 @@ mod tests {
     use crate::app::testing::ready_app;
 
     use crate::app::testing::FakeDisplays;
-    use crate::app::worker::{Domain, Op, fetch};
+    use crate::app::worker::{Op, fetch};
     use crate::exec::fake::FakeExecutor;
 
     fn args(v: &[&str]) -> Vec<String> {
@@ -271,6 +293,72 @@ mod tests {
         a.keep_answer(true, t0);
         revert_on_close(&a, &fake);
         assert!(fake.calls().is_empty(), "no trial, or kept: {:?}", fake.calls());
+    }
+
+    /// Final review (B-M3): closing with a displays action still in the worker sends what is
+    /// queued and waits for its answer before deciding on the revert: a Keep pressed just before
+    /// quitting reaches the daemon, a try is answered before the close-time revert follows it.
+    #[test]
+    fn closing_waits_for_a_pending_displays_action() {
+        // A worker answering each action after `delay`, recording them in order.
+        fn worker(delay: Duration) -> (Sender<Request>, Receiver<Update>, Arc<std::sync::Mutex<Vec<String>>>) {
+            let (tx_req, rx_req) = std::sync::mpsc::channel::<Request>();
+            let (tx_up, rx_up) = std::sync::mpsc::channel::<Update>();
+            let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = log.clone();
+            std::thread::spawn(move || {
+                while let Ok(r) = rx_req.recv() {
+                    if let Request::Do(op) = r {
+                        std::thread::sleep(delay);
+                        seen.lock().unwrap().push(format!("{op:?}").split('(').next().unwrap().to_string());
+                        let _ = tx_up.send(Update::Done(op, Ok(())));
+                    }
+                }
+            });
+            (tx_req, rx_up, log)
+        }
+        let t0 = Instant::now();
+        // Keep pressed, not sent yet: closing sends it and waits for it; nothing reverted.
+        let mut a = ready_app();
+        a.go_tab(Tab::Displays, t0);
+        a.toggle_output("HDMI-A-1", t0);
+        let tried = a.take_requests().into_iter().find_map(|r| match r {
+            Request::Do(op @ Op::TryDisplays(_)) => Some(op),
+            _ => None,
+        });
+        a.on_update(Update::Done(tried.expect("a try sent"), Ok(())), t0);
+        a.keep_answer(true, t0);
+        let (tx, rx, log) = worker(Duration::from_millis(50));
+        let fake = FakeDisplays::default();
+        close(&mut a, &tx, &rx, &fake, CLOSE_WAIT);
+        assert_eq!(*log.lock().unwrap(), vec!["KeepDisplays"]);
+        assert!(!a.is_pending(Domain::Displays), "the keep's answer was waited for");
+        assert!(fake.calls().is_empty(), "kept: {:?}", fake.calls());
+
+        // A try still in the worker: answered first, then reverted.
+        let mut a = ready_app();
+        a.go_tab(Tab::Displays, t0);
+        a.take_requests();
+        a.toggle_output("HDMI-A-1", t0);
+        let (tx, rx, log) = worker(Duration::from_millis(50));
+        let fake = FakeDisplays::default();
+        close(&mut a, &tx, &rx, &fake, CLOSE_WAIT);
+        assert_eq!(*log.lock().unwrap(), vec!["TryDisplays"]);
+        assert!(!a.is_pending(Domain::Displays), "the try's answer came before the revert");
+        assert_eq!(fake.calls(), vec!["revert"]);
+
+        // A worker that never answers: the close waits no longer than its bound, then reverts.
+        let mut a = ready_app();
+        a.go_tab(Tab::Displays, t0);
+        a.take_requests();
+        a.toggle_output("HDMI-A-1", t0);
+        let (tx, rx, _log) = worker(Duration::from_secs(3600));
+        let fake = FakeDisplays::default();
+        let start = Instant::now();
+        close(&mut a, &tx, &rx, &fake, Duration::from_millis(100));
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+        assert_eq!(fake.calls(), vec!["revert"]);
+        assert_eq!(CLOSE_WAIT, Duration::from_secs(2));
     }
 
     #[test]
