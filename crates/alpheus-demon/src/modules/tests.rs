@@ -18,7 +18,7 @@ macro_rules! rows {
 rows! {
     Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Volume => 5, Network => 6,
     Bluetooth => 7, Battery => 8, Resources => 9, Tray => 10, Notifications => 11, Osd => 12,
-    Quick => 13, Clock => 14, Power => 15,
+    Quick => 13, Displays => 14, Clock => 15, Power => 16,
 }
 
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
@@ -46,7 +46,7 @@ fn names_are_unique_and_lowercase() {
 #[test]
 fn segments_and_popups_belong_to_the_right_modules() {
     let no_segment: Vec<ModuleId> = MODULES.iter().filter(|m| m.segment.is_none()).map(|m| m.id).collect();
-    assert_eq!(no_segment, [ModuleId::Osd, ModuleId::Quick]);
+    assert_eq!(no_segment, [ModuleId::Osd, ModuleId::Quick, ModuleId::Displays]);
     let gated: Vec<ModuleId> = MODULES.iter().filter(|m| m.popup_needs_quick).map(|m| m.id).collect();
     assert_eq!(gated, [ModuleId::Volume, ModuleId::Network, ModuleId::Bluetooth]);
     assert!(MODULES.iter().filter(|m| m.popup_needs_quick).all(|m| m.popup == Some(ModulePopup::Quick)));

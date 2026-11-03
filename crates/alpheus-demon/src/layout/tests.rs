@@ -801,3 +801,23 @@ fn the_quick_module_draws_nothing_in_the_bar() {
     }
     assert_eq!(ModuleId::Quick.spec().hue, None);
 }
+
+/// Displays spec § 1: the module reads and changes the screens; it draws nothing in the bar, has
+/// no popup, no hue, no tab, and starts no source.
+#[test]
+fn the_displays_row_draws_nothing() {
+    let spec = ModuleId::Displays.spec();
+    assert!(spec.segment.is_none() && spec.popup.is_none() && spec.hue.is_none() && spec.tab.is_none());
+    assert_eq!(spec.needs, crate::modules::Needs::NONE);
+    let mut with = bar();
+    assert!(with.config.modules.contains(&ModuleId::Displays), "on by default");
+    with.apply(Msg::Sound(Some(SoundState { sink: Some(Volume { percent: 84, muted: false }), ..SoundState::default() })));
+    let mut without = with.clone();
+    without.config.modules.retain(|m| *m != ModuleId::Displays);
+    for style in [BarStyle::Flat, BarStyle::Islands] {
+        let (with, without) = (styled(with.clone(), style), styled(without.clone(), style));
+        for width in [100, 60, 40] {
+            assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{style:?}, {width} cells");
+        }
+    }
+}

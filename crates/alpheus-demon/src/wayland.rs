@@ -405,6 +405,9 @@ pub struct App {
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
+    /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
+    /// `modules` or without the manager.
+    pub(crate) displays: Option<crate::outputs_app::OutputsApp>,
     /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
     /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
@@ -647,6 +650,13 @@ impl App {
         let pool = SlotPool::new(64 * 1024, &shm).map_err(|e| format!("shared buffer: {e}"))?;
         // Optional: without it, the launcher has no click-outside scrim (logged at open).
         let viewporter = globals.bind::<WpViewporter, _, _>(qh, 1..=1, ()).ok();
+        // Only with the module: otherwise the global is not bound at all.
+        let displays = bar
+            .config
+            .modules
+            .contains(&ModuleId::Displays)
+            .then(|| crate::outputs_app::OutputsApp::bind(globals, qh, &bar.config.displays))
+            .flatten();
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
@@ -675,6 +685,7 @@ impl App {
             pending_restore: Vec::new(),
             seat: None,
             viewporter,
+            displays,
             loop_handle: None,
             qh: qh.clone(),
             tray: None,

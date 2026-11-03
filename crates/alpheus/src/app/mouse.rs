@@ -97,7 +97,7 @@ impl App {
     fn dialog_answer(&mut self, yes: bool, now: Instant) {
         match self.overlay {
             Overlay::Confirm(_) => self.close_confirm(yes),
-            Overlay::Keep(_) => self.keep_answer(yes, now),
+            Overlay::Keep(_) => self.keep_answer(yes),
             Overlay::SaveProfile(_) => self.save_answer(yes, now),
             _ => {}
         }

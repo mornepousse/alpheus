@@ -41,6 +41,12 @@ fn requests() -> Vec<Request> {
         Request::Quick(QuickVerb::Sound),
         Request::Quick(QuickVerb::Wifi),
         Request::Quick(QuickVerb::Bluetooth),
+        Request::Outputs,
+        Request::OutputsTry(String::new()),
+        Request::OutputsTry("step\tDP-1\t1920x1080@60 0 0 1000 0\nstep\tHDMI-A-1\toff\n".into()),
+        Request::OutputsTry("café ☕ 日本\n".into()),
+        Request::OutputsKeep,
+        Request::OutputsRevert,
     ]
 }
 
@@ -402,4 +408,76 @@ fn empty_dmenu_lines_are_dropped() {
         d.feed(body.as_bytes()),
         Ok(Some(Request::Dmenu { prompt: None, lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }))
     );
+}
+
+#[test]
+fn outputs_verbs_round_trip() {
+    assert_eq!(encode_request(&Request::Outputs), b"alpheus-launcher/1 outputs\n");
+    assert_eq!(encode_request(&Request::OutputsKeep), b"alpheus-launcher/1 outputs-keep\n");
+    assert_eq!(encode_request(&Request::OutputsRevert), b"alpheus-launcher/1 outputs-revert\n");
+    assert_eq!(encode_request(&Request::OutputsTry("ab\n".into())), b"alpheus-launcher/1 outputs-try 3\nab\n");
+    // The body travels in pieces as well, and its length is checked at once.
+    let wire = encode_request(&Request::OutputsTry("step\tA\toff\n".into()));
+    let mut d = RequestDecoder::new();
+    for b in &wire[..wire.len() - 1] {
+        assert_eq!(d.feed(&[*b]), Ok(None));
+    }
+    assert_eq!(d.feed(&wire[wire.len() - 1..]), Ok(Some(Request::OutputsTry("step\tA\toff\n".into()))));
+    let too_big = format!("{MAGIC} outputs-try {}\n", crate::displays::wire::MAX_OUTPUTS_BODY + 1);
+    assert_eq!(decode(too_big.as_bytes()), Err(IpcError::TooLarge("outputs body")));
+    assert!(decode(format!("{MAGIC} outputs-try\n").as_bytes()).is_err());
+    assert!(decode(format!("{MAGIC} outputs-try x\n").as_bytes()).is_err());
+    assert!(decode(format!("{MAGIC} outputs-try 2\nabc").as_bytes()).is_err(), "bytes after the body");
+    let mut not_utf8 = format!("{MAGIC} outputs-try 2\n").into_bytes();
+    not_utf8.extend_from_slice(&[0xff, 0xfe]);
+    assert!(decode(&not_utf8).is_err(), "not UTF-8");
+    for bare in ["outputs", "outputs-keep", "outputs-revert"] {
+        assert!(decode(format!("{MAGIC} {bare} x\n").as_bytes()).is_err(), "{bare} takes no word");
+    }
+    assert!(decode(format!("{MAGIC} outputs-try 0 x\n").as_bytes()).is_err());
+}
+
+#[test]
+fn outputs_reply_carries_its_body() {
+    let r = Reply::Outputs("status ready\ntrial none\n".into());
+    assert_eq!(encode_reply(&r), b"outputs 24\nstatus ready\ntrial none\n");
+    assert_eq!(decode_reply(&encode_reply(&r)), Ok(r));
+    let empty = Reply::Outputs(String::new());
+    assert_eq!(decode_reply(&encode_reply(&empty)), Ok(empty));
+    assert_eq!(decode_reply(b"outputs 5\nab"), Err(IpcError::Truncated));
+    assert!(matches!(decode_reply(b"outputs 1\nab"), Err(IpcError::Malformed(_))));
+    assert!(matches!(decode_reply(b"outputs x\n"), Err(IpcError::Malformed(_))));
+    assert!(matches!(decode_reply(b"outputs 1\n\xff"), Err(IpcError::Malformed(_))));
+    let too_big = format!("outputs {}\n", crate::displays::wire::MAX_OUTPUTS_BODY + 1);
+    assert_eq!(decode_reply(too_big.as_bytes()), Err(IpcError::TooLarge("outputs body")));
+}
+
+#[test]
+fn an_unknown_trial_word_is_refused() {
+    use crate::displays::wire::{Snapshot, Status, TrialEnd, TrialState, decode_snapshot, encode_snapshot};
+    let snapshot = Snapshot { status: Status::Ready, outputs: vec![], trial: TrialState::Ended(TrialEnd::Kept) };
+    let body = encode_snapshot(&snapshot);
+    // The reply passes the body whole; the snapshot reads it strictly.
+    let Ok(Reply::Outputs(back)) = decode_reply(&encode_reply(&Reply::Outputs(body.clone()))) else { panic!("not an outputs reply") };
+    assert_eq!(decode_snapshot(&back), Ok(snapshot));
+    let odd = body.replace("kept", "forgotten");
+    let Ok(Reply::Outputs(back)) = decode_reply(&encode_reply(&Reply::Outputs(odd))) else { panic!("not an outputs reply") };
+    assert!(decode_snapshot(&back).is_err());
+}
+
+#[test]
+fn a_trial_waits_longer_than_the_other_verbs_and_dmenu_waits_for_the_person() {
+    assert_eq!(Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }.reply_timeout(), None);
+    assert_eq!(Request::OutputsTry(String::new()).reply_timeout(), Some(Duration::from_secs(7)));
+    for r in [Request::Toggle, Request::Outputs, Request::OutputsKeep, Request::OutputsRevert, Request::Quick(QuickVerb::Top)] {
+        assert_eq!(r.reply_timeout(), Some(Duration::from_secs(2)), "{r:?}");
+    }
+}
+
+#[test]
+fn exchange_tells_a_missing_socket_from_other_failures() {
+    let path = std::env::temp_dir().join(format!("alpheus-ipc-{}-absent", std::process::id()));
+    let e = exchange(&path, &Request::Toggle, REPLY_TIMEOUT).unwrap_err();
+    assert_eq!(e.kind(), io::ErrorKind::NotFound);
+    assert!(e.to_string().contains("not running"), "{e}");
 }

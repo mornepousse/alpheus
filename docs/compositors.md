@@ -1,9 +1,12 @@
 # Compositors and external commands
 
-alpheus never writes to a compositor. It only **reads** each compositor's own
-socket for state, and every action that must reach a compositor (switching a
-workspace, focusing a window, changing a monitor, logging out) goes through an
-external command that you provide. This page lists what each compositor gives
+alpheus never writes to a compositor's socket. It only **reads** each
+compositor's own socket for state, and every action that must reach a
+compositor (switching a workspace, focusing a window, logging out) goes through
+an external command that you provide. One exception: the daemon changes the
+screens' layout itself through the Wayland protocol `zwlr_output_configuration_v1`
+(`outputs/wlr.rs`; the Displays tab and screen profiles, below), never output
+power management, never `dpms`. This page lists what each compositor gives
 the bar, and exactly which commands alpheus runs and what it expects of them.
 
 ## Detection
@@ -24,7 +27,8 @@ workspaces would be.
 ## Support matrix
 
 Legend: yes = implemented and covered by tests; partial = see the note;
-no = not available; "unverified" = reasoned from the code, never run.
+no = not available; "unverified" = reasoned from the code, never run (for the
+Displays row: the protocol code is shared, but only Sway's was run, headless).
 
 | Feature | Hyprland | niri | Sway | Mango | Other layer-shell |
 |---|---|---|---|---|---|
@@ -34,7 +38,7 @@ no = not available; "unverified" = reasoned from the code, never run.
 | Launcher's windows list and focus | yes: `address:0x…` selectors | yes: `id:N` | yes: `id:<con_id>` | yes: `id:<client id>` | no: the list is empty |
 | Order of that list | previous window first, focused last | same | same (Sway's own focus order) | same (a focus history the daemon keeps) | n/a |
 | Screen-capture privacy indicator | yes: PipeWire, plus the compositor's `screencast` events | yes: PipeWire, plus niri's cast events | partial: PipeWire only; a recorder that does not go through PipeWire (wf-recorder) is not seen | partial: PipeWire only, same limit | partial, unverified: PipeWire only |
-| Displays tab (TUI) | yes, through `wm-set outputs` and `wm-set monitor` | no: the tab says "not available under niri" and calls nothing | no: same message for Sway | partial: calls `wm-set`, which must support Mango (the author's `wm-set` does not yet) | unverified: the tab calls `wm-set` as under Hyprland |
+| Displays tab (TUI) and profiles on hotplug | implemented, unverified: through `zwlr_output_manager_v1`, in the daemon | implemented, unverified: same | yes: same, tested against a headless Sway | implemented, unverified: same | unverified: works if the compositor implements `zwlr_output_manager_v1`; otherwise the tab says "the compositor has no output management" |
 | Keyboard-grab caveat | On every Hyprland version the bar stays non-exclusive while a menu grabs (Hyprland hands the grab the keyboard itself). The `alpheus-launch --quick` panel has no grab and makes the bar exclusive; on Hyprland before 0.56.2 (hyprwm/Hyprland#15729) a click inside it may then close it | none known | a grabbing popup gets no keyboard unless the bar surface is exclusive: alpheus makes it exclusive during a grab | unverified | unverified |
 
 Notes.
@@ -42,7 +46,13 @@ Notes.
 - Sway and Mango were added last. They are covered by tests against recorded
   Mango captures and a headless Sway, and the daemon's memory and wake-up
   tests run under both. The author's daily trial under them is still pending,
-  so treat them as less proven than Hyprland and niri.
+  so treat them as less proven than Hyprland and niri. That does not apply to
+  the Displays row, the other way round: Sway is the one compositor its tests
+  run against.
+- A configuration the Displays tab or a profile applied lasts until the
+  compositor reloads its own: Sway keeps it until `swaymsg reload`, niri and
+  Hyprland lose it on a config reload. The daemon re-applies a matching profile
+  only when the screens change, not on a compositor reload.
 - On any compositor the bar also needs layer-shell, and its menus need
   xdg-shell popups. The notification bubbles, the OSD and the launcher are
   layer-shell surfaces on the Overlay layer (above a fullscreen window).
@@ -67,7 +77,8 @@ a log line) and nothing else breaks.
 
 ### `wm-set`
 
-A single script is the one place where compositor-specific writes live. The
+A single script is the one place where compositor-specific writes live (the
+screens' layout aside: the daemon sets it through the output protocol, below). The
 repository does not ship it (the author's lives in a private configuration), so
 here is the contract. Write one for your compositor, or point the configurable
 commands at your own tools.
@@ -77,9 +88,6 @@ commands at your own tools.
 | `wm-set workspace <ref> <output>` | the bar, on a click or wheel on a workspace | yes: `[workspaces] command` in `bar.toml`, with `{workspace}` and `{output}` | switch `<output>` to the workspace `<ref>` |
 | `wm-set focus-window <selector>` | the launcher, when a window is chosen | yes: `focus` in `launcher.toml`, with `{window}` (required) | focus that window |
 | `wm-set exit` | the TUI's Power tab "Log out"; the bar's quick panel and ⏻ menu do **not** use it | the TUI: no; the bar: `[quick] logout` (empty by default) | end the compositor session |
-| `wm-set outputs` | the TUI's Displays tab | no | print the outputs as JSON, see below |
-| `wm-set monitor <output> <WxH@R> <X>x<Y> <scale> <rotation>` | the Displays tab, to apply a layout or roll one back | no | enable or reconfigure an output; exit 0 on success |
-| `wm-set monitor-disable <output>` | the Displays tab | no | disable an output; exit 0 on success |
 
 `<ref>` and `<selector>` are opaque strings that the daemon takes from the
 compositor you run, so your script only has to hand them back to it:
@@ -93,43 +101,19 @@ compositor you run, so your script only has to hand them back to it:
 
 `<output>` is the compositor's own output name (`eDP-1`, `HDMI-A-1`).
 
-The Displays tab parses `wm-set outputs` strictly. It expects a JSON array,
-one object per output, enabled or not:
+### The Displays tab needs no command
 
-```json
-[
-  {
-    "name": "eDP-1",
-    "description": "Interne Dalle 0x0001",
-    "enabled": true,
-    "mode": "2560x1600@60",
-    "modes": ["2560x1600@60"],
-    "x": 0,
-    "y": 1080,
-    "scale": 1.00,
-    "transform": 0,
-    "displaylink": false
-  }
-]
-```
-
-- `mode` is the current mode as `<width>x<height>@<refresh>` (`@60`, no
-  unit); for a disabled output it is ignored (`"0x0@0"` is fine). An
-  unreadable `mode` on an **enabled** output makes the whole reply unreadable:
-  alpheus will not guess the state of a screen that is on. Unreadable entries
-  in `modes` are skipped.
-- `x`, `y`: position in the compositor's layout; `scale`: a number;
-  `transform`: an integer 0 to 7 (Wayland's output transform: 0 normal,
-  1 to 3 rotations, 4 to 7 flipped); `displaylink`: true for a USB-docked
-  (DisplayLink) output; the tab marks it with a warning sign and a rollback
-  re-enables it last.
-- A fixture is in `crates/alpheus-commun/tests/fixtures/wm-set-outputs.json`
-  (descriptions anonymised).
-- The arguments alpheus passes to `monitor` are the mode as above, the
-  position as `<x>x<y>`, the scale as `1`, `1.25` or `1.2` (trailing zeroes
-  trimmed) and the rotation as the same 0 to 7 integer.
-- Enabling steps run before disabling ones, and any failure triggers a
-  best-effort rollback with the same calls; exit non-zero on failure.
+The tab and the screen profiles do not call `wm-set`: the daemon binds
+`zwlr_output_manager_v1` (versions 1 to 4) and the TUI asks it over the
+launcher's socket (`outputs`, `outputs-try`, `outputs-keep`, `outputs-revert`).
+The daemon holds the 15 s trial, so a TUI that dies cannot leave a bad layout,
+and applies the `displays.toml` profile that matches the connected screens when
+they change (`[displays] auto`, on by default; the `displays` module must be in
+`modules`). A DisplayLink screen is recognised from
+`/sys/class/drm/card*-<name>/device/device/driver` ending in `evdi`
+(`[displays] drm_dir`), and is kept at 120 Hz or below. A compositor without
+the protocol gets the message "the compositor has no output management" and
+nothing else breaks. At most 3 profiles are applied automatically per set of screens per minute (a dock reconnecting in a loop must not modeset forever); a profile held back is applied when that minute ends, if the screens are still the same. When the daemon stops during a trial it sends back the layout from before. Known limits: a daemon that crashes loses the trial (the trial layout stays), and a try still waiting for the compositor's answer at shutdown may keep its layout (the restore can be cancelled by it).
 
 ### Other commands
 

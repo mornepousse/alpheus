@@ -62,7 +62,10 @@ floor); the lightweight alternatives aren't polished enough.
 - **Never write to the compositor directly**: everything goes through
   `wm-set` (nixos-config), which routes to Hyprland (Lua or hyprlang
   config) and niri. In Lua config, `hyprctl dispatch`/`keyword` no longer
-  have hyprlang syntax.
+  have hyprlang syntax. *Amended 2026-10-30 (displays spec § 2): the one
+  exception is `zwlr_output_configuration_v1` in the daemon's
+  `outputs/wlr.rs`, which changes the screens' layout (apply, trial,
+  profiles on hotplug); no `dpms`, no power state, no command.*
 - **Tests without a graphical session, never a real call** to tools that
   act on the session (fake command executor).
 

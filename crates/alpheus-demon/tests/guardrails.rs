@@ -286,6 +286,10 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
     assert_eq!(forbidden_word("mmsg dispatch view,2"), Some("mmsg"));
 }
 
+/// The daemon only reads from the compositor, plus two writes: the workspace command, and output
+/// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
+/// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
+/// never output power management, never dpms (displays spec § 2, as amended).
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in all_source_files() {
@@ -300,7 +304,89 @@ fn the_daemon_only_reads_from_the_compositor() {
             assert!(compositor_connection_allowed(&name), "connection to the compositor in {name}");
         }
         assert!(!t.contains("Command::new"), "process spawned directly in {name} (go through the executor)");
+        // The one compositor write besides the workspace command (displays spec § 2): an output
+        // configuration, built and applied in the protocol file only.
+        if let Some(w) = OUTPUT_WRITES.iter().find(|w| t.contains(**w)) {
+            assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{w}\": an output configuration outside the protocol file");
+        }
+        // Only the glue sends one, so none bypasses the controller.
+        if t.contains("wlr.send(") {
+            assert_eq!(name, "outputs_app.rs", "an output configuration sent outside the displays glue");
+        }
     }
+}
+
+/// The displays timer is synced as soon as the loop exists: a `done` handled before (a
+/// roundtrip at startup) would leave its debounce unarmed until the next hotplug.
+#[test]
+fn the_displays_timer_is_synced_once_the_loop_exists() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let set = "state.loop_handle = Some(handle.clone());";
+    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in launch.rs"));
+    assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
+}
+
+/// Final review A-I2: the daemon stopping sends a trial's state from before while the app (its
+/// output manager) still exists, before the connection's last flush carries it.
+#[test]
+fn the_displays_are_restored_before_the_app_is_dropped() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let body = &prod[prod.find("fn shut_down(").expect("shut_down in launch.rs")..];
+    let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} not found in shut_down"));
+    let restore = at("state.displays_shutdown()");
+    assert!(restore < at("drop(core.state);"), "restored before the app is dropped");
+    assert!(restore < at("core.conn.flush()"), "restored before the last flush");
+}
+
+/// The only file that speaks `zwlr_output_manager_v1` (displays spec § 1).
+const OUTPUTS_PROTOCOL_FILE: &str = "outputs/wlr.rs";
+
+/// What builds or applies an output configuration. `.apply()` with nothing inside: `Bar::apply`
+/// takes a message.
+const OUTPUT_WRITES: [&str; 4] = ["zwlr_output_configuration", "ZwlrOutputConfiguration", "create_configuration", ".apply()"];
+
+/// Displays spec § 1: one file speaks the output protocol; the glue and the rest of the daemon
+/// only see the pure model (`outputs::model`, `outputs::control`).
+#[test]
+fn outputs_protocol_only_in_wlr_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["zwlr_output_", "ZwlrOutput"] {
+            if t.contains(token) {
+                assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
+/// Displays spec § 2 and the DisplayLink freeze: no output power management anywhere in alpheus,
+/// never a screen powered off (`dpms` is already a forbidden word in the daemon).
+#[test]
+fn output_power_management_never_appears() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut files = 0;
+    let mut stack: Vec<PathBuf> =
+        std::fs::read_dir(crates).unwrap().flatten().map(|e| e.path().join("src")).filter(|p| p.is_dir()).collect();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                files += 1;
+                let t = std::fs::read_to_string(&p).unwrap().to_lowercase().replace('_', "");
+                for word in ["outputpower", "dpms"] {
+                    assert!(!t.contains(word), "\"{word}\" in {}", p.display());
+                }
+            }
+        }
+    }
+    assert!(files > 100, "the workspace's sources were not found ({files})");
 }
 
 /// Review guardrail: only files in `src/sources/` are allowed to open or
@@ -675,6 +761,10 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
+            Request::Outputs => "outputs",
+            Request::OutputsTry(_) => "outputs-try",
+            Request::OutputsKeep => "outputs-keep",
+            Request::OutputsRevert => "outputs-revert",
         }
     }
     let all = [
@@ -685,8 +775,27 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
+        Request::Outputs,
+        Request::OutputsTry(String::new()),
+        Request::OutputsKeep,
+        Request::OutputsRevert,
     ];
-    assert_eq!(all.iter().map(verb).collect::<Vec<_>>(), ["toggle", "close", "dmenu", "dnd", "clear-notifications", "osd", "quick"]);
+    assert_eq!(
+        all.iter().map(verb).collect::<Vec<_>>(),
+        [
+            "toggle",
+            "close",
+            "dmenu",
+            "dnd",
+            "clear-notifications",
+            "osd",
+            "quick",
+            "outputs",
+            "outputs-try",
+            "outputs-keep",
+            "outputs-revert"
+        ]
+    );
 }
 
 /// Production code of a file: everything EXCEPT the item that follows each
@@ -879,6 +988,13 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
         // question (quick delivery 3).
         ("wayland.rs", "Timer::", 10),
+        // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
+        // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
+        // trial (15 s), armed only while one of them is pending.
+        ("outputs_app.rs", "Timer::", 1),
+        // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
+        // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
+        ("outputs_app.rs", "Generic::new", 1),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd: readable only when theme.toml or a colour file
@@ -1222,7 +1338,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 41] = [
+const NO_THREAD_NOR_COMMAND: [&str; 43] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1264,6 +1380,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 41] = [
     "sources/dbus/bt.rs",
     "sources/dbus/bt_act.rs",
     "bt_app.rs",
+    "outputs/",
+    "outputs_app.rs",
 ];
 
 #[test]

@@ -98,7 +98,8 @@ what you use.
 | Launcher | `systemd-run --user` (used to start applications in a scope; a detached spawn is the fallback); a terminal for terminal apps (`foot` by default, `terminal` in `launcher.toml`) |
 | Quick panel / power menu actions | the commands of `[quick]` in `bar.toml`: `loginctl lock-session`, `systemctl reboot` and `systemctl poweroff` by default; log out is empty by default |
 | Control center (`alpheus`) | the tools of its tabs: `wpctl`, `nmcli`, `bluetoothctl`, `brightnessctl`, `powerprofilesctl`, `systemctl`; `wiremix`, `nmtui` and `bluetui` are opened by default for deeper changes (set `[commands]` in `config.toml`) |
-| Workspace switching, focusing a window from the launcher, the Displays tab | an external `wm-set` command, see [compositors.md](compositors.md#external-commands) |
+| Workspace switching, focusing a window from the launcher, the TUI's "Log out" | an external `wm-set` command, see [compositors.md](compositors.md#external-commands) |
+| Displays tab, screen profiles on hotplug | nothing external: a compositor that implements `zwlr_output_manager_v1` (the daemon speaks it itself) and the `displays` module |
 
 Not used: `playerctl`, `pactl`, any compositor client such as `hyprctl` or
 `swaymsg` (the daemon reads each compositor's socket itself and never writes

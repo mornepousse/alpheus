@@ -1,5 +1,27 @@
 use super::*;
-use alpheus_commun::launcher_ipc::DmenuFlags;
+use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb};
+
+/// Each verb to the one that answers it: the displays verbs to the output controller, never to
+/// the launcher (which would close or open on them).
+#[test]
+fn each_verb_goes_to_its_handler() {
+    let cases = [
+        (Request::Outputs, Route::Displays),
+        (Request::OutputsTry("step\tDP-1\toff\n".into()), Route::Displays),
+        (Request::OutputsKeep, Route::Displays),
+        (Request::OutputsRevert, Route::Displays),
+        (Request::Dnd(DndVerb::Toggle), Route::Notifications),
+        (Request::ClearNotifications, Route::Notifications),
+        (Request::Osd(OsdVerb::Brightness), Route::Osd),
+        (Request::Quick(QuickVerb::Top), Route::Quick),
+        (Request::Toggle, Route::Launcher),
+        (Request::Close, Route::Launcher),
+        (Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }, Route::Launcher),
+    ];
+    for (request, want) in cases {
+        assert_eq!(route(&request), want, "{request:?}");
+    }
+}
 
 #[test]
 fn a_socket_bind_failure_is_logged_and_the_bar_runs_without_a_launcher() {

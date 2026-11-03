@@ -11,14 +11,13 @@
 //! cases where a caller may fall back to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_HEADER, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, Reply, Request, decode_reply,
-    encode_request, numbered_lines, wipe, zero,
+    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT, Reply, Request, exchange_waiting,
+    numbered_lines, wipe,
 };
 use std::ffi::OsString;
-use std::io::{self, ErrorKind, Read, Write};
-use std::os::unix::net::UnixStream;
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub const EXIT_OK: i32 = 0;
 /// dmenu cancelled (fuzzel's contract).
@@ -30,7 +29,7 @@ pub const EXIT_ERROR: i32 = 2;
 pub const EXIT_UNREACHABLE: i32 = 3;
 /// toggle/close: give up waiting for "done" after this. (Client side; the daemon's
 /// own `socket::REPLY_TIMEOUT` bounds its reply writes, so a stuck client cannot hold the daemon.)
-pub const CLIENT_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
@@ -234,86 +233,14 @@ pub enum ClientError {
     Protocol(String),
 }
 
-/// Connects, sends, waits for the reply (no timeout for dmenu, CLIENT_REPLY_TIMEOUT otherwise).
-/// The write side is never shut down after sending: the daemon reads a
-/// hang-up as "the client went away" and would close a waiting dmenu.
+/// `launcher_ipc::exchange` with the wait each request has (no timeout for dmenu,
+/// `CLIENT_REPLY_TIMEOUT` for most, longer for a displays trial), its errors told apart: a daemon
+/// that is not running from a failed exchange.
 pub fn exchange(socket: &Path, request: &Request) -> Result<Reply, ClientError> {
-    let mut stream = UnixStream::connect(socket).map_err(|e| match e.kind() {
-        ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
-            ClientError::NotRunning(format!("alpheus-demon is not running (no launcher socket at {})", socket.display()))
-        }
-        _ => ClientError::Protocol(format!("cannot reach the launcher socket {}: {e}", socket.display())),
-    })?;
-    // dmenu waits for the person, as long as it takes; toggle/close must be answered
-    // within CLIENT_REPLY_TIMEOUT, as one total deadline (not a per-read allowance
-    // that a daemon trickling one byte at a time could restart forever).
-    let timeout = match request {
-        Request::Dmenu { .. } => None,
-        Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_) => {
-            Some(CLIENT_REPLY_TIMEOUT)
-        }
-    };
-    stream.set_write_timeout(timeout).map_err(|e| ClientError::Protocol(format!("socket setup failed: {e}")))?;
-    let deadline = timeout.map(|t| Instant::now() + t);
-    let sent = stream.write_all(&encode_request(request));
-    let mut answer = Vec::new();
-    let read = read_reply(&mut stream, &mut answer, deadline);
-    let reply = answer_of(sent, read, &answer);
-    // The reply's bytes held the typed password: overwritten before they are freed.
-    if matches!(request, Request::Dmenu { flags, .. } if flags.password) {
-        zero(&mut answer);
-    }
-    reply
-}
-
-/// The reply in `answer`, or why there is none.
-fn answer_of(sent: io::Result<()>, read: io::Result<()>, answer: &[u8]) -> Result<Reply, ClientError> {
-    // A daemon that refuses early (request too large) answers before we finished sending.
-    if let Ok(reply) = decode_reply(answer) {
-        return Ok(reply);
-    }
-    if let Err(e) = sent {
-        return Err(ClientError::Protocol(format!("cannot send the request: {e}")));
-    }
-    match read {
-        Err(e) if e.kind() == ErrorKind::TimedOut => {
-            Err(ClientError::Protocol(format!("no answer from alpheus-demon within {} s", CLIENT_REPLY_TIMEOUT.as_secs())))
-        }
-        Err(e) => Err(ClientError::Protocol(format!("cannot read the answer: {e}"))),
-        Ok(()) => decode_reply(answer).map_err(|e| ClientError::Protocol(format!("unexpected answer from alpheus-demon: {e}"))),
-    }
-}
-
-/// Reads the reply into `answer`, bounded to `MAX_HEADER + MAX_DMENU_BYTES + 1` bytes
-/// (enough to tell an oversized or malformed answer apart without ever reading an
-/// unbounded stream). With a `deadline`, the whole loop is given up on as a single total
-/// budget: the remaining time is recomputed before every read, so a daemon trickling
-/// bytes just under a per-read timeout cannot stall the client past it. `deadline: None`
-/// (dmenu) waits for the person, however long that takes.
-fn read_reply(stream: &mut UnixStream, answer: &mut Vec<u8>, deadline: Option<Instant>) -> io::Result<()> {
-    const BOUND: usize = MAX_HEADER + MAX_DMENU_BYTES + 1;
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        if answer.len() >= BOUND {
-            return Ok(());
-        }
-        if let Some(dl) = deadline {
-            let remaining = dl.checked_duration_since(Instant::now()).filter(|d| !d.is_zero());
-            let Some(remaining) = remaining else {
-                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
-            };
-            stream.set_read_timeout(Some(remaining))?;
-        }
-        let want = chunk.len().min(BOUND - answer.len());
-        match stream.read(&mut chunk[..want]) {
-            Ok(0) => return Ok(()),
-            Ok(n) => answer.extend_from_slice(&chunk[..n]),
-            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
-                return Err(io::Error::new(ErrorKind::TimedOut, "deadline exceeded"));
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    exchange_waiting(socket, request, request.reply_timeout()).map_err(|e| match e.kind() {
+        ErrorKind::NotFound | ErrorKind::ConnectionRefused => ClientError::NotRunning(e.to_string()),
+        _ => ClientError::Protocol(e.to_string()),
+    })
 }
 
 /// stdin → lines, refused (Err message) above the protocol's limits — before any connection.
@@ -414,7 +341,15 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
         },
         (Request::Dmenu { .. }, Reply::Cancelled) => EXIT_CANCELLED,
         (
-            Request::Toggle | Request::Close | Request::Dnd(_) | Request::ClearNotifications | Request::Osd(_) | Request::Quick(_),
+            Request::Toggle
+            | Request::Close
+            | Request::Dnd(_)
+            | Request::ClearNotifications
+            | Request::Osd(_)
+            | Request::Quick(_)
+            | Request::OutputsTry(_)
+            | Request::OutputsKeep
+            | Request::OutputsRevert,
             Reply::Done,
         ) => EXIT_OK,
         (_, Reply::Busy) => fail(stderr, "another menu is already open"),
@@ -442,6 +377,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         } else {
             "--password"
         }),
+        _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Quick(verb) => {
             OLD_QUICK.iter().find(|(only, refusal, _)| refusal == &error && only.is_none_or(|v| v == *verb)).map(|(_, _, what)| *what)
         }
@@ -614,5 +550,28 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&args(&["--osd", "brightness"]), &socket, &mut std::io::empty(), &mut out, &mut err);
         assert_eq!(code, EXIT_UNREACHABLE, "{}", String::from_utf8_lossy(&err));
+    }
+
+    /// An upgrade not followed by a restart: a daemon that never heard of the displays verbs
+    /// refuses each as an unknown request, which reads as "too old" (exit 3), never as a plain error.
+    #[test]
+    fn a_daemon_without_the_displays_verbs_is_too_old() {
+        let socket_refusal = |word: &str| format!("malformed request: unknown request \"{word}\"");
+        for (request, word) in [
+            (Request::Outputs, "outputs"),
+            (Request::OutputsTry(String::new()), "outputs-try"),
+            (Request::OutputsKeep, "outputs-keep"),
+            (Request::OutputsRevert, "outputs-revert"),
+        ] {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let code = reply_to_exit(&request, Reply::Error(socket_refusal(word)), &[], &mut out, &mut err);
+            assert_eq!(code, EXIT_UNREACHABLE, "{request:?}");
+            assert!(String::from_utf8_lossy(&err).contains("displays"), "{}", String::from_utf8_lossy(&err));
+            // Another refusal, or another verb's word, stays a plain error.
+            for other in ["displays are off in bar.toml".to_string(), socket_refusal("quick")] {
+                let mut err = Vec::new();
+                assert_eq!(reply_to_exit(&request, Reply::Error(other.clone()), &[], &mut Vec::new(), &mut err), EXIT_ERROR, "{other}");
+            }
+        }
     }
 }

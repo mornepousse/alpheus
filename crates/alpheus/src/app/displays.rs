@@ -1,22 +1,27 @@
 //! Displays tab: profiles, toggling an output, the settings panel, saving
-//! the current state, and the "Keep these settings?" trial with automatic
-//! rollback. Every setting goes through a trial: the plan is sent to the
-//! worker thread with its reverse plan, a 15 s countdown once applied.
+//! the current state, and the "Keep these settings?" trial. Every setting is
+//! tried by the alpheus daemon, which holds the 15 s trial and rolls back on
+//! its own (displays protocol spec); the tab shows its countdown, sends Keep
+//! or Cancel, and learns from the 2 s refresh how a trial ended.
 
-use super::worker::Op;
-use super::{App, Overlay};
+use super::worker::{Domain, Op};
+use super::{App, Loadable, Overlay};
 use crate::backends::{BResult, BackendError};
 use crate::displays::geometry::{Align, GeoError, Placement, Relation, Screen, deduce, logical_size, resolve};
 use crate::displays::profiles::{self, Profile, from_outputs, placed, plan_profile};
-use crate::displays::{
-    Active, Mode, Output, Plan, Scale, Step, active_count, changed_elsewhere, rotation_label, screen_lost, short_from_description,
-    short_names,
-};
+use crate::displays::wire::{Snapshot, Status, TrialEnd, TrialState};
+use crate::displays::{Active, Mode, Output, Plan, Scale, Step, active_count, rotation_label, short_from_description, short_names};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// Delay before automatically rolling back to the previous settings.
+/// Delay before the daemon rolls back to the previous settings.
 pub const KEEP_DELAY: Duration = Duration::from_secs(15);
+/// How long a profile picked from the palette waits for the tab to unlock: one watchdog and a
+/// refresh. Past that it is dropped, never applied unasked much later.
+pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
+
+/// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
+use alpheus_commun::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_NO_TRIAL as NO_TRIAL, ERROR_OFF as OFF};
 
 /// Tab state outside the data read.
 #[derive(Debug, Default)]
@@ -32,17 +37,20 @@ pub struct DisplaysTab {
     /// "+ Save current".
     pub profile_sel: usize,
     pub trial: Option<Trial>,
-    /// Rollback sent and still unanswered: to redo if alpheus closes.
-    pub undoing: Option<Plan>,
-    /// Profile requested from the palette: applied on the next read.
+    /// This tab has tried a change: the daemon's reports of how a trial ended are told (after
+    /// Cancel or the countdown, the box is already closed).
+    pub following: bool,
+    /// The end last told (Keep, or a report): the same end reported again is not told twice, a
+    /// different one is (a revert the compositor refused). None once the daemon reports no trial.
+    pub told: Option<TrialEnd>,
+    /// Profile requested from the palette: applied on the next read that unlocks the tab.
     pub queued_profile: Option<String>,
-    /// A plan has answered and no fresh read has arrived yet: the known
-    /// outputs may be those of a rejected trial, so nothing is planned on
-    /// top of them.
+    /// When the queued profile is dropped (`QUEUED_PROFILE_WAIT` after it was asked).
+    pub queued_until: Option<Instant>,
+    /// A plan has answered and no fresh read has arrived yet, or the last read said the daemon
+    /// is busy or reported an end: the known outputs may be those of a rejected trial, so
+    /// nothing is planned on top of them until a read with no trial (or this tab's own open one).
     pub awaiting_read: bool,
-    /// The compositor's name when the tab calls nothing there (Sway, niri: `wm-set outputs`
-    /// refuses); None: through `wm-set`.
-    pub unavailable: Option<&'static str>,
 }
 
 /// A trial in progress: applied (or being applied), not kept yet.
@@ -50,15 +58,13 @@ pub struct DisplaysTab {
 pub struct Trial {
     pub title: String,
     pub plan: Plan,
-    pub undo: Plan,
-    /// Outputs read just before (to detect an external change).
-    pub before: Vec<Output>,
     pub summary: Vec<String>,
     /// "Bravo missing, ignored".
     pub notes: Vec<String>,
     /// The plan touches a DisplayLink output.
     pub displaylink: bool,
-    /// End of the countdown; `None` until the plan has answered.
+    /// End of the countdown, on the tab's own clock, brought forward by the daemon's
+    /// `seconds left`; `None` until the daemon has answered the try.
     pub deadline: Option<Instant>,
     /// Remaining seconds shown.
     pub remaining: u64,
@@ -272,21 +278,9 @@ fn describe_step(s: &Step, outs: &[Output], labels: &[String]) -> String {
     }
 }
 
-/// Rollback after a lost screen: the reverse plan restricted to the outputs
-/// still present, without any shutdown if the result would leave nothing on.
-fn lost_undo(undo: &Plan, now: &[Output]) -> Plan {
-    let mut plan = undo.restricted_to(now);
-    let lit_after = now
-        .iter()
-        .filter(|o| match plan.steps.iter().find(|s| s.output == o.name) {
-            Some(s) => s.active.is_some(),
-            None => o.active.is_some(),
-        })
-        .count();
-    if lit_after == 0 {
-        plan.steps.retain(|s| s.active.is_some());
-    }
-    plan
+/// Whole seconds left before `deadline`, rounded up.
+fn remaining(deadline: Instant, now: Instant) -> u64 {
+    deadline.saturating_duration_since(now).as_millis().div_ceil(1000) as u64
 }
 
 fn wrap(idx: usize, dir: i32, len: usize) -> usize {
@@ -299,14 +293,14 @@ impl App {
         self.data.displays.ready().map_or(&[], Vec::as_slice)
     }
 
-    /// Plan to undo if alpheus closes right now (trial or rollback in progress).
-    pub fn exit_undo(&self) -> Option<Plan> {
-        self.displays.trial.as_ref().map(|t| t.undo.clone()).or_else(|| self.displays.undoing.clone())
+    /// A trial is waiting for Keep or Cancel (or for the daemon's answer): closing reverts it.
+    pub fn trial_open(&self) -> bool {
+        self.displays.trial.is_some()
     }
 
     /// Is a display change already in progress? (Warns with a message.)
     fn displays_busy(&mut self, now: Instant) -> bool {
-        let msg = if self.displays.trial.is_some() || self.displays.undoing.is_some() {
+        let msg = if self.displays.trial.is_some() {
             "Displays: a change is already in progress"
         } else if self.displays.awaiting_read {
             "Displays: waiting for a fresh read"
@@ -325,44 +319,39 @@ impl App {
 
     // ── Responses and time ───────────────────────────────────────────
 
-    /// After reading the outputs: a lost screen or an external change
-    /// during a trial, a profile requested from the palette, the panel of
-    /// an unplugged output.
-    pub(crate) fn displays_read(&mut self, now: Instant) {
-        let outs = self.outputs().to_vec();
-        if self.data.displays.ready().is_none() {
-            // Failed read: a queued profile won't be applied much later.
+    /// The daemon's snapshot (or why there is none): the outputs, how its trial stands, then a
+    /// profile requested from the palette, the panel of an unplugged output.
+    pub(crate) fn displays_read(&mut self, r: BResult<Snapshot>, now: Instant) {
+        self.queued_expiry(now);
+        let snapshot = match r {
+            Ok(s) => s,
+            Err(e) => {
+                self.data.displays = Loadable::Failed(e.to_string());
+                // Failed read: a queued profile won't be applied much later.
+                self.displays.queued_profile = None;
+                return;
+            }
+        };
+        self.data.displays = match snapshot.status {
+            Status::Ready => Loadable::Ready(snapshot.outputs),
+            Status::Off => Loadable::Failed(OFF.into()),
+            Status::NoManager => Loadable::Failed(NO_MANAGER.into()),
+        };
+        self.trial_read(snapshot.trial, now);
+        self.trial_gone(snapshot.trial, now);
+        let Some(outs) = self.data.displays.ready().cloned() else {
             self.displays.queued_profile = None;
             return;
-        }
-        // Read that comes after any plan response (reads in flight during a
-        // plan are discarded): a reliable base going forward.
-        self.displays.awaiting_read = false;
-        if let Some(t) = &self.displays.trial {
-            if t.deadline.is_some() && screen_lost(&t.plan, &outs) {
-                // Decision D1: a screen from the trial has disappeared, or
-                // nothing is on any more: roll back on the outputs still
-                // present.
-                let undo = lost_undo(&t.undo, &outs);
-                self.displays.trial = None;
-                self.close_keep();
-                let msg = if undo.steps.is_empty() {
-                    "Screen lost during the trial: nothing to restore"
-                } else {
-                    "Screen lost during the trial: rolling back to the previous state"
-                };
-                self.status.error = Some(msg.to_string());
-                self.toast(msg.to_string(), true, now);
-                if !undo.steps.is_empty() {
-                    self.start_undo(undo);
-                }
-            } else if t.deadline.is_some() && changed_elsewhere(&t.before, &t.plan, &outs) {
-                self.displays.trial = None;
-                self.close_keep();
-                self.status.last = Some("Displays changed elsewhere".into());
-                self.toast("Displays changed elsewhere".into(), false, now);
-            }
-        }
+        };
+        // Read that comes after any answer (reads in flight during a change are discarded): a
+        // reliable base going forward, unless a configuration still flies or its end was just
+        // reported (the outputs may predate the compositor's `done`).
+        // Another alpheus's trial open: its screens may be rolled back, wait for its end too.
+        self.displays.awaiting_read = match snapshot.trial {
+            TrialState::Busy | TrialState::Ended(_) => true,
+            TrialState::Open { .. } => self.displays.trial.is_none(),
+            TrialState::None => false,
+        };
         if let Overlay::Panel(p) = &self.overlay {
             if !outs.iter().any(|o| o.name == p.output) {
                 let msg = format!("Displays: {} unplugged, setting abandoned", p.output);
@@ -371,125 +360,197 @@ impl App {
             }
         }
         self.displays.profile_sel = self.displays.profile_sel.min(self.displays.profiles.len());
-        if let Some(name) = self.displays.queued_profile.take() {
-            self.apply_display_profile(&name, now);
+        // A queued profile waits for the unlock.
+        if !self.displays.awaiting_read {
+            if let Some(name) = self.displays.queued_profile.take() {
+                self.apply_display_profile(&name, now);
+            }
         }
     }
 
-    /// Worker thread's response to a display plan.
+    /// The daemon's trial: its seconds left bring the countdown forward; an end closes the Keep
+    /// box and is told once. Also fed by a read dropped while an action is pending: an end is
+    /// reported once.
+    pub(super) fn trial_read(&mut self, state: TrialState, now: Instant) {
+        match state {
+            TrialState::None => self.displays.told = None,
+            // A configuration with the compositor: an end, if any, comes after it.
+            TrialState::Busy => {}
+            TrialState::Open { seconds_left } => {
+                if let Some(t) = &mut self.displays.trial {
+                    if let Some(deadline) = t.deadline {
+                        let theirs = now + Duration::from_secs(seconds_left.into());
+                        t.deadline = Some(deadline.min(theirs));
+                        t.remaining = remaining(deadline.min(theirs), now);
+                    }
+                }
+            }
+            TrialState::Ended(end) => {
+                if self.displays.trial.take().is_some() {
+                    self.close_keep();
+                    self.tell_end(end, now);
+                } else if !self.displays.following {
+                    return; // another alpheus's trial
+                } else if self.displays.told != Some(end) {
+                    self.tell_end(end, now);
+                }
+                self.displays.told = Some(end);
+            }
+        }
+    }
+
+    /// A fresh read (no action of this tab's in flight) with no trial in the daemon while this
+    /// tab counts down an answered try: the daemon restarted, or the trial ended unseen. The box
+    /// closes; there is nothing left to keep or revert.
+    fn trial_gone(&mut self, state: TrialState, now: Instant) {
+        let answered = self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some());
+        if state != TrialState::None || !answered || self.is_pending(Domain::Displays) {
+            return;
+        }
+        self.displays.trial = None;
+        self.close_keep();
+        self.inform("Displays: the trial ended", now);
+    }
+
+    /// An informational line: the status bar and one toast.
+    fn inform(&mut self, msg: &str, now: Instant) {
+        self.status.last = Some(msg.into());
+        self.toast(msg.into(), false, now);
+    }
+
+    fn tell_end(&mut self, end: TrialEnd, now: Instant) {
+        let (msg, error) = match end {
+            TrialEnd::Kept => ("Displays: settings kept", false),
+            TrialEnd::Reverted => ("Displays: previous settings restored", false),
+            TrialEnd::ScreenLost => ("Screen lost during the trial: rolling back to the previous state", true),
+            TrialEnd::ChangedElsewhere => ("Displays changed elsewhere", false),
+            TrialEnd::Refused => ("Displays: the compositor refused this configuration", true),
+            TrialEnd::NoAnswer => ("Displays: no answer from the compositor", true),
+        };
+        if error {
+            self.status.error = Some(msg.into());
+        } else {
+            self.status.last = Some(msg.into());
+        }
+        self.toast(msg.into(), error, now);
+    }
+
+    /// Worker thread's answer to a try, a keep or a revert.
     pub(crate) fn displays_done(&mut self, op: Op, r: BResult<()>, now: Instant) {
-        let Op::ApplyDisplays { plan, undo } = op else { return };
         self.displays.awaiting_read = true;
-        match (undo, r) {
-            (Some(_), Ok(())) => {
+        match (op, r) {
+            (Op::TryDisplays(plan), Ok(())) => {
                 if let Some(t) = &mut self.displays.trial {
                     if t.plan == plan && t.deadline.is_none() {
                         t.deadline = Some(now + KEEP_DELAY);
                         t.remaining = KEEP_DELAY.as_secs();
                     }
                 }
-                self.refresh_tab(now);
             }
-            (Some(u), Err(e)) => {
-                // Never a half-applied state: roll back immediately.
+            (Op::TryDisplays(plan), Err(e)) => {
+                // Refused, or the daemon unreachable: nothing was applied.
                 if self.displays.trial.as_ref().is_some_and(|t| t.plan == plan) {
                     self.displays.trial = None;
                     self.close_keep();
                 }
-                let msg = format!("Displays: {e} — rolling back to the previous settings");
+                let msg = format!("Displays: {e}");
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
-                self.start_undo(u);
             }
-            (None, Ok(())) => {
-                self.displays.undoing = None;
-                self.status.last = Some("Displays: previous settings restored".into());
-                self.toast("Displays: previous settings restored".into(), false, now);
-                self.refresh_tab(now);
+            (Op::KeepDisplays, Ok(())) => self.inform("Displays: settings kept", now),
+            // The daemon restarted: the trial it held is gone, nothing to keep or roll back.
+            (Op::KeepDisplays | Op::RevertDisplays, Err(BackendError::Daemon(e))) if e == NO_TRIAL => {
+                self.inform("Displays: the daemon restarted; its trial ended", now);
             }
-            (None, Err(e)) => {
-                self.displays.undoing = None;
-                let msg = match e {
-                    BackendError::Incomplete { .. } => format!("Displays: {e}"),
-                    e => format!("Displays: rollback impossible: {e}"),
+            (op, Err(e)) => {
+                let msg = match op {
+                    Op::RevertDisplays => format!("Displays: rollback impossible: {e}"),
+                    Op::KeepDisplays => format!("Displays: keep failed: {e}"),
+                    _ => format!("Displays: {e}"),
                 };
                 self.status.error = Some(msg.clone());
                 self.toast(msg, true, now);
-                self.refresh_tab(now);
             }
+            _ => {}
         }
+        self.refresh_tab(now);
     }
 
-    /// Countdown: remaining seconds, rollback at the deadline.
+    /// Countdown: remaining seconds; at the deadline the box closes and the daemon, which rolls
+    /// back on its own, is asked to as well.
     pub(crate) fn displays_tick(&mut self, now: Instant) {
+        self.queued_expiry(now);
         let Some(t) = &mut self.displays.trial else { return };
         let Some(deadline) = t.deadline else { return };
         if now < deadline {
-            t.remaining = (deadline - now).as_millis().div_ceil(1000) as u64;
+            t.remaining = remaining(deadline, now);
             return;
         }
-        if let Some(t) = self.displays.trial.take() {
-            self.close_keep();
-            self.toast("Displays: time's up, rolling back to the previous settings".into(), false, now);
-            self.start_undo(t.undo);
+        self.displays.trial = None;
+        self.close_keep();
+        self.toast("Displays: time's up, rolling back to the previous settings".into(), false, now);
+        self.end_trial(false);
+    }
+
+    /// A queued profile that waited too long is dropped, with a word.
+    fn queued_expiry(&mut self, now: Instant) {
+        if self.displays.queued_profile.is_some() && self.displays.queued_until.is_some_and(|u| now >= u) {
+            self.displays.queued_profile = None;
+            self.displays.queued_until = None;
+            self.toast("Displays: profile not applied (busy)".into(), true, now);
         }
     }
 
     // ── Trial ────────────────────────────────────────────────────────
 
-    /// Sends `plan` with its reverse and opens "Keep these settings?".
+    /// Sends `plan` to the daemon and opens "Keep these settings?".
     pub(crate) fn start_trial(&mut self, title: String, plan: Plan, notes: Vec<String>, now: Instant) {
         if plan.steps.is_empty() {
             self.toast(format!("{title}: nothing to change"), false, now);
             return;
         }
-        let Some(before) = self.data.displays.ready().cloned() else {
+        let Some(before) = self.data.displays.ready() else {
             self.toast("Displays: unknown state".into(), true, now);
             return;
         };
-        let labels = short_names(&before);
-        let summary = plan.steps.iter().map(|s| describe_step(s, &before, &labels)).collect();
+        let labels = short_names(before);
+        let summary = plan.steps.iter().map(|s| describe_step(s, before, &labels)).collect();
         let displaylink = plan.steps.iter().any(|s| before.iter().any(|o| o.name == s.output && o.displaylink));
-        let undo = Plan::undo(&before, &plan);
-        self.displays.trial = Some(Trial {
-            title,
-            plan: plan.clone(),
-            undo: undo.clone(),
-            before,
-            summary,
-            notes,
-            displaylink,
-            deadline: None,
-            remaining: KEEP_DELAY.as_secs(),
-        });
+        self.displays.trial =
+            Some(Trial { title, plan: plan.clone(), summary, notes, displaylink, deadline: None, remaining: KEEP_DELAY.as_secs() });
+        (self.displays.following, self.displays.told) = (true, None);
         self.overlay = Overlay::Keep(Keep::default());
-        self.send_op(Op::ApplyDisplays { plan, undo: Some(undo) });
+        self.send_op(Op::TryDisplays(plan));
     }
 
-    fn start_undo(&mut self, plan: Plan) {
-        self.displays.undoing = Some(plan.clone());
-        self.send_op(Op::ApplyDisplays { plan, undo: None });
+    /// The trial is over on this side: Keep (already told) or a revert (told once the daemon
+    /// reports it). Nothing is planned on the outputs until they are read again.
+    fn end_trial(&mut self, keep: bool) {
+        self.displays.told = keep.then_some(TrialEnd::Kept);
+        self.displays.awaiting_read = true;
+        self.send_op(if keep { Op::KeepDisplays } else { Op::RevertDisplays });
     }
 
-    /// Keep (only once applied) or Cancel (roll back).
-    pub(crate) fn keep_answer(&mut self, keep: bool, now: Instant) {
+    /// Keep (only once applied) or Cancel (roll back, also while applying: the revert follows
+    /// the try in the worker's queue).
+    pub(crate) fn keep_answer(&mut self, keep: bool) {
         if keep {
             if self.displays.trial.as_ref().is_some_and(|t| t.deadline.is_some()) {
                 self.displays.trial = None;
                 self.close_keep();
-                self.status.last = Some("Displays: settings kept".into());
-                self.toast("Displays: settings kept".into(), false, now);
+                // "Settings kept" once the daemon answers (it may have restarted).
+                self.end_trial(true);
             }
-        } else if let Some(t) = self.displays.trial.take() {
+        } else if self.displays.trial.take().is_some() {
             self.close_keep();
-            self.start_undo(t.undo);
+            self.end_trial(false);
         }
     }
 
     // ── Profiles and list ────────────────────────────────────────────
 
     pub(crate) fn apply_display_profile(&mut self, name: &str, now: Instant) {
-        if self.displays.unavailable.is_some() || self.displays_busy(now) {
+        if self.displays_busy(now) {
             return;
         }
         let Some(outs) = self.data.displays.ready() else {
@@ -515,7 +576,7 @@ impl App {
 
     /// Space on an output: enable it, or disable it (never the last one).
     pub(crate) fn toggle_output(&mut self, name: &str, now: Instant) {
-        if self.displays.unavailable.is_some() || self.displays_busy(now) {
+        if self.displays_busy(now) {
             return;
         }
         let outs = self.outputs().to_vec();
@@ -860,4 +921,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

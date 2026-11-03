@@ -5,12 +5,15 @@
 
 mod common;
 
+use alpheus_commun::displays::wire::{self, Snapshot, Status, TrialEnd, TrialState};
+use alpheus_commun::displays::{Active, Mode, Scale, Step};
 use alpheus_commun::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_demon::quick::{BAR, BAR_START};
 use alpheus_launch::{EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use common::bluez::{FakeBluez, device_path};
+use common::displays::{displays, output, outputs_snapshot, snapshot_until};
 use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec, text};
 use common::notify::{FakeClient, FakeMako, Heard, Hint, NAME as NOTIFICATIONS, Note};
@@ -21,8 +24,8 @@ use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
     capture_delta, capture_gone, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder,
-    launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file,
-    write_atomically, wtype, wtype_spawn,
+    harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta,
+    wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -44,6 +47,35 @@ fn dies_within_2_s(pid: i32) {
         assert!(t.elapsed() < Duration::from_secs(2), "pw-dump {pid} survived the daemon");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A base build (`ALPHEUS_TEST_BASE_CONFIG=1`) gets no `[displays]`, which it would reject; the
+/// privacy roots stay on empty directories either way.
+#[test]
+fn the_harness_leaves_displays_out_for_a_base_build() {
+    let runtime = Path::new("/run/test");
+    for base in [false, true] {
+        let text = harness_bar_toml("modules = [\"clock\"]\n", runtime, base);
+        assert!(text.contains("dev_dir = \"/run/test/privacy-dev\"") && text.contains("proc_dir = \"/run/test/privacy-proc\""), "{text}");
+        assert_eq!(text.contains("[displays]"), !base, "{text}");
+        assert!(alpheus_demon::config::BarConfig::from_text(&text).is_ok(), "{text}");
+    }
+    let own = harness_bar_toml("[displays]\ndrm_dir = \"/x\"\n", runtime, false);
+    assert_eq!(own.matches("drm_dir").count(), 1, "the test's own table is kept: {own}");
+}
+
+/// The harness fails a test whose daemon rejected bar.toml, instead of running it on defaults.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_rejected_bar_toml_fails_the_harness() {
+    let sway = Sway::start("rejected", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("[nonsense]\n"), ..DaemonOptions::default() })
+    }));
+    assert!(started.is_err(), "the harness took a daemon running on defaults");
+    let d = start_daemon(&sway);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
 }
 
 #[test]
@@ -5222,6 +5254,158 @@ fn privacy_the_popup_names_a_direct_camera() {
     wait_for_the_privacy_popup_in(&sway, &d, privacy_green(), 52..=60);
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// A daemon on `sway`, reading it as its compositor, displays on (the default modules).
+fn displays_daemon(sway: &Sway) -> Daemon {
+    displays_daemon_with(sway, None)
+}
+
+fn displays_daemon_with(sway: &Sway, bar_toml: Option<&str>) -> Daemon {
+    let d = start_daemon_with(sway, &DaemonOptions { bar_toml, backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    d
+}
+
+/// Displays protocol spec: the heads come from `zwlr_output_manager_v1`, answered from memory.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn outputs_are_read_from_the_protocol() {
+    let sway = Sway::start("displays-read", 2);
+    let d = displays_daemon(&sway);
+    let s = outputs_snapshot(&sway, &d, 2..=2);
+    assert_eq!(s.status, Status::Ready);
+    assert_eq!(s.trial, TrialState::None);
+    let mut names: Vec<&str> = s.outputs.iter().map(|o| o.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+    assert!(s.outputs.iter().all(|o| o.active.is_some()), "both on: {s:?}");
+}
+
+/// `outputs-try` of `name` as it is, at scale `scale` (thousandths).
+fn try_scale(s: &Snapshot, name: &str, scale: u32) -> Request {
+    let active = output(s, name).active.clone().expect("enabled");
+    Request::OutputsTry(wire::encode_desired(&[Step { output: name.into(), active: Some(Active { scale: Scale(scale), ..active }) }]))
+}
+
+/// Displays protocol spec, the trial: a try answers done once the compositor applied it, the
+/// next snapshot shows it with the trial open; keep ends it as kept, and the scale stays.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_try_applies_and_keep_keeps() {
+    let sway = Sway::start("displays-keep", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(output(&before, "HEADLESS-1").active.as_ref().map(|a| a.scale), Some(Scale(1000)));
+    assert_eq!(displays(&sway, &try_scale(&before, "HEADLESS-1", 2000)), Reply::Done, "{:?}", d.log());
+    let s = snapshot_until(&sway, &d, |s| output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| a.scale == Scale(2000)));
+    assert!(matches!(s.trial, TrialState::Open { seconds_left: 1..=15 }), "{s:?}");
+    assert_eq!(displays(&sway, &Request::OutputsKeep), Reply::Done);
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(s.trial, TrialState::Ended(TrialEnd::Kept), "reported once");
+    assert_eq!(outputs_snapshot(&sway, &d, 1..=1).trial, TrialState::None);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(output(&outputs_snapshot(&sway, &d, 1..=1), "HEADLESS-1").active.as_ref().map(|a| a.scale), Some(Scale(2000)));
+    assert!(d.log().iter().all(|l| !l.contains("displays: configuration refused") && !l.contains("displays: no answer")), "{:?}", d.log());
+}
+
+/// Displays protocol spec, the trial: with no keep, the daemon brings the state from before
+/// back at the 15 s deadline, without the TUI.
+#[test]
+#[ignore = "headless sway, 16 s (nix develop)"]
+fn a_try_reverts_at_the_deadline() {
+    let sway = Sway::start("displays-revert", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(displays(&sway, &try_scale(&before, "HEADLESS-1", 2000)), Reply::Done, "{:?}", d.log());
+    snapshot_until(&sway, &d, |s| output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| a.scale == Scale(2000)));
+    thread::sleep(Duration::from_secs(16));
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(s.trial, TrialState::Ended(TrialEnd::Reverted), "{s:?}");
+    assert_eq!(output(&s, "HEADLESS-1").active, output(&before, "HEADLESS-1").active, "the state from before");
+}
+
+/// Displays protocol spec, the TUI's errors: a mode the screen does not have is refused,
+/// `the compositor refused this configuration`, and nothing changes. The refusal comes from the
+/// controller (the screen has no such mode, so nothing is sent); a real compositor `failed` is
+/// covered by the controller's unit tests only: headless sway refuses nothing the controller
+/// lets through.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_refused_configuration_answers_refused() {
+    let sway = Sway::start("displays-refused", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    let active = output(&before, "HEADLESS-1").active.clone().expect("enabled");
+    let mode = Mode { width: 1234, height: 567, refresh: 75 };
+    let body = wire::encode_desired(&[Step { output: "HEADLESS-1".into(), active: Some(Active { mode, ..active }) }]);
+    assert_eq!(displays(&sway, &Request::OutputsTry(body)), Reply::Error("the compositor refused this configuration".into()));
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!((s.trial, s.outputs), (TrialState::None, before.outputs), "no trial, nothing changed");
+}
+
+/// Displays protocol spec, hotplug: a plugged screen whose set matches a profile of
+/// displays.toml gets its positions once the debounce ended, and only once.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hotplug_applies_the_matching_profile_once() {
+    let sway = Sway::start("displays-hotplug", 1);
+    // One profile for a screen that is not there: the start-up evaluation logs its line (none
+    // is logged without a profile), and it comes before `quiet` is taken.
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("displays.toml"),
+        "[[profile]]\nname = \"Elsewhere\"\n[[profile.display]]\ndescription = \"Nobody P0 X0\"\nmode = \"640x480@60\"\nplacement = { x = 0, y = 0 }\n",
+    )
+    .unwrap();
+    // No module that refreshes on its own (resources every 2 s): the loop rests between events.
+    let d = displays_daemon_with(&sway, Some("modules = [\"workspaces\", \"displays\"]\n"));
+    let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
+    assert!(d.wait_for("displays: no profile for these screens", DELAY), "{:?}", d.log());
+    // The plugged head's description carries a counter of the headless backend: one profile per
+    // value it may take, the same placement in each (only the set that is there matches).
+    let profiles: String = (2..=9)
+        .map(|n| {
+            format!(
+                "[[profile]]\nname = \"Desk {n}\"\n\
+                 [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+                 [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
+            )
+        })
+        .collect();
+    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), profiles).unwrap();
+    let quiet = d.log().len();
+    sway.command("create_output");
+    let placed = |s: &Snapshot| {
+        s.outputs.len() == 2
+            && s.trial == TrialState::None
+            && output(s, "HEADLESS-2").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
+            && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (1920, 0))
+    };
+    let s = snapshot_until(&sway, &d, placed);
+    // An apply logs nothing (the spec's fixed lines): a second evaluation would show as the
+    // loop waking each debounce, with no request on the socket meanwhile. The snapshot request
+    // and the apply's last events settle first: no wake-up for 300 ms.
+    let quiet_since = |d: &Daemon| {
+        let (start, mut last, mut since) = (Instant::now(), d.main_thread_wakeups(), Instant::now());
+        while since.elapsed() < Duration::from_millis(300) {
+            assert!(start.elapsed() < DELAY, "the loop never settled: {:?}", d.log());
+            thread::sleep(Duration::from_millis(20));
+            let now = d.main_thread_wakeups();
+            if now != last {
+                (last, since) = (now, Instant::now());
+            }
+        }
+    };
+    quiet_since(&d);
+    let before = d.main_thread_wakeups();
+    thread::sleep(Duration::from_secs(2));
+    let wakeups = d.main_thread_wakeups() - before;
+    assert_eq!(wakeups, 0, "{wakeups} wake-ups of the loop in 2 s once applied");
+    assert_eq!(outputs_snapshot(&sway, &d, 2..=2), s, "unchanged 2 s later");
+    let lines: Vec<String> = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect();
+    assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
 }
 
 /// Each test gives its compositor a name, and the name picks its runtime directory

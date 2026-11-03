@@ -84,6 +84,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Privacy indicators, module on at start | −88…+120 KB over the same bar without it (8.79–8.90 MB) | same test, 6 runs; the fake `pw-dump` serves a full-size initial graph (the sound fixture's dump), so this is the "large graph" figure: the capture model keeps only the nodes and links that matter (≤ 1,024 nodes, 4,096 links) |
 | Privacy indicators, a capture shown | −60…+26 KB, −50…−28 KB once it ended | `privacy_pss_with_a_capture_and_after`, 3 runs (8.0–8.1 MB idle, 1 output); no surface unless the popup opens; 20 more capture cycles +16…+30 KB; 0 loop wake-ups at rest after a capture and 0 for the whole daemon (`at_rest_no_wakeups_after_a_capture`): the 0.5 s off-delay timer is armed only while an indicator is going off |
 | Privacy indicators, a camera opened directly | one-time cost −236…+100 KB (`everything`; one base run read 9.35 MB, a boot shift); module on at start +84…+192 KB (`+ privacy`) vs. `5d8fd55`, 3 runs each, retaken once the harness points every test daemon's `[privacy]` at empty directories (about 9.0–9.2 MB, 3 outputs); a holder shown −38…+70 KB over idle, 0…+4 KB once gone, +20 cycles +32…+64 KB (8.5–8.6 MB, 1 output) | binary 6.05 → 6.07 MiB (+24 KiB stripped); `privacy_camera_pss_and_rest`, 3 runs; 0 loop and 0 whole-daemon wake-ups in 5 s after the holder went (the 300 ms scan timer and the 0.5 s off-delay are armed only after a trigger); the scan stays on the event loop: median 4.0–4.1 ms on 120 processes × 30 descriptors (the daemon scans only its own user: 93 processes and 2,726 descriptors measured on the workstation), 14–15 ms on a synthetic 500 × 20 tree, the worst case seen |
+| Displays (output protocol), linked in but off | one-time cost +4…+168 KB (`everything` of `startup_pss_per_source`, nine pairings; no `displays` in that case) | binary 6.25 → 6.49 MiB (+244 KiB stripped); measured `dc4793a` vs this delivery, release, back to back, 3 runs each, separate target directories. `+ sound`, `+ D-Bus` and `+ resources` read about +124…+504 KB higher on the new build with no code change on those paths and `displays` absent from those cases: base-side harness spread (the base's `+ resources` read below its `plan 1` in run 1), not a cost |
+| Displays, module on at start | +56…+204 KB with 1 output, −36…+36 KB with 3 | `displays_pss_at_start`, 3 runs (8.8–9.0 MB with 1 output, 9.3 MB with 3): heads and modes read at bind; bound base + 512 KB; 0 loop and 0 whole-daemon wake-ups at rest |
+| Displays, trials and hotplug | trial open −46…+8 KB over idle; 20 more trials +0 KB; 20 hotplug cycles +40…+44 KB, then **+8 KB** between cycles 21 and 41 and +0…+8 KB to 61 | `displays_pss_after_trials`, `displays_pss_after_hotplug_cycles`, 3 runs each, the daemon's own memory (PSS without the shm pools; checkpoint bound 32 KB). The pools are printed only: the bar's SCTK `RawPool` remaps on a resize (84…220 KB, also with the module off). 0 loop and 0 whole-daemon wake-ups after a trial (16 s) and after the cycles (10 s). A 64 KiB `displays.toml` raises the heap ≈ 2.8 MB once (the parse peaks ≈ 44× the file's size), re-parsed at each debounce end; a real file of a few profiles costs 20–60 KB |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -153,7 +156,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | **Panels** | | | | | |
 | Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi\|bluetooth]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), Bluetooth (power, paired and nearby devices, connect, pair with codes, forget), a Bluetooth headset's Hi-Fi/Mic mode, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
 | Power menu | ✅ a ⏻ button at the bar's end: Lock, Log out, Reboot, Power off with the quick panel's commands (reboot and power off ask first; a double click never confirms); the panel's session buttons and the TUI too | ✅ | ✅ | ✅ | ❌ |
-| Display settings | ✅ TUI (Hyprland; Mango through `wm-set` once nixos-config writes its monitors.conf; a message under Sway and niri) | ✅ | ➖ | ➖ | ❌ |
+| Display settings | ✅ TUI (enable, place, resolution, scale, profiles, 15 s rollback held by the daemon) through `zwlr_output_manager_v1`, no external script; profiles applied on hotplug (at most 3 a minute per set of screens, a held-back one applied when the minute ends); a trial restored when the daemon stops (lost if it crashes); DisplayLink kept at 120 Hz or below | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ✅ Wi-Fi and Bluetooth in the quick panel (Bluetooth: connect, pair with codes, forget, headset mode; `More…` opens nmtui for enterprise, hidden networks, VPN, hotspot); per-app audio in the TUI (wiremix) | ✅ | ➖ | ✅ | ❌ |
 | Notification center, history | ✅ a panel under the bell: the player, the last 50 notifications (in memory), do-not-disturb, Clear all | ✅ | ✅ | ➖ | ➖ |
 | USB devices (debugging) | 🚧 TUI tab | ❌ | ❌ | ❌ | ❌ |
@@ -207,7 +210,10 @@ checks this.
 
 Seven tabs: **Home**, **Sound**, **Network**, **BT** (Bluetooth), **Power**,
 **Displays** (enable, place, set resolution and scale, profiles, with
-automatic rollback after 15 s if not confirmed), **Theme** (choose a
+automatic rollback after 15 s if not confirmed; the daemon speaks the output
+protocol and holds that countdown, so it works under every compositor that
+implements `zwlr_output_manager_v1`, and a profile matching the connected
+screens is applied on hotplug), **Theme** (choose a
 theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`).
 
 | Key | Action |
@@ -258,7 +264,7 @@ app's menu in a popup, keyboard and mouse),
 server holds the name; a left click opens the panel — the player, the last 50 notifications, Do not
 disturb, Clear all — a middle click toggles do-not-disturb; bubbles top centre on the focused output:
 a left click runs the app's default action, a right click dismisses, critical ones stay until
-clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi|bluetooth]`: the volume with its output devices and, for a Bluetooth headset, its Hi-Fi/Mic mode (a switch of its PipeWire profile with `wpctl set-profile`), the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the Bluetooth (power, and a detail of the paired devices and of the nearby ones found while it is open: connect or disconnect, pair a new one — a keyboard's code to type or a code to confirm shown in the panel by alpheus's own pairing agent, then trusted and connected —, and forget one after `Forget? ⏎`; the Bluetooth module's left click opens it), the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **clock** (a click opens the
+clicked), **OSD** (a pill bottom centre on the focused output for the volume and mute, read from PipeWire's own state — any app, any key, a headset's buttons — with the new sink's name when the default sink switches; for the microphone only when its mute flips, never for a change of its level, which call apps (WebRTC) adjust on their own; and for the laptop's brightness on `alpheus-launch --osd brightness`, read once from sysfs, never written; it goes 1.3 s after the last change and never takes a click), **quick settings** (a panel under the volume, network or Bluetooth module, or `alpheus-launch --quick [sound|wifi|bluetooth]`: the volume with its output devices and, for a Bluetooth headset, its Hi-Fi/Mic mode (a switch of its PipeWire profile with `wpctl set-profile`), the backlight, the Wi-Fi (the radio, and a detail of the visible networks: saved ones connect by their profile, open ones by name, a new WPA-personal one with a password typed in the panel and handed to `nmcli` on its standard input; a failed new network's profile is removed; `More…` opens nmtui), the Bluetooth (power, and a detail of the paired devices and of the nearby ones found while it is open: connect or disconnect, pair a new one — a keyboard's code to type or a code to confirm shown in the panel by alpheus's own pairing agent, then trusted and connected —, and forget one after `Forget? ⏎`; the Bluetooth module's left click opens it), the microphone, do-not-disturb, the power profile from power-profiles-daemon, keep-awake and night light as commands of your own, and lock, log out, reboot and power off — reboot and power off ask once more; every change is a command such as `wpctl`, `brightnessctl` or `powerprofilesctl`, never a write of the bar's own; a row whose tool, device or command is missing does not show), **displays** (nothing drawn: the daemon reads the screens through `zwlr_output_manager_v1` for the Displays tab, holds the tab's 15 s trial and applies the matching `displays.toml` profile on hotplug, 500 ms after the screens settle, at most 3 times a minute per set of screens (one held back is applied when the minute ends); a trial still open when the daemon stops is rolled back, one lost to a crash is not, and a try still waiting for the compositor at shutdown may keep its layout; `[displays] auto = false` keeps the tab and drops the hotplug behaviour), **clock** (a click opens the
 month's calendar), **power** (⏻ at the bar's end: a menu with Lock, Log out, Reboot and Power off, run with the quick panel's `[quick]` commands; reboot and power off ask once more, and a double click never confirms; an entry with no command does not show, nor the button without any). Clicking a module opens the matching tab
 of the control center (with the quick panel: the right click on volume, network and Bluetooth). One bar per screen, screens plugged and unplugged
 are tracked live. On a narrow screen, secondary modules disappear;
@@ -624,8 +630,8 @@ rest applies; unknown keys in `colors*.toml` are ignored. The daemon logs to its
 When the files are read: `bar.toml` **once, when the daemon starts** (restart
 `alpheus-demon` after editing it); the theme files (`theme.toml`,
 `colors.toml`, `colors-light.toml`) are **watched and reloaded live**;
-`launcher.toml` is read **at each open** of the launcher; `config.toml` and
-`displays.toml` once, when the control center starts (restart it to apply an edit).
+`launcher.toml` is read **at each open** of the launcher; `config.toml` once, when the control
+center starts (restart it to apply an edit); `displays.toml` when the control center starts, and by the daemon at the end of each hotplug debounce.
 
 - `theme.toml`: the theme (a preset or the wallpaper), light/dark mode,
   per-role overrides, the bar style and its opacity; `colors.toml` / `colors-light.toml`: the wallpaper's
@@ -633,7 +639,7 @@ When the files are read: `bar.toml` **once, when the daemon starts** (restart
   without a restart, the control center reads them when it opens.
 - `config.toml`: the TUI (keys, tools opened for sound, network,
   Bluetooth).
-- `displays.toml`: screen profiles, written by the Displays tab.
+- `displays.toml`: screen profiles, written by the Displays tab and applied by the daemon on hotplug (exact match of the connected screens, by `make model serial`, else description).
 - `bar.toml`: the bar.
 - `launcher.toml`: the launcher (terminal command, result rows, history
   size, mode prefixes, the focus command, command sources); read fresh at each open,
@@ -642,7 +648,7 @@ When the files are read: `bar.toml` **once, when the daemon starts** (restart
 ```toml
 # bar.toml — default values
 modules = ["launcher", "workspaces", "window", "media", "privacy", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "clock", "power"]
+           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "clock", "power"]
 height = 22
 
 [font]
@@ -671,6 +677,10 @@ ignore = ["kdeconnect"]   # bus-name substrings never queried; playerctld is alw
 ignore = []               # app names (whole name, any case) never shown; an indicator left with no name and nothing unnamed goes off
 # dev_dir = "/dev"        # where video devices are listed (watched, never opened)
 # proc_dir = "/proc"      # where processes are listed (the camera scan)
+
+[displays]
+auto = true                          # apply the displays.toml profile that matches the connected screens, 500 ms after they change
+# drm_dir = "/sys/class/drm"         # where connectors are listed: a card driven by evdi marks a DisplayLink screen (120 Hz cap)
 
 [notifications]
 timeout = 5          # seconds, when the app leaves it to the server
@@ -771,7 +781,10 @@ warning on the status line); the rest of the file still applies.
   the bar, measured on a headless sway).
 - **Never `dpms`** nor sleep handling: turning off a screen on a
   DisplayLink output can freeze the machine.
-- **No direct writes to the compositor**: only configurable commands.
+- **No direct writes to the compositor**: only configurable commands, with
+  one exception: the daemon sets the screens' layout through
+  `zwlr_output_configuration_v1` (`outputs/wlr.rs`); never output power
+  management, never `dpms`.
 - **Tests without a graphical session**: every command goes through an
   injectable executor, no test acts on the session.
 

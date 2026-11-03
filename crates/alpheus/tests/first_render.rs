@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 fn first_render_under_100_ms_even_with_slow_tools() {
     let start = Instant::now();
     let dir = std::env::temp_dir().join("alpheus-first-render-no-config");
-    let mut app = build_app(&dir, Tab::Home, None, start);
+    let mut app = build_app(&dir, Tab::Home, start);
     let exec = Arc::new(FakeExecutor::with_delay(Duration::from_millis(500)));
     let (tx, _rx) = worker::spawn(Backends::system(exec, dir.clone()));
     for r in app.take_requests() {

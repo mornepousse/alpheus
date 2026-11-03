@@ -3,8 +3,9 @@
 //! is returned as soon as it's read; a burst of slider changes is coalesced
 //! (only the last one counts).
 
-use crate::backends::{AudioStatus, BResult, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
-use crate::displays::{Output, Plan};
+use crate::backends::{AudioStatus, BResult, BackendError, Backends, BtStatus, NetStatus, NodeRef, PowerAction, Profiles, Volume};
+use crate::displays::Plan;
+use crate::displays::wire::Snapshot;
 use std::sync::mpsc::{self, Receiver, Sender};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,13 +51,13 @@ pub enum Op {
     },
     SetProfile(String),
     Power(PowerAction),
-    /// Display setting. `undo`: reverse plan of a trial (reapplied if the
-    /// plan fails, or on cancel); `None`: this one is itself a rollback,
-    /// applied best-effort (every step, even after a failure).
-    ApplyDisplays {
-        plan: Plan,
-        undo: Option<Plan>,
-    },
+    /// Display setting, tried by the daemon: answered once the compositor
+    /// has, its 15 s trial then open there.
+    TryDisplays(Plan),
+    /// Keeps the daemon's trial.
+    KeepDisplays,
+    /// Reverts the daemon's trial.
+    RevertDisplays,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +76,7 @@ pub enum Update {
     KeepAwake(BResult<bool>),
     Profiles(BResult<Profiles>),
     Audio(BResult<AudioStatus>),
-    Displays(BResult<Vec<Output>>),
+    Displays(BResult<Snapshot>),
     Done(Op, BResult<()>),
     /// A setting dropped by coalescing a burst (a more recent change to the
     /// same slider replaced it): each `Request::Do` thus gets exactly one
@@ -97,7 +98,7 @@ impl Op {
             Op::ToggleKeepAwake { .. } => &[Domain::KeepAwake],
             Op::SetProfile(_) => &[Domain::Profiles],
             Op::Power(_) => &[],
-            Op::ApplyDisplays { .. } => &[Domain::Displays],
+            Op::TryDisplays(_) | Op::KeepDisplays | Op::RevertDisplays => &[Domain::Displays],
         }
     }
 }
@@ -112,7 +113,7 @@ pub fn fetch(b: &Backends, d: Domain) -> Update {
         Domain::Network => Update::Network(b.network.status()),
         Domain::Bluetooth => Update::Bluetooth(b.bluetooth.status()),
         Domain::Audio => Update::Audio(b.sound.status()),
-        Domain::Displays => Update::Displays(b.displays.outputs()),
+        Domain::Displays => Update::Displays(b.displays.snapshot().map_err(BackendError::Daemon)),
     }
 }
 
@@ -127,10 +128,9 @@ pub fn perform(b: &Backends, op: &Op) -> BResult<()> {
         Op::ToggleKeepAwake { .. } => b.energy.toggle_keep_awake(),
         Op::SetProfile(p) => b.energy.set_profile(p),
         Op::Power(a) => b.power.perform(*a),
-        // A trial (with a reverse plan) stops at the first failure; a
-        // rollback (without a reverse plan) tries every step (decision D2).
-        Op::ApplyDisplays { plan, undo: Some(_) } => b.displays.apply(plan),
-        Op::ApplyDisplays { plan, undo: None } => b.displays.apply_best_effort(plan),
+        Op::TryDisplays(plan) => b.displays.try_(&plan.steps).map_err(BackendError::Daemon),
+        Op::KeepDisplays => b.displays.keep().map_err(BackendError::Daemon),
+        Op::RevertDisplays => b.displays.revert().map_err(BackendError::Daemon),
     }
 }
 
@@ -261,42 +261,34 @@ mod tests {
     }
 
     #[test]
-    fn displays_read_and_applied_through_wm_set() {
+    fn displays_are_read_and_changed_through_the_daemon() {
+        use crate::app::testing::FakeDisplays;
         use crate::displays::Step;
+        use crate::displays::wire::{Status, TrialState};
         let f = Arc::new(FakeExecutor::new());
-        f.ok("wm-set outputs", "[]");
-        f.ok("wm-set monitor-disable eDP-1", "");
-        let b = backends(&f);
-        assert_eq!(fetch(&b, Domain::Displays), Update::Displays(Ok(Vec::new())));
+        let fake = Arc::new(FakeDisplays::default());
+        let mut b = backends(&f);
+        b.displays = fake.clone();
+        let snapshot = Snapshot { status: Status::Ready, outputs: crate::displays::testing::machine(), trial: TrialState::None };
+        *fake.snapshot.lock().unwrap() = Ok(snapshot.clone());
+        assert_eq!(fetch(&b, Domain::Displays), Update::Displays(Ok(snapshot)));
         let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }] };
-        assert_eq!(perform(&b, &Op::ApplyDisplays { plan, undo: None }), Ok(()));
-        assert_eq!(f.calls(), vec!["wm-set outputs", "wm-set monitor-disable eDP-1"]);
-    }
-
-    #[test]
-    fn trial_stops_at_first_failure_rollback_is_best_effort() {
-        // Decision D2: the trial (with a reverse plan) stops at the first
-        // failure; the rollback (without a reverse plan) tries every step.
-        use crate::displays::Step;
-        let plan = Plan { steps: vec![Step { output: "eDP-1".into(), active: None }, Step { output: "HDMI-A-1".into(), active: None }] };
-        let f = Arc::new(FakeExecutor::new());
-        f.ok("wm-set monitor-disable HDMI-A-1", ""); // eDP-1 not programmed: failure
-        let b = backends(&f);
-        assert!(perform(&b, &Op::ApplyDisplays { plan: plan.clone(), undo: Some(Plan::default()) }).is_err());
-        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1"], "trial: stops at the first failure");
-        let f = Arc::new(FakeExecutor::new());
-        f.ok("wm-set monitor-disable HDMI-A-1", "");
-        let b = backends(&f);
-        let e = perform(&b, &Op::ApplyDisplays { plan, undo: None }).unwrap_err();
-        assert_eq!(f.calls(), vec!["wm-set monitor-disable eDP-1", "wm-set monitor-disable HDMI-A-1"], "rollback: best-effort");
-        assert_eq!(e.to_string(), "incomplete rollback: eDP-1 (wm-set not found)");
+        assert_eq!(perform(&b, &Op::TryDisplays(plan)), Ok(()));
+        assert_eq!(perform(&b, &Op::KeepDisplays), Ok(()));
+        assert_eq!(perform(&b, &Op::RevertDisplays), Ok(()));
+        assert_eq!(fake.calls(), vec!["snapshot", "try eDP-1", "keep", "revert"]);
+        assert!(f.calls().is_empty(), "no command: {:?}", f.calls());
+        // The daemon's words become the error, as they are.
+        *fake.answer.lock().unwrap() = Err("another change is in progress".into());
+        let e = perform(&b, &Op::KeepDisplays).unwrap_err();
+        assert_eq!(e.to_string(), "another change is in progress");
     }
 
     #[test]
     fn display_settings_are_never_coalesced() {
         // A trial then its rollback: both pass, in order.
-        let trial = Op::ApplyDisplays { plan: Plan::default(), undo: Some(Plan::default()) };
-        let rollback = Op::ApplyDisplays { plan: Plan::default(), undo: None };
+        let trial = Op::TryDisplays(Plan::default());
+        let rollback = Op::RevertDisplays;
         let (r, dropped) = coalesce(vec![Request::Do(trial.clone()), Request::Do(rollback.clone())]);
         assert_eq!(r, vec![Request::Do(trial), Request::Do(rollback)]);
         assert!(dropped.is_empty());
@@ -358,7 +350,9 @@ mod tests {
         assert!(Op::SetVolume(NodeRef::DefaultSink, 5).domains().contains(&Domain::Audio));
         assert!(Op::SetDefault(64).domains().contains(&Domain::Volume));
         assert!(Op::Power(crate::backends::PowerAction::Lock).domains().is_empty());
-        assert_eq!(Op::ApplyDisplays { plan: Plan::default(), undo: None }.domains(), &[Domain::Displays]);
+        for op in [Op::TryDisplays(Plan::default()), Op::KeepDisplays, Op::RevertDisplays] {
+            assert_eq!(op.domains(), &[Domain::Displays]);
+        }
     }
 
     #[test]

@@ -11,9 +11,9 @@ One Cargo workspace, four crates:
 
 | Crate | What it is | Does not depend on |
 |---|---|---|
-| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol | ratatui, Wayland |
+| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
-| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators | ratatui |
+| `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators, displays (the screens' layout through `zwlr_output_manager_v1`, profiles on hotplug) | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
 
 These boundaries are enforced from `Cargo.lock` by
@@ -73,7 +73,10 @@ happened*.
 ### The launcher bridge
 
 `alpheus-launch` talks to the daemon over `$XDG_RUNTIME_DIR/alpheus-launcher.sock`
-(mode 0600, peers of another uid refused). The wire protocol lives in
+(mode 0600, peers of another uid refused). The TUI is its second client: the
+Displays tab reads and tries the screens' layout there (`outputs`,
+`outputs-try`, `outputs-keep`, `outputs-revert`), and the daemon holds the 15 s
+trial. The wire protocol lives in
 `alpheus-commun::launcher_ipc`. The daemon's side is `launcher/socket.rs`, the
 only place that binds it. Application and `$PATH` scans run on a short-lived
 thread at each open; command sources (`[[sources]]`) run through the executor's
@@ -86,11 +89,14 @@ These are guardrails from the scope document, checked mechanically.
 1. **No sleep or `dpms` handling.** Locking and blanking stay with an idle
    daemon; `dpms` is a forbidden word in the daemon's sources, and the D-Bus
    sources may not name `Sleep`, `Suspend`, `Hibernate`, `PowerOff` or `Reboot`.
-2. **The compositor is only read.** Each compositor module has a fixed list of
-   requests it may write (four for Hyprland, one subscription for niri, three
-   messages for Sway, two `watch` lines for Mango); sockets are
+2. **The compositor's sockets are only read.** Each compositor module has a
+   fixed list of requests it may write (four for Hyprland, one subscription for
+   niri, three messages for Sway, two `watch` lines for Mango); sockets are
    opened only under `src/sources/`. Anything that must change the compositor
-   goes through a configured external command (see [compositors.md](compositors.md)).
+   goes through a configured external command (see [compositors.md](compositors.md)),
+   with **one exception**: `zwlr_output_configuration_v1` in the daemon's
+   `outputs/wlr.rs`, which changes the screens' layout (the Displays tab's
+   trial, profiles on hotplug); never output power management, never `dpms`.
 3. **Nothing resident without a reason.** A closed launcher owns no thread,
    timer or keyboard.
 4. **The system D-Bus is read-only.** The one connection on the D-Bus thread

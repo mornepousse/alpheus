@@ -244,7 +244,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 16);
+    assert_eq!(ModuleId::ALL.len(), 17);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -528,4 +528,23 @@ fn state_forms_are_read() {
     assert!(state_form("file:$HOME/x").is_err(), "only $XDG_RUNTIME_DIR and ~ are expanded");
     assert!(state_form("File:/x").is_err(), "the prefixes are exact");
     assert!(state_form("process:a\u{7}").is_err(), "no control character");
+}
+
+/// Displays spec § 1: `displays` is a module with no segment, on by default; `[displays]` turns
+/// the hotplug profiles off and says where the DRM connectors are listed (absolute).
+#[test]
+fn config_displays_defaults_and_absolute_drm_dir() {
+    let d = BarConfig::default();
+    assert!(d.modules.contains(&ModuleId::Displays), "on by default");
+    assert_eq!(ModuleId::Displays.name(), "displays");
+    assert_eq!(d.displays, DisplaysConfig { auto: true, drm_dir: PathBuf::from("/sys/class/drm") });
+    assert_eq!(BarConfig::from_text("height = 22").unwrap().displays, DisplaysConfig::default(), "absent: defaults");
+    let c = BarConfig::from_text("[displays]\nauto = false\ndrm_dir = \"/tmp/drm\"\n").unwrap();
+    assert_eq!(c.displays, DisplaysConfig { auto: false, drm_dir: PathBuf::from("/tmp/drm") });
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    for t in ["[displays]\ndrm_dir = \"sys/class/drm\"", "[displays]\ndrm_dir = \"\""] {
+        assert!(err(t).contains("displays.drm_dir must be an absolute path"), "{t}");
+    }
+    assert!(err("[displays]\npower = true").contains("power"), "unknown key refused");
+    assert_eq!(BarConfig::from_text("modules = [\"displays\"]").unwrap().modules, [ModuleId::Displays]);
 }
