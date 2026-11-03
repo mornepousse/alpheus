@@ -70,7 +70,39 @@ pub(crate) struct Wlr {
     serial: Option<u32>,
     /// The heads of the last `done`, in the controller's order.
     shown: Vec<Shown>,
+    /// The configuration sent and not yet answered.
+    pending: Pending<ZwlrOutputConfigurationV1>,
     modes_logged: bool,
+}
+
+/// The one configuration sent and not answered, with its generation: destroyed when a newer one
+/// is sent or the controller gives up on it, so none is left on either side of the connection.
+#[derive(Debug)]
+pub(crate) struct Pending<C> {
+    slot: Option<(u64, C)>,
+}
+
+impl<C> Default for Pending<C> {
+    fn default() -> Self {
+        Pending { slot: None }
+    }
+}
+
+impl<C: PartialEq> Pending<C> {
+    /// `c` is now the one in flight; the one it replaces, to destroy.
+    pub(crate) fn replace(&mut self, generation: u64, c: C) -> Option<C> {
+        self.slot.replace((generation, c)).map(|(_, old)| old)
+    }
+
+    /// `c` got its answer (and is destroyed by its handler): whether it was the one in flight.
+    pub(crate) fn answered(&mut self, c: &C) -> bool {
+        self.slot.take_if(|(_, p)| p == c).is_some()
+    }
+
+    /// The one in flight, to destroy, unless the controller still waits for it (`flight`).
+    pub(crate) fn abandoned(&mut self, flight: Option<u64>) -> Option<C> {
+        self.slot.take_if(|(g, _)| Some(*g) != flight).map(|(_, c)| c)
+    }
 }
 
 /// A configuration the compositor would refuse with a protocol error (which ends the bar's
@@ -82,7 +114,7 @@ impl Wlr {
     /// Binds the manager (versions 1 to 4); None when the compositor has none.
     pub(crate) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<Wlr> {
         let manager = globals.bind::<ZwlrOutputManagerV1, _, _>(qh, 1..=4, ()).ok()?;
-        Some(Wlr { manager, heads: Vec::new(), serial: None, shown: Vec::new(), modes_logged: false })
+        Some(Wlr { manager, heads: Vec::new(), serial: None, shown: Vec::new(), pending: Pending::default(), modes_logged: false })
     }
 
     /// Every head as it is at this `done`, its mode list capped at `MAX_MODES`.
@@ -107,7 +139,7 @@ impl Wlr {
 
     /// Builds the configuration of `targets` on the last `done`'s serial and applies it, in one
     /// go. Its answer comes back with `generation`.
-    pub(crate) fn send(&self, generation: u64, targets: &[Target], qh: &QueueHandle<App>) -> Result<(), Unsendable> {
+    pub(crate) fn send(&mut self, generation: u64, targets: &[Target], qh: &QueueHandle<App>) -> Result<(), Unsendable> {
         let serial = self.serial.ok_or(Unsendable)?;
         let keys: Vec<(&str, usize)> = self.shown.iter().map(|s| (s.name.as_str(), s.modes.len())).collect();
         let order = plan(&keys, targets)?;
@@ -130,7 +162,17 @@ impl Wlr {
             }
         }
         config.apply();
+        if let Some(old) = self.pending.replace(generation, config) {
+            old.destroy();
+        }
         Ok(())
+    }
+
+    /// Destroys the configuration in flight unless the controller still waits for it.
+    pub(crate) fn abandon(&mut self, flight: Option<u64>) {
+        if let Some(c) = self.pending.abandoned(flight) {
+            c.destroy();
+        }
     }
 
     fn head(&mut self, p: &ZwlrOutputHeadV1) -> Option<&mut LiveHead> {
@@ -139,8 +181,9 @@ impl Wlr {
 }
 
 /// For each target, the index of its head among the last `done`'s (connector, mode count), or
-/// `Unsendable`: every head exactly once, a mode index of that head (or `KEEP`), a positive
-/// finite scale and a transform of `wl_output`.
+/// `Unsendable`: every head exactly once, a mode index of that head (or `KEEP`), a scale that
+/// goes out as a positive `wl_fixed` (at least 1/256; the wire truncates) and at most
+/// `MAX_SCALE`, and a transform of `wl_output`.
 pub(crate) fn plan(shown: &[(&str, usize)], targets: &[Target]) -> Result<Vec<usize>, Unsendable> {
     if targets.len() != shown.len() {
         return Err(Unsendable);
@@ -152,13 +195,22 @@ pub(crate) fn plan(shown: &[(&str, usize)], targets: &[Target]) -> Result<Vec<us
             return Err(Unsendable);
         }
         if let Some((mode, _, _, scale, transform)) = t.state
-            && ((mode != KEEP && mode >= shown[i].1) || !(scale.is_finite() && scale > 0.0) || transform > 7)
+            && ((mode != KEEP && mode >= shown[i].1) || !sendable_scale(scale) || transform > 7)
         {
             return Err(Unsendable);
         }
         out.push(i);
     }
     Ok(out)
+}
+
+/// The largest scale sent (the protocols' compositors stay far below).
+const MAX_SCALE: f64 = 10.0;
+
+/// A finite scale whose `wl_fixed` (`(scale * 256) as i32`, as the scanner sends it) is positive,
+/// at most `MAX_SCALE`.
+fn sendable_scale(scale: f64) -> bool {
+    scale.is_finite() && (scale * 256.0) as i32 >= 1 && scale <= MAX_SCALE
 }
 
 fn release_head(p: &ZwlrOutputHeadV1) {
@@ -299,6 +351,9 @@ impl Dispatch<ZwlrOutputConfigurationV1, u64> for App {
             _ => return,
         };
         // One answer per configuration: it is done with.
+        if let Some(d) = state.displays.as_mut() {
+            d.wlr.pending.answered(proxy);
+        }
         proxy.destroy();
         state.displays_event(answer);
     }

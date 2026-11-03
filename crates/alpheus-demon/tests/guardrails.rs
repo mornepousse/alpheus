@@ -286,6 +286,10 @@ fn the_keywords_key_passes_but_the_keyword_command_does_not() {
     assert_eq!(forbidden_word("mmsg dispatch view,2"), Some("mmsg"));
 }
 
+/// The daemon only reads from the compositor, plus two writes: the workspace command, and output
+/// configurations (`zwlr_output_configuration_v1`), built and applied in `outputs/wlr.rs` only
+/// and sent only by `outputs_app.rs` (the controller's one-in-flight, last-screen and cap rules);
+/// never output power management, never dpms (displays spec § 2, as amended).
 #[test]
 fn the_daemon_only_reads_from_the_compositor() {
     for (p, t) in all_source_files() {
@@ -305,7 +309,22 @@ fn the_daemon_only_reads_from_the_compositor() {
         if let Some(w) = OUTPUT_WRITES.iter().find(|w| t.contains(**w)) {
             assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{w}\": an output configuration outside the protocol file");
         }
+        // Only the glue sends one, so none bypasses the controller.
+        if t.contains("wlr.send(") {
+            assert_eq!(name, "outputs_app.rs", "an output configuration sent outside the displays glue");
+        }
     }
+}
+
+/// The displays timer is synced as soon as the loop exists: a `done` handled before (a
+/// roundtrip at startup) would leave its debounce unarmed until the next hotplug.
+#[test]
+fn the_displays_timer_is_synced_once_the_loop_exists() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let set = "state.loop_handle = Some(handle.clone());";
+    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in launch.rs"));
+    assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
 }
 
 /// The only file that speaks `zwlr_output_manager_v1` (displays spec § 1).

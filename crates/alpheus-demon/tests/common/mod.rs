@@ -609,6 +609,31 @@ pub fn daemon_binary() -> PathBuf {
     env::var_os("ALPHEUS_DEMON_UNDER_TEST").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_alpheus-demon")))
 }
 
+/// `ALPHEUS_TEST_BASE_CONFIG=1`, set with `ALPHEUS_DEMON_UNDER_TEST` when that binary is a base
+/// build from before `[displays]`: the harness then leaves out the tables such a build does not
+/// know (bar.toml has `deny_unknown_fields`: one unknown table and the whole file is rejected,
+/// every test's settings with it, and `[privacy]` back on the machine's /dev and /proc). Today
+/// only `[displays]`, which a daemon without the module never reads.
+pub fn base_config() -> bool {
+    env::var_os("ALPHEUS_TEST_BASE_CONFIG").is_some_and(|v| v == "1")
+}
+
+/// What the harness writes as bar.toml: the test's `text`, with the camera watch's `[privacy]`
+/// roots and the DisplayLink detection's `[displays] drm_dir` pointed at empty directories under
+/// `runtime` (never the machine's /dev, /proc or /sys) unless the test sets its own; `base`
+/// (`base_config`) leaves `[displays]` out.
+pub fn harness_bar_toml(text: &str, runtime: &Path, base: bool) -> String {
+    let (dev, proc, drm) = (runtime.join("privacy-dev"), runtime.join("privacy-proc"), runtime.join("displays-drm"));
+    let mut text = text.to_string();
+    if !text.contains("dev_dir") {
+        text = under_table(&text, "privacy", &format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display()));
+    }
+    if !base && !text.contains("drm_dir") {
+        text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
+    }
+    text
+}
+
 /// The directory of the real `cat`, symlinks resolved: on NixOS a
 /// coreutils-only store path. The fake programs need cat, sleep, mv; the
 /// session's profile (wm-set, systemd-run, real applications) stays out of
@@ -645,23 +670,10 @@ fn under_table(text: &str, table: &str, keys: &str) -> String {
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
-    // The privacy module's camera watch lists devices and processes where `[privacy]` says: empty
-    // directories here, never the machine's /dev and /proc, unless the test sets its own table.
-    let (dev, proc) = (sway.runtime.join("privacy-dev"), sway.runtime.join("privacy-proc"));
-    fs::create_dir_all(&dev).unwrap();
-    fs::create_dir_all(&proc).unwrap();
-    // The displays module's DisplayLink detection lists DRM connectors where `[displays]` says: an
-    // empty directory here, never the machine's /sys, unless the test sets its own.
-    let drm = sway.runtime.join("displays-drm");
-    fs::create_dir_all(&drm).unwrap();
-    let mut text = o.bar_toml.unwrap_or("").to_string();
-    if !text.contains("dev_dir") {
-        text = under_table(&text, "privacy", &format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display()));
+    for empty in ["privacy-dev", "privacy-proc", "displays-drm"] {
+        fs::create_dir_all(sway.runtime.join(empty)).unwrap();
     }
-    if !text.contains("drm_dir") {
-        text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
-    }
-    fs::write(config.join("alpheus/bar.toml"), text).unwrap();
+    fs::write(config.join("alpheus/bar.toml"), harness_bar_toml(o.bar_toml.unwrap_or(""), &sway.runtime, base_config())).unwrap();
     if let Some(text) = o.launcher_toml {
         fs::write(config.join("alpheus/launcher.toml"), text).unwrap();
     }
@@ -709,7 +721,9 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
             j.lock().unwrap().push(l);
         }
     });
-    Daemon { child, log }
+    let mut d = Daemon { child, log };
+    d.assert_config_taken();
+    d
 }
 
 /// One request on the daemon's launcher socket (this test's runtime dir).
@@ -931,6 +945,21 @@ pub fn assert_no_spin(ticks: u64, window: Duration, what: &str) {
 impl Daemon {
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Fails the test when the daemon rejected the bar.toml the harness wrote: it would run on
+    /// the defaults, every test setting ignored and the privacy roots back on the machine's.
+    /// bar.toml's warnings come just before the `theme:` line (or the daemon ended first).
+    fn assert_config_taken(&mut self) {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(10) && !self.wait_for("theme: ", Duration::from_millis(20)) {
+            if self.child.try_wait().ok().flatten().is_some() {
+                thread::sleep(Duration::from_millis(50)); // the last lines, read by the log thread
+                break;
+            }
+        }
+        let rejected = self.log().into_iter().find(|l| l.contains("bar.toml invalid") || l.contains("bar.toml unreadable"));
+        assert!(rejected.is_none(), "the daemon rejected the harness's bar.toml: {rejected:?} (a base build: ALPHEUS_TEST_BASE_CONFIG=1)");
     }
 
     /// Waits for a log line containing `pattern`.

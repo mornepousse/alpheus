@@ -24,6 +24,9 @@ pub enum Event {
     Succeeded(u64),
     Failed(u64),
     Cancelled(u64),
+    /// That configuration could not be built (the compositor would raise a
+    /// protocol error): never sent, answered as a refusal of its own.
+    Invalid(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +52,8 @@ const LOG_TWINS: &str = "displays: two screens look the same";
 const LOG_LOWERED: &str = "displays: lowered a DisplayLink screen to 120 Hz";
 const BUSY: &str = "another change is in progress";
 const REFUSED: &str = "the compositor refused this configuration";
+const LOG_INVALID: &str = "displays: configuration not sent (invalid)";
+const INVALID: &str = "configuration not sent (invalid)";
 /// `cancelled` answers re-sent before giving up.
 const MAX_RESENDS: u8 = 3;
 
@@ -74,6 +79,15 @@ struct Kept {
     /// The mode its index named (width, height, mHz); `None` for `KEEP`.
     mode: Option<(i32, i32, i32)>,
     state: Option<(usize, i32, i32, f64, u8)>,
+}
+
+/// How a configuration in flight ended.
+#[derive(Clone, Copy, PartialEq)]
+enum Answer {
+    Applied,
+    Refused,
+    /// Never sent: it could not be built.
+    Invalid,
 }
 
 /// The one configuration waiting for the compositor's answer.
@@ -140,6 +154,11 @@ impl Controller {
         }
     }
 
+    /// The generation of the configuration waiting for its answer, if any.
+    pub fn in_flight(&self) -> Option<u64> {
+        self.flight.as_ref().map(|f| f.generation)
+    }
+
     /// The heads of the last `done`.
     pub fn heads(&self) -> &[Head] {
         &self.heads
@@ -148,7 +167,7 @@ impl Controller {
     pub fn on_event(&mut self, e: Event, now: Instant) -> Vec<Action> {
         // An answer to a configuration no longer in flight (given up by the
         // watchdog, or re-sent since) is not this one's.
-        if let Event::Succeeded(g) | Event::Failed(g) | Event::Cancelled(g) = e
+        if let Event::Succeeded(g) | Event::Failed(g) | Event::Cancelled(g) | Event::Invalid(g) = e
             && self.flight.as_ref().is_none_or(|f| f.generation != g)
         {
             return Vec::new();
@@ -173,12 +192,13 @@ impl Controller {
                 out
             }
             // Applied: the heads are stale until its `done`.
-            Event::Succeeded(_) => self.answer(true, false, now),
-            Event::Failed(_) => self.answer(false, true, now),
+            Event::Succeeded(_) => self.answer(Answer::Applied, false, now),
+            Event::Failed(_) => self.answer(Answer::Refused, true, now),
+            Event::Invalid(_) => self.answer(Answer::Invalid, true, now),
             Event::Cancelled(_) => {
                 let Some(f) = &mut self.flight else { return Vec::new() };
                 if f.resends >= MAX_RESENDS {
-                    return self.answer(false, true, now);
+                    return self.answer(Answer::Refused, true, now);
                 }
                 if f.done_since {
                     return self.resend(now);
@@ -347,7 +367,7 @@ impl Controller {
             resend: false,
         });
         if noop {
-            return self.answer(true, true, now);
+            return self.answer(Answer::Applied, true, now);
         }
         sent
     }
@@ -360,18 +380,21 @@ impl Controller {
         if targets.iter().all(|t| t.state.is_none()) {
             // Every screen it left on is gone: answered as refused.
             self.flight = Some(f);
-            return self.answer(false, true, now);
+            return self.answer(Answer::Refused, true, now);
         }
         self.send(targets, f.purpose, f.resends + 1, now)
     }
 
-    /// The compositor's answer (`succeeded` or a refusal). `fresh`: the
-    /// heads already show the outcome (else the cap waits for the `done`).
-    fn answer(&mut self, ok: bool, fresh: bool, now: Instant) -> Vec<Action> {
+    /// The compositor's answer (`succeeded` or a refusal), or ours for a
+    /// configuration never sent. `fresh`: the heads already show the outcome
+    /// (else the cap waits for the `done`).
+    fn answer(&mut self, answer: Answer, fresh: bool, now: Instant) -> Vec<Action> {
         let Some(f) = self.flight.take() else { return Vec::new() };
         let mut out = Vec::new();
+        let ok = answer == Answer::Applied;
+        let (log, reply) = if answer == Answer::Invalid { (LOG_INVALID, INVALID) } else { (LOG_REFUSED, REFUSED) };
         if !ok {
-            out.push(Action::Log(LOG_REFUSED));
+            out.push(Action::Log(log));
         }
         if ok && !fresh && !f.done_since {
             self.stale = Some(now + WATCHDOG);
@@ -381,7 +404,7 @@ impl Controller {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
                 out.extend(self.open_trial(before, f.targets, true, f.done_since, now));
             }
-            Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(REFUSED))),
+            Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(reply))),
             // The screens did not come back: the TUI must not say they did.
             Purpose::Revert if !ok => self.ended = Some(TrialEnd::Refused),
             _ => {}

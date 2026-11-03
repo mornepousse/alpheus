@@ -538,6 +538,7 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
     };
     let handle = event_loop.handle();
     state.loop_handle = Some(handle.clone());
+    state.displays_sync();
     if WaylandSource::new(conn.clone(), file).insert(handle.clone()).is_err() {
         log("Wayland source: could not insert");
         return None;

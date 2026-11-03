@@ -11,16 +11,24 @@ use crate::outputs::control::{Action, Controller, Event, ReplyTo};
 use crate::outputs::model::Head;
 use crate::outputs::wlr::Wlr;
 use crate::wayland::App;
-use alpheus_commun::displays::profiles;
+use alpheus_commun::displays::profiles::{self, Profile};
 use alpheus_commun::paths;
+use alpheus_commun::theme::settings::MAX_FILE;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
+use std::cell::Cell;
 use std::collections::VecDeque;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Entries of `drm_dir` looked at, at most (a machine has a handful).
 const MAX_DRM_ENTRIES: usize = 512;
+/// The line for an invalid or unreadable displays.toml: never its error, which may quote a
+/// screen's identity.
+const LOG_INVALID_FILE: &str = "displays: displays.toml invalid";
 /// Characters of a profile name in its log line.
 const MAX_LOGGED_NAME: usize = 64;
 
@@ -35,6 +43,7 @@ pub(crate) struct OutputsApp {
     /// displays.toml, read only when the debounce ends with `auto` on.
     profiles_path: PathBuf,
     links: DisplayLinks,
+    invalid: InvalidFile,
     /// The answer to the TUI's last try, for the socket verb to send.
     #[allow(dead_code)]
     pub(crate) reply: Option<Result<(), &'static str>>,
@@ -50,19 +59,20 @@ impl OutputsApp {
             drm_dir: config.drm_dir.clone(),
             profiles_path: paths::config_dir().join("displays.toml"),
             links: DisplayLinks::default(),
+            invalid: InvalidFile::default(),
             reply: None,
         })
     }
 
-    /// Runs the controller's actions; a configuration that cannot be built is the compositor's
-    /// refusal, at once.
+    /// Runs the controller's actions; a configuration that cannot be built is answered as
+    /// invalid, at once.
     fn run(&mut self, actions: Vec<Action>, qh: &QueueHandle<App>, now: Instant) {
         let mut queue: VecDeque<Action> = actions.into();
         while let Some(action) = queue.pop_front() {
             match action {
                 Action::Send(generation, targets) => {
                     if self.wlr.send(generation, &targets, qh).is_err() {
-                        queue.extend(self.controller.on_event(Event::Failed(generation), now));
+                        queue.extend(self.controller.on_event(Event::Invalid(generation), now));
                     }
                 }
                 Action::Log(line) => log(line),
@@ -70,6 +80,8 @@ impl OutputsApp {
                 Action::Reply(ReplyTo::Try, answer) => self.reply = Some(answer),
             }
         }
+        // A configuration the controller gave up on (the watchdog) is destroyed.
+        self.wlr.abandon(self.controller.in_flight());
     }
 }
 
@@ -102,7 +114,20 @@ impl App {
         let Some(d) = app.displays.as_mut() else { return };
         d.timer.fired();
         let path = d.profiles_path.clone();
-        let actions = d.controller.tick(&|| profiles::load(&path).0, now);
+        let read = Cell::new(None);
+        let actions = d.controller.tick(
+            &|| {
+                let (profiles, invalid) = read_profiles(&path);
+                read.set(Some(invalid));
+                profiles
+            },
+            now,
+        );
+        if let Some(invalid) = read.get()
+            && d.invalid.note(invalid)
+        {
+            log(LOG_INVALID_FILE);
+        }
         d.run(actions, &app.qh, now);
         app.displays_sync();
     }
@@ -118,8 +143,52 @@ impl App {
     /// The compositor stopped the manager: the timer goes, then everything else.
     pub(crate) fn displays_gone(&mut self) {
         if let Some(mut d) = self.displays.take() {
+            d.wlr.abandon(None);
             d.timer.sync_opt(self.loop_handle.as_ref(), None, App::displays_tick);
         }
+    }
+}
+
+/// displays.toml's profiles, and a fingerprint of the file when it is invalid or unreadable
+/// (None when absent or valid). At most `MAX_FILE` bytes of a regular file are read; the open
+/// never blocks (a FIFO is opened non-blocking, then refused).
+pub(crate) fn read_profiles(path: &Path) -> (Vec<Profile>, Option<u64>) {
+    match read_regular(path) {
+        Ok(text) => match profiles::parse(&text) {
+            Ok(p) => (p, None),
+            Err(_) => {
+                let mut h = DefaultHasher::new();
+                text.hash(&mut h);
+                (Vec::new(), Some(h.finish()))
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
+        Err(_) => (Vec::new(), Some(0)),
+    }
+}
+
+fn read_regular(path: &Path) -> std::io::Result<String> {
+    let file = std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "not a regular file"));
+    }
+    let mut text = String::new();
+    file.take(MAX_FILE).read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// The fingerprint of the invalid displays.toml last logged: one line per change of the file.
+#[derive(Debug, Default)]
+pub(crate) struct InvalidFile {
+    last: Option<u64>,
+}
+
+impl InvalidFile {
+    /// Notes the file's state (`read_profiles`' fingerprint); true when its line is due.
+    pub(crate) fn note(&mut self, invalid: Option<u64>) -> bool {
+        let due = invalid.is_some() && invalid != self.last;
+        self.last = invalid;
+        due
     }
 }
 
@@ -222,6 +291,48 @@ mod tests {
             transform: 0,
             displaylink: false,
         }
+    }
+
+    const PROFILE: &str = r#"
+[[profile]]
+name = "Desk"
+[[profile.display]]
+description = "Alpha P24 A1"
+mode = "1920x1080@60"
+placement = { x = 0, y = 0 }
+"#;
+
+    #[test]
+    fn displays_toml_is_read_capped_from_a_regular_file_only() {
+        let dir = TempPath::dir("displays-toml");
+        let path = dir.join("displays.toml");
+        assert_eq!(read_profiles(&path), (Vec::new(), None), "absent: no profile, nothing wrong");
+        std::fs::write(&path, PROFILE).unwrap();
+        let (profiles, invalid) = read_profiles(&path);
+        assert_eq!((profiles.len(), invalid), (1, None));
+        std::fs::write(&path, "[[profile").unwrap();
+        assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "invalid");
+        // A profile past the first 64 KiB is never read.
+        std::fs::write(&path, format!("#{}\n{PROFILE}", "a".repeat(70 * 1024))).unwrap();
+        assert_eq!(read_profiles(&path), (Vec::new(), None), "never more than 64 KiB");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a directory");
+        std::fs::remove_dir(&path).unwrap();
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+        assert!(matches!(read_profiles(&path), (p, Some(_)) if p.is_empty()), "a FIFO, without blocking");
+    }
+
+    #[test]
+    fn an_invalid_displays_toml_is_logged_once_per_change() {
+        let mut seen = InvalidFile::default();
+        assert!(!seen.note(None));
+        assert!(seen.note(Some(1)));
+        assert!(!seen.note(Some(1)), "the same file at the next debounce");
+        assert!(seen.note(Some(2)), "changed, still invalid");
+        assert!(!seen.note(None));
+        assert!(seen.note(Some(2)), "fixed, then broken again");
     }
 
     #[test]

@@ -937,3 +937,31 @@ fn our_result_reported_before_the_answer_is_adopted() {
     assert_eq!(c.trial_state(t0 + ms(2000)), TrialState::Ended(TrialEnd::ChangedElsewhere));
     assert!(sends(&c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL)).is_empty());
 }
+
+#[test]
+fn a_configuration_never_sent_answers_invalid_not_refused() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0)], t0);
+    c.try_(&[move_to("DP-1", 10)], t0).unwrap();
+    let a = c.on_event(Event::Invalid(gen_of(&c)), t0 + ms(1));
+    assert_eq!(logs(&a), vec!["displays: configuration not sent (invalid)"]);
+    assert_eq!(replies(&a), vec![Err("configuration not sent (invalid)")]);
+    assert_eq!(c.trial_state(t0 + ms(1)), TrialState::None);
+    assert_eq!(c.next_deadline(), None);
+    assert!(c.on_event(Event::Invalid(99), t0 + ms(2)).is_empty(), "not the one in flight");
+}
+
+#[test]
+fn the_flight_is_known_until_answered_or_given_up() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0)], t0);
+    assert_eq!(c.in_flight(), None);
+    let g = sent_gen(&c.try_(&[move_to("DP-1", 10)], t0).unwrap());
+    assert_eq!(c.in_flight(), Some(g));
+    c.tick(&Vec::new, t0 + WATCHDOG);
+    assert_eq!(c.in_flight(), None, "given up by the watchdog");
+    let mut c = settled(vec![alpha(0)], t0);
+    c.try_(&[move_to("DP-1", 10)], t0).unwrap();
+    c.on_event(failed(&c), t0 + ms(1));
+    assert_eq!(c.in_flight(), None, "answered");
+}

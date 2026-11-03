@@ -21,8 +21,8 @@ use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
     capture_delta, capture_gone, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder,
-    launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta, wait_for_pid_file,
-    write_atomically, wtype, wtype_spawn,
+    harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta,
+    wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -44,6 +44,35 @@ fn dies_within_2_s(pid: i32) {
         assert!(t.elapsed() < Duration::from_secs(2), "pw-dump {pid} survived the daemon");
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// A base build (`ALPHEUS_TEST_BASE_CONFIG=1`) gets no `[displays]`, which it would reject; the
+/// privacy roots stay on empty directories either way.
+#[test]
+fn the_harness_leaves_displays_out_for_a_base_build() {
+    let runtime = Path::new("/run/test");
+    for base in [false, true] {
+        let text = harness_bar_toml("modules = [\"clock\"]\n", runtime, base);
+        assert!(text.contains("dev_dir = \"/run/test/privacy-dev\"") && text.contains("proc_dir = \"/run/test/privacy-proc\""), "{text}");
+        assert_eq!(text.contains("[displays]"), !base, "{text}");
+        assert!(alpheus_demon::config::BarConfig::from_text(&text).is_ok(), "{text}");
+    }
+    let own = harness_bar_toml("[displays]\ndrm_dir = \"/x\"\n", runtime, false);
+    assert_eq!(own.matches("drm_dir").count(), 1, "the test's own table is kept: {own}");
+}
+
+/// The harness fails a test whose daemon rejected bar.toml, instead of running it on defaults.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_rejected_bar_toml_fails_the_harness() {
+    let sway = Sway::start("rejected", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let started = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some("[nonsense]\n"), ..DaemonOptions::default() })
+    }));
+    assert!(started.is_err(), "the harness took a daemon running on defaults");
+    let d = start_daemon(&sway);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
 }
 
 #[test]
