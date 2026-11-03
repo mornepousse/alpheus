@@ -21,8 +21,7 @@ pub const KEEP_DELAY: Duration = Duration::from_secs(15);
 pub const QUEUED_PROFILE_WAIT: Duration = Duration::from_secs(10);
 
 /// The tab's words for the daemon's status (the daemon's own, as it answers them in an error).
-const OFF: &str = "displays are off in bar.toml";
-const NO_MANAGER: &str = "the compositor has no output management";
+use alpheus_commun::displays::wire::{ERROR_NO_MANAGER as NO_MANAGER, ERROR_OFF as OFF};
 
 /// Tab state outside the data read.
 #[derive(Debug, Default)]

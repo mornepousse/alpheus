@@ -11,6 +11,10 @@ use super::{Active, Mode, Output, Scale, Step};
 pub const MAX_OUTPUTS_BODY: usize = 64 * 1024;
 pub const MAX_OUTPUTS: usize = 16;
 pub const MAX_MODES: usize = 256;
+/// A displays verb's error without `displays` in the daemon's `modules`.
+pub const ERROR_OFF: &str = "displays are off in bar.toml";
+/// A displays verb's error when the compositor has no output manager, or stopped it.
+pub const ERROR_NO_MANAGER: &str = "the compositor has no output management";
 
 /// What the daemon says of its displays module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

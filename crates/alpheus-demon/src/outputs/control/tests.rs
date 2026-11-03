@@ -1135,3 +1135,146 @@ fn a_revert_sent_on_stale_heads_waits_for_its_own_done() {
     c.on_event(Event::Done(vec![alpha(0), at_120]), t0 + ms(50));
     assert_eq!(c.trial_state(t0 + ms(50)), TrialState::Ended(TrialEnd::Reverted));
 }
+
+/// Final review A-I1: a profile cancelled after the screens changed is not re-sent onto the new
+/// set; the new set is evaluated after its own debounce. In either order of the two events.
+#[test]
+fn a_cancelled_profile_is_dropped_once_the_screens_changed() {
+    for cancel_first in [false, true] {
+        let t0 = Instant::now();
+        let src = Source::new(SIDE_BY_SIDE);
+        let profiles = || src.get();
+        let mut c = Controller::new(true);
+        c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
+        assert_eq!(sends(&c.tick(&profiles, t0 + DEBOUNCE)).len(), 1);
+        let plugged = Event::Done(vec![alpha(1920), bravo(0), charlie(3840)]);
+        let a = if cancel_first {
+            assert!(c.on_event(cancelled(&c), t0 + ms(600)).is_empty());
+            c.on_event(plugged, t0 + ms(610))
+        } else {
+            assert!(c.on_event(plugged, t0 + ms(600)).is_empty());
+            c.on_event(cancelled(&c), t0 + ms(610))
+        };
+        assert!(sends(&a).is_empty(), "cancel_first {cancel_first}: {a:?}");
+        assert_eq!(c.in_flight(), None);
+        assert_eq!(c.next_deadline(), Some(t0 + ms(610) + DEBOUNCE), "cancel_first {cancel_first}");
+        let a = c.tick(&profiles, t0 + ms(610) + DEBOUNCE);
+        assert_eq!(src.reads.get(), 2, "the new set evaluated");
+        assert_eq!(logs(&a), vec!["displays: no profile for these screens"]);
+    }
+}
+
+/// The same for the 120 Hz cap: a screen plugged while it flies, then cancelled.
+#[test]
+fn a_cancelled_cap_is_dropped_once_the_screens_changed() {
+    let t0 = Instant::now();
+    let mut c = Controller::new(false);
+    c.on_event(Event::Done(vec![dock(0)]), t0);
+    assert_eq!(sends(&c.tick(&Vec::new, t0 + DEBOUNCE)).len(), 1);
+    assert!(c.on_event(Event::Done(vec![dock(0), alpha(2560)]), t0 + ms(600)).is_empty());
+    let a = c.on_event(cancelled(&c), t0 + ms(610));
+    assert!(sends(&a).is_empty(), "{a:?}");
+    assert_eq!(c.next_deadline(), Some(t0 + ms(610) + DEBOUNCE));
+}
+
+/// Final review A-I2: the daemon stopping restores the state from before a trial, open or
+/// still flying; nothing else is sent.
+#[test]
+fn shutdown_restores_the_state_from_before_a_trial() {
+    let t0 = Instant::now();
+    let restored = vec![
+        Target { name: "DP-1".into(), state: Some((0, 0, 0, 1.0, 0)) },
+        Target { name: "DP-2".into(), state: Some((0, 1920, 0, 1.0, 0)) },
+    ];
+    let mut c = trial_open(t0);
+    let a = c.shutdown(t0 + ms(1000));
+    assert_eq!(sends(&a), vec![&restored], "an open trial");
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100)], t0).unwrap();
+    let a = c.shutdown(t0 + ms(5));
+    assert_eq!(sends(&a), vec![&restored], "a try still flying: sent even though the heads still show it");
+    // Nothing to restore: at rest, a profile in flight, a revert in flight.
+    assert!(settled(vec![alpha(0)], t0).shutdown(t0).is_empty());
+    let src = Source::new(SIDE_BY_SIDE);
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
+    assert_eq!(sends(&c.tick(&|| src.get(), t0 + DEBOUNCE)).len(), 1);
+    assert!(c.shutdown(t0 + ms(600)).is_empty(), "a profile");
+    let mut c = trial_open(t0);
+    c.revert(t0 + ms(100));
+    assert!(c.shutdown(t0 + ms(110)).is_empty(), "a revert already flying");
+}
+
+/// Final review A-I2(b): whether this controller ever took a try.
+#[test]
+fn a_trial_seen_is_remembered() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0)], t0);
+    assert!(!c.trial_seen());
+    c.try_(&[move_to("DP-1", 0)], t0).unwrap();
+    assert!(!c.trial_seen(), "a no-op opens no trial");
+    c.try_(&[move_to("DP-1", 10)], t0).unwrap();
+    assert!(c.trial_seen(), "flying counts");
+    c.on_event(failed(&c), t0 + ms(10));
+    assert!(c.trial_seen(), "for good");
+}
+
+/// Final review A-M1: at most 3 automatic applies per set of screens per 60 s; the skip is logged
+/// once per window.
+#[test]
+fn a_profile_is_applied_at_most_three_times_a_minute() {
+    let t0 = Instant::now();
+    let src = Source::new(SIDE_BY_SIDE);
+    let profiles = || src.get();
+    let mut c = Controller::new(true);
+    // A dock reconnecting in a loop: Alpha alone, then Bravo back where the profile does not want it.
+    let mut cycle = |at: Instant| {
+        c.on_event(Event::Done(vec![alpha(1920)]), at);
+        c.tick(&profiles, at + DEBOUNCE);
+        c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), at + ms(1000));
+        let a = c.tick(&profiles, at + ms(1000) + DEBOUNCE);
+        if c.in_flight().is_some() {
+            c.on_event(failed(&c), at + ms(1600));
+        }
+        a
+    };
+    for i in 0..3 {
+        assert_eq!(sends(&cycle(t0 + ms(2000 * i))).len(), 1, "apply {i}");
+    }
+    let a = cycle(t0 + ms(6000));
+    assert!(sends(&a).is_empty(), "{a:?}");
+    assert_eq!(logs(&a), vec!["displays: profile not re-applied (too many changes)"]);
+    let a = cycle(t0 + ms(8000));
+    assert!(sends(&a).is_empty() && logs(&a).is_empty(), "logged once: {a:?}");
+    // A minute after the first: applied again.
+    assert_eq!(sends(&cycle(t0 + ms(60_000))).len(), 1);
+}
+
+/// Final review A-M3: without displays.toml (or with no profile in it) nothing is logged.
+#[test]
+fn no_profile_at_all_logs_nothing() {
+    let t0 = Instant::now();
+    let none = Source::new("");
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), charlie(1920)]), t0);
+    let a = c.tick(&|| none.get(), t0 + DEBOUNCE);
+    assert!(a.is_empty(), "{a:?}");
+    assert_eq!(none.reads.get(), 1);
+}
+
+/// A profile the screens already show is no apply: never counted, never skipped with a line.
+#[test]
+fn a_profile_already_shown_is_not_counted() {
+    let t0 = Instant::now();
+    let src = Source::new(SIDE_BY_SIDE);
+    let profiles = || src.get();
+    let mut c = Controller::new(true);
+    for i in 0..5 {
+        let at = t0 + ms(2000 * i);
+        c.on_event(Event::Done(vec![alpha(0)]), at);
+        c.tick(&profiles, at + DEBOUNCE);
+        c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), at + ms(1000));
+        let a = c.tick(&profiles, at + ms(1000) + DEBOUNCE);
+        assert!(a.is_empty(), "cycle {i}: {a:?}");
+    }
+}

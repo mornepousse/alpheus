@@ -15,7 +15,7 @@ use crate::outputs::model::{Head, Target, to_output};
 use crate::outputs::wlr::Wlr;
 use crate::wayland::App;
 use alpheus_commun::displays::profiles::{self, Profile};
-use alpheus_commun::displays::wire::{Snapshot, Status, decode_desired, encode_snapshot};
+use alpheus_commun::displays::wire::{ERROR_NO_MANAGER, ERROR_OFF, Snapshot, Status, decode_desired, encode_snapshot};
 use alpheus_commun::launcher_ipc::{Reply, Request};
 use alpheus_commun::paths;
 use alpheus_commun::theme::settings::MAX_FILE;
@@ -38,10 +38,10 @@ const MAX_DRM_ENTRIES: usize = 512;
 const LOG_INVALID_FILE: &str = "displays: displays.toml invalid";
 /// Characters of a profile name in its log line.
 const MAX_LOGGED_NAME: usize = 64;
-/// The verbs' answer without the module (displays spec, the TUI's errors).
-pub(crate) const OFF: &str = "displays are off in bar.toml";
-/// The verbs' answer when the compositor has no output manager, or stopped it.
-pub(crate) const NO_MANAGER: &str = "the compositor has no output management";
+/// A displays.toml parsed past this many bytes hands its parse's peak back to the system.
+const RELEASE_AFTER: usize = 8 * 1024;
+/// A keep or a revert to a daemon that never took a try: it restarted, the trial is lost.
+const NO_TRIAL: &str = "no trial in progress (the daemon restarted)";
 
 /// The output manager, its controller and their timer; on the app only with `displays` in
 /// `modules` and a compositor that has the manager.
@@ -161,6 +161,8 @@ pub(crate) fn verb(
                 Err(e) => return Some(Reply::Error(e.into())),
             }
         }
+        // Since the daemon started, no try: a trial it held before is lost (never "done").
+        Request::OutputsKeep | Request::OutputsRevert if !controller.trial_seen() => return Some(Reply::Error(NO_TRIAL.into())),
         Request::OutputsKeep => controller.keep(now),
         Request::OutputsRevert => controller.revert(now),
         _ => return Some(Reply::Error("not a displays verb".into())),
@@ -173,7 +175,7 @@ pub(crate) fn verb(
 /// The answer to a displays verb when there is no controller: the module is off, or the
 /// compositor has no output manager.
 pub(crate) fn unavailable(module_on: bool) -> Reply {
-    Reply::Error(if module_on { NO_MANAGER } else { OFF }.into())
+    Reply::Error(if module_on { ERROR_NO_MANAGER } else { ERROR_OFF }.into())
 }
 
 /// The client of the try in flight, and the watch on its hang-up (edge-triggered, as the
@@ -319,10 +321,19 @@ impl App {
         self.displays.as_mut().is_none_or(|d| d.client.check())
     }
 
+    /// The daemon stops: a trial, open or flying, gets its state from before sent back (the
+    /// shutdown's flush carries it; no answer is waited for).
+    pub(crate) fn displays_shutdown(&mut self) {
+        let now = Instant::now();
+        let Some(d) = self.displays.as_mut() else { return };
+        let actions = d.controller.shutdown(now);
+        d.run(actions, &self.qh, now);
+    }
+
     /// The compositor stopped the manager: the timer goes, then everything else.
     pub(crate) fn displays_gone(&mut self) {
         if let Some(mut d) = self.displays.take() {
-            d.client.answer(Reply::Error(NO_MANAGER.into()));
+            d.client.answer(Reply::Error(ERROR_NO_MANAGER.into()));
             d.wlr.abandon(None);
             d.timer.sync_opt(self.loop_handle.as_ref(), None, App::displays_tick);
         }
@@ -333,15 +344,28 @@ impl App {
 /// (None when absent or valid). At most `MAX_FILE` bytes of a regular file are read; the open
 /// never blocks (a FIFO is opened non-blocking, then refused).
 pub(crate) fn read_profiles(path: &Path) -> (Vec<Profile>, Option<u64>) {
+    read_profiles_with(path, &mut crate::memory::release_memory)
+}
+
+/// `read_profiles`; `release` runs after a parse of more than `RELEASE_AFTER` bytes.
+fn read_profiles_with(path: &Path, release: &mut dyn FnMut()) -> (Vec<Profile>, Option<u64>) {
     match read_regular(path) {
-        Ok(text) => match profiles::parse(&text) {
-            Ok(p) => (p, None),
-            Err(_) => {
-                let mut h = DefaultHasher::new();
-                text.hash(&mut h);
-                (Vec::new(), Some(h.finish()))
+        Ok(text) => {
+            let read = match profiles::parse(&text) {
+                Ok(p) => (p, None),
+                Err(_) => {
+                    let mut h = DefaultHasher::new();
+                    text.hash(&mut h);
+                    (Vec::new(), Some(h.finish()))
+                }
+            };
+            // The parse peaks at many times the file's size; glibc would keep that high-water.
+            if text.len() > RELEASE_AFTER {
+                drop(text);
+                release();
             }
-        },
+            read
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => (Vec::new(), None),
         Err(_) => (Vec::new(), Some(0)),
     }
@@ -703,12 +727,50 @@ placement = { x = 0, y = 0 }
             }
             assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Ended(end));
         }
+        // No trial now, but one was seen (a revert racing the daemon's own deadline): nothing to do.
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
+        verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+        let refused = c.on_event(Event::Failed(sent.0[0].0), now);
+        execute(&mut c, refused, now, &mut sent.ok());
         assert_eq!(verb(&mut c, &Request::OutputsKeep, now, &mut sent.ok()), Some(Reply::Done), "no trial: nothing to do");
         assert_eq!(verb(&mut c, &Request::OutputsRevert, now, &mut sent.ok()), Some(Reply::Done));
+        assert_eq!(sent.0.len(), 1, "nothing sent but the try");
+    }
+
+    /// Final review A-I2(b): a keep or a revert reaching a daemon that never took a try (it
+    /// restarted mid-trial) says so, rather than a done the TUI would read as rolled back.
+    #[test]
+    fn keep_and_revert_without_any_trial_say_the_daemon_restarted() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        for request in [Request::OutputsKeep, Request::OutputsRevert] {
+            assert_eq!(
+                verb(&mut c, &request, now, &mut sent.ok()),
+                Some(Reply::Error("no trial in progress (the daemon restarted)".into())),
+                "{request:?}"
+            );
+        }
         assert!(sent.0.is_empty());
+    }
+
+    /// A displays.toml past 8 KiB hands the parse's peak back to the system; a small one does not.
+    #[test]
+    fn a_large_displays_toml_releases_its_parse_memory() {
+        let dir = TempPath::dir("displays-toml-release");
+        let path = dir.join("displays.toml");
+        let mut released = 0;
+        std::fs::write(&path, PROFILE).unwrap();
+        assert_eq!(read_profiles_with(&path, &mut || released += 1).0.len(), 1);
+        assert_eq!(released, 0, "small");
+        std::fs::write(&path, format!("#{}\n{PROFILE}", "a".repeat(8 * 1024))).unwrap();
+        assert_eq!(read_profiles_with(&path, &mut || released += 1).0.len(), 1);
+        assert_eq!(released, 1, "past 8 KiB");
+        std::fs::write(&path, format!("#{}\n[[profile", "a".repeat(8 * 1024))).unwrap();
+        assert!(read_profiles_with(&path, &mut || released += 1).1.is_some());
+        assert_eq!(released, 2, "parsed, even when invalid");
     }
 
     #[test]

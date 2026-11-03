@@ -2515,9 +2515,21 @@ const HOTPLUG_STEP: usize = 20;
 fn displays_pss_after_hotplug_cycles() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("displays-plug");
-    let (sway, _hypr, d) = start("displays-plug", 1, &bus, None, Some(DISPLAYS_BAR), PwDump::Silent);
+    let sway = Sway::start("displays-plug", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    // One profile for a screen that is not there: the start-up evaluation logs its line (none is
+    // logged without a profile) first, and none may follow.
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("displays.toml"),
+        "[[profile]]\nname = \"Elsewhere\"\n[[profile.display]]\ndescription = \"Nobody P0 X0\"\nmode = \"640x480@60\"\nplacement = { x = 0, y = 0 }\n",
+    )
+    .unwrap();
+    let options = DaemonOptions { bar_toml: Some(DISPLAYS_BAR), system_bus: Some(&bus.address), ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
-    // The start-up evaluation (no displays.toml yet) logs its line first: none may follow.
     assert!(d.wait_for("displays: no profile for these screens", DELAY), "{:?}", d.log());
     std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), hotplug_profiles(&first, 3)).unwrap();
     std::thread::sleep(TRAY_SETTLE);

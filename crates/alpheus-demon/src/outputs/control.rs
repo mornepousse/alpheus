@@ -48,6 +48,7 @@ pub enum Action {
 const LOG_REFUSED: &str = "displays: configuration refused by the compositor";
 const LOG_NO_ANSWER: &str = "displays: no answer from the compositor";
 const LOG_NO_PROFILE: &str = "displays: no profile for these screens";
+const LOG_TOO_MANY: &str = "displays: profile not re-applied (too many changes)";
 const LOG_TWINS: &str = "displays: two screens look the same";
 const LOG_LOWERED: &str = "displays: lowered a DisplayLink screen to 120 Hz";
 const BUSY: &str = "another change is in progress";
@@ -56,6 +57,12 @@ const LOG_INVALID: &str = "displays: configuration not sent (invalid)";
 const INVALID: &str = "configuration not sent (invalid)";
 /// `cancelled` answers re-sent before giving up.
 const MAX_RESENDS: u8 = 3;
+/// Automatic applies for one set of screens within `AUTO_WINDOW`, at most (a dock reconnecting
+/// in a loop must not modeset forever).
+const MAX_AUTO_APPLIES: usize = 3;
+const AUTO_WINDOW: Duration = Duration::from_secs(60);
+/// Applies and skip lines remembered, at most (each needs a debounce: a handful a minute).
+const MAX_AUTO_HISTORY: usize = 32;
 
 /// Why a configuration was sent: what its answer leads to.
 enum Purpose {
@@ -140,6 +147,12 @@ pub struct Controller {
     trial: Option<Trial>,
     /// How the last trial ended, until `trial_state` reports it.
     ended: Option<TrialEnd>,
+    /// A try was sent since the controller started.
+    trial_seen: bool,
+    /// The automatic applies sent in the last `AUTO_WINDOW` (identity set, when).
+    auto_applies: Vec<(Vec<String>, Instant)>,
+    /// The skip lines logged in the last `AUTO_WINDOW` (identity set, when).
+    auto_skips: Vec<(Vec<String>, Instant)>,
 }
 
 impl Controller {
@@ -156,12 +169,32 @@ impl Controller {
             stale: None,
             trial: None,
             ended: None,
+            trial_seen: false,
+            auto_applies: Vec::new(),
+            auto_skips: Vec::new(),
         }
     }
 
     /// The generation of the configuration waiting for its answer, if any.
     pub fn in_flight(&self) -> Option<u64> {
         self.flight.as_ref().map(|f| f.generation)
+    }
+
+    /// Whether a try was ever sent by this controller (since the daemon started).
+    pub fn trial_seen(&self) -> bool {
+        self.trial_seen
+    }
+
+    /// The daemon stops: the state from before a trial, open or flying, is sent back (sent even
+    /// when the heads still show it: the try may land yet). Its answer is not waited for.
+    pub fn shutdown(&mut self, now: Instant) -> Vec<Action> {
+        let before = match (self.trial.take(), self.flight.take_if(|f| matches!(f.purpose, Purpose::Try { .. }))) {
+            (Some(t), _) => t.before,
+            (None, Some(Flight { purpose: Purpose::Try { before, .. }, .. })) => before,
+            _ => return Vec::new(),
+        };
+        let targets = self.placed(&before);
+        self.send_as(targets, Purpose::Revert, true, 0, now + WATCHDOG, now)
     }
 
     /// The heads of the last `done`.
@@ -236,6 +269,7 @@ impl Controller {
         }
         self.ended = None;
         let before = self.remember(self.current());
+        self.trial_seen = true;
         Ok(self.send(t, Purpose::Try { before, asked: None }, 0, now + WATCHDOG, now))
     }
 
@@ -423,6 +457,11 @@ impl Controller {
     /// are now (each screen followed to its connector).
     fn resend(&mut self, now: Instant) -> Vec<Action> {
         let Some(f) = self.flight.take() else { return Vec::new() };
+        // A profile or a cap chosen for a set of screens that changed since: dropped, the new
+        // set is evaluated after its debounce.
+        if self.changed && matches!(f.purpose, Purpose::Auto | Purpose::Cap) {
+            return self.settle(false, true, now);
+        }
         let targets = self.placed(&f.targets);
         if targets.iter().all(|t| t.state.is_none()) {
             // Every screen it left on is gone: answered as refused.
@@ -564,17 +603,58 @@ impl Controller {
             match match_profile(&profiles, &outs) {
                 ProfileMatch::Matches(p) => {
                     match plan_profile(p, &outs).ok().and_then(|pp| targets(&self.heads, &pp.plan.steps).ok()) {
+                        // Already shown: nothing sent, nothing counted.
+                        Some(t) if is_noop(&self.heads, &t) => return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now),
+                        Some(_) if self.too_many_applies(now) => {
+                            if self.skip_line_due(now) {
+                                out.push(Action::Log(LOG_TOO_MANY));
+                            }
+                        }
                         // A refusal is remembered: `evaluated` holds this set.
-                        Some(t) => return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now),
+                        Some(t) => {
+                            self.note_auto(true, now);
+                            return self.send(t, Purpose::Auto, 0, now + WATCHDOG, now);
+                        }
                         None => out.push(Action::LogProfile(p.name.clone())),
                     }
                 }
                 ProfileMatch::Ambiguous => out.push(Action::Log(LOG_TWINS)),
-                ProfileMatch::NoMatch => out.push(Action::Log(LOG_NO_PROFILE)),
+                // Silent without a profile at all (no displays.toml, or an empty one).
+                ProfileMatch::NoMatch if !profiles.is_empty() => out.push(Action::Log(LOG_NO_PROFILE)),
+                ProfileMatch::NoMatch => {}
             }
         }
         out.extend(self.cap(now));
         out
+    }
+
+    /// This set of screens already had `MAX_AUTO_APPLIES` automatic applies in the last
+    /// `AUTO_WINDOW` (older ones forgotten).
+    fn too_many_applies(&mut self, now: Instant) -> bool {
+        let fresh = |e: &(Vec<String>, Instant)| now.saturating_duration_since(e.1) < AUTO_WINDOW;
+        self.auto_applies.retain(fresh);
+        self.auto_skips.retain(fresh);
+        let ids = self.evaluated.as_ref();
+        self.auto_applies.iter().filter(|(s, _)| Some(s) == ids).count() >= MAX_AUTO_APPLIES
+    }
+
+    /// The skip line, once per window for this set.
+    fn skip_line_due(&mut self, now: Instant) -> bool {
+        let ids = self.evaluated.as_ref();
+        if self.auto_skips.iter().any(|(s, _)| Some(s) == ids) {
+            return false;
+        }
+        self.note_auto(false, now);
+        true
+    }
+
+    /// Remembers an apply (or a skip line) for the evaluated set, the oldest dropped past the cap.
+    fn note_auto(&mut self, apply: bool, now: Instant) {
+        let list = if apply { &mut self.auto_applies } else { &mut self.auto_skips };
+        if list.len() >= MAX_AUTO_HISTORY {
+            list.remove(0);
+        }
+        list.push((self.evaluated.clone().unwrap_or_default(), now));
     }
 
     /// DisplayLink heads above 120 Hz lowered, once per head per identity set.

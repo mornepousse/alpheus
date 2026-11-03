@@ -716,6 +716,9 @@ fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // Guarded like every launcher entry point: a launcher bug must not turn a
     // clean stop into a crash.
     core.state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
+    // A trial left open would outlive the daemon: its state from before goes out with the flush.
+    let state = &mut core.state;
+    crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
     drop(core.state); // surfaces destroyed
     // The socket file goes now (Server's Drop), not with the loop: the
     // loop's sources may keep each other alive through LoopHandle clones.

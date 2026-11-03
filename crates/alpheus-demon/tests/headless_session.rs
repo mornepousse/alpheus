@@ -5350,10 +5350,18 @@ fn a_refused_configuration_answers_refused() {
 #[ignore = "headless sway (nix develop)"]
 fn hotplug_applies_the_matching_profile_once() {
     let sway = Sway::start("displays-hotplug", 1);
+    // One profile for a screen that is not there: the start-up evaluation logs its line (none
+    // is logged without a profile), and it comes before `quiet` is taken.
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("displays.toml"),
+        "[[profile]]\nname = \"Elsewhere\"\n[[profile.display]]\ndescription = \"Nobody P0 X0\"\nmode = \"640x480@60\"\nplacement = { x = 0, y = 0 }\n",
+    )
+    .unwrap();
     // No module that refreshes on its own (resources every 2 s): the loop rests between events.
     let d = displays_daemon_with(&sway, Some("modules = [\"workspaces\", \"displays\"]\n"));
     let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
-    // The start-up evaluation (no displays.toml yet) logs its line before `quiet` is taken.
     assert!(d.wait_for("displays: no profile for these screens", DELAY), "{:?}", d.log());
     // The plugged head's description carries a counter of the headless backend: one profile per
     // value it may take, the same placement in each (only the set that is there matches).

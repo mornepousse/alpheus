@@ -327,6 +327,19 @@ fn the_displays_timer_is_synced_once_the_loop_exists() {
     assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
 }
 
+/// Final review A-I2: the daemon stopping sends a trial's state from before while the app (its
+/// output manager) still exists, before the connection's last flush carries it.
+#[test]
+fn the_displays_are_restored_before_the_app_is_dropped() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let prod = production_code(&text);
+    let body = &prod[prod.find("fn shut_down(").expect("shut_down in launch.rs")..];
+    let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} not found in shut_down"));
+    let restore = at("state.displays_shutdown()");
+    assert!(restore < at("drop(core.state);"), "restored before the app is dropped");
+    assert!(restore < at("core.conn.flush()"), "restored before the last flush");
+}
+
 /// The only file that speaks `zwlr_output_manager_v1` (displays spec § 1).
 const OUTPUTS_PROTOCOL_FILE: &str = "outputs/wlr.rs";
 
