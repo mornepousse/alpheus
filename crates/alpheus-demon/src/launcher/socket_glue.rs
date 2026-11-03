@@ -179,41 +179,31 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
                 *s.borrow_mut() = Some(conn);
                 return Ok(PostAction::Continue);
             }
-            // The notifications verbs are answered here, before the launcher's guard: a
-            // panic in there closes the launcher, and these are not the launcher's.
-            Progress::Ready(request @ (Request::Dnd(_) | Request::ClearNotifications)) => {
-                let reply = state.notifications_verb(&request);
-                reply_guarded(conn, &reply);
-            }
-            // The OSD's verb: a sysfs read and a pill, answered here like the
-            // notifications verbs, before the launcher's guard.
-            Progress::Ready(request @ Request::Osd(_)) => {
-                let reply = state.osd_verb(&request);
-                reply_guarded(conn, &reply);
-            }
-            // The quick panel's verb: answered here like the OSD's, before the
-            // launcher's guard.
-            Progress::Ready(request @ Request::Quick(_)) => {
-                let reply = state.quick_verb(&request);
-                reply_guarded(conn, &reply);
-            }
-            // The displays verbs: answered here, before the launcher's guard, as the quick
-            // panel's. Not wired to the output controller yet.
-            Progress::Ready(Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert) => {
-                reply_guarded(conn, &displays_verb());
-            }
-            Progress::Ready(request) => {
-                // A dmenu request may have buffered up to 4 MiB: once it
-                // reached RELEASE_AFTER, give the pages back as soon as it
-                // is consumed, whatever the daemon then decides to do with
-                // it (opened, or Busy). Read before `conn` is handed to
-                // `launcher_request`, which consumes it.
-                let buffered = conn.received();
-                if releases_memory_once_consumed(&request, buffered) {
-                    crate::memory::release_memory();
+            Progress::Ready(request) => match route(&request) {
+                // The notifications verbs are answered here, before the launcher's guard: a
+                // panic in there closes the launcher, and these are not the launcher's.
+                Route::Notifications => reply_guarded(conn, &state.notifications_verb(&request)),
+                // The OSD's verb: a sysfs read and a pill, answered here like the
+                // notifications verbs, before the launcher's guard.
+                Route::Osd => reply_guarded(conn, &state.osd_verb(&request)),
+                // The quick panel's verb: answered here like the OSD's.
+                Route::Quick => reply_guarded(conn, &state.quick_verb(&request)),
+                // The displays verbs: answered from the output controller, a try once the
+                // compositor answered (its connection kept until then, `outputs_app.rs`).
+                Route::Displays => state.displays_verb(&request, conn),
+                Route::Launcher => {
+                    // A dmenu request may have buffered up to 4 MiB: once it
+                    // reached RELEASE_AFTER, give the pages back as soon as it
+                    // is consumed, whatever the daemon then decides to do with
+                    // it (opened, or Busy). Read before `conn` is handed to
+                    // `launcher_request`, which consumes it.
+                    let buffered = conn.received();
+                    if releases_memory_once_consumed(&request, buffered) {
+                        crate::memory::release_memory();
+                    }
+                    state.launcher_request(&q, request, conn)
                 }
-                state.launcher_request(&q, request, conn)
-            }
+            },
             Progress::Failed(m) => {
                 log(&format!("launcher socket: {m}"));
                 let buffered = conn.received();
@@ -254,9 +244,25 @@ fn watch_connection(state: &mut App, conn: Conn, qh: &QueueHandle<App>, inflight
     }
 }
 
-/// What the daemon answers a displays verb: the module is not wired yet, which reads as off.
-fn displays_verb() -> Reply {
-    Reply::Error("displays are off in bar.toml".into())
+/// Who answers a whole request: the verbs answered here, before the launcher's guard, or the
+/// launcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Route {
+    Notifications,
+    Osd,
+    Quick,
+    Displays,
+    Launcher,
+}
+
+fn route(request: &Request) -> Route {
+    match request {
+        Request::Dnd(_) | Request::ClearNotifications => Route::Notifications,
+        Request::Osd(_) => Route::Osd,
+        Request::Quick(_) => Route::Quick,
+        Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
+        Request::Toggle | Request::Close | Request::Dmenu { .. } => Route::Launcher,
+    }
 }
 
 #[cfg(test)]

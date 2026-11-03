@@ -979,6 +979,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
         ("outputs_app.rs", "Timer::", 1),
+        // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
+        // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
+        ("outputs_app.rs", "Generic::new", 1),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd: readable only when theme.toml or a colour file

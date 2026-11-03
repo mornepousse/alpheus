@@ -4,16 +4,21 @@
 //! DisplayLink heads are told from `[displays] drm_dir`, read once per new head name, never
 //! watched, nothing opened under /dev. Logs only the spec's fixed lines.
 
-use crate::config::DisplaysConfig;
+use crate::config::{DisplaysConfig, ModuleId};
 use crate::deadline::DeadlineTimer;
+use crate::launcher::socket::{Conn, Pending};
 use crate::log::write as log;
 use crate::outputs::control::{Action, Controller, Event, ReplyTo};
-use crate::outputs::model::Head;
+use crate::outputs::model::{Head, Target, to_output};
 use crate::outputs::wlr::Wlr;
 use crate::wayland::App;
 use alpheus_commun::displays::profiles::{self, Profile};
+use alpheus_commun::displays::wire::{Snapshot, Status, decode_desired, encode_snapshot};
+use alpheus_commun::launcher_ipc::{Reply, Request};
 use alpheus_commun::paths;
 use alpheus_commun::theme::settings::MAX_FILE;
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{Interest, LoopHandle, Mode, PostAction, RegistrationToken};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
 use std::cell::Cell;
@@ -31,6 +36,10 @@ const MAX_DRM_ENTRIES: usize = 512;
 const LOG_INVALID_FILE: &str = "displays: displays.toml invalid";
 /// Characters of a profile name in its log line.
 const MAX_LOGGED_NAME: usize = 64;
+/// The verbs' answer without the module (displays spec, the TUI's errors).
+pub(crate) const OFF: &str = "displays are off in bar.toml";
+/// The verbs' answer when the compositor has no output manager, or stopped it.
+pub(crate) const NO_MANAGER: &str = "the compositor has no output management";
 
 /// The output manager, its controller and their timer; on the app only with `displays` in
 /// `modules` and a compositor that has the manager.
@@ -44,9 +53,8 @@ pub(crate) struct OutputsApp {
     profiles_path: PathBuf,
     links: DisplayLinks,
     invalid: InvalidFile,
-    /// The answer to the TUI's last try, for the socket verb to send.
-    #[allow(dead_code)]
-    pub(crate) reply: Option<Result<(), &'static str>>,
+    /// The TUI's try waiting for the compositor's answer.
+    client: TryClient,
 }
 
 impl OutputsApp {
@@ -60,28 +68,168 @@ impl OutputsApp {
             profiles_path: paths::config_dir().join("displays.toml"),
             links: DisplayLinks::default(),
             invalid: InvalidFile::default(),
-            reply: None,
+            client: TryClient::default(),
         })
     }
 
     /// Runs the controller's actions; a configuration that cannot be built is answered as
     /// invalid, at once.
     fn run(&mut self, actions: Vec<Action>, qh: &QueueHandle<App>, now: Instant) {
-        let mut queue: VecDeque<Action> = actions.into();
-        while let Some(action) = queue.pop_front() {
-            match action {
-                Action::Send(generation, targets) => {
-                    if self.wlr.send(generation, &targets, qh).is_err() {
-                        queue.extend(self.controller.on_event(Event::Invalid(generation), now));
-                    }
-                }
-                Action::Log(line) => log(line),
-                Action::LogProfile(name) => log(&profile_line(&name)),
-                Action::Reply(ReplyTo::Try, answer) => self.reply = Some(answer),
-            }
+        let OutputsApp { controller, wlr, client, .. } = self;
+        if let Some(answer) = execute(controller, actions, now, &mut |g, t| wlr.send(g, t, qh).is_ok()) {
+            client.answer(try_reply(answer));
         }
         // A configuration the controller gave up on (the watchdog) is destroyed.
         self.wlr.abandon(self.controller.in_flight());
+    }
+
+    /// One displays verb: answered now, or (a try) its client kept until the compositor answers.
+    fn verb(&mut self, request: &Request, conn: Conn, qh: &QueueHandle<App>, handle: Option<&LoopHandle<'static, App>>) {
+        let now = Instant::now();
+        let OutputsApp { controller, wlr, client, .. } = self;
+        match verb(controller, request, now, &mut |g, t| wlr.send(g, t, qh).is_ok()) {
+            Some(reply) => conn.reply(&reply),
+            None => client.wait(conn.into_pending(), handle),
+        }
+        self.wlr.abandon(self.controller.in_flight());
+    }
+}
+
+/// Runs the controller's actions; `send` builds and sends one configuration (false: it could
+/// not be built, answered as invalid at once). Returns the try's answer when one came.
+pub(crate) fn execute(
+    controller: &mut Controller,
+    actions: Vec<Action>,
+    now: Instant,
+    send: &mut dyn FnMut(u64, &[Target]) -> bool,
+) -> Option<Result<(), &'static str>> {
+    let mut answer = None;
+    let mut queue: VecDeque<Action> = actions.into();
+    while let Some(action) = queue.pop_front() {
+        match action {
+            Action::Send(generation, targets) => {
+                if !send(generation, &targets) {
+                    queue.extend(controller.on_event(Event::Invalid(generation), now));
+                }
+            }
+            Action::Log(line) => log(line),
+            Action::LogProfile(name) => log(&profile_line(&name)),
+            Action::Reply(ReplyTo::Try, a) => answer = Some(a),
+        }
+    }
+    answer
+}
+
+/// A try's answer on the socket.
+fn try_reply(answer: Result<(), &'static str>) -> Reply {
+    match answer {
+        Ok(()) => Reply::Done,
+        Err(e) => Reply::Error(e.into()),
+    }
+}
+
+/// The snapshot the `outputs` verb sends: the heads of the last `done` and the trial (an end
+/// is reported once).
+pub(crate) fn snapshot(controller: &mut Controller, now: Instant) -> Snapshot {
+    Snapshot { status: Status::Ready, outputs: controller.heads().iter().map(to_output).collect(), trial: controller.trial_state(now) }
+}
+
+/// A displays verb against the controller: its reply, or None for a try whose answer comes
+/// from the compositor (at most the watchdog later). `send` as in `execute`.
+pub(crate) fn verb(
+    controller: &mut Controller,
+    request: &Request,
+    now: Instant,
+    send: &mut dyn FnMut(u64, &[Target]) -> bool,
+) -> Option<Reply> {
+    let actions = match request {
+        Request::Outputs => return Some(Reply::Outputs(encode_snapshot(&snapshot(controller, now)))),
+        Request::OutputsTry(body) => {
+            let steps = match decode_desired(body) {
+                Ok(steps) => steps,
+                Err(e) => return Some(Reply::Error(format!("malformed request: {e}"))),
+            };
+            match controller.try_(&steps, now) {
+                Ok(actions) => return execute(controller, actions, now, send).map(try_reply),
+                Err(e) => return Some(Reply::Error(e.into())),
+            }
+        }
+        Request::OutputsKeep => controller.keep(now),
+        Request::OutputsRevert => controller.revert(now),
+        _ => return Some(Reply::Error("not a displays verb".into())),
+    };
+    // Keep and revert answer no try; what they send is answered by the compositor later.
+    execute(controller, actions, now, send);
+    Some(Reply::Done)
+}
+
+/// The answer to a displays verb when there is no controller: the module is off, or the
+/// compositor has no output manager.
+pub(crate) fn unavailable(module_on: bool) -> Reply {
+    Reply::Error(if module_on { NO_MANAGER } else { OFF }.into())
+}
+
+/// The client of the try in flight, and the watch on its hang-up (edge-triggered, as the
+/// dmenu client's: a client that half-closed would stay readable). At most one.
+#[derive(Default)]
+pub(crate) struct TryClient {
+    pending: Option<Pending>,
+    watch: Option<(LoopHandle<'static, App>, RegistrationToken)>,
+}
+
+impl TryClient {
+    #[cfg(test)]
+    fn waiting(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Keeps `pending` until the answer; watched for a hang-up when there is a loop. A watch
+    /// that cannot be made is not logged (only the spec's fixed lines are): a client gone is then
+    /// noticed at its answer, the watchdog's at the latest.
+    pub(crate) fn wait(&mut self, pending: Pending, handle: Option<&LoopHandle<'static, App>>) {
+        self.unwatch();
+        if let Some(handle) = handle
+            && let Ok(fd) = pending.fd().try_clone_to_owned()
+        {
+            let source = Generic::new(fd, Interest::READ, Mode::Edge);
+            let watch = handle.insert_source(source, |_, _, app: &mut App| {
+                Ok(if app.displays_client_check() { PostAction::Remove } else { PostAction::Continue })
+            });
+            self.watch = watch.ok().map(|token| (handle.clone(), token));
+        }
+        self.pending = Some(pending);
+    }
+
+    /// The answer to the waiting client, if one still waits; true when it was sent.
+    pub(crate) fn answer(&mut self, reply: Reply) -> bool {
+        self.unwatch();
+        match self.pending.take() {
+            Some(p) => {
+                p.reply(&reply);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The client hung up: it is dropped (its answer, when it comes, goes nowhere). True when
+    /// nobody waits any more.
+    pub(crate) fn check(&mut self) -> bool {
+        if self.pending.as_ref().is_some_and(Pending::hung_up) {
+            self.pending = None;
+        }
+        if self.pending.is_none() {
+            // The watch's own source returns Remove: forget its token, never remove it twice.
+            self.watch = None;
+            return true;
+        }
+        false
+    }
+
+    fn unwatch(&mut self) {
+        if let Some((handle, token)) = self.watch.take() {
+            handle.remove(token);
+        }
     }
 }
 
@@ -140,9 +288,26 @@ impl App {
         }
     }
 
+    /// A displays verb from the launcher socket (`launcher/socket_glue.rs`).
+    pub(crate) fn displays_verb(&mut self, request: &Request, conn: Conn) {
+        let module_on = self.bar.config.modules.contains(&ModuleId::Displays);
+        let (qh, handle) = (self.qh.clone(), self.loop_handle.clone());
+        match self.displays.as_mut() {
+            Some(d) => d.verb(request, conn, &qh, handle.as_ref()),
+            None => conn.reply(&unavailable(module_on)),
+        }
+        self.displays_sync();
+    }
+
+    /// The try's client watch fired: true once nobody waits (the watch is removed).
+    fn displays_client_check(&mut self) -> bool {
+        self.displays.as_mut().is_none_or(|d| d.client.check())
+    }
+
     /// The compositor stopped the manager: the timer goes, then everything else.
     pub(crate) fn displays_gone(&mut self) {
         if let Some(mut d) = self.displays.take() {
+            d.client.answer(Reply::Error(NO_MANAGER.into()));
             d.wlr.abandon(None);
             d.timer.sync_opt(self.loop_handle.as_ref(), None, App::displays_tick);
         }
@@ -354,5 +519,198 @@ placement = { x = 0, y = 0 }
         links.mark(&mut back, &mut read);
         assert!(back[1].displaylink);
         assert_eq!(reads, ["eDP-1", "DVI-I-1", "DVI-I-1"], "a head that left and came back is new");
+    }
+
+    use crate::outputs::control::WATCHDOG;
+    use crate::outputs::model::HeadMode;
+    use alpheus_commun::displays::wire::{TrialEnd, TrialState, decode_snapshot, encode_desired};
+    use alpheus_commun::displays::{Active, Mode, Scale, Step};
+    use alpheus_commun::launcher_ipc::decode_reply;
+    use std::time::Duration;
+
+    /// An enabled 1920x1080 60 Hz head at `x`.
+    fn moded(name: &str, x: i32) -> Head {
+        let mut h = head(name);
+        h.make = format!("Make {name}");
+        h.modes = vec![HeadMode { width: 1920, height: 1080, mhz: 60_000, preferred: true }];
+        h.current = Some(0);
+        h.x = x;
+        h
+    }
+
+    /// A controller that read two screens side by side.
+    fn ready(now: Instant) -> Controller {
+        let mut c = Controller::new(false);
+        c.on_event(Event::Done(vec![moded("DP-1", 0), moded("DP-2", 1920)]), now);
+        c
+    }
+
+    fn scale_two(output: &str, x: i32) -> String {
+        let mode = Mode { width: 1920, height: 1080, refresh: 60 };
+        encode_desired(&[Step { output: output.into(), active: Some(Active { mode, x, y: 0, scale: Scale(2000), transform: 0 }) }])
+    }
+
+    /// Every configuration sent, its generation and targets.
+    #[derive(Default)]
+    struct Sent(Vec<(u64, Vec<Target>)>);
+
+    impl Sent {
+        fn ok(&mut self) -> impl FnMut(u64, &[Target]) -> bool + '_ {
+            |g, t| {
+                self.0.push((g, t.to_vec()));
+                true
+            }
+        }
+    }
+
+    fn snapshot_of(reply: Option<Reply>) -> Snapshot {
+        match reply {
+            Some(Reply::Outputs(body)) => decode_snapshot(&body).unwrap(),
+            other => panic!("not a snapshot: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unavailable_says_why() {
+        assert_eq!(unavailable(false), Reply::Error("displays are off in bar.toml".into()));
+        assert_eq!(unavailable(true), Reply::Error("the compositor has no output management".into()));
+    }
+
+    #[test]
+    fn the_outputs_verb_answers_from_memory() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        let s = snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok()));
+        assert_eq!(s.status, Status::Ready);
+        assert_eq!(
+            s.outputs.iter().map(|o| (o.name.as_str(), o.active.as_ref().map(|a| a.x))).collect::<Vec<_>>(),
+            [("DP-1", Some(0)), ("DP-2", Some(1920))]
+        );
+        assert_eq!(s.trial, TrialState::None);
+        assert!(sent.0.is_empty(), "no compositor round trip");
+    }
+
+    #[test]
+    fn a_try_waits_for_the_compositor_and_its_answer_opens_the_trial() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok()), None, "pending until the answer");
+        assert_eq!(sent.0.len(), 1, "one configuration sent");
+        let (generation, targets) = sent.0[0].clone();
+        assert_eq!(targets[0].state.map(|s| s.3), Some(2.0));
+        let answer = c.on_event(Event::Succeeded(generation), now);
+        assert_eq!(execute(&mut c, answer, now, &mut sent.ok()), Some(Ok(())));
+        let s = snapshot_of(verb(&mut c, &Request::Outputs, now + Duration::from_secs(3), &mut sent.ok()));
+        assert_eq!(s.trial, TrialState::Open { seconds_left: 12 });
+    }
+
+    #[test]
+    fn a_refused_try_is_answered_with_its_reason() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+        assert_eq!(answer, None);
+        let refused = c.on_event(Event::Failed(sent.0[0].0), now);
+        assert_eq!(
+            execute(&mut c, refused, now, &mut sent.ok()).map(try_reply),
+            Some(Reply::Error("the compositor refused this configuration".into()))
+        );
+    }
+
+    #[test]
+    fn a_try_refused_before_the_compositor_is_answered_at_once() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        let ask = |c: &mut Controller, body: &str, sent: &mut Sent| verb(c, &Request::OutputsTry(body.into()), now, &mut sent.ok());
+        assert_eq!(
+            ask(&mut c, &scale_two("HDMI-A-9", 0), &mut sent),
+            Some(Reply::Error("the compositor refused this configuration".into()))
+        );
+        assert_eq!(
+            ask(&mut c, "step\tDP-1\toff\nstep\tDP-2\toff\n", &mut sent),
+            Some(Reply::Error("refused: no screen would stay on".into()))
+        );
+        assert!(matches!(ask(&mut c, "nonsense", &mut sent), Some(Reply::Error(e)) if e.starts_with("malformed request: ")));
+        assert_eq!(ask(&mut c, "", &mut sent), Some(Reply::Done), "nothing to try");
+        assert!(sent.0.is_empty());
+        assert_eq!(ask(&mut c, &scale_two("DP-1", 0), &mut sent), None);
+        assert_eq!(ask(&mut c, &scale_two("DP-2", 1920), &mut sent), Some(Reply::Error("another change is in progress".into())));
+        assert_eq!(sent.0.len(), 1);
+    }
+
+    #[test]
+    fn a_try_that_cannot_be_built_is_answered_at_once() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut |_, _| false);
+        assert!(matches!(answer, Some(Reply::Error(_))), "{answer:?}");
+        assert_eq!(c.in_flight(), None, "nothing waits for an answer");
+    }
+
+    /// The client waits 7 s for a try; the watchdog answers it after 5 s at most.
+    #[test]
+    fn an_unanswered_try_is_answered_by_the_watchdog_before_the_client_gives_up() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok()), None);
+        let at = c.next_deadline().expect("the watchdog");
+        assert!(at <= now + WATCHDOG && WATCHDOG < alpheus_commun::launcher_ipc::OUTPUTS_TRY_TIMEOUT);
+        let late = c.tick(&Vec::new, at);
+        assert_eq!(execute(&mut c, late, at, &mut sent.ok()), Some(Ok(())), "possibly applied: done");
+    }
+
+    #[test]
+    fn keep_and_revert_answer_done() {
+        for (request, end, sends) in [(Request::OutputsKeep, TrialEnd::Kept, 0), (Request::OutputsRevert, TrialEnd::Reverted, 1)] {
+            let now = Instant::now();
+            let mut c = ready(now);
+            let mut sent = Sent::default();
+            verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+            let answer = c.on_event(Event::Succeeded(sent.0[0].0), now);
+            execute(&mut c, answer, now, &mut sent.ok());
+            // The compositor's `done` after the answer: DP-1 at scale 2.
+            let mut applied = moded("DP-1", 0);
+            applied.scale = 2.0;
+            assert!(c.on_event(Event::Done(vec![applied, moded("DP-2", 1920)]), now).is_empty());
+            assert_eq!(verb(&mut c, &request, now, &mut sent.ok()), Some(Reply::Done), "{request:?}");
+            assert_eq!(sent.0.len(), 1 + sends, "{request:?}: the state from before sent back, or nothing");
+            assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Ended(end));
+        }
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        assert_eq!(verb(&mut c, &Request::OutputsKeep, now, &mut sent.ok()), Some(Reply::Done), "no trial: nothing to do");
+        assert_eq!(verb(&mut c, &Request::OutputsRevert, now, &mut sent.ok()), Some(Reply::Done));
+        assert!(sent.0.is_empty());
+    }
+
+    #[test]
+    fn a_waiting_client_gets_the_answer_once() {
+        let mut client = TryClient::default();
+        let (pending, mut peer) = Pending::pair();
+        client.wait(pending, None);
+        assert!(client.waiting() && !client.check(), "still there");
+        assert!(client.answer(Reply::Error("the compositor refused this configuration".into())));
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).unwrap();
+        assert_eq!(decode_reply(&bytes).unwrap(), Reply::Error("the compositor refused this configuration".into()));
+        assert!(!client.waiting());
+        assert!(!client.answer(Reply::Done), "answered once");
+    }
+
+    #[test]
+    fn a_client_that_hung_up_mid_try_is_dropped_unanswered() {
+        let mut client = TryClient::default();
+        let (pending, peer) = Pending::pair();
+        client.wait(pending, None);
+        drop(peer);
+        assert!(client.check(), "nobody waits any more");
+        assert!(!client.waiting(), "its connection is closed, not kept until the answer");
+        assert!(!client.answer(Reply::Done), "the late answer goes nowhere");
     }
 }

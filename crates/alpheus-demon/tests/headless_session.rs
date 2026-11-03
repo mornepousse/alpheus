@@ -5,7 +5,9 @@
 
 mod common;
 
-use alpheus_commun::launcher_ipc::{DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::displays::wire::{self, Snapshot, Status, TrialEnd, TrialState};
+use alpheus_commun::displays::{Active, Mode, Scale, Step};
+use alpheus_commun::launcher_ipc::{self, DmenuFlags, OsdVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::Rgb;
 use alpheus_commun::theme::presets::preset;
 use alpheus_demon::quick::{BAR, BAR_START};
@@ -5251,6 +5253,178 @@ fn privacy_the_popup_names_a_direct_camera() {
     wait_for_the_privacy_popup_in(&sway, &d, privacy_green(), 52..=60);
     keys(&sway, &["Escape"]);
     assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+}
+
+/// One displays verb on this test's daemon, with the wait the TUI uses (`reply_timeout`).
+fn displays(sway: &Sway, request: &Request) -> Reply {
+    launcher_ipc::exchange_waiting(&socket_path(&sway.runtime), request, request.reply_timeout())
+        .unwrap_or_else(|e| panic!("{request:?}: {e:?}"))
+}
+
+/// The daemon's snapshot, once it read a number of heads in `n`.
+fn outputs_snapshot(sway: &Sway, d: &Daemon, n: std::ops::RangeInclusive<usize>) -> Snapshot {
+    let mut last = None;
+    let start = Instant::now();
+    while start.elapsed() < DELAY {
+        match displays(sway, &Request::Outputs) {
+            Reply::Outputs(body) => {
+                let s = wire::decode_snapshot(&body).unwrap_or_else(|e| panic!("{e}: {body:?}"));
+                if n.contains(&s.outputs.len()) {
+                    return s;
+                }
+                last = Some(s);
+            }
+            other => panic!("outputs: {other:?} {:?}", d.log()),
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("{n:?} heads never read: {last:?} {:?}", d.log());
+}
+
+/// A daemon on `sway`, reading it as its compositor, displays on (the default modules).
+fn displays_daemon(sway: &Sway) -> Daemon {
+    displays_daemon_with(sway, None)
+}
+
+fn displays_daemon_with(sway: &Sway, bar_toml: Option<&str>) -> Daemon {
+    let d = start_daemon_with(sway, &DaemonOptions { bar_toml, backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    d
+}
+
+/// Displays protocol spec: the heads come from `zwlr_output_manager_v1`, answered from memory.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn outputs_are_read_from_the_protocol() {
+    let sway = Sway::start("displays-read", 2);
+    let d = displays_daemon(&sway);
+    let s = outputs_snapshot(&sway, &d, 2..=2);
+    assert_eq!(s.status, Status::Ready);
+    assert_eq!(s.trial, TrialState::None);
+    let mut names: Vec<&str> = s.outputs.iter().map(|o| o.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["HEADLESS-1", "HEADLESS-2"]);
+    assert!(s.outputs.iter().all(|o| o.active.is_some()), "both on: {s:?}");
+}
+
+/// The output named `name` in `s`.
+fn output<'s>(s: &'s Snapshot, name: &str) -> &'s alpheus_commun::displays::Output {
+    s.outputs.iter().find(|o| o.name == name).unwrap_or_else(|| panic!("no {name}: {s:?}"))
+}
+
+/// `outputs-try` of `name` as it is, at scale `scale` (thousandths).
+fn try_scale(s: &Snapshot, name: &str, scale: u32) -> Request {
+    let active = output(s, name).active.clone().expect("enabled");
+    Request::OutputsTry(wire::encode_desired(&[Step { output: name.into(), active: Some(Active { scale: Scale(scale), ..active }) }]))
+}
+
+/// The daemon's snapshot until `ok` holds (DELAY at most).
+fn snapshot_until(sway: &Sway, d: &Daemon, ok: impl Fn(&Snapshot) -> bool) -> Snapshot {
+    let mut last = None;
+    let start = Instant::now();
+    while start.elapsed() < DELAY {
+        let s = outputs_snapshot(sway, d, 0..=16);
+        if ok(&s) {
+            return s;
+        }
+        last = Some(s);
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!("never: {last:?} {:?}", d.log());
+}
+
+/// Displays protocol spec, the trial: a try answers done once the compositor applied it, the
+/// next snapshot shows it with the trial open; keep ends it as kept, and the scale stays.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_try_applies_and_keep_keeps() {
+    let sway = Sway::start("displays-keep", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(output(&before, "HEADLESS-1").active.as_ref().map(|a| a.scale), Some(Scale(1000)));
+    assert_eq!(displays(&sway, &try_scale(&before, "HEADLESS-1", 2000)), Reply::Done, "{:?}", d.log());
+    let s = snapshot_until(&sway, &d, |s| output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| a.scale == Scale(2000)));
+    assert!(matches!(s.trial, TrialState::Open { seconds_left: 1..=15 }), "{s:?}");
+    assert_eq!(displays(&sway, &Request::OutputsKeep), Reply::Done);
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(s.trial, TrialState::Ended(TrialEnd::Kept), "reported once");
+    assert_eq!(outputs_snapshot(&sway, &d, 1..=1).trial, TrialState::None);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(output(&outputs_snapshot(&sway, &d, 1..=1), "HEADLESS-1").active.as_ref().map(|a| a.scale), Some(Scale(2000)));
+    assert!(d.log().iter().all(|l| !l.contains("displays: configuration refused") && !l.contains("displays: no answer")), "{:?}", d.log());
+}
+
+/// Displays protocol spec, the trial: with no keep, the daemon brings the state from before
+/// back at the 15 s deadline, without the TUI.
+#[test]
+#[ignore = "headless sway, 16 s (nix develop)"]
+fn a_try_reverts_at_the_deadline() {
+    let sway = Sway::start("displays-revert", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(displays(&sway, &try_scale(&before, "HEADLESS-1", 2000)), Reply::Done, "{:?}", d.log());
+    snapshot_until(&sway, &d, |s| output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| a.scale == Scale(2000)));
+    thread::sleep(Duration::from_secs(16));
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!(s.trial, TrialState::Ended(TrialEnd::Reverted), "{s:?}");
+    assert_eq!(output(&s, "HEADLESS-1").active, output(&before, "HEADLESS-1").active, "the state from before");
+}
+
+/// Displays protocol spec, the TUI's errors: a mode the screen does not have is refused,
+/// `the compositor refused this configuration`, and nothing changes.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn a_refused_configuration_answers_refused() {
+    let sway = Sway::start("displays-refused", 1);
+    let d = displays_daemon(&sway);
+    let before = outputs_snapshot(&sway, &d, 1..=1);
+    let active = output(&before, "HEADLESS-1").active.clone().expect("enabled");
+    let mode = Mode { width: 1234, height: 567, refresh: 75 };
+    let body = wire::encode_desired(&[Step { output: "HEADLESS-1".into(), active: Some(Active { mode, ..active }) }]);
+    assert_eq!(displays(&sway, &Request::OutputsTry(body)), Reply::Error("the compositor refused this configuration".into()));
+    let s = outputs_snapshot(&sway, &d, 1..=1);
+    assert_eq!((s.trial, s.outputs), (TrialState::None, before.outputs), "no trial, nothing changed");
+}
+
+/// Displays protocol spec, hotplug: a plugged screen whose set matches a profile of
+/// displays.toml gets its positions once the debounce ended, and only once.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hotplug_applies_the_matching_profile_once() {
+    let sway = Sway::start("displays-hotplug", 1);
+    // No module that refreshes on its own (resources every 2 s): the loop rests between events.
+    let d = displays_daemon_with(&sway, Some("modules = [\"workspaces\", \"displays\"]\n"));
+    let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
+    // The plugged head's description carries a counter of the headless backend: one profile per
+    // value it may take, the same placement in each (only the set that is there matches).
+    let profiles: String = (2..=9)
+        .map(|n| {
+            format!(
+                "[[profile]]\nname = \"Desk {n}\"\n\
+                 [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+                 [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
+            )
+        })
+        .collect();
+    std::fs::write(sway.runtime.join("config/alpheus/displays.toml"), profiles).unwrap();
+    let quiet = d.log().len();
+    sway.command("create_output");
+    let placed = |s: &Snapshot| {
+        s.outputs.len() == 2
+            && output(s, "HEADLESS-2").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
+            && output(s, "HEADLESS-1").active.as_ref().is_some_and(|a| (a.x, a.y) == (1920, 0))
+    };
+    let s = snapshot_until(&sway, &d, placed);
+    // An apply logs nothing (the spec's fixed lines): a second evaluation would show as the
+    // loop waking each debounce, with no request on the socket meanwhile.
+    thread::sleep(Duration::from_millis(500));
+    let before = d.main_thread_wakeups();
+    thread::sleep(Duration::from_secs(2));
+    let wakeups = d.main_thread_wakeups() - before;
+    assert!(wakeups <= 2, "{wakeups} wake-ups of the loop in 2 s once applied");
+    assert_eq!(outputs_snapshot(&sway, &d, 2..=2), s, "unchanged 2 s later");
+    let lines: Vec<String> = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect();
+    assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
 }
 
 /// Each test gives its compositor a name, and the name picks its runtime directory
