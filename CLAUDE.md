@@ -16,7 +16,7 @@ breakdown), then the spec of the sub-project currently in progress in
 - Sub-project 1 bis, **Displays** tab (Hyprland first): spec
   ([`docs/specs/2026-10-03-alpheus-ecrans-design.md`](docs/specs/2026-10-03-alpheus-ecrans-design.md))
   and plan executed, merged into `main` on 2026-10-03 (through nixos-config's
-  `wm-set`; moved to the output protocol on branch `feat/displays-wlr`, see
+  `wm-set`; moved to the output protocol on 2026-11-03, see
   below). Real-world trial by Mae still pending. Keyboard layouts tab: deferred.
 - Fixtures and snapshots are **anonymized** (Wi-Fi, VPN, MAC, machine): never
   recommit a raw capture from the workstation, the repository is meant to
@@ -223,7 +223,7 @@ breakdown), then the spec of the sub-project currently in progress in
 - **Mango and Sway backends** (spec
   [`docs/specs/2026-10-13-alpheus-mango-sway-design.md`](docs/specs/2026-10-13-alpheus-mango-sway-design.md),
   plan [`docs/plans/2026-10-13-alpheus-mango-sway-plan-1.md`](docs/plans/2026-10-13-alpheus-mango-sway-plan-1.md))
-  **implemented and merged into `main` on 2026-10-13** (per-task reviews, a two-slice final review and its fix wave; Mae's trial pending, French note in `.superpowers/sdd/mango/note-essai.md`; the Displays tab no longer waits on `wm-set` since `feat/displays-wlr`, below):
+  **implemented and merged into `main` on 2026-10-13** (per-task reviews, a two-slice final review and its fix wave; Mae's trial pending, French note in `.superpowers/sdd/mango/note-essai.md`; the Displays tab no longer waits on `wm-set` since the displays protocol delivery, below):
   - **Detection.** `SWAYSOCK`, `HYPRLAND_INSTANCE_SIGNATURE`, `MANGO_INSTANCE_SIGNATURE`, `NIRI_SOCKET`, in nixos-config's order, with niri last, in the daemon and the TUI; one start line names the backend (`compositor: Sway ($SWAYSOCK)`).
   - **Mango.** Two read-only connections to `$MANGO_INSTANCE_SIGNATURE` (`watch all-monitors`, `watch all-clients`), one `poll` without timeout; one workspace per (output, tag), empty inactive tags hidden, several active tags visible, the overview shows none (an output left with no tag keeps its lowest one, dim, so its bar never shows another output's tags); the active output's client as the title; a focus history the model keeps for the launcher (`id:<client id>`). The path is read again at each session; a line nested past `MAX_NESTING` is unreadable, as under Sway.
   - **Sway.** The i3 IPC on `$SWAYSOCK`: SUBSCRIBE to workspace and window events on one connection, GET_WORKSPACES and GET_TREE on the other, once per burst (at most 256 events drained before a re-read); counts, title (app_id or the X11 class) and the launcher's list (`id:<con_id>`) from the tree, the scratchpad skipped; a tree nested deeper than about 44 containers reads as unreadable (`MAX_NESTING` 90).
@@ -262,7 +262,7 @@ breakdown), then the spec of the sub-project currently in progress in
 - **Displays through the output protocol** (the Displays tab and screen profiles move from nixos-config's `wm-set` to the daemon's `zwlr_output_manager_v1`; spec
   [`docs/specs/2026-10-30-alpheus-displays-protocol-design.md`](docs/specs/2026-10-30-alpheus-displays-protocol-design.md),
   plan [`docs/plans/2026-10-30-alpheus-displays-plan-1.md`](docs/plans/2026-10-30-alpheus-displays-plan-1.md))
-  **implemented on branch `feat/displays-wlr`, NOT merged** (per-task reviews and fix rounds; Mae's trial and her go pending):
+  **implemented and merged into `main` on 2026-11-03** (per-task reviews and fix rounds, a two-slice final review and three fix rounds; Mae's trial pending):
   - **The daemon owns the protocol.** `outputs/wlr.rs` binds the manager (versions 1..=4) and is the one place alpheus writes the screens' layout (the guardrail's single exception, spec § 2). The model updates only on the manager's `done`; one configuration in flight (a `done` meanwhile means "evaluate again after the answer", `cancelled` retried 3 times); never a no-op configuration; a 500 ms debounce on hotplug; a 5 s watchdog (one `DeadlineTimer`, armed only while a configuration is pending) for a compositor that never answers; the last screen is never switched off.
   - **The trial lives in the daemon** (15 s, one `DeadlineTimer` armed only during a trial; the TUI dying cannot leave a bad layout). It ends `Kept`, `Reverted`, `ScreenLost`, `ChangedElsewhere`, `Refused` or `NoAnswer`; while any configuration is in flight the snapshot says `Busy` and the tab stays locked.
   - **Profiles on hotplug.** With `[displays] auto = true` (default), the `displays.toml` profile whose screens are exactly the connected ones is applied after the debounce, never during a trial. A screen is matched by identity (`make model serial`, else its `description`; the saved connector is only a hint between two identical screens).
