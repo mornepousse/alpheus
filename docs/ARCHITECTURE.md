@@ -11,7 +11,7 @@ One Cargo workspace, four crates:
 
 | Crate | What it is | Does not depend on |
 |---|---|---|
-| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol | ratatui, Wayland |
+| `alpheus-commun` | the shared foundation: the injectable command executor (`exec`), configuration, theme model, the TUI's backends (sound, network, Bluetooth, brightness, energy, power, displays) and the launcher's wire protocol (which also carries the Displays tab's verbs) | ratatui, Wayland |
 | `alpheus` | the TUI control center (ratatui) | Wayland |
 | `alpheus-demon` | the resident daemon: bar, launcher, notifications, OSD, tray, quick settings, privacy indicators | ratatui |
 | `alpheus-launch` | a small client for the daemon's socket (`--toggle`, `--dmenu`, `--quick`, …) | Wayland, fonts |
