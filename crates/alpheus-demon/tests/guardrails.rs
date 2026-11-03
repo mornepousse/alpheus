@@ -300,7 +300,61 @@ fn the_daemon_only_reads_from_the_compositor() {
             assert!(compositor_connection_allowed(&name), "connection to the compositor in {name}");
         }
         assert!(!t.contains("Command::new"), "process spawned directly in {name} (go through the executor)");
+        // The one compositor write besides the workspace command (displays spec § 2): an output
+        // configuration, built and applied in the protocol file only.
+        if let Some(w) = OUTPUT_WRITES.iter().find(|w| t.contains(**w)) {
+            assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{w}\": an output configuration outside the protocol file");
+        }
     }
+}
+
+/// The only file that speaks `zwlr_output_manager_v1` (displays spec § 1).
+const OUTPUTS_PROTOCOL_FILE: &str = "outputs/wlr.rs";
+
+/// What builds or applies an output configuration. `.apply()` with nothing inside: `Bar::apply`
+/// takes a message.
+const OUTPUT_WRITES: [&str; 4] = ["zwlr_output_configuration", "ZwlrOutputConfiguration", "create_configuration", ".apply()"];
+
+/// Displays spec § 1: one file speaks the output protocol; the glue and the rest of the daemon
+/// only see the pure model (`outputs::model`, `outputs::control`).
+#[test]
+fn outputs_protocol_only_in_wlr_rs() {
+    let mut seen = false;
+    for (p, t) in all_source_files() {
+        let name = relative_path(&p);
+        for token in ["zwlr_output_", "ZwlrOutput"] {
+            if t.contains(token) {
+                assert_eq!(name, OUTPUTS_PROTOCOL_FILE, "\"{token}\" outside the protocol file");
+                seen = true;
+            }
+        }
+    }
+    assert!(seen, "the protocol file names the protocol");
+}
+
+/// Displays spec § 2 and the DisplayLink freeze: no output power management anywhere in alpheus,
+/// never a screen powered off (`dpms` is already a forbidden word in the daemon).
+#[test]
+fn output_power_management_never_appears() {
+    let crates = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let mut files = 0;
+    let mut stack: Vec<PathBuf> =
+        std::fs::read_dir(crates).unwrap().flatten().map(|e| e.path().join("src")).filter(|p| p.is_dir()).collect();
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                files += 1;
+                let t = std::fs::read_to_string(&p).unwrap().to_lowercase().replace('_', "");
+                for word in ["outputpower", "dpms"] {
+                    assert!(!t.contains(word), "\"{word}\" in {}", p.display());
+                }
+            }
+        }
+    }
+    assert!(files > 100, "the workspace's sources were not found ({files})");
 }
 
 /// Review guardrail: only files in `src/sources/` are allowed to open or
@@ -902,6 +956,10 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
         // question (quick delivery 3).
         ("wayland.rs", "Timer::", 10),
+        // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
+        // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
+        // trial (15 s), armed only while one of them is pending.
+        ("outputs_app.rs", "Timer::", 1),
         // A dmenu client's hang-up watch: only while its menu is open.
         ("launcher/host.rs", "Generic::new", 1),
         // The theme's inotify fd: readable only when theme.toml or a colour file
@@ -1245,7 +1303,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 41] = [
+const NO_THREAD_NOR_COMMAND: [&str; 43] = [
     "tray/",
     "media.rs",
     "notify.rs",
@@ -1287,6 +1345,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 41] = [
     "sources/dbus/bt.rs",
     "sources/dbus/bt_act.rs",
     "bt_app.rs",
+    "outputs/",
+    "outputs_app.rs",
 ];
 
 #[test]

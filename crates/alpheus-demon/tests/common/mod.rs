@@ -629,6 +629,19 @@ fn coreutils_dir() -> PathBuf {
     dir
 }
 
+/// `keys` (whole lines) added to `[table]` of `text`: right under its header when it has one (TOML
+/// forbids a second), else in a new table at the end.
+fn under_table(text: &str, table: &str, keys: &str) -> String {
+    let header = format!("[{table}]");
+    let Some(at) = text.find(&header) else { return format!("{text}\n{header}\n{keys}") };
+    let (head, rest) = match text[at..].find('\n') {
+        Some(n) => text.split_at(at + n + 1),
+        None => (text, ""),
+    };
+    let nl = if head.ends_with('\n') { "" } else { "\n" };
+    format!("{head}{nl}{keys}{rest}")
+}
+
 pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let config = sway.runtime.join("config");
     fs::create_dir_all(config.join("alpheus")).unwrap();
@@ -637,24 +650,18 @@ pub fn start_daemon_with(sway: &Sway, o: &DaemonOptions) -> Daemon {
     let (dev, proc) = (sway.runtime.join("privacy-dev"), sway.runtime.join("privacy-proc"));
     fs::create_dir_all(&dev).unwrap();
     fs::create_dir_all(&proc).unwrap();
-    let text = o.bar_toml.unwrap_or("");
-    if o.bar_toml.is_some() || !text.contains("dev_dir") {
-        let roots = format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display());
-        let text = if text.contains("dev_dir") {
-            text.to_string()
-        } else if let Some(at) = text.find("[privacy]") {
-            // TOML forbids a second `[privacy]` header: the roots go right under the existing one.
-            let (head, rest) = match text[at..].find('\n') {
-                Some(n) => text.split_at(at + n + 1),
-                None => (text, ""),
-            };
-            let nl = if head.ends_with('\n') { "" } else { "\n" };
-            format!("{head}{nl}{roots}{rest}")
-        } else {
-            format!("{text}\n[privacy]\n{roots}")
-        };
-        fs::write(config.join("alpheus/bar.toml"), text).unwrap();
+    // The displays module's DisplayLink detection lists DRM connectors where `[displays]` says: an
+    // empty directory here, never the machine's /sys, unless the test sets its own.
+    let drm = sway.runtime.join("displays-drm");
+    fs::create_dir_all(&drm).unwrap();
+    let mut text = o.bar_toml.unwrap_or("").to_string();
+    if !text.contains("dev_dir") {
+        text = under_table(&text, "privacy", &format!("dev_dir = \"{}\"\nproc_dir = \"{}\"\n", dev.display(), proc.display()));
     }
+    if !text.contains("drm_dir") {
+        text = under_table(&text, "displays", &format!("drm_dir = \"{}\"\n", drm.display()));
+    }
+    fs::write(config.join("alpheus/bar.toml"), text).unwrap();
     if let Some(text) = o.launcher_toml {
         fs::write(config.join("alpheus/launcher.toml"), text).unwrap();
     }

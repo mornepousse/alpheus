@@ -60,6 +60,9 @@
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
+//! [displays]                                                # the screens through the output protocol (with "displays" in modules)
+//! auto = true                                               # apply the displays.toml profile matching the connected screens
+//! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
 //! ```
 
 use crate::clock;
@@ -94,6 +97,9 @@ pub enum ModuleId {
     /// The quick settings panel (quick spec): opened by a left click on the volume, network or
     /// Bluetooth module, or `alpheus-launch --quick`. No segment in the bar.
     Quick,
+    /// The screens (displays spec § 1): read and changed through the output management protocol, the
+    /// matching profile applied on hotplug. No segment in the bar.
+    Displays,
     Clock,
     /// The power button (power spec § 1): ⏻ at the bar's end, a left click opens its menu with
     /// `[quick]`'s lock, logout, reboot and poweroff. No segment when all four are empty.
@@ -357,6 +363,22 @@ impl Default for PrivacyConfig {
     }
 }
 
+/// `[displays]` (displays spec § 1).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DisplaysConfig {
+    /// Apply the profile whose screens are exactly the connected ones when they change.
+    pub auto: bool,
+    /// Where the DRM connectors are listed: a screen whose card is driven by `evdi` is DisplayLink.
+    pub drm_dir: PathBuf,
+}
+
+impl Default for DisplaysConfig {
+    fn default() -> Self {
+        DisplaysConfig { auto: true, drm_dir: PathBuf::from("/sys/class/drm") }
+    }
+}
+
 /// The bounds of `[notifications]`.
 pub const NOTIFY_TIMEOUT_LIMIT: u32 = 600;
 pub const NOTIFY_VISIBLE_MAX: u8 = 8;
@@ -586,6 +608,7 @@ pub struct BarConfig {
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
+    pub displays: DisplaysConfig,
 }
 
 impl Default for BarConfig {
@@ -605,6 +628,7 @@ impl Default for BarConfig {
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
+            displays: DisplaysConfig::default(),
         }
     }
 }
@@ -644,6 +668,8 @@ struct Raw {
     osd: OsdConfig,
     #[serde(default)]
     quick: QuickConfig,
+    #[serde(default)]
+    displays: DisplaysConfig,
 }
 
 impl BarConfig {
@@ -736,6 +762,9 @@ impl BarConfig {
         if !b.privacy.proc_dir.is_absolute() {
             return Err("privacy.proc_dir must be an absolute path".into());
         }
+        if !b.displays.drm_dir.is_absolute() {
+            return Err("displays.drm_dir must be an absolute path".into());
+        }
         check_quick(&b.quick)?;
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
@@ -753,6 +782,7 @@ impl BarConfig {
             notifications: b.notifications,
             osd: b.osd,
             quick: b.quick,
+            displays: b.displays,
         })
     }
 }

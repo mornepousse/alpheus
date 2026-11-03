@@ -90,7 +90,7 @@ const fn row(id: ModuleId, name: &'static str, group: GroupKind) -> ModuleSpec {
     ModuleSpec { id, name, group, hue: None, tab: None, segment: None, popup: None, popup_needs_quick: false, needs: Needs::NONE }
 }
 
-pub(crate) const COUNT: usize = 16;
+pub(crate) const COUNT: usize = 17;
 
 pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec { segment: Some(|_, _| Some(segments::launcher())), ..row(ModuleId::Launcher, "launcher", GroupKind::Launcher) },
@@ -175,6 +175,8 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
         needs: Needs::SOUND.or(Needs::NETWORK).or(Needs::BLUETOOTH).or(Needs::POWER_PROFILE),
         ..row(ModuleId::Quick, "quick", GroupKind::Status)
     },
+    // The screens are read and changed through the output protocol (outputs_app.rs), never drawn.
+    row(ModuleId::Displays, "displays", GroupKind::Status),
     ModuleSpec {
         segment: Some(|bar, _| Some(bar_clock(bar))),
         popup: Some(ModulePopup::Calendar),
