@@ -91,10 +91,41 @@ fn sends(actions: &[Action]) -> Vec<&Vec<Target>> {
     actions
         .iter()
         .filter_map(|a| match a {
-            Action::Send(t) => Some(t),
+            Action::Send(_, t) => Some(t),
             _ => None,
         })
         .collect()
+}
+
+/// The generation in flight (0, never sent, when none is).
+fn gen_of(c: &Controller) -> u64 {
+    c.flight.as_ref().map_or(0, |f| f.generation)
+}
+
+/// The compositor's answers to the configuration in flight.
+fn ok(c: &Controller) -> Event {
+    Event::Succeeded(gen_of(c))
+}
+
+fn failed(c: &Controller) -> Event {
+    Event::Failed(gen_of(c))
+}
+
+fn cancelled(c: &Controller) -> Event {
+    Event::Cancelled(gen_of(c))
+}
+
+/// The generation of the one configuration sent in `actions`.
+fn sent_gen(actions: &[Action]) -> u64 {
+    let gens: Vec<u64> = actions
+        .iter()
+        .filter_map(|a| match a {
+            Action::Send(g, _) => Some(*g),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(gens.len(), 1, "{actions:?}");
+    gens[0]
 }
 
 fn logs(actions: &[Action]) -> Vec<&'static str> {
@@ -143,7 +174,7 @@ fn trial_open(t0: Instant) -> Controller {
     let mut c = settled(vec![alpha(0), bravo(1920)], t0);
     let a = c.try_(&[move_to("DP-1", 100)], t0).unwrap();
     assert_eq!(sends(&a).len(), 1);
-    let a = c.on_event(Event::Succeeded, t0 + ms(10));
+    let a = c.on_event(ok(&c), t0 + ms(10));
     assert_eq!(replies(&a), vec![Ok(())]);
     assert!(c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(15)).is_empty());
     c
@@ -185,7 +216,7 @@ fn our_own_apply_does_not_reevaluate() {
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DP-2").state, Some((0, 1920, 0, 1.0, 0)));
     // The compositor answers, then reports the new layout (either order).
-    assert!(c.on_event(Event::Succeeded, t0 + ms(600)).is_empty());
+    assert!(c.on_event(ok(&c), t0 + ms(600)).is_empty());
     assert!(c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(610)).is_empty());
     assert!(c.tick(&profiles, t0 + ms(5000)).is_empty());
     assert_eq!(src.reads.get(), 1);
@@ -197,7 +228,7 @@ fn our_own_apply_does_not_reevaluate() {
     c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
     assert_eq!(sends(&c.tick(&profiles, t0 + DEBOUNCE)).len(), 1);
     assert!(c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(600)).is_empty());
-    assert!(c.on_event(Event::Succeeded, t0 + ms(610)).is_empty());
+    assert!(c.on_event(ok(&c), t0 + ms(610)).is_empty());
     assert!(c.tick(&profiles, t0 + ms(5000)).is_empty());
     assert_eq!(src.reads.get(), 1);
     assert_eq!(c.next_deadline(), None);
@@ -270,7 +301,7 @@ fn a_failed_profile_is_not_retried_for_the_same_screens() {
     let mut c = Controller::new(true);
     c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0);
     assert_eq!(sends(&c.tick(&profiles, t0 + DEBOUNCE)).len(), 1);
-    let a = c.on_event(Event::Failed, t0 + ms(600));
+    let a = c.on_event(failed(&c), t0 + ms(600));
     assert_eq!(logs(&a), vec!["displays: configuration refused by the compositor"]);
     // The same screens, even moved elsewhere: never retried.
     assert!(c.on_event(Event::Done(vec![alpha(1920), bravo(0)]), t0 + ms(700)).is_empty());
@@ -332,12 +363,12 @@ fn cancelled_is_retried_three_times() {
     let wanted = sends(&first)[0].clone();
     for i in 1..=3 {
         let at = t0 + ms(100 * i);
-        assert!(c.on_event(Event::Cancelled, at).is_empty());
+        assert!(c.on_event(cancelled(&c), at).is_empty());
         // Re-sent after the next Done, unchanged.
         let a = c.on_event(Event::Done(vec![alpha(0)]), at + ms(10));
         assert_eq!(sends(&a), vec![&wanted], "retry {i}");
     }
-    let a = c.on_event(Event::Cancelled, t0 + ms(400));
+    let a = c.on_event(cancelled(&c), t0 + ms(400));
     assert_eq!(logs(&a), vec!["displays: configuration refused by the compositor"]);
     assert_eq!(replies(&a), vec![Err("the compositor refused this configuration")]);
     assert!(sends(&c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(410))).is_empty());
@@ -352,7 +383,7 @@ fn a_cancel_after_its_done_resends_at_once() {
     c.try_(&[move_to("DP-1", 10)], t0).unwrap();
     // The Done that outdated the configuration came first.
     assert!(c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(10)).is_empty());
-    assert_eq!(sends(&c.on_event(Event::Cancelled, t0 + ms(20))).len(), 1);
+    assert_eq!(sends(&c.on_event(cancelled(&c), t0 + ms(20))).len(), 1);
 }
 
 #[test]
@@ -364,10 +395,10 @@ fn a_head_whose_mode_is_unknown_is_kept_as_is() {
     let a = c.try_(&[move_to("DP-1", 10)], t0).unwrap();
     assert_eq!(target(sends(&a)[0], "DP-2").state, Some((KEEP, 1920, 0, 1.0, 0)));
     // Re-sent after a cancel, and restored by the revert, still kept.
-    c.on_event(Event::Cancelled, t0 + ms(10));
+    c.on_event(cancelled(&c), t0 + ms(10));
     let a = c.on_event(Event::Done(vec![alpha(0), unknown.clone()]), t0 + ms(20));
     assert_eq!(target(sends(&a)[0], "DP-2").state, Some((KEEP, 1920, 0, 1.0, 0)));
-    c.on_event(Event::Succeeded, t0 + ms(30));
+    c.on_event(ok(&c), t0 + ms(30));
     c.on_event(Event::Done(vec![alpha(10), unknown]), t0 + ms(40));
     let a = c.revert(t0 + ms(50));
     assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
@@ -389,7 +420,7 @@ fn one_configuration_in_flight() {
     assert!(c.tick(&profiles, t0 + ms(1300)).is_empty());
     assert_eq!(src.reads.get(), 1);
     // After the answer, the deferred evaluation runs once, debounced.
-    assert!(c.on_event(Event::Failed, t0 + ms(1400)).iter().all(|a| !matches!(a, Action::Send(_))));
+    assert!(c.on_event(failed(&c), t0 + ms(1400)).iter().all(|a| !matches!(a, Action::Send(..))));
     assert_eq!(c.next_deadline(), Some(t0 + ms(1900)));
     let a = c.tick(&profiles, t0 + ms(1900));
     assert_eq!(src.reads.get(), 2);
@@ -425,7 +456,7 @@ fn the_cap_lowers_a_displaylink_head_without_a_profile() {
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DVI-I-1").state, Some((1, 1920, 0, 1.0, 0)));
     assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
-    c.on_event(Event::Succeeded, t0 + ms(700));
+    c.on_event(ok(&c), t0 + ms(700));
     let mut lowered = dock(1920);
     lowered.current = Some(1);
     assert!(c.on_event(Event::Done(vec![alpha(0), lowered]), t0 + ms(710)).is_empty());
@@ -448,7 +479,7 @@ fn the_cap_waits_for_the_trial() {
     // A try before the debounce expired: the trial keeps the dock as it is.
     let a = c.try_(&[move_to("DP-1", 10)], t0 + ms(100)).unwrap();
     assert_eq!(target(sends(&a)[0], "DVI-I-1").state, Some((0, 1920, 0, 1.0, 0)));
-    c.on_event(Event::Succeeded, t0 + ms(200));
+    c.on_event(ok(&c), t0 + ms(200));
     assert!(c.on_event(Event::Done(vec![alpha(10), dock(1920)]), t0 + ms(210)).is_empty());
     assert!(c.tick(&profiles, t0 + ms(1000)).is_empty());
     assert_eq!(c.next_deadline(), Some(t0 + ms(200) + TRIAL));
@@ -474,8 +505,9 @@ fn no_answer_counts_as_possibly_applied_and_the_trial_still_reverts() {
     assert_eq!(sent.len(), 1);
     assert_eq!(target(sent[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
     assert_eq!(c.trial_state(t0 + ms(20_001)), TrialState::Ended(TrialEnd::Reverted));
-    // The revert is answered: nothing is held any more.
-    c.on_event(Event::Succeeded, t0 + ms(20_100));
+    // The revert is answered and lands: nothing is held any more.
+    c.on_event(ok(&c), t0 + ms(20_100));
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(20_110));
     assert_eq!(c.next_deadline(), None);
     assert!(c.try_(&[move_to("DP-1", 5)], t0 + ms(20_200)).is_ok());
 }
@@ -489,6 +521,9 @@ fn a_late_change_that_never_lands_is_not_a_change_elsewhere() {
     // Unconfirmed: a Done showing the state from before is still ours.
     assert!(c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(6000)).is_empty());
     assert!(matches!(c.trial_state(t0 + ms(6000)), TrialState::Open { .. }));
+    // It may still land after that: ours too.
+    assert!(c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(7000)).is_empty());
+    assert!(matches!(c.trial_state(t0 + ms(7000)), TrialState::Open { .. }));
 }
 
 #[test]
@@ -516,7 +551,7 @@ fn revert_restores_the_state_from_before() {
     assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
     assert_eq!(c.trial_state(t0 + ms(1000)), TrialState::Ended(TrialEnd::Reverted));
     // Without a trial, keep and revert do nothing.
-    c.on_event(Event::Succeeded, t0 + ms(1100));
+    c.on_event(ok(&c), t0 + ms(1100));
     assert!(c.revert(t0 + ms(1200)).is_empty());
     assert!(c.keep(t0 + ms(1200)).is_empty());
     assert_eq!(c.trial_state(t0 + ms(1200)), TrialState::None);
@@ -547,7 +582,7 @@ fn a_refused_try_opens_no_trial() {
     let t0 = Instant::now();
     let mut c = settled(vec![alpha(0)], t0);
     c.try_(&[move_to("DP-1", 10)], t0).unwrap();
-    let a = c.on_event(Event::Failed, t0 + ms(10));
+    let a = c.on_event(failed(&c), t0 + ms(10));
     assert_eq!(replies(&a), vec![Err("the compositor refused this configuration")]);
     assert_eq!(c.trial_state(t0 + ms(10)), TrialState::None);
     assert_eq!(c.next_deadline(), None);
@@ -558,7 +593,7 @@ fn a_lost_screen_reverts_the_rest() {
     let t0 = Instant::now();
     let mut c = settled(vec![alpha(0), bravo(1920)], t0);
     c.try_(&[move_to("DP-1", 100), move_to("DP-2", 2020)], t0).unwrap();
-    c.on_event(Event::Succeeded, t0 + ms(10));
+    c.on_event(ok(&c), t0 + ms(10));
     // Bravo unplugged; a new screen appeared meanwhile and stays as it is.
     let a = c.on_event(Event::Done(vec![alpha(100), charlie(5000)]), t0 + ms(1000));
     let sent = sends(&a);
@@ -578,7 +613,7 @@ fn a_done_before_the_answer_is_not_a_change_elsewhere() {
     c.try_(&[move_to("DP-1", 100)], t0).unwrap();
     // A `done` from before our change lands first, then the answer.
     c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(5));
-    c.on_event(Event::Succeeded, t0 + ms(10));
+    c.on_event(ok(&c), t0 + ms(10));
     assert!(matches!(c.trial_state(t0 + ms(10)), TrialState::Open { .. }));
 }
 
@@ -591,17 +626,17 @@ fn a_revert_to_a_capped_mode_is_lowered_again() {
     let mut c = Controller::new(true);
     c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0);
     assert_eq!(sends(&c.tick(&|| none.get(), t0 + DEBOUNCE)).len(), 1);
-    c.on_event(Event::Succeeded, t0 + ms(600));
+    c.on_event(ok(&c), t0 + ms(600));
     c.on_event(Event::Done(vec![alpha(0), lowered]), t0 + ms(610));
     // The compositor puts it back: not fought on the same screens.
     assert!(c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0 + ms(700)).is_empty());
     // A trial, reverted: the state from before (over the cap) comes back,
     // then the cap lowers it once more.
     c.try_(&[move_to("DP-1", 10)], t0 + ms(800)).unwrap();
-    c.on_event(Event::Succeeded, t0 + ms(810));
+    c.on_event(ok(&c), t0 + ms(810));
     c.on_event(Event::Done(vec![alpha(10), dock(1920)]), t0 + ms(820));
     assert_eq!(sends(&c.revert(t0 + ms(900))).len(), 1);
-    c.on_event(Event::Succeeded, t0 + ms(910));
+    c.on_event(ok(&c), t0 + ms(910));
     let a = c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0 + ms(920));
     assert_eq!(target(sends(&a)[0], "DVI-I-1").state, Some((1, 1920, 0, 1.0, 0)));
 }
@@ -615,7 +650,7 @@ fn a_revert_never_leaves_no_screen_on() {
     let mut c = settled(vec![alpha(0), off], t0);
     // Bravo on, Alpha off; then Alpha, the only screen on before, is lost.
     c.try_(&[Step { output: "DP-1".into(), active: None }, move_to("DP-2", 0)], t0).unwrap();
-    c.on_event(Event::Succeeded, t0 + ms(10));
+    c.on_event(ok(&c), t0 + ms(10));
     let mut alpha_off = alpha(0);
     alpha_off.enabled = false;
     c.on_event(Event::Done(vec![alpha_off, bravo(0)]), t0 + ms(20));
@@ -650,7 +685,7 @@ fn auto_waits_for_the_trial_then_runs_once() {
     c.tick(&profiles, t0 + DEBOUNCE);
     assert_eq!(src.reads.get(), 1);
     c.try_(&[move_to("DP-1", 100)], t0 + ms(1000)).unwrap();
-    c.on_event(Event::Succeeded, t0 + ms(1010));
+    c.on_event(ok(&c), t0 + ms(1010));
     // Bravo plugged in, then out and in again, during the trial: nothing yet.
     assert!(c.on_event(Event::Done(vec![alpha(100), bravo(0)]), t0 + ms(2000)).is_empty());
     assert!(c.on_event(Event::Done(vec![alpha(100)]), t0 + ms(2100)).is_empty());
@@ -663,7 +698,7 @@ fn auto_waits_for_the_trial_then_runs_once() {
     let a = c.tick(&profiles, t0 + ms(4500));
     assert_eq!(src.reads.get(), 2);
     assert_eq!(sends(&a).len(), 1);
-    c.on_event(Event::Succeeded, t0 + ms(4600));
+    c.on_event(ok(&c), t0 + ms(4600));
     c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(4610));
     assert!(c.tick(&profiles, t0 + ms(9000)).is_empty());
     assert_eq!(src.reads.get(), 2);
@@ -693,10 +728,194 @@ fn next_deadline_is_none_at_rest() {
     assert_eq!(c.trial_state(t0), TrialState::None);
     // A finished trial leaves nothing armed.
     c.try_(&[move_to("DP-1", 100)], t0).unwrap();
-    c.on_event(Event::Succeeded, t0 + ms(10));
+    c.on_event(ok(&c), t0 + ms(10));
     c.revert(t0 + ms(100));
-    c.on_event(Event::Succeeded, t0 + ms(200));
+    c.on_event(ok(&c), t0 + ms(200));
     c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(210));
     assert_eq!(c.next_deadline(), None);
     assert_eq!(c.heads().len(), 2);
+}
+
+/// A dock screen at `x` whose modes are these sizes at 60 Hz, the first current.
+fn screen(name: &str, serial: &str, x: i32, sizes: &[(i32, i32)]) -> Head {
+    let mut h = head(name, "Dock", serial, x);
+    h.displaylink = true;
+    h.modes = sizes.iter().map(|&(width, height)| HeadMode { width, height, mhz: 60_000, preferred: false }).collect();
+    h
+}
+
+const FHD: (i32, i32) = (1920, 1080);
+const QHD: (i32, i32) = (2560, 1440);
+
+#[test]
+fn a_late_answer_is_not_taken_for_a_later_configuration() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    let first = sent_gen(&c.try_(&[move_to("DP-1", 100)], t0).unwrap());
+    // No answer: the trial opens, possibly applied, and is reverted.
+    assert_eq!(replies(&c.tick(&|| Vec::new(), t0 + WATCHDOG)), vec![Ok(())]);
+    c.on_event(Event::Done(vec![alpha(100), bravo(1920)]), t0 + ms(5500));
+    let second = sent_gen(&c.revert(t0 + ms(6000)));
+    assert_ne!(first, second);
+    // The first configuration's late answers are not the revert's.
+    assert!(c.on_event(Event::Succeeded(first), t0 + ms(6100)).is_empty());
+    assert!(c.on_event(Event::Failed(first), t0 + ms(6110)).is_empty());
+    assert!(c.on_event(Event::Cancelled(first), t0 + ms(6120)).is_empty());
+    assert_eq!(c.try_(&[move_to("DP-1", 5)], t0 + ms(6200)), Err("another change is in progress"));
+    assert_eq!(c.next_deadline(), Some(t0 + ms(6000) + WATCHDOG));
+    // The revert's own answer ends it.
+    c.on_event(Event::Succeeded(second), t0 + ms(6300));
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0 + ms(6310));
+    assert!(c.try_(&[move_to("DP-1", 5)], t0 + ms(6400)).is_ok());
+}
+
+#[test]
+fn the_first_done_after_the_answer_is_what_was_applied() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    let mode = Mode { width: 1920, height: 1080, refresh: 60 };
+    let scaled = Active { mode, x: 0, y: 0, scale: Scale::from_f64(1.3).unwrap(), transform: 0 };
+    let a = c.try_(&[Step { output: "DP-1".into(), active: Some(scaled) }], t0).unwrap();
+    assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.3, 0)));
+    c.on_event(ok(&c), t0 + ms(10));
+    // The compositor rounds the scale to one it accepts: still our change.
+    let mut rounded = alpha(0);
+    rounded.scale = 1.333;
+    assert!(c.on_event(Event::Done(vec![rounded.clone(), bravo(1920)]), t0 + ms(20)).is_empty());
+    assert!(c.on_event(Event::Done(vec![rounded, bravo(1920)]), t0 + ms(30)).is_empty());
+    assert!(matches!(c.trial_state(t0 + ms(30)), TrialState::Open { .. }));
+    // The safety net holds: it reverts at the deadline.
+    let a = c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL);
+    assert_eq!(target(sends(&a)[0], "DP-1").state, Some((0, 0, 0, 1.0, 0)));
+    assert_eq!(c.trial_state(t0 + ms(10) + TRIAL), TrialState::Ended(TrialEnd::Reverted));
+}
+
+#[test]
+fn a_resend_follows_each_screen_to_its_new_connector() {
+    let t0 = Instant::now();
+    let one = screen("DVI-I-1", "A1", 0, &[FHD, QHD]);
+    let two = screen("DVI-I-2", "B2", 1920, &[QHD, FHD]);
+    let mut c = settled(vec![one, two], t0);
+    c.try_(&[move_to("DVI-I-1", 100)], t0).unwrap();
+    c.on_event(cancelled(&c), t0 + ms(10));
+    // The dock re-enumerates: the screens swap connectors, and A lists its
+    // modes in another order.
+    let mut a1 = screen("DVI-I-2", "A1", 0, &[QHD, FHD]);
+    a1.current = Some(1);
+    let b2 = screen("DVI-I-1", "B2", 1920, &[QHD, FHD]);
+    let a = c.on_event(Event::Done(vec![b2, a1]), t0 + ms(20));
+    let sent = sends(&a);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(target(sent[0], "DVI-I-2").state, Some((1, 100, 0, 1.0, 0)));
+    assert_eq!(target(sent[0], "DVI-I-1").state, Some((0, 1920, 0, 1.0, 0)));
+}
+
+#[test]
+fn a_resend_drops_a_screen_that_left() {
+    let t0 = Instant::now();
+    let mut c = settled(vec![alpha(0), bravo(1920)], t0);
+    c.try_(&[move_to("DP-1", 100), move_to("DP-2", 2020)], t0).unwrap();
+    c.on_event(cancelled(&c), t0 + ms(10));
+    let a = c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(20));
+    let sent = sends(&a);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0], &vec![Target { name: "DP-1".into(), state: Some((0, 100, 0, 1.0, 0)) }]);
+}
+
+#[test]
+fn a_revert_follows_each_screen_to_its_new_connector() {
+    let t0 = Instant::now();
+    let one = screen("DVI-I-1", "A1", 0, &[FHD, QHD]);
+    let two = screen("DVI-I-2", "B2", 1920, &[QHD, FHD]);
+    let mut c = settled(vec![one.clone(), two], t0);
+    c.try_(&[move_to("DVI-I-1", 100)], t0).unwrap();
+    c.on_event(ok(&c), t0 + ms(10));
+    let mut moved = one;
+    moved.x = 100;
+    c.on_event(Event::Done(vec![moved, screen("DVI-I-2", "B2", 1920, &[QHD, FHD])]), t0 + ms(20));
+    // Swapped connectors, same layout: the trial goes on.
+    let mut a1 = screen("DVI-I-2", "A1", 100, &[QHD, FHD]);
+    a1.current = Some(1);
+    let b2 = screen("DVI-I-1", "B2", 1920, &[QHD, FHD]);
+    assert!(c.on_event(Event::Done(vec![b2, a1]), t0 + ms(1000)).is_empty());
+    assert!(matches!(c.trial_state(t0 + ms(1000)), TrialState::Open { .. }));
+    let a = c.revert(t0 + ms(2000));
+    let sent = sends(&a);
+    assert_eq!(target(sent[0], "DVI-I-2").state, Some((1, 0, 0, 1.0, 0)));
+    assert_eq!(target(sent[0], "DVI-I-1").state, Some((0, 1920, 0, 1.0, 0)));
+}
+
+#[test]
+fn a_bounce_within_the_debounce_still_evaluates() {
+    let t0 = Instant::now();
+    let src = Source::new(SIDE_BY_SIDE);
+    let profiles = || src.get();
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), bravo(1920)]), t0);
+    assert!(sends(&c.tick(&profiles, t0 + DEBOUNCE)).is_empty());
+    // Bravo drops and comes back at once, re-created at the origin.
+    assert!(c.on_event(Event::Done(vec![alpha(0)]), t0 + ms(1000)).is_empty());
+    assert!(c.on_event(Event::Done(vec![alpha(0), bravo(0)]), t0 + ms(1100)).is_empty());
+    assert_eq!(c.next_deadline(), Some(t0 + ms(1100) + DEBOUNCE));
+    let a = c.tick(&profiles, t0 + ms(1600));
+    assert_eq!(src.reads.get(), 2);
+    assert_eq!(target(sends(&a)[0], "DP-2").state, Some((0, 1920, 0, 1.0, 0)));
+}
+
+#[test]
+fn a_refused_revert_ends_the_trial_as_refused() {
+    let t0 = Instant::now();
+    let mut c = trial_open(t0);
+    assert_eq!(sends(&c.revert(t0 + ms(1000))).len(), 1);
+    c.on_event(failed(&c), t0 + ms(1010));
+    assert_eq!(c.trial_state(t0 + ms(1010)), TrialState::Ended(TrialEnd::Refused));
+    assert_eq!(c.trial_state(t0 + ms(1010)), TrialState::None);
+    // At the deadline too.
+    let mut c = trial_open(t0);
+    c.tick(&|| Vec::new(), t0 + ms(10) + TRIAL);
+    c.on_event(failed(&c), t0 + ms(20) + TRIAL);
+    assert_eq!(c.trial_state(t0 + ms(20) + TRIAL), TrialState::Ended(TrialEnd::Refused));
+}
+
+#[test]
+fn a_try_before_the_done_of_an_answered_change_is_refused() {
+    let t0 = Instant::now();
+    let none = Source::new("");
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0);
+    assert_eq!(sends(&c.tick(&|| none.get(), t0 + DEBOUNCE)).len(), 1);
+    c.on_event(ok(&c), t0 + ms(600));
+    // The heads predate the cap's change until its `done`.
+    assert_eq!(c.try_(&[move_to("DP-1", 10)], t0 + ms(610)), Err("another change is in progress"));
+    let mut lowered = dock(1920);
+    lowered.current = Some(1);
+    c.on_event(Event::Done(vec![alpha(0), lowered]), t0 + ms(620));
+    assert!(c.try_(&[move_to("DP-1", 10)], t0 + ms(630)).is_ok());
+    // A `done` that never comes holds it no longer than the watchdog.
+    let mut c = Controller::new(true);
+    c.on_event(Event::Done(vec![alpha(0), dock(1920)]), t0);
+    c.tick(&|| none.get(), t0 + DEBOUNCE);
+    c.on_event(ok(&c), t0 + ms(600));
+    assert_eq!(c.next_deadline(), Some(t0 + ms(600) + WATCHDOG));
+    assert!(c.tick(&|| none.get(), t0 + ms(600) + WATCHDOG).is_empty());
+    assert_eq!(c.next_deadline(), None);
+    assert!(c.try_(&[move_to("DP-1", 10)], t0 + ms(5700)).is_ok());
+}
+
+#[test]
+fn a_resend_with_no_screen_left_on_is_refused() {
+    let t0 = Instant::now();
+    let mut off = bravo(1920);
+    off.enabled = false;
+    off.current = None;
+    let mut c = settled(vec![alpha(0), off], t0);
+    c.try_(&[Step { output: "DP-1".into(), active: None }, move_to("DP-2", 0)], t0).unwrap();
+    c.on_event(cancelled(&c), t0 + ms(10));
+    // Bravo, the screen the try turned on, left before the re-send.
+    let mut alpha_off = alpha(0);
+    alpha_off.enabled = false;
+    let a = c.on_event(Event::Done(vec![alpha_off]), t0 + ms(20));
+    assert!(sends(&a).is_empty());
+    assert_eq!(replies(&a), vec![Err("the compositor refused this configuration")]);
+    assert_eq!(c.trial_state(t0 + ms(20)), TrialState::None);
 }

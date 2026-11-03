@@ -8,6 +8,8 @@ use alpheus_commun::displays::{Active, Mode, Output, Scale, Step};
 pub const DISPLAYLINK_MAX_MHZ: i32 = 120_000;
 /// Modes kept per head; the rest are ignored.
 pub const MAX_MODES: usize = 256;
+/// The refusal of a configuration that leaves every screen off.
+pub const NO_SCREEN: &str = "refused: no screen would stay on";
 /// Two scales closer than this are the same.
 const SCALE_TOLERANCE: f64 = 0.005;
 
@@ -189,7 +191,7 @@ pub fn targets(heads: &[Head], steps: &[Step]) -> Result<Vec<Target>, String> {
         out.push(Target { name: h.name.clone(), state });
     }
     if out.iter().all(|t| t.state.is_none()) {
-        return Err("refused: no screen would stay on".into());
+        return Err(NO_SCREEN.into());
     }
     Ok(out)
 }

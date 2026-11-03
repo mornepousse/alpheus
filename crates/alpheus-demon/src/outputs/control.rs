@@ -3,7 +3,7 @@
 //! the 15 s trial. Pure: no Wayland and no clock (every call takes `now`);
 //! the glue turns protocol events into `Event`s and runs the `Action`s.
 
-use super::model::{Head, KEEP, Target, is_noop, over_cap, targets, to_output};
+use super::model::{Head, HeadMode, KEEP, NO_SCREEN, Target, is_noop, over_cap, targets, to_output};
 use alpheus_commun::displays::Step;
 use alpheus_commun::displays::profiles::{Profile, ProfileMatch, match_profile, plan_profile};
 use alpheus_commun::displays::wire::{TrialEnd, TrialState};
@@ -20,9 +20,10 @@ pub const TRIAL: Duration = Duration::from_secs(15);
 pub enum Event {
     /// The manager's `done`: every head as it now is.
     Done(Vec<Head>),
-    Succeeded,
-    Failed,
-    Cancelled,
+    /// The answers to the configuration sent with that generation.
+    Succeeded(u64),
+    Failed(u64),
+    Cancelled(u64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +33,9 @@ pub enum ReplyTo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// Build and apply one configuration: every head, enabled or not.
-    Send(Vec<Target>),
+    /// Build and apply one configuration: every head, enabled or not. Its
+    /// answer comes back with the same generation.
+    Send(u64, Vec<Target>),
     Log(&'static str),
     /// `displays: profile "<name>" does not resolve`.
     LogProfile(String),
@@ -46,7 +48,6 @@ const LOG_NO_PROFILE: &str = "displays: no profile for these screens";
 const LOG_TWINS: &str = "displays: two screens look the same";
 const LOG_LOWERED: &str = "displays: lowered a DisplayLink screen to 120 Hz";
 const BUSY: &str = "another change is in progress";
-const NO_SCREEN: &str = "refused: no screen would stay on";
 const REFUSED: &str = "the compositor refused this configuration";
 /// `cancelled` answers re-sent before giving up.
 const MAX_RESENDS: u8 = 3;
@@ -58,15 +59,29 @@ enum Purpose {
     /// The DisplayLink 120 Hz rule.
     Cap,
     /// A trial asked by the TUI; `before` is what to restore.
-    Try { before: Vec<Target> },
+    Try { before: Vec<Kept> },
     /// The end of a trial, restoring the state from before.
     Revert,
 }
 
+/// A target remembered with its screen, to be re-sent or restored on
+/// whichever connector that screen is on by then.
+#[derive(Debug, Clone)]
+struct Kept {
+    identity: String,
+    /// The connector it was on: breaks ties between twins.
+    name: String,
+    /// The mode its index named (width, height, mHz); `None` for `KEEP`.
+    mode: Option<(i32, i32, i32)>,
+    state: Option<(usize, i32, i32, f64, u8)>,
+}
+
 /// The one configuration waiting for the compositor's answer.
 struct Flight {
+    /// The generation its `Send` and its answers carry.
+    generation: u64,
     purpose: Purpose,
-    targets: Vec<Target>,
+    targets: Vec<Kept>,
     watchdog: Instant,
     resends: u8,
     /// A `done` arrived since it was sent.
@@ -76,11 +91,14 @@ struct Flight {
 }
 
 struct Trial {
-    before: Vec<Target>,
-    applied: Vec<Target>,
+    before: Vec<Kept>,
+    applied: Vec<Kept>,
     deadline: Instant,
     /// The compositor said `succeeded` (not the watchdog).
     confirmed: bool,
+    /// `applied` is what a `done` after the answer reported (the compositor
+    /// may round a scale or a rate): only later `done`s are judged.
+    adopted: bool,
 }
 
 pub struct Controller {
@@ -88,10 +106,18 @@ pub struct Controller {
     heads: Vec<Head>,
     /// Identity set (sorted) of the last evaluation; `None` before the first.
     evaluated: Option<Vec<String>>,
+    /// A `done` changed the identity set since the last evaluation (a screen
+    /// that left and came back inside the debounce still counts).
+    changed: bool,
     debounce: Option<Instant>,
     /// Heads the cap already lowered for this identity set (connectors).
     lowered: Vec<String>,
     flight: Option<Flight>,
+    /// The last generation sent.
+    generation: u64,
+    /// After a `succeeded`, until its `done` (at most the watchdog): the
+    /// heads predate that change, so no try is taken.
+    stale: Option<Instant>,
     trial: Option<Trial>,
     /// How the last trial ended, until `trial_state` reports it.
     ended: Option<TrialEnd>,
@@ -99,7 +125,19 @@ pub struct Controller {
 
 impl Controller {
     pub fn new(auto: bool) -> Self {
-        Controller { auto, heads: Vec::new(), evaluated: None, debounce: None, lowered: Vec::new(), flight: None, trial: None, ended: None }
+        Controller {
+            auto,
+            heads: Vec::new(),
+            evaluated: None,
+            changed: false,
+            debounce: None,
+            lowered: Vec::new(),
+            flight: None,
+            generation: 0,
+            stale: None,
+            trial: None,
+            ended: None,
+        }
     }
 
     /// The heads of the last `done`.
@@ -108,9 +146,21 @@ impl Controller {
     }
 
     pub fn on_event(&mut self, e: Event, now: Instant) -> Vec<Action> {
+        // An answer to a configuration no longer in flight (given up by the
+        // watchdog, or re-sent since) is not this one's.
+        if let Event::Succeeded(g) | Event::Failed(g) | Event::Cancelled(g) = e
+            && self.flight.as_ref().is_none_or(|f| f.generation != g)
+        {
+            return Vec::new();
+        }
         match e {
             Event::Done(heads) => {
+                let ids = self.identities();
                 self.heads = heads;
+                if self.identities() != ids {
+                    self.changed = true;
+                }
+                self.stale = None;
                 if let Some(f) = &mut self.flight {
                     if f.resend {
                         return self.resend(now);
@@ -123,9 +173,9 @@ impl Controller {
                 out
             }
             // Applied: the heads are stale until its `done`.
-            Event::Succeeded => self.answer(true, false, now),
-            Event::Failed => self.answer(false, true, now),
-            Event::Cancelled => {
+            Event::Succeeded(_) => self.answer(true, false, now),
+            Event::Failed(_) => self.answer(false, true, now),
+            Event::Cancelled(_) => {
                 let Some(f) = &mut self.flight else { return Vec::new() };
                 if f.resends >= MAX_RESENDS {
                     return self.answer(false, true, now);
@@ -142,7 +192,7 @@ impl Controller {
     /// Starts a trial of `steps`. `Err` answers at once; with `Ok`, the
     /// answer comes as a `Reply(Try, ..)` action, now or later.
     pub fn try_(&mut self, steps: &[Step], now: Instant) -> Result<Vec<Action>, &'static str> {
-        if self.busy() {
+        if self.busy() || self.stale.is_some() {
             return Err(BUSY);
         }
         let ok = vec![Action::Reply(ReplyTo::Try, Ok(()))];
@@ -155,7 +205,7 @@ impl Controller {
             return Ok(ok);
         }
         self.ended = None;
-        let before = self.current();
+        let before = self.remember(self.current());
         Ok(self.send(t, Purpose::Try { before }, 0, now))
     }
 
@@ -186,6 +236,7 @@ impl Controller {
             }
             out.extend(self.settle(false, true, now));
         }
+        self.stale.take_if(|s| now >= *s);
         if let Some(t) = self.trial.take_if(|t| now >= t.deadline) {
             self.end(TrialEnd::Reverted);
             out.extend(self.restore(&t.before, now));
@@ -196,9 +247,13 @@ impl Controller {
         out
     }
 
-    /// The earliest deadline armed: watchdog, trial or debounce.
+    /// The earliest deadline armed: watchdog, the wait for a `done`, trial
+    /// or debounce.
     pub fn next_deadline(&self) -> Option<Instant> {
-        [self.flight.as_ref().map(|f| f.watchdog), self.trial.as_ref().map(|t| t.deadline), self.debounce].into_iter().flatten().min()
+        [self.flight.as_ref().map(|f| f.watchdog), self.stale, self.trial.as_ref().map(|t| t.deadline), self.debounce]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     /// The trial for the TUI; an end is reported once.
@@ -225,6 +280,42 @@ impl Controller {
         self.heads.iter().map(now_target).collect()
     }
 
+    /// `targets` (named after the current heads) with their screens.
+    fn remember(&self, targets: Vec<Target>) -> Vec<Kept> {
+        targets
+            .into_iter()
+            .filter_map(|t| {
+                let h = self.heads.iter().find(|h| h.name == t.name)?;
+                let mode = t.state.and_then(|s| h.modes.get(s.0)).map(|m| (m.width, m.height, m.mhz));
+                Some(Kept { identity: h.identity(), name: t.name, mode, state: t.state })
+            })
+            .collect()
+    }
+
+    /// `kept` on the heads there are now: each screen where it now is, its
+    /// mode found again by size and rate; a screen gone is dropped and a
+    /// head nothing names (or whose mode is gone) stays as it is.
+    fn placed(&self, kept: &[Kept]) -> Vec<Target> {
+        let on = assign(&self.heads, kept);
+        self.heads.iter().zip(on).map(|(h, k)| k.and_then(|k| place(h, k)).unwrap_or_else(|| now_target(h))).collect()
+    }
+
+    /// A screen of `kept` is on no head any more.
+    fn lost(&self, kept: &[Kept]) -> bool {
+        assign(&self.heads, kept).iter().flatten().count() < kept.len()
+    }
+
+    /// Whether the screens named in `kept` are in that state.
+    fn shows(&self, kept: &[Kept]) -> bool {
+        let on = assign(&self.heads, kept);
+        on.iter().flatten().count() == kept.len()
+            && self
+                .heads
+                .iter()
+                .zip(on)
+                .all(|(h, k)| k.is_none_or(|k| place(h, k).is_some_and(|t| is_noop(std::slice::from_ref(h), std::slice::from_ref(&t)))))
+    }
+
     fn end(&mut self, how: TrialEnd) {
         self.ended = Some(how);
         // A user's change: the cap may lower a restored mode once more.
@@ -239,19 +330,39 @@ impl Controller {
         }
         self.debounce = None;
         let noop = is_noop(&self.heads, &targets);
-        let sent = if noop { Vec::new() } else { vec![Action::Send(targets.clone())] };
-        self.flight = Some(Flight { purpose, targets, watchdog: now + WATCHDOG, resends, done_since: false, resend: false });
+        let sent = if noop {
+            Vec::new()
+        } else {
+            self.generation += 1;
+            vec![Action::Send(self.generation, targets.clone())]
+        };
+        let targets = self.remember(targets);
+        self.flight = Some(Flight {
+            generation: self.generation,
+            purpose,
+            targets,
+            watchdog: now + WATCHDOG,
+            resends,
+            done_since: false,
+            resend: false,
+        });
         if noop {
             return self.answer(true, true, now);
         }
         sent
     }
 
-    /// After a `cancelled`, the same configuration again, if it still
-    /// names exactly the heads there are.
+    /// After a `cancelled`, the same configuration again on the heads there
+    /// are now (each screen followed to its connector).
     fn resend(&mut self, now: Instant) -> Vec<Action> {
-        let Some(f) = self.flight.take_if(|f| fits(&self.heads, &f.targets)) else { return self.answer(false, true, now) };
-        self.send(f.targets, f.purpose, f.resends + 1, now)
+        let Some(f) = self.flight.take() else { return Vec::new() };
+        let targets = self.placed(&f.targets);
+        if targets.iter().all(|t| t.state.is_none()) {
+            // Every screen it left on is gone: answered as refused.
+            self.flight = Some(f);
+            return self.answer(false, true, now);
+        }
+        self.send(targets, f.purpose, f.resends + 1, now)
     }
 
     /// The compositor's answer (`succeeded` or a refusal). `fresh`: the
@@ -262,58 +373,65 @@ impl Controller {
         if !ok {
             out.push(Action::Log(LOG_REFUSED));
         }
-        if let Purpose::Try { before } = f.purpose {
-            if ok {
+        if ok && !fresh && !f.done_since {
+            self.stale = Some(now + WATCHDOG);
+        }
+        match f.purpose {
+            Purpose::Try { before } if ok => {
                 out.push(Action::Reply(ReplyTo::Try, Ok(())));
                 out.extend(self.open_trial(before, f.targets, true, f.done_since, now));
-            } else {
-                out.push(Action::Reply(ReplyTo::Try, Err(REFUSED)));
             }
+            Purpose::Try { .. } => out.push(Action::Reply(ReplyTo::Try, Err(REFUSED))),
+            // The screens did not come back: the TUI must not say they did.
+            Purpose::Revert if !ok => self.ended = Some(TrialEnd::Refused),
+            _ => {}
         }
         out.extend(self.settle(false, fresh || f.done_since, now));
         out
     }
 
-    fn open_trial(&mut self, before: Vec<Target>, applied: Vec<Target>, confirmed: bool, done_since: bool, now: Instant) -> Vec<Action> {
-        self.trial = Some(Trial { before, applied, deadline: now + TRIAL, confirmed });
+    fn open_trial(&mut self, before: Vec<Kept>, applied: Vec<Kept>, confirmed: bool, done_since: bool, now: Instant) -> Vec<Action> {
+        self.trial = Some(Trial { before, applied, deadline: now + TRIAL, confirmed, adopted: false });
         // A screen may have gone while it waited; its state is not judged
         // yet (that `done` may predate our change).
         if done_since { self.check_trial(false, now) } else { Vec::new() }
     }
 
-    /// A trial against the heads: a lost screen reverts the rest; with
-    /// `judge`, a state that is neither ours nor (unconfirmed) the one from
-    /// before ends it as changed elsewhere.
+    /// A trial against the heads: a lost screen reverts the rest. With
+    /// `judge`, the first `done` after the answer is adopted as what was
+    /// applied (unconfirmed, unless it still shows the state from before:
+    /// the change may land later); a later state other than that one ends
+    /// it as changed elsewhere.
     fn check_trial(&mut self, judge: bool, now: Instant) -> Vec<Action> {
         let Some(t) = &self.trial else { return Vec::new() };
-        if t.applied.iter().any(|a| !self.heads.iter().any(|h| h.name == a.name)) {
+        if self.lost(&t.applied) {
             let t = self.trial.take().expect("checked above");
             self.end(TrialEnd::ScreenLost);
             return self.restore(&t.before, now);
         }
-        if judge && !self.shows(&t.applied) && (t.confirmed || !self.shows(&t.before)) {
+        if !judge {
+            return Vec::new();
+        }
+        if !t.adopted {
+            if t.confirmed || !self.shows(&t.before) {
+                // The trial's own screens only: one plugged meanwhile is not part of it.
+                let on = assign(&self.heads, &t.applied);
+                let ours = self.heads.iter().zip(on).filter(|(_, k)| k.is_some()).map(|(h, _)| now_target(h)).collect();
+                let applied = self.remember(ours);
+                let t = self.trial.as_mut().expect("checked above");
+                t.applied = applied;
+                t.adopted = true;
+            }
+        } else if !self.shows(&t.applied) {
             self.trial = None;
             self.end(TrialEnd::ChangedElsewhere);
         }
         Vec::new()
     }
 
-    /// Whether the heads named in `targets` are in that state.
-    fn shows(&self, targets: &[Target]) -> bool {
-        let heads: Vec<Head> = targets.iter().filter_map(|t| self.heads.iter().find(|h| h.name == t.name).cloned()).collect();
-        is_noop(&heads, targets)
-    }
-
     /// `before` on the heads still there; the others stay as they are.
-    fn restore(&mut self, before: &[Target], now: Instant) -> Vec<Action> {
-        let targets = self
-            .heads
-            .iter()
-            .map(|h| {
-                let fits = |b: &&Target| b.name == h.name && valid(h, &b.state);
-                before.iter().find(fits).cloned().unwrap_or_else(|| now_target(h))
-            })
-            .collect();
+    fn restore(&mut self, before: &[Kept], now: Instant) -> Vec<Action> {
+        let targets = self.placed(before);
         self.send(targets, Purpose::Revert, 0, now)
     }
 
@@ -326,7 +444,7 @@ impl Controller {
             self.debounce = None;
             return Vec::new();
         }
-        if self.evaluated.as_ref() != Some(&self.identities()) {
+        if self.changed || self.evaluated.as_ref() != Some(&self.identities()) {
             if from_done || self.debounce.is_none() {
                 self.debounce = Some(now + DEBOUNCE);
             }
@@ -339,6 +457,7 @@ impl Controller {
     /// The debounce ended: the matching profile (when `auto`), then the cap.
     fn evaluate(&mut self, profiles: &dyn Fn() -> Vec<Profile>, now: Instant) -> Vec<Action> {
         self.evaluated = Some(self.identities());
+        self.changed = false;
         self.lowered.clear();
         let mut out = Vec::new();
         if self.auto {
@@ -387,14 +506,40 @@ fn now_target(h: &Head) -> Target {
     targets(std::slice::from_ref(h), &[]).ok().and_then(|mut t| t.pop()).unwrap_or_else(|| Target { name: h.name.clone(), state: None })
 }
 
-/// A mode index the head can take: one of its modes, or `KEEP`.
-fn valid(h: &Head, state: &Option<(usize, i32, i32, f64, u8)>) -> bool {
-    state.is_none_or(|s| s.0 == KEEP || s.0 < h.modes.len())
+/// Which kept screen each head is, by identity; among twins, the one that
+/// was on the same connector first (as profiles match them).
+fn assign<'k>(heads: &[Head], kept: &'k [Kept]) -> Vec<Option<&'k Kept>> {
+    let ids: Vec<String> = heads.iter().map(Head::identity).collect();
+    let mut on = vec![None; heads.len()];
+    let mut used = vec![false; kept.len()];
+    for same_connector in [true, false] {
+        for (i, h) in heads.iter().enumerate() {
+            if on[i].is_some() {
+                continue;
+            }
+            let pick = (0..kept.len()).find(|&j| !used[j] && kept[j].identity == ids[i] && (!same_connector || kept[j].name == h.name));
+            if let Some(j) = pick {
+                used[j] = true;
+                on[i] = Some(&kept[j]);
+            }
+        }
+    }
+    on
 }
 
-/// `targets` names every head once and only valid modes.
-fn fits(heads: &[Head], targets: &[Target]) -> bool {
-    heads.len() == targets.len() && targets.iter().all(|t| heads.iter().any(|h| h.name == t.name && valid(h, &t.state)))
+/// `k` on head `h`: its mode index found again by size and rate (the
+/// current one first); `None` when `h` no longer has that mode.
+fn place(h: &Head, k: &Kept) -> Option<Target> {
+    let state = match (k.state, k.mode) {
+        (None, _) => None,
+        (Some(s), None) => Some((KEEP, s.1, s.2, s.3, s.4)),
+        (Some(s), Some(mode)) => {
+            let same = |m: &HeadMode| (m.width, m.height, m.mhz) == mode;
+            let i = h.current.filter(|&c| h.modes.get(c).is_some_and(same)).or_else(|| h.modes.iter().position(same))?;
+            Some((i, s.1, s.2, s.3, s.4))
+        }
+    };
+    Some(Target { name: h.name.clone(), state })
 }
 
 #[cfg(test)]
