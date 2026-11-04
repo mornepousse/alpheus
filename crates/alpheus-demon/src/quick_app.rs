@@ -128,11 +128,11 @@ pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)
     }
 }
 
-/// A Wi-Fi state read for `open` belongs to the tap's current open (`current`, from
-/// `WifiTap::snapshot`); one read for an earlier open (a close's last word, a re-read under the
+/// A panel state read for `open` belongs to the tap's current open (`current`, from
+/// `Tap::snapshot`); one read for an earlier open (a close's last word, a re-read under the
 /// scope before) does not. Untagged (the system bus down), or with no tap: it
 /// does.
-pub(crate) fn wifi_current(open: Option<u64>, current: Option<u64>) -> bool {
+pub(crate) fn open_current(open: Option<u64>, current: Option<u64>) -> bool {
     match (open, current) {
         (Some(open), Some(current)) => open == current,
         _ => true,
@@ -140,7 +140,7 @@ pub(crate) fn wifi_current(open: Option<u64>, current: Option<u64>) -> bool {
 }
 
 /// The open panel's part of a Wi-Fi message: `Quick::follow_wifi` on a state of this open, nothing
-/// for an earlier open's (`wifi_current`).
+/// for an earlier open's (`open_current`).
 pub(crate) fn panel_wifi(
     q: &mut Quick,
     live: &Live,
@@ -149,7 +149,7 @@ pub(crate) fn panel_wifi(
     current: Option<u64>,
     now: Instant,
 ) -> Option<WifiNews> {
-    wifi_current(open, current).then(|| q.follow_wifi(live, state, now))
+    open_current(open, current).then(|| q.follow_wifi(live, state, now))
 }
 
 /// The Bluetooth view a bar message carries for the open panel (quick Bluetooth spec § 5), taken out
@@ -162,7 +162,7 @@ pub(crate) fn taken_bt(m: &mut Msg) -> Option<(Option<u64>, Option<BtView>)> {
 }
 
 /// The open panel's part of a Bluetooth view message: `Quick::follow_bt` on a view of this open
-/// (`wifi_current`, the same tags), nothing for an earlier open's.
+/// (`open_current`, the same tags), nothing for an earlier open's.
 pub(crate) fn panel_bt(
     q: &mut Quick,
     live: &Live,
@@ -171,14 +171,14 @@ pub(crate) fn panel_bt(
     current: Option<u64>,
     now: Instant,
 ) -> Option<QuickAction> {
-    wifi_current(open, current).then(|| q.follow_bt(live, view, now))
+    open_current(open, current).then(|| q.follow_bt(live, view, now))
 }
 
 /// A view of this open says BlueZ is no longer there to be reached: none (the bus
 /// down, the Bluetooth domain out), or one with no adapter (BlueZ gone: the D-Bus thread reads
 /// `BtState::Absent` between two owners). The acting connection is then let go.
 pub(crate) fn bluez_left(open: Option<u64>, view: Option<&BtView>, current: Option<u64>) -> bool {
-    wifi_current(open, current) && view.is_none_or(|v| v.adapter.is_none())
+    open_current(open, current) && view.is_none_or(|v| v.adapter.is_none())
 }
 
 /// What the D-Bus thread reads of Bluetooth: nothing without a panel, else what its row and
@@ -750,7 +750,7 @@ impl App {
                 Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, *dnd), open, state, current, now),
                 _ => {
                     // The follower's open is the one the tap still has (it never went Closed).
-                    if wifi_current(open, current)
+                    if open_current(open, current)
                         && let Some(outcome) = quick.wifi_follow.as_mut().map(|f| f.set_state(state))
                     {
                         self.quick_follow(outcome);

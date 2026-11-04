@@ -2134,7 +2134,7 @@ fn the_bluetooth_connection_goes_with_the_panel() {
         assert!(function_body(&quick_app, f).contains("self.quick_bt_sync()"), "{f}: the tap and the connection follow the panel");
     }
     let take = function_body(&quick_app, "pub(crate) fn quick_take(");
-    assert!(take.contains("taken_bt(") && take.contains("snapshot()") && take.contains("wifi_current("), "{take}");
+    assert!(take.contains("taken_bt(") && take.contains("snapshot()") && take.contains("open_current("), "{take}");
     let (dropped, panel) = (take.find("self.bt_drop()"), take.find("panel_bt("));
     assert!(matches!((dropped, panel), (Some(d), Some(p)) if d < p), "BlueZ gone: dropped before the panel's orders: {take}");
     // The headset is read before the sink list, which marks a panel-scope message.
@@ -2316,8 +2316,8 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(take.contains("taken_wifi(") && take.contains("panel_wifi("), "the Wi-Fi state goes to the panel, never kept: {take}");
     // Only a state read for the tap's current open reaches the panel or the follower.
     let panel = function_body(&quick_app, "pub(crate) fn panel_wifi(");
-    assert!(panel.contains("wifi_current(") && panel.contains("follow_wifi("), "{panel}");
-    assert!(take.contains("wifi_current(") && take.contains("snapshot()"), "{take}");
+    assert!(panel.contains("open_current(") && panel.contains("follow_wifi("), "{panel}");
+    assert!(take.contains("open_current(") && take.contains("snapshot()"), "{take}");
     // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
     // its attempt (the tap and the timer let go then).
     assert!(take.contains("quick.wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
