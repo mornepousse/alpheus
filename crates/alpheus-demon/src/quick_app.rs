@@ -2,13 +2,14 @@
 //! Bluetooth modules or `alpheus-launch --quick`, filled from the bar's state, the sound thread's
 //! sink list (`pipewire::SoundTap`), the backlight and the configured `state`s, and acting through
 //! the daemon's executor: every command spawned, never waited for. One `DeadlineTimer`
-//! (`quick_timer`) is armed only for a pending re-read, the reboot question or a Wi-Fi attempt.
+//! (`QuickApp::timer`) is armed only for a pending re-read, the reboot question or a Wi-Fi attempt.
 //! Nothing of it stays once the panel closes (`quick_closed`), but for one thing (Mae's ruling P1):
 //! an attempt on a new network outlives the panel (`WifiFollow`), the Wi-Fi still read and the
 //! timer armed for it alone until it ends, so a failed new profile is still deleted.
 
 use crate::backlight::{self, Reread};
 use crate::config::ModuleId;
+use crate::deadline::DeadlineTimer;
 use crate::grid::Target;
 use crate::keys::Key;
 use crate::launcher::host::toggle_is_debounced;
@@ -25,7 +26,56 @@ use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Instant;
+
+/// The quick panel's state beyond the model, one field of `App`: what the glue shares with the
+/// source threads, the connection it acts on and the attempt it still follows.
+pub(crate) struct QuickApp {
+    /// The quick panel's timer: armed only while the panel is open and a re-read
+    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
+    /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
+    /// question (quick delivery 3); closed, only for an attempt still followed (`wifi_follow`, Mae's
+    /// ruling P1).
+    pub(crate) timer: DeadlineTimer,
+    /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
+    /// asks for them while open. None without a sound source.
+    pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
+    /// Shared with the D-Bus thread (`sources::dbus::wifi::WifiTap`): what the open quick panel
+    /// shows of the Wi-Fi. None without the quick module or the network domain.
+    pub(crate) wifi_tap: Option<Arc<crate::sources::dbus::wifi::WifiTap>>,
+    /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
+    /// of Bluetooth. None without the quick module or the Bluetooth domain.
+    pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,
+    /// The quick panel's acting Bluetooth connection (bt_app.rs): only while the Bluetooth detail
+    /// is open or a call is in flight. None at rest.
+    pub(crate) bt_act: Option<crate::sources::dbus::bt_act::BtAct>,
+    /// Its fd's source on the loop, while it lives.
+    pub(crate) bt_source: Option<smithay_client_toolkit::reexports::calloop::RegistrationToken>,
+    /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
+    /// Wi-Fi stays read for it until it ends. None at rest.
+    pub(crate) wifi_follow: Option<WifiFollow>,
+    /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
+    /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again.
+    pub(crate) verb_opened: Option<Instant>,
+}
+
+impl QuickApp {
+    /// Nothing shared yet, nothing pending. Written out (not derived) so the guardrail that lists
+    /// every timer still counts this one.
+    pub(crate) fn new() -> QuickApp {
+        QuickApp {
+            timer: DeadlineTimer::new(),
+            sound_tap: None,
+            wifi_tap: None,
+            bt_tap: None,
+            bt_act: None,
+            bt_source: None,
+            wifi_follow: None,
+            verb_opened: None,
+        }
+    }
+}
 
 /// What `SoundTap::open` read when the panel opens: its sink list,
 /// returned for the panel, and the rest given to the bar, so a microphone mute the base scope never
@@ -386,7 +436,7 @@ impl App {
         let room = self.popup_room(i).1.saturating_sub(1);
         // From here the sound thread publishes the list (Scope::Panel): every way out below, and
         // every close, goes back through `quick_closed`.
-        let opened = self.sound_tap.as_ref().map(|t| t.open());
+        let opened = self.quick.sound_tap.as_ref().map(|t| t.open());
         let (sinks, headset) = match opened {
             Some(s) => {
                 let (sinks, headset, redraw) = opened_sound(&mut self.bar, s);
@@ -416,7 +466,7 @@ impl App {
         };
         let (columns, height) = rows.cells();
         if self.popup_open(qh, anchor, PopupBody::Quick(Box::new(q)), columns, height, input) {
-            self.quick_verb_opened = (input == Input::Keys).then(Instant::now);
+            self.quick.verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("quick shown ({what})"));
             self.quick_resume();
@@ -431,7 +481,7 @@ impl App {
     /// its timer, the detail when asked for (its rescan), the D-Bus thread's reading kept.
     fn quick_resume(&mut self) {
         let action = match self.popup.as_mut().map(|p| &mut p.body) {
-            Some(PopupBody::Quick(q)) => match self.wifi_follow.take() {
+            Some(PopupBody::Quick(q)) => match self.quick.wifi_follow.take() {
                 Some(f) => resumed(q, f),
                 None => return,
             },
@@ -450,7 +500,7 @@ impl App {
             log("quick: asked, but the quick module is not in modules");
             return Reply::Done;
         }
-        if self.quick_shown() && verb_debounced(self.quick_verb_opened, Instant::now()) {
+        if self.quick_shown() && verb_debounced(self.quick.verb_opened, Instant::now()) {
             log("quick: toggle debounced");
             return Reply::Done;
         }
@@ -560,9 +610,9 @@ impl App {
     pub(crate) fn quick_timer_sync(&mut self) {
         let at = match self.popup_body() {
             Some(PopupBody::Quick(q)) => q.deadline(),
-            _ => self.wifi_follow.as_ref().map(WifiFollow::deadline),
+            _ => self.quick.wifi_follow.as_ref().map(WifiFollow::deadline),
         };
-        self.quick_timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
+        self.quick.timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
 
     /// The D-Bus thread follows what the open panel shows of the Wi-Fi (quick Wi-Fi spec § 5): its row,
@@ -570,20 +620,20 @@ impl App {
     /// detail (Mae's ruling P1); else nothing. A change wakes the thread once; the same scope again,
     /// nothing.
     pub(crate) fn quick_wifi_sync(&self) {
-        let Some(tap) = &self.wifi_tap else { return };
+        let Some(tap) = &self.quick.wifi_tap else { return };
         let panel = match self.popup_body() {
             Some(PopupBody::Quick(q)) => q.wifi_scope(),
             _ => WifiScope::Closed,
         };
-        tap.set(wifi_scope(panel, self.wifi_follow.as_ref()));
+        tap.set(wifi_scope(panel, self.quick.wifi_follow.as_ref()));
     }
 
     /// The follower's `outcome` (Mae's ruling P1, `followed`), logged; the tap and the timer then
     /// follow it: re-armed on its deadline while it waits (it may move to ACTIVATION_BOUND), both
     /// let go once it ended.
     fn quick_follow(&mut self, outcome: Outcome) {
-        let App { exec, wifi_follow, .. } = self;
-        for line in followed(exec.as_ref(), wifi_follow, outcome) {
+        let App { exec, quick, .. } = self;
+        for line in followed(exec.as_ref(), &mut quick.wifi_follow, outcome) {
             log(&line);
         }
         self.quick_wifi_sync();
@@ -593,12 +643,12 @@ impl App {
     /// The timer fired (calloop callback; its source is dropped): the slider levels that waited
     /// for their window sent, the due re-reads, then a refresh.
     pub(crate) fn quick_tick(app: &mut App, now: Instant) {
-        app.quick_timer.fired();
+        app.quick.timer.fired();
         let (mut due, device) = match app.popup_body_mut() {
             Some(PopupBody::Quick(q)) => (q.due(now), q.backlight.as_ref().map(|b| b.device.clone())),
             _ => {
                 // No panel: a followed attempt's timeout (Mae's ruling P1).
-                if let Some(outcome) = app.wifi_follow.as_mut().map(|f| f.due(now)) {
+                if let Some(outcome) = app.quick.wifi_follow.as_mut().map(|f| f.due(now)) {
                     app.quick_follow(outcome);
                 }
                 return;
@@ -643,7 +693,7 @@ impl App {
             _ => return,
         };
         if follow.is_some() {
-            self.wifi_follow = follow;
+            self.quick.wifi_follow = follow;
         }
         // A code question rejected, the pairing cancelled, discovery stopped while
         // the connection still exists (`quick_closed` then unregisters the agent and closes it).
@@ -659,20 +709,20 @@ impl App {
     /// to its own scope, the timer gone, unless an attempt is still followed (then the Wi-Fi stays
     /// read and the timer stays on that attempt's deadline alone).
     pub(crate) fn quick_closed(&mut self) {
-        self.quick_verb_opened = None;
-        if let Some(tap) = &self.sound_tap {
+        self.quick.verb_opened = None;
+        if let Some(tap) = &self.quick.sound_tap {
             tap.close();
         }
-        if let Some(tap) = &self.wifi_tap {
-            wifi_closed(tap, self.wifi_follow.as_ref());
+        if let Some(tap) = &self.quick.wifi_tap {
+            wifi_closed(tap, self.quick.wifi_follow.as_ref());
         }
         // Nothing of Bluetooth outlives the panel: the D-Bus thread reads nothing, the agent goes.
-        if let Some(tap) = &self.bt_tap {
+        if let Some(tap) = &self.quick.bt_tap {
             tap.set(BtScope::Closed);
         }
         self.bt_close();
-        let at = self.wifi_follow.as_ref().map(WifiFollow::deadline);
-        self.quick_timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
+        let at = self.quick.wifi_follow.as_ref().map(WifiFollow::deadline);
+        self.quick.timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
 
     /// A bar message before anyone else reads it: a sound message's sink list and a Wi-Fi state go to
@@ -694,14 +744,14 @@ impl App {
         }
         if let Some((open, state)) = taken_wifi(m) {
             let now = Instant::now();
-            let current = self.wifi_tap.as_ref().map(|t| t.snapshot().1);
-            let App { popup, bar, dnd, wifi_follow, .. } = &mut *self;
+            let current = self.quick.wifi_tap.as_ref().map(|t| t.snapshot().1);
+            let App { popup, bar, dnd, quick, .. } = &mut *self;
             let news = match popup.as_mut().map(|p| &mut p.body) {
                 Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, *dnd), open, state, current, now),
                 _ => {
                     // The follower's open is the one the tap still has (it never went Closed).
                     if wifi_current(open, current)
-                        && let Some(outcome) = wifi_follow.as_mut().map(|f| f.set_state(state))
+                        && let Some(outcome) = quick.wifi_follow.as_mut().map(|f| f.set_state(state))
                     {
                         self.quick_follow(outcome);
                     }
@@ -717,7 +767,7 @@ impl App {
         }
         if let Some((open, view)) = taken_bt(m) {
             let now = Instant::now();
-            let current = self.bt_tap.as_ref().map(|t| t.snapshot().1);
+            let current = self.quick.bt_tap.as_ref().map(|t| t.snapshot().1);
             // BlueZ gone or replaced: the connection let go first, so nothing the panel orders next
             // reaches the old owner; the next need opens one on the new owner.
             if bluez_left(open, view.as_ref(), current) {

@@ -131,8 +131,8 @@ impl App {
         });
         match inserted {
             Some(Ok(token)) => {
-                self.bt_act = Some(act);
-                self.bt_source = Some(token);
+                self.quick.bt_act = Some(act);
+                self.quick.bt_source = Some(token);
                 true
             }
             _ => {
@@ -160,7 +160,7 @@ impl App {
         if orders.is_empty() {
             return;
         }
-        if self.bt_act.is_none() && opens_for(&orders, panel(self).is_some_and(adapter_seen)) && !self.bt_open() {
+        if self.quick.bt_act.is_none() && opens_for(&orders, panel(self).is_some_and(adapter_seen)) && !self.bt_open() {
             let now = Instant::now();
             for o in orders {
                 if let BtOrder::Call(call) = o {
@@ -169,7 +169,7 @@ impl App {
             }
             return;
         }
-        let Some(act) = self.bt_act.as_mut() else { return };
+        let Some(act) = self.quick.bt_act.as_mut() else { return };
         for o in orders {
             match o {
                 BtOrder::Call(call) => act.call(call),
@@ -215,12 +215,12 @@ impl App {
     /// connection goes mid-batch, the rest of the batch was its own: dropped.
     pub(crate) fn bt_readable(&mut self) {
         let now = Instant::now();
-        while let Some(events) = self.bt_act.as_mut().map(BtAct::read).filter(|e| !e.is_empty()) {
+        while let Some(events) = self.quick.bt_act.as_mut().map(BtAct::read).filter(|e| !e.is_empty()) {
             let mut later = Vec::new();
             // A lost connection answers its calls `Gone`, then `Closed`: that one is let go there.
             let closing = events.iter().any(|e| matches!(e, BtEvent::Closed));
             for event in events {
-                if self.bt_act.is_none() {
+                if self.quick.bt_act.is_none() {
                     break;
                 }
                 match event {
@@ -234,7 +234,7 @@ impl App {
                     }
                     BtEvent::Agent { id, request } => match unanswered(self.quick_shown(), &request) {
                         Some(reply) => {
-                            if let Some(act) = self.bt_act.as_mut() {
+                            if let Some(act) = self.quick.bt_act.as_mut() {
                                 act.reply(id, reply);
                                 act.flush();
                             }
@@ -258,13 +258,13 @@ impl App {
     /// The D-Bus thread reads what the open panel shows of Bluetooth (`bt_scope_for`); the acting
     /// connection opens while it is wanted and BlueZ has an adapter, and closes once it is not.
     pub(crate) fn quick_bt_sync(&mut self) {
-        let in_flight = self.bt_act.as_ref().map_or(0, BtAct::in_flight);
+        let in_flight = self.quick.bt_act.as_ref().map_or(0, BtAct::in_flight);
         let (scope, step) = {
             let q = panel(self);
             let row_shown = Bt::shows(quick::live(&self.bar, self.dnd).bluetooth);
-            (bt_scope_for(q, row_shown), sync_step(q, row_shown, self.bt_act.is_some(), in_flight))
+            (bt_scope_for(q, row_shown), sync_step(q, row_shown, self.quick.bt_act.is_some(), in_flight))
         };
-        if let Some(tap) = &self.bt_tap {
+        if let Some(tap) = &self.quick.bt_tap {
             tap.set(scope);
         }
         match step {
@@ -280,10 +280,10 @@ impl App {
     /// The connection closed in order: its source removed, then the held agent calls rejected, the
     /// agent unregistered, what is queued written (`BtAct::close`).
     pub(crate) fn bt_close(&mut self) {
-        if let (Some(token), Some(handle)) = (self.bt_source.take(), self.loop_handle.as_ref()) {
+        if let (Some(token), Some(handle)) = (self.quick.bt_source.take(), self.loop_handle.as_ref()) {
             handle.remove(token);
         }
-        if let Some(act) = self.bt_act.take() {
+        if let Some(act) = self.quick.bt_act.take() {
             act.close();
         }
     }
@@ -298,10 +298,10 @@ impl App {
 
     /// `bt_drop` but for its action, the caller's to take (`bt_readable` takes it after its batch).
     fn bt_let_go(&mut self) -> QuickAction {
-        if let (Some(token), Some(handle)) = (self.bt_source.take(), self.loop_handle.as_ref()) {
+        if let (Some(token), Some(handle)) = (self.quick.bt_source.take(), self.loop_handle.as_ref()) {
             handle.remove(token);
         }
-        if self.bt_act.take().is_none() {
+        if self.quick.bt_act.take().is_none() {
             return QuickAction::Nothing;
         }
         let call = panel(self).and_then(|q| q.bt.action.as_ref().map(|a| a.call.clone()));

@@ -987,9 +987,11 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // a device open, close, creation or removal. The quick panel's timer also covers a Bluetooth
         // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
         // question (quick delivery 3).
-        ("wayland.rs", "Timer::", 9),
+        ("wayland.rs", "Timer::", 8),
         // The camera scan's debounce, built in `Camera::new` (see above).
         ("camera_app.rs", "Timer::", 1),
+        // The quick panel's timer, built in `QuickApp::new` (see above).
+        ("quick_app.rs", "Timer::", 1),
         // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
@@ -2155,7 +2157,10 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     for nested in ["self.quick_action(", "self.bt_answer(", "self.bt_drop()", "self.bt_run(", "self.bt_readable()"] {
         assert!(!batch.contains(nested), "{nested} inside the batch: {batch}");
     }
-    assert!(batch.contains("if self.bt_act.is_none() {\n                    break;"), "the rest of a gone connection's batch: {batch}");
+    assert!(
+        batch.contains("if self.quick.bt_act.is_none() {\n                    break;"),
+        "the rest of a gone connection's batch: {batch}"
+    );
     let after = &readable[readable.find(batch).expect("the batch") + batch.len()..];
     assert!(after.contains("self.quick_action(action)"), "the batch's actions taken after it: {after}");
     let run = function_body(&bt_app, "pub(crate) fn bt_run(");
@@ -2165,7 +2170,7 @@ fn the_bluetooth_connection_goes_with_the_panel() {
     assert!(matches!((flushed, read), (Some(f), Some(r)) if f < r), "read after the flush: {run}");
 }
 
-/// Only bt_app.rs drives the acting connection; wayland.rs only declares its field.
+/// Only bt_app.rs drives the acting connection; quick_app.rs only declares its field.
 #[test]
 fn only_bt_app_and_bt_act_name_btact() {
     let mut naming = Vec::new();
@@ -2179,7 +2184,7 @@ fn only_bt_app_and_bt_act_name_btact() {
         }
     }
     naming.sort();
-    assert_eq!(naming, ["bt_app.rs", "sources/dbus/bt_act.rs", "wayland.rs"]);
+    assert_eq!(naming, ["bt_app.rs", "quick_app.rs", "sources/dbus/bt_act.rs"]);
 }
 
 /// Quick Bluetooth spec § 2: a log line never names a device (BlueZ paths embed the address), and
@@ -2289,13 +2294,13 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     // followed (then it stays on that attempt's deadline only).
     assert!(
         closed.contains(".close()")
-            && closed.contains("quick_timer.sync_opt(")
-            && closed.contains("self.wifi_follow.as_ref().map(WifiFollow::deadline)"),
+            && closed.contains("quick.timer.sync_opt(")
+            && closed.contains("self.quick.wifi_follow.as_ref().map(WifiFollow::deadline)"),
         "{closed}"
     );
     // Quick Wi-Fi spec § 5 and Mae's ruling P1: the D-Bus thread stops reading the Wi-Fi, unless an
     // attempt on a new network is still followed.
-    assert!(closed.contains("wifi_closed(") && closed.contains("self.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
+    assert!(closed.contains("wifi_closed(") && closed.contains("self.quick.wifi_follow"), "the Wi-Fi tap follows the close: {closed}");
     let wifi_closed = function_body(&quick_app, "pub(crate) fn wifi_closed(");
     assert!(wifi_closed.contains("WifiScope::Closed"), "closed: no Wi-Fi read any more: {wifi_closed}");
     // Quick Wi-Fi spec § 5: the D-Bus thread follows what the open panel shows, and nothing once closed.
@@ -2311,8 +2316,8 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     assert!(take.contains("wifi_current(") && take.contains("snapshot()"), "{take}");
     // Mae's ruling P1: with no panel, the state and the clock go to the follower, which ends with
     // its attempt (the tap and the timer let go then).
-    assert!(take.contains("wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
-    assert!(tick.contains("self.wifi_follow") || tick.contains("app.wifi_follow"), "the follower's timeout: {tick}");
+    assert!(take.contains("quick.wifi_follow") && take.contains(".set_state(") && take.contains("self.quick_follow("), "{take}");
+    assert!(tick.contains("self.quick.wifi_follow") || tick.contains("app.quick.wifi_follow"), "the follower's timeout: {tick}");
     // A panel reopened while an attempt is followed takes it back: no second attempt.
     let toggle = function_body(&quick_app, "pub(crate) fn quick_toggle(");
     let resume = function_body(&quick_app, "fn quick_resume(");

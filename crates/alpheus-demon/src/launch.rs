@@ -638,9 +638,9 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
+        // Shared with the quick panel: the loop keeps a clone (`App::quick.sound_tap`).
         let tap = Arc::new(crate::pipewire::SoundTap::new(plan.privacy));
-        state.sound_tap = Some(tap.clone());
+        state.quick.sound_tap = Some(tap.clone());
         sources::sound::start(exec.clone(), plan.scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
@@ -649,18 +649,18 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
         // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match crate::sources::dbus::wifi::WifiTap::new() {
-                Ok(t) => state.wifi_tap = Some(Arc::new(t)),
+                Ok(t) => state.quick.wifi_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
         // The Bluetooth row and detail, the same way (quick settings delivery 3).
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
             match crate::sources::dbus::bt::BtTap::new() {
-                Ok(t) => state.bt_tap = Some(Arc::new(t)),
+                Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
             }
         }
-        sources::dbus::start(want.dbus.clone(), state.wifi_tap.clone(), state.bt_tap.clone(), move |s| {
+        sources::dbus::start(want.dbus.clone(), state.quick.wifi_tap.clone(), state.quick.bt_tap.clone(), move |s| {
             sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
         });
     }
