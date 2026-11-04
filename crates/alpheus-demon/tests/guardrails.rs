@@ -320,10 +320,10 @@ fn the_daemon_only_reads_from_the_compositor() {
 /// roundtrip at startup) would leave its debounce unarmed until the next hotplug.
 #[test]
 fn the_displays_timer_is_synced_once_the_loop_exists() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
     let set = "state.loop_handle = Some(handle.clone());";
-    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in launch.rs"));
+    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in startup.rs"));
     assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
 }
 
@@ -331,9 +331,9 @@ fn the_displays_timer_is_synced_once_the_loop_exists() {
 /// output manager) still exists, before the connection's last flush carries it.
 #[test]
 fn the_displays_are_restored_before_the_app_is_dropped() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
-    let body = &prod[prod.find("fn shut_down(").expect("shut_down in launch.rs")..];
+    let body = &prod[prod.find("fn shut_down(").expect("shut_down in startup.rs")..];
     let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} not found in shut_down"));
     let restore = at("state.displays_shutdown()");
     assert!(restore < at("drop(core.state);"), "restored before the app is dropped");
@@ -585,14 +585,14 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
 fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (popup, launch) = (src("popup.rs"), src("launch.rs"));
+    let (popup, startup) = (src("popup.rs"), src("startup.rs"));
     for f in ["pub(crate) fn keyboard_release(", "pub(crate) fn keyboard_lost("] {
         let body = function_body(&popup, f);
         assert!(body.contains("self.keyboard_retire(k)"), "{f} must retire the keyboard, never drop it: {body}");
     }
     let retire = function_body(&popup, "fn keyboard_retire(");
     assert!(retire.contains("self.keyboard.retired.hold(k)"), "keyboard_retire must hold it: {retire}");
-    let run = function_body(&launch, "fn main_loop(");
+    let run = function_body(&startup, "fn main_loop(");
     let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
     let drain = run.find("state.keyboard.retired.drain()").expect("the loop must drain the retired keyboards");
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
@@ -957,7 +957,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
     const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
     const ALLOWED: &[(&str, &str, usize)] = &[
         // The bar's clock and resources timers.
-        ("launch.rs", "Timer::", 2),
+        ("startup.rs", "Timer::", 2),
         // The launcher's request deadline, armed per connection and removed once it is read; the
         // listener's resume, armed only after an accept() error.
         ("launcher/socket_glue.rs", "Timer::", 2),
@@ -965,14 +965,14 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // timeout, armed only while a call is pending.
         ("deadline.rs", "Timer::", 2),
         // The bar's signal guard.
-        ("launch.rs", "thread::Builder", 1),
+        ("startup.rs", "thread::Builder", 1),
         // The launcher's listening socket (its fd: the one thing at rest) and
         // one watch per connection being read.
         ("launcher/socket_glue.rs", "Generic::new", 2),
         // The tray's session-bus fd (only inserted when "tray" is in modules and a
         // session bus answers — an unused module costs nothing at runtime, but the call itself is
         // still in the source).
-        ("launch.rs", "Generic::new", 1),
+        ("startup.rs", "Generic::new", 1),
         // In wayland.rs: the tray's DeadlineTimer, armed only while calls are pending; the tooltip's,
         // armed only while the pointer rests on a tray icon; the media popup's tick, armed only while
         // that popup is open and its player plays; the power menu's (power spec § 4), armed only
@@ -1742,9 +1742,9 @@ fn the_theme_and_camera_watches_only_read() {
 /// sees no bus and gives up for good).
 #[test]
 fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
-    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
+    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in startup.rs"));
     let last = at("state.theme_changed();");
     assert_eq!(prod.matches("state.theme_changed();").count(), 1);
     for before in ["crate::watch::start(", "start_tray(state, handle)", "state.follow_portal_if_auto();", "state.publish_mode();"] {
@@ -2536,8 +2536,8 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
         "privacy_at, privacy_changed, else privacy_timer_sync: {feed}"
     );
     // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
-    let launch = src("launch.rs");
-    let (fed, kept) = (launch.find("self.privacy_feed(&m)"), launch.find("on_message(self, m,"));
+    let startup = src("startup.rs");
+    let (fed, kept) = (startup.find("self.privacy_feed(&m)"), startup.find("on_message(self, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 

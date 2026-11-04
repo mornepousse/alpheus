@@ -7,8 +7,8 @@
 //! theme files are read at startup only. Read-only: nothing here writes to the directory.
 
 use crate::inotify::{Events, Inotify};
-use crate::launch::describe;
 use crate::log::write as log;
+use crate::startup::describe;
 use crate::wayland::App;
 use alpheus_commun::paths;
 use alpheus_commun::theme::settings::{
@@ -172,7 +172,7 @@ fn arm(fd: &Inotify, dir: &Path) -> Result<On, String> {
     }
 }
 
-/// Starts watching (`launch::run`, once the loop exists). Any failure: one line, the theme files read
+/// Starts watching (`startup::run`, once the loop exists). Any failure: one line, the theme files read
 /// at startup only, the bar unaffected.
 pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
     let dir = paths::config_dir();

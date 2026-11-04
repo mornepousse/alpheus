@@ -1,3 +1,3 @@
 fn main() {
-    std::process::exit(alpheus_demon::launch::run());
+    std::process::exit(alpheus_demon::startup::run());
 }
