@@ -1125,3 +1125,24 @@ fn start_with_no_domains_connects_nothing() {
     });
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0, "no connection, no thread, nothing published");
 }
+
+/// A panel reading failing drops that reading only, and names its own domain's outage (the bus's
+/// when the bus went away).
+#[test]
+fn a_panel_reading_failing_is_its_own_domains_outage() {
+    let full = || SystemState { wifi: Some(WifiState::default()), bt: Some(BtView::default()), ..SystemState::default() };
+    let eof = || io::Error::new(io::ErrorKind::UnexpectedEof, "gone");
+
+    let mut s = full();
+    let e = wifi_into(Err(io::Error::other("rule")), &mut s).unwrap_err();
+    assert_eq!(outage::outage_of(&e), Outage::Domain(Domain::Network));
+    assert_eq!((s.wifi, s.bt.is_some()), (None, true), "only its own reading");
+    let mut s = full();
+    let e = bt_into(Err(io::Error::other("read")), &mut s).unwrap_err();
+    assert_eq!(outage::outage_of(&e), Outage::Domain(Domain::Bluetooth));
+    assert_eq!((s.bt, s.wifi.is_some()), (None, true), "only its own reading");
+
+    let mut s = full();
+    assert_eq!(outage::outage_of(&wifi_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
+    assert_eq!(outage::outage_of(&bt_into(Err(eof()), &mut s).unwrap_err()), Outage::Bus);
+}
