@@ -391,7 +391,7 @@ impl App {
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
         // A failed Activate answered after the launcher opened must not open a menu over it.
-        self.last_icon = None;
+        self.menu.last_icon = None;
         // A tooltip's hover tracking must not survive it:
         // left alone, `Hover.over` would still name whatever icon it was armed on, and a
         // later motion that never truly left it would wrongly look like "still on the same icon",

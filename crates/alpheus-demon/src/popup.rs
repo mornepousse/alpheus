@@ -673,8 +673,8 @@ impl App {
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
         if menu && why == PopupClose::Dismissed {
-            if let (Some((key, _)), Some(button)) = (self.menu_for.clone(), self.menu_opened_by) {
-                self.recently_closed_menu = Some((key, button, Instant::now()));
+            if let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by) {
+                self.menu.recently_closed = Some((key, button, Instant::now()));
             }
         }
         // The same race for a module's popup (the calendar; the media popup): a left press on
@@ -684,7 +684,7 @@ impl App {
         {
             self.recently_closed_popup = Some((p, Instant::now()));
         }
-        if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
+        if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu.target.is_some()) {
             self.menu_end();
         }
         if let Some(p) = kind {
@@ -696,7 +696,7 @@ impl App {
         // that no longer exists — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
         if matches!(open.body, PopupBody::Tooltip(_)) {
-            self.tooltip_item = None;
+            self.menu.tooltip_item = None;
         }
         drop(open);
         if let Some(p) = kind {

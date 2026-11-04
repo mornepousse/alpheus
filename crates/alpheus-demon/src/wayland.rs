@@ -511,29 +511,10 @@ pub struct App {
     pub(crate) camera: crate::camera_app::Camera,
     /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
     pub(crate) key_repeat: bool,
-    /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
-    pub(crate) tooltip_item: Option<ItemKey>,
-    /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
-    /// button that pressed it: a failed Activate's menu, arriving asynchronously, is for the icon
-    /// and button the user actually pressed, not necessarily the one under the pointer by then.
-    pub(crate) last_icon: Option<(ItemKey, PopupAnchor, Button)>,
-    /// The menu asked for (its session opening, then its popup shown) and where it hangs.
-    pub(crate) menu_for: Option<(ItemKey, PopupAnchor)>,
-    /// The button whose press opened `menu_for`'s menu (Mae, 2026-10-06): a click with THAT
-    /// button, or a right click (always), on the same icon only closes its menu.
-    pub(crate) menu_opened_by: Option<Button>,
-    /// A submenu asked for whose children are being fetched: entered when they arrive.
-    pub(crate) submenu_wanted: Option<i32>,
+    /// The tray menus' and tooltip's state (menu_app.rs).
+    pub(crate) menu: crate::menu_app::TrayMenu,
     /// The last key's time (dbusmenu Event's timestamp).
     pub(crate) key_time: u32,
-    /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
-    pub(crate) menu_asked_at: Option<Instant>,
-    /// The icon, the closing button and the time of the menu last closed by `xdg_popup.done`
-    /// (`PopupClose::Dismissed`): a compositor may deliver `xdg_popup.done`
-    /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
-    /// menu`) would let that very press reopen what it just closed — a record of it, consulted
-    /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
-    pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
     pub(crate) recently_closed_popup: Option<(ModulePopup, Instant)>,
@@ -698,14 +679,8 @@ impl App {
             privacy_timer: DeadlineTimer::new(),
             camera: crate::camera_app::Camera::new(),
             key_repeat: false,
-            tooltip_item: None,
-            last_icon: None,
-            menu_for: None,
-            menu_opened_by: None,
-            submenu_wanted: None,
+            menu: Default::default(),
             key_time: 0,
-            menu_asked_at: None,
-            recently_closed_menu: None,
             recently_closed_popup: None,
             // Asked of the compositor actually on the other end of the connection (its own
             // `hyprland_*` globals), never of the environment: an inherited
@@ -1338,15 +1313,15 @@ impl PointerHandler for App {
                     // pressed before this one, must not open a menu once the user has pressed
                     // elsewhere on the bar meanwhile.
                     if pressed_icon.is_none() {
-                        self.last_icon = None;
+                        self.menu.last_icon = None;
                     }
                     let b = actions::button(*button);
                     let menu_shown_for = match self.popup_body() {
-                        Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
+                        Some(PopupBody::Menu(_)) => self.menu.target.as_ref().map(|(k, _)| k),
                         _ => None,
                     };
-                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
-                        || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
+                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu.opened_by)
+                        || closed_recently(self.menu.recently_closed.as_ref(), pressed_icon.as_ref(), b, Instant::now());
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client): it is a click outside that popup —
                     // except a module popup's own second click: its toggle closes it.
@@ -1362,7 +1337,7 @@ impl PointerHandler for App {
                     }
                     // A menu asked for but not shown yet dies with any press on the bar (a menu
                     // shown has just ended with its popup).
-                    if self.menu_for.is_some() {
+                    if self.menu.target.is_some() {
                         self.menu_end();
                     }
                     // Consumed by a matching press, and just as irrelevant to any
@@ -1370,7 +1345,7 @@ impl PointerHandler for App {
                     // close above: a close this press performs itself needs no record (only a
                     // compositor `done` arriving ahead of the press does), else a quick reopen
                     // on the same icon would be swallowed.
-                    self.recently_closed_menu = None;
+                    self.menu.recently_closed = None;
                     let popup_only_closes = closed_by_done(&mut self.recently_closed_popup, pressed_popup, Instant::now());
                     if only_closes || popup_only_closes {
                         continue; // the menu's own icon: closed, never reopened (Mae)
@@ -1488,7 +1463,7 @@ impl App {
         // cleared together in `popup_close`). Should that ever break, the tooltip closes rather
         // than the daemon panicking. `self.tray` can be None: the session bus just closed,
         // taking every item with it.
-        let gone = match (&self.tray, self.tooltip_item.as_ref()) {
+        let gone = match (&self.tray, self.menu.tooltip_item.as_ref()) {
             (Some(tray), Some(key)) => tray.item(key).is_none(),
             _ => true,
         };
@@ -1541,7 +1516,7 @@ impl App {
         let qh = app.qh.clone();
         let (columns, height) = rows.cells();
         if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, Input::Tooltip) {
-            app.tooltip_item = Some(key);
+            app.menu.tooltip_item = Some(key);
             app.popup_paint(rows);
             log("tooltip shown");
         }

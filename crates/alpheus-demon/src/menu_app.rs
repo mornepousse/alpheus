@@ -11,6 +11,32 @@ use crate::wayland::{App, position_by};
 use smithay_client_toolkit::shell::WaylandSurface;
 use std::time::Instant;
 
+/// The tray menus' and tooltip's state, one field of `App`.
+#[derive(Default)]
+pub(crate) struct TrayMenu {
+    /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
+    pub(crate) tooltip_item: Option<ItemKey>,
+    /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
+    /// button that pressed it: a failed Activate's menu, arriving asynchronously, is for the icon
+    /// and button the user actually pressed, not necessarily the one under the pointer by then.
+    pub(crate) last_icon: Option<(ItemKey, PopupAnchor, Button)>,
+    /// The menu asked for (its session opening, then its popup shown) and where it hangs.
+    pub(crate) target: Option<(ItemKey, PopupAnchor)>,
+    /// The button whose press opened `target`'s menu (Mae, 2026-10-06): a click with THAT
+    /// button, or a right click (always), on the same icon only closes its menu.
+    pub(crate) opened_by: Option<Button>,
+    /// A submenu asked for whose children are being fetched: entered when they arrive.
+    pub(crate) submenu_wanted: Option<i32>,
+    /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
+    pub(crate) asked_at: Option<Instant>,
+    /// The icon, the closing button and the time of the menu last closed by `xdg_popup.done`
+    /// (`PopupClose::Dismissed`): a compositor may deliver `xdg_popup.done`
+    /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
+    /// menu`) would let that very press reopen what it just closed — a record of it, consulted
+    /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
+    pub(crate) recently_closed: Option<(ItemKey, Button, Instant)>,
+}
+
 impl App {
     /// The item's menu: remembered anchor (the clicked icon's zone on that output) and the button
     /// that asked for it; the popup opens when the first layout arrives (question 8) — or never,
@@ -21,7 +47,7 @@ impl App {
         // erroring in turn) must not close and reopen the session already in flight for it. Distinct
         // from a second RIGHT click on the same icon (`closes_own_menu`, in the Press arm below),
         // which does close it (Mae's decision).
-        if already_requested(self.menu_for.as_ref().map(|(k, _)| k), &key) {
+        if already_requested(self.menu.target.as_ref().map(|(k, _)| k), &key) {
             return;
         }
         // One menu at a time: a menu shown goes (its session is replaced by the new one).
@@ -33,10 +59,10 @@ impl App {
         // with its own 2 s deadline — re-arm the timer now, not only at the next bus event.
         self.tray_sync();
         if opened {
-            self.menu_for = Some((key, anchor));
-            self.menu_opened_by = Some(button);
-            self.submenu_wanted = None;
-            self.menu_asked_at = Some(Instant::now());
+            self.menu.target = Some((key, anchor));
+            self.menu.opened_by = Some(button);
+            self.menu.submenu_wanted = None;
+            self.menu.asked_at = Some(Instant::now());
         } else {
             // A request still waiting for an earlier layout does not outlive this one.
             self.menu_end();
@@ -48,7 +74,8 @@ impl App {
     pub(crate) fn menu_layout_changed(&mut self) {
         let menu_shown = matches!(self.popup_body(), Some(PopupBody::Menu(_)));
         if menu_shown {
-            let App { tray, popup, submenu_wanted, .. } = self;
+            let App { tray, popup, menu, .. } = self;
+            let submenu_wanted = &mut menu.submenu_wanted;
             let (Some(layout), Some(PopupBody::Menu(m))) =
                 (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
             else {
@@ -76,10 +103,10 @@ impl App {
             self.menu_repaint();
             return;
         }
-        let Some((key, anchor)) = self.menu_for.clone() else { return };
+        let Some((key, anchor)) = self.menu.target.clone() else { return };
         // Mae: at most 2 s from the request to the menu — each call has its own 2 s, so a layout can
         // land later than that; it opens nothing then.
-        if self.menu_asked_at.is_some_and(|t| t.elapsed() > crate::tray::bus::TIMEOUT) {
+        if self.menu.asked_at.is_some_and(|t| t.elapsed() > crate::tray::bus::TIMEOUT) {
             self.menu_end();
             log("tray: menu not shown (timeout)");
             return;
@@ -135,7 +162,7 @@ impl App {
         // the one that was asked for before. Left uncleared, a late `LayoutUpdated` (Steam,
         // Electron re-emit it often) could otherwise graft it in long after the user moved on.
         if matches!(a, MenuAction::Redraw | MenuAction::Submenu(_) | MenuAction::Click(_)) {
-            self.submenu_wanted = None;
+            self.menu.submenu_wanted = None;
         }
         match a {
             MenuAction::Nothing => {}
@@ -153,7 +180,8 @@ impl App {
                     tray.menu_submenu(id);
                 }
                 self.tray_sync(); // re-arms the deadline timer for AboutToShow/GetLayout
-                let App { tray, popup, submenu_wanted, .. } = self;
+                let App { tray, popup, menu, .. } = self;
+                let submenu_wanted = &mut menu.submenu_wanted;
                 let (Some(layout), Some(PopupBody::Menu(m))) =
                     (tray.as_ref().and_then(|t| t.menu()).and_then(MenuSession::layout), popup.as_mut().map(|p| &mut p.body))
                 else {
@@ -176,10 +204,10 @@ impl App {
         // even if the router already dropped its own session object first (the stale-path check
         // closes it before ever surfacing `close_menu`): `tray.close_menu()` is harmless once
         // there is nothing left to close, but the request DID end, and used to go unlogged then.
-        let had_one = self.menu_for.take().is_some();
-        self.menu_opened_by = None;
-        self.submenu_wanted = None;
-        self.menu_asked_at = None;
+        let had_one = self.menu.target.take().is_some();
+        self.menu.opened_by = None;
+        self.menu.submenu_wanted = None;
+        self.menu.asked_at = None;
         if had_one {
             if let Some(tray) = self.tray.as_mut() {
                 tray.close_menu();

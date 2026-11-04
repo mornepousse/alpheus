@@ -651,7 +651,7 @@ fn menu_repaint_launcher_open_and_the_interactivity_reset_keep_their_guards() {
     assert!(!repaint.contains(".name =="), "menu_repaint must not find its bar by name: {repaint}");
     assert!(repaint.contains("position_by"), "menu_repaint must find its bar by the popup's parent surface: {repaint}");
     let open = function_body(&surface, "pub fn launcher_open(");
-    assert!(open.contains("self.last_icon = None"), "launcher_open must drop the remembered tray press: {open}");
+    assert!(open.contains("self.menu.last_icon = None"), "launcher_open must drop the remembered tray press: {open}");
     let close = function_body(&popup, "pub fn popup_close(");
     assert!(close.contains("self.exclusive_during_grab"), "popup_close must only reset what popup_open set: {close}");
     let opening = function_body(&popup, "pub fn popup_open(");
