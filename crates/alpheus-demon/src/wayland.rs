@@ -5,15 +5,11 @@
 //! `tray_bridge.rs`.
 
 use crate::actions::{self, Button, Wheel};
-use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
-use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::osd::Osd;
-use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
@@ -27,7 +23,7 @@ use alpheus_commun::theme::settings::ThemeSettings;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
-use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
@@ -371,18 +367,8 @@ pub struct App {
     pub bar: Bar,
     /// The 16 colour roles every surface paints with (themes spec § 1).
     pub(crate) roles: Roles,
-    /// theme.toml as last read: its mode decides whether the portal matters.
-    pub(crate) theme_settings: ThemeSettings,
-    /// The portal's color-scheme once it answered; None: no word yet, or no portal
-    /// (mode auto is then dark).
-    pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
-    /// The resolver's warnings at the last resolve: a reload logs only new ones.
-    pub(crate) theme_warnings: Vec<String>,
-    /// An empty theme.toml that kept the settings during a reload was logged (once per run: editors
-    /// that truncate before writing would log every save otherwise).
-    pub(crate) blank_theme_noted: bool,
-    /// The inotify watch on the config directory; None: the theme files are read at startup only.
-    pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
+    /// theme.toml's settings, the portal's word, the config watch and the mode file (appearance.rs).
+    pub(crate) theme: crate::appearance::ThemeState,
     pub(crate) fonts: Fonts,
     pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
@@ -421,22 +407,8 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
-    /// The bar's own session link (link.rs): when the tray module is off and mode = "auto" or the
-    /// media module needs the session bus, ONE connection for both. None otherwise, or once its bus
-    /// closed (never reconnected).
-    pub(crate) link: Option<crate::link::SessionLink>,
-    /// Armed only while one of the link's calls is pending (2 s); never at rest.
-    pub(crate) link_timer: DeadlineTimer,
-    /// `open_link` already ran, successfully or not: never a second connection nor a second attempt.
-    pub(crate) link_tried: bool,
-    /// `follow_portal_if_auto` already acted: never a second attempt.
-    pub(crate) portal_tried: bool,
-    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes; None: unset, nothing written.
-    pub(crate) mode_runtime: Option<std::path::PathBuf>,
-    /// The mode last written to it; None: not yet.
-    pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
-    /// The last write failure logged: the same one is not logged again.
-    pub(crate) mode_error: Option<String>,
+    /// The bar's own session link, its timer and its bookkeeping (link.rs).
+    pub(crate) link: crate::link::LinkState,
     /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
     pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
@@ -445,9 +417,8 @@ pub struct App {
     pub(crate) tray_deferred_queued: bool,
     /// An idle callback is queued to route what waits in a bus's `ready` with no fd event to
     /// announce it: answers a flush drained, or that the settle rounds left after a burst.
-    /// One per connection, the tray's and the link's.
+    /// One per connection (the link's is `link.ready_queued`).
     pub(crate) tray_ready_queued: bool,
-    pub(crate) link_ready_queued: bool,
     /// The horizontal wheel, for tray icons only.
     pub(crate) hwheel: Wheel,
     /// The last button press (serial, time, surface-local position): Activate's
@@ -467,105 +438,31 @@ pub struct App {
     pub(crate) xdg: Option<XdgShell>,
     /// The open popup (menu, tooltip, calendar); None at rest.
     pub(crate) popup: Option<OpenPopup>,
-    /// The keyboard, bound only while the launcher or a grabbing popup needs it.
-    pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
-    pub(crate) mods: Mods,
-    /// Keys down on `keyboard` (`popup::KeysDown`): it is never released while one is down on a
-    /// live focus (`popup::release_decision`).
-    pub(crate) keys_down: crate::popup::KeysDown,
-    /// The surface `keyboard` entered, until its leave: alive or not decides whether a release waits.
-    pub(crate) keyboard_focus: Option<wl_surface::WlSurface>,
-    /// `keyboard_release` was asked while a key was down: done at its release or a leave.
-    pub(crate) release_deferred: bool,
-    /// Released keyboards still held elsewhere (`retired`): dropped after a `dispatch`, never in one.
-    pub(crate) retired_keyboards: crate::retired::Retired<wl_keyboard::WlKeyboard>,
+    /// The bound keyboard and what follows its keys (popup.rs).
+    pub(crate) keyboard: crate::popup::Keyboard,
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
     pub(crate) hover: Hover,
     pub(crate) hover_timer: DeadlineTimer,
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
-    /// The notification bubbles while at least one shows (bubbles_surface.rs); None at rest.
-    pub(crate) bubbles: Option<OpenBubbles>,
-    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
-    /// armed only while there is one.
-    pub(crate) bubble_timer: DeadlineTimer,
-    /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
-    pub(crate) bubble_closes: Closes,
-    /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
-    pub(crate) osd: Osd,
-    /// The OSD's surface while the pill shows (osd_surface.rs); None at rest.
-    pub(crate) osd_open: Option<OpenOsd>,
-    /// The pill's hide timer: armed only while it shows.
-    pub(crate) osd_timer: DeadlineTimer,
-    /// The quick panel's timer: armed only while the panel is open and a re-read
-    /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
-    /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
-    /// question (quick delivery 3); closed, only for an attempt still followed (`wifi_follow`, Mae's
-    /// ruling P1).
-    pub(crate) quick_timer: DeadlineTimer,
+    /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
+    pub(crate) bubbles: crate::bubbles_surface::BubbleSurface,
+    /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
+    pub(crate) osd: crate::osd_surface::OsdSurface,
+    /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
+    /// (quick_app.rs).
+    pub(crate) quick: crate::quick_app::QuickApp,
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
-    /// The camera devices' inotify watch (privacy delivery 2); None without `privacy` or when
-    /// `dev_dir` cannot be watched.
-    pub(crate) camera_watch: Option<crate::camera_dev::CameraWatch>,
-    /// The (`dev_dir`, `proc_dir`) the camera scan reads; set with the watch.
-    pub(crate) camera_roots: Option<(std::path::PathBuf, std::path::PathBuf)>,
-    /// The camera scan's debounce: armed only for `SCAN_DEBOUNCE` after a device event.
-    pub(crate) camera_timer: DeadlineTimer,
-    /// The first trigger of the burst waiting for its scan (the debounce's cap); cleared by the scan.
-    pub(crate) camera_burst: Option<std::time::Instant>,
-    /// The process-scan bound was logged (once per daemon).
-    pub(crate) camera_bound_logged: bool,
-    /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and
-    /// asks for them while open. None without a sound source.
-    pub(crate) sound_tap: Option<Arc<crate::pipewire::SoundTap>>,
-    /// Shared with the D-Bus thread (`sources::dbus::wifi::WifiTap`): what the open quick panel
-    /// shows of the Wi-Fi. None without the quick module or the network domain.
-    pub(crate) wifi_tap: Option<Arc<crate::sources::dbus::wifi::WifiTap>>,
-    /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
-    /// of Bluetooth. None without the quick module or the Bluetooth domain.
-    pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,
-    /// The quick panel's acting Bluetooth connection (bt_app.rs): only while the Bluetooth detail
-    /// is open or a call is in flight. None at rest.
-    pub(crate) bt_act: Option<crate::sources::dbus::bt_act::BtAct>,
-    /// Its fd's source on the loop, while it lives.
-    pub(crate) bt_source: Option<smithay_client_toolkit::reexports::calloop::RegistrationToken>,
-    /// An attempt on a new network still followed once the panel closed (Mae's ruling P1): the
-    /// Wi-Fi stays read for it until it ends. None at rest.
-    pub(crate) wifi_follow: Option<crate::quick_app::WifiFollow>,
-    /// When `alpheus-launch --quick` last opened the panel; None once it closed, or when a click
-    /// opened it. A verb inside TOGGLE_DEBOUNCE of it is the same key press again.
-    pub(crate) quick_verb_opened: Option<Instant>,
-    /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
-    pub(crate) key_repeat: bool,
-    /// The item whose tooltip is shown (it leaving closes the tooltip: ItemGone).
-    pub(crate) tooltip_item: Option<ItemKey>,
-    /// The tray icon last pressed, its cells (where its menu hangs if one is asked for) and the
-    /// button that pressed it: a failed Activate's menu, arriving asynchronously, is for the icon
-    /// and button the user actually pressed, not necessarily the one under the pointer by then.
-    pub(crate) last_icon: Option<(ItemKey, PopupAnchor, Button)>,
-    /// The menu asked for (its session opening, then its popup shown) and where it hangs.
-    pub(crate) menu_for: Option<(ItemKey, PopupAnchor)>,
-    /// The button whose press opened `menu_for`'s menu (Mae, 2026-10-06): a click with THAT
-    /// button, or a right click (always), on the same icon only closes its menu.
-    pub(crate) menu_opened_by: Option<Button>,
-    /// A submenu asked for whose children are being fetched: entered when they arrive.
-    pub(crate) submenu_wanted: Option<i32>,
-    /// The last key's time (dbusmenu Event's timestamp).
-    pub(crate) key_time: u32,
-    /// When the menu's session opened: its first layout must come within bus::TIMEOUT (Mae: 2 s).
-    pub(crate) menu_asked_at: Option<Instant>,
-    /// The icon, the closing button and the time of the menu last closed by `xdg_popup.done`
-    /// (`PopupClose::Dismissed`): a compositor may deliver `xdg_popup.done`
-    /// before the press that follows it reaches the bar, so the live check alone (`closes_own_
-    /// menu`) would let that very press reopen what it just closed — a record of it, consulted
-    /// within `RECENT_CLOSE_WINDOW`, makes the race harmless.
-    pub(crate) recently_closed_menu: Option<(ItemKey, Button, Instant)>,
+    /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
+    pub(crate) camera: crate::camera_app::Camera,
+    /// The tray menus' and tooltip's state (menu_app.rs).
+    pub(crate) menu: crate::menu_app::TrayMenu,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
     pub(crate) recently_closed_popup: Option<(ModulePopup, Instant)>,
@@ -671,11 +568,7 @@ impl App {
             pointer: None,
             wheel: Wheel::default(),
             bar,
-            theme_settings,
-            portal_mode: None,
-            theme_warnings: Vec::new(),
-            blank_theme_noted: false,
-            theme_watch: None,
+            theme: crate::appearance::ThemeState::new(theme_settings),
             roles,
             fonts,
             exec,
@@ -691,17 +584,10 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
-            link: None,
-            link_timer: DeadlineTimer::new(),
-            link_tried: false,
-            portal_tried: false,
-            mode_runtime: None,
-            mode_written: None,
-            mode_error: None,
+            link: crate::link::LinkState::new(),
             dnd: false,
             tray_deferred_queued: false,
             tray_ready_queued: false,
-            link_ready_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
             popup_press_time: 0,
@@ -710,45 +596,17 @@ impl App {
             mail: None,
             xdg,
             popup: None,
-            keyboard: None,
-            mods: Mods::default(),
-            keys_down: crate::popup::KeysDown::default(),
-            keyboard_focus: None,
-            release_deferred: false,
-            retired_keyboards: Default::default(),
+            keyboard: Default::default(),
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
-            bubbles: None,
-            bubble_timer: DeadlineTimer::new(),
-            bubble_closes: Closes::default(),
-            osd: Osd::default(),
-            osd_open: None,
-            osd_timer: DeadlineTimer::new(),
-            quick_timer: DeadlineTimer::new(),
+            bubbles: crate::bubbles_surface::BubbleSurface::new(),
+            osd: crate::osd_surface::OsdSurface::new(),
+            quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),
             privacy_timer: DeadlineTimer::new(),
-            camera_watch: None,
-            camera_roots: None,
-            camera_timer: DeadlineTimer::new(),
-            camera_burst: None,
-            camera_bound_logged: false,
-            sound_tap: None,
-            wifi_tap: None,
-            bt_tap: None,
-            bt_act: None,
-            bt_source: None,
-            wifi_follow: None,
-            quick_verb_opened: None,
-            key_repeat: false,
-            tooltip_item: None,
-            last_icon: None,
-            menu_for: None,
-            menu_opened_by: None,
-            submenu_wanted: None,
-            key_time: 0,
-            menu_asked_at: None,
-            recently_closed_menu: None,
+            camera: crate::camera_app::Camera::new(),
+            menu: Default::default(),
             recently_closed_popup: None,
             // Asked of the compositor actually on the other end of the connection (its own
             // `hyprland_*` globals), never of the environment: an inherited
@@ -814,8 +672,8 @@ impl App {
         // The focus going with this bar (a popup closed by Escape, the key still down, a release
         // deferred on it): the key-up and leave that would end the wait may never come. Not by
         // `is_alive`: `closed` holds the layer surface (and so its wl_surface) until it returns.
-        if self.keyboard_focus.as_ref() == Some(&surface) {
-            self.keyboard_focus = None;
+        if self.keyboard.focus.as_ref() == Some(&surface) {
+            self.keyboard.focus = None;
             self.keyboard_release_deferred();
         }
         s.output
@@ -921,7 +779,7 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, roles, pool, theme_settings, compositor, opaque_scratch, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, theme, compositor, opaque_scratch, .. } = self;
         let s = &mut surfaces[i];
         if !drawable(s.configured, s.width, s.placing) {
             return;
@@ -941,7 +799,7 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint_bar(&grid, roles, &bar_background(bar, theme_settings, &grid), pixels, w, h, e);
+        fonts.paint_bar(&grid, roles, &bar_background(bar, &theme.settings, &grid), pixels, w, h, e);
         let surface = s.layer.wl_surface();
         // The compositor skips blending what the style paints opaque (shapes spec § 3): told again only
         // when it changes (a new width, style or block layout).
@@ -1377,19 +1235,19 @@ impl PointerHandler for App {
                     }
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
                     // A press that hits no icon drops
-                    // `last_icon` — a failed Activate answered late, for whatever icon was
+                    // `menu.last_icon` — a failed Activate answered late, for whatever icon was
                     // pressed before this one, must not open a menu once the user has pressed
                     // elsewhere on the bar meanwhile.
                     if pressed_icon.is_none() {
-                        self.last_icon = None;
+                        self.menu.last_icon = None;
                     }
                     let b = actions::button(*button);
                     let menu_shown_for = match self.popup_body() {
-                        Some(PopupBody::Menu(_)) => self.menu_for.as_ref().map(|(k, _)| k),
+                        Some(PopupBody::Menu(_)) => self.menu.target.as_ref().map(|(k, _)| k),
                         _ => None,
                     };
-                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu_opened_by)
-                        || closed_recently(self.recently_closed_menu.as_ref(), pressed_icon.as_ref(), b, Instant::now());
+                    let only_closes = closes_own_menu(menu_shown_for, pressed_icon.as_ref(), b, self.menu.opened_by)
+                        || closed_recently(self.menu.recently_closed.as_ref(), pressed_icon.as_ref(), b, Instant::now());
                     // A press on the bar is delivered to it even while one of its popups grabs
                     // the pointer (same client): it is a click outside that popup —
                     // except a module popup's own second click: its toggle closes it.
@@ -1405,7 +1263,7 @@ impl PointerHandler for App {
                     }
                     // A menu asked for but not shown yet dies with any press on the bar (a menu
                     // shown has just ended with its popup).
-                    if self.menu_for.is_some() {
+                    if self.menu.target.is_some() {
                         self.menu_end();
                     }
                     // Consumed by a matching press, and just as irrelevant to any
@@ -1413,7 +1271,7 @@ impl PointerHandler for App {
                     // close above: a close this press performs itself needs no record (only a
                     // compositor `done` arriving ahead of the press does), else a quick reopen
                     // on the same icon would be swallowed.
-                    self.recently_closed_menu = None;
+                    self.menu.recently_closed = None;
                     let popup_only_closes = closed_by_done(&mut self.recently_closed_popup, pressed_popup, Instant::now());
                     if only_closes || popup_only_closes {
                         continue; // the menu's own icon: closed, never reopened (Mae)
@@ -1527,11 +1385,11 @@ impl App {
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
         }
-        // A Tooltip popup is always paired with `tooltip_item` (set together in `hover_fire`,
+        // A Tooltip popup is always paired with `menu.tooltip_item` (set together in `hover_fire`,
         // cleared together in `popup_close`). Should that ever break, the tooltip closes rather
         // than the daemon panicking. `self.tray` can be None: the session bus just closed,
         // taking every item with it.
-        let gone = match (&self.tray, self.tooltip_item.as_ref()) {
+        let gone = match (&self.tray, self.menu.tooltip_item.as_ref()) {
             (Some(tray), Some(key)) => tray.item(key).is_none(),
             _ => true,
         };
@@ -1584,7 +1442,7 @@ impl App {
         let qh = app.qh.clone();
         let (columns, height) = rows.cells();
         if app.popup_open(&qh, anchor, PopupBody::Tooltip(text), columns, height, Input::Tooltip) {
-            app.tooltip_item = Some(key);
+            app.menu.tooltip_item = Some(key);
             app.popup_paint(rows);
             log("tooltip shown");
         }

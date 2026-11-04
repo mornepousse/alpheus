@@ -395,6 +395,27 @@ pub(crate) fn key_to(launcher_open: bool, grabbing_popup: bool) -> KeyTo {
 /// Most keys `KeysDown` follows at once (more than a hand can hold).
 pub(crate) const MAX_KEYS_DOWN: usize = 16;
 
+/// The keyboard feature's state, one field of `App`: the keyboard while bound and what follows its keys.
+#[derive(Default)]
+pub(crate) struct Keyboard {
+    /// The keyboard, bound only while the launcher or a grabbing popup needs it.
+    pub(crate) device: Option<wl_keyboard::WlKeyboard>,
+    pub(crate) mods: Mods,
+    /// Keys down on `device` (`KeysDown`): it is never released while one is down on a
+    /// live focus (`release_decision`).
+    pub(crate) keys_down: KeysDown,
+    /// The surface `device` entered, until its leave: alive or not decides whether a release waits.
+    pub(crate) focus: Option<wl_surface::WlSurface>,
+    /// `keyboard_release` was asked while a key was down: done at its release or a leave.
+    pub(crate) release_deferred: bool,
+    /// Released keyboards still held elsewhere (`retired`): dropped after a `dispatch`, never in one.
+    pub(crate) retired: crate::retired::Retired<wl_keyboard::WlKeyboard>,
+    /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
+    pub(crate) repeat: bool,
+    /// The last key's time (dbusmenu Event's timestamp).
+    pub(crate) time: u32,
+}
+
 /// The keys down on the bound keyboard, by raw code: those `enter` reports already held, then each
 /// press until its release; a leave clears them. A set, so a release of a key never counted (held
 /// before the keyboard was bound and not reported) cannot make another one look up.
@@ -673,8 +694,8 @@ impl App {
         // count as only-closing (`closed_recently`, wayland.rs) even though this popup is already
         // gone by the time it arrives.
         if menu && why == PopupClose::Dismissed {
-            if let (Some((key, _)), Some(button)) = (self.menu_for.clone(), self.menu_opened_by) {
-                self.recently_closed_menu = Some((key, button, Instant::now()));
+            if let (Some((key, _)), Some(button)) = (self.menu.target.clone(), self.menu.opened_by) {
+                self.menu.recently_closed = Some((key, button, Instant::now()));
             }
         }
         // The same race for a module's popup (the calendar; the media popup): a left press on
@@ -684,7 +705,7 @@ impl App {
         {
             self.recently_closed_popup = Some((p, Instant::now()));
         }
-        if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu_for.is_some()) {
+        if (menu && why != PopupClose::Replaced) || (why == PopupClose::Launcher && self.menu.target.is_some()) {
             self.menu_end();
         }
         if let Some(p) = kind {
@@ -692,11 +713,11 @@ impl App {
         }
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
-        // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
+        // Whatever the reason: a closed tooltip is never left pairing `menu.tooltip_item` with a popup
         // that no longer exists — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
         if matches!(open.body, PopupBody::Tooltip(_)) {
-            self.tooltip_item = None;
+            self.menu.tooltip_item = None;
         }
         drop(open);
         if let Some(p) = kind {
@@ -739,7 +760,7 @@ impl App {
         match body {
             PopupBody::Menu(_) => {
                 let action = self.menu_with(|m, layout| m.key(k, layout));
-                self.menu_action(action, self.key_time);
+                self.menu_action(action, self.keyboard.time);
             }
             PopupBody::Tooltip(_) => {}
             // The module popups: their own row (`POPUPS`).
@@ -874,20 +895,20 @@ impl App {
     pub(crate) fn keyboard_acquire(&mut self, qh: &QueueHandle<App>) {
         if self.keyboard_wanted() {
             // Wanted again before a deferred release happened: kept.
-            self.release_deferred = false;
+            self.keyboard.release_deferred = false;
         }
-        if self.keyboard.is_some() || !self.keyboard_wanted() {
+        if self.keyboard.device.is_some() || !self.keyboard_wanted() {
             return;
         }
         let (Some(handle), Some(seat)) = (self.loop_handle.clone(), self.seat.clone()) else { return };
         let repeat = Box::new(|app: &mut App, _: &wl_keyboard::WlKeyboard, event: KeyEvent| {
             // SCTK's own repeat: the quick panel lets only the arrows repeat (quick spec § 3).
-            app.key_repeat = true;
+            app.keyboard.repeat = true;
             app.key_event(event);
-            app.key_repeat = false;
+            app.keyboard.repeat = false;
         });
         match self.seats.get_keyboard_with_repeat(qh, &seat, None, handle, repeat) {
-            Ok(k) => self.keyboard = Some(k),
+            Ok(k) => self.keyboard.device = Some(k),
             // UnsupportedCapability just means the seat has no keyboard yet
             // (retried once the capability appears, new_capability): routine,
             // not worth a line every time.
@@ -899,31 +920,31 @@ impl App {
     /// release() once neither the launcher nor a grabbing popup needs it, and no key is down
     /// (`release_decision`): else at that key's release or the focus leaving.
     pub(crate) fn keyboard_release(&mut self) {
-        let focus_alive = self.keyboard_focus.as_ref().is_some_and(Proxy::is_alive);
-        match release_decision(self.keyboard_wanted(), &self.keys_down, focus_alive) {
+        let focus_alive = self.keyboard.focus.as_ref().is_some_and(Proxy::is_alive);
+        match release_decision(self.keyboard_wanted(), &self.keyboard.keys_down, focus_alive) {
             Release::Keep => return,
             Release::Defer => {
-                self.release_deferred = true;
+                self.keyboard.release_deferred = true;
                 return;
             }
             Release::Now => {}
         }
-        self.release_deferred = false;
-        if let Some(k) = self.keyboard.take() {
+        self.keyboard.release_deferred = false;
+        if let Some(k) = self.keyboard.device.take() {
             // The keyboards released before and still held: 0 unless one is still in use elsewhere.
-            let earlier = self.retired_keyboards.len();
+            let earlier = self.keyboard.retired.len();
             self.keyboard_retire(k);
             log(&format!("keyboard released ({earlier} retired)"));
         }
         // What the released keyboard reported is gone with it.
-        self.keys_down.clear();
-        self.keyboard_focus = None;
-        self.mods = Mods::default();
+        self.keyboard.keys_down.clear();
+        self.keyboard.focus = None;
+        self.keyboard.mods = Mods::default();
     }
 
     /// A key went up or the focus left: the release `keyboard_release` deferred, if any, now.
     pub(crate) fn keyboard_release_deferred(&mut self) {
-        if self.release_deferred {
+        if self.keyboard.release_deferred {
             self.keyboard_release();
         }
     }
@@ -933,11 +954,11 @@ impl App {
     /// A key repeating then, with no `leave` first, keeps repeating until its surface dies: SCTK
     /// gives no way to stop it (`retired`'s module doc).
     pub(crate) fn keyboard_lost(&mut self) {
-        if let Some(k) = self.keyboard.take() {
+        if let Some(k) = self.keyboard.device.take() {
             self.keyboard_retire(k);
         }
-        (self.keys_down, self.keyboard_focus, self.release_deferred) = (KeysDown::default(), None, false);
-        self.mods = Mods::default();
+        (self.keyboard.keys_down, self.keyboard.focus, self.keyboard.release_deferred) = (KeysDown::default(), None, false);
+        self.keyboard.mods = Mods::default();
     }
 
     /// Releases `k` and keeps it until no one else holds it (`retired`): wayland-backend drops its own
@@ -947,19 +968,19 @@ impl App {
     fn keyboard_retire(&mut self, k: wl_keyboard::WlKeyboard) {
         if k.version() >= 3 {
             k.release();
-            self.retired_keyboards.hold(k);
+            self.keyboard.retired.hold(k);
         }
     }
 
     /// A key (press or repeat): to the launcher when it is open, else to a grabbing popup.
     pub(crate) fn key_event(&mut self, event: KeyEvent) {
-        self.key_time = event.time;
+        self.keyboard.time = event.time;
         match key_to(self.launcher_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
             KeyTo::Launcher => {
                 self.launcher_guarded("key", move |app| app.launcher_key(event));
             }
             KeyTo::Popup => {
-                if let Some(k) = keys::translate(event.keysym, event.utf8.as_deref(), self.mods) {
+                if let Some(k) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) {
                     self.popup_key(k);
                 }
             }
@@ -981,14 +1002,14 @@ impl KeyboardHandler for App {
         _: &[Keysym],
     ) {
         // The keys already down count: their release must not make another key look up.
-        self.keys_down.entered(held);
-        self.keyboard_focus = Some(surface.clone());
+        self.keyboard.keys_down.entered(held);
+        self.keyboard.focus = Some(surface.clone());
     }
 
     fn leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, surface: &wl_surface::WlSurface, _: u32) {
         // A leave ends every repeat (SCTK): no key counts as down any more.
-        self.keys_down.clear();
-        self.keyboard_focus = None;
+        self.keyboard.keys_down.clear();
+        self.keyboard.focus = None;
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("focus", |app| app.launcher_close(crate::launcher::surface::CloseReason::FocusLost));
         }
@@ -996,20 +1017,20 @@ impl KeyboardHandler for App {
     }
 
     fn press_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.keys_down.pressed(event.raw_code);
+        self.keyboard.keys_down.pressed(event.raw_code);
         self.key_event(event);
     }
 
     /// wl_keyboard v10 repeats (compositor-side); calloop repeats go through
     /// the callback given at bind time, to the same place.
     fn repeat_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.key_repeat = true;
+        self.keyboard.repeat = true;
         self.key_event(event);
-        self.key_repeat = false;
+        self.keyboard.repeat = false;
     }
 
     fn release_key(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_keyboard::WlKeyboard, _: u32, event: KeyEvent) {
-        self.keys_down.released(event.raw_code);
+        self.keyboard.keys_down.released(event.raw_code);
         self.keyboard_release_deferred();
     }
 
@@ -1024,7 +1045,7 @@ impl KeyboardHandler for App {
         _: RawModifiers,
         _: u32,
     ) {
-        self.mods = Mods { ctrl: m.ctrl, shift: m.shift, alt: m.alt, logo: m.logo };
+        self.keyboard.mods = Mods { ctrl: m.ctrl, shift: m.shift, alt: m.alt, logo: m.logo };
     }
 }
 

@@ -23,7 +23,7 @@ impl App {
     /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
     /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
     /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
-    /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
+    /// from `menu.last_icon`), the layout changed; then the frame request and the deadline timer.
     pub(crate) fn tray_output(&mut self, out: TrayOutput) {
         if let Some(mode) = out.appearance {
             self.portal_said(mode);
@@ -74,7 +74,7 @@ impl App {
                 }
             }
         }
-        if out.bus_closed && self.menu_for.is_some() {
+        if out.bus_closed && self.menu.target.is_some() {
             // The session went with the bus (the tray is already dropped): a menu shown closes, a
             // request still waiting dies.
             if matches!(self.popup_body(), Some(PopupBody::Menu(_))) {
@@ -86,8 +86,8 @@ impl App {
         // SAME batch (one incoming message closes the menu stale under it, another opens a new
         // one for a different item), and processing open_menu first would let this close_menu,
         // meant for the OLD request, wrongly end the NEW one `open_menu` just replaced it with.
-        if out.close_menu && self.menu_for.is_some() {
-            let gone = self.menu_for.as_ref().is_some_and(|(k, _)| self.tray.as_ref().is_none_or(|t| t.item(k).is_none()));
+        if out.close_menu && self.menu.target.is_some() {
+            let gone = self.menu.target.as_ref().is_some_and(|(k, _)| self.tray.as_ref().is_none_or(|t| t.item(k).is_none()));
             let why = if gone {
                 PopupClose::ItemGone
             } else if out.menu_path_changed {
@@ -106,7 +106,7 @@ impl App {
         if let Some(key) = out.open_menu {
             // Consumed: a late second answer, or one arriving after Escape closed
             // the menu, must not open it again from a press that was already used.
-            match take_icon_for(&mut self.last_icon, &key) {
+            match take_icon_for(&mut self.menu.last_icon, &key) {
                 Some((key, anchor, button)) => self.menu_requested(key, anchor, button),
                 None => log("tray: a menu was asked for an icon no longer under the pointer"),
             }
@@ -130,7 +130,7 @@ impl App {
             self.tray_sync();
             return;
         }
-        let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
+        let Some(link) = self.link.session.as_mut().filter(|l| l.media().is_some()) else { return };
         link.media_do(f);
         // What the flush drained is routed from an idle (`link_sync`).
         self.link_sync();
@@ -149,7 +149,7 @@ impl App {
             self.tray_sync();
             return;
         }
-        let Some(link) = self.link.as_mut().filter(|l| l.notifications().is_some()) else { return };
+        let Some(link) = self.link.session.as_mut().filter(|l| l.notifications().is_some()) else { return };
         link.notifications_do(f);
         self.link_sync();
     }
@@ -236,7 +236,7 @@ impl App {
         // The icon's cells, where its menu will hang, and the button that pressed it
         // — read back by `menu_requested` once the menu
         // actually opens, which may be later (a failed Activate's error answers asynchronously).
-        self.last_icon = self.icon_anchor(i, position.0).map(|(k, a)| (k, a, b));
+        self.menu.last_icon = self.icon_anchor(i, position.0).map(|(k, a)| (k, a, b));
         if let Some(tray) = self.tray.as_mut() {
             let out = tray.gesture(&key, g, (position.0 as i32, position.1 as i32));
             self.tray_output(out);
@@ -268,7 +268,7 @@ pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a Sess
     tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))
 }
 
-/// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
+/// The remembered press (`menu.last_icon`) for `key`, taken out: whatever its key, it is spent after this
 /// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
 fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
     last.take().filter(|(k, _, _)| k == key)

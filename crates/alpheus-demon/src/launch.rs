@@ -528,7 +528,7 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
             return None;
         }
     };
-    state.theme_warnings = theme_warnings;
+    state.theme.warnings = theme_warnings;
     let event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
@@ -616,7 +616,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     state.start_notifications(want.notifications);
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
-    state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
+    state.theme.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
     // module) when the tray is off. Never a second connection, never a
     // retry.
@@ -638,9 +638,9 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
     sources::start(sources::detect(|k| std::env::var_os(k)), move |e| tx_compositor.send(Mail::Bar(Msg::Compositor(e))).is_ok());
     if want.sound {
         let tx = tx.clone();
-        // Shared with the quick panel: the loop keeps a clone (`App::sound_tap`).
+        // Shared with the quick panel: the loop keeps a clone (`App::quick.sound_tap`).
         let tap = Arc::new(crate::pipewire::SoundTap::new(plan.privacy));
-        state.sound_tap = Some(tap.clone());
+        state.quick.sound_tap = Some(tap.clone());
         sources::sound::start(exec.clone(), plan.scope, tap, move |s| tx.send(Mail::Bar(Msg::Sound(s))).is_ok());
     }
     if !want.dbus.is_empty() {
@@ -649,18 +649,18 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
         // tap, two fds at rest, no thread, no timer. Only with the panel and the network domain.
         if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
             match crate::sources::dbus::wifi::WifiTap::new() {
-                Ok(t) => state.wifi_tap = Some(Arc::new(t)),
+                Ok(t) => state.quick.wifi_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Wi-Fi tap ({e})")),
             }
         }
         // The Bluetooth row and detail, the same way (quick settings delivery 3).
         if state.quick_enabled() && want.dbus.contains(&Domain::Bluetooth) {
             match crate::sources::dbus::bt::BtTap::new() {
-                Ok(t) => state.bt_tap = Some(Arc::new(t)),
+                Ok(t) => state.quick.bt_tap = Some(Arc::new(t)),
                 Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
             }
         }
-        sources::dbus::start(want.dbus.clone(), state.wifi_tap.clone(), state.bt_tap.clone(), move |s| {
+        sources::dbus::start(want.dbus.clone(), state.quick.wifi_tap.clone(), state.quick.bt_tap.clone(), move |s| {
             sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
         });
     }
@@ -699,7 +699,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         after_dispatch(state);
         after_dispatch_windows(state);
         // Outside the dispatch: a released keyboard's last reference (`retired`).
-        state.retired_keyboards.drain();
+        state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a
         // `closed` of this same batch has already run): places the bar
         // back on outputs `closed` marked for restoration and that are

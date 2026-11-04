@@ -2,16 +2,17 @@
 //! output (the compositor's choice when it is unknown), anchored at the bottom only: centred,
 //! `margin` px above the edge, exclusive zone 0. No keyboard, and an EMPTY input region: it never
 //! takes a click. Created on show, dropped on hide with its own small pool, so nothing of it stays
-//! resident. One `DeadlineTimer` (`App::osd_timer`) hides it `timeout_ms` after the last change.
+//! resident. One `DeadlineTimer` (`OsdSurface::timer`) hides it `timeout_ms` after the last change.
 //! Overlay, because Hyprland draws Top under a fullscreen window.
 
 use crate::backlight;
 use crate::bubbles;
 use crate::config::ModuleId;
+use crate::deadline::DeadlineTimer;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
 use crate::list::Boxed;
 use crate::log::write as log;
-use crate::osd::{self, Heard, Pill};
+use crate::osd::{self, Heard, Osd, Pill};
 use crate::painter::FrameInk;
 use crate::popup::box_size;
 use crate::system::SoundState;
@@ -25,6 +26,25 @@ use smithay_client_toolkit::shm::slot::{Buffer, SlotPool};
 use std::time::Instant;
 
 const NAMESPACE: &str = "alpheus-osd";
+
+/// The OSD's state, one field of `App`: the trigger memory, the surface while the pill shows and its
+/// hide timer.
+pub(crate) struct OsdSurface {
+    /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
+    pub(crate) model: Osd,
+    /// The OSD's surface while the pill shows; None at rest.
+    pub(crate) open: Option<OpenOsd>,
+    /// The pill's hide timer: armed only while it shows.
+    pub(crate) timer: DeadlineTimer,
+}
+
+impl OsdSurface {
+    /// Nothing shown, nothing armed. Written out (not derived) so the guardrail that lists every
+    /// timer still counts this one.
+    pub(crate) fn new() -> OsdSurface {
+        OsdSurface { model: Osd::default(), open: None, timer: DeadlineTimer::new() }
+    }
+}
 
 /// Everything the shown pill holds; dropped whole when it hides.
 pub struct OpenOsd {
@@ -58,7 +78,7 @@ impl App {
             return;
         }
         let now = Instant::now();
-        match self.osd.sound(s, now) {
+        match self.osd.model.sound(s, now) {
             Heard::Baseline => log("osd: sound baseline"),
             Heard::Show(pill) => self.osd_show(pill, now),
             Heard::Quiet => {}
@@ -70,7 +90,7 @@ impl App {
     pub(crate) fn osd_show(&mut self, pill: Pill, now: Instant) {
         let timeout = osd::timeout(&self.bar.config.osd);
         let what = osd::describe(&pill);
-        self.osd.show(pill, now, timeout);
+        self.osd.model.show(pill, now, timeout);
         self.osd_sync(&what);
     }
 
@@ -95,16 +115,16 @@ impl App {
     /// The surface follows the model: none when nothing shows; created on the focused output, or
     /// updated in place (moved only when its content changed and the focus moved); then the timer.
     fn osd_sync(&mut self, what: &str) {
-        match self.osd.shown().map(|p| osd::rows(p, self.bar.config.osd.width)) {
+        match self.osd.model.shown().map(|p| osd::rows(p, self.bar.config.osd.width)) {
             None => self.osd_drop("hidden"),
             Some(boxed) => {
-                let changed = self.osd_open.as_ref().is_some_and(|o| o.boxed != boxed);
-                let on = self.osd_open.as_ref().and_then(|o| o.output_name.clone());
+                let changed = self.osd.open.as_ref().is_some_and(|o| o.boxed != boxed);
+                let on = self.osd.open.as_ref().and_then(|o| o.output_name.clone());
                 let (_, focused) = self.bubbles_target();
-                if self.osd_open.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
+                if self.osd.open.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
                     self.osd_drop("focus moved");
                 }
-                if self.osd_open.is_some() {
+                if self.osd.open.is_some() {
                     self.osd_update(boxed);
                 } else {
                     self.osd_create(boxed, what);
@@ -160,7 +180,7 @@ impl App {
         layer.commit();
         let place = output_name.as_deref().unwrap_or("the compositor's choice of output");
         log(&format!("osd surface on {place}: {what}"));
-        self.osd_open = Some(OpenOsd {
+        self.osd.open = Some(OpenOsd {
             layer,
             pool,
             buffers: Vec::new(),
@@ -177,7 +197,7 @@ impl App {
 
     /// A change on the open pill: counted; repainted only when its row differs.
     fn osd_update(&mut self, boxed: Boxed) {
-        let Some(open) = self.osd_open.as_mut() else { return };
+        let Some(open) = self.osd.open.as_mut() else { return };
         open.shown = open.shown.saturating_add(1);
         if open.boxed == boxed {
             return;
@@ -191,7 +211,7 @@ impl App {
     /// A new size is asked (its configure draws), the same one is drawn after the dispatch pass
     /// (`flush_osd`: a burst of changes paints once), nothing before the first configure.
     fn osd_resize(&mut self, wanted: (u32, u32)) {
-        let Some(open) = self.osd_open.as_mut() else { return };
+        let Some(open) = self.osd.open.as_mut() else { return };
         match plan_redraw(open.size, wanted, open.configured) {
             Redraw::Resize(w, h) => {
                 open.size = (w, h);
@@ -210,8 +230,8 @@ impl App {
     /// no-op at rest (no pill).
     pub(crate) fn osd_draw(&mut self) {
         let height = self.bar.config.height;
-        let App { osd_open, fonts, roles, .. } = self;
-        let Some(open) = osd_open.as_mut() else { return };
+        let App { osd, fonts, roles, .. } = self;
+        let Some(open) = osd.open.as_mut() else { return };
         if !open.configured || open.last.as_ref() == Some(&open.boxed) {
             return;
         }
@@ -237,7 +257,7 @@ impl App {
     }
 
     fn osd_drop(&mut self, why: &str) {
-        let Some(open) = self.osd_open.take() else { return };
+        let Some(open) = self.osd.open.take() else { return };
         let shown = open.shown;
         drop(open);
         log(&format!("osd surface dropped ({why}, {shown} shown)"));
@@ -247,12 +267,12 @@ impl App {
 
     /// Whether `surface` is the pill's (checked by identity, before the bar's own handling).
     pub(crate) fn osd_owns(&self, surface: &wl_surface::WlSurface) -> bool {
-        self.osd_open.as_ref().is_some_and(|o| o.layer.wl_surface() == surface)
+        self.osd.open.as_ref().is_some_and(|o| o.layer.wl_surface() == surface)
     }
 
     /// The pill's configure (the caller checked `osd_owns`): an imposed size is obeyed, then drawn.
     pub(crate) fn osd_configured(&mut self, size: (u32, u32)) {
-        let Some(open) = self.osd_open.as_mut() else { return };
+        let Some(open) = self.osd.open.as_mut() else { return };
         if let Some(imposed) = plan_configure(open.size, size) {
             open.size = imposed;
         }
@@ -264,17 +284,17 @@ impl App {
     /// The compositor closed the pill (its output going, or its own reasons): hidden, never
     /// reopened; the next change shows a new one.
     pub(crate) fn osd_layer_closed(&mut self) {
-        self.osd.hide();
+        self.osd.model.hide();
         self.osd_drop("closed by the compositor");
         self.osd_timer_sync();
     }
 
     /// An output went away: the pill on it is hidden and dropped (it is transient: never moved).
     pub(crate) fn osd_output_gone(&mut self, output: &wl_output::WlOutput) {
-        if !self.osd_open.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
+        if !self.osd.open.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
             return;
         }
-        self.osd.hide();
+        self.osd.model.hide();
         self.osd_drop("output gone");
         self.osd_timer_sync();
     }
@@ -284,12 +304,12 @@ impl App {
         if !self.osd_owns(surface) {
             return false;
         }
-        let Some((boxed, scale)) = self.osd_open.as_ref().map(|o| (o.boxed.clone(), o.scale)) else { return true };
+        let Some((boxed, scale)) = self.osd.open.as_ref().map(|o| (o.boxed.clone(), o.scale)) else { return true };
         if scale == factor {
             return true;
         }
         let size = self.osd_size(&boxed, factor);
-        if let Some(open) = self.osd_open.as_mut() {
+        if let Some(open) = self.osd.open.as_mut() {
             open.scale = factor;
             open.last = None;
         }
@@ -299,7 +319,7 @@ impl App {
 
     /// A restyle or a theme change (spec § 3): the shown pill painted again with the current roles.
     pub(crate) fn osd_repaint(&mut self) {
-        if let Some(open) = self.osd_open.as_mut() {
+        if let Some(open) = self.osd.open.as_mut() {
             open.last = None;
         }
         self.osd_draw();
@@ -307,15 +327,15 @@ impl App {
 
     /// The hide timer follows the pill's deadline: armed only while it shows (spec § 3).
     pub(crate) fn osd_timer_sync(&mut self) {
-        let deadline = self.osd.deadline();
-        self.osd_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);
+        let deadline = self.osd.model.deadline();
+        self.osd.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::osd_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never
     /// before the deadline it was armed for; a later change moved the deadline: re-armed.
     pub(crate) fn osd_expire(app: &mut App, deadline: Instant) {
-        app.osd_timer.fired();
-        if app.osd.expire(Instant::now().max(deadline)) {
+        app.osd.timer.fired();
+        if app.osd.model.expire(Instant::now().max(deadline)) {
             app.osd_drop("timeout");
         }
         app.osd_timer_sync();

@@ -59,11 +59,11 @@ impl App {
                 self.tray_output(TrayOutput::default());
             }
             Host::OnLink | Host::OwnBus => {
-                if self.link.is_none() && !self.open_link(LinkUser::Notifications) {
+                if self.link.session.is_none() && !self.open_link(LinkUser::Notifications) {
                     self.bell_without_server();
                     return;
                 }
-                if let Some(link) = self.link.as_mut() {
+                if let Some(link) = self.link.session.as_mut() {
                     link.start_notifications(&self.bar.config.notifications, self.dnd);
                 }
                 log("notifications: on the bar's session bus");
@@ -81,7 +81,7 @@ impl App {
 
     /// The server, wherever it lives (`notifications_of`, kept free for split borrows).
     pub(crate) fn notifications(&self) -> Option<&Notifications> {
-        notifications_of(self.tray.as_ref(), self.link.as_ref())
+        notifications_of(self.tray.as_ref(), self.link.session.as_ref())
     }
 
     /// The bell's new view: repainted when the bar shows a change, one line per changed state.
