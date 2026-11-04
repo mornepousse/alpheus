@@ -213,8 +213,8 @@ impl App {
             }
             Host::NoBus => log("appearance: no session bus; dark"),
             Host::OnLink | Host::OwnBus => {
-                if self.link.is_some() || self.open_link(LinkUser::Appearance) {
-                    if let Some(link) = self.link.as_mut() {
+                if self.link.session.is_some() || self.open_link(LinkUser::Appearance) {
+                    if let Some(link) = self.link.session.as_mut() {
                         link.start_appearance();
                     }
                     // Its ReadOne is pending: the link's deadline timer is armed for it.

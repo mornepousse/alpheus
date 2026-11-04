@@ -162,7 +162,7 @@ impl App {
     /// (mako has it, or it was lost), or with nothing to show.
     fn bubble_stack(&self) -> Vec<BubbleBox> {
         let width = self.bar.config.notifications.width;
-        notifications_of(self.tray.as_ref(), self.link.as_ref())
+        notifications_of(self.tray.as_ref(), self.link.session.as_ref())
             .filter(|n| n.held())
             .map(|n| bubbles::stack(&n.center().bubbles(), width, crate::tray::notifications::minute_now()))
             .unwrap_or_default()
@@ -467,7 +467,8 @@ impl App {
     /// shows up later past its time. None while nothing expires (sticky critical bubbles, no bubble,
     /// the name not held).
     pub(crate) fn bubble_timer_sync(&mut self) {
-        let deadline = notifications_of(self.tray.as_ref(), self.link.as_ref()).filter(|n| n.held()).and_then(|n| n.center().next_expiry());
+        let deadline =
+            notifications_of(self.tray.as_ref(), self.link.session.as_ref()).filter(|n| n.held()).and_then(|n| n.center().next_expiry());
         self.bubbles.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::bubble_expire);
     }
 

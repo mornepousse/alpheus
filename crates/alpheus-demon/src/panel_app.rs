@@ -38,8 +38,8 @@ impl App {
         let now = Instant::now();
         let built = {
             let App { tray, link, .. } = &*self;
-            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-            notifications_of(tray.as_ref(), link.as_ref()).map(|n| {
+            let players = mpris_of(tray.as_ref(), link.session.as_ref()).map(Mpris::players);
+            notifications_of(tray.as_ref(), link.session.as_ref()).map(|n| {
                 let mut p = Panel::new(n.center(), players, room);
                 panel::scroll_into_view(&mut p, n.center(), players);
                 let rows = panel::rows(n.center(), players, &p, now, crate::tray::notifications::minute_now());
@@ -69,8 +69,8 @@ impl App {
     /// consumer is missing.
     pub(crate) fn panel_with(&mut self, f: impl FnOnce(&mut Panel, &Center, Option<&Players>) -> PanelAction) -> PanelAction {
         let App { tray, link, popup, .. } = self;
-        let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-        match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
+        let players = mpris_of(tray.as_ref(), link.session.as_ref()).map(Mpris::players);
+        match (notifications_of(tray.as_ref(), link.session.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
             (Some(n), Some(PopupBody::Panel(p))) => f(p, n.center(), players),
             _ => PanelAction::Nothing,
         }
@@ -124,14 +124,14 @@ impl App {
         if !self.panel_shown() {
             return;
         }
-        if notifications_of(self.tray.as_ref(), self.link.as_ref()).is_some_and(|n| n.center().view(n.held()).unread > 0) {
+        if notifications_of(self.tray.as_ref(), self.link.session.as_ref()).is_some_and(|n| n.center().view(n.held()).unread > 0) {
             self.notify_do(|n| n.center_mut().mark_read());
         }
         let now = Instant::now();
         let built = {
             let App { tray, link, popup, .. } = &mut *self;
-            let players = mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players);
-            match (notifications_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|o| &mut o.body)) {
+            let players = mpris_of(tray.as_ref(), link.session.as_ref()).map(Mpris::players);
+            match (notifications_of(tray.as_ref(), link.session.as_ref()), popup.as_mut().map(|o| &mut o.body)) {
                 (Some(n), Some(PopupBody::Panel(p))) => {
                     panel::scroll_into_view(p, n.center(), players);
                     let before = p.entries;

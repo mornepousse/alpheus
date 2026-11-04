@@ -130,7 +130,7 @@ impl App {
             self.tray_sync();
             return;
         }
-        let Some(link) = self.link.as_mut().filter(|l| l.media().is_some()) else { return };
+        let Some(link) = self.link.session.as_mut().filter(|l| l.media().is_some()) else { return };
         link.media_do(f);
         // What the flush drained is routed from an idle (`link_sync`).
         self.link_sync();
@@ -149,7 +149,7 @@ impl App {
             self.tray_sync();
             return;
         }
-        let Some(link) = self.link.as_mut().filter(|l| l.notifications().is_some()) else { return };
+        let Some(link) = self.link.session.as_mut().filter(|l| l.notifications().is_some()) else { return };
         link.notifications_do(f);
         self.link_sync();
     }

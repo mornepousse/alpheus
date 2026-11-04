@@ -14,6 +14,7 @@
 
 use crate::appearance::Appearance;
 use crate::config::{MediaConfig, ModuleId, NotificationsConfig};
+use crate::deadline::DeadlineTimer;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;
@@ -103,6 +104,27 @@ impl LinkOutput {
         }
         self.bubbles |= other.bubbles;
         self.closed |= other.closed;
+    }
+}
+
+/// The bar's own session link as `App` holds it: the connection, its timer and its bookkeeping.
+pub(crate) struct LinkState {
+    /// When the tray module is off and mode = "auto" or the media module needs the session bus, ONE
+    /// connection for both. None otherwise, or once its bus closed (never reconnected).
+    pub(crate) session: Option<SessionLink>,
+    /// Armed only while one of the link's calls is pending (2 s); never at rest.
+    pub(crate) timer: DeadlineTimer,
+    /// `open_link` already ran, successfully or not: never a second connection nor a second attempt.
+    pub(crate) tried: bool,
+    /// An idle callback is queued to route what waits in the link's `ready` (see `link_sync`).
+    pub(crate) ready_queued: bool,
+}
+
+impl LinkState {
+    /// No connection, nothing armed. Written out (not derived) so the guardrail that lists every
+    /// timer still counts this one.
+    pub(crate) fn new() -> LinkState {
+        LinkState { session: None, timer: DeadlineTimer::new(), tried: false, ready_queued: false }
     }
 }
 
@@ -317,8 +339,8 @@ impl App {
         Buses {
             tray_wanted: self.bar.config.modules.contains(&ModuleId::Tray),
             tray_running: self.tray.is_some(),
-            link_running: self.link.is_some(),
-            link_tried: self.link_tried,
+            link_running: self.link.session.is_some(),
+            link_tried: self.link.tried,
         }
     }
 
@@ -337,10 +359,10 @@ impl App {
                 self.tray_output(TrayOutput::default());
             }
             Host::OnLink | Host::OwnBus => {
-                if self.link.is_none() && !self.open_link(LinkUser::Media) {
+                if self.link.session.is_none() && !self.open_link(LinkUser::Media) {
                     return;
                 }
-                if let Some(link) = self.link.as_mut() {
+                if let Some(link) = self.link.session.as_mut() {
                     link.start_media(&self.bar.config.media);
                 }
                 log("media: on the bar's session bus");
@@ -349,11 +371,11 @@ impl App {
         }
     }
 
-    /// Opens the bar's session link, once whatever happens (`link_tried`), for `who` (its failure
+    /// Opens the bar's session link, once whatever happens (`link.tried`), for `who` (its failure
     /// lines are that user's: `link_failed`). Its fd goes in the loop, level-triggered like the tray's, and the
     /// source removes itself once the link is gone (bus closed).
     pub(crate) fn open_link(&mut self, who: LinkUser) -> bool {
-        self.link_tried = true;
+        self.link.tried = true;
         let Some(handle) = self.loop_handle.clone() else { return false };
         let bus = match SessionBus::session() {
             Ok(b) => b,
@@ -372,34 +394,34 @@ impl App {
         };
         let inserted = handle.insert_source(Generic::new(fd, Interest::READ, Trigger::Level), |_, _, app: &mut App| {
             app.link_readable();
-            Ok(if app.link.is_some() { PostAction::Continue } else { PostAction::Remove })
+            Ok(if app.link.session.is_some() { PostAction::Continue } else { PostAction::Remove })
         });
         if inserted.is_err() {
             log(&link_failed(who, "event loop refused the session bus source"));
             return false;
         }
-        self.link = Some(link);
+        self.link.session = Some(link);
         true
     }
 
     /// The link's fd is readable (calloop callback).
     pub(crate) fn link_readable(&mut self) {
-        let Some(link) = self.link.as_mut() else { return };
+        let Some(link) = self.link.session.as_mut() else { return };
         let out = link.on_readable();
         self.link_output(out);
     }
 
     /// Its deadline timer fired (calloop callback; the source is dropped).
     pub(crate) fn link_deadline(app: &mut App, now: Instant) {
-        app.link_timer.fired();
-        let Some(link) = app.link.as_mut() else { return };
+        app.link.timer.fired();
+        let Some(link) = app.link.session.as_mut() else { return };
         let out = link.on_deadline(now);
         app.link_output(out);
     }
 
     pub(crate) fn link_output(&mut self, out: LinkOutput) {
         if out.closed
-            && let Some(link) = self.link.take()
+            && let Some(link) = self.link.session.take()
         {
             if link.follows_portal() {
                 log("appearance: the session bus closed; the mode stays as it is");
@@ -433,18 +455,18 @@ impl App {
     /// are routed from one idle `link_readable`: no fd event will announce them.
     /// `pub(crate)`: `App::mpris_do` (tray_bridge.rs) calls it after a `media_do`.
     pub(crate) fn link_sync(&mut self) {
-        if !self.link_ready_queued
-            && self.link.as_ref().is_some_and(SessionLink::has_ready)
+        if !self.link.ready_queued
+            && self.link.session.as_ref().is_some_and(SessionLink::has_ready)
             && let Some(handle) = &self.loop_handle
         {
-            self.link_ready_queued = true;
+            self.link.ready_queued = true;
             handle.insert_idle(|app| {
-                app.link_ready_queued = false;
+                app.link.ready_queued = false;
                 app.link_readable();
             });
         }
-        let deadline = self.link.as_ref().and_then(SessionLink::next_deadline);
-        self.link_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::link_deadline);
+        let deadline = self.link.session.as_ref().and_then(SessionLink::next_deadline);
+        self.link.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::link_deadline);
     }
 }
 

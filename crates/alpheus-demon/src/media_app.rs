@@ -45,8 +45,10 @@ impl App {
             return;
         }
         let now = Instant::now();
-        let built =
-            mpris_of(self.tray.as_ref(), self.link.as_ref()).map(Mpris::players).filter(|p| p.shown().next().is_some()).map(|players| {
+        let built = mpris_of(self.tray.as_ref(), self.link.session.as_ref())
+            .map(Mpris::players)
+            .filter(|p| p.shown().next().is_some())
+            .map(|players| {
                 let popup = MediaPopup::new(players);
                 let rows = media_popup::rows(players, &popup, now, media_popup::WIDTH);
                 let heading = media_popup::heading(players, &rows);
@@ -70,7 +72,7 @@ impl App {
     /// `f` on the open media popup and the players; Nothing when either is missing.
     pub(crate) fn media_with(&mut self, f: impl FnOnce(&mut MediaPopup, &Players) -> MediaAction) -> MediaAction {
         let App { tray, link, popup, .. } = self;
-        match (mpris_of(tray.as_ref(), link.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
+        match (mpris_of(tray.as_ref(), link.session.as_ref()), popup.as_mut().map(|p| &mut p.body)) {
             (Some(m), Some(PopupBody::Media(p))) => f(p, m.players()),
             _ => MediaAction::Nothing,
         }
@@ -123,7 +125,7 @@ impl App {
         let now = Instant::now();
         let rows = {
             let App { tray, link, popup, .. } = &mut *self;
-            match (mpris_of(tray.as_ref(), link.as_ref()).map(Mpris::players), popup.as_mut().map(|o| &mut o.body)) {
+            match (mpris_of(tray.as_ref(), link.session.as_ref()).map(Mpris::players), popup.as_mut().map(|o| &mut o.body)) {
                 (Some(players), Some(PopupBody::Media(p))) if players.shown().next().is_some() => {
                     p.fit(players);
                     Some(media_popup::rows(players, p, now, media_popup::WIDTH))
@@ -145,7 +147,7 @@ impl App {
     pub(crate) fn media_timer_sync(&mut self) {
         let now = Instant::now();
         let open = self.media_shown() || self.panel_shown();
-        let due = mpris_of(self.tray.as_ref(), self.link.as_ref())
+        let due = mpris_of(self.tray.as_ref(), self.link.session.as_ref())
             .and_then(|m| m.players().active())
             .and_then(|p| media_popup::player_tick(open, p, now));
         let at = media_popup::next_deadline(due, self.media_timer.deadline(), now);

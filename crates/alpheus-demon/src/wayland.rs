@@ -407,14 +407,8 @@ pub struct App {
     /// The bar surface whose frame callback was asked for the tray's dirty
     /// properties (None: none asked).
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
-    /// The bar's own session link (link.rs): when the tray module is off and mode = "auto" or the
-    /// media module needs the session bus, ONE connection for both. None otherwise, or once its bus
-    /// closed (never reconnected).
-    pub(crate) link: Option<crate::link::SessionLink>,
-    /// Armed only while one of the link's calls is pending (2 s); never at rest.
-    pub(crate) link_timer: DeadlineTimer,
-    /// `open_link` already ran, successfully or not: never a second connection nor a second attempt.
-    pub(crate) link_tried: bool,
+    /// The bar's own session link, its timer and its bookkeeping (link.rs).
+    pub(crate) link: crate::link::LinkState,
     /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
     pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
@@ -423,9 +417,8 @@ pub struct App {
     pub(crate) tray_deferred_queued: bool,
     /// An idle callback is queued to route what waits in a bus's `ready` with no fd event to
     /// announce it: answers a flush drained, or that the settle rounds left after a burst.
-    /// One per connection, the tray's and the link's.
+    /// One per connection (the link's is `link.ready_queued`).
     pub(crate) tray_ready_queued: bool,
-    pub(crate) link_ready_queued: bool,
     /// The horizontal wheel, for tray icons only.
     pub(crate) hwheel: Wheel,
     /// The last button press (serial, time, surface-local position): Activate's
@@ -591,13 +584,10 @@ impl App {
             tray: None,
             tray_timer: DeadlineTimer::new(),
             tray_frame_pending: None,
-            link: None,
-            link_timer: DeadlineTimer::new(),
-            link_tried: false,
+            link: crate::link::LinkState::new(),
             dnd: false,
             tray_deferred_queued: false,
             tray_ready_queued: false,
-            link_ready_queued: false,
             hwheel: Wheel::default(),
             last_press: None,
             popup_press_time: 0,
