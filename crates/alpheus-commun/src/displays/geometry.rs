@@ -343,8 +343,8 @@ mod tests {
 
     #[test]
     fn scale_and_rotation_change_neighbors_place() {
-        let lenovo = logical_size(mode(1920, 1080, 60), Scale(1250), 0); // 1536×864
-        let s = [scr("A", lenovo.0, lenovo.1, Placement::Origin), scr("B", 1920, 1080, rel(Relation::RightOf, "A", Align::Start))];
+        let scaled = logical_size(mode(1920, 1080, 60), Scale(1250), 0); // 1536×864
+        let s = [scr("A", scaled.0, scaled.1, Placement::Origin), scr("B", 1920, 1080, rel(Relation::RightOf, "A", Align::Start))];
         assert_eq!(at(&s)[1], Some((1536, 0)));
         let rotated = logical_size(mode(1920, 1080, 60), Scale::ONE, 1); // 1080×1920
         let s = [scr("A", rotated.0, rotated.1, Placement::Origin), scr("B", 1920, 1080, rel(Relation::RightOf, "A", Align::End))];
