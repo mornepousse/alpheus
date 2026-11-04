@@ -1,5 +1,5 @@
 use super::*;
-use crate::tray::bus::testing::FakeOutbox;
+use crate::session_bus::bus::testing::FakeOutbox;
 
 #[test]
 fn the_rule_names_one_signal_of_the_portal_for_one_key() {

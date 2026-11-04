@@ -9,9 +9,9 @@ use alpheus_commun::theme::Roles;
 use alpheus_commun::theme::presets::preset;
 use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, effective_mode, resolve};
 use alpheus_demon::link::{LinkOutput, SessionLink};
-use alpheus_demon::tray::PORTAL_NAME;
-use alpheus_demon::tray::bus::{SessionBus, TIMEOUT};
-use alpheus_demon::tray::router::Tray;
+use alpheus_demon::session_bus::PORTAL_NAME;
+use alpheus_demon::session_bus::bus::{SessionBus, TIMEOUT};
+use alpheus_demon::session_bus::router::Tray;
 use common::portal::FakePortal;
 use common::{Peer, PrivateBus};
 use std::path::PathBuf;
@@ -153,7 +153,7 @@ fn a_silent_portal_times_out_once_then_dark() {
 #[test]
 #[ignore = "private dbus-daemon (nix develop)"]
 fn a_peer_cannot_set_the_mode_with_a_unicast_signal() {
-    use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+    use alpheus_demon::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
     let bus = PrivateBus::start("appearance-spoof");
     let session = SessionBus::at(&bus.address).unwrap();
     let ours = session.unique_name().to_string();

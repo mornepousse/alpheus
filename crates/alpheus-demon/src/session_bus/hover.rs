@@ -6,7 +6,7 @@
 
 use crate::grid::{Grid, Style, Target, text_width, truncate};
 use crate::popup::Anchor;
-use crate::tray::ItemKey;
+use crate::session_bus::ItemKey;
 use std::time::{Duration, Instant};
 
 pub const TOOLTIP_DELAY: Duration = Duration::from_millis(500);

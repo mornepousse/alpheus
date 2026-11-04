@@ -7,8 +7,8 @@ use crate::config::{BarConfig, ModuleId};
 use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::privacy::Privacy;
+use crate::session_bus::icons::TrayIcon;
 use crate::system::{BtState, BtView, NetState, PowerState, ProfileState, Resources, Sample, SoundState, WifiState};
-use crate::tray::icons::TrayIcon;
 use alpheus_commun::theme::settings::{BarStyle, ModuleColors};
 use std::time::{Duration, Instant};
 
@@ -457,8 +457,8 @@ mod tests {
 
     #[test]
     fn tray_message_redraws_only_on_change() {
-        use crate::tray::icons::{Icon, TrayIcon};
-        use crate::tray::{ItemKey, Status};
+        use crate::session_bus::icons::{Icon, TrayIcon};
+        use crate::session_bus::{ItemKey, Status};
         let icon = |c: char, status| TrayIcon {
             key: ItemKey { owner: ":1.7".into(), path: "/StatusNotifierItem".into() },
             icon: Icon::Letter(c),

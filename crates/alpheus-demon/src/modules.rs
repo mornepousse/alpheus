@@ -2,7 +2,7 @@
 //! declaration order (a test pins each row's `id` to its index). Adding a module: a `ModuleId` variant
 //! (config.rs), one row here, and, if it can be dropped on a narrow bar, its place in
 //! `layout::REMOVAL`; its segment function lives with the others (`segments.rs`). A module with a
-//! popup also needs a row of `popup::POPUPS`; one with a new source, a `Needs` flag (`launch::wanted`).
+//! popup also needs a row of `popup::POPUPS`; one with a new source, a `Needs` flag (`startup::wanted`).
 //!
 //! Left as `match`es because their arms hold logic, not data: `actions::module_command` (the
 //! clicks, which read the configuration), `actions::media_control` (a button to a player call).
@@ -14,7 +14,7 @@ use crate::popup::ModulePopup;
 use crate::segments;
 use crate::state::Bar;
 
-/// The sources a module asks for (`launch::wanted`): a module that is not in `modules` costs
+/// The sources a module asks for (`startup::wanted`): a module that is not in `modules` costs
 /// nothing. Plain bit flags, combined with `|` in the table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Needs(u16);

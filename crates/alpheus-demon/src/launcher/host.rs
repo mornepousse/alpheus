@@ -5,7 +5,6 @@
 //! closes the launcher, never the bar (spec § 3).
 
 use crate::compositor::Toplevel;
-use crate::launch::Mail;
 use crate::launcher::config::{LauncherConfig, config_path};
 use crate::launcher::history::History;
 use crate::launcher::model::Launcher;
@@ -15,6 +14,7 @@ use crate::launcher::sources::Entries;
 use crate::launcher::surface::{CloseReason, history_path_for, reply_on_close};
 use crate::log::write as log;
 use crate::sources::panic_text;
+use crate::startup::Mail;
 use crate::state::Feed;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{DmenuFlags, Reply, Request};
@@ -422,7 +422,7 @@ impl App {
     }
 
     /// Pushes the compositor's current windows to an open launcher — called
-    /// at most once per `dispatch()` pass (`launch::WindowsFeed`),
+    /// at most once per `dispatch()` pass (`startup::WindowsFeed`),
     /// never once per `Msg::Compositor`: `Launcher::set_windows` is not
     /// cheap, and a burst (e.g. niri) can carry several in one pass.
     pub fn launcher_windows_changed(&mut self) {

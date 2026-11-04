@@ -8,12 +8,12 @@ use crate::link::SessionLink;
 use crate::log::write as log;
 use crate::painter;
 use crate::popup::{Anchor as PopupAnchor, PopupBody, PopupClose};
+use crate::session_bus::bus::SessionBus;
+use crate::session_bus::mpris::Mpris;
+use crate::session_bus::notifications::Notifications;
+use crate::session_bus::router::{Tray, TrayOutput};
+use crate::session_bus::{Gesture, ItemKey, icons};
 use crate::state::Msg;
-use crate::tray::bus::SessionBus;
-use crate::tray::mpris::Mpris;
-use crate::tray::notifications::Notifications;
-use crate::tray::router::{Tray, TrayOutput};
-use crate::tray::{Gesture, ItemKey, icons};
 use crate::wayland::{App, eligible_for_frame};
 
 use smithay_client_toolkit::shell::WaylandSurface;

@@ -4,8 +4,8 @@
 
 mod common;
 
-use alpheus_demon::tray::Prop;
-use alpheus_demon::tray::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus, TIMEOUT, session_address};
+use alpheus_demon::session_bus::Prop;
+use alpheus_demon::session_bus::bus::{Call, CallError, CallId, Incoming, Outbox, Property, SessionBus, TIMEOUT, session_address};
 use common::{Peer, PrivateBus};
 use dbus::arg::Variant;
 use std::ffi::OsString;
@@ -220,7 +220,7 @@ fn the_xdg_runtime_bus_socket_is_found() {
 
 // ---- The fakes themselves, driven by a plain Peer ----
 
-use alpheus_demon::tray::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use alpheus_demon::session_bus::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use common::sni::{FakeItem, FakeMenu, FakeWatcher, Registration, Spec, Value};
 use dbus::Message;
 
@@ -683,9 +683,9 @@ fn an_icon_pixmap_value_is_available_though_never_read() {
 
 // ---- The watcher and the router ----
 
-use alpheus_demon::tray::ItemKey;
-use alpheus_demon::tray::host::Item;
-use alpheus_demon::tray::router::{Role, Tray, TrayOutput};
+use alpheus_demon::session_bus::ItemKey;
+use alpheus_demon::session_bus::host::Item;
+use alpheus_demon::session_bus::router::{Role, Tray, TrayOutput};
 use std::collections::HashSet;
 use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1349,7 +1349,7 @@ fn the_menu_closes_when_its_app_leaves() {
 
 // ---- Gestures ----
 
-use alpheus_demon::tray::Gesture;
+use alpheus_demon::session_bus::Gesture;
 
 /// Steam's libappindicator has no Activate (spike § 4): the left click's
 /// UnknownMethod answer opens its menu instead.

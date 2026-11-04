@@ -1,6 +1,6 @@
 //! The media module's model (media spec docs/specs/2026-10-08-alpheus-media-design.md): the MPRIS
 //! players, which one is active, their track, and what the bar and the popup show. Pure: it never
-//! names D-Bus (`tray/codec.rs` hands it `Value`s), starts nothing and never reads the clock (its
+//! names D-Bus (`session_bus/codec.rs` hands it `Value`s), starts nothing and never reads the clock (its
 //! callers pass the `Instant`). Bounded: 16 players, cleaned strings of at most 256 characters,
 //! 8 artists.
 
@@ -57,7 +57,7 @@ pub enum Control {
     Previous,
 }
 
-/// A decoded D-Bus variant, built by tray/codec.rs; media.rs never names `dbus`.
+/// A decoded D-Bus variant, built by session_bus/codec.rs; media.rs never names `dbus`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Str(String),

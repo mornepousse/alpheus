@@ -1,6 +1,6 @@
 //! The launcher socket's side of the event loop: the listener and each connection registered on
 //! calloop, the connection cap, the request deadline, and the verbs answered before the launcher's
-//! guard (`socket.rs` keeps the socket itself, pure of calloop). Started by `launch::run`.
+//! guard (`socket.rs` keeps the socket itself, pure of calloop). Started by `startup::run`.
 
 use crate::launcher::host::guarded;
 use crate::launcher::socket::{Conn, MAX_CONNECTIONS, Progress, REQUEST_DEADLINE, Server};

@@ -1,7 +1,7 @@
 //! The notification server's model (notifications spec docs/specs/2026-10-09-alpheus-notifications-design.md):
 //! what came in, cleaned and capped; ids, tags and revisions; the timeouts; the spam guards (a 1 s
 //! merge window, a token bucket per application, a cap on live bubbles); the history, do-not-disturb
-//! and the unread count; which bubbles show. Pure: it never names D-Bus (tray/codec.rs decodes the
+//! and the unread count; which bubbles show. Pure: it never names D-Bus (session_bus/codec.rs decodes the
 //! calls and calls the `*_text` cleaners here), starts nothing and never reads the clock (its callers
 //! pass the `Instant` and the local time, `clock::local_minutes`). Bounded: `history + MAX_LIVE` entries, each capped.
 

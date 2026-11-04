@@ -25,15 +25,15 @@ use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
+use alpheus_demon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
+use alpheus_demon::session_bus::{
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+};
 use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
-use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
-use alpheus_demon::tray::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
-};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -320,10 +320,10 @@ fn the_daemon_only_reads_from_the_compositor() {
 /// roundtrip at startup) would leave its debounce unarmed until the next hotplug.
 #[test]
 fn the_displays_timer_is_synced_once_the_loop_exists() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
     let set = "state.loop_handle = Some(handle.clone());";
-    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in launch.rs"));
+    let at = prod.find(set).unwrap_or_else(|| panic!("{set} not found in startup.rs"));
     assert!(prod[at + set.len()..].trim_start().starts_with("state.displays_sync();"), "displays_sync right after the loop handle");
 }
 
@@ -331,9 +331,9 @@ fn the_displays_timer_is_synced_once_the_loop_exists() {
 /// output manager) still exists, before the connection's last flush carries it.
 #[test]
 fn the_displays_are_restored_before_the_app_is_dropped() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
-    let body = &prod[prod.find("fn shut_down(").expect("shut_down in launch.rs")..];
+    let body = &prod[prod.find("fn shut_down(").expect("shut_down in startup.rs")..];
     let at = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("{needle} not found in shut_down"));
     let restore = at("state.displays_shutdown()");
     assert!(restore < at("drop(core.state);"), "restored before the app is dropped");
@@ -585,14 +585,14 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
 fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let (popup, launch) = (src("popup.rs"), src("launch.rs"));
+    let (popup, startup) = (src("popup.rs"), src("startup.rs"));
     for f in ["pub(crate) fn keyboard_release(", "pub(crate) fn keyboard_lost("] {
         let body = function_body(&popup, f);
         assert!(body.contains("self.keyboard_retire(k)"), "{f} must retire the keyboard, never drop it: {body}");
     }
     let retire = function_body(&popup, "fn keyboard_retire(");
     assert!(retire.contains("self.keyboard.retired.hold(k)"), "keyboard_retire must hold it: {retire}");
-    let run = function_body(&launch, "fn main_loop(");
+    let run = function_body(&startup, "fn main_loop(");
     let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
     let drain = run.find("state.keyboard.retired.drain()").expect("the loop must drain the retired keyboards");
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
@@ -615,7 +615,7 @@ fn the_panel_marks_read_only_after_it_opened() {
     assert!(read < shown, "marked read inside the shown branch, before `panel shown`: {body}");
 }
 
-/// The settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
+/// The settle rounds (link.rs, session_bus/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
 /// idle read. libdbus's flush reads only when its write has to wait, so no private bus builds that
@@ -957,7 +957,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
     const TOKENS: [&str; 5] = ["Timer::", "thread::Builder", "thread::spawn", "Generic::new", "get_keyboard"];
     const ALLOWED: &[(&str, &str, usize)] = &[
         // The bar's clock and resources timers.
-        ("launch.rs", "Timer::", 2),
+        ("startup.rs", "Timer::", 2),
         // The launcher's request deadline, armed per connection and removed once it is read; the
         // listener's resume, armed only after an accept() error.
         ("launcher/socket_glue.rs", "Timer::", 2),
@@ -965,14 +965,14 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // timeout, armed only while a call is pending.
         ("deadline.rs", "Timer::", 2),
         // The bar's signal guard.
-        ("launch.rs", "thread::Builder", 1),
+        ("startup.rs", "thread::Builder", 1),
         // The launcher's listening socket (its fd: the one thing at rest) and
         // one watch per connection being read.
         ("launcher/socket_glue.rs", "Generic::new", 2),
         // The tray's session-bus fd (only inserted when "tray" is in modules and a
         // session bus answers — an unused module costs nothing at runtime, but the call itself is
         // still in the source).
-        ("launch.rs", "Generic::new", 1),
+        ("startup.rs", "Generic::new", 1),
         // In wayland.rs: the tray's DeadlineTimer, armed only while calls are pending; the tooltip's,
         // armed only while the pointer rests on a tray icon; the media popup's tick, armed only while
         // that popup is open and its player plays; the power menu's (power spec § 4), armed only
@@ -1137,8 +1137,14 @@ fn d_bus_is_confined_to_sources_and_read_only() {
 /// The files that may name the `dbus` crate: the system bus's, Bluetooth's
 /// acting connection (`bt_act.rs`), and the tray's four (its connection,
 /// codec, watcher and router).
-const DBUS_FILES: [&str; 6] =
-    ["sources/dbus/dbusrs_bus.rs", "sources/dbus/bt_act.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+const DBUS_FILES: [&str; 6] = [
+    "sources/dbus/dbusrs_bus.rs",
+    "sources/dbus/bt_act.rs",
+    "session_bus/bus.rs",
+    "session_bus/codec.rs",
+    "session_bus/watcher.rs",
+    "session_bus/router.rs",
+];
 
 /// Bluetooth's acting connection (quick settings delivery 3, spec § 5): the
 /// only D-Bus file that changes anything, and only through the pinned
@@ -1238,9 +1244,9 @@ fn tray_d_bus_is_confined_and_allowlisted() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
         if uses_crate(&t, "dbus_crossroads") {
-            assert_eq!(name, "tray/watcher.rs", "dbus-crossroads used in {name}");
+            assert_eq!(name, "session_bus/watcher.rs", "dbus-crossroads used in {name}");
         }
-        if !name.starts_with("tray/") {
+        if !name.starts_with("session_bus/") {
             continue;
         }
         tray_files += 1;
@@ -1264,7 +1270,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
         // bare crossroads-style `ctx.method_call(` or any future way of building a call is caught the
         // same way, without double-counting the one already-allowed spelling. Consequence: no
-        // private method under tray/ may be named `method_call` either — its definition
+        // private method under session_bus/ may be named `method_call` either — its definition
         // (`fn method_call(`) and every call site (`self.method_call(`) are substring matches too,
         // failing this guardrail even though the method has nothing to do with building a
         // `dbus::Message` (the router's dispatch method is named `inbound_call`, not
@@ -1274,7 +1280,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         }
     }
     assert!(tray_files >= 2, "the tray's sources were not found");
-    assert_eq!(built, ["tray/bus.rs"], "every tray call is built by bus::message, from a Call");
+    assert_eq!(built, ["session_bus/bus.rs"], "every tray call is built by bus::message, from a Call");
     let names: Vec<&str> = TrayMethod::ALL.iter().map(|m| m.name()).collect();
     assert_eq!(
         names,
@@ -1347,7 +1353,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
 const NO_THREAD_NOR_COMMAND: [&str; 43] = [
-    "tray/",
+    "session_bus/",
     "media.rs",
     "notify.rs",
     "osd.rs",
@@ -1736,9 +1742,9 @@ fn the_theme_and_camera_watches_only_read() {
 /// sees no bus and gives up for good).
 #[test]
 fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
-    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/launch.rs")).unwrap();
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
     let prod = production_code(&text);
-    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in launch.rs"));
+    let at = |needle: &str| prod.find(needle).unwrap_or_else(|| panic!("{needle} not found in startup.rs"));
     let last = at("state.theme_changed();");
     assert_eq!(prod.matches("state.theme_changed();").count(), 1);
     for before in ["crate::watch::start(", "start_tray(state, handle)", "state.follow_portal_if_auto();", "state.publish_mode();"] {
@@ -1757,19 +1763,19 @@ fn the_notification_server_has_no_panicking_path() {
         |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("{name}"));
     for name in [
         "notify.rs",
-        "tray/notifications.rs",
+        "session_bus/notifications.rs",
         "notify_app.rs",
         "bubbles.rs",
         "bubbles_surface.rs",
         "panel.rs",
         "state_file.rs",
-        "tray/codec.rs",
+        "session_bus/codec.rs",
     ] {
         let t = text(name);
         let production = t.split("#[cfg(").next().unwrap_or_default();
         assert!(!panics(production), "a panicking call in {name}'s production code");
     }
-    let bus = text("tray/bus.rs");
+    let bus = text("session_bus/bus.rs");
     let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
     let end = bus.find("pub fn session_address").expect("the builders end before session_address");
     assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");
@@ -2530,8 +2536,8 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
         "privacy_at, privacy_changed, else privacy_timer_sync: {feed}"
     );
     // The mail callback feeds it before the bar keeps the message (as the OSD reads sound first).
-    let launch = src("launch.rs");
-    let (fed, kept) = (launch.find("self.privacy_feed(&m)"), launch.find("on_message(self, m,"));
+    let startup = src("startup.rs");
+    let (fed, kept) = (startup.find("self.privacy_feed(&m)"), startup.find("on_message(self, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 

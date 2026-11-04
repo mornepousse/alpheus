@@ -1,5 +1,5 @@
 use super::*;
-use crate::tray::codec::MenuProps;
+use crate::session_bus::codec::MenuProps;
 
 fn node(id: i32, label: &str) -> MenuNode {
     MenuNode { id, props: MenuProps { label: Some(label.into()), ..MenuProps::default() }, children: Vec::new() }

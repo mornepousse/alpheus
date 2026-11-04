@@ -560,8 +560,8 @@ mod tests;
 #[cfg(test)]
 mod gesture_tests {
     use super::*;
-    use crate::tray::Orientation;
-    use crate::tray::icons::testing::{Fake, host};
+    use crate::session_bus::Orientation;
+    use crate::session_bus::icons::testing::{Fake, host};
 
     fn key() -> ItemKey {
         ItemKey { owner: ":1.100".into(), path: "/StatusNotifierItem".into() }

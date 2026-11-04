@@ -2,8 +2,8 @@
 //! 8 MiB `image-data` decodes with no more allocation than one without it. Measured by this test
 //! binary's own counting allocator, per thread, so nothing else in the binary blurs the count.
 
-use alpheus_demon::tray::codec::{Inbound, inbound};
-use alpheus_demon::tray::{NOTIFICATIONS_INTERFACE, NOTIFICATIONS_PATH};
+use alpheus_demon::session_bus::codec::{Inbound, inbound};
+use alpheus_demon::session_bus::{NOTIFICATIONS_INTERFACE, NOTIFICATIONS_PATH};
 use dbus::Message;
 use dbus::arg::{IterAppend, Variant};
 use dbus::strings::Signature;

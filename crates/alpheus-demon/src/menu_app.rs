@@ -4,9 +4,9 @@
 use crate::actions::Button;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, PopupBody, PopupClose};
-use crate::tray::ItemKey;
-use crate::tray::menu::{Menu, MenuAction};
-use crate::tray::menu_session::MenuSession;
+use crate::session_bus::ItemKey;
+use crate::session_bus::menu::{Menu, MenuAction};
+use crate::session_bus::menu_session::MenuSession;
 use crate::wayland::{App, position_by};
 use smithay_client_toolkit::shell::WaylandSurface;
 use std::time::Instant;
@@ -106,7 +106,7 @@ impl App {
         let Some((key, anchor)) = self.menu.target.clone() else { return };
         // Mae: at most 2 s from the request to the menu — each call has its own 2 s, so a layout can
         // land later than that; it opens nothing then.
-        if self.menu.asked_at.is_some_and(|t| t.elapsed() > crate::tray::bus::TIMEOUT) {
+        if self.menu.asked_at.is_some_and(|t| t.elapsed() > crate::session_bus::bus::TIMEOUT) {
             self.menu_end();
             log("tray: menu not shown (timeout)");
             return;

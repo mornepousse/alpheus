@@ -8,8 +8,8 @@ use crate::config::ModuleId;
 use crate::grid::{Grid, Target};
 use crate::media::Control;
 use crate::painter::column_under;
+use crate::session_bus::{Gesture, Orientation};
 use crate::state::{Bar, Feed};
-use crate::tray::{Gesture, Orientation};
 use alpheus_commun::exec::Executor;
 
 use crate::log::write as log;

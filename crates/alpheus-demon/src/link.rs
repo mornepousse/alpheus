@@ -8,7 +8,7 @@
 //! It is driven by the bar's loop (no thread), like the tray's connection. Once opened it stays open:
 //! no retry and no teardown, since an idle connection costs nothing at rest.
 //!
-//! Calls and decoding are the tray's typed allowlist (`tray::bus`, `tray::codec`), so this file never
+//! Calls and decoding are the tray's typed allowlist (`session_bus::bus`, `session_bus::codec`), so this file never
 //! names the dbus crate. Never name a function `method_call` here: the guardrails count that
 //! substring.
 
@@ -18,11 +18,11 @@ use crate::deadline::DeadlineTimer;
 use crate::log::write as log;
 use crate::media::MediaView;
 use crate::notify::NotifyView;
-use crate::tray::bus::{Incoming, SessionBus, refusal};
-use crate::tray::codec::{self, Signal};
-use crate::tray::mpris::Mpris;
-use crate::tray::notifications::{self, Notifications};
-use crate::tray::router::TrayOutput;
+use crate::session_bus::bus::{Incoming, SessionBus, refusal};
+use crate::session_bus::codec::{self, Signal};
+use crate::session_bus::mpris::Mpris;
+use crate::session_bus::notifications::{self, Notifications};
+use crate::session_bus::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
 use smithay_client_toolkit::reexports::calloop::generic::Generic;

@@ -8,15 +8,15 @@ use crate::actions::{self, Button, Wheel};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
-use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
+use crate::session_bus::ItemKey;
+use crate::session_bus::hover::{self, Hover, HoverChange};
+use crate::session_bus::router::Tray;
+use crate::startup::Mail;
 use crate::state::Bar;
-use crate::tray::ItemKey;
-use crate::tray::hover::{self, Hover, HoverChange};
-use crate::tray::router::Tray;
 use alpheus_commun::exec::Executor;
 use alpheus_commun::theme::Roles;
 use alpheus_commun::theme::settings::ThemeSettings;
@@ -374,7 +374,7 @@ pub struct App {
     pub stop: bool,
     /// Raised by a message that changed the display (channel, clock):
     /// redrawn exactly once after `loop.dispatch()` returns, not on every
-    /// message — see `launch::on_message`.
+    /// message — see `startup::on_message`.
     pub(crate) dirty: bool,
     /// Outputs restored since their last surface was closed (`closed`),
     /// with no successful `configure` since (see `should_restore_once`): at
@@ -394,7 +394,7 @@ pub struct App {
     /// The screens through the output management protocol (outputs_app.rs); None without `displays` in
     /// `modules` or without the manager.
     pub(crate) displays: Option<crate::outputs_app::OutputsApp>,
-    /// The event loop's handle (launch.rs sets it): keyboard repeat, socket
+    /// The event loop's handle (startup.rs sets it): keyboard repeat, socket
     /// connections, the dmenu client watch, the tray's deadline timer.
     pub loop_handle: Option<LoopHandle<'static, App>>,
     /// For the tray's frame requests, made outside any Wayland callback, and the bubbles' surface.
@@ -432,7 +432,7 @@ pub struct App {
     pub(crate) launcher: Option<OpenLauncher>,
     /// Bumped at each open: a scan result from an older open is ignored.
     pub(crate) launcher_generation: u64,
-    /// The loop's mailbox (launch.rs sets it): a scan posts its catalog there.
+    /// The loop's mailbox (startup.rs sets it): a scan posts its catalog there.
     pub(crate) mail: Option<channel::Sender<Mail>>,
     /// xdg_wm_base, for the popups; None: no popups (logged once at startup).
     pub(crate) xdg: Option<XdgShell>,
@@ -475,7 +475,7 @@ pub struct App {
     /// briefly share, in the ≤ ½ s between arming and firing. Cleared whenever `Hover` itself cancels (`hover_apply`'s `Cancel` arm).
     hover_surface: Option<wl_surface::WlSurface>,
     /// Raised by a `Msg::Compositor` message, consumed once per
-    /// `dispatch()` pass (`launch::WindowsFeed`): an open launcher's windows
+    /// `dispatch()` pass (`startup::WindowsFeed`): an open launcher's windows
     /// are fed at most once per pass, never once per message — a burst
     /// (e.g. niri) can carry several in the same pass, and `set_windows` is
     /// not cheap.
@@ -766,7 +766,7 @@ impl App {
     }
 
     /// Called once per `loop.dispatch()` pass, right after `after_dispatch`
-    /// (`launch::run`): places the bar back on every output `closed` marked
+    /// (`startup::run`): places the bar back on every output `closed` marked
     /// for restoration this batch and that is still known now — see
     /// `pending_restores`'s doc for why this can't be decided synchronously
     /// inside `closed` itself.
@@ -1061,7 +1061,7 @@ impl LayerShellHandler for App {
         // hasn't run yet) and restore it, only for `output_destroyed` a
         // moment later to tear it right back down — an extra remove+place
         // pair with no purpose. `restore_pending`, called once the whole
-        // batch has been dispatched (`launch::run`), sees the true end
+        // batch has been dispatched (`startup::run`), sees the true end
         // state instead.
         //
         // `should_restore_once` (bounding restores to one per output as
@@ -1482,7 +1482,7 @@ fn popup_pointer_kind(wheel: &mut Wheel, kind: &PointerEventKind) -> Option<Popu
     }
 }
 
-impl crate::launch::DeferredRedraw for App {
+impl crate::startup::DeferredRedraw for App {
     fn bar_mut(&mut self) -> &mut Bar {
         &mut self.bar
     }
@@ -1497,7 +1497,7 @@ impl crate::launch::DeferredRedraw for App {
     }
 }
 
-impl crate::launch::WindowsFeed for App {
+impl crate::startup::WindowsFeed for App {
     fn windows_dirty_mut(&mut self) -> &mut bool {
         &mut self.windows_dirty
     }

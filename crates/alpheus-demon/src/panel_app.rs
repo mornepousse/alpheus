@@ -8,7 +8,7 @@ use crate::media_popup::MediaAction;
 use crate::notify::Center;
 use crate::panel::{self, Panel, PanelAction};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer, no_hook};
-use crate::tray::mpris::Mpris;
+use crate::session_bus::mpris::Mpris;
 use crate::tray_bridge::{mpris_of, notifications_of};
 use crate::wayland::App;
 use smithay_client_toolkit::reexports::client::QueueHandle;
@@ -42,7 +42,7 @@ impl App {
             notifications_of(tray.as_ref(), link.session.as_ref()).map(|n| {
                 let mut p = Panel::new(n.center(), players, room);
                 panel::scroll_into_view(&mut p, n.center(), players);
-                let rows = panel::rows(n.center(), players, &p, now, crate::tray::notifications::minute_now());
+                let rows = panel::rows(n.center(), players, &p, now, crate::session_bus::notifications::minute_now());
                 let card = panel::items(n.center(), players).first() == Some(&panel::Item::Card);
                 (p, rows, card)
             })
@@ -136,7 +136,7 @@ impl App {
                     panel::scroll_into_view(p, n.center(), players);
                     let before = p.entries;
                     p.entries = n.center().history().count();
-                    Some((panel::rows(n.center(), players, p, now, crate::tray::notifications::minute_now()), before, p.entries))
+                    Some((panel::rows(n.center(), players, p, now, crate::session_bus::notifications::minute_now()), before, p.entries))
                 }
                 _ => None,
             }

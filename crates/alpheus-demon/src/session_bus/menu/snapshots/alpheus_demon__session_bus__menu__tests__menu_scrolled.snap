@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus-demon/src/tray/menu.rs
+source: crates/alpheus-demon/src/session_bus/menu.rs
 expression: snapshot(&rows)
 ---
  Entry 5  ▴

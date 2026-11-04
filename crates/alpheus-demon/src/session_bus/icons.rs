@@ -110,11 +110,11 @@ pub fn icons(items: &[Item], overrides: &BTreeMap<String, String>) -> Vec<TrayIc
 /// run against, independent of the host's internals.
 #[cfg(test)]
 pub(crate) mod testing {
-    use crate::tray::bus::testing::FakeOutbox;
-    use crate::tray::bus::{Call, CallError, Property};
-    use crate::tray::codec::Reply;
-    use crate::tray::host::{Host, Item};
-    use crate::tray::{Prop, PropValue, Status};
+    use crate::session_bus::bus::testing::FakeOutbox;
+    use crate::session_bus::bus::{Call, CallError, Property};
+    use crate::session_bus::codec::Reply;
+    use crate::session_bus::host::{Host, Item};
+    use crate::session_bus::{Prop, PropValue, Status};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -242,7 +242,7 @@ mod tests {
     use super::testing::{Answers, Fake, items};
     use super::*;
     use crate::grid::text_width;
-    use crate::tray::Prop;
+    use crate::session_bus::Prop;
 
     fn no_overrides() -> BTreeMap<String, String> {
         BTreeMap::new()

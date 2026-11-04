@@ -130,11 +130,11 @@ fn a_100_kb_title_is_capped() {
     let huge = "é".repeat(50_000);
     assert!(huge.len() >= 100_000);
     let t = metadata(&[("xesam:title", s(&huge)), ("xesam:artist", list(&[huge.as_str()]))]);
-    assert_eq!(t.title.as_deref().map(|x| x.chars().count()), Some(crate::tray::MAX_TEXT));
-    assert_eq!(t.artists[0].chars().count(), crate::tray::MAX_TEXT);
+    assert_eq!(t.title.as_deref().map(|x| x.chars().count()), Some(crate::session_bus::MAX_TEXT));
+    assert_eq!(t.artists[0].chars().count(), crate::session_bus::MAX_TEXT);
     let mut p = players(&[("spotify", ":1.4", "Playing")]);
     p.set_identity(":1.4", &huge);
-    assert_eq!(p.get(":1.4").and_then(|x| x.identity.as_ref()).map(|x| x.chars().count()), Some(crate::tray::MAX_TEXT));
+    assert_eq!(p.get(":1.4").and_then(|x| x.identity.as_ref()).map(|x| x.chars().count()), Some(crate::session_bus::MAX_TEXT));
 }
 
 /// A newline in a title never reaches the bar (cleaned to a space, like the tray).
