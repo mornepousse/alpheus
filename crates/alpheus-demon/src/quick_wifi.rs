@@ -10,7 +10,7 @@ use crate::config::QuickConfig;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::keys::Key;
 use crate::list;
-use crate::quick::{LOCK, Line, QuickAction, argv, run, text_row};
+use crate::quick::{LOCK, Line, QuickAction, argv, moved, nav, run, text_row};
 use crate::quick_secret::Secret;
 use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
 use crate::text;
@@ -664,26 +664,16 @@ impl Wifi {
         let nets = self.networks();
         let picks = self.picks(&nets, config);
         let at = picks.iter().position(|p| *p == self.pick);
-        let last = picks.len().saturating_sub(1);
-        let to = match k {
+        match k {
             Key::Escape | Key::Left => {
                 self.close_detail();
                 return QuickAction::Redraw;
             }
             Key::Enter => return self.activate(config, &nets, now),
-            Key::Up | Key::CtrlP => at.map_or(0, |a| a.saturating_sub(1)),
-            Key::Down | Key::CtrlN => at.map_or(0, |a| (a + 1).min(last)),
-            Key::Home => 0,
-            Key::End => last,
-            _ => return QuickAction::Nothing,
-        };
-        match picks.get(to) {
-            Some(p) if *p != self.pick => {
-                self.pick = p.clone();
-                QuickAction::Redraw
-            }
-            _ => QuickAction::Nothing,
+            _ => {}
         }
+        let Some(to) = nav(k, at, picks.len()) else { return QuickAction::Nothing };
+        picks.into_iter().nth(to).map_or(QuickAction::Nothing, |p| moved(&mut self.pick, p))
     }
 
     /// Keys while the field is open: characters, Backspace, Ctrl+U edit; Enter sends; Escape closes

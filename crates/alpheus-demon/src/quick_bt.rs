@@ -13,7 +13,7 @@ use crate::actions::Button;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::keys::Key;
 use crate::list;
-use crate::quick::{Line, Question, QuickAction, run, text_row};
+use crate::quick::{Line, Question, QuickAction, moved, nav, run, text_row};
 use crate::quick_wifi::VALUE_CELLS;
 use crate::segments::{BLUETOOTH, BLUETOOTH_CONNECTED};
 use crate::session::{self, Activation};
@@ -625,8 +625,7 @@ impl Bt {
         }
         let devices: Vec<String> = self.devices().iter().map(|d| d.path.clone()).collect();
         let at = self.selected.as_ref().and_then(|p| devices.iter().position(|d| d == p)).map_or(0, |i| i + 1);
-        let last = devices.len();
-        let to = match k {
+        match k {
             Key::Escape | Key::Left => return orders(self.close_detail()),
             Key::Char(' ') if self.selected.is_none() => {
                 let a = self.toggle();
@@ -635,22 +634,11 @@ impl Bt {
             }
             Key::Enter => return self.activate(confirm, now),
             Key::Delete => return self.ask_forget(confirm, now),
-            Key::Up | Key::CtrlP => at.saturating_sub(1),
-            Key::Down | Key::CtrlN => (at + 1).min(last),
-            Key::Home => 0,
-            Key::End => last,
-            _ => return QuickAction::Nothing,
-        };
-        self.select(to.checked_sub(1).and_then(|i| devices.get(i)).cloned())
-    }
-
-    /// The selection on `to`: Redraw when it moved.
-    fn select(&mut self, to: Option<String>) -> QuickAction {
-        if to == self.selected {
-            return QuickAction::Nothing;
+            _ => {}
         }
-        self.selected = to;
-        QuickAction::Redraw
+        // The header first: one more entry than the devices.
+        let Some(to) = nav(k, Some(at), devices.len() + 1) else { return QuickAction::Nothing };
+        moved(&mut self.selected, to.checked_sub(1).and_then(|i| devices.get(i)).cloned())
     }
 
     /// A press on a detail line: a left one on the header goes back; on a device it selects it then
@@ -671,20 +659,20 @@ impl Bt {
         match (line, b, device) {
             (Line::BtHeader, Button::Left, _) => orders(self.close_detail()),
             (Line::BtDevice(_), Button::Left, Some(p)) => {
-                let moved = self.select(Some(p));
+                let on_it = moved(&mut self.selected, Some(p));
                 match self.activate(confirm, now) {
-                    QuickAction::Nothing => moved,
+                    QuickAction::Nothing => on_it,
                     a => a,
                 }
             }
             (Line::BtDevice(_), Button::Right, Some(p)) => {
-                let moved = self.select(Some(p));
+                let on_it = moved(&mut self.selected, Some(p));
                 if confirm.is_some() {
                     // Already asked about this device: the question stays as it is.
-                    return moved;
+                    return on_it;
                 }
                 match self.ask_forget(confirm, now) {
-                    QuickAction::Nothing => moved,
+                    QuickAction::Nothing => on_it,
                     a => a,
                 }
             }
