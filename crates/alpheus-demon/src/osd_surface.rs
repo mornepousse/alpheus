@@ -2,7 +2,7 @@
 //! output (the compositor's choice when it is unknown), anchored at the bottom only: centred,
 //! `margin` px above the edge, exclusive zone 0. No keyboard, and an EMPTY input region: it never
 //! takes a click. Created on show, dropped on hide with its own small pool, so nothing of it stays
-//! resident. One `DeadlineTimer` (`App::osd_timer`) hides it `timeout_ms` after the last change.
+//! resident. One `DeadlineTimer` (`OsdSurface::timer`) hides it `timeout_ms` after the last change.
 //! Overlay, because Hyprland draws Top under a fullscreen window.
 
 use crate::backlight;
