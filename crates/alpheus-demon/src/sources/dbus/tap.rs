@@ -70,5 +70,6 @@ impl Tap {
     }
 }
 
+/// Names only: `WifiTap` and `BtTap` are one type, the compiler does not tell them apart.
 pub type WifiTap = Tap;
 pub type BtTap = Tap;

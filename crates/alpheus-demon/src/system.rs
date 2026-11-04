@@ -260,6 +260,7 @@ pub enum PanelScope {
 /// `sources::dbus::wifi::WifiTap`. `Row`: the radio, the Wi-Fi device and the access point it is on;
 /// `Detail`: the detail is open or a connection is under way, every access point and the saved
 /// profiles too, and their signals followed.
+/// Names only: `WifiScope` and `BtScope` are one type, the compiler does not tell them apart.
 pub type WifiScope = PanelScope;
 
 /// An access point's security, from NetworkManager's NM80211ApFlags and NM80211ApSecurityFlags.
