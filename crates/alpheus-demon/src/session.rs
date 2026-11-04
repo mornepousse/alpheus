@@ -139,7 +139,8 @@ pub fn ask<Q: PartialEq + Clone>(question: &mut Option<(Q, Instant)>, q: Q, now:
     }
 }
 
-/// At `now`: the question gone once CONFIRM passed; true when it just went (its row redrawn).
+/// At `now`: what waits until an instant (a question, a list's `failed` mark) gone once that passed;
+/// true when it just went (its row redrawn).
 pub fn expire<Q>(question: &mut Option<(Q, Instant)>, now: Instant) -> bool {
     if question.as_ref().is_some_and(|(_, at)| *at <= now) {
         *question = None;

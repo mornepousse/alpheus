@@ -12,8 +12,8 @@
 use crate::actions::Button;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::keys::Key;
-use crate::list;
-use crate::quick::{Line, Question, QuickAction, moved, nav, run, text_row};
+pub use crate::quick::FAILED_SHOWN;
+use crate::quick::{FAILED_TAG, Line, Question, QuickAction, RUNNING_TAG, moved, nav, note_row, run, text_row};
 use crate::quick_wifi::VALUE_CELLS;
 use crate::segments::{BLUETOOTH, BLUETOOTH_CONNECTED};
 use crate::session::{self, Activation};
@@ -40,14 +40,10 @@ pub const OFF_NOTE: &str = "Bluetooth is off";
 pub const NEARBY: &str = "Nearby";
 /// A paired, unconnected device's tag.
 const PAIRED_TAG: &str = "paired";
-/// The tags of an action running, a failure, and the forget question (spec § 2).
-const RUNNING_TAG: &str = "…";
-const FAILED_TAG: &str = "failed";
+/// The forget question's tag (spec § 2).
 const FORGET_TAG: &str = "Forget? ⏎";
 /// How long each call of an action may wait for its answer (spec § 2).
 pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
-/// How long `failed` shows after a failure.
-pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
 /// BlueZ's answer to a `Connect` on a device already connected: a success.
 const ALREADY_CONNECTED: &str = "org.bluez.Error.AlreadyConnected";
 /// The object went (a device removed meanwhile): the action ends silently.
@@ -463,11 +459,7 @@ impl Bt {
     /// At `now`: the action's deadline passed (its pairing cancelled, its call forgotten, `failed`,
     /// a `(timeout)` log line), `failed` gone; and whether to repaint.
     pub fn due(&mut self, now: Instant) -> (Vec<BtOrder>, Option<String>, bool) {
-        let mut redraw = false;
-        if self.failed.as_ref().is_some_and(|(_, until)| *until <= now) {
-            self.failed = None;
-            redraw = true;
-        }
+        let redraw = session::expire(&mut self.failed, now);
         let Some(a) = self.action.as_ref().filter(|a| a.deadline.is_some_and(|d| d <= now)) else {
             return (Vec::new(), None, redraw);
         };
@@ -701,9 +693,7 @@ impl Bt {
             Line::BtNearby => {
                 g.write(1, end.saturating_sub(1), NEARBY, Style::MUTED);
             }
-            Line::BtNote(note) => {
-                g.write(3, end.saturating_sub(1), note, Style::MUTED);
-            }
+            Line::BtNote(note) => note_row(g, note),
             Line::BtDevice(i) => {
                 if let Some(d) = devices.get(i) {
                     let (tag, style) = self.tag(d, confirm);
@@ -743,21 +733,15 @@ impl Bt {
 /// cell from the end. Selected: the band across the whole row.
 fn device_row(g: &mut Grid, d: &BtEntry, tag: &str, tag_style: Style, selected: bool) {
     let end = g.width();
-    let tag_width = text_width(tag);
-    let room = if tag_width > 0 { tag_width + 2 } else { 1 };
+    let room = match text_width(tag) {
+        0 => 1,
+        w => w + 2,
+    };
     let label = if d.label.trim().is_empty() { "?" } else { d.label.as_str() };
     let label = truncate(label, end.saturating_sub(5).saturating_sub(room));
     let text = format!("{} {label}", kind_glyph(d.kind));
     let mark = if d.connected { '●' } else { ' ' };
-    list::row(
-        g,
-        0,
-        end,
-        &list::Row { icon: Some(mark), icon_style: Style::ACCENT, text: &text, right: "", style: Style::NORMAL, selected },
-    );
-    if tag_width > 0 {
-        g.write(end.saturating_sub(tag_width + 1), end, tag, if selected { Style::SELECTED } else { tag_style });
-    }
+    text_row(g, Some(mark), &text, tag, tag_style, selected);
 }
 
 #[cfg(test)]

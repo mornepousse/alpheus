@@ -10,8 +10,10 @@ use crate::config::QuickConfig;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::keys::Key;
 use crate::list;
-use crate::quick::{LOCK, Line, QuickAction, argv, moved, nav, run, text_row};
+pub use crate::quick::FAILED_SHOWN;
+use crate::quick::{FAILED_TAG, LOCK, Line, QuickAction, RUNNING_TAG, argv, moved, nav, note_row, run, text_row};
 use crate::quick_secret::Secret;
+use crate::session;
 use crate::system::{AccessPoint, SavedWifi, Security, WifiDevice, WifiScope, WifiState};
 use crate::text;
 use std::cmp::Reverse;
@@ -43,8 +45,6 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// An attempt still activating on its network at CONNECT_TIMEOUT waits up to this long from its
 /// start (beyond NetworkManager's default 45 s DHCP timeout); then it ends, its profile kept.
 pub const ACTIVATION_BOUND: Duration = Duration::from_secs(60);
-/// How long a failed network shows `failed`.
-pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
 /// How long an open password field outlives its network leaving the list (an access point aged
 /// out while typing).
 pub const FIELD_KEPT: Duration = Duration::from_secs(10);
@@ -60,9 +60,7 @@ pub(crate) const NM_GONE: &str = "NetworkManager went away";
 /// A failure whose last state predates an outage of another domain (F4): its profile kept.
 const STALE: &str = "no fresh state since an outage";
 const BARS: [char; 4] = ['▂', '▄', '▆', '█'];
-/// A network row's tags; the widest one sets the room every row keeps for its tag.
-const CONNECTING: &str = "…";
-const FAILED_TAG: &str = "failed";
+/// A saved network's tag.
 const SAVED_TAG: &str = "saved";
 
 /// 1 to 4 steps of signal: 0–24 %, 25–49 %, 50–74 %, 75–100 %.
@@ -524,10 +522,7 @@ impl Wifi {
             run.extend(cleanup);
             (failed, redraw) = (Some(why), true);
         }
-        if self.failed.as_ref().is_some_and(|(_, at)| *at <= now) {
-            self.failed = None;
-            redraw = true;
-        }
+        redraw |= session::expire(&mut self.failed, now);
         if self.field.as_ref().and_then(|f| f.missing).is_some_and(|at| at + FIELD_KEPT <= now) {
             self.close_field();
             redraw = true;
@@ -808,7 +803,7 @@ impl Wifi {
     /// FAILED_SHOWN after, else "saved" (dimmed) or nothing.
     fn tag(&self, n: &Network) -> (&'static str, Style) {
         if self.attempt.as_ref().is_some_and(|a| a.ssid == n.ssid) {
-            (CONNECTING, Style::MUTED)
+            (RUNNING_TAG, Style::MUTED)
         } else if self.failed.as_ref().is_some_and(|(s, _)| *s == n.ssid) {
             (FAILED_TAG, Style::WARN)
         } else if n.saved.is_some() {
@@ -820,12 +815,9 @@ impl Wifi {
 
     /// One detail line into `g` (`WIDTH + 2` wide, a pad cell each side).
     pub fn draw(&self, g: &mut Grid, line: Line, nets: &[Network], selected: bool) {
-        let end = g.width();
         match line {
             Line::WifiHeader => text_row(g, None, "‹ Wi-Fi", "", Style::NORMAL, false),
-            Line::WifiNote(note) => {
-                g.write(3, end.saturating_sub(1), note, Style::MUTED);
-            }
+            Line::WifiNote(note) => note_row(g, note),
             Line::WifiMore => text_row(g, Some(' '), "More…", "", Style::NORMAL, selected),
             Line::Network(i) => {
                 if let Some(n) = nets.get(i) {
@@ -851,17 +843,13 @@ fn network_row(g: &mut Grid, n: &Network, tag: &str, tag_style: Style, selected:
     let end = g.width();
     let lock = if n.security.secured() { LOCK } else { ' ' };
     let signal = bars(n.strength);
-    let tag_room = [CONNECTING, FAILED_TAG, SAVED_TAG].into_iter().map(text_width).max().unwrap_or(0);
+    // The widest tag sets the room every row keeps for its tag.
+    let tag_room = [RUNNING_TAG, FAILED_TAG, SAVED_TAG].into_iter().map(text_width).max().unwrap_or(0);
     // "▂▄▆█ 🔒 " then the tag's room.
     let width = BARS.len() as u16 + 3 + tag_room;
     let label = truncate(&n.label, end.saturating_sub(width + 2).saturating_sub(3));
     let mark = if n.connected { '●' } else { ' ' };
-    list::row(
-        g,
-        0,
-        end,
-        &list::Row { icon: Some(mark), icon_style: Style::ACCENT, text: &label, right: "", style: Style::NORMAL, selected },
-    );
+    text_row(g, Some(mark), &label, "", Style::NORMAL, selected);
     let pick = |s: Style| if selected { Style::SELECTED } else { s };
     let x = g.write(end.saturating_sub(width + 1), end, &signal, pick(Style::NORMAL));
     let x = g.write(x, end, " ", pick(Style::NORMAL));
@@ -876,12 +864,7 @@ fn network_row(g: &mut Grid, n: &Network, tag: &str, tag_style: Style, selected:
 /// than the row; `too long` in warn after a character that did not fit. Never a byte of the secret.
 fn password_row(g: &mut Grid, f: &Field, selected: bool) {
     let end = g.width();
-    list::row(
-        g,
-        0,
-        end,
-        &list::Row { icon: Some(' '), icon_style: Style::ACCENT, text: "Password", right: "", style: Style::NORMAL, selected },
-    );
+    text_row(g, Some(' '), "Password", "", Style::NORMAL, selected);
     let pick = |s: Style| if selected { Style::SELECTED } else { s };
     if f.overflow {
         g.write(PASSWORD_AT, end.saturating_sub(1), TOO_LONG, pick(Style::WARN));

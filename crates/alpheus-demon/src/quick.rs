@@ -4,6 +4,11 @@
 //! to run. The popup (`PopupBody::Quick`), the reads (sysfs, `/proc`: `quick_state.rs`) and the
 //! commands themselves are the wiring's (`quick_app.rs`): nothing here reads a file, starts a
 //! thread or runs a command.
+//!
+//! A list with a detail (`quick_wifi.rs`, `quick_bt.rs`) is its own struct and file: its state, rows,
+//! keys and safety rules. This file only hands it its turn (`Row`, `ROWS`, `Line`, `lines`,
+//! `selected_line`, `key`, `press`, `rows`, `fit`), and gives it `nav`, `moved`, `text_row`, `note_row`,
+//! `FAILED_SHOWN` and the tags.
 
 use crate::actions::Button;
 use crate::backlight::Reread;
@@ -58,6 +63,10 @@ pub const BRIGHTNESS_MIN: u8 = 1;
 /// How long a slider keeps showing (and stepping from) the level it sent while the live source
 /// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may lag a window under load.
 pub const SETTLE: Duration = Duration::from_secs(1);
+/// How long a list's entry shows `failed` after what ran on it failed; the tags of both.
+pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
+pub(crate) const RUNNING_TAG: &str = "…";
+pub(crate) const FAILED_TAG: &str = "failed";
 /// A session button takes this many cells either side of its glyph for a click.
 const REACH: u16 = 2;
 
@@ -1384,6 +1393,12 @@ pub(crate) fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &st
     if w > 0 {
         g.write(end.saturating_sub(w + 1), end, right, if selected { Style::SELECTED } else { right_style });
     }
+}
+
+/// A list's note in place of its entries, dim.
+pub(crate) fn note_row(g: &mut Grid, note: &str) {
+    let end = g.width();
+    g.write(3, end.saturating_sub(1), note, Style::MUTED);
 }
 
 /// The session buttons, SESSION_GAP cells apart; the chosen one on a 3-cell band when the row is
