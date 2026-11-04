@@ -10,8 +10,6 @@ use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
-use crate::osd::Osd;
-use crate::osd_surface::OpenOsd;
 use crate::painter::{self, Background, BarGeometry, Fonts, Rect};
 use crate::placement::{Placement, input_rect};
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, OpenPopup, PopupBody, PopupClose, PopupPointer};
@@ -457,12 +455,8 @@ pub struct App {
     pub(crate) media_timer: DeadlineTimer,
     /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
     pub(crate) bubbles: crate::bubbles_surface::BubbleSurface,
-    /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
-    pub(crate) osd: Osd,
-    /// The OSD's surface while the pill shows (osd_surface.rs); None at rest.
-    pub(crate) osd_open: Option<OpenOsd>,
-    /// The pill's hide timer: armed only while it shows.
-    pub(crate) osd_timer: DeadlineTimer,
+    /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
+    pub(crate) osd: crate::osd_surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
     /// (quick_app.rs).
     pub(crate) quick: crate::quick_app::QuickApp,
@@ -617,9 +611,7 @@ impl App {
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
             bubbles: crate::bubbles_surface::BubbleSurface::new(),
-            osd: Osd::default(),
-            osd_open: None,
-            osd_timer: DeadlineTimer::new(),
+            osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),
             privacy_timer: DeadlineTimer::new(),
