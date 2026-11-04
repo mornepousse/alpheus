@@ -189,7 +189,7 @@ pub fn start(
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking_bt(bt_tap.clone());
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking(bt_tap.clone());
             session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, p)
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));
