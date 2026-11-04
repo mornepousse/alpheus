@@ -6,10 +6,10 @@ use crate::grid::Grid;
 use crate::layout::lay_out;
 use crate::notify::NotifyView;
 use crate::privacy::{Capture, Indicator};
+use crate::session_bus::ItemKey;
+use crate::session_bus::icons::{DISCORD, STEAM, TELEGRAM};
 use crate::state::{Bar, Msg};
 use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
-use crate::tray::ItemKey;
-use crate::tray::icons::{DISCORD, STEAM, TELEGRAM};
 use std::collections::VecDeque;
 
 // The segments under `module_colors = "none"` (delivery 1's look), shadowing the real ones: the

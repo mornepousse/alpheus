@@ -1,7 +1,7 @@
 use super::*;
 use crate::notify::{Action, Incoming, Urgency};
-use crate::tray::bus::testing::FakeOutbox;
-use crate::tray::{NOTIFICATIONS_INTERFACE, WATCHER_NAME};
+use crate::session_bus::bus::testing::FakeOutbox;
+use crate::session_bus::{NOTIFICATIONS_INTERFACE, WATCHER_NAME};
 
 fn note(summary: &str) -> Incoming {
     Incoming {
@@ -145,7 +145,8 @@ fn a_critical_demoted_by_a_flood_is_signalled_closed() {
     let mut n = held();
     let ids: Vec<u32> = (0..9)
         .map(|i| {
-            let reply = n.handle(&crate::tray::bus::testing::critical_notify_call(&format!("alert {i}")), Instant::now(), || 600).unwrap();
+            let reply =
+                n.handle(&crate::session_bus::bus::testing::critical_notify_call(&format!("alert {i}")), Instant::now(), || 600).unwrap();
             reply.read1::<u32>().unwrap()
         })
         .collect();
@@ -160,7 +161,7 @@ fn a_critical_demoted_by_a_flood_is_signalled_closed() {
 #[test]
 fn the_minute_is_read_only_for_a_served_notify() {
     let never = || -> u32 { panic!("the clock read for a call that needs no time") };
-    let notify = || crate::tray::bus::testing::notify_call("hello");
+    let notify = || crate::session_bus::bus::testing::notify_call("hello");
     let (_, mut queued) = started(false);
     assert!(queued.handle(&notify(), Instant::now(), never).is_some(), "refused while not held, no clock read");
     let mut n = held();
@@ -285,7 +286,8 @@ fn a_lost_bus_is_a_lost_name() {
 #[test]
 fn only_the_notifications_path_is_ours() {
     assert!(serves(&call("Notify")));
-    let watcher = Message::new_method_call(":1.1", crate::tray::WATCHER_PATH, crate::tray::WATCHER_INTERFACE, "Bogus").unwrap();
+    let watcher =
+        Message::new_method_call(":1.1", crate::session_bus::WATCHER_PATH, crate::session_bus::WATCHER_INTERFACE, "Bogus").unwrap();
     assert!(!serves(&watcher));
     let below = Message::new_method_call(":1.1", "/org/freedesktop/Notifications/x", NOTIFICATIONS_INTERFACE, "Notify").unwrap();
     assert!(!serves(&below), "only the object itself");

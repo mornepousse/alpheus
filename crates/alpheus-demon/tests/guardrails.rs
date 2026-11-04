@@ -25,15 +25,15 @@ use alpheus_demon::power::{Power, PowerAction};
 use alpheus_demon::privacy::{Capture, Indicator};
 use alpheus_demon::quick::{self, Backlight, Focus, Live, Quick, QuickAction};
 use alpheus_demon::session::{self, Session};
+use alpheus_demon::session_bus::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
+use alpheus_demon::session_bus::{
+    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
+};
 use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActMethod, CAPABILITY};
 use alpheus_demon::sources::dbus::dbusrs_bus::{LOGIN1_RULE, MATCH_RULES, Method, WIFI_RULES};
 use alpheus_demon::sources::{hypr::Request, mango, niri::REQUEST, sway};
 use alpheus_demon::state::{Bar, Msg};
 use alpheus_demon::system::*;
-use alpheus_demon::tray::bus::{Call, DBUS_NAME_FLAG_DO_NOT_QUEUE, Method as TrayMethod, NOTIFICATIONS_NAME_FLAGS, message};
-use alpheus_demon::tray::{
-    APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, NOTIFICATIONS_NAME, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE, WATCHER_NAME,
-};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -615,7 +615,7 @@ fn the_panel_marks_read_only_after_it_opened() {
     assert!(read < shown, "marked read inside the shown branch, before `panel shown`: {body}");
 }
 
-/// The settle rounds (link.rs, tray/router.rs) stop after `SETTLE_ROUNDS`, and
+/// The settle rounds (link.rs, session_bus/router.rs) stop after `SETTLE_ROUNDS`, and
 /// what the last round's flush drained waits in the bus's `ready`, which no fd event announces (the
 /// socket was read already). After every callback, `link_sync` and `tray_sync` route it from one
 /// idle read. libdbus's flush reads only when its write has to wait, so no private bus builds that
@@ -1137,8 +1137,14 @@ fn d_bus_is_confined_to_sources_and_read_only() {
 /// The files that may name the `dbus` crate: the system bus's, Bluetooth's
 /// acting connection (`bt_act.rs`), and the tray's four (its connection,
 /// codec, watcher and router).
-const DBUS_FILES: [&str; 6] =
-    ["sources/dbus/dbusrs_bus.rs", "sources/dbus/bt_act.rs", "tray/bus.rs", "tray/codec.rs", "tray/watcher.rs", "tray/router.rs"];
+const DBUS_FILES: [&str; 6] = [
+    "sources/dbus/dbusrs_bus.rs",
+    "sources/dbus/bt_act.rs",
+    "session_bus/bus.rs",
+    "session_bus/codec.rs",
+    "session_bus/watcher.rs",
+    "session_bus/router.rs",
+];
 
 /// Bluetooth's acting connection (quick settings delivery 3, spec § 5): the
 /// only D-Bus file that changes anything, and only through the pinned
@@ -1238,9 +1244,9 @@ fn tray_d_bus_is_confined_and_allowlisted() {
     for (p, t) in source_files() {
         let name = relative_path(&p);
         if uses_crate(&t, "dbus_crossroads") {
-            assert_eq!(name, "tray/watcher.rs", "dbus-crossroads used in {name}");
+            assert_eq!(name, "session_bus/watcher.rs", "dbus-crossroads used in {name}");
         }
-        if !name.starts_with("tray/") {
+        if !name.starts_with("session_bus/") {
             continue;
         }
         tray_files += 1;
@@ -1264,7 +1270,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         // "method_call(" alone catches `Message::new_method_call(` too (it is a substring of it): a
         // bare crossroads-style `ctx.method_call(` or any future way of building a call is caught the
         // same way, without double-counting the one already-allowed spelling. Consequence: no
-        // private method under tray/ may be named `method_call` either — its definition
+        // private method under session_bus/ may be named `method_call` either — its definition
         // (`fn method_call(`) and every call site (`self.method_call(`) are substring matches too,
         // failing this guardrail even though the method has nothing to do with building a
         // `dbus::Message` (the router's dispatch method is named `inbound_call`, not
@@ -1274,7 +1280,7 @@ fn tray_d_bus_is_confined_and_allowlisted() {
         }
     }
     assert!(tray_files >= 2, "the tray's sources were not found");
-    assert_eq!(built, ["tray/bus.rs"], "every tray call is built by bus::message, from a Call");
+    assert_eq!(built, ["session_bus/bus.rs"], "every tray call is built by bus::message, from a Call");
     let names: Vec<&str> = TrayMethod::ALL.iter().map(|m| m.name()).collect();
     assert_eq!(
         names,
@@ -1347,7 +1353,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
 const NO_THREAD_NOR_COMMAND: [&str; 43] = [
-    "tray/",
+    "session_bus/",
     "media.rs",
     "notify.rs",
     "osd.rs",
@@ -1757,19 +1763,19 @@ fn the_notification_server_has_no_panicking_path() {
         |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).map(|(_, t)| t.clone()).unwrap_or_else(|| panic!("{name}"));
     for name in [
         "notify.rs",
-        "tray/notifications.rs",
+        "session_bus/notifications.rs",
         "notify_app.rs",
         "bubbles.rs",
         "bubbles_surface.rs",
         "panel.rs",
         "state_file.rs",
-        "tray/codec.rs",
+        "session_bus/codec.rs",
     ] {
         let t = text(name);
         let production = t.split("#[cfg(").next().unwrap_or_default();
         assert!(!panics(production), "a panicking call in {name}'s production code");
     }
-    let bus = text("tray/bus.rs");
+    let bus = text("session_bus/bus.rs");
     let start = bus.find("pub fn notify_reply").expect("the notification builders in bus.rs");
     let end = bus.find("pub fn session_address").expect("the builders end before session_address");
     assert!(!panics(&bus[start..end]), "a panicking call in bus.rs's notification builders");

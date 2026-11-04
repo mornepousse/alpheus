@@ -9,7 +9,7 @@
 use crate::grid::{Grid, Style, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed, Row};
-use crate::tray::codec::{Layout, MenuNode, Toggle};
+use crate::session_bus::codec::{Layout, MenuNode, Toggle};
 
 /// What a menu interaction asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

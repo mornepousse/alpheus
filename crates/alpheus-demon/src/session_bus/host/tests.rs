@@ -1,7 +1,7 @@
 use super::*;
-use crate::tray::WATCHER_NAME;
-use crate::tray::bus::Method;
-use crate::tray::bus::testing::FakeOutbox;
+use crate::session_bus::WATCHER_NAME;
+use crate::session_bus::bus::Method;
+use crate::session_bus::bus::testing::FakeOutbox;
 use std::fs;
 
 const NIMBUS: &str = "org.kde.StatusNotifierItem-4242-1";

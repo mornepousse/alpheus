@@ -293,7 +293,7 @@ fn right_click_on_the_drawn_volume_mutes() {
 
 #[test]
 fn a_tray_icon_runs_no_command() {
-    use crate::tray::ItemKey;
+    use crate::session_bus::ItemKey;
     let t = Target::TrayItem(ItemKey { owner: ":1.7".into(), path: "/StatusNotifierItem".into() });
     for b in [Button::Left, Button::Right, Button::Middle, Button::WheelUp, Button::WheelDown] {
         assert_eq!(command(&full(), "eDP-1", &t, b), None, "{b:?}");

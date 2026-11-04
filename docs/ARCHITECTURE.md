@@ -52,7 +52,7 @@ happened*.
   keeps a second copy from starting.
 - **Session-bus features run on the loop itself,** through a second,
   non-blocking connection (the tray's StatusNotifierWatcher and dbusmenu,
-  MPRIS, the notification server, the portal's colour scheme): no new thread.
+  MPRIS, the notification server, the portal's colour scheme; all in `session_bus/`): no new thread.
 - **Timers are deadlines, not ticks.** `deadline::DeadlineTimer` arms one
   calloop timer at the earliest deadline while there is one and nothing
   otherwise: tooltips, notification expiry, the OSD's 1.3 s, popups, the

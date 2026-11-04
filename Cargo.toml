@@ -31,7 +31,7 @@ xkeysym = "0.2"
 # on the D-Bus thread and no thread of its own (tray plan 1, Mae 2026-10-05). Daemon only.
 dbus = "0.9"
 # The tray's own StatusNotifierWatcher object (tray plan 2, Mae 2026-10-05): dbus-rs's own object
-# server, no further dependency. Daemon only, in src/tray/watcher.rs.
+# server, no further dependency. Daemon only, in src/session_bus/watcher.rs.
 dbus-crossroads = "0.5"
 
 [profile.release]

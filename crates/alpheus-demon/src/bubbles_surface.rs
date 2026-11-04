@@ -13,8 +13,8 @@ use crate::log::write as log;
 use crate::notify::CloseReason;
 use crate::painter::FrameInk;
 use crate::popup::box_size;
+use crate::session_bus::notifications::Notifications;
 use crate::state::Feed;
-use crate::tray::notifications::Notifications;
 use crate::tray_bridge::notifications_of;
 use crate::wayland::{App, pick_buffer};
 use smithay_client_toolkit::compositor::Region;
@@ -164,7 +164,7 @@ impl App {
         let width = self.bar.config.notifications.width;
         notifications_of(self.tray.as_ref(), self.link.session.as_ref())
             .filter(|n| n.held())
-            .map(|n| bubbles::stack(&n.center().bubbles(), width, crate::tray::notifications::minute_now()))
+            .map(|n| bubbles::stack(&n.center().bubbles(), width, crate::session_bus::notifications::minute_now()))
             .unwrap_or_default()
     }
 

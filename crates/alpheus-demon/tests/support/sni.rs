@@ -9,7 +9,7 @@
 //! D-Bus and never use the daemon's tray code.
 
 use super::{Peer, PrivateBus};
-use alpheus_demon::tray::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
+use alpheus_demon::session_bus::{DEFAULT_ITEM_PATH, ITEM_INTERFACE, MENU_INTERFACE, WATCHER_INTERFACE, WATCHER_NAME, WATCHER_PATH};
 use dbus::Message;
 use dbus::arg::{ArgType, Iter, IterAppend, Variant};
 use dbus::message::MessageType;

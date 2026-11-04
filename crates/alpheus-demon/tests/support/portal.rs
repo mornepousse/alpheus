@@ -5,7 +5,7 @@
 //! the tray's fakes (support/sni.rs), and speaks raw D-Bus: never the daemon's code.
 
 use super::{Peer, PrivateBus};
-use alpheus_demon::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
+use alpheus_demon::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
 use dbus::Message;
 use dbus::arg::Variant;
 use dbus::message::MessageType;

@@ -1,8 +1,8 @@
 use super::*;
 use crate::media::Control;
 use crate::notify::{Action, Incoming, MAX_ACTIONS, MAX_APP, MAX_BODY, MAX_LABEL, MAX_SUMMARY, Urgency};
-use crate::tray::DEFAULT_ITEM_PATH;
-use crate::tray::{NOTIFICATIONS_NAME, WATCHER_NAME};
+use crate::session_bus::DEFAULT_ITEM_PATH;
+use crate::session_bus::{NOTIFICATIONS_NAME, WATCHER_NAME};
 use dbus::arg::{IterAppend, Variant};
 use dbus::strings::Signature;
 
@@ -137,7 +137,7 @@ fn read_one_decodes_the_color_scheme_plain_or_nested() {
 
 #[test]
 fn setting_changed_is_read_for_color_scheme_only() {
-    use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+    use crate::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
     let changed = |path: &str, ns: &str, key: &str, f: &dyn Fn(&mut IterAppend<'_>)| {
         signal_from(":1.4", path, SETTINGS_INTERFACE, "SettingChanged", |i| {
             i.append(ns);
@@ -163,7 +163,7 @@ fn setting_changed_is_read_for_color_scheme_only() {
 
 #[test]
 fn a_unicast_setting_changed_is_never_the_portals() {
-    use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
+    use crate::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_PATH, SETTINGS_INTERFACE};
     let mut m = Message::new_signal(PORTAL_PATH, SETTINGS_INTERFACE, "SettingChanged").unwrap();
     m.set_sender(Some(":1.4".into()));
     let mut m = m.append3(APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, Variant(2u32));
@@ -751,7 +751,7 @@ fn properties_changed_is_read_for_the_player_interface_only() {
         "without its invalidated list"
     );
     let root = changed_signal(|i| {
-        i.append(crate::tray::MPRIS_INTERFACE);
+        i.append(crate::session_bus::MPRIS_INTERFACE);
         dict(i, &[("Identity", st("Spotify"))]);
         i.append(Vec::<&str>::new());
     });

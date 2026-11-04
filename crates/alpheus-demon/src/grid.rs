@@ -3,7 +3,7 @@
 //! drawing (`painter`) only copies it.
 
 use crate::config::ModuleId;
-use crate::tray::ItemKey;
+use crate::session_bus::ItemKey;
 use std::str::Chars;
 use unicode_normalization::{IsNormalized, Recompositions, UnicodeNormalization, is_nfc_quick};
 use unicode_width::UnicodeWidthChar;
@@ -374,7 +374,7 @@ mod tests {
 
     #[test]
     fn zone_at_finds_the_icon_cells() {
-        let key = |n: u32| crate::tray::ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
+        let key = |n: u32| crate::session_bus::ItemKey { owner: format!(":1.{n}"), path: "/StatusNotifierItem".into() };
         let mut g = Grid::empty(10);
         g.zone(1, 2, Target::TrayItem(key(1)));
         g.zone(3, 5, Target::TrayItem(key(2))); // a two-cell glyph

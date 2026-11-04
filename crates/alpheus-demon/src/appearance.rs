@@ -12,10 +12,10 @@
 
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
+use crate::session_bus::bus::{Call, CallError, CallId, Outbox};
+use crate::session_bus::codec::Reply;
+use crate::session_bus::router::TrayOutput;
 use crate::state_file;
-use crate::tray::bus::{Call, CallError, CallId, Outbox};
-use crate::tray::codec::Reply;
-use crate::tray::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
 use alpheus_commun::theme::mode_file::{MODE_DIR, MODE_FILE, mode_path, mode_text};
@@ -24,7 +24,7 @@ use std::io;
 use std::path::Path;
 
 #[cfg(test)]
-use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
+use crate::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
 
 /// The one match rule: `SettingChanged` from whoever owns the portal's name, for color-scheme only.
 pub const SETTING_RULE: &str = "type='signal',sender='org.freedesktop.portal.Desktop',path='/org/freedesktop/portal/desktop',interface='org.freedesktop.portal.Settings',member='SettingChanged',arg0='org.freedesktop.appearance',arg1='color-scheme'";

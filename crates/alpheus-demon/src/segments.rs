@@ -11,10 +11,10 @@ use crate::media::MediaView;
 use crate::notify::NotifyView;
 use crate::privacy::{CAMERA, MIC, Privacy, SCREEN};
 use crate::session::{self, POWER};
+use crate::session_bus::Status;
+use crate::session_bus::icons::{Icon, TrayIcon};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
-use crate::tray::Status;
-use crate::tray::icons::{Icon, TrayIcon};
 use alpheus_commun::theme::settings::ModuleColors;
 use std::collections::VecDeque;
 

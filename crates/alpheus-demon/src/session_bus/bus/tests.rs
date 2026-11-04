@@ -41,7 +41,7 @@ fn signatures(m: &Message) -> Vec<String> {
 
 #[test]
 fn read_one_reads_one_setting_of_the_portal() {
-    use crate::tray::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
+    use crate::session_bus::{APPEARANCE_NAMESPACE, COLOR_SCHEME_KEY, PORTAL_NAME, PORTAL_PATH, SETTINGS_INTERFACE};
     let m = message(&Call::ReadOne);
     assert_eq!(
         (m.destination().as_deref(), m.path().as_deref(), m.interface().as_deref(), m.member().as_deref()),

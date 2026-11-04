@@ -1,7 +1,7 @@
 use super::*;
-use crate::tray::bus::Method;
-use crate::tray::bus::testing::FakeOutbox;
-use crate::tray::codec::{MenuNode, MenuProps};
+use crate::session_bus::bus::Method;
+use crate::session_bus::bus::testing::FakeOutbox;
+use crate::session_bus::codec::{MenuNode, MenuProps};
 
 fn key() -> ItemKey {
     ItemKey { owner: ":1.7".into(), path: "/StatusNotifierItem".into() }

@@ -15,7 +15,7 @@ use super::{
 };
 use crate::media::Control;
 use crate::sources::dbus::BUS_DRIVER;
-/// Re-exported so the notifications consumer (tray/notifications.rs) passes messages through
+/// Re-exported so the notifications consumer (session_bus/notifications.rs) passes messages through
 /// without naming the dbus crate (guardrails: DBUS_FILES).
 pub use dbus::Message;
 use dbus::arg::Variant;

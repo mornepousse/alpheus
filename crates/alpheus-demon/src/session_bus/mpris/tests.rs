@@ -1,7 +1,7 @@
 use super::*;
 use crate::media::{Status, Value};
-use crate::tray::bus::Method;
-use crate::tray::bus::testing::FakeOutbox;
+use crate::session_bus::bus::Method;
+use crate::session_bus::bus::testing::FakeOutbox;
 use std::cell::RefCell;
 
 thread_local! {
