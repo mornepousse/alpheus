@@ -1870,6 +1870,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
         logout: vec!["fake-logout".into()],
         wifi_more: Some(vec!["fake-more".into()]),
+        mixer: Some(vec!["fake-mixer".into()]),
         ..QuickConfig::default()
     };
     let sound = SoundState {
@@ -2054,6 +2055,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "systemctl reboot",
         "systemctl poweroff",
         "fake-more",
+        "fake-mixer",
     ];
     for c in &calls {
         let ok = match c.split(' ').collect::<Vec<_>>().as_slice() {
@@ -2104,6 +2106,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli --ask device wifi connect Bureau-Test",
         "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
         "fake-more",
+        "fake-mixer",
         "rfkill unblock bluetooth",
     ] {
         assert!(calls.iter().any(|c| c == expected), "{expected} never reached: {calls:?}");

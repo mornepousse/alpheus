@@ -52,6 +52,7 @@ pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
 pub const PROFILE: char = '\u{f0f85}';
 pub const KEEP_AWAKE: char = '\u{f0176}';
 pub const NIGHT_LIGHT: char = '\u{f0594}';
+pub const MIXER: char = '\u{f066a}'; // md-tune_vertical
 /// Re-reads after a command (spec § 5): the backlight, a configured toggle's state.
 pub const BRIGHTNESS_REREAD: Duration = Duration::from_millis(150);
 pub const TOGGLE_REREAD: Duration = Duration::from_millis(300);
@@ -109,6 +110,8 @@ pub enum Row {
     /// The Bluetooth adapter (quick Bluetooth spec § 1): right under the Wi-Fi row.
     Bluetooth,
     Mic,
+    /// `Mixer…` (`[quick] mixer`): opens a terminal mixer, right under the microphone.
+    Mixer,
     Dnd,
     Profile,
     KeepAwake,
@@ -403,6 +406,12 @@ fn bar_value(col: u16) -> Option<u8> {
 }
 
 /// Enter or a click on the profile: the next one the daemon offers, wrapping.
+/// A configured command (`More…`, `Mixer…`) run as given, then the panel closes; nothing when it
+/// is empty. Its argv never reaches the log, only `what`.
+pub(crate) fn run_and_close(argv: &[String], what: &str) -> QuickAction {
+    if argv.is_empty() { QuickAction::Nothing } else { QuickAction::RunAndClose { argv: argv.to_vec(), what: what.into() } }
+}
+
 fn cycle(live: &Live) -> QuickAction {
     let Some(p) = live.profile else { return QuickAction::Nothing };
     let Some(active) = p.active else { return QuickAction::Nothing };
@@ -491,7 +500,7 @@ struct RowSpec {
 /// - a configured toggle (like keep awake): also a `Toggle` variant with its `index`, `config` and
 ///   `word` arms, its `QuickConfig` field in config.rs (default, argv and state checks, the bar.toml
 ///   header) and its state read in `quick_app.rs`. The per-toggle arrays follow `Toggle::ALL`.
-const ROWS: [RowSpec; 11] = [
+const ROWS: [RowSpec; 12] = [
     RowSpec {
         row: Row::Volume,
         name: "volume",
@@ -504,6 +513,13 @@ const ROWS: [RowSpec; 11] = [
     RowSpec { row: Row::Wifi, name: "wifi", group: 1, present: |_, q| q.wifi.shows(), draw: draw_wifi },
     RowSpec { row: Row::Bluetooth, name: "bluetooth", group: 1, present: |live, _| Bt::shows(live.bluetooth), draw: draw_bluetooth },
     RowSpec { row: Row::Mic, name: "mic", group: 1, present: |live, _| live.sound.is_some_and(|s| s.source.is_some()), draw: draw_mic },
+    RowSpec {
+        row: Row::Mixer,
+        name: "mixer",
+        group: 1,
+        present: |live, _| live.config.mixer.as_deref().is_some_and(|m| !m.is_empty()),
+        draw: |g, _, _, selected| text_row(g, Some(MIXER), "Mixer…", "", Style::NORMAL, selected),
+    },
     RowSpec {
         row: Row::Dnd,
         name: "dnd",
@@ -796,6 +812,7 @@ impl Quick {
             }
             (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
+            (Row::Mixer, Key::Char(' ') | Key::Enter) => run_and_close(live.config.mixer.as_deref().unwrap_or(&[]), "mixer"),
             (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
             (Row::Profile, Key::Enter) => cycle(live),
             (Row::KeepAwake, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::KeepAwake, now),
