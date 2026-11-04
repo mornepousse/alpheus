@@ -5,7 +5,6 @@
 //! `tray_bridge.rs`.
 
 use crate::actions::{self, Button, Wheel};
-use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
@@ -456,13 +455,8 @@ pub struct App {
     /// The media popup's redraw tick (spec § 2): armed only while that popup is open and its player
     /// plays, up to the track's end; never at rest.
     pub(crate) media_timer: DeadlineTimer,
-    /// The notification bubbles while at least one shows (bubbles_surface.rs); None at rest.
-    pub(crate) bubbles: Option<OpenBubbles>,
-    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
-    /// armed only while there is one.
-    pub(crate) bubble_timer: DeadlineTimer,
-    /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
-    pub(crate) bubble_closes: Closes,
+    /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
+    pub(crate) bubbles: crate::bubbles_surface::BubbleSurface,
     /// The OSD's trigger memory and the pill shown with its deadline (osd.rs): a few words at rest.
     pub(crate) osd: Osd,
     /// The OSD's surface while the pill shows (osd_surface.rs); None at rest.
@@ -622,9 +616,7 @@ impl App {
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
-            bubbles: None,
-            bubble_timer: DeadlineTimer::new(),
-            bubble_closes: Closes::default(),
+            bubbles: crate::bubbles_surface::BubbleSurface::new(),
             osd: Osd::default(),
             osd_open: None,
             osd_timer: DeadlineTimer::new(),

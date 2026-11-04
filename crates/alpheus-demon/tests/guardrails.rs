@@ -987,11 +987,13 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // a device open, close, creation or removal. The quick panel's timer also covers a Bluetooth
         // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
         // question (quick delivery 3).
-        ("wayland.rs", "Timer::", 8),
+        ("wayland.rs", "Timer::", 7),
         // The camera scan's debounce, built in `Camera::new` (see above).
         ("camera_app.rs", "Timer::", 1),
         // The quick panel's timer, built in `QuickApp::new` (see above).
         ("quick_app.rs", "Timer::", 1),
+        // The bubbles' expiry timer, built in `BubbleSurface::new` (see above).
+        ("bubbles_surface.rs", "Timer::", 1),
         // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.

@@ -7,6 +7,7 @@
 
 use crate::actions::{self, Button};
 use crate::bubbles::{self, Activation, BubbleBox, DEFAULT_ACTION};
+use crate::deadline::DeadlineTimer;
 use crate::launcher::surface::{Redraw, plan_configure, plan_redraw};
 use crate::log::write as log;
 use crate::notify::CloseReason;
@@ -45,6 +46,26 @@ pub struct OpenBubbles {
     configured: bool,
     /// The stack last committed: an unchanged one is not repainted.
     last: Option<Vec<BubbleBox>>,
+}
+
+/// The bubbles' state, one field of `App`: the surface while a bubble shows, the expiry timer and
+/// what the compositor closing the surface left behind.
+pub(crate) struct BubbleSurface {
+    /// The notification bubbles while at least one shows; None at rest.
+    pub(crate) open: Option<OpenBubbles>,
+    /// The earliest finite expiry of a live bubble, shown or hidden by do-not-disturb (spec § 3):
+    /// armed only while there is one.
+    pub(crate) timer: DeadlineTimer,
+    /// What the compositor closing the bubbles' surface left behind: opened again once per stack.
+    pub(crate) closes: Closes,
+}
+
+impl BubbleSurface {
+    /// Nothing shown, nothing armed. Written out (not derived) so the guardrail that lists every
+    /// timer still counts this one.
+    pub(crate) fn new() -> BubbleSurface {
+        BubbleSurface { open: None, timer: DeadlineTimer::new(), closes: Closes::default() }
+    }
 }
 
 /// The stack's (id, revision) pairs: what a compositor `closed` is remembered by.
@@ -192,15 +213,15 @@ impl App {
         if stack.is_empty() {
             self.bubbles_drop("empty");
         } else {
-            let changed = self.bubbles.as_ref().is_some_and(|o| o.stack != stack);
-            let on = self.bubbles.as_ref().and_then(|o| o.output_name.clone());
+            let changed = self.bubbles.open.as_ref().is_some_and(|o| o.stack != stack);
+            let on = self.bubbles.open.as_ref().and_then(|o| o.output_name.clone());
             let (_, focused) = self.bubbles_target();
-            if self.bubbles.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
+            if self.bubbles.open.is_some() && bubbles::moves(changed, focused.as_deref(), on.as_deref()) {
                 self.bubbles_drop("focus moved");
             }
-            if self.bubbles.is_some() {
+            if self.bubbles.open.is_some() {
                 self.bubbles_update(stack);
-            } else if self.bubble_closes.may_open(&keys(&stack)) {
+            } else if self.bubbles.closes.may_open(&keys(&stack)) {
                 self.bubbles_create(stack);
             }
         }
@@ -232,7 +253,7 @@ impl App {
         layer.commit();
         let place = output_name.as_deref().unwrap_or("the compositor's choice of output");
         log(&format!("bubbles surface on {place}"));
-        self.bubbles = Some(OpenBubbles {
+        self.bubbles.open = Some(OpenBubbles {
             layer,
             pool,
             buffers: Vec::new(),
@@ -265,9 +286,9 @@ impl App {
     /// A changed stack on the open surface: nothing when it did not change; otherwise new spans,
     /// then the size.
     fn bubbles_update(&mut self, stack: Vec<BubbleBox>) {
-        let Some(scale) = self.bubbles.as_ref().filter(|o| o.stack != stack).map(|o| o.scale) else { return };
+        let Some(scale) = self.bubbles.open.as_ref().filter(|o| o.stack != stack).map(|o| o.scale) else { return };
         let (spans, size) = self.bubbles_layout(&stack, scale);
-        let Some(open) = self.bubbles.as_mut() else { return };
+        let Some(open) = self.bubbles.open.as_mut() else { return };
         open.stack = stack;
         open.spans = spans;
         self.bubbles_resize(size);
@@ -276,9 +297,9 @@ impl App {
     /// The input region re-sent, then the size: a new one is asked (its configure draws), the same one
     /// is drawn now, nothing before the first configure.
     fn bubbles_resize(&mut self, wanted: (u32, u32)) {
-        let Some(open) = self.bubbles.as_ref() else { return };
+        let Some(open) = self.bubbles.open.as_ref() else { return };
         self.bubbles_input(&open.layer, &open.spans, wanted.0);
-        let Some(open) = self.bubbles.as_mut() else { return };
+        let Some(open) = self.bubbles.open.as_mut() else { return };
         match plan_redraw(open.size, wanted, open.configured) {
             Redraw::Resize(w, h) => {
                 open.size = (w, h);
@@ -296,7 +317,7 @@ impl App {
     fn bubbles_draw(&mut self) {
         let height = self.bar.config.height;
         let App { bubbles, fonts, roles, .. } = self;
-        let Some(open) = bubbles.as_mut() else { return };
+        let Some(open) = bubbles.open.as_mut() else { return };
         if !open.configured || open.last.as_ref() == Some(&open.stack) {
             return;
         }
@@ -332,7 +353,7 @@ impl App {
     }
 
     fn bubbles_drop(&mut self, why: &str) {
-        let Some(open) = self.bubbles.take() else { return };
+        let Some(open) = self.bubbles.open.take() else { return };
         drop(open);
         log(&format!("bubbles surface dropped ({why})"));
         // The pool and its buffers: give the pages back.
@@ -341,20 +362,20 @@ impl App {
 
     /// Whether `surface` is the bubbles' (checked by identity, before the bar's own handling).
     pub(crate) fn bubbles_owns(&self, surface: &wl_surface::WlSurface) -> bool {
-        self.bubbles.as_ref().is_some_and(|o| o.layer.wl_surface() == surface)
+        self.bubbles.open.as_ref().is_some_and(|o| o.layer.wl_surface() == surface)
     }
 
     /// The bubbles' configure (the caller checked `bubbles_owns`): an imposed size is obeyed (the
     /// bubbles that do not fit are not painted), then drawn.
     pub(crate) fn bubbles_configured(&mut self, size: (u32, u32)) {
-        let Some(open) = self.bubbles.as_mut() else { return };
+        let Some(open) = self.bubbles.open.as_mut() else { return };
         if let Some(imposed) = plan_configure(open.size, size) {
             open.size = imposed;
             // The input region follows the width the bubbles are painted at (the draw commits it).
-            let Some(open) = self.bubbles.as_ref() else { return };
+            let Some(open) = self.bubbles.open.as_ref() else { return };
             self.bubbles_input(&open.layer, &open.spans, imposed.0);
         }
-        let Some(open) = self.bubbles.as_mut() else { return };
+        let Some(open) = self.bubbles.open.as_mut() else { return };
         open.configured = true;
         open.last = None;
         self.bubbles_draw();
@@ -365,11 +386,11 @@ impl App {
     /// gone in the batch makes it an unplug, `Closes`): opened again, once per stack for the
     /// compositor's own closes.
     pub(crate) fn bubbles_layer_closed(&mut self) {
-        let keys = self.bubbles.as_ref().map(|o| keys(&o.stack)).unwrap_or_default();
+        let keys = self.bubbles.open.as_ref().map(|o| keys(&o.stack)).unwrap_or_default();
         self.bubbles_drop("closed by the compositor");
-        self.bubble_closes.closed(keys);
+        self.bubbles.closes.closed(keys);
         if let Some(handle) = &self.loop_handle {
-            handle.insert_idle(|app| match app.bubble_closes.settle() {
+            handle.insert_idle(|app| match app.bubbles.closes.settle() {
                 Some(true) => app.bubbles_sync(),
                 Some(false) => log("bubbles: closed again by the compositor; shown again when they change"),
                 None => {}
@@ -382,8 +403,8 @@ impl App {
     /// compositor's choice.
     pub(crate) fn bubbles_output_gone(&mut self, output: &wl_output::WlOutput) {
         // A close earlier in this batch was this unplug's doing.
-        self.bubble_closes.output_lost();
-        if !self.bubbles.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
+        self.bubbles.closes.output_lost();
+        if !self.bubbles.open.as_ref().is_some_and(|o| bubbles::holds(o.output.as_ref(), output)) {
             return;
         }
         self.bubbles_drop("output gone");
@@ -398,12 +419,12 @@ impl App {
         if !self.bubbles_owns(surface) {
             return false;
         }
-        let Some((stack, scale)) = self.bubbles.as_ref().map(|o| (o.stack.clone(), o.scale)) else { return true };
+        let Some((stack, scale)) = self.bubbles.open.as_ref().map(|o| (o.stack.clone(), o.scale)) else { return true };
         if scale == factor {
             return true;
         }
         let (spans, size) = self.bubbles_layout(&stack, factor);
-        if let Some(open) = self.bubbles.as_mut() {
+        if let Some(open) = self.bubbles.open.as_mut() {
             open.scale = factor;
             open.spans = spans;
             open.last = None;
@@ -427,6 +448,7 @@ impl App {
             PointerEventKind::Press { button, .. } => {
                 let under = self
                     .bubbles
+                    .open
                     .as_ref()
                     .and_then(|o| bubbles::hit(&o.spans, ev.position.1).and_then(|i| o.stack.get(i)).map(|b| (b.id, b.revision)));
                 match (under, actions::button(*button)) {
@@ -446,14 +468,14 @@ impl App {
     /// the name not held).
     pub(crate) fn bubble_timer_sync(&mut self) {
         let deadline = notifications_of(self.tray.as_ref(), self.link.as_ref()).filter(|n| n.held()).and_then(|n| n.center().next_expiry());
-        self.bubble_timer.sync_opt(self.loop_handle.as_ref(), deadline, App::bubble_expire);
+        self.bubbles.timer.sync_opt(self.loop_handle.as_ref(), deadline, App::bubble_expire);
     }
 
     /// The timer fired (calloop callback; its source is dropped). Expired at the real time, never
     /// before the deadline it was armed for: a bubble due at that instant always goes, so the timer
     /// never re-arms on the same deadline.
     pub(crate) fn bubble_expire(app: &mut App, deadline: Instant) {
-        app.bubble_timer.fired();
+        app.bubbles.timer.fired();
         let now = Instant::now().max(deadline);
         let mut expired = 0;
         app.notify_act(|n| {
