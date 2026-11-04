@@ -456,7 +456,7 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
 /// `keyboard_lost` (popup.rs), which only touch Wayland/seat state, not the
 /// launcher's model — nothing there to guard anymore. The guard moved with
 /// the actual launcher calls: `popup.rs`'s `key_event` (every keypress,
-/// including `update_modifiers`'s own `self.mods` write, touches no
+/// including `update_modifiers`'s own `self.keyboard.mods` write, touches no
 /// launcher state and needs none either) dispatches to the launcher only
 /// for its `KeyTo::Launcher` branch, guarded there; `leave` still guards its
 /// direct `launcher_close` call. No fake Wayland seat or keyboard exists to
@@ -578,7 +578,7 @@ fn launcher_fail_takes_the_launcher_then_releases_the_keyboard_then_returns_earl
 
 /// Mae's crash (2026-10-06, 2026-10-09): a released `wl_keyboard`'s last reference, dropped inside
 /// calloop's dispatch, made SCTK's repeat data re-enter the loop. Every release goes through
-/// `keyboard_retire`, which holds the keyboard in `retired_keyboards`, and the loop drains that
+/// `keyboard_retire`, which holds the keyboard in `keyboard.retired`, and the loop drains that
 /// list right after each `dispatch` returns. The ordering needs a compositor's `delete_id`, so the
 /// wiring is checked in the source (`retired.rs` tests the hazard and the drain on a real loop).
 #[test]
@@ -591,10 +591,10 @@ fn a_released_keyboard_is_retired_then_dropped_after_the_dispatch() {
         assert!(body.contains("self.keyboard_retire(k)"), "{f} must retire the keyboard, never drop it: {body}");
     }
     let retire = function_body(&popup, "fn keyboard_retire(");
-    assert!(retire.contains("self.retired_keyboards.hold(k)"), "keyboard_retire must hold it: {retire}");
+    assert!(retire.contains("self.keyboard.retired.hold(k)"), "keyboard_retire must hold it: {retire}");
     let run = function_body(&launch, "fn main_loop(");
     let dispatch = run.find("event_loop.dispatch(").expect("the loop dispatches");
-    let drain = run.find("state.retired_keyboards.drain()").expect("the loop must drain the retired keyboards");
+    let drain = run.find("state.keyboard.retired.drain()").expect("the loop must drain the retired keyboards");
     assert!(dispatch < drain, "drained after the dispatch returns, never inside it: {run}");
 }
 
@@ -2457,18 +2457,18 @@ fn the_power_menu_lets_go_of_its_timer_and_runs_only_its_entry() {
     // flag to the model, never a constant.
     assert!(row.contains("key: App::power_key,"), "{row}");
     let key = function_body(&power_app, "fn power_key(");
-    assert!(key.contains("self.key_repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
+    assert!(key.contains("self.keyboard.repeat") && key.contains("p.key(k, repeat, now)"), "the repeat reaches the model: {key}");
 }
 
 /// Quick spec § 3: only the arrows repeat in the panel, so SCTK's own repeat must be told from a
-/// press: both repeat paths raise `key_repeat` around `key_event`.
+/// press: both repeat paths raise `keyboard.repeat` around `key_event`.
 #[test]
 fn the_keyboards_own_repeat_is_told_from_a_press() {
     let files = source_files();
     let popup = production_code(&files.iter().find(|(p, _)| relative_path(p) == "popup.rs").expect("popup.rs").1);
     for f in ["pub(crate) fn keyboard_acquire(", "fn repeat_key("] {
         let body = function_body(&popup, f);
-        let (raised, lowered) = (body.find("key_repeat = true"), body.find("key_repeat = false"));
+        let (raised, lowered) = (body.find("keyboard.repeat = true"), body.find("keyboard.repeat = false"));
         let event = body.find("key_event(");
         assert!(matches!((raised, event, lowered), (Some(r), Some(e), Some(l)) if r < e && e < l), "{f}: {body}");
     }

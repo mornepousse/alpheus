@@ -9,7 +9,6 @@ use crate::bubbles_surface::{Closes, OpenBubbles};
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::grid::{Grid, Target};
-use crate::keys::Mods;
 use crate::launch::Mail;
 use crate::launcher::surface::{CloseReason, OpenLauncher};
 use crate::osd::Osd;
@@ -27,7 +26,7 @@ use alpheus_commun::theme::settings::ThemeSettings;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, channel};
 use smithay_client_toolkit::reexports::client::delegate_noop;
 use smithay_client_toolkit::reexports::client::globals::GlobalList;
-use smithay_client_toolkit::reexports::client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::reexports::protocols::wp::viewporter::client::{wp_viewport::WpViewport, wp_viewporter::WpViewporter};
 use smithay_client_toolkit::seat::pointer::{CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer};
@@ -449,18 +448,8 @@ pub struct App {
     pub(crate) xdg: Option<XdgShell>,
     /// The open popup (menu, tooltip, calendar); None at rest.
     pub(crate) popup: Option<OpenPopup>,
-    /// The keyboard, bound only while the launcher or a grabbing popup needs it.
-    pub(crate) keyboard: Option<wl_keyboard::WlKeyboard>,
-    pub(crate) mods: Mods,
-    /// Keys down on `keyboard` (`popup::KeysDown`): it is never released while one is down on a
-    /// live focus (`popup::release_decision`).
-    pub(crate) keys_down: crate::popup::KeysDown,
-    /// The surface `keyboard` entered, until its leave: alive or not decides whether a release waits.
-    pub(crate) keyboard_focus: Option<wl_surface::WlSurface>,
-    /// `keyboard_release` was asked while a key was down: done at its release or a leave.
-    pub(crate) release_deferred: bool,
-    /// Released keyboards still held elsewhere (`retired`): dropped after a `dispatch`, never in one.
-    pub(crate) retired_keyboards: crate::retired::Retired<wl_keyboard::WlKeyboard>,
+    /// The bound keyboard and what follows its keys (popup.rs).
+    pub(crate) keyboard: crate::popup::Keyboard,
     /// The tray icon the pointer rests on (tooltips), and its timer: armed only while it rests on one.
     pub(crate) hover: Hover,
     pub(crate) hover_timer: DeadlineTimer,
@@ -491,12 +480,8 @@ pub struct App {
     pub(crate) privacy_timer: DeadlineTimer,
     /// The camera devices' watch and scan state (privacy delivery 2, camera_app.rs).
     pub(crate) camera: crate::camera_app::Camera,
-    /// The key being handled is SCTK's repeat, not a press (the panel repeats the arrows only).
-    pub(crate) key_repeat: bool,
     /// The tray menus' and tooltip's state (menu_app.rs).
     pub(crate) menu: crate::menu_app::TrayMenu,
-    /// The last key's time (dbusmenu Event's timestamp).
-    pub(crate) key_time: u32,
     /// The module popup last closed by `done`, and when (the calendar on Hyprland and niri; the media
     /// popup): a left press on that module within `RECENT_CLOSE_WINDOW` only closes.
     pub(crate) recently_closed_popup: Option<(ModulePopup, Instant)>,
@@ -633,12 +618,7 @@ impl App {
             mail: None,
             xdg,
             popup: None,
-            keyboard: None,
-            mods: Mods::default(),
-            keys_down: crate::popup::KeysDown::default(),
-            keyboard_focus: None,
-            release_deferred: false,
-            retired_keyboards: Default::default(),
+            keyboard: Default::default(),
             hover: Hover::new(),
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
@@ -652,9 +632,7 @@ impl App {
             power_timer: DeadlineTimer::new(),
             privacy_timer: DeadlineTimer::new(),
             camera: crate::camera_app::Camera::new(),
-            key_repeat: false,
             menu: Default::default(),
-            key_time: 0,
             recently_closed_popup: None,
             // Asked of the compositor actually on the other end of the connection (its own
             // `hyprland_*` globals), never of the environment: an inherited
@@ -720,8 +698,8 @@ impl App {
         // The focus going with this bar (a popup closed by Escape, the key still down, a release
         // deferred on it): the key-up and leave that would end the wait may never come. Not by
         // `is_alive`: `closed` holds the layer surface (and so its wl_surface) until it returns.
-        if self.keyboard_focus.as_ref() == Some(&surface) {
-            self.keyboard_focus = None;
+        if self.keyboard.focus.as_ref() == Some(&surface) {
+            self.keyboard.focus = None;
             self.keyboard_release_deferred();
         }
         s.output

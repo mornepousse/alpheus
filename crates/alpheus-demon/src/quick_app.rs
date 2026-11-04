@@ -395,7 +395,7 @@ impl App {
 
     /// ↑ ↓ ← →, Space, Enter, Escape, Home, End (quick spec § 3); the repeat tells a held key.
     fn quick_key(&mut self, k: Key) {
-        let (repeat, now) = (self.key_repeat, Instant::now());
+        let (repeat, now) = (self.keyboard.repeat, Instant::now());
         let action = self.quick_with(|q, live| q.key(live, k, repeat, now));
         self.quick_action(action);
     }

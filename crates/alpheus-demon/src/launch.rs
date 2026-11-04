@@ -699,7 +699,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         after_dispatch(state);
         after_dispatch_windows(state);
         // Outside the dispatch: a released keyboard's last reference (`retired`).
-        state.retired_keyboards.drain();
+        state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a
         // `closed` of this same batch has already run): places the bar
         // back on outputs `closed` marked for restoration and that are

@@ -55,7 +55,7 @@ impl App {
 
     /// ↑ ↓ Tab Shift+Tab, Enter, Space, Escape (power spec § 2); the repeat tells a held key.
     fn power_key(&mut self, k: Key) {
-        let (repeat, now) = (self.key_repeat, Instant::now());
+        let (repeat, now) = (self.keyboard.repeat, Instant::now());
         let action = self.power_with(|p| p.key(k, repeat, now));
         self.power_action(action);
     }

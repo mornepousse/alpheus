@@ -674,7 +674,7 @@ impl App {
     /// without a keyboard yet is retried when the capability appears.
     pub(crate) fn launcher_key(&mut self, event: KeyEvent) {
         let Some(open) = self.launcher.as_mut() else { return };
-        let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), self.mods) else { return };
+        let Some(key) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) else { return };
         let outcome = open.model.key(key);
         self.launcher_outcome(outcome);
     }
