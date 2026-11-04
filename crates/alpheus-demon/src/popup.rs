@@ -713,7 +713,7 @@ impl App {
         }
         let Some(open) = self.popup.take() else { return };
         let (grab, keyed, parent) = (open.grab, open.keyed, open.parent.clone());
-        // Whatever the reason: a closed tooltip is never left pairing `tooltip_item` with a popup
+        // Whatever the reason: a closed tooltip is never left pairing `menu.tooltip_item` with a popup
         // that no longer exists — `tooltip_item_gone` (wayland.rs)
         // relies on the two always being set and cleared together.
         if matches!(open.body, PopupBody::Tooltip(_)) {

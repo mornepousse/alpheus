@@ -1094,7 +1094,7 @@ fn slow_activate_item(bus: &PrivateBus, delay: Duration) {
     });
 }
 
-/// A press on the bar that hits no icon drops `last_icon` —
+/// A press on the bar that hits no icon drops `menu.last_icon` —
 /// a failed Activate answered late, for the icon pressed earlier, must open nothing once the user
 /// has since clicked elsewhere.
 #[test]

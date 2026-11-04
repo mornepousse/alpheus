@@ -23,7 +23,7 @@ impl App {
     /// Applies a tray callback's output: redraw (Msg::Tray rebuilt from the
     /// tray's items and `[tray.icons]`), bus closed (logged once, the tray
     /// dropped and emptied, never retried), a menu asked (`open_menu`: opened
-    /// from `last_icon`), the layout changed; then the frame request and the deadline timer.
+    /// from `menu.last_icon`), the layout changed; then the frame request and the deadline timer.
     pub(crate) fn tray_output(&mut self, out: TrayOutput) {
         if let Some(mode) = out.appearance {
             self.portal_said(mode);
@@ -268,7 +268,7 @@ pub(crate) fn notifications_of<'a>(tray: Option<&'a Tray>, link: Option<&'a Sess
     tray.and_then(Tray::notifications).or_else(|| link.and_then(SessionLink::notifications))
 }
 
-/// The remembered press (`last_icon`) for `key`, taken out: whatever its key, it is spent after this
+/// The remembered press (`menu.last_icon`) for `key`, taken out: whatever its key, it is spent after this
 /// (a different icon's press is stale too — the answer that asked for `key` found it replaced).
 fn take_icon_for(last: &mut Option<(ItemKey, PopupAnchor, Button)>, key: &ItemKey) -> Option<(ItemKey, PopupAnchor, Button)> {
     last.take().filter(|(k, _, _)| k == key)

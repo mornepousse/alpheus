@@ -35,7 +35,7 @@ pub(crate) struct QuickApp {
     /// The quick panel's timer: armed only while the panel is open and a re-read
     /// (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a Bluetooth
     /// call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s forget
-    /// question (quick delivery 3); closed, only for an attempt still followed (`wifi_follow`, Mae's
+    /// question (quick delivery 3); closed, only for an attempt still followed (`QuickApp::wifi_follow`, Mae's
     /// ruling P1).
     pub(crate) timer: DeadlineTimer,
     /// Shared with the sound thread (`pipewire::SoundTap`): the panel reads the sinks at open and

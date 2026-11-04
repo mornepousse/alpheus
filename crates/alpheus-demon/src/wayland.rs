@@ -1235,7 +1235,7 @@ impl PointerHandler for App {
                     }
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
                     // A press that hits no icon drops
-                    // `last_icon` — a failed Activate answered late, for whatever icon was
+                    // `menu.last_icon` — a failed Activate answered late, for whatever icon was
                     // pressed before this one, must not open a menu once the user has pressed
                     // elsewhere on the bar meanwhile.
                     if pressed_icon.is_none() {
@@ -1385,7 +1385,7 @@ impl App {
         if !matches!(open.body, PopupBody::Tooltip(_)) {
             return;
         }
-        // A Tooltip popup is always paired with `tooltip_item` (set together in `hover_fire`,
+        // A Tooltip popup is always paired with `menu.tooltip_item` (set together in `hover_fire`,
         // cleared together in `popup_close`). Should that ever break, the tooltip closes rather
         // than the daemon panicking. `self.tray` can be None: the session bus just closed,
         // taking every item with it.

@@ -157,7 +157,7 @@ impl App {
     /// close Activated; Submenu: menu_submenu, enter when grafted; Close: close_menu + popup_close).
     pub(crate) fn menu_action(&mut self, a: MenuAction, timestamp: u32) {
         // Any of these three actions invalidates a pending
-        // submenu fetch (`submenu_wanted`) — a selection move or going back (both Redraw), a
+        // submenu fetch (`menu.submenu_wanted`) — a selection move or going back (both Redraw), a
         // DIFFERENT submenu asked for, or an entry run all mean the user is no longer waiting on
         // the one that was asked for before. Left uncleared, a late `LayoutUpdated` (Steam,
         // Electron re-emit it often) could otherwise graft it in long after the user moved on.
@@ -221,13 +221,13 @@ impl App {
 /// `open_menu` for the key whose menu is already open, or whose session is
 /// already opening, is a no-op — a duplicate failed Activate (two quick left clicks on an item
 /// without its own Activate, e.g. Steam) must not close and reopen the session already in flight.
-fn already_requested(menu_for: Option<&ItemKey>, key: &ItemKey) -> bool {
-    menu_for == Some(key)
+fn already_requested(target: Option<&ItemKey>, key: &ItemKey) -> bool {
+    target == Some(key)
 }
 
-/// A submenu fetch (`submenu_wanted`) is worth grafting only
+/// A submenu fetch (`menu.submenu_wanted`) is worth grafting only
 /// if the menu's current selection is still that very id when the layout arrives — any other
-/// action in between (a move, going back, a different submenu chosen) clears `submenu_wanted`
+/// action in between (a move, going back, a different submenu chosen) clears `menu.submenu_wanted`
 /// itself (`menu_action`), but `relayout`'s own bookkeeping can also shift the selection without
 /// going through it (an entry dropped from the menu, say); this is the last check before grafting.
 fn submenu_still_selected(wanted: Option<i32>, selected: Option<i32>) -> bool {

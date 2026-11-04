@@ -639,7 +639,7 @@ fn answers_left_by_the_settle_rounds_are_routed_from_an_idle() {
 
 /// Three small orderings no fake Wayland surface can exercise. `menu_repaint`
 /// finds its bar by the popup's parent SURFACE (never an output name); `launcher_open` drops the
-/// remembered tray press (`last_icon`), so a late failed Activate cannot open a menu over the
+/// remembered tray press (`menu.last_icon`), so a late failed Activate cannot open a menu over the
 /// launcher; and the bar's keyboard interactivity is only reset where `popup_open` set it
 /// (`exclusive_during_grab`, false on Hyprland), at both places.
 #[test]
@@ -685,7 +685,7 @@ fn an_output_removal_and_a_launcher_open_also_cancel_a_stale_hover() {
 }
 
 /// `tooltip_item_gone` (wayland.rs) relies on a Tooltip popup
-/// always being paired with `tooltip_item` — set together in `hover_fire`, so it must be cleared
+/// always being paired with `menu.tooltip_item` — set together in `hover_fire`, so it must be cleared
 /// together too, in `popup_close`, whatever the closing reason (hover ended, a press, a replaced
 /// popup…), or a later redraw's check would read a stale key left behind by an earlier tooltip.
 /// No fake Wayland popup exists to exercise every closing reason in a unit test, so this checks
@@ -973,30 +973,28 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // session bus answers — an unused module costs nothing at runtime, but the call itself is
         // still in the source).
         ("launch.rs", "Generic::new", 1),
-        // The tray's DeadlineTimer, armed only while calls are pending; the tooltip's, armed only
-        // while the pointer rests on a tray icon; the bar's session link's (`link.timer`), armed only while one of its
-        // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each) — never at rest; the media popup's tick
-        // armed only while that popup is open and its player plays; the
-        // notification bubbles' expiry, armed only while a live bubble (shown,
-        // or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer, armed
-        // only while the pill shows; the quick panel's, armed only while it is open and
-        // a re-read (150 ms, 300 ms) or the reboot question (3 s) is pending; the power menu's (power
-        // spec § 4), armed only while it is open and its reboot or power-off question (3 s) is pending;
-        // the privacy indicators' off-delay (privacy spec § 4), armed only while an indicator is
-        // pending off; the camera scan's debounce (privacy delivery 2), armed only for 300 ms after
-        // a device open, close, creation or removal. The quick panel's timer also covers a Bluetooth
-        // call's 30 s deadline (suspended while a code shows), its 4 s `failed` and the 3 s forget
-        // question (quick delivery 3).
+        // In wayland.rs: the tray's DeadlineTimer, armed only while calls are pending; the tooltip's,
+        // armed only while the pointer rests on a tray icon; the media popup's tick, armed only while
+        // that popup is open and its player plays; the power menu's (power spec § 4), armed only
+        // while it is open and its reboot or power-off question (3 s) is pending; the privacy
+        // indicators' off-delay (privacy spec § 4), armed only while an indicator is pending off.
+        // The other features' timers are built in their own files, listed below.
         ("wayland.rs", "Timer::", 5),
-        // The camera scan's debounce, built in `Camera::new` (see above).
+        // The camera scan's debounce (privacy delivery 2), built in `Camera::new`: armed only for
+        // 300 ms after a device open, close, creation or removal.
         ("camera_app.rs", "Timer::", 1),
-        // The quick panel's timer, built in `QuickApp::new` (see above).
+        // The quick panel's timer, built in `QuickApp::new`: armed only while it is open and a
+        // re-read (150 ms, 300 ms), the reboot question (3 s) or a Wi-Fi deadline is pending, or a
+        // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
+        // forget question (quick delivery 3) is.
         ("quick_app.rs", "Timer::", 1),
-        // The bubbles' expiry timer, built in `BubbleSurface::new`, and the OSD's hide timer, built
-        // in `OsdSurface::new` (see above).
+        // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
+        // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
+        // built in `OsdSurface::new`: armed only while the pill shows.
         ("bubbles_surface.rs", "Timer::", 1),
         ("osd_surface.rs", "Timer::", 1),
-        // The session link's timer, built in `LinkState::new` (see above).
+        // The bar's session link's timer, built in `LinkState::new`: armed only while one of its
+        // calls is pending — the portal's ReadOne, an MPRIS listing or read (2 s at most each).
         ("link.rs", "Timer::", 1),
         // The displays' one DeadlineTimer (displays spec § 1): the hotplug debounce (500 ms after a
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
@@ -1019,7 +1017,7 @@ fn nothing_resident_while_the_launcher_is_closed() {
         ("bt_app.rs", "Generic::new", 1),
         // The bar's own session link: only when the tray module is off
         // and mode = "auto" or the media module needs the session bus, ONE connection for both;
-        // readable only when the portal or a player speaks. Its deadline timer, in wayland.rs, is
+        // readable only when the portal or a player speaks. Its deadline timer, above, is
         // armed only while one of its calls is pending.
         ("link.rs", "Generic::new", 1),
         // The scan: started at open, ends once its catalog is delivered.
