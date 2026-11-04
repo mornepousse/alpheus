@@ -433,6 +433,31 @@ fn wifi_more_is_read_checked_and_resolved() {
     assert!(BarConfig::from_text("[quick]\nwifi_mor = []").unwrap_err().contains("wifi_mor"), "unknown key refused");
 }
 
+/// `mixer` is read as `wifi_more` is: as given, absent resolved at load time from the launcher's
+/// terminal then wiremix, `[]` hides the row and is never replaced.
+#[test]
+fn mixer_is_read_checked_and_resolved() {
+    assert_eq!(QuickConfig::default().mixer, None, "absent: resolved at load time");
+    let c = BarConfig::from_text("[quick]\nmixer = [\"foot\", \"-e\", \"wiremix\"]\n").unwrap();
+    assert_eq!(c.quick.mixer, Some(vec!["foot".to_string(), "-e".into(), "wiremix".into()]));
+    let hidden = BarConfig::from_text("[quick]\nmixer = []\n").unwrap();
+    assert_eq!(hidden.quick.mixer, Some(vec![]));
+    let mut q = QuickConfig::default();
+    resolve_mixer(&mut q, &["alacritty".to_string(), "-e".into()]);
+    assert_eq!(q.mixer, Some(vec!["alacritty".to_string(), "-e".into(), "wiremix".into()]));
+    assert_eq!(q.wifi_more, None, "the other default is its own");
+    let mut kept = hidden.quick.clone();
+    resolve_mixer(&mut kept, &["foot".to_string()]);
+    assert_eq!(kept.mixer, Some(vec![]), "given: never replaced");
+    for (t, want) in [
+        ("[quick]\nmixer = [\" \"]", "quick.mixer: the program is blank"),
+        ("[quick]\nmixer = [\"foot\", \"a\\u0000b\"]", "quick.mixer: an argument holds a NUL"),
+    ] {
+        let e = BarConfig::from_text(t).unwrap_err();
+        assert!(e.contains(want), "{t}: {e}");
+    }
+}
+
 #[test]
 fn quick_defaults_and_settings() {
     let d = BarConfig::default();

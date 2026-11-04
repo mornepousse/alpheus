@@ -286,6 +286,7 @@ fn settings_absent_or_invalid() {
     std::fs::create_dir_all(&d).unwrap();
     let mut expected = BarConfig::default();
     crate::config::resolve_wifi_more(&mut expected.quick, &LauncherConfig::default().terminal);
+    crate::config::resolve_mixer(&mut expected.quick, &LauncherConfig::default().terminal);
     let (c, w) = settings(&d);
     assert_eq!((c, w.len()), (expected.clone(), 0));
     assert_eq!(expected.quick.wifi_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui".into()]), "More… defaults to nmtui");
@@ -297,8 +298,11 @@ fn settings_absent_or_invalid() {
     std::fs::write(d.join("bar.toml"), "height = 22\n").unwrap();
     std::fs::write(d.join("launcher.toml"), "terminal = [\"alacritty\", \"-e\"]\n").unwrap();
     assert_eq!(settings(&d).0.quick.wifi_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui".into()]));
+    assert_eq!(settings(&d).0.quick.mixer, Some(vec!["alacritty".to_string(), "-e".into(), "wiremix".into()]));
     std::fs::write(d.join("bar.toml"), "[quick]\nwifi_more = []\n").unwrap();
     assert_eq!(settings(&d).0.quick.wifi_more, Some(vec![]), "given in bar.toml: kept");
+    std::fs::write(d.join("bar.toml"), "[quick]\nmixer = []\n").unwrap();
+    assert_eq!(settings(&d).0.quick.mixer, Some(vec![]), "given in bar.toml: kept");
     let _ = std::fs::remove_dir_all(&d);
 }
 

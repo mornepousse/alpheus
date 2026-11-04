@@ -1238,8 +1238,8 @@ macro_rules! rows {
 }
 
 rows! {
-    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Mic => 5, Dnd => 6,
-    Profile => 7, KeepAwake => 8, NightLight => 9, Session => 10,
+    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Mic => 5, Mixer => 6, Dnd => 7,
+    Profile => 8, KeepAwake => 9, NightLight => 10, Session => 11,
 }
 
 /// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
@@ -1253,10 +1253,10 @@ fn one_spec_per_row_in_variant_order() {
     let names: Vec<&str> = ROWS.iter().map(|s| s.name).collect();
     assert_eq!(
         names,
-        ["volume", "headset", "brightness", "wifi", "bluetooth", "mic", "dnd", "profile", "keep-awake", "night-light", "session"]
+        ["volume", "headset", "brightness", "wifi", "bluetooth", "mic", "mixer", "dnd", "profile", "keep-awake", "night-light", "session"]
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
-    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2]);
+    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
 }
 
 /// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
@@ -1270,4 +1270,35 @@ fn a_pending_toggle_reread_is_the_deadline_whichever_toggle() {
         q.reread_toggles[t.index()] = Some(at);
         assert_eq!(q.deadline(), Some(at), "{t:?}");
     }
+}
+
+/// `[quick] mixer`: a `Mixer…` row right after the microphone, shown only with a command (an
+/// unresolved config, a test's default, or `[]` hides it), run as given and then the panel closes.
+#[test]
+fn the_mixer_row_runs_its_command_then_closes() {
+    let command = vec!["fake-term".to_string(), "-e".into(), "fake-mixer".into()];
+    let mut w = World::full();
+    let t = Instant::now();
+    assert!(!shown(&w.live(), &quick(&w, Focus::Top)).contains(&Row::Mixer), "unresolved: no row");
+    w.config.mixer = Some(vec![]);
+    assert!(!shown(&w.live(), &quick(&w, Focus::Top)).contains(&Row::Mixer), "[] hides it");
+    w.config.mixer = Some(command.clone());
+    let l = w.live();
+    let q = quick(&w, Focus::Top);
+    assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Mic, Row::Mixer, Row::Dnd, Row::Profile, Row::Session]);
+    let b = rows(&l, &q);
+    assert_eq!(texts(&b)[4], format!(" {MIXER} Mixer…"), "{:?}", texts(&b));
+    assert_eq!(b.separators, [2, 7], "in the microphone's group");
+    let run = QuickAction::RunAndClose { argv: command, what: "mixer".into() };
+    for k in [Key::Enter, Key::Char(' ')] {
+        let mut q = quick(&w, Focus::Top);
+        q.selected = Row::Mixer;
+        assert_eq!(q.key(&l, k, false, t), run, "{k:?}");
+    }
+    let mut q = quick(&w, Focus::Top);
+    assert_eq!(q.press(&l, (5, 4), Button::Left, t), run, "a left click");
+    assert_eq!(q.selected, Row::Mixer);
+    let mut q = quick(&w, Focus::Top);
+    q.selected = Row::Mixer;
+    assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Nothing, "arrows do nothing");
 }

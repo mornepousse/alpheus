@@ -118,8 +118,7 @@ pub fn more(config: &QuickConfig) -> &[String] {
 
 /// `More…`: `wifi_more` as given, then the panel closes; nothing when it is empty.
 fn run_more(config: &QuickConfig) -> QuickAction {
-    let argv = more(config).to_vec();
-    if argv.is_empty() { QuickAction::Nothing } else { QuickAction::RunAndClose { argv, what: "wifi more".into() } }
+    crate::quick::run_and_close(more(config), "wifi more")
 }
 
 /// What Enter does on a network (quick Wi-Fi spec § 2).

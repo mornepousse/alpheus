@@ -60,6 +60,7 @@
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
+//! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -489,6 +490,10 @@ pub struct QuickConfig {
     /// networks, VPN, hotspot. None: absent from bar.toml, resolved at load time
     /// (`resolve_wifi_more`); an empty list hides the row.
     pub wifi_more: Option<Vec<String>>,
+    /// The `Mixer…` row, run as given. None: absent from bar.toml, resolved at load time
+    /// (`resolve_mixer`; an unresolved config, a test's default, shows no row); an empty list
+    /// hides the row.
+    pub mixer: Option<Vec<String>>,
 }
 
 impl Default for QuickConfig {
@@ -505,6 +510,7 @@ impl Default for QuickConfig {
             reboot: argv(&["systemctl", "reboot"]),
             poweroff: argv(&["systemctl", "poweroff"]),
             wifi_more: None,
+            mixer: None,
         }
     }
 }
@@ -513,8 +519,21 @@ impl Default for QuickConfig {
 /// then "nmtui" (quick Wi-Fi spec § 4). Given (even empty): kept as is.
 pub fn resolve_wifi_more(q: &mut QuickConfig, terminal: &[String]) {
     if q.wifi_more.is_none() {
-        q.wifi_more = Some(terminal.iter().cloned().chain(std::iter::once("nmtui".to_string())).collect());
+        q.wifi_more = Some(in_terminal(terminal, "nmtui"));
     }
+}
+
+/// `[quick] mixer` absent from bar.toml: the launcher's terminal, then "wiremix". Given (even
+/// empty): kept as is. Not looked up on `$PATH`: the panel has no such lookup, and a missing
+/// wiremix is a terminal that closes at once.
+pub fn resolve_mixer(q: &mut QuickConfig, terminal: &[String]) {
+    if q.mixer.is_none() {
+        q.mixer = Some(in_terminal(terminal, "wiremix"));
+    }
+}
+
+fn in_terminal(terminal: &[String], program: &str) -> Vec<String> {
+    terminal.iter().cloned().chain(std::iter::once(program.to_string())).collect()
 }
 
 /// A toggle's `state`, read (quick spec § 4).
@@ -571,6 +590,7 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
         ("quick.keep_awake.toggle", q.keep_awake.toggle.as_slice()),
         ("quick.night_light.toggle", q.night_light.toggle.as_slice()),
         ("quick.wifi_more", q.wifi_more.as_deref().unwrap_or(no_more)),
+        ("quick.mixer", q.mixer.as_deref().unwrap_or(no_more)),
     ] {
         if command.first().is_some_and(|p| p.trim().is_empty()) {
             return Err(format!("{key}: the program is blank"));

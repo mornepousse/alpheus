@@ -130,6 +130,7 @@ nothing else breaks. At most 3 profiles are applied automatically per set of scr
 | `tools-menu "Garder éveillé"` | the TUI's "Keep awake" | no | toggles keep-awake; alpheus reads the state from the flag file `$XDG_RUNTIME_DIR/garder-eveille`, which the script must create or remove (names kept as the author's contract) |
 | `wpctl`, `nmcli`, `bluetoothctl`, `brightnessctl`, `powerprofilesctl` | the TUI's tabs | no | the stock tools |
 | `wiremix`, `nmtui`, `bluetui` | the TUI, to open a full tool | yes: `[commands] mixer`, `network`, `bluetooth` in `config.toml` | an interactive terminal program |
+| `foot -e wiremix` | the quick panel's "Mixer…" | yes: `[quick] mixer` | a terminal command; the default is shown even without wiremix installed |
 | `foot -e nmtui` | the quick panel's Wi-Fi "More…" | yes: `[quick] wifi_more` | a terminal command |
 | `[[sources]]` `list` / `run` | the launcher's command sources | yes: `launcher.toml` | `list` prints one entry per line within 1 s; `run` receives the chosen line as `{line}` |
 
