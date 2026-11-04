@@ -107,17 +107,9 @@ pub enum BtState {
 }
 
 /// What the quick panel's Bluetooth reading covers (quick settings delivery 3): asked by the loop
-/// through `sources::dbus::bt::BtTap`, read by the D-Bus thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum BtScope {
-    /// The panel is closed: nothing read, nothing followed, nothing kept.
-    #[default]
-    Closed,
-    /// The panel is open: the adapter (powered, blocked).
-    Row,
-    /// The Bluetooth detail is open: the paired devices and the ones seen nearby too.
-    Detail,
-}
+/// through `sources::dbus::bt::BtTap`, read by the D-Bus thread. `Row`: the adapter (powered,
+/// blocked); `Detail`: the Bluetooth detail is open, the paired devices and the ones seen nearby too.
+pub type BtScope = PanelScope;
 
 /// What a device is, from BlueZ's `Icon` (never its address).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -251,20 +243,25 @@ pub struct ProfileState {
     pub offered: Vec<Profile>,
 }
 
-/// What the quick panel's Wi-Fi reading covers (quick Wi-Fi spec § 5): asked by the loop through
-/// `sources::dbus::wifi::WifiTap`, read by the D-Bus thread. Ordered by what is read: `Closed` <
-/// `Row` < `Detail`.
+/// What a reading for the quick panel covers: asked by the loop through a `sources::dbus::tap::Tap`,
+/// read by the D-Bus thread. Ordered by what is read: `Closed` < `Row` < `Detail`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum WifiScope {
+pub enum PanelScope {
     /// The panel is closed: nothing read, nothing followed, nothing kept.
     #[default]
     Closed,
-    /// The panel is open: the radio, the Wi-Fi device and the access point it is on.
+    /// The panel is open: what the list's row shows.
     Row,
-    /// The Wi-Fi detail is open, or a connection is under way: every access point and the saved
-    /// profiles too, and their signals followed.
+    /// The list's detail is open: everything it lists too.
     Detail,
 }
+
+/// What the quick panel's Wi-Fi reading covers (quick Wi-Fi spec § 5), through
+/// `sources::dbus::wifi::WifiTap`. `Row`: the radio, the Wi-Fi device and the access point it is on;
+/// `Detail`: the detail is open or a connection is under way, every access point and the saved
+/// profiles too, and their signals followed.
+/// Names only: `WifiScope` and `BtScope` are one type, the compiler does not tell them apart.
+pub type WifiScope = PanelScope;
 
 /// An access point's security, from NetworkManager's NM80211ApFlags and NM80211ApSecurityFlags.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

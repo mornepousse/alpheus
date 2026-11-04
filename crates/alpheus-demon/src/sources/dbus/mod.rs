@@ -43,6 +43,8 @@ use wifi::{WifiReader, WifiTap};
 pub use outage::{DomainLog, Outage, is_service_gone, optional, service_gone};
 use outage::{outage_of, tag, worth_logging};
 use run::run_supervised;
+#[cfg(test)]
+use session::{bt_into, wifi_into};
 pub use session::{messages, session};
 #[cfg(test)]
 use session::{read, read_all};
@@ -189,7 +191,7 @@ pub fn start(
         let tap = wifi.unwrap_or_default();
         let bt_tap = bt.unwrap_or_default();
         let run = move |p: &mut dyn FnMut(SystemState) -> bool| {
-            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking_bt(bt_tap.clone());
+            let mut bus = dbusrs_bus::DbusRsBus::system(&domains)?.waking(tap.clone()).waking(bt_tap.clone());
             session(&mut bus, &domains, &mut log_state, &tap, &bt_tap, p)
         };
         run_supervised(run, &send, std::thread::sleep, Instant::now, |m| log(&prefixed("D-Bus", m)));

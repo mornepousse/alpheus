@@ -7,9 +7,9 @@
 //! Replies are read in place with libdbus's iterators: a type the bar
 //! doesn't read is skipped, never decoded.
 
-use super::bt::BtTap;
 use super::props::{Objects, Prop, Props};
-use super::wifi::{self, WifiTap};
+use super::tap::Tap;
+use super::wifi;
 use super::{BUS_DRIVER, BUS_DRIVER_PATH, Bus, Domain, OBJECT_MANAGER, PROPERTIES, Signal, UPOWER, bluez, network, upower};
 use crate::system::SavedWifi;
 use dbus::Message;
@@ -445,10 +445,10 @@ pub fn refusal(call: &Message) -> Message {
 
 pub struct DbusRsBus {
     channel: Channel,
-    /// The quick panel's tap, polled beside the bus's socket (`waking`); None: libdbus sleeps alone.
-    wake: Option<Arc<WifiTap>>,
-    /// The Bluetooth panel's, the same way (`waking_bt`).
-    wake_bt: Option<Arc<BtTap>>,
+    /// The quick panel's taps, polled beside the bus's socket (`waking`); none: libdbus sleeps alone.
+    wakes: Vec<Arc<Tap>>,
+    /// The bus's socket then each tap's, as `next_signal` polls them (one buffer, kept).
+    fds: Vec<libc::pollfd>,
 }
 
 impl DbusRsBus {
@@ -466,21 +466,12 @@ impl DbusRsBus {
     }
 
     /// Also wakes on `tap`'s word (quick Wi-Fi spec § 5): `next_signal` then polls the bus's socket
-    /// and the tap's together and returns `Signal::poke()` when the loop asks. A tap without its
+    /// and every tap's together and returns `Signal::poke()` when the loop asks. A tap without its
     /// socket pair changes nothing.
-    pub fn waking(mut self, tap: Arc<WifiTap>) -> DbusRsBus {
+    pub fn waking(mut self, tap: Arc<Tap>) -> DbusRsBus {
         if tap.wake_fd().is_some() {
             self.channel.set_watch_enabled(true);
-            self.wake = Some(tap);
-        }
-        self
-    }
-
-    /// The same for the Bluetooth panel's tap (quick settings delivery 3): a third socket to poll.
-    pub fn waking_bt(mut self, tap: Arc<BtTap>) -> DbusRsBus {
-        if tap.wake_fd().is_some() {
-            self.channel.set_watch_enabled(true);
-            self.wake_bt = Some(tap);
+            self.wakes.push(tap);
         }
         self
     }
@@ -488,7 +479,7 @@ impl DbusRsBus {
     /// Connecting and `Hello` are blocking (libdbus's own deadlines); then
     /// the match rules, each with `TIMEOUT`.
     fn subscribe(channel: Channel, domains: &[Domain]) -> io::Result<DbusRsBus> {
-        let bus = DbusRsBus { channel, wake: None, wake_bt: None };
+        let bus = DbusRsBus { channel, wakes: Vec::new(), fds: Vec::new() };
         for (_, rule) in MATCH_RULES.iter().filter(|(d, _)| domains.contains(d)) {
             bus.call(BUS_DRIVER, BUS_DRIVER_PATH, Method::AddMatch, Some(rule))?;
         }
@@ -515,7 +506,7 @@ impl DbusRsBus {
         self.channel.set_watch_enabled(true);
         let fd = self.channel.watch().fd;
         // `waking`'s poll needs the watch: left on with a tap.
-        if self.wake.is_none() && self.wake_bt.is_none() {
+        if self.wakes.is_empty() {
             self.channel.set_watch_enabled(false);
         }
         fd
@@ -586,9 +577,7 @@ impl Bus for DbusRsBus {
                     _ => {}
                 }
             }
-            let wake_fd = self.wake.as_ref().and_then(|t| t.wake_fd());
-            let bt_fd = self.wake_bt.as_ref().and_then(|t| t.wake_fd());
-            if wake_fd.is_none() && bt_fd.is_none() {
+            if self.wakes.is_empty() {
                 // None: asleep on the socket until the bus sends something.
                 if self.channel.read_write(None).is_err() || !self.channel.is_connected() {
                     return Err(closed());
@@ -600,32 +589,19 @@ impl Bus for DbusRsBus {
             // (`read_write(0)`), and a word from the loop comes first.
             let w = self.channel.watch();
             let events = libc::POLLIN | if w.write { libc::POLLOUT } else { 0 };
-            let mut fds = [libc::pollfd { fd: w.fd, events, revents: 0 }; 3];
-            let mut n = 1;
-            for fd in [wake_fd, bt_fd].into_iter().flatten() {
-                fds[n] = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
-                n += 1;
-            }
-            crate::sys::poll(&mut fds[..n], -1)?;
+            self.fds.clear();
+            self.fds.push(libc::pollfd { fd: w.fd, events, revents: 0 });
+            self.fds.extend(self.wakes.iter().filter_map(|t| t.wake_fd()).map(|fd| libc::pollfd { fd, events: libc::POLLIN, revents: 0 }));
+            crate::sys::poll(&mut self.fds, -1)?;
             if self.channel.read_write(Some(Duration::ZERO)).is_err() || !self.channel.is_connected() {
                 return Err(closed());
             }
             let mut poked = false;
-            let mut at = 1;
-            if wake_fd.is_some() {
-                if fds[at].revents & libc::POLLIN != 0 {
-                    if let Some(t) = &self.wake {
-                        t.drain();
-                    }
+            for (slot, tap) in self.fds[1..].iter().zip(&self.wakes) {
+                if slot.revents & libc::POLLIN != 0 {
+                    tap.drain();
                     poked = true;
                 }
-                at += 1;
-            }
-            if bt_fd.is_some() && fds[at].revents & libc::POLLIN != 0 {
-                if let Some(t) = &self.wake_bt {
-                    t.drain();
-                }
-                poked = true;
             }
             if poked {
                 return Ok(Signal::poke());

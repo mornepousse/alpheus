@@ -6,50 +6,45 @@
 //! the panel's opens (Closed to any other scope): a close and a reopen the thread reads as one poke
 //! are still a new open, and a state read for an earlier open is told apart from the current one's.
 
+use crate::system::PanelScope;
 use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::sync::{Mutex, PoisonError};
 
-/// A scope whose default is the closed panel.
-pub trait Scope: Copy + PartialEq + Default {}
-
-impl Scope for crate::system::WifiScope {}
-impl Scope for crate::system::BtScope {}
-
 #[derive(Debug, Default)]
-pub struct Tap<S: Scope> {
+pub struct Tap {
     /// The scope asked (the default: closed), and the opens so far.
-    scope: Mutex<(S, u64)>,
+    scope: Mutex<(PanelScope, u64)>,
     wake: Option<(UnixStream, UnixStream)>,
 }
 
-impl<S: Scope> Tap<S> {
+impl Tap {
     /// A tap with its socket pair, both ends non-blocking and close-on-exec.
-    pub fn new() -> io::Result<Tap<S>> {
+    pub fn new() -> io::Result<Tap> {
         let (read, write) = UnixStream::pair()?;
         read.set_nonblocking(true)?;
         write.set_nonblocking(true)?;
-        Ok(Tap { scope: Mutex::new((S::default(), 0)), wake: Some((read, write)) })
+        Ok(Tap { scope: Mutex::new((PanelScope::Closed, 0)), wake: Some((read, write)) })
     }
 
-    pub fn scope(&self) -> S {
+    pub fn scope(&self) -> PanelScope {
         self.snapshot().0
     }
 
     /// The scope asked and the opens so far, read together.
-    pub fn snapshot(&self) -> (S, u64) {
+    pub fn snapshot(&self) -> (PanelScope, u64) {
         *self.scope.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The loop asks for `scope`: kept, and the thread woken when it changed (a byte already waiting
     /// is enough: a full socket is not an error); from closed to another scope, one more open. True
     /// when it changed.
-    pub fn set(&self, scope: S) -> bool {
+    pub fn set(&self, scope: PanelScope) -> bool {
         let changed = {
             let mut s = self.scope.lock().unwrap_or_else(PoisonError::into_inner);
             let changed = s.0 != scope;
-            if s.0 == S::default() && scope != S::default() {
+            if s.0 == PanelScope::Closed && scope != PanelScope::Closed {
                 s.1 = s.1.wrapping_add(1);
             }
             s.0 = scope;
@@ -75,5 +70,6 @@ impl<S: Scope> Tap<S> {
     }
 }
 
-pub type WifiTap = Tap<crate::system::WifiScope>;
-pub type BtTap = Tap<crate::system::BtScope>;
+/// Names only: `WifiTap` and `BtTap` are one type, the compiler does not tell them apart.
+pub type WifiTap = Tap;
+pub type BtTap = Tap;

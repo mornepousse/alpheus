@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 type Seen = (Option<BtState>, Option<BtView>);
 
 fn follow(b: &PrivateBus, tap: &Arc<BtTap>) -> mpsc::Receiver<Seen> {
-    let mut bus = DbusRsBus::at(&b.address, &[Domain::Bluetooth]).unwrap().waking_bt(tap.clone());
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Bluetooth]).unwrap().waking(tap.clone());
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {

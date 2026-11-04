@@ -1,6 +1,7 @@
 //! One session on one connection: the initial reads, the publish, then each signal.
 
 use super::*;
+use crate::system::PanelScope;
 
 /// Re-reads `d` into `s`. Err: the read failed for real (a timeout…), the
 /// domain is now None, tagged `Outage::Domain(d)` (I2) so a caller
@@ -91,38 +92,41 @@ fn publish_if_changed(last: &mut Option<SystemState>, s: &SystemState, publish: 
     ok
 }
 
-/// A Wi-Fi read's result into `s`. Err when the bus itself went away, tagged so (every domain
-/// blanked, never the network domain alone), or when a detail rule could not be removed: the
-/// network domain's outage, so the session ends and the reconnection drops
-/// every rule, the other modules kept meanwhile.
-fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
-    match r {
-        Ok(w) => {
-            s.wifi = w;
-            Ok(())
-        }
-        Err(e) => {
-            s.wifi = None;
-            let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(Domain::Network) };
-            Err(tag(e, outage))
-        }
-    }
+/// A panel reading's result into `slot`. Err when the bus itself went away, tagged so (every domain
+/// blanked, never `domain` alone), or on any other error: `domain`'s outage, so the session ends and
+/// the reconnection drops every rule, the other modules kept meanwhile. The reading is dropped
+/// either way.
+fn panel_into<T>(r: io::Result<Option<T>>, slot: &mut Option<T>, domain: Domain) -> io::Result<()> {
+    r.map(|v| *slot = v).map_err(|e| {
+        *slot = None;
+        let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(domain) };
+        tag(e, outage)
+    })
 }
 
-/// A Bluetooth read's result into `s`, as `wifi_into`: the bus going away is a bus outage, any other
-/// error the Bluetooth domain's (the view dropped either way).
-fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io::Result<()> {
-    match r {
-        Ok(v) => {
-            s.bt = v;
-            Ok(())
-        }
-        Err(e) => {
-            s.bt = None;
-            let outage = if e.kind() == io::ErrorKind::UnexpectedEof { Outage::Bus } else { Outage::Domain(Domain::Bluetooth) };
-            Err(tag(e, outage))
-        }
-    }
+/// A Wi-Fi read's result into `s`: the network domain's outage (a detail rule that could not be
+/// removed).
+pub(super) fn wifi_into(r: io::Result<Option<WifiState>>, s: &mut SystemState) -> io::Result<()> {
+    panel_into(r, &mut s.wifi, Domain::Network)
+}
+
+/// A Bluetooth read's result into `s`: the Bluetooth domain's outage.
+pub(super) fn bt_into(r: io::Result<Option<BtView>>, s: &mut SystemState) -> io::Result<()> {
+    panel_into(r, &mut s.bt, Domain::Bluetooth)
+}
+
+/// What a tap asks (`Tap::snapshot`), read through `rescope`; `open` the open last read for. A close
+/// and a reopen read as one poke (the scope unchanged) are still a new open: closed first, so
+/// everything is read again; its state tagged with the new open, and so published even when it reads
+/// the same. A reader still at its default reads nothing when closed.
+fn asked<T>(
+    (scope, now): (PanelScope, u64),
+    open: &mut u64,
+    mut rescope: impl FnMut(PanelScope) -> io::Result<Option<T>>,
+) -> io::Result<Option<T>> {
+    let reopened = now != *open && scope != PanelScope::Closed;
+    *open = now;
+    if reopened { rescope(PanelScope::Closed).and_then(|_| rescope(scope)) } else { rescope(scope) }
 }
 
 /// `wifi`, `bt`: what the open quick panel asks (quick Wi-Fi spec § 5): read when the session starts,
@@ -143,15 +147,13 @@ pub fn session(
     // A panel already open when this session starts (a reconnection): its Wi-Fi read now. A word
     // left waiting from the previous session is answered by this read: drained, never read twice.
     wifi.drain();
-    let (scope, open) = wifi.snapshot();
-    s.wifi_open = open;
-    if let Err(e) = wifi_into(reader.rescope(bus, scope), &mut s) {
+    let r = asked(wifi.snapshot(), &mut s.wifi_open, |scope| reader.rescope(bus, scope));
+    if let Err(e) = wifi_into(r, &mut s) {
         failed = Some(e);
     }
     bt.drain();
-    let (bt_scope, bt_now) = bt.snapshot();
-    s.bt_open = bt_now;
-    if let Err(e) = bt_into(bt_reader.rescope(bus, bt_scope), &mut s) {
+    let r = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
+    if let Err(e) = bt_into(r, &mut s) {
         failed = Some(e);
     }
     if !publish_if_changed(&mut last, &s, publish) {
@@ -177,27 +179,10 @@ pub fn session(
             drained = true;
         }
         if signal.is_poke() {
-            // A close and a reopen read as one poke (the scope unchanged) are still a new open:
-            // closed first, so everything is read again; its state tagged with the new open, and so
-            // published even when it reads the same.
-            let (scope, open) = wifi.snapshot();
-            let reopened = open != s.wifi_open && scope != WifiScope::Closed;
-            s.wifi_open = open;
-            let r = if reopened {
-                reader.rescope(bus, WifiScope::Closed).and_then(|_| reader.rescope(bus, scope))
-            } else {
-                reader.rescope(bus, scope)
-            };
+            let r = asked(wifi.snapshot(), &mut s.wifi_open, |scope| reader.rescope(bus, scope));
             let r = wifi_into(r, &mut s);
             // The same for Bluetooth, read whichever tap spoke (a poke does not say which).
-            let (bscope, bopen) = bt.snapshot();
-            let breopened = bopen != s.bt_open && bscope != BtScope::Closed;
-            s.bt_open = bopen;
-            let b = if breopened {
-                bt_reader.rescope(bus, BtScope::Closed).and_then(|_| bt_reader.rescope(bus, bscope))
-            } else {
-                bt_reader.rescope(bus, bscope)
-            };
+            let b = asked(bt.snapshot(), &mut s.bt_open, |scope| bt_reader.rescope(bus, scope));
             let b = bt_into(b, &mut s);
             if !publish_if_changed(&mut last, &s, publish) {
                 return Ok(());

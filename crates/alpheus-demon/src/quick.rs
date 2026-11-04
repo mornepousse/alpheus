@@ -4,6 +4,11 @@
 //! to run. The popup (`PopupBody::Quick`), the reads (sysfs, `/proc`: `quick_state.rs`) and the
 //! commands themselves are the wiring's (`quick_app.rs`): nothing here reads a file, starts a
 //! thread or runs a command.
+//!
+//! A list with a detail (`quick_wifi.rs`, `quick_bt.rs`) is its own struct and file: its state, rows,
+//! keys and safety rules. This file only hands it its turn (`Row`, `ROWS`, `Line`, `lines`,
+//! `selected_line`, `key`, `press`, `rows`, `fit`), and gives it `nav`, `moved`, `text_row`, `note_row`,
+//! `FAILED_SHOWN` and the tags.
 
 use crate::actions::Button;
 use crate::backlight::Reread;
@@ -58,6 +63,10 @@ pub const BRIGHTNESS_MIN: u8 = 1;
 /// How long a slider keeps showing (and stepping from) the level it sent while the live source
 /// (pw-dump, sysfs) still reports another one: wpctl or brightnessctl may lag a window under load.
 pub const SETTLE: Duration = Duration::from_secs(1);
+/// How long a list's entry shows `failed` after what ran on it failed; the tags of both.
+pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
+pub(crate) const RUNNING_TAG: &str = "…";
+pub(crate) const FAILED_TAG: &str = "failed";
 /// A session button takes this many cells either side of its glyph for a click.
 const REACH: u16 = 2;
 
@@ -345,6 +354,28 @@ impl Pace {
     }
 }
 
+/// ↑ ↓ Home End (and Ctrl+P, Ctrl+N) over a list of `len` entries, never wrapping: where they go
+/// from `at` (nothing selected yet: to the first). None: another key.
+pub(crate) fn nav(k: Key, at: Option<usize>, len: usize) -> Option<usize> {
+    let last = len.saturating_sub(1);
+    match k {
+        Key::Up | Key::CtrlP => Some(at.map_or(0, |a| a.saturating_sub(1))),
+        Key::Down | Key::CtrlN => Some(at.map_or(0, |a| (a + 1).min(last))),
+        Key::Home => Some(0),
+        Key::End => Some(last),
+        _ => None,
+    }
+}
+
+/// A selection put on `to`: Redraw when it moved.
+pub(crate) fn moved<T: PartialEq>(selected: &mut T, to: T) -> QuickAction {
+    if *selected == to {
+        return QuickAction::Nothing;
+    }
+    *selected = to;
+    QuickAction::Redraw
+}
+
 pub(crate) fn run(parts: &[&str], what: &str) -> QuickAction {
     QuickAction::Run { argv: argv(parts), what: what.to_string() }
 }
@@ -607,8 +638,7 @@ impl Quick {
             // The row went (BlueZ or its adapter gone): back on the rows, its orders dropped (the
             // acting connection goes with BlueZ).
             let _dropped = self.bt.close_detail();
-            self.selected = Row::Bluetooth;
-            self.top = 0;
+            self.back_on(Row::Bluetooth);
         }
         self.bt.fit();
         let was_open = self.wifi.open;
@@ -617,8 +647,7 @@ impl Quick {
             self.detail = false;
         } else if was_open {
             // The Wi-Fi detail closed under it (its device gone): back on the rows, from the top.
-            self.selected = Row::Wifi;
-            self.top = 0;
+            self.back_on(Row::Wifi);
         }
         if self.volume_level.is_some() {
             let sound = live.sound;
@@ -656,6 +685,12 @@ impl Quick {
         {
             self.button = *b;
         }
+    }
+
+    /// A list's detail closed: back on its row, from the top.
+    fn back_on(&mut self, row: Row) {
+        self.selected = row;
+        self.top = 0;
     }
 
     fn visible(&self) -> usize {
@@ -709,15 +744,13 @@ impl Quick {
         let action = if self.bt.open {
             let a = self.bt.key(k, &mut self.confirm, now);
             if !self.bt.open {
-                self.selected = Row::Bluetooth;
-                self.top = 0;
+                self.back_on(Row::Bluetooth);
             }
             a
         } else if self.wifi.open {
             let a = self.wifi.key(live.config, k, now);
             if !self.wifi.open {
-                self.selected = Row::Wifi;
-                self.top = 0;
+                self.back_on(Row::Wifi);
             }
             a
         } else if self.detail {
@@ -735,23 +768,13 @@ impl Quick {
     fn rows_key(&mut self, live: &Live, k: Key, now: Instant) -> QuickAction {
         let rows = shown(live, self);
         let at = rows.iter().position(|r| *r == self.selected).unwrap_or(0);
-        let last = rows.len().saturating_sub(1);
-        let to = match k {
+        match k {
             Key::Escape => return QuickAction::Close,
-            Key::Up | Key::CtrlP => at.saturating_sub(1),
-            Key::Down | Key::CtrlN => (at + 1).min(last),
-            Key::Home => 0,
-            Key::End => last,
             Key::Enter if self.selected == Row::Volume => return self.open_outputs(),
-            _ => return self.act(live, k, now),
-        };
-        match rows.get(to) {
-            Some(r) if *r != self.selected => {
-                self.selected = *r;
-                QuickAction::Redraw
-            }
-            _ => QuickAction::Nothing,
+            _ => {}
         }
+        let Some(to) = nav(k, Some(at), rows.len()) else { return self.act(live, k, now) };
+        rows.get(to).map_or(QuickAction::Nothing, |r| moved(&mut self.selected, *r))
     }
 
     /// Space, Enter and ← → on a row (spec § 3).
@@ -822,13 +845,7 @@ impl Quick {
     fn move_button(&mut self, live: &Live, delta: i32) -> QuickAction {
         let drawn = self.buttons(live);
         let at = drawn.iter().position(|b| *b == self.button).unwrap_or(0);
-        match drawn.get(list::step(at, delta, drawn.len(), |_| true)) {
-            Some(b) if *b != self.button => {
-                self.button = *b;
-                QuickAction::Redraw
-            }
-            _ => QuickAction::Nothing,
-        }
+        drawn.get(list::step(at, delta, drawn.len(), |_| true)).map_or(QuickAction::Nothing, |b| moved(&mut self.button, *b))
     }
 
     /// A session button (spec § 2): lock and log out at once; reboot and power off on a second
@@ -881,16 +898,14 @@ impl Quick {
             (l @ (Line::WifiHeader | Line::Network(_) | Line::WifiNote(_) | Line::WifiMore | Line::Password), _) => {
                 let a = self.wifi.press(live.config, l, b, now);
                 if !self.wifi.open {
-                    self.selected = Row::Wifi;
-                    self.top = 0;
+                    self.back_on(Row::Wifi);
                 }
                 a
             }
             (l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode), _) => {
                 let a = self.bt.press(l, b, &mut self.confirm, now);
                 if !self.bt.open {
-                    self.selected = Row::Bluetooth;
-                    self.top = 0;
+                    self.back_on(Row::Bluetooth);
                 }
                 a
             }
@@ -1112,13 +1127,18 @@ impl Quick {
     /// never undoing a wheel scroll on a mere strength change.
     pub fn follow_wifi(&mut self, live: &Live, state: Option<WifiState>, now: Instant) -> WifiNews {
         let news = self.set_wifi(state, now);
+        self.follow_selection(live);
+        news
+    }
+
+    /// Fitted after a list's new state; the window moves only when the selected line did.
+    fn follow_selection(&mut self, live: &Live) {
         self.fit(live);
         let all = lines(live, self);
         let at = self.selected_line(&all);
         if at != self.kept_at {
             self.keep_visible(at, all.len());
         }
-        news
     }
 
     /// What the D-Bus thread is to read while the panel is open.
@@ -1176,15 +1196,9 @@ impl Quick {
         let was_open = self.bt.open;
         let action = self.bt.set_view(view, now);
         if was_open && !self.bt.open {
-            self.selected = Row::Bluetooth;
-            self.top = 0;
+            self.back_on(Row::Bluetooth);
         }
-        self.fit(live);
-        let all = lines(live, self);
-        let at = self.selected_line(&all);
-        if at != self.kept_at {
-            self.keep_visible(at, all.len());
-        }
+        self.follow_selection(live);
         action
     }
 
@@ -1192,23 +1206,18 @@ impl Quick {
     /// go back to the rows (the volume still selected).
     fn detail_key(&mut self, k: Key) -> QuickAction {
         let at = self.sinks.iter().position(|s| Some(s.id) == self.sink).unwrap_or(0);
-        let last = self.sinks.len().saturating_sub(1);
-        let to = match k {
+        match k {
             Key::Escape | Key::Left => {
                 self.detail = false;
                 self.top = 0;
                 return QuickAction::Redraw;
             }
-            Key::Up | Key::CtrlP => at.saturating_sub(1),
-            Key::Down | Key::CtrlN => (at + 1).min(last),
-            Key::Home => 0,
-            Key::End => last,
             Key::Enter => return self.choose_sink(at),
-            _ => return QuickAction::Nothing,
-        };
-        let before = self.sink;
-        self.sink = self.sinks.get(to).map(|s| s.id);
-        if self.sink == before { QuickAction::Nothing } else { QuickAction::Redraw }
+            _ => {}
+        }
+        let Some(to) = nav(k, Some(at), self.sinks.len()) else { return QuickAction::Nothing };
+        let to = self.sinks.get(to).map(|s| s.id);
+        moved(&mut self.sink, to)
     }
 
     /// `wpctl set-default <id>` for the i-th sink (spec § 5).
@@ -1384,6 +1393,12 @@ pub(crate) fn text_row(g: &mut Grid, icon: Option<char>, label: &str, right: &st
     if w > 0 {
         g.write(end.saturating_sub(w + 1), end, right, if selected { Style::SELECTED } else { right_style });
     }
+}
+
+/// A list's note in place of its entries, dim.
+pub(crate) fn note_row(g: &mut Grid, note: &str) {
+    let end = g.width();
+    g.write(3, end.saturating_sub(1), note, Style::MUTED);
 }
 
 /// The session buttons, SESSION_GAP cells apart; the chosen one on a 3-cell band when the row is
