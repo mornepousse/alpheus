@@ -528,7 +528,7 @@ fn build_app(loaded: Loaded, exec: &Arc<dyn Executor>) -> Option<(Core, channel:
             return None;
         }
     };
-    state.theme_warnings = theme_warnings;
+    state.theme.warnings = theme_warnings;
     let event_loop: EventLoop<'static, App> = match EventLoop::try_new() {
         Ok(b) => b,
         Err(e) => {
@@ -616,7 +616,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     }
     state.start_notifications(want.notifications);
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.
-    state.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
+    state.theme.mode_runtime = alpheus_commun::theme::mode_file::runtime_from(|k| std::env::var_os(k));
     // mode = "auto": the portal on the tray's connection, or on the bar's link (shared with the media
     // module) when the tray is off. Never a second connection, never a
     // retry.

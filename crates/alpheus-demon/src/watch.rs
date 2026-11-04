@@ -202,7 +202,7 @@ pub(crate) fn start(state: &mut App, handle: &LoopHandle<'static, App>) {
         log("theme: event loop refused the inotify source; theme files read at startup only");
         return;
     }
-    state.theme_watch = Some(watch);
+    state.theme.watch = Some(watch);
 }
 
 /// A reload repaints when the roles changed or the bar's shape did (module colours, style, opacity):
@@ -279,7 +279,7 @@ pub(crate) fn reload_settings(dir: &Path, previous: &ThemeSettings, portal: impl
 impl App {
     /// The inotify fd is readable (calloop callback): every queued record drained, one re-resolve at most.
     pub(crate) fn theme_readable(&mut self) {
-        let Some(watch) = self.theme_watch.as_mut() else { return };
+        let Some(watch) = self.theme.watch.as_mut() else { return };
         if watch.drain().theme {
             self.theme_changed();
         }
@@ -292,28 +292,28 @@ impl App {
     /// the bar never flashes to the default theme on a reload.
     pub(crate) fn theme_changed(&mut self) {
         let dir = paths::config_dir();
-        let portal = self.portal_mode;
-        let Reload { settings, resolved, kept } = reload_settings(&dir, &self.theme_settings, || portal);
-        if kept && !self.blank_theme_noted {
-            self.blank_theme_noted = true;
+        let portal = self.theme.portal_mode;
+        let Reload { settings, resolved, kept } = reload_settings(&dir, &self.theme.settings, || portal);
+        if kept && !self.theme.blank_noted {
+            self.theme.blank_noted = true;
             log("theme: theme.toml is empty, keeping the current settings until it is written");
         }
         let mode = effective_mode(settings.mode, portal);
         let warnings = resolved.lines();
         let mut new_lines = false;
-        for w in fresh(&self.theme_warnings, &warnings) {
+        for w in fresh(&self.theme.warnings, &warnings) {
             log(w);
             new_lines = true;
         }
-        self.theme_warnings = warnings;
-        let shape = shape_change(&self.theme_settings, &settings);
+        self.theme.warnings = warnings;
+        let shape = shape_change(&self.theme.settings, &settings);
         self.bar.module_colors = settings.module_colors;
         // The layout's spacing and the placement follow the bar's style: set before
         // any repaint or re-placement below.
         self.bar.style = settings.style;
-        self.theme_settings = settings;
+        self.theme.settings = settings;
         // A switch to mode = "auto" starts following the portal (a no-op once tried, or when not
-        // auto). After the store, never before: it reads `self.theme_settings`.
+        // auto). After the store, never before: it reads `self.theme.settings`.
         self.follow_portal_if_auto();
         // The mode file for the TUI follows the mode in effect (a no-op when it did not change).
         self.publish_mode();
@@ -332,7 +332,7 @@ impl App {
             return;
         }
         self.roles = resolved.roles;
-        log(&format!("theme reloaded: {}{}", describe(&self.theme_settings, mode), shape.note));
+        log(&format!("theme reloaded: {}{}", describe(&self.theme.settings, mode), shape.note));
         self.restyle(shape.placement);
     }
 

@@ -371,18 +371,8 @@ pub struct App {
     pub bar: Bar,
     /// The 16 colour roles every surface paints with (themes spec § 1).
     pub(crate) roles: Roles,
-    /// theme.toml as last read: its mode decides whether the portal matters.
-    pub(crate) theme_settings: ThemeSettings,
-    /// The portal's color-scheme once it answered; None: no word yet, or no portal
-    /// (mode auto is then dark).
-    pub(crate) portal_mode: Option<alpheus_commun::theme::Mode>,
-    /// The resolver's warnings at the last resolve: a reload logs only new ones.
-    pub(crate) theme_warnings: Vec<String>,
-    /// An empty theme.toml that kept the settings during a reload was logged (once per run: editors
-    /// that truncate before writing would log every save otherwise).
-    pub(crate) blank_theme_noted: bool,
-    /// The inotify watch on the config directory; None: the theme files are read at startup only.
-    pub(crate) theme_watch: Option<crate::watch::ThemeWatch>,
+    /// theme.toml's settings, the portal's word, the config watch and the mode file (appearance.rs).
+    pub(crate) theme: crate::appearance::ThemeState,
     pub(crate) fonts: Fonts,
     pub(crate) exec: Arc<dyn Executor>,
     pub stop: bool,
@@ -429,14 +419,6 @@ pub struct App {
     pub(crate) link_timer: DeadlineTimer,
     /// `open_link` already ran, successfully or not: never a second connection nor a second attempt.
     pub(crate) link_tried: bool,
-    /// `follow_portal_if_auto` already acted: never a second attempt.
-    pub(crate) portal_tried: bool,
-    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes; None: unset, nothing written.
-    pub(crate) mode_runtime: Option<std::path::PathBuf>,
-    /// The mode last written to it; None: not yet.
-    pub(crate) mode_written: Option<alpheus_commun::theme::Mode>,
-    /// The last write failure logged: the same one is not logged again.
-    pub(crate) mode_error: Option<String>,
     /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
     pub(crate) dnd: bool,
     /// An idle callback is queued to route what a void tray call's flush drained
@@ -620,11 +602,7 @@ impl App {
             pointer: None,
             wheel: Wheel::default(),
             bar,
-            theme_settings,
-            portal_mode: None,
-            theme_warnings: Vec::new(),
-            blank_theme_noted: false,
-            theme_watch: None,
+            theme: crate::appearance::ThemeState::new(theme_settings),
             roles,
             fonts,
             exec,
@@ -643,10 +621,6 @@ impl App {
             link: None,
             link_timer: DeadlineTimer::new(),
             link_tried: false,
-            portal_tried: false,
-            mode_runtime: None,
-            mode_written: None,
-            mode_error: None,
             dnd: false,
             tray_deferred_queued: false,
             tray_ready_queued: false,
@@ -853,7 +827,7 @@ impl App {
     }
 
     fn draw(&mut self, i: usize) {
-        let App { surfaces, fonts, bar, roles, pool, theme_settings, compositor, opaque_scratch, .. } = self;
+        let App { surfaces, fonts, bar, roles, pool, theme, compositor, opaque_scratch, .. } = self;
         let s = &mut surfaces[i];
         if !drawable(s.configured, s.width, s.placing) {
             return;
@@ -873,7 +847,7 @@ impl App {
             log(&format!("buffer {w}×{h}: unexpectedly busy right after allocation or reuse"));
             return;
         };
-        fonts.paint_bar(&grid, roles, &bar_background(bar, theme_settings, &grid), pixels, w, h, e);
+        fonts.paint_bar(&grid, roles, &bar_background(bar, &theme.settings, &grid), pixels, w, h, e);
         let surface = s.layer.wl_surface();
         // The compositor skips blending what the style paints opaque (shapes spec § 3): told again only
         // when it changes (a new width, style or block layout).

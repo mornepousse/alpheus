@@ -19,7 +19,7 @@ use crate::tray::router::TrayOutput;
 use crate::wayland::App;
 use alpheus_commun::theme::Mode;
 use alpheus_commun::theme::mode_file::{MODE_DIR, MODE_FILE, mode_path, mode_text};
-use alpheus_commun::theme::settings::{ModeSetting, effective_mode, portal_mode};
+use alpheus_commun::theme::settings::{ModeSetting, ThemeSettings, effective_mode, portal_mode};
 use std::io;
 use std::path::Path;
 
@@ -42,6 +42,48 @@ fn why(e: &CallError) -> String {
         CallError::Disconnected => "the session bus closed".into(),
         CallError::Remote(name) => name.clone(),
         CallError::BadReply(what) => what.clone(),
+    }
+}
+
+/// The theme's state, one field of `App`: theme.toml as read, the portal's word, the config
+/// directory's watch and the mode file for the TUI. The roles stay a field of their own.
+pub(crate) struct ThemeState {
+    /// theme.toml as last read: its mode decides whether the portal matters.
+    pub(crate) settings: ThemeSettings,
+    /// The portal's color-scheme once it answered; None: no word yet, or no portal
+    /// (mode auto is then dark).
+    pub(crate) portal_mode: Option<Mode>,
+    /// The resolver's warnings at the last resolve: a reload logs only new ones.
+    pub(crate) warnings: Vec<String>,
+    /// An empty theme.toml that kept the settings during a reload was logged (once per run: editors
+    /// that truncate before writing would log every save otherwise).
+    pub(crate) blank_noted: bool,
+    /// The inotify watch on the config directory; None: the theme files are read at startup only.
+    pub(crate) watch: Option<crate::watch::ThemeWatch>,
+    /// `follow_portal_if_auto` already acted: never a second attempt.
+    pub(crate) portal_tried: bool,
+    /// $XDG_RUNTIME_DIR, where the mode file for the TUI goes; None: unset, nothing written.
+    pub(crate) mode_runtime: Option<std::path::PathBuf>,
+    /// The mode last written to it; None: not yet.
+    pub(crate) mode_written: Option<Mode>,
+    /// The last write failure logged: the same one is not logged again.
+    pub(crate) mode_error: Option<String>,
+}
+
+impl ThemeState {
+    /// The settings as read at startup; nothing watched, tried or written yet.
+    pub(crate) fn new(settings: ThemeSettings) -> ThemeState {
+        ThemeState {
+            settings,
+            portal_mode: None,
+            warnings: Vec::new(),
+            blank_noted: false,
+            watch: None,
+            portal_tried: false,
+            mode_runtime: None,
+            mode_written: None,
+            mode_error: None,
+        }
     }
 }
 
@@ -160,7 +202,7 @@ impl App {
     /// Called after `start_tray` and `start_media` at startup, and in `theme_changed` right after the
     /// new settings are stored. Either way one connection serves everything.
     pub(crate) fn follow_portal_if_auto(&mut self) {
-        match host(portal_wanted(self.theme_settings.mode, self.portal_tried), self.buses()) {
+        match host(portal_wanted(self.theme.settings.mode, self.theme.portal_tried), self.buses()) {
             Host::Nothing => return,
             Host::OnTray => {
                 if let Some(tray) = self.tray.as_mut() {
@@ -180,14 +222,14 @@ impl App {
                 }
             }
         }
-        self.portal_tried = true;
+        self.theme.portal_tried = true;
     }
 
     /// The portal's word, from either connection: re-resolved and repainted only when
     /// the mode in effect changes.
     pub(crate) fn portal_said(&mut self, mode: Mode) {
-        let repaint = repaint_needed(self.theme_settings.mode, self.portal_mode, mode);
-        self.portal_mode = Some(mode);
+        let repaint = repaint_needed(self.theme.settings.mode, self.theme.portal_mode, mode);
+        self.theme.portal_mode = Some(mode);
         if repaint {
             self.theme_changed();
         }
@@ -197,8 +239,9 @@ impl App {
     /// reload, the portal's word). No runtime directory: nothing written. A failed write is one line;
     /// the next change tries again.
     pub(crate) fn publish_mode(&mut self) {
-        let now = effective_mode(self.theme_settings.mode, self.portal_mode);
-        publish(self.mode_runtime.as_deref(), &mut self.mode_written, &mut self.mode_error, now, write_mode, log);
+        let now = effective_mode(self.theme.settings.mode, self.theme.portal_mode);
+        let t = &mut self.theme;
+        publish(t.mode_runtime.as_deref(), &mut t.mode_written, &mut t.mode_error, now, write_mode, log);
     }
 }
 
