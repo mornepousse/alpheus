@@ -60,6 +60,7 @@
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
+//! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)

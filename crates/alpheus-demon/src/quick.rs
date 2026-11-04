@@ -405,13 +405,13 @@ fn bar_value(col: u16) -> Option<u8> {
     (BAR_START..BAR_START + BAR).contains(&col).then(|| ((u32::from(col - BAR_START) + 1) * 100 / u32::from(BAR)) as u8)
 }
 
-/// Enter or a click on the profile: the next one the daemon offers, wrapping.
 /// A configured command (`More…`, `Mixer…`) run as given, then the panel closes; nothing when it
 /// is empty. Its argv never reaches the log, only `what`.
 pub(crate) fn run_and_close(argv: &[String], what: &str) -> QuickAction {
     if argv.is_empty() { QuickAction::Nothing } else { QuickAction::RunAndClose { argv: argv.to_vec(), what: what.into() } }
 }
 
+/// Enter or a click on the profile: the next one the daemon offers, wrapping.
 fn cycle(live: &Live) -> QuickAction {
     let Some(p) = live.profile else { return QuickAction::Nothing };
     let Some(active) = p.active else { return QuickAction::Nothing };

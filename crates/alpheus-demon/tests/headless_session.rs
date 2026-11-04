@@ -3765,6 +3765,23 @@ fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Dae
     (bus, sway, hypr, d)
 }
 
+/// `Mixer…`, three rows under the volume: Enter runs `[quick] mixer` and closes the panel; the log
+/// names the row, never the command.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_the_mixer_row_runs_its_command_and_closes_the_panel() {
+    let (_bus, sway, _hypr, d) = quick_daemon("quick-mixer", "[quick]\nmixer = [\"fake-mixer\", \"--flag\"]\n");
+    fake_recorder(&sway, "fake-mixer");
+    sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
+    assert!(d.wait_for("quick shown (rows: volume brightness mic mixer session; sinks: 3)", DELAY), "{:?}", d.log());
+    wait_for_the_popup_drawn(&sway, &d);
+    keys(&sway, &["Down", "Down", "Down", "Return"]);
+    assert!(wait_for_call(&sway, "fake-mixer", "fake-mixer --flag"), "{:?} {:?}", recorded(&sway, "fake-mixer"), d.log());
+    assert!(d.wait_for("quick: mixer", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("fake-mixer")), "the command never reaches the log: {:?}", d.log());
+}
+
 /// Waits until `program` recorded `call`.
 fn wait_for_call(sway: &Sway, program: &str, call: &str) -> bool {
     wait_until(|| recorded(sway, program).iter().any(|c| c == call))
@@ -3784,7 +3801,7 @@ fn quick_volume_bar(s: &Ppm) -> Vec<[u8; 3]> {
 fn quick_a_click_on_the_volume_opens_the_panel_and_the_arrows_reach_wpctl_and_brightnessctl() {
     let (_bus, sway, _hypr, d) = quick_daemon("quick-open", "");
     sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
-    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 3)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick shown (rows: volume brightness mic mixer session; sinks: 3)", DELAY), "{:?}", d.log());
     wait_for_the_popup_drawn(&sway, &d);
     keys(&sway, &["Right"]);
     assert!(
@@ -3821,7 +3838,7 @@ fn quick_the_outputs_detail_lists_two_sinks_and_enter_sets_the_default() {
     pw_dump_send(&sway.runtime, r#"[{"id":64,"info":null}]"#);
     thread::sleep(Duration::from_millis(500)); // applied by the sound thread: no publication to wait for
     sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
-    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 2)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick shown (rows: volume brightness mic mixer session; sinks: 2)", DELAY), "{:?}", d.log());
     wait_for_the_popup_drawn(&sway, &d);
     keys(&sway, &["Return", "Up", "Return"]);
     assert!(
@@ -3860,7 +3877,7 @@ fn quick_panel(s: &Ppm) -> Vec<[u8; 3]> {
 fn quick_a_microphone_muted_while_closed_shows_at_the_next_open() {
     let (_bus, sway, _hypr, d) = quick_daemon("quick-mic", "");
     sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
-    assert!(d.wait_for("quick shown (rows: volume brightness mic session", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick shown (rows: volume brightness mic mixer session", DELAY), "{:?}", d.log());
     wait_for_the_popup_drawn(&sway, &d);
     let before = quick_panel(&sway.screenshot("HEADLESS-1").expect("grim"));
     keys(&sway, &["Escape"]);
@@ -3928,7 +3945,7 @@ fn wakeups_over_a_batch(sway: &Sway, d: &Daemon, batch: &str) -> u64 {
 fn quick_closed_the_sound_thread_wakes_nothing_for_the_sink_list() {
     let (_bus, sway, _hypr, d) = quick_daemon("quick-scope", "");
     sway.click(VOLUME_AT.0, VOLUME_AT.1, "button1");
-    assert!(d.wait_for("quick shown (rows: volume brightness mic session; sinks: 3)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("quick shown (rows: volume brightness mic mixer session; sinks: 3)", DELAY), "{:?}", d.log());
     wait_for_the_popup_drawn(&sway, &d);
     assert!(wakeups_over_a_batch(&sway, &d, r#"[{"id":64,"info":null}]"#) > 0, "open: the list published: {:?}", d.log());
     keys(&sway, &["Escape"]);
