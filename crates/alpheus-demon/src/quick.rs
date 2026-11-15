@@ -41,9 +41,6 @@ pub const PERCENT_AT: u16 = 26;
 const _: () = assert!(PERCENT_AT + PERCENT_CELLS - GLYPH_AT - 3 - PERCENT_CELLS == BAR);
 /// The volume's `›` (the outputs detail), on the column where the text rows end.
 pub const MORE_AT: u16 = 32;
-/// The session buttons' first glyph column, and the gap from one to the next.
-pub const SESSION_AT: u16 = 3;
-pub const SESSION_GAP: u16 = 5;
 /// wpctl's targets: the default output, as the bar's own clicks name it, and the default input.
 pub const SINK: &str = crate::actions::SINK;
 pub const SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
@@ -68,8 +65,6 @@ pub const SETTLE: Duration = Duration::from_secs(1);
 pub const FAILED_SHOWN: Duration = Duration::from_secs(4);
 pub(crate) const RUNNING_TAG: &str = "…";
 pub(crate) const FAILED_TAG: &str = "failed";
-/// A session button takes this many cells either side of its glyph for a click.
-const REACH: u16 = 2;
 
 /// Where the panel opens (spec § 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -963,7 +958,7 @@ impl Quick {
             return self.activate(live, s, now);
         }
         let drawn = self.buttons(live);
-        let hit = drawn.iter().enumerate().find(|(i, _)| col.abs_diff(SESSION_AT + SESSION_GAP * *i as u16) <= REACH).map(|(_, s)| *s);
+        let hit = session_cells(WIDTH + 2, drawn.len()).iter().position(|(at, w)| col >= *at && col < at + w).map(|i| drawn[i]);
         let Some(s) = hit else { return QuickAction::Nothing };
         self.button = s;
         self.activate(live, s, now)
@@ -1356,8 +1351,8 @@ fn draw_bluetooth(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
 
 fn draw_mic(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     if let Some(v) = live.sound.and_then(|s| s.source) {
-        let (glyph, word, style) = if v.muted { (MIC_OFF, "muted", Style::WARN) } else { (MIC_ON, "live", Style::NORMAL) };
-        text_row(g, Some(glyph), "Microphone", word, style, selected);
+        text_row(g, Some(if v.muted { MIC_OFF } else { MIC_ON }), "Microphone", "", Style::NORMAL, selected);
+        write_switch(g, Some(!v.muted));
     }
 }
 
@@ -1367,23 +1362,27 @@ fn draw_profile(g: &mut Grid, live: &Live, _: &Quick, selected: bool) {
     }
 }
 
-/// A row with a ●/○/· state on the right.
+/// A row with a switch on the right.
 fn draw_mark(g: &mut Grid, glyph: char, label: &str, on: Option<bool>, selected: bool) {
-    text_row(g, Some(glyph), label, mark(on), mark_style(on), selected);
+    text_row(g, Some(glyph), label, "", Style::NORMAL, selected);
+    write_switch(g, on);
 }
 
-/// A toggle's state: ● on, ○ off, · unknown (spec § 2, § 4).
-fn mark(on: Option<bool>) -> &'static str {
+/// A toggle's state, 7 cells (UI refresh, Decision 8): ` ON  ● ` filled in the accent,
+/// ` ○ off ` on a pill, `·` dim when unknown.
+pub(crate) fn switch(on: Option<bool>) -> (&'static str, Style) {
     match on {
-        Some(true) => "●",
-        Some(false) => "○",
-        None => "·",
+        Some(true) => (" ON  ● ", Style::ACTIVE),
+        Some(false) => (" ○ off ", Style::SURFACE),
+        None => ("·", Style::MUTED),
     }
 }
 
-/// ● in the accent, the others in fg_dim.
-fn mark_style(on: Option<bool>) -> Style {
-    if on == Some(true) { Style::ACCENT } else { Style::MUTED }
+/// `switch(on)` right-aligned to end one cell before the row's end.
+fn write_switch(g: &mut Grid, on: Option<bool>) {
+    let end = g.width();
+    let (text, style) = switch(on);
+    g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
 }
 
 /// "G ━━━━━━━━━━━━━━────────  64%  ›" (spec § 2), the OSD's level (`osd::level`) one pad cell in:
@@ -1418,23 +1417,58 @@ pub(crate) fn note_row(g: &mut Grid, note: &str) {
     g.write(3, end.saturating_sub(1), note, Style::MUTED);
 }
 
-/// The session buttons, SESSION_GAP cells apart; the chosen one on a 3-cell band when the row is
-/// selected. Waiting for a second activation, the row is the question instead, in warn.
+/// The session buttons' cells (UI refresh, Decision 7): columns `1..end - 1`, one-cell gaps, equal
+/// widths, the remainder on the last. (start, width); drawing and clicks both come from here.
+pub(crate) fn session_cells(end: u16, n: usize) -> Vec<(u16, u16)> {
+    let n = n as u16;
+    if n == 0 {
+        return Vec::new();
+    }
+    let room = end.saturating_sub(2).saturating_sub(n - 1);
+    let w = room / n;
+    let rest = room - w * n;
+    (0..n).map(|i| (1 + i * (w + 1), if i == n - 1 { w + rest } else { w })).collect()
+}
+
+/// A button's word on the panel.
+pub(crate) fn session_word(s: Session) -> &'static str {
+    match s {
+        Session::Lock => "Lock",
+        Session::Logout => "Log out",
+        Session::Reboot => "Reboot",
+        Session::Poweroff => "Off",
+    }
+}
+
+/// The first of "G word", "word", "G" that fits `w` cells.
+pub(crate) fn session_label(s: Session, w: u16) -> String {
+    let word = session_word(s);
+    let full = format!("{} {word}", s.glyph());
+    if text_width(&full) <= w {
+        full
+    } else if text_width(word) <= w {
+        word.to_string()
+    } else {
+        s.glyph().to_string()
+    }
+}
+
+/// The session buttons in equal cells on `SURFACE`, the chosen one `ACTIVE` when the row is
+/// selected, the label centred. Waiting for a second activation, the row is the question instead,
+/// in warn.
 fn session_row(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
     let end = g.width();
     if let Some((Question::Session(s), _)) = &q.confirm {
         g.write(1, end.saturating_sub(1), &s.question(), Style::WARN);
         return;
     }
-    for (i, s) in q.buttons(live).into_iter().enumerate() {
-        let x = SESSION_AT + SESSION_GAP * i as u16;
-        let style = if selected && s == q.button {
-            g.write(x - 1, x + 2, "   ", Style::SELECTED);
-            Style::SELECTED
-        } else {
-            Style::NORMAL
-        };
-        g.write(x, x + 1, &s.glyph().to_string(), style);
+    let buttons = q.buttons(live);
+    for (s, (at, w)) in buttons.iter().zip(session_cells(end, buttons.len())) {
+        let style = if selected && *s == q.button { Style::ACTIVE } else { Style::SURFACE };
+        g.write(at, at + w, &" ".repeat(usize::from(w)), style);
+        let label = session_label(*s, w);
+        let x = at + w.saturating_sub(text_width(&label)) / 2;
+        g.write(x, at + w, &label, style);
     }
 }
 
