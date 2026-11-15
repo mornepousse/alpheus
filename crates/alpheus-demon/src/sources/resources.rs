@@ -14,10 +14,11 @@
 use crate::config::{ResourceItem, ResourcesConfig};
 use crate::log::write as log;
 use crate::sys::FsBlocks;
-use crate::system::Sample;
+use crate::system::{NetRate, Sample};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuTimes {
@@ -105,15 +106,35 @@ fn hwmon_temp(dir: &Path) -> PathBuf {
     labelled("Tdie").or_else(|| labelled("Tctl")).unwrap_or_else(|| dir.join("temp1_input"))
 }
 
+/// Every hwmon directory with a temperature file: its driver name and that file.
+fn hwmon_list(root: &Path) -> Vec<(String, PathBuf)> {
+    entries(&root.join("sys/class/hwmon"))
+        .into_iter()
+        .filter_map(|d| Some((first_line(&d.join("name"))?, hwmon_temp(&d))))
+        .filter(|(_, p)| p.exists())
+        .collect()
+}
+
+/// hwmon drivers of a GPU, by preference.
+const GPU_HWMON: [&str; 5] = ["amdgpu", "nouveau", "i915", "xe", "nvidia"];
+
+/// Every hwmon temperature file of the GPU named `hint`, or, empty, of the first driver of
+/// `GPU_HWMON` found. Never a thermal zone (none names a GPU reliably); several matches when
+/// several cards share a driver, the caller takes the max.
+pub fn pick_gpu(root: &Path, hint: &str) -> Vec<PathBuf> {
+    let hwmon = hwmon_list(root);
+    let find_all = |name: &str| -> Vec<PathBuf> { hwmon.iter().filter(|(n, _)| n == name).map(|(_, p)| p.clone()).collect() };
+    if !hint.is_empty() {
+        return find_all(hint);
+    }
+    GPU_HWMON.iter().map(|n| find_all(n)).find(|v| !v.is_empty()).unwrap_or_default()
+}
+
 /// Every hwmon or thermal-zone file matching `hint` (or, empty, the first
 /// name found by preference) — several when more than one package or driver
 /// shares that name; the caller takes the max.
 pub fn pick_sensor(root: &Path, hint: &str) -> Vec<PathBuf> {
-    let hwmon: Vec<(String, PathBuf)> = entries(&root.join("sys/class/hwmon"))
-        .into_iter()
-        .filter_map(|d| Some((first_line(&d.join("name"))?, hwmon_temp(&d))))
-        .filter(|(_, p)| p.exists())
-        .collect();
+    let hwmon = hwmon_list(root);
     let zones: Vec<(String, PathBuf)> = entries(&root.join("sys/class/thermal"))
         .into_iter()
         .filter(|d| d.file_name().is_some_and(|n| n.to_string_lossy().starts_with("thermal_zone")))
@@ -161,6 +182,47 @@ pub struct Roots {
     pub statfs: StatFs,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetCounters {
+    pub rx: u64,
+    pub tx: u64,
+}
+
+/// The interface of the IPv4 default route in /proc/net/route text: among the lines that are up
+/// (flag 1) with a zero destination and mask, the lowest metric (the first on a tie).
+pub fn default_route(route: &str) -> Option<String> {
+    route
+        .lines()
+        .skip(1)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (iface, dest, _gateway, flags) = (f.next()?, f.next()?, f.next()?, f.next()?);
+            let metric = f.nth(2)?.parse::<u32>().ok()?;
+            let mask = f.next()?;
+            let up = u32::from_str_radix(flags, 16).ok()? & 1 != 0;
+            (up && dest == "00000000" && mask == "00000000").then_some((metric, iface))
+        })
+        .min_by_key(|(metric, _)| *metric)
+        .map(|(_, iface)| iface.to_string())
+}
+
+/// Bytes received and sent by `iface` in /proc/net/dev text (the exact name, not a prefix).
+pub fn net_counters(dev: &str, iface: &str) -> Option<NetCounters> {
+    let line = dev.lines().find_map(|l| l.trim_start().strip_prefix(iface)?.strip_prefix(':'))?;
+    let mut f = line.split_whitespace();
+    let rx = f.next()?.parse().ok()?;
+    let tx = f.nth(7)?.parse().ok()?;
+    Some(NetCounters { rx, tx })
+}
+
+/// Bytes per second between two readings; None for counters that went back (an interface reset)
+/// or no time elapsed.
+pub fn net_rate(prev: NetCounters, now: NetCounters, elapsed: Duration) -> Option<NetRate> {
+    let ms = Some(elapsed.as_millis()).filter(|m| *m > 0)?;
+    let per_s = |a: u64, b: u64| Some(u64::try_from(u128::from(b.checked_sub(a)?) * 1000 / ms).unwrap_or(u64::MAX));
+    Some(NetRate { down: per_s(prev.rx, now.rx)?, up: per_s(prev.tx, now.tx)? })
+}
+
 /// Disk in use like `df`: used / (used + available), rounded up, so a nearly full disk never reads
 /// lower than `df`'s. None for a filesystem with no blocks. Computed in u128: no overflow.
 pub fn disk_percent(fs: FsBlocks) -> Option<u8> {
@@ -172,9 +234,16 @@ pub fn disk_percent(fs: FsBlocks) -> Option<u8> {
     Some(((used * 100).div_ceil(denom)).min(100) as u8)
 }
 
-pub struct Reader {
-    roots: Roots,
-    show: Vec<ResourceItem>,
+/// Which temperature a `Sensor` follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SensorKind {
+    Cpu,
+    Gpu,
+}
+
+/// One temperature, resolved by name and re-resolved when it goes stale (see `Sensor::read`).
+struct Sensor {
+    kind: SensorKind,
     hint: String,
     /// Each match, alongside the canonicalised `/sys/devices/...` path it
     /// resolved to at the time: hwmon numbers are not stable across a
@@ -182,14 +251,23 @@ pub struct Reader {
     /// naming a different device (freed, then reused by something else)
     /// without ever disappearing — `exists()` alone would miss that.
     sensors: Vec<(PathBuf, PathBuf)>,
-    previous: Option<CpuTimes>,
-    /// Ticks left before retrying `pick_sensor` while `sensors` is empty;
+    /// Ticks left before retrying a pick while `sensors` is empty;
     /// re-resolution driven by a stale path (see `still_resolves`) is not
     /// throttled.
     retry_in: u32,
     /// Whether "nothing matches" is worth a log line this time: once per
     /// such stretch, not once per tick.
     no_match_log: NoMatchLog,
+}
+
+pub struct Reader {
+    roots: Roots,
+    show: Vec<ResourceItem>,
+    cpu_sensor: Option<Sensor>,
+    gpu_sensor: Option<Sensor>,
+    previous: Option<CpuTimes>,
+    /// The interface of the last successful net reading, its counters and when.
+    net: Option<(String, NetCounters, Instant)>,
 }
 
 /// Does `path` still canonicalise to the device `was` named when resolved?
@@ -220,65 +298,97 @@ impl NoMatchLog {
     }
 }
 
-impl Reader {
-    /// Resolves the sensors once, by name, at startup.
-    pub fn new(roots: Roots, config: &ResourcesConfig) -> Reader {
-        let mut r = Reader {
-            roots,
-            show: config.show.clone(),
-            hint: config.sensor.clone(),
-            sensors: Vec::new(),
-            previous: None,
-            retry_in: 0,
-            no_match_log: NoMatchLog::default(),
-        };
-        if r.shows(ResourceItem::Temperature) {
-            r.resolve();
-        }
-        r
+impl Sensor {
+    fn new(kind: SensorKind, hint: &str, root: &Path) -> Sensor {
+        let mut s = Sensor { kind, hint: hint.to_string(), sensors: Vec::new(), retry_in: 0, no_match_log: NoMatchLog::default() };
+        s.resolve(root);
+        s
     }
 
-    fn shows(&self, item: ResourceItem) -> bool {
-        self.show.contains(&item)
-    }
-
-    /// Re-runs `pick_sensor` and canonicalises every match; logs once if the
+    /// Re-runs the pick and canonicalises every match; logs once if the
     /// result is empty, and arms the throttled empty-list retry.
-    fn resolve(&mut self) {
-        self.sensors =
-            pick_sensor(&self.roots.root, &self.hint).into_iter().filter_map(|p| std::fs::canonicalize(&p).ok().map(|c| (p, c))).collect();
+    fn resolve(&mut self, root: &Path) {
+        let picked = match self.kind {
+            SensorKind::Cpu => pick_sensor(root, &self.hint),
+            SensorKind::Gpu => pick_gpu(root, &self.hint),
+        };
+        self.sensors = picked.into_iter().filter_map(|p| std::fs::canonicalize(&p).ok().map(|c| (p, c))).collect();
         if self.sensors.is_empty() {
             self.retry_in = RETRY_EMPTY_EVERY_TICKS;
         }
         if self.no_match_log.note(self.sensors.is_empty()) {
-            log(&format!("resources: no temperature sensor matches {:?}", self.hint));
+            let what = match self.kind {
+                SensorKind::Cpu => "temperature sensor",
+                SensorKind::Gpu => "GPU sensor",
+            };
+            log(&format!("resources: no {what} matches {:?}", self.hint));
         }
-    }
-
-    /// The first match, diagnostics only: `sample` reads every match and
-    /// keeps the max.
-    pub fn sensor(&self) -> Option<&Path> {
-        self.sensors.first().map(|(p, _)| p.as_path())
     }
 
     /// The max reading across every match; re-resolves by name first when a
     /// cached path no longer resolves to the same device (hwmon is not
     /// stable across a reboot or a hot-(re)plug — never addressed as a bare
     /// `hwmonN`), or, throttled, when nothing has matched so far.
-    fn temperature(&mut self) -> Option<i16> {
+    fn read(&mut self, root: &Path) -> Option<i16> {
         if self.sensors.iter().any(|(p, was)| !still_resolves(p, was)) {
-            self.resolve();
+            self.resolve(root);
         } else if self.sensors.is_empty() {
             match self.retry_in.checked_sub(1) {
                 Some(n) => self.retry_in = n,
-                None => self.resolve(),
+                None => self.resolve(root),
             }
         }
         self.sensors.iter().filter_map(|(p, _)| read_temperature(p)).max()
     }
+}
+
+impl Reader {
+    /// Resolves the sensors once, by name, at startup.
+    pub fn new(roots: Roots, config: &ResourcesConfig) -> Reader {
+        let show = config.show.clone();
+        let sensor = |item, kind, hint: &str| show.contains(&item).then(|| Sensor::new(kind, hint, &roots.root));
+        let cpu_sensor = sensor(ResourceItem::Temperature, SensorKind::Cpu, &config.sensor);
+        let gpu_sensor = sensor(ResourceItem::Gpu, SensorKind::Gpu, &config.gpu_sensor);
+        Reader { roots, show, cpu_sensor, gpu_sensor, previous: None, net: None }
+    }
+
+    fn shows(&self, item: ResourceItem) -> bool {
+        self.show.contains(&item)
+    }
+
+    /// The first temperature match, diagnostics only: `sample` reads every match and keeps the max.
+    pub fn sensor(&self) -> Option<&Path> {
+        self.cpu_sensor.as_ref()?.sensors.first().map(|(p, _)| p.as_path())
+    }
+
+    /// Net throughput of the default route's interface against the last reading of that same
+    /// interface; the new counters replace the old ones on every successful read.
+    fn net(&mut self, now: Instant) -> Option<NetRate> {
+        let route = std::fs::read_to_string(self.roots.root.join("proc/net/route")).ok().and_then(|t| default_route(&t));
+        let Some(iface) = route else {
+            self.net = None;
+            return None;
+        };
+        let counters = std::fs::read_to_string(self.roots.root.join("proc/net/dev")).ok().and_then(|t| net_counters(&t, &iface));
+        let Some(counters) = counters else {
+            self.net = None;
+            return None;
+        };
+        let rate = match &self.net {
+            Some((was, prev, at)) if *was == iface => net_rate(*prev, counters, now.saturating_duration_since(*at)),
+            _ => None,
+        };
+        self.net = Some((iface, counters, now));
+        rate
+    }
+
+    /// One reading at the current time.
+    pub fn sample(&mut self) -> Sample {
+        self.sample_at(Instant::now())
+    }
 
     /// One reading; each figure only when its item is in `show` (the others stay None, nothing read).
-    pub fn sample(&mut self) -> Sample {
+    pub(crate) fn sample_at(&mut self, now: Instant) -> Sample {
         let mut sample = Sample::default();
         if self.shows(ResourceItem::Cpu) {
             let now = first_line(&self.roots.root.join("proc/stat")).and_then(|l| parse_stat(&l));
@@ -292,11 +402,17 @@ impl Reader {
             sample.memory = std::fs::read_to_string(self.roots.root.join("proc/meminfo")).ok().and_then(|t| parse_meminfo(&t));
         }
         if self.shows(ResourceItem::Temperature) {
-            sample.temperature = self.temperature();
+            sample.temperature = self.cpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));
         }
         if self.shows(ResourceItem::Disk) {
             // A failing call leaves the figure out; the next tick asks again.
             sample.disk = self.roots.home.as_deref().and_then(self.roots.statfs).and_then(disk_percent);
+        }
+        if self.shows(ResourceItem::Net) {
+            sample.net = self.net(now);
+        }
+        if self.shows(ResourceItem::Gpu) {
+            sample.gpu = self.gpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));
         }
         sample
     }
@@ -306,6 +422,7 @@ impl Reader {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     const STAT_A: &str = include_str!("../../tests/fixtures/proc-stat-a.txt");
     const STAT_B: &str = include_str!("../../tests/fixtures/proc-stat-b.txt");
@@ -623,5 +740,115 @@ mod tests {
         let mut d = Reader::new(roots(&t.0, Some("/fictional/home"), refuse), &ResourcesConfig::default());
         d.sample();
         assert_eq!(d.sample().disk, None);
+    }
+
+    const NET_A: &str = include_str!("../../tests/fixtures/proc-net-dev-a.txt");
+    const NET_B: &str = include_str!("../../tests/fixtures/proc-net-dev-b.txt");
+
+    const ROUTE_HEAD: &str = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n";
+    const ROUTE_ETH0: &str = "eth0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
+    const ROUTE_WLAN0: &str = "wlan0\t00000000\t0102A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0\n";
+    const ROUTE_SUBNET: &str = "wlan0\t0002A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0\n";
+
+    #[test]
+    fn default_route_takes_the_lowest_metric() {
+        let route = |lines: &[&str]| format!("{ROUTE_HEAD}{}", lines.concat());
+        assert_eq!(default_route(&route(&[ROUTE_ETH0, ROUTE_WLAN0, ROUTE_SUBNET])), Some("eth0".to_string()));
+        assert_eq!(default_route(&route(&[ROUTE_WLAN0, ROUTE_SUBNET])), Some("wlan0".to_string()));
+        let down = ROUTE_ETH0.replace("0003", "0002");
+        assert_eq!(default_route(&route(&[&down, ROUTE_WLAN0, ROUTE_SUBNET])), Some("wlan0".to_string()), "a down route is skipped");
+        assert_eq!(default_route(&route(&[ROUTE_SUBNET])), None, "no default route");
+        assert_eq!(default_route(""), None);
+    }
+
+    #[test]
+    fn net_counters_of_an_interface() {
+        assert_eq!(net_counters(NET_A, "wlan0"), Some(NetCounters { rx: 1_000_000, tx: 200_000 }));
+        assert_eq!(net_counters(NET_A, "wlan"), None, "no prefix match");
+        assert_eq!(net_counters(NET_A, "usb0"), None);
+    }
+
+    #[test]
+    fn net_rate_between_two_readings() {
+        let a = net_counters(NET_A, "wlan0").unwrap();
+        let b = net_counters(NET_B, "wlan0").unwrap();
+        assert_eq!(net_rate(a, b, Duration::from_secs(2)), Some(NetRate { down: 1_258_291, up: 81_920 }));
+        assert_eq!(net_rate(b, a, Duration::from_secs(2)), None, "counters reset");
+        assert_eq!(net_rate(a, b, Duration::ZERO), None);
+    }
+
+    fn net_reader(root: &Path) -> Reader {
+        let config = ResourcesConfig { show: vec![ResourceItem::Net], ..ResourcesConfig::default() };
+        Reader::new(roots(root, None, refuse), &config)
+    }
+
+    #[test]
+    fn the_reader_shows_net_from_the_second_pass() {
+        let t = workstation("net");
+        put(&t.0, "proc/net/route", &format!("{ROUTE_HEAD}{ROUTE_WLAN0}"));
+        put(&t.0, "proc/net/dev", NET_A);
+        let mut r = net_reader(&t.0);
+        let t0 = Instant::now();
+        assert_eq!(r.sample_at(t0).net, None, "the first pass only records");
+        put(&t.0, "proc/net/dev", NET_B);
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(2)).net, Some(NetRate { down: 1_258_291, up: 81_920 }));
+        put(&t.0, "proc/net/route", &format!("{ROUTE_HEAD}{ROUTE_ETH0}"));
+        // eth0 far ahead of wlan0: comparing across interfaces would give a rate, not None.
+        let eth0_ahead = NET_B.replace("  eth0:  900000", "  eth0: 9000000").replace("   150000     800", "  9000000     800");
+        assert_ne!(eth0_ahead, NET_B);
+        put(&t.0, "proc/net/dev", &eth0_ahead);
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(4)).net, None, "another interface: nothing to compare");
+        put(&t.0, "proc/net/dev", &eth0_ahead.replace("  eth0: 9000000", "  eth0: 9500000"));
+        assert!(r.sample_at(t0 + Duration::from_secs(6)).net.is_some());
+        std::fs::remove_file(t.0.join("proc/net/route")).unwrap();
+        assert_eq!(r.sample_at(t0 + Duration::from_secs(8)).net, None, "no route");
+    }
+
+    fn gpu_tree(name: &str) -> Tree {
+        let r = std::env::temp_dir().join(format!("alpheus-resources-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&r);
+        for (f, t) in [
+            ("sys/class/hwmon/hwmon0/name", "coretemp\n"),
+            ("sys/class/hwmon/hwmon0/temp1_input", "66000\n"),
+            ("sys/class/hwmon/hwmon3/name", "amdgpu\n"),
+            ("sys/class/hwmon/hwmon3/temp1_label", "edge\n"),
+            ("sys/class/hwmon/hwmon3/temp1_input", "54000\n"),
+            ("sys/class/hwmon/hwmon3/temp2_label", "junction\n"),
+            ("sys/class/hwmon/hwmon3/temp2_input", "61000\n"),
+            ("sys/class/hwmon/hwmon5/name", "i915\n"),
+            ("sys/class/thermal/thermal_zone2/type", "amdgpu\n"),
+            ("sys/class/thermal/thermal_zone2/temp", "70000\n"),
+        ] {
+            put(&r, f, t);
+        }
+        Tree(r)
+    }
+
+    #[test]
+    fn pick_gpu_automatic_or_by_name() {
+        let t = gpu_tree("pickgpu");
+        assert_eq!(pick_gpu(&t.0, ""), vec![t.0.join("sys/class/hwmon/hwmon3/temp1_input")]);
+        assert_eq!(pick_gpu(&t.0, "i915"), Vec::<PathBuf>::new(), "no temperature input");
+        assert_eq!(pick_gpu(&t.0, "nouveau"), Vec::<PathBuf>::new());
+        assert_eq!(pick_gpu(&t.0, "amdgpu"), vec![t.0.join("sys/class/hwmon/hwmon3/temp1_input")], "never the thermal zone");
+    }
+
+    #[test]
+    fn the_reader_reads_the_gpu_like_the_cpu() {
+        let t = gpu_tree("readgpu");
+        let config = ResourcesConfig { show: vec![ResourceItem::Gpu], ..ResourcesConfig::default() };
+        let mut r = Reader::new(roots(&t.0, None, refuse), &config);
+        let s = r.sample();
+        assert_eq!((s.gpu, s.temperature), (Some(54), None));
+        std::fs::rename(t.0.join("sys/class/hwmon/hwmon3"), t.0.join("sys/class/hwmon/hwmon7")).unwrap();
+        assert_eq!(r.sample().gpu, Some(54), "re-resolved by name");
+        std::fs::remove_dir_all(t.0.join("sys/class/hwmon/hwmon7")).unwrap();
+        assert_eq!(r.sample().gpu, None, "stale, re-resolved: nothing left");
+        assert_eq!(r.sample().gpu, None, "the retry is throttled from here");
+        put(&t.0, "sys/class/hwmon/hwmon8/name", "amdgpu\n");
+        put(&t.0, "sys/class/hwmon/hwmon8/temp1_input", "50000\n");
+        let found_at = (0..RETRY_EMPTY_EVERY_TICKS).find(|_| r.sample().gpu.is_some());
+        assert!(found_at.is_some(), "never found again");
+        assert_ne!(found_at, Some(0), "not throttled at all");
     }
 }
