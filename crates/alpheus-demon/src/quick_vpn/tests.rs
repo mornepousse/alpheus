@@ -1,6 +1,6 @@
 use super::*;
 use crate::grid::text_width;
-use crate::quick_wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT, NM_GONE};
+use crate::quick_wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
 use crate::system::{ActiveVpn, VpnProfile};
 use std::time::Duration;
 
@@ -179,7 +179,7 @@ fn the_attempt_connects_or_fails() {
     let mut v = vpn(vec![profile(1, "VPN-Test-1", VpnKind::Plugin, 0, true)], &[]);
     v.enter(&uuid(1), t);
     set(&mut v, &[(1, ACTIVATING)], t + S);
-    assert_eq!(set(&mut v, &[], t + 2 * S), Some("the connection needs a secret"));
+    assert_eq!(set(&mut v, &[], t + 2 * S), Some("the connection may need a secret"));
 }
 
 #[test]
@@ -195,7 +195,7 @@ fn the_profile_going_away_ends_the_attempt_without_a_mark() {
     v.enter(&uuid(1), t);
     let mut s = v.state.clone().expect("state");
     s.profiles.clear();
-    assert_eq!(v.set_state(Some(s), t + S), Some(NM_GONE), "no profile at all: NetworkManager's");
+    assert_eq!(v.set_state(Some(s), t + S), Some("the profile went away"), "no profile left, NetworkManager there");
 }
 
 #[test]
@@ -273,4 +273,19 @@ fn the_scope_is_detail_while_open_or_attempting() {
     assert_eq!(v.scope(), VpnScope::Detail);
     v.close_detail();
     assert_eq!((v.open, v.pick.clone(), v.scope()), (false, Pick::None, VpnScope::Row));
+}
+
+/// The last used is looked for among every profile read, not only the 16 listed.
+#[test]
+fn space_ups_the_last_used_even_past_the_listed_16() {
+    let t = Instant::now();
+    let profiles: Vec<VpnProfile> =
+        (0..20).map(|n| profile(n, &format!("VPN-Test-{n:02}"), VpnKind::Plugin, if n == 17 { 999 } else { 1 }, false)).collect();
+    let mut v = vpn(profiles, &[]);
+    assert!(!v.listed().iter().any(|p| p.uuid == uuid(17)), "the 18th by name is not listed");
+    assert_eq!(v.toggle(t), run(&["nmcli", "connection", "up", "uuid", &uuid(17)], "vpn up"));
+    assert_eq!(v.attempt.as_ref().map(|a| a.uuid.clone()), Some(uuid(17)));
+    // Enter from a detail row still needs a listed row.
+    let mut v = vpn((0..20).map(|n| profile(n, &format!("VPN-Test-{n:02}"), VpnKind::Plugin, 0, false)).collect(), &[]);
+    assert_eq!(v.enter(&uuid(17), t), QuickAction::Nothing);
 }

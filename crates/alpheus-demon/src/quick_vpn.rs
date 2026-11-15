@@ -25,7 +25,7 @@ pub const DEACTIVATING: u32 = 3;
 
 /// Why an attempt failed, for the log (never a name or a uuid).
 const ACTIVATION_FAILED: &str = "the activation failed";
-const NEEDS_SECRET: &str = "the connection needs a secret";
+const NEEDS_SECRET: &str = "the connection may need a secret";
 const NO_ANSWER: &str = "no answer in 20 s";
 const STILL_ACTIVATING: &str = "still activating after 60 s";
 const PROFILE_GONE: &str = "the profile went away";
@@ -86,7 +86,7 @@ impl Attempt {
     pub fn observe(&mut self, state: Option<&VpnState>) -> Outcome {
         let Some(state) = state else { return Outcome::Gone(NM_GONE) };
         if !state.profiles.iter().any(|p| p.uuid == self.uuid) {
-            return Outcome::Gone(if state.profiles.is_empty() { NM_GONE } else { PROFILE_GONE });
+            return Outcome::Gone(PROFILE_GONE);
         }
         match active_state(state, &self.uuid) {
             Some(ACTIVATED) => Outcome::Connected,
@@ -156,9 +156,9 @@ impl Vpn {
         if listed.iter().any(|p| matches!(p.state, Some(ACTIVATING | DEACTIVATING))) { "…".into() } else { "off".into() }
     }
 
-    /// The profiles in the detail's order: active ones first, then by name (case ignored), then
-    /// uuid; cut to PROFILES_MAX after sorting.
-    pub fn listed(&self) -> Vec<Listed> {
+    /// Every profile in the detail's order: active ones first, then by name (case ignored), then
+    /// uuid.
+    fn sorted(&self) -> Vec<Listed> {
         let Some(state) = &self.state else { return Vec::new() };
         let mut l: Vec<Listed> = state
             .profiles
@@ -166,36 +166,50 @@ impl Vpn {
             .map(|p| Listed { uuid: p.uuid.clone(), label: p.name.clone(), kind: p.kind, state: active_state(state, &p.uuid) })
             .collect();
         l.sort_by_cached_key(|p| (!is_active(p.state), p.label.to_lowercase(), p.uuid.clone()));
+        l
+    }
+
+    /// The profiles the detail lists: `sorted`, cut to PROFILES_MAX.
+    pub fn listed(&self) -> Vec<Listed> {
+        let mut l = self.sorted();
         l.truncate(PROFILES_MAX);
         l
     }
 
     /// Space on the row (rulings 2 and 3): the first activating or activated profile goes down,
-    /// else the last used one (the highest `last_used`, ties and none: the first listed) comes up.
-    /// Nothing while an attempt runs (`enter` says so).
+    /// else the last used one (the highest `last_used` over every profile read, even past the
+    /// 16 listed; ties and none: the first in the detail's order) comes up. Nothing while an
+    /// attempt runs.
     pub fn toggle(&mut self, now: Instant) -> QuickAction {
-        let listed = self.listed();
-        let target = listed.iter().find(|p| matches!(p.state, Some(ACTIVATING | ACTIVATED))).or_else(|| {
+        if self.attempt.is_some() {
+            return QuickAction::Nothing;
+        }
+        let all = self.sorted();
+        let target = all.iter().find(|p| matches!(p.state, Some(ACTIVATING | ACTIVATED))).or_else(|| {
             let used = |uuid: &str| self.state.as_ref().and_then(|s| s.profiles.iter().find(|p| p.uuid == uuid)).map_or(0, |p| p.last_used);
             // The first maximum: `max_by_key` keeps the last one.
-            listed
-                .iter()
+            all.iter()
                 .fold(None, |best: Option<&Listed>, p| if best.is_none_or(|b| used(&p.uuid) > used(&b.uuid)) { Some(p) } else { best })
         });
-        match target.map(|p| p.uuid.clone()) {
-            Some(uuid) => self.enter(&uuid, now),
+        match target {
+            Some(p) => self.act(&p.uuid.clone(), p.state, now),
             None => QuickAction::Nothing,
         }
     }
 
-    /// Enter on a profile: down when activating or activated, nothing while deactivating or during
-    /// an attempt (one at a time), else the attempt begins and `connection up` runs.
+    /// Enter on a listed profile: down when activating or activated, nothing while deactivating or
+    /// during an attempt (one at a time), else the attempt begins and `connection up` runs.
     pub fn enter(&mut self, uuid: &str, now: Instant) -> QuickAction {
+        let Some(p) = self.listed().into_iter().find(|p| p.uuid == uuid) else { return QuickAction::Nothing };
+        self.act(uuid, p.state, now)
+    }
+
+    /// `connection down` or `up` on `uuid` in `state`; one attempt at a time.
+    fn act(&mut self, uuid: &str, state: Option<u32>, now: Instant) -> QuickAction {
         if self.attempt.is_some() {
             return QuickAction::Nothing;
         }
-        let Some(p) = self.listed().into_iter().find(|p| p.uuid == uuid) else { return QuickAction::Nothing };
-        match p.state {
+        match state {
             Some(ACTIVATING | ACTIVATED) => run(&["nmcli", "connection", "down", "uuid", uuid], "vpn down"),
             Some(DEACTIVATING) => QuickAction::Nothing,
             _ => {
