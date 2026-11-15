@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus/src/ui/mod.rs
+source: crates/alpheus/src/ui/tests.rs
 expression: "draw(&a, 100, 28).0.join(\"\\n\")"
 ---
                                                                                                     
@@ -9,7 +9,7 @@ expression: "draw(&a, 100, 28).0.join(\"\\n\")"
                                                                                                     
   󰋜 Home     1      Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]                      
                                                                                                     
-  󰕾 Sound    2    Map                                                                               
+  󰕾 Sound    2    MAP ────────────────────────────────────────                                      
                      ┌──Alpha───┐┌──Bravo──┐                                                        
   󰖩 Network  3       │    2   ● ││    3    │                                                        
                      └──────────┘└─────────┘                                                        
@@ -19,9 +19,9 @@ expression: "draw(&a, 100, 28).0.join(\"\\n\")"
                     │             │                                                                 
  ▌󰍹 Displays 6      └─────────────┘                                                                 
                                                                                                     
-  󰏘 Theme    7    Displays                                                                          
+  󰏘 Theme    7    DISPLAYS ────────────────────────────────────────                                 
                     1 Laptop     eDP-1     [■] on        2560×1600@60  position 0, 1080             
-                  ▶ 2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  origin                       
+                  ▌ 2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  origin                       
                     3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha               
                                                                                                     
                                                                                                     

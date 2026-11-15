@@ -1,0 +1,40 @@
+---
+source: crates/alpheus/src/ui/tests.rs
+expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
+---
+                                                                                                                        
+  ◆ alpheus       󰏘  Theme                                                                                              
+  control center  Theme, mode, bar style and module colours                                                             
+                  ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────  
+                                                                                                                        
+  󰋜 Home     1    Theme                           Preview — Catppuccin, dark                                            
+                      Wallpaper (matugen)         ┌────────────────────────────────────────────┐                        
+  󰕾 Sound    2    ❯ ● Catppuccin                  │ 1  2  3! notes.md ♪ 84% ≈ ▮ 15% ▤ 6G 14:05 │                        
+                      Gruvbox                     └────────────────────────────────────────────┘                        
+  󰖩 Network  3        Tokyo Night                                                                                       
+                      Rosé Pine                   ┌────────────┐                                                        
+  󰂯 BT       4        Everforest                  │ Open       │                                                        
+                      Kanagawa                    │ ✓ Mute     │                                                        
+  󰐥 Power    5        Solarized                   │   Low      │                                                        
+                      Nord          dark only     └────────────┘                                                        
+  󰍹 Displays 6        Dracula       dark only                                                                           
+                      Ember                                                                                             
+ ▌󰏘 Theme    7        Glacier                                                                                           
+                      Ink                                                                                               
+                      High contrast                                                                                     
+                      Sorbet                                                                                            
+                      Phosphor      dark only                                                                           
+                                                                                                                        
+                  Mode             Auto   Dark   Light                                                                  
+                  Module colours   None   Icons   Full   Pills                                                          
+                  Style            Flat   Islands   Powerline   Floating   Underline   Translucent                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ● ready                                                                                                               
+                                                                                                                        
+                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    ↑/↓  Choose    Enter  Apply

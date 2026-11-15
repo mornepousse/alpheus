@@ -1,13 +1,17 @@
 //! Tab content, as rows: one focusable element per row, headings and lists
 //! around it; scrolling keeps the focus visible.
 
+use super::Chrome;
 use super::appearance;
+use super::controls;
 use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
+use super::rail::tab_hue;
+use super::shape::{self, Ink};
 use crate::app::action::{Tab, profile_label};
 use crate::app::{App, Item, Loadable, toggle_label};
-use crate::theme::Theme;
+use crate::theme::{Shape, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -25,7 +29,7 @@ enum Row {
     Map(usize),
 }
 
-pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
+pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
     if app.tab == Tab::Appearance {
         return appearance::render(buf, body, app, hits);
     }
@@ -35,7 +39,9 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     } else {
         Vec::new()
     };
-    let rows = rows(app, map.len());
+    let rail = chrome == Chrome::Rail;
+    let hue = tab_hue(&app.theme, app.tab);
+    let rows = rows(app, map.len(), rail);
     let label_w = app.tab.spec().label_width;
     let focus_row = rows.iter().position(|r| matches!(r, Row::Item(i) if *i == app.focus)).unwrap_or(0);
     let h = usize::from(body.height);
@@ -46,6 +52,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
         let th = &app.theme;
         match row {
             Row::Blank => {}
+            Row::Heading(t) if rail => controls::heading(buf, body, body.x, y, t, hue, th),
             Row::Heading(t) => {
                 put(buf, body, body.x, y, t, Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
             }
@@ -57,7 +64,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
             }
             Row::Item(i) => {
                 if let Some(item) = items.get(*i) {
-                    draw_item(buf, body, y, *i, item, app, label_w, hits);
+                    draw_item(buf, body, y, *i, item, app, label_w, chrome, hits);
                 }
             }
             Row::Map(k) => {
@@ -70,7 +77,7 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
 }
 
 /// Rows of the tab; `map_rows`: height of the display map.
-fn rows(app: &App, map_rows: usize) -> Vec<Row> {
+fn rows(app: &App, map_rows: usize, rail: bool) -> Vec<Row> {
     let mut rows = Vec::new();
     if app.search.editing || !app.search.text.is_empty() {
         let cursor = if app.search.editing { "▏" } else { "" };
@@ -123,7 +130,17 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
                         rows.push(Row::Text("none".into()));
                     }
                     for c in list {
-                        rows.push(Row::Text(format!("{:<10} {}  ({})", c.kind, c.name, c.device)));
+                        rows.push(Row::Text(if rail {
+                            let glyph = match c.kind.as_str() {
+                                "Wi-Fi" => "󰖩",
+                                "Ethernet" => "󰈀",
+                                "WireGuard" | "VPN" => "󰦝",
+                                _ => "󰛳",
+                            };
+                            format!("{glyph}  {:<24} {:<10} {}", c.name, c.kind, c.device)
+                        } else {
+                            format!("{:<10} {}  ({})", c.kind, c.name, c.device)
+                        }));
                     }
                 }
             }
@@ -163,7 +180,11 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
                         rows.push(Row::Text("none".into()));
                     }
                     for d in list {
-                        rows.push(Row::Text(format!("{}  ({})", d.name, d.mac)));
+                        rows.push(Row::Text(if rail {
+                            format!("󰂱  {:<24} {}", d.name, d.mac)
+                        } else {
+                            format!("{}  ({})", d.name, d.mac)
+                        }));
                     }
                 }
             }
@@ -175,12 +196,28 @@ fn rows(app: &App, map_rows: usize) -> Vec<Row> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &App, label_w: u16, hits: &mut HitMap) {
+fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &App, label_w: u16, chrome: Chrome, hits: &mut HitMap) {
     let th = &app.theme;
     let focused = i == app.focus;
+    let rail = chrome == Chrome::Rail;
     let row = Rect::new(body.x, y, body.width, 1);
-    put(buf, body, body.x, y, if focused { "▶" } else { " " }, Style::default().fg(th.accent));
-    let label_style = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    let hue = tab_hue(th, app.tab);
+    let line = th.shape == Shape::Line;
+    // The band under a focused row (Rail); chips on it sit on its colour.
+    let behind = if focused && !line { th.selection } else { th.bg };
+    let label_style = match (rail, focused) {
+        (false, true) => Style::default().fg(th.accent).add_modifier(Modifier::BOLD),
+        (true, true) if line => Style::default().fg(hue).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        (true, true) => Style::default().fg(th.fg).add_modifier(Modifier::BOLD),
+        _ => Style::default().fg(th.fg),
+    };
+    if rail {
+        if focused {
+            shape::band(buf, row, th.selection, hue, th.bg, th.shape);
+        }
+    } else {
+        put(buf, body, body.x, y, if focused { "▶" } else { " " }, Style::default().fg(th.accent));
+    }
     let lx = body.x + 2;
     let vx = lx + label_w;
     let label_max = usize::from(label_w - 1);
@@ -188,14 +225,21 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
         Item::Slider(id) => {
             put(buf, body, lx, y, &truncate(&app.slider_label(*id), label_max), label_style);
             hits.push(row, Target::Item(i));
-            if let Some(bar) = draw_slider(buf, body, vx, y, &app.slider_loadable(*id), app.slider_muted(*id), th) {
+            let (v, muted) = (app.slider_loadable(*id), app.slider_muted(*id));
+            let bar =
+                if rail { controls::gauge(buf, body, vx, y, &v, muted, th, hue) } else { draw_slider(buf, body, vx, y, &v, muted, th) };
+            if let Some(bar) = bar {
                 hits.push(bar, Target::Slider { item: i });
             }
         }
         Item::Toggle(id) => {
             put(buf, body, lx, y, toggle_label(*id), label_style);
             hits.push(row, Target::Item(i));
-            draw_toggle(buf, body, vx, y, &app.toggle_loadable(*id), th);
+            if rail {
+                controls::switch(buf, body, vx, y, &app.toggle_loadable(*id), th, hue);
+            } else {
+                draw_toggle(buf, body, vx, y, &app.toggle_loadable(*id), th);
+            }
         }
         Item::Profile => {
             put(buf, body, lx, y, "Energy profile", label_style);
@@ -210,8 +254,16 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 Loadable::Ready(p) => {
                     let mut x = vx;
                     for (j, name) in p.available.iter().enumerate() {
-                        let style = if *name == p.active { th.filled() } else { Style::default().fg(th.muted) };
-                        let w = put(buf, body, x, y, &format!(" {} ", profile_label(name)), style);
+                        let active = *name == p.active;
+                        let text = format!(" {} ", profile_label(name));
+                        let w = if rail {
+                            let (fg, fill) = if active { (th.on_accent, hue) } else { (th.muted, th.raised) };
+                            let fill = if line && !active { th.muted } else { fill };
+                            shape::chip(buf, body, x, y, &text, Ink { fg, fill, behind, bold: active }, th.shape)
+                        } else {
+                            let style = if active { th.filled() } else { Style::default().fg(th.muted) };
+                            put(buf, body, x, y, &text, style)
+                        };
                         hits.push(Rect::new(x, y, w, 1), Target::ProfileOption(j));
                         x = x.saturating_add(w + 1);
                     }
@@ -221,8 +273,12 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
         Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits),
         Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits),
         Item::Button(c) => {
-            let style = if focused { th.filled() } else { Style::default().fg(th.accent) };
-            let w = put(buf, body, lx, y, &format!("[ {} ]", c.label()), style);
+            let w = if rail {
+                controls::button(buf, body, lx, y, c, focused, th, hue)
+            } else {
+                let style = if focused { th.filled() } else { Style::default().fg(th.accent) };
+                put(buf, body, lx, y, &format!("[ {} ]", c.label()), style)
+            };
             // Clickable area intentionally limited to the drawn button (not the whole row).
             hits.push(Rect::new(body.x, y, w + 2, 1), Target::Item(i));
         }

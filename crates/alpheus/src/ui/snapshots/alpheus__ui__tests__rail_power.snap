@@ -1,0 +1,40 @@
+---
+source: crates/alpheus/src/ui/tests.rs
+expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
+---
+                                                                                                                        
+  ◆ alpheus       󰐥  Power                                                                                              
+  control center  Lock, leave or restart the session                                                                    
+                  ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────  
+                                                                                                                        
+  󰋜 Home     1    ▌   󰌾  Lock                 󰁔                                                                         
+                                                                                                                        
+  󰕾 Sound    2        󰍃  Log out              󰁔                                                                         
+                                                                                                                        
+  󰖩 Network  3        󰤄  Suspend              󰁔                                                                         
+                                                                                                                        
+  󰂯 BT       4        󰜉  Reboot               󰁔                                                                         
+                                                                                                                        
+ ▌󰐥 Power    5        󰐥  Power off            󰁔                                                                         
+                                                                                                                        
+  󰍹 Displays 6                                                                                                          
+                                                                                                                        
+  󰏘 Theme    7                                                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ● ready                                                                                                               
+                                                                                                                        
+                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    Enter  Activate

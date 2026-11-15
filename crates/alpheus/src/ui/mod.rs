@@ -2,6 +2,7 @@
 //! clickable regions: each component knows its own region for click testing.
 
 mod appearance;
+mod controls;
 mod displays;
 pub mod draw;
 pub mod hit;
@@ -52,12 +53,12 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
     }
     if chrome(area) == Chrome::Rail {
         let body = rail::render(buf, area, app, &mut hits);
-        tabs::render(buf, body, app, &mut hits);
+        tabs::render(buf, body, app, &mut hits, Chrome::Rail);
     } else {
         let bar = |y| Rect::new(area.x, y, area.width, 1);
         let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
         tab_bar(buf, bar(area.y), app, &mut hits);
-        tabs::render(buf, body, app, &mut hits);
+        tabs::render(buf, body, app, &mut hits, Chrome::Classic);
         status_line(buf, bar(area.bottom() - 2), app);
         shortcut_bar(buf, bar(area.bottom() - 1), app);
     }
