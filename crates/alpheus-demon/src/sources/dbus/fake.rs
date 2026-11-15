@@ -7,7 +7,7 @@ use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};
 use super::wifi::{self, WifiTap};
 use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone, under};
-use crate::system::SavedWifi;
+use crate::system::{Saved, SavedWifi};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io;
 use std::sync::Arc;
@@ -77,7 +77,7 @@ pub struct FakeBus {
     /// ListConnections' answer; None: NotFound.
     pub connections: Option<Vec<String>>,
     /// GetSettings' answers by path, already reduced (None: not a Wi-Fi profile).
-    pub settings: BTreeMap<String, Option<SavedWifi>>,
+    pub settings: BTreeMap<String, Option<Saved>>,
     /// Paths whose ListConnections or GetSettings finds NetworkManager gone mid-call (ServiceUnknown).
     pub gone: BTreeSet<String>,
     /// Paths whose GetSettings NetworkManager refuses (Settings.PermissionDenied: another user's).
@@ -196,8 +196,10 @@ impl FakeBus {
         // and a wired one.
         let (home, wired) = ("/org/freedesktop/NetworkManager/Settings/3", "/org/freedesktop/NetworkManager/Settings/4");
         self.connections = Some(vec![home.into(), wired.into()]);
-        self.settings
-            .insert(home.into(), Some(SavedWifi { uuid: "00000000-0000-0000-0000-000000000009".into(), ssid: b"MON_WIFI_1".to_vec() }));
+        self.settings.insert(
+            home.into(),
+            Some(Saved::Wifi(SavedWifi { uuid: "00000000-0000-0000-0000-000000000009".into(), ssid: b"MON_WIFI_1".to_vec() })),
+        );
         self.settings.insert(wired.into(), None);
     }
 
@@ -308,7 +310,7 @@ impl Bus for FakeBus {
         self.connections.clone().ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "UnknownMethod: ListConnections"))
     }
 
-    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>> {
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<Saved>> {
         self.calls.push(format!("GetSettings {destination} {path}"));
         self.reach(destination)?;
         if self.gone.contains(path) {

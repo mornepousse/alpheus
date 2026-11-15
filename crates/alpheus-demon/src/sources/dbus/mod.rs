@@ -18,6 +18,7 @@ mod session;
 mod signal;
 pub mod tap;
 pub mod upower;
+pub mod vpn;
 pub mod wifi;
 
 #[cfg(test)]
@@ -30,7 +31,7 @@ use super::{Backoff, STABLE_DURATION, SourceGuard, panic_text, prefixed};
 use crate::log::write as log;
 use crate::memory::release_memory;
 use crate::state::Msg;
-use crate::system::{BtScope, BtState, BtView, NetState, PowerState, ProfileState, SavedWifi, WifiScope, WifiState};
+use crate::system::{BtScope, BtState, BtView, NetState, PowerState, ProfileState, Saved, WifiScope, WifiState};
 use bt::{BtReader, BtTap};
 use props::{Objects, Props};
 use std::io;
@@ -86,7 +87,7 @@ pub trait Bus {
     fn list_connections(&mut self, destination: &str) -> io::Result<Vec<String>>;
     /// `org.freedesktop.NetworkManager.Settings.Connection.GetSettings` on `path`, reduced to a Wi-Fi
     /// profile's uuid and SSID (`wifi::saved_wifi`); None for any other kind. Never its secrets.
-    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<SavedWifi>>;
+    fn get_settings(&mut self, destination: &str, path: &str) -> io::Result<Option<Saved>>;
     /// AddMatch (`add`) or RemoveMatch of one rule.
     fn match_rule(&mut self, rule: &str, add: bool) -> io::Result<()>;
     /// AddMatch (`add`) or RemoveMatch of each rule, in order: the Wi-Fi detail's (`WIFI_RULES`).

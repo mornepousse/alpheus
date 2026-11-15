@@ -331,7 +331,7 @@ fn saved_profiles_are_read_on_their_signal_only() {
     bus.connections.as_mut().unwrap().push("/org/freedesktop/NetworkManager/Settings/5".into());
     bus.settings.insert(
         "/org/freedesktop/NetworkManager/Settings/5".into(),
-        Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() }),
+        Some(Saved::Wifi(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() })),
     );
     let calls = bus.calls.len();
     let d = r.changed(&mut bus, &WifiChange::Saved).unwrap().unwrap().device.unwrap();
@@ -370,8 +370,10 @@ fn one_unreadable_item_is_left_out_never_the_whole_detail() {
     bus.failing.insert(format!("{AP}/11"));
     let voisin = "/org/freedesktop/NetworkManager/Settings/5";
     bus.connections.as_mut().unwrap().push(voisin.into());
-    bus.settings
-        .insert(voisin.into(), Some(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() }));
+    bus.settings.insert(
+        voisin.into(),
+        Some(Saved::Wifi(SavedWifi { uuid: "11111111-2222-4333-8444-555555555555".into(), ssid: b"Voisin-Test".to_vec() })),
+    );
     bus.failing.insert("/org/freedesktop/NetworkManager/Settings/3".into());
     let (mut r, d) = detail(&mut bus);
     assert_eq!(ssids(&d), ["MON_WIFI_1", "Cafe-Libre"], "Voisin-Test left out, the others kept");
