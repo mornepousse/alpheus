@@ -416,6 +416,8 @@ pub struct NotificationsConfig {
 
 /// At most this many `[[notifications.rules]]`.
 pub const NOTIFY_RULES_MAX: usize = 32;
+/// An app name longer than this never matches (the codec caps and cleans names).
+pub const NOTIFY_RULE_APP_MAX: usize = 64;
 
 /// What a rule does with a matching notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -816,8 +818,14 @@ impl BarConfig {
         }
         for (i, r) in n.rules.iter().enumerate() {
             let at = i + 1;
-            if r.app.trim().is_empty() {
+            let app = r.app.trim();
+            if app.is_empty() {
                 return Err(format!("notifications.rules[{at}]: app empty"));
+            }
+            if app.len() > NOTIFY_RULE_APP_MAX || app.chars().any(|c| c.is_control() || crate::text::invisible(c)) {
+                return Err(format!(
+                    "notifications.rules[{at}]: app too long (over {NOTIFY_RULE_APP_MAX} bytes) or with control characters"
+                ));
             }
             if r.action.is_none() && r.urgency.is_none() {
                 return Err(format!("notifications.rules[{at}]: needs action or urgency"));
@@ -865,7 +873,13 @@ impl BarConfig {
             tray,
             media: b.media,
             privacy: b.privacy,
-            notifications: b.notifications.clone(),
+            notifications: {
+                let mut n = b.notifications.clone();
+                for r in &mut n.rules {
+                    r.app = r.app.trim().to_string();
+                }
+                n
+            },
             osd: b.osd,
             quick: b.quick,
             displays: b.displays,

@@ -451,6 +451,9 @@ impl Center {
 
     /// The first rule whose app is the whole name of the sender or its desktop entry, any case.
     fn rule_for(&self, n: &Incoming) -> Option<&Rule> {
+        if self.rules.is_empty() {
+            return None;
+        }
         let entry = n.desktop_entry.as_deref().filter(|d| !d.is_empty());
         let (name, entry) = (n.app_name.to_lowercase(), entry.map(str::to_lowercase));
         self.rules.iter().find(|r| r.app == name || entry.as_deref() == Some(r.app.as_str()))
@@ -593,6 +596,10 @@ impl Center {
         let life = if bubble { timeout(n.urgency, n.expire_ms, &self.timeouts) } else { None };
         let kept = !n.transient && self.history > 0;
         let app = if n.app_name.is_empty() { app_label(&identity).to_string() } else { n.app_name };
+        // A mute ends the bubble it replaces: the host is told, as for a demotion.
+        if muted && had_bubble {
+            self.effects.push(Effect::Closed(id, CloseReason::Expired));
+        }
         let entry = Entry {
             id,
             revision,

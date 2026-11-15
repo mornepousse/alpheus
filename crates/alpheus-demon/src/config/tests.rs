@@ -641,3 +641,13 @@ fn notification_rules_are_validated() {
     assert_eq!(BarConfig::from_text(&many(32)).unwrap().notifications.rules.len(), 32);
     assert!(err(&many(33)).contains("notifications.rules: at most 32 (got 33)"));
 }
+
+#[test]
+fn notification_rule_apps_are_trimmed_and_bounded() {
+    let rule = |app: &str| format!("[[notifications.rules]]\napp = \"{app}\"\naction = \"mute\"\n");
+    assert_eq!(BarConfig::from_text(&rule("  Chatty ")).unwrap().notifications.rules[0].app, "Chatty");
+    assert!(BarConfig::from_text(&rule("   ")).unwrap_err().contains("rules[1]: app empty"));
+    assert!(BarConfig::from_text(&rule(&"a".repeat(64))).is_ok());
+    assert!(BarConfig::from_text(&rule(&"a".repeat(65))).unwrap_err().contains("rules[1]: app too long"));
+    assert!(BarConfig::from_text(&rule("a\\u0007b")).unwrap_err().contains("control characters"));
+}

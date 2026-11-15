@@ -868,6 +868,35 @@ fn a_dropped_flood_spends_no_token() {
         c.notify(note("Other", &format!("o{i}")), t, 0);
     }
     assert_eq!(c.history().count(), 10);
+    assert_eq!(c.bubbles().len(), 4, "visible");
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), 10, "all ten got a bubble");
     assert!(c.buckets.iter().all(|b| b.identity != "Spam"), "no bucket for the dropped app");
     assert!(c.buckets.iter().any(|b| b.identity == "Other"));
+}
+
+#[test]
+fn a_muted_critical_demotes_nobody() {
+    let mut c = ruled(&[("Pager", MUTE, Some(RuleUrgency::Critical))]);
+    let t = Instant::now();
+    for i in 0..MAX_LIVE {
+        c.notify(note(&format!("App{i}"), "x"), t, 0);
+    }
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), MAX_LIVE);
+    c.take_effects();
+    c.notify(note("Pager", "up"), t, 0);
+    assert!(c.take_effects().is_empty());
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), MAX_LIVE);
+}
+
+#[test]
+fn a_mute_replacing_a_live_bubble_closes_it() {
+    let mut c = ruled(&[("Chatty", MUTE, None)]);
+    let t = Instant::now();
+    // A live bubble from a name the rule does not match, then replaced under a name it does.
+    let live = c.notify(note("Chat", "a"), t, 0);
+    assert_eq!(c.bubbles().len(), 1);
+    c.take_effects();
+    assert_eq!(c.notify(Incoming { replaces_id: live, ..note("Chatty", "b") }, t, 0), live);
+    assert_eq!(c.take_effects(), vec![Effect::Closed(live, CloseReason::Expired)]);
+    assert!(c.bubbles().is_empty());
 }
