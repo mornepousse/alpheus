@@ -808,8 +808,8 @@ mod tests {
         assert_eq!(call_error(e, false).kind(), io::ErrorKind::UnexpectedEof);
     }
 
-    /// Quick Wi-Fi spec § 5: GetSettings' reply keeps the connection's uuid and type and the SSID;
-    /// the security setting (its key management, never a secret here) is never decoded.
+    /// A Wi-Fi profile still reads as before (quick Wi-Fi spec § 5): its uuid and the SSID, the
+    /// security setting never decoded; a wired one, neither Wi-Fi nor VPN, is dropped.
     #[test]
     fn settings_reply_still_reads_wifi_and_drops_ethernet() {
         let wifi = r#"{"type":"a{sa{sv}}","data":[{"connection":{"id":{"type":"s","data":"Maison-Test"},"uuid":{"type":"s","data":"11111111-2222-4333-8444-555555555555"},"type":{"type":"s","data":"802-11-wireless"}},"802-11-wireless":{"ssid":{"type":"ay","data":[77,97,105,115,111,110,45,84,101,115,116]},"mode":{"type":"s","data":"infrastructure"}},"802-11-wireless-security":{"key-mgmt":{"type":"s","data":"wpa-psk"}},"ipv4":{"method":{"type":"s","data":"auto"}}}]}"#;
@@ -860,6 +860,37 @@ mod tests {
         assert!(!vpn(&vpn_reply("vpn", "")).asks);
         assert!(vpn(&vpn_reply("vpn", &data(r#"{"cert-pass-flags":"0","password-flags":"2"}"#))).asks, "any key");
         assert!(vpn(&vpn_reply("vpn", &data(r#"{"a-flags":"2","password-flags":"0"}"#))).asks, "an earlier key still counts");
+    }
+
+    /// Hostile shapes: no panic, no error, and nothing taken for a secret asked.
+    #[test]
+    fn settings_reply_survives_hostile_vpn_types() {
+        let sections = |s: &str| vpn(&vpn_reply("vpn", s));
+        // `data` as a{sv} instead of a{ss}.
+        let wrong = r#","vpn":{"data":{"type":"a{sv}","data":{"password-flags":{"type":"u","data":1}}}}"#;
+        assert!(!sections(wrong).asks);
+        // A non-numeric value, and a negative or oversized one.
+        for v in ["abc", "", "-1", "99999999999"] {
+            let d = format!(r#","vpn":{{"data":{{"type":"a{{ss}}","data":{{"password-flags":"{v}"}}}}}}"#);
+            assert!(!sections(&d).asks, "{v:?}");
+        }
+        // A string private-key-flags, and a negative one.
+        let s = r#","wireguard":{"private-key-flags":{"type":"s","data":"1"}}"#;
+        assert!(!vpn(&vpn_reply("wireguard", s)).asks);
+        let s = r#","wireguard":{"private-key-flags":{"type":"i","data":-1}}"#;
+        assert!(!vpn(&vpn_reply("wireguard", s)).asks);
+    }
+
+    #[test]
+    fn vpn_data_is_walked_to_256_entries_only() {
+        let entries = |n: usize, flag: &str| {
+            let mut e: Vec<String> = (0..n).map(|i| format!(r#""k{i}":"v""#)).collect();
+            e.push(format!(r#""x-flags":"{flag}""#));
+            let d = format!(r#","vpn":{{"data":{{"type":"a{{ss}}","data":{{{}}}}}}}"#, e.join(","));
+            vpn(&vpn_reply("vpn", &d)).asks
+        };
+        assert!(entries(255, "2"), "the 256th entry is read");
+        assert!(!entries(256, "2"), "the 257th is not");
     }
 
     #[test]

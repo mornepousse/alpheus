@@ -64,8 +64,22 @@ mod tests {
         let long = with(&"é".repeat(300));
         assert!(long.len() <= NAME_MAX && !long.is_empty());
         assert_eq!(with("\u{7}"), "?");
+        assert_eq!(with(""), "?", "an empty id");
         let bad = connection(r#"{"uuid":{"type":"s","data":"-x"},"type":{"type":"s","data":"vpn"}}"#);
         assert_eq!(saved_vpn(Some(&bad), false), None);
+    }
+
+    #[test]
+    fn last_use_is_zero_when_absent_or_negative() {
+        let with = |ts: &str| {
+            let json = format!(
+                r#"{{"uuid":{{"type":"s","data":"11111111-2222-4333-8444-555555555555"}},"type":{{"type":"s","data":"vpn"}}{ts}}}"#
+            );
+            saved_vpn(Some(&connection(&json)), false).unwrap().last_used
+        };
+        assert_eq!(with(""), 0, "absent");
+        assert_eq!(with(r#","timestamp":{"type":"x","data":-5}"#), 0, "negative");
+        assert_eq!(with(r#","timestamp":{"type":"t","data":1700000000}"#), 1700000000);
     }
 
     #[test]
