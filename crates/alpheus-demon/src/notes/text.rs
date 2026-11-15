@@ -94,6 +94,18 @@ impl Pad {
         at
     }
 
+    /// `at` (a boundary) moved forward past any zero-width scalars that follow it.
+    fn past_marks(&self, at: usize) -> usize {
+        let mut at = at.min(self.text.len());
+        while let Some(c) = self.char_at(at) {
+            if char_width(c) != 0 {
+                break;
+            }
+            at += c.len_utf8();
+        }
+        at
+    }
+
     /// Moves the caret to `at` (snapped); `extend` keeps or starts the selection, otherwise it is
     /// cleared.
     pub fn set_caret(&mut self, at: usize, extend: bool) {
@@ -120,7 +132,9 @@ impl Pad {
         let end = range.start + with.len();
         self.text.replace_range(range, with);
         self.anchor = None;
-        self.caret = self.snap(end);
+        // After an insert the caret never goes below the end of `with`: a zero-width mark that now
+        // follows it is passed, not snapped over. A delete snaps back as before.
+        self.caret = if with.is_empty() { self.snap(end) } else { self.past_marks(end) };
         true
     }
 

@@ -200,3 +200,23 @@ fn shift_moves_select_and_typing_replaces() {
     n.key(NoteKey::Char('J'));
     assert_eq!(n.pad.text(), "J world");
 }
+
+#[test]
+fn a_big_delete_never_leaves_blank_rows() {
+    let mut n = Notes::new(numbered(40), None);
+    n.set_area(20, 14);
+    assert_eq!(n.top(), 26);
+    n.key(NoteKey::Move { to: Motion::DocStart, extend: true });
+    n.key(NoteKey::Backspace);
+    assert_eq!(n.pad.text(), "");
+    assert_eq!(n.top(), 0);
+    let mut n = Notes::new(numbered(40), None);
+    n.set_area(20, 14);
+    for _ in 0..10 {
+        n.key(NoteKey::Move { to: Motion::Up, extend: true });
+    }
+    n.key(NoteKey::Backspace);
+    let rows = lines(n.pad.text(), n.width).len();
+    assert_eq!(rows, 30);
+    assert_eq!(n.top(), rows - 14, "the last screen is full");
+}

@@ -121,3 +121,14 @@ fn take_selection_removes_and_returns() {
     assert_eq!(p.text(), "foo ");
     assert_eq!(p.take_selection(), None);
 }
+
+#[test]
+fn an_insert_before_a_mark_keeps_the_caret_after_the_insert() {
+    let mut p = pad("\u{301}x");
+    p.set_caret(0, false);
+    assert_eq!(p.caret(), 0);
+    p.insert("a");
+    assert_eq!(p.text(), "a\u{301}x");
+    assert!(p.caret() >= 1, "the caret is not before the inserted text: {}", p.caret());
+    assert_eq!(p.caret(), "a\u{301}".len(), "and moves on past the mark that now follows it");
+}

@@ -77,7 +77,8 @@ impl Notes {
         n
     }
 
-    /// The wrap width and the number of text rows; keeps the caret visible.
+    /// The wrap width and the number of text rows; keeps the caret visible. Contract: `width` must
+    /// equal `view::wrap_width(layout)`, or the model wraps differently from what is drawn.
     pub fn set_area(&mut self, width: u16, rows: usize) {
         self.width = width.max(1);
         self.rows = rows.max(1);
@@ -113,6 +114,8 @@ impl Notes {
     fn follow_caret(&mut self) {
         let ls = lines(self.pad.text(), self.width);
         let (row, _) = locate(self.pad.text(), &ls, self.pad.caret());
+
+        self.top = self.top.min(ls.len().saturating_sub(self.rows));
         if row < self.top {
             self.top = row;
         } else if row >= self.top + self.rows {
