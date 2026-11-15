@@ -87,6 +87,11 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Displays (output protocol), linked in but off | one-time cost +4…+168 KB (`everything` of `startup_pss_per_source`, nine pairings; no `displays` in that case) | binary 6.25 → 6.49 MiB (+244 KiB stripped); measured `dc4793a` vs this delivery, release, back to back, 3 runs each, separate target directories. `+ sound`, `+ D-Bus` and `+ resources` read about +124…+504 KB higher on the new build with no code change on those paths and `displays` absent from those cases: base-side harness spread (the base's `+ resources` read below its `plan 1` in run 1), not a cost |
 | Displays, module on at start | +56…+204 KB with 1 output, −36…+36 KB with 3 | `displays_pss_at_start`, 3 runs (8.8–9.0 MB with 1 output, 9.3 MB with 3): heads and modes read at bind; bound base + 512 KB; 0 loop and 0 whole-daemon wake-ups at rest |
 | Displays, trials and hotplug | trial open −46…+8 KB over idle; 20 more trials +0 KB; 20 hotplug cycles +40…+44 KB, then **+8 KB** between cycles 21 and 41 and +0…+8 KB to 61 | `displays_pss_after_trials`, `displays_pss_after_hotplug_cycles`, 3 runs each, the daemon's own memory (PSS without the shm pools; checkpoint bound 32 KB). The pools are printed only: the bar's SCTK `RawPool` remaps on a resize (84…220 KB, also with the module off). 0 loop and 0 whole-daemon wake-ups after a trial (16 s) and after the cycles (10 s). A 64 KiB `displays.toml` raises the heap ≈ 2.8 MB once (the parse peaks ≈ 44× the file's size), re-parsed at each debounce end; a real file of a few profiles costs 20–60 KB |
+| Small features 1 (battery alerts, rules, timed do-not-disturb, calculator), linked in | +24…+88 KB vs. the delivery before this one | binary 6.50 → 6.59 MiB (+98 KiB stripped); measured `697fea2` vs this delivery, release, back to back, 3 runs each, separate target directories, on the `everything` case of `startup_pss_per_source` (9,256–9,266 → 9,290–9,344 KB): code linked in |
+| 32 notification rules, four battery thresholds and `dnd_while_sharing` configured | +4…+116 KB at start | `small_features_cost_nothing_at_start`, 3 runs, 3 outputs (8.3–8.4 MB with the notifications module): bounded at 128 KB; the rules are 32 short strings and the thresholds four numbers |
+| Timed do-not-disturb on | 0 loop wake-ups in 10 s | `at_rest_no_wakeups_with_a_timed_dnd`, 3 runs: one timer armed at the end, nothing before it (a 1 s timer reads 10 wake-ups in 10 s: the test bites) |
+| Calculator, open with `6*7` typed | +778–790 KB over closed | `launcher_calc_pss_open_and_closed`, 3 runs (9.4–9.5 MB closed, 1 output, 300 synthetic apps); closed again 0…+16 KB; the first open of any launcher box also warms code and font pages once (+390…+422 KB, the same with a plain toggle), so closed is read after one warm-up cycle |
+| Calculator, after a cycle | 0 loop wake-ups in 5 s | `at_rest_no_wakeups_after_a_calc_cycle`, 3 runs: open with `--calc`, `6*7` typed, Escape |
 | mako, replaced by the notifications above | 6.7 MB | measured on the author's session (2026-10-08, 19.5 MB RSS); alpheus takes `org.freedesktop.Notifications` as soon as mako lets it go, ≈ 6.7 MB (the module serving costs 0–4 KB here; a live figure against a headless one) won back |
 | swayosd, replaced by the OSD above | 7.6 MB | PSS on the author's session (2026-10-09): GTK4, libpulse, zbus, async-std; ≈ 7.6 MB won back once `swayosd-server` is no longer started (the module at rest costs 0–96 KB here; a live figure against a headless one) |
 | Borrowed for now: swaybg | 1.4 MB | optional |
@@ -150,6 +155,9 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | System tray (icons and menus) | ✅ Nerd Font glyphs, no images | ✅ | ✅ | ✅ | ✅ |
 | Media (MPRIS) | ✅ `▶ Title` in the bar, middle click play/pause, wheel next/previous; a popup with time, progress, ⏮ ⏯ ⏭ and the player choice | ✅ | ✅ | ✅ | ✅ |
 | Notification counter, do-not-disturb | ✅ a neutral bell with the unread count, crossed under do-not-disturb (middle click, or `alpheus-launch --dnd on\|off\|toggle`) | ✅ | ✅ | ➖ | ➖ |
+| Timed do-not-disturb, and while sharing the screen | ✅ `alpheus-launch --dnd on --for 30m` or `--until 22:30`, kept across a restart; `[notifications] dnd_while_sharing` | ➖ | ✅ | ❌ | ❌ |
+| Per-app notification rules | ✅ `[[notifications.rules]]`: mute (kept in the history), drop, or change the urgency | ➖ | ✅ | ❌ | ➖ |
+| Low battery alerts | ✅ a notification at 20, 10 and 5 % while discharging (`[battery] warn`), the lowest one critical | ➖ | ✅ | ❌ | ➖ |
 | Keyboard layout | 💭 | ✅ | ➖ | ✅ | ✅ |
 | Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is still invisible | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
@@ -164,7 +172,8 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Apps, run command, window switcher | ✅ | ✅ | ➖ | ❌ | ➖ |
 | Script/dmenu mode | ✅ (fuzzel's exit codes) | ➖ | ➖ | ❌ | ✅ |
 | Menu scripts' entries in the search (`[[sources]]`: a `list` command per open, `run` with the chosen line) | ✅ the entry, then its path dimmed; nothing resident, nothing per keystroke | ➖ | ✅ | ❌ | ❌ |
-| Calculator, units, currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
+| Calculator and unit conversion | ✅ type `6*7`, `2^10`, `0xff + 1` or `5 km to mi` in Mod+Space, or `alpheus-launch --calc` (a bind of your own, Super+C) to open it directly; Enter copies the answer through `wl-copy` | ✅ | ➖ | ❌ | ❌ |
+| Currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
 | System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
 | Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
@@ -289,11 +298,11 @@ The notifications module is the `org.freedesktop.Notifications` server on that s
 waits in the D-Bus queue while another server (mako) holds the name, and takes over as soon as it is
 released; a mako started after it is refused and exits. Text is capped and cleaned: markup is
 stripped, never rendered, and images are skipped unread. A noisy app is rate-limited, and the bubbles
-exist only while one shows. One timer is armed for the earliest expiry, and none at rest. Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
-do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`), `--clear-notifications`
+exist only while one shows. One timer is armed for the earliest expiry, and none at rest. **Rules** (`[[notifications.rules]]`, at most 32, the first match wins) are applied to each notification before anything else: `action = "mute"` shows no bubble but keeps it in the history and counts it unread, `action = "drop"` ignores it entirely (the sender is answered as usual, nothing is stored), `urgency = "low"|"normal"|"critical"` replaces the app's own; the app name is compared whole, in any case, and never logged. **Battery alerts** (`[battery] warn = [20, 10, 5]`, with `battery` and `notifications` in `modules`) are notifications from `alpheus` itself when the battery, discharging, crosses a threshold from UPower's state the bar already reads (no new timer, thread or match rule); one per threshold, all armed again once it charges, the lowest one critical; given only while the server holds the name, and offered again when it starts. With `[notifications] dnd_while_sharing = true` (and `privacy` and `notifications` in `modules`), do-not-disturb turns on while a screen capture runs and off when it ends, unless you set it yourself meanwhile (your choice wins). Scripts drive it through `alpheus-launch`: `--dnd on|off|toggle` sets
+do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`; `--dnd on --for 30m` (`2h`, `1h30m`; 1 minute to 24 hours) or `--dnd on --until 22:30` (local time, tomorrow if already past) ends it by itself: one timer, armed only while it runs, and a restarted daemon keeps the end or turns it off if it passed; `off` and `toggle` cancel it, an older daemon exits 3), `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
-show, or the `osd` module is off; 3 when the bar is not running). `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
+show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -317,6 +326,8 @@ of PSS over closed, median open latency ≈ 0.8–1.3 ms, 50 open/close cycles
 grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 0 wake-ups in 5 s at rest after use (2 in one of three runs). A 100,000-line dmenu peaks at
 +6.6–6.8 MB and drops back to +0.5 MB a second after it is cancelled.
+
+**Calculator.** A query that looks like arithmetic shows one row above the other results (or alone with `alpheus-launch --calc`). `+ - * / % ^`, parentheses, `x` as a multiplication, `0x`/`0b`/`0o` and `_` in numbers, `pi` and `e`, and `sqrt`, `cbrt`, `abs`, `ln`, `log`, `log2`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `round`, `floor`, `ceil`, `min`, `max`. Integers are exact (128 bits) and fall back to floating point on overflow; results keep 12 significant digits. `%` is the truncated remainder, as in C and Rust: `-7 % 3` is `-1`. A result computed from hexadecimal, binary or octal input also shows `0x…` and `0b…`. Units convert with `<value> <unit> to <unit>` (or `in`): length (`mm cm m km inch ft yd mi`), mass (`mg g kg t oz lb`), temperature (`c f k`), data (`b kb mb gb tb pb`, `kib … pib`) and time (`ms s min h d`). Inches are typed `inch` (or `inches`): `in` is the keyword, so `12 in to cm` gives no row. A word such as `e`, `pi`, `2048`, `7zip` or `1password` never shows the row. `Enter` copies the answer (`3.10685596119 mi`), `Ctrl+Enter` copies `5 km to mi = 3.10685596119 mi`, through `copy = ["wl-copy"]` in `launcher.toml` (`[]` hides the action); the copy is not recorded in the history. Nothing resident, nothing per keystroke beyond the parse.
 
 **Command sources.** A menu script's lines can be searched next to the apps.
 A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` command. `list` runs once per open, on the thread that already scans the applications, after them: 1 s at most, 2,000 lines, 256 KiB. `run` receives the chosen line as one argument, never through a shell.
@@ -689,6 +700,13 @@ timeout_max = 20
 max_visible = 4      # bubbles shown at once; more wait
 width = 40           # cells (24 to 80)
 history = 50         # entries kept in memory (0 to 200)
+dnd_while_sharing = false   # true: do not disturb while a screen is shared (needs "privacy" and "notifications" in modules)
+
+# Per app, the first match wins, at most 32. The app name is the whole name, any case.
+# [[notifications.rules]]
+# app = "Chatty"
+# action = "mute"      # "mute": no bubble, kept in the history and counted; "drop": ignored entirely
+# urgency = "low"      # "low" | "normal" | "critical": replaces the app's own (not with "drop")
 
 [osd]
 timeout_ms = 1300    # how long the pill stays after the last change (600 to 5000)
@@ -725,6 +743,7 @@ command = ["wm-set", "workspace", "{workspace}", "{output}"]
 [battery]
 peripherals = "always"   # "always" | "low" | "never": peripherals with a real percentage
 coarse = "low"           # "always" | "low" | "never": peripherals with only a coarse level
+warn = [20, 10, 5]       # a notification when the battery, discharging, crosses one (1 to 99); the lowest is critical; []: none
 ```
 
 An unknown module name in `modules` is an error that makes the whole
@@ -740,6 +759,7 @@ terminal_hold = ["foot", "--hold", "-e"]         # a command or typed shell text
 rows = 10                                        # result rows (3 to 30)
 history = 200                                    # entries kept (0 to 1000; 0: no history file)
 focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
+copy = ["wl-copy"]                               # the calculator's Enter: the text on its standard input; [] hides the action
 
 [prefixes]
 commands = ">"       # non-empty, no leading space, neither a prefix of the other

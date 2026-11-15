@@ -2586,3 +2586,142 @@ fn displays_pss_after_hotplug_cycles() {
     assert!(own_20 <= once_own + 128, "{own_20} KB after 20 more cycles vs {once_own} KB without the pools: hotplug must keep nothing");
     assert!(own_40 <= own_20 + 32, "{own_40} KB after 40 cycles vs {own_20} KB after 20, without the pools: still growing");
 }
+
+/// `NOTIFY_BAR` plus what small features 1 adds to the configuration: 32 rules, four battery
+/// thresholds and `dnd_while_sharing` (the last needs `privacy`, so it only sits there).
+fn small_features_bar() -> String {
+    let rules: String = (0..32).map(|i| format!("[[notifications.rules]]\napp = \"Chatty app {i}\"\naction = \"mute\"\n")).collect();
+    format!("{NOTIFY_BAR}[battery]\nwarn = [30, 20, 10, 5]\n[notifications]\ndnd_while_sharing = true\n{rules}")
+}
+
+/// Small features 1: the rules, the battery thresholds and the option cost nothing at start (3
+/// outputs, each bar on a daemon of its own, the server answering).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn small_features_cost_nothing_at_start() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("small-cost");
+    let mut kb = Vec::new();
+    for (name, toml) in [("small-cost-a", NOTIFY_BAR.to_string()), ("small-cost-b", small_features_bar())] {
+        let session = PrivateBus::start(&format!("{name}-session"));
+        let (_sway, _hypr, d) = start(name, 3, &bus, Some(&session), Some(&toml), PwDump::Silent);
+        wait_for_the_notification_server(&session);
+        std::thread::sleep(TRAY_SETTLE);
+        kb.push(d.pss_kb());
+    }
+    let (base, with) = (kb[0], kb[1]);
+    eprintln!("small features PSS at start (KB): {base} notifications alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing");
+    assert!(with <= base + 128, "{with} KB vs {base} KB: more than 128 KB for configuration alone — report, never raise");
+}
+
+/// One `--calc` cycle: open, `6*7` typed, closed by a typed Escape; the n-th of each. The open
+/// reading is taken while the box is still up (one wtype process keeps its virtual keyboard from the
+/// typing through the Escape, as in `launcher_open_close_cycles_no_growth`).
+fn calc_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
+    assert_eq!(launcher(sway, &Request::Calc), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", "6*7", "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    let open = d.pss_kb();
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+/// Small features 1: `--calc` opened with `6*7` typed, then closed (a typed Escape): the box's
+/// cost, and nothing kept once it is gone. The first open of any launcher box warms file-backed
+/// pages (code, fonts) and the glyph cache once (+0.4-0.7 MB, measured for a plain Toggle with the
+/// same typing too), so, as in `launcher_open_close_cycles_no_growth`, `closed` is read after one
+/// warm-up cycle; the first cycle's figures are printed.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_calc_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("calc-cost");
+    let (sway, _hypr, d) = start_launcher("calc-cost", &bus, None, &many_apps(), None);
+    std::thread::sleep(Duration::from_secs(3));
+    let cold = d.pss_kb();
+    let first_open = calc_cycle(&sway, &d, 1);
+    let closed = d.pss_kb();
+    let open = calc_cycle(&sway, &d, 2);
+    let again = d.pss_kb();
+    eprintln!(
+        "calculator PSS (KB): cold {cold}, first open {first_open}, warmed closed {closed} (+{} the warm-up), open with 6*7 {open} (+{}), closed again {again}",
+        closed.saturating_sub(cold),
+        open.saturating_sub(closed)
+    );
+    assert!(open <= closed + 1536, "open costs {} KB > 1.5 MB — report, never raise", open.saturating_sub(closed));
+    assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
+}
+
+/// Small features 1: a do-not-disturb with an end an hour away is one armed timer and nothing
+/// else: the loop sleeps, as it does with an untimed one.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_a_timed_dnd() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("dnd-rest");
+    let session = PrivateBus::start("dnd-rest-session");
+    let sway = Sway::start("dnd-rest", 1);
+    let state = sway.runtime.join("state/alpheus");
+    std::fs::create_dir_all(&state).unwrap();
+    // Owner only, as the daemon insists on (it reads a state directory open to others as off).
+    for dir in [state.parent().unwrap(), state.as_path()] {
+        std::fs::set_permissions(dir, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    let end = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 3600;
+    std::fs::write(state.join("dnd"), format!("until {end}\n")).unwrap();
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(NOTIFY_BAR),
+            system_bus: Some(&bus.address),
+            session_bus: Some(&session.address),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    wait_for_the_notification_server(&session);
+    std::thread::sleep(TRAY_SETTLE);
+    const REST: Duration = Duration::from_secs(10);
+    away_from_the_minute(REST);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "a timed do-not-disturb");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest with a timed do-not-disturb (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s with a timed do-not-disturb");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// Small features 1: after `--calc`, a typed query and an Escape: no timer, watch or repeat left.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_a_calc_cycle() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("calc-rest");
+    let (sway, _hypr, d) = start_launcher("calc-rest", &bus, Some(AT_REST_NO_RESOURCES), &[], None);
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(launcher(&sway, &Request::Calc), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", 1, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "6*7", "-s", "300", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("launcher closed (escape)", 1, DELAY), "{:?}", d.log());
+    // Past the key repeat's one firing and the scan thread.
+    std::thread::sleep(Duration::from_secs(3));
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after a calculator cycle");
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after a calculator cycle (5 s): {main_delta}");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a calculator cycle");
+}
+
+/// The bar without the resources timer: the clock is the only timer, which `away_from_the_minute` avoids.
+const AT_REST_NO_RESOURCES: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
