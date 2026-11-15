@@ -270,7 +270,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                 }
             }
         }
-        Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits),
+        Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits, rail),
         Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits),
         Item::Button(c) => {
             let w = if rail {

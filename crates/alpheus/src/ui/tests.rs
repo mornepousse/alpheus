@@ -189,9 +189,9 @@ fn displays_tab_rendering() {
     let all = rows.join("\n");
     for expected in [
         "Profiles",
-        "[ Laptop seul ]",
-        "[ Bureau ]",
-        "[ + Save current ]",
+        " Laptop seul ",
+        " Bureau ",
+        " + Save current ",
         "MAP",
         "DISPLAYS",
         "1 Laptop",
@@ -262,7 +262,7 @@ fn daemon_absent_shows_its_message() {
         a.on_update(fetch(&b, Domain::Displays), Instant::now());
         let all = draw(&a, 100, 24).0.join("\n");
         assert!(all.contains(shown), "{shown}:\n{all}");
-        assert!(all.contains("[ Bureau ]"), "the profiles stay visible");
+        assert!(all.contains(" Bureau "), "the profiles stay visible");
         assert!(!all.contains("1 Laptop"), "no output listed");
     }
     let mut a = displays_tab();
@@ -639,6 +639,10 @@ fn rail_controls_fit_mae_window_87x26() {
         assert!(rows.join("\n").contains(s), "{s}");
     }
     assert!(hits.find(Target::Slider { item: 2 }).is_some());
+    for (name, tail) in [("Dock D6000 Dell", "75%"), ("CasqueBT", "62%"), ("Stereo Microphone", "100%")] {
+        let line = rows.iter().find(|r| r.contains(name) && r.contains('●')).unwrap_or_else(|| panic!("{name}"));
+        assert!(line.trim_end().ends_with(tail), "{line:?}");
+    }
     // Network and Bluetooth: the list rows whole, the button whole.
     let a = tab_app(Tab::Network);
     let (rows, _) = draw(&a, 87, 26);
@@ -669,4 +673,61 @@ fn rail_controls_fit_mae_window_87x26() {
     assert!(rows.join("\n").contains("MAP") && rows.join("\n").contains("DISPLAYS"));
     let a = tab_app(Tab::Appearance);
     assert!(!draw(&a, 87, 26).0.join("\n").contains("…"));
+}
+
+/// The chosen profile chip stands out from the focus band and from the resting chips, and follows ←/→.
+#[test]
+fn the_chosen_profile_chip_is_filled_in_the_rail() {
+    for (w, h) in [(87, 26), (120, 36)] {
+        let mut a = displays_tab();
+        a.focus = 0;
+        a.displays.profile_sel = 0;
+        for want in 0..3 {
+            a.displays.profile_sel = want;
+            let (_, hits) = draw(&a, w, h);
+            let b = buffer(&a, w, h);
+            let bg = |j: usize| {
+                let r = hits.find(Target::DisplayProfile(j)).unwrap();
+                b[(r.x + 1, r.y)].bg
+            };
+            assert_eq!(bg(want), a.theme.green, "{w}x{h}: the chosen chip is the hue");
+            for j in (0..3).filter(|j| *j != want) {
+                assert_eq!(bg(j), a.theme.raised, "{w}x{h}: a resting chip");
+            }
+            assert_ne!(bg(want), a.theme.selection);
+        }
+        // Hit regions are what is drawn: no overlap, each as wide as its label + 2.
+        let (rows, hits) = draw(&a, w, h);
+        for (j, name) in ["Laptop seul", "Bureau", "+ Save current"].iter().enumerate() {
+            let r = hits.find(Target::DisplayProfile(j)).unwrap();
+            let drawn: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();
+            assert_eq!(drawn, format!(" {name} "));
+        }
+        // ←/→ move the choice.
+        a.displays.profile_sel = 0;
+        a.profile_bar_move(1);
+        let b = buffer(&a, w, h);
+        let r = draw(&a, w, h).1.find(Target::DisplayProfile(1)).unwrap();
+        assert_eq!(b[(r.x + 1, r.y)].bg, a.theme.green);
+    }
+}
+
+#[test]
+fn bands_under_round_and_line_at_the_tab_level() {
+    let mut a = tab_app(Tab::Sound);
+    a.focus = 0;
+    a.theme.shape = crate::theme::Shape::Round;
+    let (_, hits) = draw(&a, 120, 36);
+    let r = hits.find(Target::Item(0)).unwrap();
+    let b = buffer(&a, 120, 36);
+    assert_eq!(b[(r.x, r.y)].symbol(), "\u{e0b6}");
+    assert_eq!(b[(r.right() - 1, r.y)].symbol(), "\u{e0b4}");
+    assert_eq!(b[(r.x + 3, r.y)].bg, a.theme.selection);
+    a.theme.shape = crate::theme::Shape::Line;
+    let b = buffer(&a, 120, 36);
+    assert_eq!((b[(r.x, r.y)].symbol(), b[(r.x, r.y)].fg), ("▎", a.theme.blue));
+    assert_ne!(b[(r.x + 3, r.y)].bg, a.theme.selection, "no fill under the line style");
+    let label = (r.x..r.right()).find(|&x| b[(x, r.y)].symbol() == "D").unwrap();
+    let m = b[(label, r.y)].modifier;
+    assert!(m.contains(ratatui::style::Modifier::BOLD) && m.contains(ratatui::style::Modifier::UNDERLINED));
 }

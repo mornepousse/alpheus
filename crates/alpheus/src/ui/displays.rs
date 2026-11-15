@@ -4,10 +4,12 @@
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
+use super::shape::{self, Ink};
 use crate::app::displays::{panel_fields, place_label, placement_labels};
 use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
 use crate::displays::{Output, active_count, rotation_label, short_from_description, short_names};
+use crate::theme::Shape;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -101,7 +103,7 @@ pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec
 }
 
 /// Profile bar row: "Profiles  [ Bureau ]  [ + Save current ]".
-pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap) {
+pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap, rail: bool) {
     let th = &app.theme;
     let lx = body.x + 2;
     let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
@@ -109,10 +111,20 @@ pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &
     let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
     let mut x = lx + 11;
     for (j, name) in names.enumerate() {
-        let style = if focused && j == app.displays.profile_sel { th.selected() } else { Style::default().fg(th.accent) };
-        let w = put(buf, body, x, y, &format!("[ {name} ]"), style);
+        let chosen = focused && j == app.displays.profile_sel;
+        let (w, gap) = if rail {
+            // The rail's chips: the chosen one filled with the tab's hue, the others on `raised`.
+            let hue = super::rail::tab_hue(th, app.tab);
+            let (fg, fill) = if chosen { (th.on_accent, hue) } else { (th.fg, th.raised) };
+            let fill = if th.shape == Shape::Line && !chosen { th.muted } else { fill };
+            let behind = if focused && th.shape != Shape::Line { th.selection } else { th.bg };
+            (shape::chip(buf, body, x, y, &format!(" {name} "), Ink { fg, fill, behind, bold: chosen }, th.shape), 1)
+        } else {
+            let style = if chosen { th.selected() } else { Style::default().fg(th.accent) };
+            (put(buf, body, x, y, &format!("[ {name} ]"), style), 2)
+        };
         hits.push(Rect::new(x, y, w, 1), Target::DisplayProfile(j));
-        x = x.saturating_add(w + 2);
+        x = x.saturating_add(w + gap);
     }
 }
 
