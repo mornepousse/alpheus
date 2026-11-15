@@ -362,10 +362,10 @@ impl Launcher {
         self.query_changed()
     }
 
-    /// The query's prefix (`?`, `:`, `$`) and its text: only in All and never under `--password`
-    /// (the secret is not parsed). A configured mode prefix is taken before, by `take_prefix`.
+    /// The query's prefix (`?`, `:`, `$`) and its text: only in All (`--password` is a dmenu, so
+    /// Script: the secret is never parsed). A configured mode prefix is taken before, by `take_prefix`.
     pub fn prefixed(&self) -> Option<(Prefix, &str)> {
-        split_query(self.mode, self.password, &self.query, &self.config)
+        split_query(self.mode, &self.query, &self.config)
     }
 
     fn query_changed(&mut self) -> Outcome {
@@ -384,7 +384,7 @@ impl Launcher {
         }
         // A prefix lists only its own rows: no catalog ranking, no calculator.
         // Field by field, not `prefixed()`: the ranker is borrowed mutably below.
-        if let Some((p, text)) = split_query(self.mode, self.password, &self.query, &self.config) {
+        if let Some((p, text)) = split_query(self.mode, &self.query, &self.config) {
             self.results = match p {
                 Prefix::Search if !text.is_empty() => vec![Hit { source: Source::Search, score: u32::MAX, frecency: 0 }],
                 Prefix::Emoji => self.ranker.rank_emoji(text, usize::from(self.config.rows)),
@@ -621,8 +621,8 @@ impl Launcher {
 }
 
 /// `Launcher::prefixed`'s rule on loose fields.
-fn split_query<'a>(mode: Mode, password: bool, query: &'a str, config: &LauncherConfig) -> Option<(Prefix, &'a str)> {
-    if mode != Mode::All || password {
+fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig) -> Option<(Prefix, &'a str)> {
+    if mode != Mode::All {
         return None;
     }
     prefix::split(query, config.search_enabled())

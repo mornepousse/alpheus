@@ -824,3 +824,27 @@ fn a_bare_colon_lists_nothing() {
     assert!(l.results.is_empty());
     assert_eq!(l.key(Key::Enter), Outcome::Nothing);
 }
+
+#[test]
+fn a_configured_mode_prefix_wins_over_a_query_prefix() {
+    let config = LauncherConfig::from_text("[prefixes]\ncommands = \"$\"\n").unwrap();
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    typed(&mut l, "$");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::Commands, ""), "the mode, not the shell prefix");
+    assert_eq!(l.prefixed(), None);
+    // Anything else typed first stays plain text for the `$` prefix.
+    let mut l = launcher();
+    typed(&mut l, "$");
+    assert_eq!((l.mode, l.prefixed()), (Mode::All, Some((Prefix::Shell, ""))));
+}
+
+#[test]
+fn a_password_dmenu_never_reads_a_prefix() {
+    let flags = DmenuFlags { password: true, ..DmenuFlags::default() };
+    let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], flags);
+    typed(&mut l, "? x");
+    assert_eq!(l.query, "? x");
+    assert_eq!(l.prefixed(), None);
+    assert!(l.results.is_empty());
+}

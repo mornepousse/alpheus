@@ -159,7 +159,7 @@ impl LauncherConfig {
     /// Validation:
     /// - terminal, terminal_hold and focus: non-empty, with a non-blank program (copy may be
     ///   empty, otherwise the same rule);
-    /// - search empty, or holding "{query}"; open may be empty, otherwise the same rule as copy;
+    /// - search empty, or a `<scheme>://` URL holding "{query}"; open may be empty, otherwise the same rule as copy;
     /// - focus contains "{window}";
     /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
     /// - prefixes non-empty, not starting with whitespace, neither one a prefix of the other
@@ -183,6 +183,9 @@ impl LauncherConfig {
                 "search: no \"{query}\" placeholder (expected a URL such as \"https://duckduckgo.com/?q={query}\", or \"\" to disable `?`)"
                     .into(),
             );
+        }
+        if !r.search.is_empty() && !has_scheme(&r.search) {
+            return Err("search: not a URL (expected it to start with a scheme such as \"https://\", or \"\" to disable `?`)".into());
         }
         if r.focus.first().is_some_and(|p| p.contains("{window}")) {
             return Err("focus[0] (the program) must not contain \"{window}\" (it names the compositor binary, not a window)".into());
@@ -230,6 +233,13 @@ impl LauncherConfig {
 /// or U+FFFD, unique; `list` and `run`
 /// non-empty with a non-blank program; `run[0]` without "{line}"; "{line}" exactly once in `run`,
 /// as a whole element (no partial substitution: a line is never split nor reinterpreted).
+/// Whether `url` starts with RFC 3986's `<scheme>://` (a letter, then letters, digits, `+`, `-`, `.`).
+fn has_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once("://") else { return false };
+    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+}
+
 fn check_sources(sources: &[SourceConfig]) -> Result<(), String> {
     if sources.len() > MAX_SOURCES {
         return Err(format!("sources: {} configured, at most {MAX_SOURCES}", sources.len()));
@@ -475,6 +485,16 @@ mod tests {
     }
 
     #[test]
+    fn a_scheme_is_a_letter_then_letters_digits_plus_minus_dot() {
+        for yes in ["http://x", "a://", "a+b-c.d1://x"] {
+            assert!(has_scheme(yes), "{yes}");
+        }
+        for no in ["", "http", "http:/x", "://x", "1a://x", "a b://x", "a_b://x", "/x://y"] {
+            assert!(!has_scheme(no), "{no}");
+        }
+    }
+
+    #[test]
     fn search_and_open_defaults_and_validation() {
         let d = LauncherConfig::default();
         assert_eq!((d.search.as_str(), d.open.as_slice()), ("https://duckduckgo.com/?q={query}", ["xdg-open".to_string()].as_slice()));
@@ -488,6 +508,23 @@ mod tests {
         );
         let e = LauncherConfig::from_text("search = \"https://x/\"").unwrap_err();
         assert!(e.contains("{query}"), "{e}");
+        // A template that is not a URL would hand the typed text to `open` as an option or a path.
+        for text in [
+            "-x={query}",
+            "{query}",
+            "//x/?q={query}",
+            "x/?q={query}",
+            "1http://x/{query}",
+            "ht tp://x/{query}",
+            "://x/{query}",
+            "{query}://x",
+        ] {
+            let e = LauncherConfig::from_text(&format!("search = {text:?}")).unwrap_err();
+            assert!(e.contains("search") && e.contains("://"), "{text}: {e}");
+        }
+        for text in ["http://x/{query}", "a+b-c.d1://x/{query}", "HTTPS://x/?q={query}"] {
+            assert!(LauncherConfig::from_text(&format!("search = {text:?}")).is_ok(), "{text}");
+        }
         for text in ["open = [\"\"]", "open = [\" \", \"x\"]"] {
             let e = LauncherConfig::from_text(text).unwrap_err();
             assert!(e.contains("open"), "{text}: {e}");
