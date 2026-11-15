@@ -9,6 +9,7 @@
 //! ```toml
 //! terminal = ["foot", "-e"]                        # Terminal=true apps, plain (no hold)
 //! terminal_hold = ["foot", "--hold", "-e"]          # a command or typed shell text, Enter (stays open)
+//! copy = ["wl-copy"]                               # the calculator's Enter: the result on its stdin; [] hides the action
 //! rows = 10                                        # result rows, 3 to 30
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
@@ -68,6 +69,9 @@ pub struct LauncherConfig {
     /// A $PATH command or typed shell text, Enter (spec § 1): held open after the command
     /// exits, so its output stays readable. Ctrl+Enter never uses this (it runs detached).
     pub terminal_hold: Vec<String>,
+    /// The calculator's copy command (small features 1): the text goes on its stdin, never on
+    /// its argv; empty hides the action.
+    pub copy: Vec<String>,
     pub rows: u16,
     /// Entries kept; 0 disables the history (never read, never written).
     pub history: usize,
@@ -82,6 +86,7 @@ impl Default for LauncherConfig {
         LauncherConfig {
             terminal: vec!["foot".into(), "-e".into()],
             terminal_hold: vec!["foot".into(), "--hold".into(), "-e".into()],
+            copy: vec!["wl-copy".into()],
             rows: 10,
             history: 200,
             prefixes: Prefixes::default(),
@@ -96,6 +101,7 @@ impl Default for LauncherConfig {
 struct Raw {
     terminal: Vec<String>,
     terminal_hold: Vec<String>,
+    copy: Vec<String>,
     rows: u16,
     history: usize,
     prefixes: Prefixes,
@@ -109,6 +115,7 @@ impl Default for Raw {
         Raw {
             terminal: d.terminal,
             terminal_hold: d.terminal_hold,
+            copy: d.copy,
             rows: d.rows,
             history: d.history,
             prefixes: d.prefixes,
@@ -131,16 +138,23 @@ impl LauncherConfig {
         }
     }
 
-    /// Validation: terminal, terminal_hold and focus non-empty with a non-blank program; focus
-    /// contains "{window}"; rows in ROWS_MIN..=ROWS_MAX; history ≤ HISTORY_MAX; prefixes
-    /// non-empty, not starting with whitespace, neither one a prefix of the other (equal
-    /// included); sources: `check_sources`.
+    /// Validation:
+    /// - terminal, terminal_hold and focus: non-empty, with a non-blank program (copy may be
+    ///   empty, otherwise the same rule);
+    /// - focus contains "{window}";
+    /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
+    /// - prefixes non-empty, not starting with whitespace, neither one a prefix of the other
+    ///   (equal included);
+    /// - sources: `check_sources`.
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {
                 return Err(format!("{key} empty (expected: [\"program\", \"argument\", …])"));
             }
+        }
+        if r.copy.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err("copy: empty program (expected: [\"program\", \"argument\", …], or [] for no copy)".into());
         }
         if r.focus.first().is_some_and(|p| p.contains("{window}")) {
             return Err("focus[0] (the program) must not contain \"{window}\" (it names the compositor binary, not a window)".into());
@@ -172,6 +186,7 @@ impl LauncherConfig {
         Ok(LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
+            copy: r.copy,
             rows: r.rows,
             history: r.history,
             prefixes: r.prefixes,
@@ -261,6 +276,7 @@ mod tests {
         let expected = LauncherConfig {
             terminal: vec!["foot".into()],
             terminal_hold: vec!["foot".into(), "--hold".into()],
+            copy: vec!["wl-copy".into()],
             rows: 6,
             history: 0,
             prefixes: Prefixes { commands: "!".into(), windows: "win:".into() },
@@ -412,5 +428,17 @@ mod tests {
     #[test]
     fn config_path_is_launcher_toml() {
         assert_eq!(config_path(Path::new("/c/alpheus")), Path::new("/c/alpheus/launcher.toml"));
+    }
+
+    #[test]
+    fn copy_defaults_to_wl_copy_and_accepts_empty() {
+        assert_eq!(LauncherConfig::default().copy, ["wl-copy"]);
+        assert_eq!(LauncherConfig::from_text("").unwrap().copy, ["wl-copy"]);
+        assert!(LauncherConfig::from_text("copy = []").unwrap().copy.is_empty());
+        assert_eq!(LauncherConfig::from_text("copy = [\"xclip\", \"-sel\", \"c\"]").unwrap().copy, ["xclip", "-sel", "c"]);
+        for text in ["copy = [\"\"]", "copy = [\" \", \"x\"]"] {
+            let e = LauncherConfig::from_text(text).unwrap_err();
+            assert!(e.contains("copy"), "{text}: {e}");
+        }
     }
 }

@@ -277,6 +277,38 @@ fn toggle_opens_and_closes_the_launcher() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// Small features, `--calc`: the calculator opens with no scan, Enter copies the result through
+/// `copy` (a stub script, never `wl-copy`), and a second `--calc` past the debounce closes it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn calc_opens_the_calculator_and_enter_copies() {
+    use std::os::unix::fs::PermissionsExt;
+    let sway = Sway::start("launcher-calc", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let copied = sway.runtime.join("copied");
+    let stub = sway.runtime.join("fake-copy");
+    std::fs::write(&stub, format!("#!/bin/sh\ncat > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", copied.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = format!("copy = [\"{}\"]\n", stub.display());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("launcher scan"), 0, "the calculator scans nothing: {:?}", d.log());
+    // One wtype process: its virtual keyboard is the seat's only one (see `wtype_spawn`).
+    assert!(wtype(&sway, &["-s", "300", "6*7", "-k", "Return"]).success());
+    wait_for_file(&copied, DELAY);
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), "42", "the result alone on the copy program's stdin");
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // Past TOGGLE_DEBOUNCE, a second `--calc` closes an open calculator.
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn typing_launches_the_fake_program() {
@@ -2656,6 +2688,94 @@ fn dnd_from_alpheus_launch_is_saved_shown_and_restored() {
     assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// The bell bar on a private bus, started after `text` was written to the do-not-disturb file.
+fn bell_daemon_with_dnd_file(name: &str, text: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    write_dnd_file(&sway, text);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, sway, hypr, d)
+}
+
+/// Small features 1, decisions 6, 8, 11: `--dnd on --for 30m` writes `until <unix>`, survives a
+/// restart, and a file whose end is about to pass turns do-not-disturb off by the timer, removing
+/// the file.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_timed_dnd_is_saved_restored_and_ends() {
+    let (bus, sway, _hypr, mut d, ()) = bell_daemon("bell-dnd-timed", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    let before = unix_now();
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb on (ends in 30 min)", DELAY), "{:?}", d.log());
+    let text = std::fs::read_to_string(&file).unwrap();
+    let end: u64 = text.strip_prefix("until ").and_then(|t| t.strip_suffix('\n')).and_then(|t| t.parse().ok()).expect(&text);
+    assert!(end.abs_diff(before + 1800) <= 5, "{text:?} against {}", before + 1800);
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let options = DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() };
+    let mut d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "kept as it was");
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    // An end two seconds away: on at start, then ended by the timer, the file removed.
+    write_dnd_file(&sway, &format!("until {}\n", unix_now() + 2));
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb off (timer ended)", Duration::from_secs(4)), "{:?}", d.log());
+    assert!(d.wait_for("bell: dnd off", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the end removes the file: {:?}", d.log());
+}
+
+/// Decision 6: at start, an end already passed and a `sharing` file read as off, and the file goes.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_past_or_sharing_dnd_file_is_cleaned_at_start() {
+    for (name, text) in [("past", format!("until {}\n", unix_now() - 10)), ("sharing", "sharing\n".to_string())] {
+        let (_bus, sway, _hypr, d) = bell_daemon_with_dnd_file(&format!("bell-dnd-clean-{name}"), &text);
+        assert!(d.wait_for("bell: dnd off", DELAY), "{name}: {:?}", d.log());
+        let file = sway.runtime.join("state/alpheus/dnd");
+        let end = Instant::now() + DELAY;
+        while file.exists() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!file.exists(), "{name}: the stale file is removed: {:?}", d.log());
+        assert_eq!(d.count("bell: dnd on"), 0, "{name}: {:?}", d.log());
+    }
+}
+
+/// Decision 7: `--dnd off` and `toggle` end a timed do-not-disturb.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_timed_dnd_is_cancelled_by_off_and_toggle() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-dnd-cancel", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(file.exists());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd on", 2, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd off", 3, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "toggled off: no file");
+}
+
 /// Spec, Success criteria: with mako running nothing changes and the bell is dim; once mako stops,
 /// alpheus takes the name at once.
 #[test]
@@ -2732,12 +2852,17 @@ fn wait_for_the_server(bus: &PrivateBus) {
 /// Do-not-disturb on before the daemon starts: the empty file `$XDG_STATE_HOME/alpheus/dnd` (the
 /// harness points `XDG_STATE_HOME` at `<runtime>/state`).
 fn dnd_on_before_start(sway: &Sway) {
+    write_dnd_file(sway, "");
+}
+
+/// The same with `text` in the file (`until <unix>\n`, `sharing\n`).
+fn write_dnd_file(sway: &Sway, text: &str) {
     let dir = sway.runtime.join("state/alpheus");
     std::fs::create_dir_all(&dir).unwrap();
     for d in [sway.runtime.join("state"), dir.clone()] {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    std::fs::write(dir.join("dnd"), "").unwrap();
+    std::fs::write(dir.join("dnd"), text).unwrap();
 }
 
 /// The bell bar on catppuccin dark, serving notifications, a client connected. `on_headless`: the
@@ -4007,8 +4132,8 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
 }
 
-/// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb that really toggles.
-const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+/// Twice the daemon's TOGGLE_DEBOUNCE (250 ms, crate-private): a verb that really toggles.
+const PAST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Hyprland re-fires a press bind, so two verbs back to back are one key press:
 /// the second is debounced and the panel stays open; a third, past the window, closes it.
@@ -4926,7 +5051,19 @@ fn privacy_daemon(name: &str, modules: &str) -> (Sway, FakeHyprland, Daemon) {
 /// `privacy_daemon` with `extra` appended to bar.toml (a `[privacy]` section pointing at fake
 /// roots) and `quiet` the hues that must be absent from the bar once it is up.
 fn privacy_daemon_with(name: &str, modules: &str, extra: &str, quiet: &[[u8; 3]]) -> (Sway, FakeHyprland, Daemon) {
+    privacy_daemon_before(name, modules, extra, quiet, |_| ())
+}
+
+/// `privacy_daemon_with`, `before` running once sway is up and before the daemon starts.
+fn privacy_daemon_before(
+    name: &str,
+    modules: &str,
+    extra: &str,
+    quiet: &[[u8; 3]],
+    before: impl FnOnce(&Sway),
+) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, 1);
+    before(&sway);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
@@ -5135,6 +5272,112 @@ fn privacy_hyprland_screencast_lights_the_screen() {
     let gone = glyph_gone_after(&sway, privacy_red(), sent);
     assert!(gone.is_some_and(|t| t >= Duration::from_millis(1300)), "held, then delayed: {gone:?} {:?}", d.log());
     assert!(gone.is_some_and(|t| t <= Duration::from_secs(3)), "gone within 3 s: {gone:?} {:?}", d.log());
+}
+
+const SHARING_BAR: &str = "modules = [\"privacy\", \"notifications\", \"clock\"]\n";
+const SHARING_ON: &str = "[notifications]\ndnd_while_sharing = true\n";
+
+fn sharing_daemon(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
+    let (sway, hypr, d) = privacy_daemon_with(name, SHARING_BAR, extra, &[privacy_orange(), privacy_red()]);
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// Small features 1, decision 7: a screencast turns do-not-disturb on, its end turns it off.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn dnd_while_sharing_follows_a_hyprland_screencast() {
+    let (sway, hypr, d) = sharing_daemon("dnd-sharing", SHARING_ON);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for("notifications: do not disturb on (screen shared)", DELAY), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sharing\n");
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    assert!(d.wait_for("do not disturb off (screen sharing ended)", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the file is gone");
+}
+
+/// Decision 7 (controller's ruling): a timed do-not-disturb that ends while a screen is shared
+/// hands over to sharing, so it stays on, and the cast's end turns it off.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn a_timed_dnd_ending_during_a_share_hands_over_to_sharing() {
+    let (sway, hypr, d) = {
+        let name = "dnd-timed-share";
+        let (sway, hypr, d) = privacy_daemon_before(name, SHARING_BAR, SHARING_ON, &[privacy_orange(), privacy_red()], |sway| {
+            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20))
+        });
+        (sway, hypr, d)
+    };
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("until "), "timed at start: {:?}", d.log());
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("until "), "still timed while the share runs: {:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb on (screen shared)", Duration::from_secs(25)), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sharing\n");
+    assert_eq!(d.count("do not disturb off"), 0, "handed over, never off: {:?}", d.log());
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    assert!(d.wait_for("do not disturb off (screen sharing ended)", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the cast's end turned it off: {:?}", d.log());
+}
+
+/// Decision 7: the user's word wins over the capture, either way.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn the_users_choice_wins_over_sharing() {
+    let (sway, hypr, d) = sharing_daemon("dnd-user-wins", SHARING_ON);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    // Off by hand during a cast: the end leaves it off, and says nothing.
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for("do not disturb on (screen shared)", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    // Another change of what the bar shows while the cast goes on: an edge, not a level, so the
+    // cast does not turn it back on.
+    firefox_records(&sway, &d);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("(screen shared)"), 1, "an edge, never a level: {:?}", d.log());
+    assert!(!file.exists(), "off by hand, off still: {:?}", d.log());
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen sharing ended"), 0, "{:?}", d.log());
+    assert!(!file.exists(), "still off: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    assert!(glyph_gone_after(&sway, privacy_orange(), Instant::now()).is_some(), "{:?}", d.log());
+    // On by hand during a cast (the cast turned it on, then the user said on): the end keeps it.
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for_count("do not disturb on (screen shared)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen sharing ended"), 0, "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "", "still on, untimed: {:?}", d.log());
+}
+
+/// The option needs `notifications` too (`dnd_load` runs only with it): without the module, a
+/// screencast leaves do-not-disturb alone, and nothing is written.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn sharing_without_the_notifications_module_leaves_dnd_alone() {
+    let (sway, hypr, d) =
+        privacy_daemon_with("dnd-no-module", "modules = [\"privacy\", \"clock\"]\n", SHARING_ON, &[privacy_orange(), privacy_red()]);
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(d.count("screen shared"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists());
+}
+
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn without_the_option_a_screencast_leaves_dnd_alone() {
+    let (sway, hypr, d) = sharing_daemon("dnd-no-option", "");
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen shared"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists());
 }
 
 /// Privacy spec § 8: once a capture ended and its glyph went, the loop sleeps (no timer left).
@@ -5446,4 +5689,31 @@ fn every_test_compositor_has_its_own_name() {
     names.sort_unstable();
     let shared: Vec<_> = names.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
     assert!(shared.is_empty(), "compositor names used by two tests: {shared:?}");
+}
+
+/// Small features 1, task 9: a laptop at 8 % at start, discharging, alerts once, for the lowest
+/// threshold crossed (10 %), once the server holds the name (whichever of the reading and
+/// the name comes first: an alert is never lost to the start-up order).
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
+    let system = PrivateBus::start("battery-alert-system");
+    let _workstation = Workstation::serve_with_display(&system, 8.0, 2);
+    let bus = PrivateBus::start("battery-alert-session");
+    let sway = Sway::start("battery-alert", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"battery\", \"notifications\", \"clock\"]\n";
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(toml),
+            system_bus: Some(&system.address),
+            session_bus: Some(&bus.address),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("battery: alert at 10 %", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
 }

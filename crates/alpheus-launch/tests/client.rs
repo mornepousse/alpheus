@@ -3,7 +3,7 @@
 //! reply. Never the session's real socket.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, encode_reply, socket_path,
+    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, encode_reply, socket_path,
 };
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
@@ -503,6 +503,8 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
         (&["--dnd", "on"][..], Request::Dnd(DndVerb::On)),
         (&["--dnd", "off"], Request::Dnd(DndVerb::Off)),
         (&["--dnd", "toggle"], Request::Dnd(DndVerb::Toggle)),
+        (&["--dnd", "on", "--for", "30m"], Request::DndOn(DndEnd::For(1800))),
+        (&["--dnd", "on", "--for=1h30m"], Request::DndOn(DndEnd::For(5400))),
         (&["--clear-notifications"], Request::ClearNotifications),
     ];
     for (i, (args, expected)) in cases.into_iter().enumerate() {
@@ -528,6 +530,23 @@ fn quick_sends_its_word_and_exits_0() {
         assert_eq!(launch(args, &socket, b""), (EXIT_OK, String::new(), String::new()), "{args:?}");
         assert_eq!(daemon.join().unwrap(), expected);
     }
+}
+
+/// Small features spec: `--calc` sends its request and exits 0 on Done; a daemon too old for it
+/// answers the unknown request: exit 3, one request.
+#[test]
+fn calc_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("calc", Reply::Done);
+    assert_eq!(launch(&["--calc"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Calc);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("calc-old", Reply::Error("malformed request: unknown request \"calc\"".into()));
+    let (code, out, err) = launch(&["--calc"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--calc"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
 /// Spec § 1: a daemon older than `--quick` refuses the word as an unknown request: exit 3, as for

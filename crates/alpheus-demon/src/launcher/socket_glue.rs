@@ -257,11 +257,11 @@ enum Route {
 
 fn route(request: &Request) -> Route {
     match request {
-        Request::Dnd(_) | Request::ClearNotifications => Route::Notifications,
+        Request::Dnd(_) | Request::DndOn(_) | Request::ClearNotifications => Route::Notifications,
         Request::Osd(_) => Route::Osd,
         Request::Quick(_) => Route::Quick,
         Request::Outputs | Request::OutputsTry(_) | Request::OutputsKeep | Request::OutputsRevert => Route::Displays,
-        Request::Toggle | Request::Close | Request::Dmenu { .. } => Route::Launcher,
+        Request::Toggle | Request::Close | Request::Calc | Request::Dmenu { .. } => Route::Launcher,
     }
 }
 

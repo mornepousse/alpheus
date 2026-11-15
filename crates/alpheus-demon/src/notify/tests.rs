@@ -772,3 +772,131 @@ fn the_glyph_comes_from_the_table_then_the_category_then_the_first_letter() {
         assert_eq!(text_width(&g.to_string()), 1, "{g:?}");
     }
 }
+
+fn ruled(rules: &[(&str, Option<RuleAction>, Option<RuleUrgency>)]) -> Center {
+    let rules = rules.iter().map(|(app, action, urgency)| NotifyRule { app: (*app).into(), action: *action, urgency: *urgency }).collect();
+    Center::new(&NotificationsConfig { rules, ..NotificationsConfig::default() }, false)
+}
+
+const MUTE: Option<RuleAction> = Some(RuleAction::Mute);
+const DROP: Option<RuleAction> = Some(RuleAction::Drop);
+
+#[test]
+fn a_muted_app_gets_no_bubble_but_is_kept_and_unread() {
+    let mut c = ruled(&[("Chatty", MUTE, None)]);
+    c.notify(note("chatty", "hi"), Instant::now(), 0);
+    assert!(c.bubbles().is_empty());
+    assert_eq!(c.history().count(), 1);
+    assert_eq!(c.view(true).unread, 1);
+}
+
+#[test]
+fn a_dropped_app_is_answered_but_never_stored() {
+    let mut c = ruled(&[("Spam", DROP, None)]);
+    let t = Instant::now();
+    let (a, b) = (c.notify(note("Spam", "1"), t, 0), c.notify(note("Spam", "2"), t, 0));
+    assert!(a != 0 && b != 0 && a != b);
+    assert_eq!(c.notify(Incoming { replaces_id: 7, ..note("Spam", "3") }, t, 0), 7);
+    assert_eq!(c.history().count(), 0);
+    assert!(c.bubbles().is_empty());
+    assert_eq!(c.view(true).unread, 0);
+}
+
+#[test]
+fn an_urgency_rule_replaces_the_senders() {
+    let mut c = ruled(&[("Pager", None, Some(RuleUrgency::Critical))]);
+    c.set_dnd(true);
+    c.notify(note("Pager", "up"), Instant::now(), 0);
+    assert_eq!(c.history().next().unwrap().urgency, Urgency::Critical);
+    assert_eq!(c.bubbles().len(), 1, "critical shows under do-not-disturb");
+    let mut c = ruled(&[("Pager", None, Some(RuleUrgency::Low))]);
+    c.notify(critical("Pager", "up"), Instant::now(), 0);
+    assert_eq!(c.history().next().unwrap().urgency, Urgency::Low);
+}
+
+#[test]
+fn mute_wins_over_a_critical_urgency() {
+    let mut c = ruled(&[("Pager", MUTE, Some(RuleUrgency::Critical))]);
+    c.notify(note("Pager", "up"), Instant::now(), 0);
+    assert!(c.bubbles().is_empty());
+    assert_eq!(c.history().count(), 1);
+}
+
+#[test]
+fn the_first_matching_rule_wins() {
+    let mut c = ruled(&[("A", MUTE, None), ("a", DROP, None)]);
+    c.notify(note("A", "x"), Instant::now(), 0);
+    assert_eq!(c.history().count(), 1, "stored, not dropped");
+}
+
+#[test]
+fn rules_match_the_whole_name_in_any_case() {
+    let mut c = ruled(&[("Fire", MUTE, None)]);
+    c.notify(note("Firefox", "x"), Instant::now(), 0);
+    assert_eq!(c.bubbles().len(), 1, "a part of the name is no match");
+    let mut c = ruled(&[("FIREFOX", MUTE, None)]);
+    c.notify(note("firefox", "x"), Instant::now(), 0);
+    assert!(c.bubbles().is_empty());
+}
+
+#[test]
+fn rules_match_the_desktop_entry() {
+    let mut c = ruled(&[("org.example.chatty", MUTE, None)]);
+    c.notify(Incoming { desktop_entry: Some("org.example.chatty".into()), ..note("", "x") }, Instant::now(), 0);
+    assert!(c.bubbles().is_empty());
+    assert_eq!(c.history().count(), 1);
+}
+
+#[test]
+fn a_muted_duplicate_still_merges() {
+    let mut c = ruled(&[("Chatty", MUTE, None)]);
+    let t = Instant::now();
+    c.notify(note("Chatty", "same"), t, 0);
+    c.notify(note("Chatty", "same"), t + Duration::from_millis(200), 0);
+    assert_eq!(c.history().count(), 1);
+    assert!(c.bubbles().is_empty());
+}
+
+#[test]
+fn a_dropped_flood_spends_no_token() {
+    let mut c = ruled(&[("Spam", DROP, None)]);
+    let t = Instant::now();
+    for i in 0..20 {
+        c.notify(note("Spam", &format!("s{i}")), t, 0);
+    }
+    for i in 0..10 {
+        c.notify(note("Other", &format!("o{i}")), t, 0);
+    }
+    assert_eq!(c.history().count(), 10);
+    assert_eq!(c.bubbles().len(), 4, "visible");
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), 10, "all ten got a bubble");
+    assert!(c.buckets.iter().all(|b| b.identity != "Spam"), "no bucket for the dropped app");
+    assert!(c.buckets.iter().any(|b| b.identity == "Other"));
+}
+
+#[test]
+fn a_muted_critical_demotes_nobody() {
+    let mut c = ruled(&[("Pager", MUTE, Some(RuleUrgency::Critical))]);
+    let t = Instant::now();
+    for i in 0..MAX_LIVE {
+        c.notify(note(&format!("App{i}"), "x"), t, 0);
+    }
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), MAX_LIVE);
+    c.take_effects();
+    c.notify(note("Pager", "up"), t, 0);
+    assert!(c.take_effects().is_empty());
+    assert_eq!(c.slots.iter().filter(|s| s.entry.live).count(), MAX_LIVE);
+}
+
+#[test]
+fn a_mute_replacing_a_live_bubble_closes_it() {
+    let mut c = ruled(&[("Chatty", MUTE, None)]);
+    let t = Instant::now();
+    // A live bubble from a name the rule does not match, then replaced under a name it does.
+    let live = c.notify(note("Chat", "a"), t, 0);
+    assert_eq!(c.bubbles().len(), 1);
+    c.take_effects();
+    assert_eq!(c.notify(Incoming { replaces_id: live, ..note("Chatty", "b") }, t, 0), live);
+    assert_eq!(c.take_effects(), vec![Effect::Closed(live, CloseReason::Expired)]);
+    assert!(c.bubbles().is_empty());
+}

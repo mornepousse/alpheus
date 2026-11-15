@@ -8,7 +8,9 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
-/// Do-not-disturb's file under the state directory (notifications spec § 5): an empty file means on.
+/// Do-not-disturb's file under the state directory (notifications spec § 5; small features 1,
+/// decision 6): any file means on to other readers (nixos-config's `shell-ctl dnd-status`); its
+/// text says whether it ends (`until <unix>`) or came from a screen share (`sharing`).
 pub const DND_FILE: &str = "dnd";
 
 fn euid() -> u32 {
@@ -75,20 +77,44 @@ pub fn remove_private(dir: &Path, name: &str) -> io::Result<()> {
     }
 }
 
-/// Do-not-disturb as saved: on only for a regular file of ours at `state_dir/dnd` (followed by
-/// nothing), in a directory that passes `dir_is_ours`, as for writing. Absent, a symlink, a
-/// directory, someone else's: off; a directory not ours is logged (read once, at startup).
-pub fn dnd_on(state_dir: &Path) -> bool {
+/// Do-not-disturb as saved: its text (at most 64 bytes, lossy UTF-8) for a regular file of ours at
+/// `state_dir/dnd` (followed by nothing), in a directory that passes `dir_is_ours`, as for writing.
+/// Absent, a symlink, a directory, someone else's: None (off); a directory not ours is logged (read
+/// once, at startup). A file that cannot be read after those checks is `Some("")`: it exists, so on.
+pub fn read_dnd(state_dir: &Path) -> Option<String> {
+    use std::io::Read;
     if let Err(e) = dir_is_ours(state_dir) {
         crate::log::write(&format!("notifications: do-not-disturb read as off: {e}"));
-        return false;
+        return None;
     }
-    std::fs::symlink_metadata(state_dir.join(DND_FILE)).is_ok_and(|m| m.file_type().is_file() && m.uid() == euid())
+    let path = state_dir.join(DND_FILE);
+    if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file() && m.uid() == euid()) {
+        return None;
+    }
+    let mut text = Vec::new();
+    let read = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .and_then(|f| f.take(DND_READ_CAP).read_to_end(&mut text));
+    Some(if read.is_ok() { String::from_utf8_lossy(&text).into_owned() } else { String::new() })
 }
 
-/// Saves do-not-disturb: on writes the empty file, off removes it.
-pub fn save_dnd(state_dir: &Path, on: bool) -> io::Result<()> {
-    if on { write_private(state_dir, DND_FILE, b"") } else { remove_private(state_dir, DND_FILE) }
+/// Bytes of the file read: the longest form is `until <20 digits>\n`.
+const DND_READ_CAP: u64 = 64;
+
+/// Whether do-not-disturb is saved on (any file is "on").
+#[cfg(test)]
+pub fn dnd_on(state_dir: &Path) -> bool {
+    read_dnd(state_dir).is_some()
+}
+
+/// Saves do-not-disturb: the text written (empty means on, untimed), None removes the file.
+pub fn save_dnd(state_dir: &Path, text: Option<&str>) -> io::Result<()> {
+    match text {
+        Some(t) => write_private(state_dir, DND_FILE, t.as_bytes()),
+        None => remove_private(state_dir, DND_FILE),
+    }
 }
 
 #[cfg(test)]
@@ -210,16 +236,50 @@ mod tests {
         let root = scratch("dnd");
         let state = root.join("alpheus");
         assert!(!dnd_on(&state), "no directory: off");
-        save_dnd(&state, true).unwrap();
+        save_dnd(&state, Some("")).unwrap();
         assert!(dnd_on(&state));
         assert_eq!(std::fs::read(state.join(DND_FILE)).unwrap(), b"", "an empty file");
         assert_eq!((mode(&state), mode(&state.join(DND_FILE))), (0o700, 0o600));
-        save_dnd(&state, true).unwrap();
+        save_dnd(&state, Some("")).unwrap();
         assert!(dnd_on(&state), "on twice: still on");
-        save_dnd(&state, false).unwrap();
+        save_dnd(&state, None).unwrap();
         assert!(!dnd_on(&state) && !state.join(DND_FILE).exists(), "off: no file");
-        save_dnd(&state, false).unwrap();
+        save_dnd(&state, None).unwrap();
         assert_eq!(names(&state), Vec::<String>::new(), "off twice: nothing left");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn read_dnd_returns_the_text_capped() {
+        let root = scratch("dnd-read");
+        let state = root.join("alpheus");
+        assert_eq!(read_dnd(&state), None, "no directory");
+        write_private(&state, DND_FILE, b"until 123\n").unwrap();
+        assert_eq!(read_dnd(&state).as_deref(), Some("until 123\n"));
+        write_private(&state, DND_FILE, &[b'x'; 1000]).unwrap();
+        assert_eq!(read_dnd(&state), Some("x".repeat(64)), "the first 64 bytes");
+        write_private(&state, DND_FILE, b"").unwrap();
+        assert_eq!(read_dnd(&state).as_deref(), Some(""), "an empty file is on");
+        write_private(&state, DND_FILE, &[0xff, 0xfe]).unwrap();
+        assert!(read_dnd(&state).is_some(), "lossy UTF-8, never an error");
+        std::fs::remove_file(state.join(DND_FILE)).unwrap();
+        let victim = root.join("victim");
+        std::fs::write(&victim, "until 5").unwrap();
+        std::os::unix::fs::symlink(&victim, state.join(DND_FILE)).unwrap();
+        assert_eq!(read_dnd(&state), None, "a symlink");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn save_dnd_writes_or_removes() {
+        let root = scratch("dnd-save");
+        let state = root.join("alpheus");
+        save_dnd(&state, Some("until 5\n")).unwrap();
+        assert_eq!(std::fs::read_to_string(state.join(DND_FILE)).unwrap(), "until 5\n");
+        assert_eq!(mode(&state.join(DND_FILE)), 0o600);
+        save_dnd(&state, None).unwrap();
+        assert!(!state.join(DND_FILE).exists());
+        save_dnd(&state, None).unwrap();
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -234,15 +294,15 @@ mod tests {
         std::fs::write(&victim, "keep").unwrap();
         std::os::unix::fs::symlink(&victim, state.join(DND_FILE)).unwrap();
         assert!(!dnd_on(&state), "a symlink, even to a regular file: off");
-        save_dnd(&state, true).unwrap();
+        save_dnd(&state, Some("")).unwrap();
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep", "the link replaced, never followed");
         assert!(!std::fs::symlink_metadata(state.join(DND_FILE)).unwrap().file_type().is_symlink());
         assert!(dnd_on(&state));
         std::fs::remove_file(state.join(DND_FILE)).unwrap();
         std::fs::create_dir(state.join(DND_FILE)).unwrap();
         assert!(!dnd_on(&state), "a directory: off");
-        assert!(save_dnd(&state, true).is_err(), "never replaces a directory");
-        assert!(save_dnd(&state, false).is_err(), "nor removes one");
+        assert!(save_dnd(&state, Some("")).is_err(), "never replaces a directory");
+        assert!(save_dnd(&state, None).is_err(), "nor removes one");
         assert!(state.join(DND_FILE).is_dir() && !dnd_on(&state));
         assert_eq!(names(&state), [DND_FILE], "no temporary file left");
         let _ = std::fs::remove_dir_all(&root);
@@ -254,7 +314,7 @@ mod tests {
     fn a_dnd_in_a_directory_not_ours_reads_as_off() {
         let root = scratch("dnd-dir");
         let state = root.join("alpheus");
-        save_dnd(&state, true).unwrap();
+        save_dnd(&state, Some("")).unwrap();
         assert!(dnd_on(&state));
         std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(!dnd_on(&state), "open to others: off");

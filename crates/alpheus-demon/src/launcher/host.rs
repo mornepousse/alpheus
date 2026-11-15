@@ -72,6 +72,8 @@ pub fn guarded<R>(what: &str, f: impl FnOnce() -> R) -> Option<R> {
 pub enum Action {
     Nothing,
     OpenApps,
+    /// `--calc`: the calculator, with no scan.
+    OpenCalc,
     Close(CloseReason),
     /// Replaces an open app launcher (closed with CloseReason::Replaced) or opens fresh;
     /// the connection is kept (`Conn::into_pending`) for the answer.
@@ -82,14 +84,19 @@ pub enum Action {
     },
 }
 
-/// open: None (closed), Some(false) (apps), Some(true) (script). `since_open` is the time elapsed
+/// open: None (closed), Some(false) (apps or the calculator), Some(true) (script). `since_open` is the time elapsed
 /// since the launcher opened (ignored when `open` is None). The Reply, when Some, is sent at once
-/// on this connection: Toggle/Close → Done (Toggle closes an open script launcher: its own client gets
+/// on this connection: Toggle/Close/Calc → Done (Toggle and Calc close an open script launcher: its own client gets
 /// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
 /// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
 pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Action, Option<Reply>) {
     match (request, open) {
         (Request::Toggle, None) => (Action::OpenApps, Some(Reply::Done)),
+        // Small features, decision 1: a second `--calc` closes the calculator, as a Toggle does,
+        // with the same debounce against a re-fired press bind.
+        (Request::Calc, None) => (Action::OpenCalc, Some(Reply::Done)),
+        (Request::Calc, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
+        (Request::Calc, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
@@ -102,6 +109,7 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         // before they could reach here. Answered all the same, never a panic.
         (
             Request::Dnd(_)
+            | Request::DndOn(_)
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)
@@ -118,7 +126,8 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
 pub fn open_after(open: Option<bool>, action: &Action) -> Option<bool> {
     match action {
         Action::Nothing => open,
-        Action::OpenApps => Some(false),
+        // The calculator is not a script: it stands for the apps' state (Dmenu replaces it).
+        Action::OpenApps | Action::OpenCalc => Some(false),
         Action::Close(_) => None,
         Action::OpenScript { .. } => Some(true),
     }
@@ -150,8 +159,8 @@ pub fn catalog_is_current(open: Option<(u64, bool)>, generation: u64) -> bool {
 /// next open's (it delivered its apps, then stalled before claiming the run) logs it too, though
 /// the run in flight is then the next open's — the one the open launcher adopts anyway. The log
 /// can name the wrong open, never the entries shown.
-pub fn entries_are_current(open: Option<(u64, bool)>, script: bool, generation: u64) -> bool {
-    !script && catalog_is_current(open, generation)
+pub fn entries_are_current(open: Option<(u64, bool)>, takes_entries: bool, generation: u64) -> bool {
+    takes_entries && catalog_is_current(open, generation)
 }
 
 /// Whether a scan refusal (`spawn_scan`'s `Err`) is shown as an error in the
@@ -174,10 +183,16 @@ pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> Launc
     config
 }
 
+/// Whether a scan's deliveries (catalog, entries) are for this model: an app launcher only, never
+/// a script menu or the calculator.
+pub(crate) fn takes_scan_deliveries(model: &Launcher) -> bool {
+    !model.is_bare()
+}
+
 /// Only an app launcher is fed the compositor's windows: a script menu's
 /// model has nothing to rank them against (`Launcher::is_script`).
 pub(crate) fn feeds_windows(open: Option<&Launcher>) -> bool {
-    open.is_some_and(|m| !m.is_script())
+    open.is_some_and(|m| !m.is_bare())
 }
 
 /// Whether `Launcher::set_windows` is worth calling: it rebuilds the
@@ -280,6 +295,7 @@ impl App {
                 conn.reply(&reply.expect("decide: only OpenScript answers None, matched above"));
                 match action {
                     Action::OpenApps => self.launcher_open_apps(qh, requested_at),
+                    Action::OpenCalc => self.launcher_open_calc(qh, requested_at),
                     Action::Close(reason) => self.launcher_close(reason),
                     Action::Nothing | Action::OpenScript { .. } => {}
                 }
@@ -303,6 +319,15 @@ impl App {
                 app.launcher_open_apps(&qh, Instant::now());
             }
         });
+    }
+
+    /// `--calc`: the calculator alone. No scan, no history; the `$PATH` is read for the copy
+    /// command's lookup only.
+    fn launcher_open_calc(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+        let config = read_config(&paths::config_dir(), &mut |m| log(m));
+        let mut model = Launcher::for_calc(config);
+        model.path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
+        self.launcher_open(qh, model, None, requested_at);
     }
 
     fn launcher_open_apps(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
@@ -384,7 +409,8 @@ impl App {
         self.scan_started = None;
         self.launcher_guarded("catalog", move |app| {
             let open = app.launcher.as_ref().map(|o| (o.generation, o.model.catalog.is_some()));
-            if !catalog_is_current(open, generation) {
+            let takes = app.launcher.as_ref().is_some_and(|o| takes_scan_deliveries(&o.model));
+            if !takes || !catalog_is_current(open, generation) {
                 // Closed, or reopened and already fed its own: a stale scan
                 // — give its pages back, nothing to hold onto it for.
                 drop(catalog);
@@ -404,8 +430,8 @@ impl App {
     pub fn launcher_entries(&mut self, generation: u64, entries: Entries) {
         self.launcher_guarded("entries", move |app| {
             let open = app.launcher.as_ref().map(|o| (o.generation, o.model.entries.is_some()));
-            let script = app.launcher.as_ref().is_some_and(|o| o.model.is_script());
-            if !entries_are_current(open, script, generation) {
+            let takes = app.launcher.as_ref().is_some_and(|o| takes_scan_deliveries(&o.model));
+            if !entries_are_current(open, takes, generation) {
                 drop(entries);
                 crate::memory::release_memory();
                 return;
@@ -511,6 +537,9 @@ mod tests {
             (Request::Dnd(DndVerb::Toggle), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::ClearNotifications, Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::Osd(OsdVerb::Brightness), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (Request::Calc, None, Action::OpenCalc, Some(Reply::Done)),
+            (Request::Calc, Some(false), Action::Close(R::Toggle), Some(Reply::Done)),
+            (Request::Calc, Some(true), Action::Close(R::Toggle), Some(Reply::Done)),
             (Request::Quick(QuickVerb::Sound), Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::Outputs, None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
             (Request::OutputsTry(String::new()), Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
@@ -521,6 +550,30 @@ mod tests {
             let label = format!("{request:?} while {open:?}");
             assert_eq!(decide(request, open, PAST_DEBOUNCE), (action, reply), "{label}");
         }
+    }
+
+    /// Small features, decision 1: `--calc` opens the calculator; a second one closes it, unless it
+    /// is the press-bind refire inside the debounce window (ignored, still answered Done). A plain
+    /// Toggle closes an open calculator, which the app launcher's open state stands for.
+    #[test]
+    fn a_second_calc_closes_the_calculator_unless_debounced() {
+        let (action, reply) = decide(Request::Calc, None, Duration::ZERO);
+        assert_eq!((action.clone(), reply), (Action::OpenCalc, Some(Reply::Done)));
+        assert_eq!(open_after(None, &action), Some(false), "no script: the apps' state");
+        let open = open_after(None, &action);
+        assert_eq!(decide(Request::Calc, open, Duration::from_millis(100)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Calc, open, PAST_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        assert_eq!(decide(Request::Toggle, open, PAST_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        assert_eq!(decide(Request::Toggle, open, Duration::from_millis(100)), (Action::Nothing, Some(Reply::Done)));
+    }
+
+    /// A scan's catalog or a source's entries (the previous open's, still in flight) never go to a
+    /// calculator or a script menu: neither has a list to feed.
+    #[test]
+    fn a_calculator_takes_no_scan_delivery() {
+        assert!(takes_scan_deliveries(&apps_model()));
+        assert!(!takes_scan_deliveries(&script_model()));
+        assert!(!takes_scan_deliveries(&Launcher::for_calc(LauncherConfig::default())));
     }
 
     /// A Toggle arriving less than `TOGGLE_DEBOUNCE` after the open is the
@@ -601,11 +654,11 @@ mod tests {
 
     #[test]
     fn entries_follow_the_catalog_rule_on_an_app_launcher_only() {
-        assert!(entries_are_current(Some((3, false)), false, 3), "its own open");
-        assert!(entries_are_current(Some((3, false)), false, 2), "no entries yet: adopts the run in flight");
-        assert!(!entries_are_current(Some((3, true)), false, 2), "already fed: a previous open's run is stale");
+        assert!(entries_are_current(Some((3, false)), true, 3), "its own open");
+        assert!(entries_are_current(Some((3, false)), true, 2), "no entries yet: adopts the run in flight");
+        assert!(!entries_are_current(Some((3, true)), true, 2), "already fed: a previous open's run is stale");
         assert!(!entries_are_current(None, false, 3), "closed");
-        assert!(!entries_are_current(Some((3, false)), true, 3), "a script menu has no use for entries");
+        assert!(!entries_are_current(Some((3, false)), false, 3), "a script menu has no use for entries");
     }
 
     #[test]

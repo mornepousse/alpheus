@@ -199,6 +199,17 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
+/// Small features 1, notification rules: the rules never name an app or a text in a log, and
+/// notify.rs, the pure model, logs nothing.
+#[test]
+fn the_notification_rules_log_nothing() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify.rs")).unwrap();
+    let prod = production_code(&text);
+    for log in ["log(", "log::write", "crate::log"] {
+        assert!(!prod.contains(log), "notify.rs logs nothing ({log})");
+    }
+}
+
 /// Every `.rs` file under `src/`, `tests.rs` included: for the scans of raw
 /// text, which must also see test code (no real call, no forbidden word).
 fn all_source_files() -> Vec<(PathBuf, String)> {
@@ -751,13 +762,15 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
             Request::Close => "close",
+            Request::Calc => "calc",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
+            Request::DndOn(_) => "dnd-on",
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
@@ -770,8 +783,10 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
     let all = [
         Request::Toggle,
         Request::Close,
+        Request::Calc,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
+        Request::DndOn(DndEnd::For(60)),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
@@ -785,8 +800,10 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         [
             "toggle",
             "close",
+            "calc",
             "dmenu",
             "dnd",
+            "dnd-on",
             "clear-notifications",
             "osd",
             "quick",
@@ -1000,6 +1017,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
         ("outputs_app.rs", "Timer::", 1),
+        // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
+        // do-not-disturb is on.
+        ("notify_app.rs", "Timer::", 1),
         // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
         // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
         ("outputs_app.rs", "Generic::new", 1),
@@ -1352,7 +1372,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 43] = [
+const NO_THREAD_NOR_COMMAND: [&str; 47] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1396,6 +1416,10 @@ const NO_THREAD_NOR_COMMAND: [&str; 43] = [
     "bt_app.rs",
     "outputs/",
     "outputs_app.rs",
+    "launcher/calc.rs",
+    "launcher/calc/units.rs",
+    "dnd.rs",
+    "battery_alert.rs",
 ];
 
 #[test]
@@ -1668,6 +1692,84 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert_eq!(argv, ["tools-menu", "--run", line], "{spawner:?}: the line is one argv element, as is");
         assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell: {argv:?}");
     }
+    // The calculator (small features 1): Enter and Ctrl+Enter on its row, in its own mode and in All,
+    // reach exactly one call, the configured `copy` command, the text on its input and never in its
+    // argv, never in a scope, never through a shell; and Copy comes from the calculator row alone.
+    let copy_bin = bin.join("copy-stub");
+    std::fs::create_dir_all(&copy_bin).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(copy_bin.join("wl-copy"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(copy_bin.join("wl-copy"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let copy_dirs = [copy_bin];
+    let config = LauncherConfig::default();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        let fresh = |in_calc_mode: bool| {
+            if in_calc_mode {
+                Launcher::for_calc(config.clone())
+            } else {
+                let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                l.set_entries(entries.clone());
+                l
+            }
+        };
+        for in_calc_mode in [true, false] {
+            for (key, input) in [(Key::Enter, "42"), (Key::CtrlEnter, "6*7 = 42")] {
+                let mut l = fresh(in_calc_mode);
+                for c in "6*7".chars() {
+                    l.key(Key::Char(c));
+                }
+                assert_eq!(l.selected_hit().map(|h| h.source), Some(alpheus_demon::launcher::matching::Source::Calc));
+                let Outcome::Activate(a) = l.key(key) else { panic!("{key:?} on the calculator row activates nothing") };
+                let fake = FakeExecutor::new();
+                fake.ok("wl-copy", "");
+                let ctx = RunContext { exec: &fake, spawner, history_path: None, path_dirs: &copy_dirs };
+                assert_eq!(perform(&mut l, a, &ctx), Ok(alpheus_demon::launcher::run::Done::Close));
+                assert_eq!(fake.calls(), ["wl-copy"], "{spawner:?}: one call, the copy program alone: no scope, no shell, no text in argv");
+                assert_eq!(fake.inputs(), [("wl-copy".to_string(), input.as_bytes().to_vec())], "{spawner:?} {key:?}");
+                let spy = ArgvSpy::default();
+                let mut l = fresh(in_calc_mode);
+                for c in "6*7".chars() {
+                    l.key(Key::Char(c));
+                }
+                let Outcome::Activate(a) = l.key(key) else { unreachable!() };
+                let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &copy_dirs });
+                let calls = spy.0.lock().unwrap().clone();
+                assert_eq!(calls, std::slice::from_ref(&config.copy), "the argv is `copy` unchanged: {calls:?}");
+            }
+        }
+    }
+    // Copy is reached only from a Calc hit: every other result of every mode, clicked either way,
+    // never gives one.
+    // A math query is part of the sweep: the positive case, the calculator's own row copies.
+    let mut calc_copies = 0;
+    for mode in Mode::CYCLE {
+        let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+        l.set_catalog(catalog.clone());
+        l.set_entries(entries.clone());
+        l.click_mode(mode);
+        for query in ["", "fire", "zone", "htop", "ls -la", "6*7"] {
+            for c in query.chars() {
+                l.key(Key::Char(c));
+            }
+            for i in 0..l.results.len() {
+                for secondary in [false, true] {
+                    let is_calc = l.results[i].source == alpheus_demon::launcher::matching::Source::Calc;
+                    let o = l.click(i, secondary);
+                    let copies = matches!(&o, Outcome::Activate(a) if format!("{a:?}").starts_with("Copy"));
+                    assert!(!copies || is_calc, "{mode:?} {query:?}: Copy from a result that is not the calculator");
+                    if is_calc {
+                        assert!(copies, "{mode:?} {query:?}: the calculator's row, clicked, copies");
+                        calc_copies += 1;
+                    }
+                }
+            }
+            l.key(Key::CtrlU);
+        }
+    }
+    assert!(calc_copies > 0, "the sweep never met a calculator row: the positive case is vacuous");
 }
 
 /// Records each call's argv as given (program first), element by element; every call fails.
@@ -1752,6 +1854,58 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     }
 }
 
+/// Timed do-not-disturb (small features 1, decisions 7 and 8): the timer's callback calls `fired()`
+/// before anything arms the timer again, and the clock's minute tick re-checks the wall-clock end
+/// (a suspended laptop's monotonic timer is late).
+#[test]
+fn the_dnd_tick_fires_before_checking() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let start = text.find("fn dnd_tick(").expect("dnd_tick");
+    let body = &text[start..];
+    let body = &body[..body.find("\n    }\n").expect("the end of dnd_tick")];
+    let fired = body.find(".fired()").expect("dnd_tick calls fired()");
+    let check = body.find("dnd_check_clock").expect("dnd_tick checks the clock");
+    assert!(fired < check, "fired() must come before dnd_check_clock in dnd_tick");
+}
+
+#[test]
+fn the_clock_rechecks_a_timed_dnd() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
+    let start = text.find("Msg::Clock(h)").expect("the clock closure");
+    let end = start + text[start..].find("TimeoutAction::ToDuration").expect("the clock closure's end");
+    assert!(text[start..end].contains("dnd_check_clock()"), "the clock tick must call dnd_check_clock()");
+}
+
+/// One path for every do-not-disturb change: `self.dnd =` only in `dnd_apply` and `dnd_load`,
+/// `state.dnd =` nowhere (startup goes through `dnd_load`).
+#[test]
+fn every_dnd_change_goes_through_dnd_apply() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
+        // notify.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
+        if name == "notify_app.rs" || name == "notify.rs" {
+            continue;
+        }
+        assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
+    }
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let prod = production_code(&text);
+    let mut owner = String::new();
+    let mut allowed = true;
+    for line in prod.lines() {
+        if let Some(i) = line.find("fn ") {
+            owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
+        }
+        if line.contains("self.dnd =") {
+            allowed &= owner == "dnd_apply" || owner == "dnd_load";
+        }
+    }
+    assert!(prod.contains("self.dnd ="), "dnd_apply sets it");
+    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify_app.rs");
+}
+
 /// No panic in the notification server's production code: its model,
 /// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
 /// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
@@ -1765,6 +1919,7 @@ fn the_notification_server_has_no_panicking_path() {
         "notify.rs",
         "session_bus/notifications.rs",
         "notify_app.rs",
+        "dnd.rs",
         "bubbles.rs",
         "bubbles_surface.rs",
         "panel.rs",
@@ -2340,7 +2495,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     );
     let follow = function_body(&quick_app, "fn quick_follow(");
     assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
-    let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
+    let dnd = function_body(&notify_app, "pub(crate) fn dnd_apply(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }
 
@@ -2426,6 +2581,20 @@ fn the_power_menu_has_no_panicking_path() {
     }
 }
 
+/// Small features 1: the calculator's evaluator runs on each keystroke of the launcher's
+/// query and must never panic, whatever is typed. Production code only.
+#[test]
+fn the_calculator_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["launcher/calc.rs", "launcher/calc/units.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
 /// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus
 /// thread and the bar's loop; neither may panic (constraints: no panicking path).
 #[test]
@@ -2503,6 +2672,18 @@ fn the_privacy_module_has_no_panicking_path() {
             assert!(!text.contains(p), "{p} in privacy code #{i}");
         }
     }
+}
+
+/// Small features 1, decision 7: every change of what the privacy graph shows ends in
+/// `privacy_changed`, which hands the screen's edge to do-not-disturb after the timer sync
+/// (`privacy_tick` and `privacy_feed` both reach it).
+#[test]
+fn privacy_changed_follows_sharing_for_dnd() {
+    let files = source_files();
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy_app.rs").expect("privacy_app.rs").1);
+    let changed = function_body(&app, "pub(crate) fn privacy_changed(");
+    let (sync, follow) = (changed.find("self.privacy_timer_sync()"), changed.find("self.dnd_sharing_follow()"));
+    assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
 }
 
 /// Privacy spec § 4: the off-delay's timer is the bar's, not the popup's. It follows
@@ -2626,4 +2807,32 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
         assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
     }
     assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick_bt.rs takes the module's glyphs");
+}
+
+/// Small features 1, task 9: the alerts' production code cannot panic, and `on_bar_message` feeds
+/// them before the bar keeps the message.
+#[test]
+fn on_bar_message_feeds_the_battery_alerts() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let startup = src("startup.rs");
+    let body = function_body(&startup, "pub(crate) fn on_bar_message(");
+    let (fed, kept) = (body.find("self.battery_feed(&m)"), body.find("on_message("));
+    assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "battery_feed, then on_message: {body}");
+    let feed = function_body(&src("notify_app.rs"), "pub(crate) fn battery_feed(").to_string();
+    for text in [src("battery_alert.rs"), feed] {
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!text.contains(p), "{p} in the battery alerts");
+        }
+    }
+}
+
+/// Small features 1, task 9: a server that just started serving re-offers the last battery
+/// reading (an alert held back before the name was held must not be lost).
+#[test]
+fn a_new_server_gets_the_last_battery_reading() {
+    let files = source_files();
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
+    let view = function_body(&app, "pub(crate) fn notify_view(");
+    assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }

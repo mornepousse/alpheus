@@ -35,12 +35,15 @@ fn requests() -> Vec<Request> {
         Request::Dnd(DndVerb::On),
         Request::Dnd(DndVerb::Off),
         Request::Dnd(DndVerb::Toggle),
+        Request::DndOn(DndEnd::For(1800)),
+        Request::DndOn(DndEnd::Until(1_763_229_600)),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
         Request::Quick(QuickVerb::Sound),
         Request::Quick(QuickVerb::Wifi),
         Request::Quick(QuickVerb::Bluetooth),
+        Request::Calc,
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsTry("step\tDP-1\t1920x1080@60 0 0 1000 0\nstep\tHDMI-A-1\toff\n".into()),
@@ -90,6 +93,7 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Wifi)), b"alpheus-launcher/1 quick wifi\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Bluetooth)), b"alpheus-launcher/1 quick bluetooth\n");
+    assert_eq!(encode_request(&Request::Calc), b"alpheus-launcher/1 calc\n");
     assert_eq!(
         encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
         b"alpheus-launcher/1 dmenu - 0\n"
@@ -122,6 +126,7 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 open\n",
         b"alpheus-launcher/1\n",
         b"alpheus-launcher/1 toggle now\n",
+        b"alpheus-launcher/1 calc now\n",
         b"alpheus-launcher/1  toggle\n",
         b"alpheus-launcher/1 dmenu x 3\n",
         b"alpheus-launcher/1 dmenu - -1\n",
@@ -469,7 +474,9 @@ fn an_unknown_trial_word_is_refused() {
 fn a_trial_waits_longer_than_the_other_verbs_and_dmenu_waits_for_the_person() {
     assert_eq!(Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }.reply_timeout(), None);
     assert_eq!(Request::OutputsTry(String::new()).reply_timeout(), Some(Duration::from_secs(7)));
-    for r in [Request::Toggle, Request::Outputs, Request::OutputsKeep, Request::OutputsRevert, Request::Quick(QuickVerb::Top)] {
+    for r in
+        [Request::Toggle, Request::Outputs, Request::OutputsKeep, Request::OutputsRevert, Request::Quick(QuickVerb::Top), Request::Calc]
+    {
         assert_eq!(r.reply_timeout(), Some(Duration::from_secs(2)), "{r:?}");
     }
 }
@@ -480,4 +487,23 @@ fn exchange_tells_a_missing_socket_from_other_failures() {
     let e = exchange(&path, &Request::Toggle, REPLY_TIMEOUT).unwrap_err();
     assert_eq!(e.kind(), io::ErrorKind::NotFound);
     assert!(e.to_string().contains("not running"), "{e}");
+}
+
+#[test]
+fn timed_dnd_has_its_wire_and_old_words_stay() {
+    assert_eq!(encode_request(&Request::DndOn(DndEnd::For(1800))), b"alpheus-launcher/1 dnd on for 1800\n");
+    assert_eq!(encode_request(&Request::DndOn(DndEnd::Until(1_763_229_600))), b"alpheus-launcher/1 dnd on until 1763229600\n");
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on for 1800\n"), Ok(Some(Request::DndOn(DndEnd::For(1800)))));
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on until 1763229600\n"), Ok(Some(Request::DndOn(DndEnd::Until(1_763_229_600)))));
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on\n"), Ok(Some(Request::Dnd(DndVerb::On))));
+    for h in [
+        &b"alpheus-launcher/1 dnd off for 60\n"[..],
+        b"alpheus-launcher/1 dnd on for x\n",
+        b"alpheus-launcher/1 dnd on later 5\n",
+        b"alpheus-launcher/1 dnd on for\n",
+        b"alpheus-launcher/1 dnd on for 4294967296\n", // u32::MAX + 1: the conversion refuses, never wraps
+    ] {
+        assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} -> {:?}", String::from_utf8_lossy(h), decode(h));
+    }
+    assert_eq!((DND_MIN_SECS, DND_MAX_SECS), (60, 86_400));
 }

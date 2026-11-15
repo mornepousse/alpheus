@@ -22,6 +22,8 @@ pub const PREVIEW_COLUMNS: u16 = 36;
 pub const MIN_COLUMNS: u16 = 24;
 /// Glyph for $PATH commands (md-console, as in icons.rs).
 pub const COMMAND_ICON: char = '\u{f018d}';
+/// Glyph for the calculator row (md-calculator).
+pub const CALC_ICON: char = '\u{f00ec}';
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,10 +133,20 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         }
         Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
+        Source::Calc => (Some(CALC_ICON), calc_text(l), "calculator".into()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
         }
+    }
+}
+
+/// The calculator row's text: `= 4 · 0x4 · 0b100`, or `error: division by zero`.
+fn calc_text(l: &Launcher) -> String {
+    match &l.calc {
+        Some(Ok(a)) => a.shown(),
+        Some(Err(e)) => format!("error: {e}"),
+        None => String::new(),
     }
 }
 
@@ -147,7 +159,15 @@ fn result_row(l: &Launcher, b: &BoxLayout, g: &mut Grid, index: usize) {
         return;
     }
     let (icon, name, kind) = describe(l, l.results[index].source);
-    let row = Row { icon, icon_style: Style::ACCENT, text: &name, right: &kind, style: Style::NORMAL, selected };
+    let failed = matches!(l.results[index].source, Source::Calc) && matches!(l.calc, Some(Err(_)));
+    let row = Row {
+        icon,
+        icon_style: Style::ACCENT,
+        text: &name,
+        right: &kind,
+        style: if failed { Style::ERROR } else { Style::NORMAL },
+        selected,
+    };
     list::row(g, 1, b.pane_end(), &row);
 }
 
@@ -173,6 +193,8 @@ fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>
 fn help_text(l: &Launcher) -> &'static str {
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
+        Mode::Calc if l.config.copy.is_empty() => "esc close",
+        Mode::Calc => "enter copy · ctrl+enter copy expression · esc close",
         Mode::Commands => "enter terminal · ctrl+enter bg · tab mode · esc close",
         // No `.desktop` action to run on a window: Ctrl+Enter is just Enter again here
         // (`secondary`'s catch-all), so it is left out, like Script's line above.
@@ -268,6 +290,21 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push(("enter  run".to_string(), Style::NORMAL));
             }
         }
+        Source::Calc => {
+            out.push((l.query.trim().to_string(), Style::BOLD_ACCENT));
+            match &l.calc {
+                Some(Ok(a)) => {
+                    out.push((a.shown(), Style::NORMAL));
+                    if !l.config.copy.is_empty() {
+                        out.push((String::new(), Style::NORMAL));
+                        out.push(("enter  copy".to_string(), Style::NORMAL));
+                        out.push(("ctrl+enter  copy expression".to_string(), Style::NORMAL));
+                    }
+                }
+                Some(Err(e)) => out.push((format!("error: {e}"), Style::ERROR)),
+                None => {}
+            }
+        }
         // Unreachable in practice: a `Source::Line` hit only exists in Script mode, where
         // `layout()` never reserves a preview panel (`preview` is always `!script`, see
         // `layout`'s doc comment) — this function is never even called with one. Kept empty,
@@ -283,7 +320,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
-    if !l.is_script() {
+    if !l.is_bare() {
         let mut g = blank(b);
         modes_row(l, b, &mut g);
         rows.push(g);
@@ -297,7 +334,11 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
         if index < l.results.len() {
             result_row(l, b, &mut g, index);
         } else if r == 0 && l.results.is_empty() && !l.password {
-            let text = if l.catalog.is_none() && !l.is_script() { "scanning…" } else { "no match" };
+            let text = match l.mode {
+                Mode::Calc => "type an expression",
+                _ if l.catalog.is_none() && !l.is_script() => "scanning…",
+                _ => "no match",
+            };
             g.write(2, end, text, Style::MUTED);
         }
         rows.push(g);
@@ -350,7 +391,7 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         let index = l.top + usize::from(row - b.list_top);
         return Some(if index < l.results.len() { Click::Result(index) } else { Click::Inside });
     }
-    if !l.is_script() && row == 1 {
+    if !l.is_bare() && row == 1 {
         if let Some((m, _, _)) = mode_spans().into_iter().find(|(_, s, e)| (*s..*e).contains(&column) && *e <= b.pane_end()) {
             return Some(Click::Mode(m));
         }

@@ -127,9 +127,9 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// panel is reserved for the app launcher from the first frame — blank while
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
-/// has one. Driven by `model.is_script()` alone, never by the selection.
+/// has one. Driven by `model.is_bare()` alone, never by the selection.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
-    view::layout(output_columns, output_rows, model.config.rows, model.is_script(), !model.is_script())
+    view::layout(output_columns, output_rows, model.config.rows, model.is_bare(), !model.is_bare())
 }
 
 /// The size a configure imposes, when it is not the one asked: a 0
@@ -417,7 +417,8 @@ impl App {
         let (columns, rows) = output_cells(output_size.0, output_size.1, advance, row_height, scale);
         // The single copy of the scan's $PATH lives on the model
         // (`Launcher::path_dirs`, read by both the preview and
-        // `RunContext`). For the app launcher, `launcher_open_apps`
+        // `RunContext`). For the app launcher and the calculator (which
+        // also sets `path_dirs`), `launcher_open_apps`
         // (host.rs) already set it, on `model`, from the one `ScanEnv` it
         // reads for the scan itself — read a second time here, it would
         // just be overwritten with the same value a few lines later. A script menu runs nothing through

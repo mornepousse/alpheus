@@ -409,8 +409,10 @@ pub struct App {
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
     /// The bar's own session link, its timer and its bookkeeping (link.rs).
     pub(crate) link: crate::link::LinkState,
-    /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
+    /// Do-not-disturb: loaded at startup, changed only by `dnd_apply`.
     pub(crate) dnd: bool,
+    /// Its timed model and the timer of its end (notify_app.rs).
+    pub(crate) dnd_timed: crate::notify_app::DndTimed,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -448,6 +450,9 @@ pub struct App {
     pub(crate) media_timer: DeadlineTimer,
     /// The notification bubbles' surface, expiry timer and close memory (bubbles_surface.rs).
     pub(crate) bubbles: crate::bubbles_surface::BubbleSurface,
+    /// Low-battery alerts (battery_alert.rs): only with the battery and notifications modules and
+    /// a threshold in `[battery] warn`.
+    pub(crate) battery_alerts: Option<crate::battery_alert::BatteryAlerts>,
     /// The OSD's trigger memory, surface and hide timer (osd_surface.rs).
     pub(crate) osd: crate::osd_surface::OsdSurface,
     /// The quick panel's timer, taps, acting Bluetooth connection and followed Wi-Fi attempt
@@ -554,6 +559,8 @@ impl App {
             .contains(&ModuleId::Displays)
             .then(|| crate::outputs_app::OutputsApp::bind(globals, qh, &bar.config.displays))
             .flatten();
+        let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
+            .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
         let xdg = XdgShell::bind(globals, qh).map_err(|e| log(&format!("popups unavailable: {e}"))).ok();
         Ok(App {
@@ -586,6 +593,7 @@ impl App {
             tray_frame_pending: None,
             link: crate::link::LinkState::new(),
             dnd: false,
+            dnd_timed: crate::notify_app::DndTimed::new(),
             tray_deferred_queued: false,
             tray_ready_queued: false,
             hwheel: Wheel::default(),
@@ -601,6 +609,7 @@ impl App {
             hover_timer: DeadlineTimer::new(),
             media_timer: DeadlineTimer::new(),
             bubbles: crate::bubbles_surface::BubbleSurface::new(),
+            battery_alerts,
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),

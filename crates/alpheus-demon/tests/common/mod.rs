@@ -1303,6 +1303,16 @@ pub struct Workstation;
 
 impl Workstation {
     pub fn serve(bus: &PrivateBus) -> Workstation {
+        Self::serve_recorded(bus, None)
+    }
+
+    /// As `serve`, with the display device's `Percentage` (rounded by the reader) and `State`
+    /// (UpDeviceState: 1 charging, 2 discharging) rewritten in its recorded `GetAll`.
+    pub fn serve_with_display(bus: &PrivateBus, percent: f64, state: u32) -> Workstation {
+        Self::serve_recorded(bus, Some((percent, state)))
+    }
+
+    fn serve_recorded(bus: &PrivateBus, display: Option<(f64, u32)>) -> Workstation {
         let peer = Peer::connect(bus);
         for name in ["org.freedesktop.NetworkManager", "org.freedesktop.UPower", "org.bluez"] {
             peer.own(name);
@@ -1322,7 +1332,11 @@ impl Workstation {
         for (device, file) in
             [("DisplayDevice", "display"), ("battery_BAT0", "bat0"), ("battery_hidpp_battery_1", "mouse"), ("line_power_AC", "ac")]
         {
-            replies.push(((format!("/org/freedesktop/UPower/devices/{device}"), "GetAll"), read(&format!("dbus-upower-{file}.json"))));
+            let mut json = read(&format!("dbus-upower-{file}.json"));
+            if let (Some((percent, state)), "display") = (display, file) {
+                json = rewrite_display(&json, percent, state);
+            }
+            replies.push(((format!("/org/freedesktop/UPower/devices/{device}"), "GetAll"), json));
         }
         thread::spawn(move || {
             while let Some(call) = peer.next_call() {
@@ -1342,6 +1356,18 @@ impl Workstation {
         });
         Workstation
     }
+}
+
+/// The recorded display device with its `Percentage` and `State` replaced.
+fn rewrite_display(json: &str, percent: f64, state: u32) -> String {
+    let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
+    let props = v
+        .pointer_mut("/data/0")
+        .filter(|p| p["Percentage"]["data"].is_number() && p["State"]["data"].is_number())
+        .expect("dbus-upower-display.json no longer has data[0].Percentage/State numbers: update rewrite_display");
+    props["Percentage"]["data"] = serde_json::json!(percent);
+    props["State"]["data"] = serde_json::json!(state);
+    v.to_string()
 }
 
 /// power-profiles-daemon's well-known name (quick spec § 5).

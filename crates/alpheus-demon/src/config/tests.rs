@@ -293,12 +293,33 @@ fn notifications_defaults_and_settings() {
     let d = BarConfig::default();
     assert_eq!(
         d.notifications,
-        NotificationsConfig { timeout: 5, timeout_min: 2, timeout_max: 20, max_visible: 4, width: 40, history: 50 }
+        NotificationsConfig {
+            timeout: 5,
+            timeout_min: 2,
+            timeout_max: 20,
+            max_visible: 4,
+            width: 40,
+            history: 50,
+            dnd_while_sharing: false,
+            rules: Vec::new()
+        }
     );
     assert!(d.modules.contains(&ModuleId::Notifications), "on by default");
     assert_eq!(BarConfig::from_text("height = 22").unwrap().notifications, NotificationsConfig::default(), "absent: defaults");
     let c = BarConfig::from_text("[notifications]\ntimeout = 8\ntimeout_max = 30\nmax_visible = 2\nwidth = 60\nhistory = 0\n").unwrap();
-    assert_eq!(c.notifications, NotificationsConfig { timeout: 8, timeout_min: 2, timeout_max: 30, max_visible: 2, width: 60, history: 0 });
+    assert_eq!(
+        c.notifications,
+        NotificationsConfig {
+            timeout: 8,
+            timeout_min: 2,
+            timeout_max: 30,
+            max_visible: 2,
+            width: 60,
+            history: 0,
+            dnd_while_sharing: false,
+            rules: Vec::new()
+        }
+    );
     for t in [
         "[notifications]\ntimeout_min = 1\ntimeout = 1\ntimeout_max = 1",
         "[notifications]\ntimeout_max = 600",
@@ -579,4 +600,75 @@ fn resources_graph_is_accepted_and_ignored() {
     let c = BarConfig::from_text("[resources]\ngraph = 20\n").unwrap();
     assert_eq!(c.resources.graph, 20, "still parsed");
     assert!(BarConfig::from_text("[resources]\ngraph = 61").unwrap_err().contains("resources.graph"), "still refused out of range");
+}
+
+#[test]
+fn dnd_while_sharing_defaults_off_and_reads_true() {
+    assert!(!BarConfig::default().notifications.dnd_while_sharing);
+    let c = BarConfig::from_text("[notifications]\ndnd_while_sharing = true\n").unwrap();
+    assert!(c.notifications.dnd_while_sharing);
+    assert_eq!(c.notifications.history, 50, "the rest stays default");
+}
+
+#[test]
+fn notification_rules_parse() {
+    let c = BarConfig::from_text(
+        "[[notifications.rules]]\napp = \"Chatty\"\naction = \"mute\"\n\
+         [[notifications.rules]]\napp = \"Pager\"\nurgency = \"critical\"\n\
+         [[notifications.rules]]\napp = \"Slow\"\naction = \"mute\"\nurgency = \"low\"\n",
+    )
+    .unwrap();
+    let rule = |app: &str, action, urgency| NotifyRule { app: app.into(), action, urgency };
+    assert_eq!(
+        c.notifications.rules,
+        vec![
+            rule("Chatty", Some(RuleAction::Mute), None),
+            rule("Pager", None, Some(RuleUrgency::Critical)),
+            rule("Slow", Some(RuleAction::Mute), Some(RuleUrgency::Low)),
+        ]
+    );
+    assert!(BarConfig::default().notifications.rules.is_empty());
+}
+
+#[test]
+fn notification_rules_are_validated() {
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    assert!(err("[[notifications.rules]]\napp = \"\"\naction = \"mute\"\n").contains("notifications.rules[1]: app empty"));
+    assert!(
+        err("[[notifications.rules]]\napp = \"A\"\naction = \"mute\"\n[[notifications.rules]]\napp = \"B\"\n")
+            .contains("notifications.rules[2]: needs action or urgency")
+    );
+    assert!(
+        err("[[notifications.rules]]\napp = \"A\"\naction = \"drop\"\nurgency = \"low\"\n")
+            .contains("notifications.rules[1]: drop takes no urgency")
+    );
+    assert!(BarConfig::from_text("[[notifications.rules]]\napp = \"A\"\naction = \"silence\"\n").is_err());
+    assert!(BarConfig::from_text("[[notifications.rules]]\nname = \"A\"\naction = \"mute\"\n").is_err());
+    let many = |n: usize| "[[notifications.rules]]\napp = \"A\"\naction = \"mute\"\n".repeat(n);
+    assert_eq!(BarConfig::from_text(&many(32)).unwrap().notifications.rules.len(), 32);
+    assert!(err(&many(33)).contains("notifications.rules: at most 32 (got 33)"));
+}
+
+#[test]
+fn notification_rule_apps_are_trimmed_and_bounded() {
+    let rule = |app: &str| format!("[[notifications.rules]]\napp = \"{app}\"\naction = \"mute\"\n");
+    assert_eq!(BarConfig::from_text(&rule("  Chatty ")).unwrap().notifications.rules[0].app, "Chatty");
+    assert!(BarConfig::from_text(&rule("   ")).unwrap_err().contains("rules[1]: app empty"));
+    assert!(BarConfig::from_text(&rule(&"a".repeat(64))).is_ok());
+    assert!(BarConfig::from_text(&rule(&"a".repeat(65))).unwrap_err().contains("rules[1]: app too long"));
+    assert!(BarConfig::from_text(&rule("a\\u0007b")).unwrap_err().contains("control characters"));
+}
+
+#[test]
+fn battery_warn_defaults_dedups_and_sorts() {
+    assert_eq!(BarConfig::default().battery.warn, [20, 10, 5]);
+    assert_eq!(BarConfig::from_text("").unwrap().battery.warn, [20, 10, 5]);
+    assert!(BarConfig::from_text("[battery]\nwarn = []").unwrap().battery.warn.is_empty());
+    assert_eq!(BarConfig::from_text("[battery]\nwarn = [5, 20, 10, 20]").unwrap().battery.warn, [20, 10, 5]);
+    for bad in [0, 100] {
+        assert_eq!(
+            BarConfig::from_text(&format!("[battery]\nwarn = [{bad}]")).unwrap_err(),
+            format!("battery.warn: {bad} out of range 1 to 99")
+        );
+    }
 }
