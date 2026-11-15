@@ -32,10 +32,18 @@ pub enum ResourcesAction {
     Close,
 }
 
-/// The open popup's own state: whether `Monitor…` is selected.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// The open popup's own state: whether `Monitor…` is selected, and whether it is there at all
+/// (`[actions] resources` empty: no row, no separator, nothing to select or run).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourcesPopup {
     pub selected: bool,
+    pub monitor: bool,
+}
+
+impl Default for ResourcesPopup {
+    fn default() -> Self {
+        Self::new(true)
+    }
 }
 
 /// Rows one item's block takes: its figure's row and its graph.
@@ -153,9 +161,14 @@ pub fn monitor_row(c: &ResourcesConfig) -> u16 {
 }
 
 impl ResourcesPopup {
+    /// A popup with the `Monitor…` row when `monitor`, nothing selected.
+    pub fn new(monitor: bool) -> Self {
+        Self { selected: false, monitor }
+    }
+
     /// The rows, `WIDTH` cells wide inside `list::boxed`'s ring: the header, a block per item of
-    /// `show` (kept whether or not it has a figure, so the size never changes), a separator and
-    /// `Monitor…`; the graphs set after `boxed`, in its coordinates.
+    /// `show` (kept whether or not it has a figure, so the size never changes), and, with the
+    /// row, a separator and `Monitor…`; the graphs set after `boxed`, in its coordinates.
     pub fn render(&self, r: &Resources, c: &ResourcesConfig) -> Boxed {
         let columns = WIDTH + 2;
         let mut rows = vec![Grid::empty(columns)];
@@ -179,14 +192,17 @@ impl ResourcesPopup {
             rows.extend((0..GRAPH_ROWS).map(|_| Grid::empty(columns)));
         }
         rows.push(Grid::empty(columns));
-        let separator = rows.len() - 1;
-        let mut monitor = Grid::empty(columns);
-        let row =
-            Row { icon: None, icon_style: Style::NORMAL, text: "Monitor…", right: "", style: Style::NORMAL, selected: self.selected };
-        list::row(&mut monitor, 1, columns - 1, &row);
-        rows.push(monitor);
-        rows.push(Grid::empty(columns));
-        let mut boxed = list::boxed(&rows, &[separator], None);
+        let mut separators = Vec::new();
+        if self.monitor {
+            separators.push(rows.len() - 1);
+            let mut monitor = Grid::empty(columns);
+            let row =
+                Row { icon: None, icon_style: Style::NORMAL, text: "Monitor…", right: "", style: Style::NORMAL, selected: self.selected };
+            list::row(&mut monitor, 1, columns - 1, &row);
+            rows.push(monitor);
+            rows.push(Grid::empty(columns));
+        }
+        let mut boxed = list::boxed(&rows, &separators, None);
         boxed.graphs = c
             .show
             .iter()
@@ -203,7 +219,7 @@ impl ResourcesPopup {
     }
 
     fn select(&mut self) -> ResourcesAction {
-        if std::mem::replace(&mut self.selected, true) { ResourcesAction::Nothing } else { ResourcesAction::Redraw }
+        if !self.monitor || std::mem::replace(&mut self.selected, true) { ResourcesAction::Nothing } else { ResourcesAction::Redraw }
     }
 
     /// ↓ ↑ Tab Shift+Tab Home End select `Monitor…`, Enter and Space run it once selected, Escape
@@ -220,7 +236,7 @@ impl ResourcesPopup {
     /// The pointer on content row `row` (`None`: off every cell): hovering `Monitor…` selects it, a
     /// left press on it runs it; anything else does nothing.
     pub fn pointer(&mut self, row: Option<u16>, kind: PopupPointer, c: &ResourcesConfig) -> ResourcesAction {
-        if row != Some(monitor_row(c)) {
+        if !self.monitor || row != Some(monitor_row(c)) {
             return ResourcesAction::Nothing;
         }
         match kind {

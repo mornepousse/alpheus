@@ -220,3 +220,25 @@ fn the_pointer_selects_and_runs_the_monitor_row() {
     let mut fresh = ResourcesPopup::default();
     assert_eq!(fresh.pointer(Some(m), PopupPointer::Press(Button::Left), &c), ResourcesAction::Monitor, "a press needs no hover first");
 }
+
+/// `[actions] resources` empty: no separator, no `Monitor…`, nothing to select, run or hover.
+#[test]
+fn no_monitor_row_without_a_command() {
+    let c = ResourcesConfig::default();
+    let mut p = ResourcesPopup::new(false);
+    let b = p.render(&Resources::default(), &c);
+    assert_eq!(b.rows.len(), 10, "the header, three blocks, one blank");
+    assert!(b.separators.is_empty());
+    assert!(texts(&b).iter().all(|t| !t.contains("Monitor")), "{:?}", texts(&b));
+    for k in [Key::Down, Key::Up, Key::Tab, Key::BackTab, Key::Home, Key::End, Key::Enter, Key::Char(' ')] {
+        assert_eq!(p.key(k), ResourcesAction::Nothing, "{k:?}");
+    }
+    assert!(!p.selected);
+    // The row the button would have been on, and a left press on it.
+    let m = monitor_row(&c);
+    assert_eq!(p.pointer(Some(m), PopupPointer::Motion, &c), ResourcesAction::Nothing);
+    assert_eq!(p.pointer(Some(m), PopupPointer::Press(Button::Left), &c), ResourcesAction::Nothing);
+    assert_eq!(p.key(Key::Escape), ResourcesAction::Close);
+    let with = ResourcesPopup::new(true).render(&Resources::default(), &c);
+    assert_eq!(with.rows.len(), 12);
+}

@@ -1403,7 +1403,7 @@ fn at_rest_no_wakeups_after_the_osd() {
     let bus = PrivateBus::start("osd-rest");
     let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
     assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(2100)); // the start-up grace
+    std::thread::sleep(Duration::from_millis(1300)); // the start-up grace
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
     assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
@@ -2173,9 +2173,10 @@ fn resources_click(sway: &Sway, d: &Daemon, line: &str, n: usize) {
 }
 
 /// Resources popup spec constraints: PSS at rest, the popup open, closed, and after 20 more
-/// cycles. The first open's file-backed warm-up (code and font pages) is in `closed`, so the
-/// closed and cycled bounds read the daemon's own memory (without the shm pools, which the
-/// compositor maps too and which move on their own); the pools get a looser bound.
+/// cycles. The first open's file-backed warm-up (code and font pages) is in `closed`, and the shm
+/// pools move on their own (the compositor maps them too), so the closed and cycled bounds read
+/// `Pss_Anon` (smaps_rollup: heap, stacks, caches, nothing file-backed or shared); the pools get
+/// a looser bound of their own, the whole PSS is printed.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn resources_popup_pss_idle_open_and_closed() {
@@ -2185,6 +2186,7 @@ fn resources_popup_pss_idle_open_and_closed() {
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_anon = d.pss_anon_kb();
     eprintln!("resources popup idle smaps (KB): {}", smaps_breakdown(&d));
     resources_click(&sway, &d, "resources popup shown", 1);
     std::thread::sleep(Duration::from_secs(1)); // configured and painted
@@ -2192,6 +2194,7 @@ fn resources_popup_pss_idle_open_and_closed() {
     resources_click(&sway, &d, "popup closed", 1);
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_anon = d.pss_anon_kb();
     eprintln!("resources popup closed smaps (KB): {}", smaps_breakdown(&d));
     for n in 2..=21 {
         resources_click(&sway, &d, "resources popup shown", n);
@@ -2202,18 +2205,19 @@ fn resources_popup_pss_idle_open_and_closed() {
     }
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_anon = d.pss_anon_kb();
     eprintln!("resources popup smaps after the cycles (KB): {}", smaps_breakdown(&d));
     let (idle_own, closed_own, cycled_own) = (idle - idle_shm, closed - closed_shm, cycled - cycled_shm);
     let open_cost = open.saturating_sub(idle);
     eprintln!(
         "resources popup PSS (KB): {idle} at rest, {open} open (cost {open_cost}), {closed} closed, {cycled} after 20 more cycles; \
          own memory {idle_own} at rest, {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, \
-         {closed_shm} closed, {cycled_shm} cycled"
+         {closed_shm} closed, {cycled_shm} cycled; Pss_Anon {idle_anon} at rest, {closed_anon} closed, {cycled_anon} cycled"
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB: report to Mae, never raise");
     assert!(open_cost <= 1024, "the open popup costs {open_cost} KB (its pool, two buffers, the first open's warm-up: <= 1 MB)");
-    assert!(closed_own <= idle_own + 512, "closed {closed_own} KB vs {idle_own} KB (own memory): more than the first open's warm-up");
-    assert!(cycled_own <= closed_own + 128, "cycled {cycled_own} KB vs {closed_own} KB closed: 20 cycles must keep nothing");
+    assert!(closed_anon <= idle_anon + 256, "closed {closed_anon} KB vs {idle_anon} KB at rest (Pss_Anon): the open popup kept memory");
+    assert!(cycled_anon <= closed_anon + 128, "cycled {cycled_anon} KB vs {closed_anon} KB closed (Pss_Anon): 20 cycles must keep nothing");
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool must go");
 }
 
@@ -2236,8 +2240,8 @@ fn heap_kb(d: &Daemon) -> u64 {
 
 /// Resources popup spec § 3: the ring is fixed, so a full and wrapped one keeps nothing more than
 /// one half full at 30 s (interval = 1: 60 samples after 60 s, the ring wraps after that). The bound
-/// reads the main heap, where a per-push allocation would land (4 KiB per push shows as +160 KB);
-/// the whole own memory is printed: it moves by 0.7-0.9 MB at random on this harness, base included.
+/// reads `Pss_Anon` (smaps_rollup: no file pages, no shm pools, which are what moves by 0.7-0.9 MB
+/// at random on this harness); the whole own memory and the main heap are printed.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn resources_history_full_keeps_nothing_more() {
@@ -2247,15 +2251,17 @@ fn resources_history_full_keeps_nothing_more() {
     std::thread::sleep(Duration::from_secs(30));
     let (early, early_shm) = d.pss_and_shm_kb();
     let heap_early = heap_kb(&d);
+    let anon_early = d.pss_anon_kb();
     std::thread::sleep(Duration::from_secs(40)); // 70 s in: the ring is full and has wrapped
     let (late, late_shm) = d.pss_and_shm_kb();
     let heap_late = heap_kb(&d);
+    let anon_late = d.pss_anon_kb();
     eprintln!(
-        "resources history (KB): own memory {} at 30 s, {} at 70 s; main heap {heap_early} at 30 s, {heap_late} at 70 s (ring full and wrapped)",
+        "resources history (KB): own memory {} at 30 s, {} at 70 s; main heap {heap_early} at 30 s, {heap_late} at 70 s; Pss_Anon {anon_early} at 30 s, {anon_late} at 70 s (ring full and wrapped)",
         early - early_shm,
         late - late_shm
     );
-    assert!(heap_late <= heap_early + 64, "a full ring grew the main heap by {} KB", heap_late.saturating_sub(heap_early));
+    assert!(anon_late <= anon_early + 64, "a full ring grew Pss_Anon by {} KB", anon_late.saturating_sub(anon_early));
 }
 
 /// Resources popup spec constraints: once the popup closed, no timer, no wake-up. At

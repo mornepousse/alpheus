@@ -1037,6 +1037,17 @@ impl Daemon {
         (total, pools)
     }
 
+    /// The daemon's anonymous memory in KB (`Pss_Anon` of smaps_rollup): heap, stacks, caches. It
+    /// leaves out file pages (code, fonts: the first open's warm-up) and the shm pools (`Pss_Shmem`,
+    /// which the compositor maps too and which move on their own), so a leak shows alone.
+    pub fn pss_anon_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines()
+            .find_map(|l| l.strip_prefix("Pss_Anon:"))
+            .and_then(|v| v.split_whitespace().next().and_then(|n| n.parse().ok()))
+            .expect("Pss_Anon in smaps_rollup")
+    }
+
     /// The daemon's shm pools' mapped size in KB (smaps `Size:` of its memfd mappings): unlike
     /// their PSS, which moves as the compositor maps them and only counts the pages painted, the
     /// size a pool was made or grown to, so a SlotPool that doubles shows exactly.

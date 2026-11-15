@@ -38,11 +38,6 @@ pub(crate) fn spawn_monitor(exec: &dyn Executor, argv: &[String]) -> Option<Stri
     })
 }
 
-/// Whether a resources tick repaints the popup: only while it is the open one.
-pub(crate) fn after_tick(open: bool) -> bool {
-    open
-}
-
 impl App {
     pub(crate) fn resources_shown(&self) -> bool {
         matches!(self.popup_body(), Some(PopupBody::Resources(_)))
@@ -54,7 +49,7 @@ impl App {
             self.popup_close(PopupClose::OutsideClick);
             return;
         }
-        let popup = ResourcesPopup::default();
+        let popup = ResourcesPopup::new(!self.bar.config.actions.resources.is_empty());
         let rows = popup.render(&self.bar.resources, &self.bar.config.resources);
         let shown = self.bar.config.resources.show.iter().map(|i| i.name()).collect::<Vec<_>>().join(" ");
         let (columns, height) = rows.cells();
@@ -115,7 +110,7 @@ impl App {
     /// The timer's reading: applied as before; the open popup repainted after it.
     pub(crate) fn resources_tick(&mut self, s: Sample) {
         on_message(self, Msg::Resources(s), || LocalTime::now().0);
-        if after_tick(self.resources_shown()) {
+        if self.resources_shown() {
             self.resources_refresh();
         }
     }
@@ -146,12 +141,5 @@ mod tests {
         assert!(line.starts_with("resources: monitor could not start ("), "{line}");
         assert!(!line.contains("fake-monitor"), "never the command: {line}");
         assert_eq!(spawn_monitor(&fake, &[]), None, "empty: nothing to spawn");
-    }
-
-    /// A tick repaints the popup only while it is the open one.
-    #[test]
-    fn a_tick_repaints_only_an_open_resources_popup() {
-        assert!(after_tick(true));
-        assert!(!after_tick(false));
     }
 }

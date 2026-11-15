@@ -5198,7 +5198,9 @@ fn resources_a_click_opens_the_popup_with_graphs() {
     // The painter's body: the hue at 40 % over the popup background, per channel, rounded.
     let mix = |c: u8, b: u8| ((u32::from(c) * 40 + u32::from(b) * 60 + 50) / 100) as u8;
     let (line, body) = (rgb(yellow), [mix(yellow.0, bg.0), mix(yellow.1, bg.1), mix(yellow.2, bg.2)]);
-    // Rows 5 and 6 of the box (22 px each, under the 22 px bar and the frame's ≈ 7 px).
+    // Rows 5 and 6 of the box (22 px each, under the 22 px bar and the frame's ≈ 7 px): the columns
+    // holding the graph's ink, so a graph that stopped repainting shows as no growth.
+    let columns = |s: &Ppm| (0..400).filter(|&x| (143..180).any(|y| matches!(s.at(x, y), Some(c) if c == line || c == body))).count();
     let inked = |s: &Ppm| {
         (143..180)
             .flat_map(|y| (0..400).map(move |x| (x, y)))
@@ -5207,6 +5209,11 @@ fn resources_a_click_opens_the_popup_with_graphs() {
             > 60
     };
     assert!(sway.wait_for_screen("HEADLESS-1", inked), "the memory graph's ink: {:?}", d.log());
+    let at_open = columns(&sway.screenshot("HEADLESS-1").expect("a screenshot"));
+    // Interval 1: three more readings push the newest point further left of the right edge.
+    thread::sleep(Duration::from_secs(3));
+    let later = columns(&sway.screenshot("HEADLESS-1").expect("a screenshot"));
+    assert!(later > at_open, "the graph did not grow: {at_open} inked columns at open, {later} 3 s later: {:?}", d.log());
     sway.click(POWER_AT.0, POWER_AT.1, "button1");
     assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
 }
