@@ -1,6 +1,8 @@
 //! The emoji table behind the `:` prefix (launcher 2 spec): one `&'static str` of
 //! `<emoji>\t<name>\n` lines generated once from Unicode's `emoji-test.txt` (see `table.rs`),
-//! so it costs one read-only section and no allocation. A row of the list is the byte offset
+//! so it costs one read-only section and no allocation (1,906 entries: Unicode emoji 16.0's
+//! fully-qualified lines without skin tones). The data is Unicode's, under the Unicode License v3:
+//! its notice is in the repository's NOTICE file. A row of the list is the byte offset
 //! of its line. Pure: no thread, no command, nothing can panic.
 
 mod table;

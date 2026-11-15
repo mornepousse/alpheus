@@ -2,6 +2,11 @@
 // (Unicode emoji 16.0, sha256 24f0c534e86cf142e2496953e8f0e46a3e702392911eddcd29c6cced85139697) by
 // `launcher::emoji::tests::regenerate_the_emoji_table`: fully-qualified lines without a
 // skin-tone modifier, as `<emoji>\t<name>\n`. Do not edit by hand.
+//
+// © 2024 Unicode®, Inc.
+// The data is distributed under the Unicode License v3, whose copyright and permission
+// notice is in the NOTICE file at the root of this repository
+// (https://www.unicode.org/license.txt).
 
 #[rustfmt::skip]
 pub(super) const TABLE: &str = concat!(

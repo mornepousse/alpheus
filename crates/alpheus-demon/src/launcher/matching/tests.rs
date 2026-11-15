@@ -677,3 +677,21 @@ fn rank_emoji_breaks_a_tie_by_table_order() {
         assert!(pair[0].score > pair[1].score || (pair[0].score == pair[1].score && a < b), "{pair:?}");
     }
 }
+
+#[test]
+fn rank_emoji_matches_non_ascii_names() {
+    let names = |text: &str| -> Vec<&'static str> {
+        let hits = Ranker::new().rank_emoji(text, 50);
+        hits.iter()
+            .filter_map(|h| match h.source {
+                Source::Emoji(offset) => crate::launcher::emoji::at(offset).map(|(_, name)| name),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(names("åland")[0], "flag: Åland Islands", "typed with the accent");
+    assert_eq!(names("Åland")[0], "flag: Åland Islands", "smart case: a capital must match");
+    assert_eq!(names("côte")[0], "flag: Côte d’Ivoire");
+    assert!(names("cote").contains(&"flag: Côte d’Ivoire"), "typed without the accent: folded");
+    assert!(names("aland").contains(&"flag: Åland Islands"), "folded");
+}

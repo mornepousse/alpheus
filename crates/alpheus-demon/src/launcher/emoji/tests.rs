@@ -39,6 +39,9 @@ fn regenerate_the_emoji_table() {
     let sha = std::env::var("ALPHEUS_EMOJI_SHA256").expect("ALPHEUS_EMOJI_SHA256");
     let source = std::fs::read_to_string(path).unwrap();
     let version = source.lines().find_map(|l| l.strip_prefix("# Version: ")).expect("a version line").trim();
+    // The data's own copyright line (`# © 2024 Unicode®, Inc.`): the Unicode License v3 wants it
+    // with every copy; the full notice is the repository's NOTICE file.
+    let copyright = source.lines().find_map(|l| l.strip_prefix("# ").filter(|r| r.starts_with('\u{a9}'))).expect("a copyright line").trim();
     let mut lines = String::new();
     for line in source.lines() {
         let Some((fields, comment)) = line.split_once('#') else { continue };
@@ -56,6 +59,11 @@ fn regenerate_the_emoji_table() {
          // (Unicode emoji {version}, sha256 {sha}) by\n\
          // `launcher::emoji::tests::regenerate_the_emoji_table`: fully-qualified lines without a\n\
          // skin-tone modifier, as `<emoji>\\t<name>\\n`. Do not edit by hand.\n\
+         //\n\
+         // {copyright}\n\
+         // The data is distributed under the Unicode License v3, whose copyright and permission\n\
+         // notice is in the NOTICE file at the root of this repository\n\
+         // (https://www.unicode.org/license.txt).\n\
          \n\
          #[rustfmt::skip]\n\
          pub(super) const TABLE: &str = concat!(\n{lines});\n"
@@ -97,5 +105,24 @@ fn at_reads_line_starts_only() {
     let starts: Vec<usize> = entries().map(|(offset, _, _)| offset).collect();
     for offset in 0..TABLE.len() {
         assert_eq!(at(offset).is_some(), starts.contains(&offset), "offset {offset}");
+    }
+}
+
+/// The Unicode License v3 wants its notice with every copy of the data: in the table's header
+/// (the copyright line and a pointer) and, in full, in the repository's NOTICE file.
+#[test]
+fn the_table_keeps_its_licence_notice() {
+    let header: String = include_str!("table.rs").lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
+    for needed in ["\u{a9} 20", "Inc.", "Unicode License v3", "NOTICE"] {
+        assert!(header.contains(needed), "{needed:?} missing from table.rs's header:\n{header}");
+    }
+    let notice = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../NOTICE")).unwrap();
+    for needed in [
+        "UNICODE LICENSE V3",
+        "COPYRIGHT AND PERMISSION NOTICE",
+        "Permission is hereby granted, free of charge",
+        "THE DATA FILES AND SOFTWARE ARE PROVIDED \"AS IS\"",
+    ] {
+        assert!(notice.contains(needed), "{needed:?} missing from NOTICE");
     }
 }

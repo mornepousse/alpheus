@@ -876,4 +876,5 @@ warning on the status line); the rest of the file still applies.
 
 ## License
 
-[MIT](LICENSE) © 2026 Mae PUGIN
+[MIT](LICENSE) © 2026 Mae PUGIN. The launcher's emoji table is Unicode data under the
+Unicode License v3: see [NOTICE](NOTICE).
