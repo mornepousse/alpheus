@@ -5802,15 +5802,19 @@ fn timer_daemon(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, Fa
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
-    let toml = format!("modules = {modules}\n[timer]\nsound = [\"touch\", \"{}\"]\n{extra}", sway.runtime.join("rang").display());
+    let toml = timer_toml(&sway, modules, extra);
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300)); // configured and drawn
     (bus, sway, hypr, d)
 }
 
+/// The timer bar's `bar.toml`: `modules` (a TOML array), the sound touching `<runtime>/rang`, `extra`.
+fn timer_toml(sway: &Sway, modules: &str, extra: &str) -> String {
+    format!("modules = {modules}\n[timer]\nsound = [\"touch\", \"{}\"]\n{extra}", sway.runtime.join("rang").display())
+}
+
 /// `alpheus-launch <args>` against the daemon: its exit code, stdout and stderr.
-#[allow(dead_code)] // the verbs are Task 5's
 fn timer_verb(sway: &Sway, args: &[&str]) -> (i32, String, String) {
     script(sway, args, "").join().unwrap()
 }
@@ -5870,6 +5874,97 @@ fn timer_the_popups_second_tick_stops_at_close() {
     assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(3), "the loop thread");
     let closed = d.main_thread_wakeups().saturating_sub(before);
     assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 3 s: {:?}", d.log());
+}
+
+const TIMER_END_MODULES: &str = "[\"timer\", \"notifications\", \"clock\"]";
+
+/// Timer spec § 5, § 7: `--timer start 2s` ends with the notification (a bubble) and the sound
+/// (the stub touches `<runtime>/rang`), and the state file is gone once it ended.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_a_short_countdown_ends_with_a_bubble_and_the_sound() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-end", TIMER_END_MODULES, "");
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (2 s)", DELAY), "{:?}", d.log());
+    assert!(sway.runtime.join("state/alpheus/timer").exists(), "saved while it runs");
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bubbles shown: 1", DELAY), "{:?}", d.log());
+    wait_for_file(&sway.runtime.join("rang"), DELAY);
+    assert!(wait_until(|| !sway.runtime.join("state/alpheus/timer").exists()), "the state file goes with the end: {:?}", d.log());
+}
+
+/// Plan decision 8: under do-not-disturb the end goes to the history only (no bubble) and makes no sound.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_under_dnd_ends_without_bubble_or_sound() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-dnd", TIMER_END_MODULES, "");
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "2s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1));
+    assert!(!d.log().iter().any(|l| l.contains("bubbles shown")), "no bubble: {:?}", d.log());
+    assert!(!sway.runtime.join("rang").exists(), "no sound");
+}
+
+/// Timer spec § 6: a running countdown is on file, and a daemon started on it restores it.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_survives_a_daemon_restart() {
+    let (bus, sway, _hypr, mut d) = timer_daemon("timer-restart", TIMER_END_MODULES, "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "30m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (30 min)", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("countdown running "), "{file:?}");
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let toml = timer_toml(&sway, TIMER_END_MODULES, "");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("timer: restored countdown", DELAY), "{:?}", d.log());
+}
+
+/// Without the module the verbs are an error (exit 2, named); with it, a verb with nothing to act
+/// on is Done and says so in the log.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn timer_verbs_need_the_module() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-off", "[\"clock\"]", "");
+    ready(&d);
+    let (code, out, err) = timer_verb(&sway, &["--timer", "stop"]);
+    assert_eq!((code, out.as_str()), (EXIT_ERROR, ""), "{err}");
+    assert!(err.contains("the timer module is not in modules"), "{err}");
+    drop(d);
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-nothing", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    // A `done` chip: the first verb dismisses it (Seen changed something, so no line), the next
+    // has nothing to act on.
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "1s"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown ended", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(d.count("timer: nothing to skip"), 0, "dismissing done is something: {:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "skip"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: nothing to skip", DELAY), "{:?}", d.log());
+}
+
+/// Plan decision 17: `--timer popup` opens the popup under the bar's right end, a second within
+/// 250 ms is the press bind's refire and is ignored, a later one closes it.
+#[test]
+#[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
+fn timer_popup_verb_opens_and_closes_it() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-verb", "[\"timer\", \"clock\"]", "");
+    ready(&d);
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: popup debounced", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
 }
 
 /// Each test gives its compositor a name, and the name picks its runtime directory

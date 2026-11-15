@@ -762,7 +762,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request, TimerVerb};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -775,6 +775,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
+            Request::Timer(_) => "timer",
             Request::Outputs => "outputs",
             Request::OutputsTry(_) => "outputs-try",
             Request::OutputsKeep => "outputs-keep",
@@ -792,6 +793,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
+        Request::Timer(TimerVerb::Popup),
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsKeep,
@@ -810,6 +812,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "clear-notifications",
             "osd",
             "quick",
+            "timer",
             "outputs",
             "outputs-try",
             "outputs-keep",

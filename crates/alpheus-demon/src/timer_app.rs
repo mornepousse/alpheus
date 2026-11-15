@@ -10,6 +10,7 @@ use crate::deadline::DeadlineTimer;
 use crate::keys::Key;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
+use crate::quick_app::verb_debounced;
 use crate::session_bus::notifications::minute_now;
 use crate::state::Msg;
 use crate::state_file;
@@ -17,6 +18,7 @@ use crate::timer::{Change, End, Lengths, Phase, Timer as Model, incoming, length
 use crate::timer_popup::{TimerAction, TimerPopup};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
+use alpheus_commun::launcher_ipc::{Reply, Request, TIMER_MAX_SECS, TIMER_MIN_SECS, TimerVerb};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::{Duration, Instant};
@@ -211,6 +213,44 @@ impl App {
         self.timer_chip();
         self.timer_sync();
         true
+    }
+
+    /// `alpheus-launch --timer …`, answered before the launcher's guard (`launcher/socket_glue.rs`).
+    /// An error when the module is not in `modules`; otherwise Done. Every verb first applies
+    /// `Seen` (a `done` chip is dismissed), and answers "nothing to <word>" in the log only when
+    /// neither that nor the verb changed anything.
+    pub(crate) fn timer_verb(&mut self, request: &Request) -> Reply {
+        let Request::Timer(verb) = request else { return Reply::Done };
+        if !self.timer.enabled {
+            return Reply::Error("the timer module is not in modules".into());
+        }
+        if *verb == TimerVerb::Popup {
+            if self.timer_shown() && verb_debounced(self.timer.verb_opened, Instant::now()) {
+                log("timer: popup debounced");
+                return Reply::Done;
+            }
+            let qh = self.qh.clone();
+            self.timer_toggle(&qh, None);
+            return Reply::Done;
+        }
+        let change = match *verb {
+            TimerVerb::Start(secs) if (TIMER_MIN_SECS..=TIMER_MAX_SECS).contains(&secs) => Change::Countdown(u64::from(secs) * 1000),
+            // The wire is not trusted: the decoder bounds it, and so does this.
+            TimerVerb::Start(_) => return Reply::Error("timer seconds out of range".into()),
+            TimerVerb::Pomodoro => Change::Pomodoro,
+            TimerVerb::Stopwatch => Change::Stopwatch,
+            TimerVerb::Pause => Change::Pause,
+            TimerVerb::Resume => Change::Resume,
+            TimerVerb::Toggle => Change::Toggle,
+            TimerVerb::Stop => Change::Stop,
+            TimerVerb::Skip => Change::Skip,
+            TimerVerb::Popup => return Reply::Done,
+        };
+        let seen = self.timer_do(Change::Seen);
+        if !self.timer_do(change) && !seen {
+            log(&format!("timer: nothing to {}", verb.word()));
+        }
+        Reply::Done
     }
 
     pub(crate) fn timer_shown(&self) -> bool {

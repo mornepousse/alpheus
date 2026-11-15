@@ -145,6 +145,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)
+            | Request::Timer(_)
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -564,7 +565,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb, QuickVerb};
+    use alpheus_commun::launcher_ipc::{DndVerb, OsdVerb, QuickVerb, TimerVerb};
 
     fn dmenu() -> Request {
         Request::Dmenu { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() }
@@ -608,6 +609,8 @@ mod tests {
             (Request::Windows, Some(Script), Action::OpenWindows, done()),
             (Request::Windows, Some(Switcher), Action::StepWindows, done()),
             (Request::Quick(QuickVerb::Sound), Some(Apps), not_ours(), refused()),
+            (Request::Timer(TimerVerb::Popup), Some(Apps), not_ours(), refused()),
+            (Request::Timer(TimerVerb::Start(60)), None, not_ours(), refused()),
             (Request::Outputs, None, not_ours(), refused()),
             (Request::OutputsTry(String::new()), Some(Script), not_ours(), refused()),
             (Request::OutputsKeep, None, not_ours(), refused()),
