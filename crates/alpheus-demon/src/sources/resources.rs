@@ -762,6 +762,26 @@ mod tests {
     }
 
     #[test]
+    fn default_route_first_line_wins_a_metric_tie() {
+        let tie = format!("{ROUTE_HEAD}{ROUTE_WLAN0}{}", ROUTE_ETH0.replace("100", "600"));
+        assert_eq!(default_route(&tie), Some("wlan0".to_string()));
+    }
+
+    #[test]
+    fn net_counters_glued_name_and_exact_match() {
+        let tail = "123 1 0 0 0 0 0 0 456 1 0 0 0 0 0 0";
+        // A 15-character name leaves no space before its first counter.
+        let dev = format!(
+            "Inter-|   Receive\n face |bytes\n verylongifname:{tail}\n  wlan0.1: 7 1 0 0 0 0 0 0 8 1 0 0 0 0 0 0\n  wlan0: 9 1 0 0 0 0 0 0 10 1 0 0 0 0 0 0\n"
+        );
+        assert_eq!(net_counters(&dev, "verylongifname"), Some(NetCounters { rx: 123, tx: 456 }));
+        assert_eq!(net_counters(&dev, "wlan0"), Some(NetCounters { rx: 9, tx: 10 }), "not wlan0.1");
+        assert_eq!(net_counters(&dev, "wlan0.1"), Some(NetCounters { rx: 7, tx: 8 }));
+        let only_dotted = "  wlan0.1: 7 1 0 0 0 0 0 0 8 1 0 0 0 0 0 0\n";
+        assert_eq!(net_counters(only_dotted, "wlan0"), None);
+    }
+
+    #[test]
     fn net_counters_of_an_interface() {
         assert_eq!(net_counters(NET_A, "wlan0"), Some(NetCounters { rx: 1_000_000, tx: 200_000 }));
         assert_eq!(net_counters(NET_A, "wlan"), None, "no prefix match");

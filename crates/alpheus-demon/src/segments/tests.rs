@@ -1,7 +1,7 @@
 use super::*;
 use crate::clock::LocalTime;
 use crate::compositor::example;
-use crate::config::{BarConfig, BatteryConfig, BatteryVisibility};
+use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ResourceItem, ResourcesConfig};
 use crate::grid::Grid;
 use crate::layout::lay_out;
 use crate::notify::NotifyView;
@@ -9,7 +9,7 @@ use crate::privacy::{Capture, Indicator};
 use crate::session_bus::ItemKey;
 use crate::session_bus::icons::{DISCORD, STEAM, TELEGRAM};
 use crate::state::{Bar, Msg};
-use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
+use crate::system::{Battery, BtDevice, Charge, NetRate, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
 
 // The segments under `module_colors = "none"` (delivery 1's look), shadowing the real ones: the
 // tests of the modules' own shapes stay as they were; the hue tests call `super::…` with a setting.
@@ -26,7 +26,7 @@ fn battery(f: &Feed<PowerState>, c: &BatteryConfig) -> Option<Segment> {
     super::battery(f, c, ModuleColors::None)
 }
 fn resources(r: &Resources) -> Option<Segment> {
-    super::resources(r, ModuleColors::None)
+    super::resources(r, &ResourcesConfig::default().show, ModuleColors::None)
 }
 
 const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
@@ -570,9 +570,9 @@ fn battery_and_resources_take_their_hues() {
     assert_eq!(draw(&super::battery(&f, d, FULL).unwrap()).1, "ggggg", "green icon and number");
     let s = Sample { cpu: Some(50), memory: Some(61), temperature: Some(67), ..Sample::default() };
     let r = resources_with(s);
-    let none = draw(&super::resources(&r, ModuleColors::None).unwrap());
-    let (text, icons) = draw(&super::resources(&r, ICONS).unwrap());
-    let (_, full) = draw(&super::resources(&r, FULL).unwrap());
+    let none = draw(&super::resources(&r, &ResourcesConfig::default().show, ModuleColors::None).unwrap());
+    let (text, icons) = draw(&super::resources(&r, &ResourcesConfig::default().show, ICONS).unwrap());
+    let (_, full) = draw(&super::resources(&r, &ResourcesConfig::default().show, FULL).unwrap());
     assert_eq!(text, none.0, "the text never changes");
     assert_eq!(none.1, "......................", "none: no hue at all");
     assert_eq!(icons, "oo...yyyy.....rrrr....", "the three icons (their leading spaces too)");
@@ -594,7 +594,7 @@ fn states_win_over_the_hues() {
         assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, want, "charging: accent under None, green otherwise ({mc:?})");
         let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85), ..Sample::default() };
         assert_eq!(
-            draw(&super::resources(&resources_with(hot), mc).unwrap()).1[5..],
+            draw(&super::resources(&resources_with(hot), &ResourcesConfig::default().show, mc).unwrap()).1[5..],
             *"eeeeeeee",
             "hot temperature stays error under {mc:?}"
         );
@@ -859,4 +859,73 @@ fn battery_low_is_warn_and_critical_is_error() {
     assert_eq!(draw(&battery(&s, d).unwrap()).1, "eeeewwwwww", "each peripheral on its own");
     assert_eq!(draw(&bluetooth(&on(&[("CasqueBT", Some(9))])).unwrap()).1, "aa........eee", "Bluetooth: critical");
     assert_eq!(CRITICAL, 10);
+}
+
+fn items(r: &Resources, show: &[ResourceItem], mc: ModuleColors) -> Option<(String, String)> {
+    super::resources(r, show, mc).map(|s| draw(&s))
+}
+
+#[test]
+fn rate_units() {
+    for (b, want) in [
+        (0, "0B"),
+        (512, "512B"),
+        (999, "999B"),
+        (1000, "1.0K"),
+        (1229, "1.2K"),
+        (10_240, "10K"),
+        (81_920, "80K"),
+        (1_022_976, "999K"),
+        (1_023_488, "1.0M"),
+        (1_258_291, "1.2M"),
+        (5_368_709_120, "5.0G"),
+        (2_000_000_000_000, "1863G"),
+    ] {
+        assert_eq!(rate(b), want, "{b}");
+    }
+}
+
+#[test]
+fn resources_extra_items_in_the_order_written() {
+    use ResourceItem::*;
+    let s = Sample {
+        cpu: Some(12),
+        memory: Some(61),
+        temperature: Some(45),
+        net: Some(NetRate { down: 1_258_291, up: 81_920 }),
+        disk: Some(62),
+        gpu: Some(54),
+    };
+    let (t, _) = items(&resources_with(s), &[Gpu, Net, Disk, Cpu], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f08ae} 54\u{b0}   \u{f01da} 1.2M \u{f0552} 80K   \u{f02ca} 62%   \u{f061a} 12%");
+}
+
+#[test]
+fn a_missing_source_hides_its_item() {
+    use ResourceItem::*;
+    let s = Sample { cpu: Some(12), ..Sample::default() };
+    let (t, _) = items(&resources_with(s), &[Cpu, Net, Disk], ModuleColors::None).unwrap();
+    assert_eq!(t, "\u{f061a} 12%");
+    assert!(items(&resources_with(s), &[Net], ModuleColors::None).is_none());
+}
+
+#[test]
+fn the_gpu_errs_from_85() {
+    let at = |t| {
+        let s = Sample { gpu: Some(t), ..Sample::default() };
+        items(&resources_with(s), &[ResourceItem::Gpu], ModuleColors::None).unwrap().1
+    };
+    assert_eq!(at(84), ".".repeat(5));
+    assert_eq!(at(85), "e".repeat(5));
+}
+
+#[test]
+fn extra_items_take_their_hues() {
+    use ResourceItem::*;
+    let s = Sample { net: Some(NetRate { down: 1_258_291, up: 81_920 }), disk: Some(62), gpu: Some(54), ..Sample::default() };
+    let r = resources_with(s);
+    let (_, st) = items(&r, &[Net, Disk, Gpu], ModuleColors::Full).unwrap();
+    assert_eq!(st, "c".repeat(12) + &"B".repeat(8) + &"p".repeat(8));
+    let (_, st) = items(&r, &[Net, Disk, Gpu], ModuleColors::None).unwrap();
+    assert_eq!(st, ".".repeat(28));
 }
