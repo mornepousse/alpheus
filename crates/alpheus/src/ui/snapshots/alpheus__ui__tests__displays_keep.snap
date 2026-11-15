@@ -17,9 +17,9 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
    └───│ ⚠ DisplayLink output: known freeze risk on this machine        │       
        │                                                                │       
  Displa│ Applying…                                                      │       
-   1 La│ [ Cancel ]  [ Keep ]                                           │on 0,… 
+   1 La│ [ Cancel ]  [ Keep ]                                           │       
  ▶ 2 Al└────────────────────────────────────────────────────────────────┘       
-   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Al… 
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha            
                                                                                 
                                                                                 
                                                                                 

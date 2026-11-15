@@ -127,25 +127,51 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     let labels = short_names(outs);
     let places = placement_labels(outs);
     let lx = body.x + 2;
+    let cols = Cols::fit(body.width.saturating_sub(2), places.iter().map(|p| p.chars().count()).max().unwrap_or(0) as u16);
     let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
     hits.push(Rect::new(body.x, y, body.width, 1), Target::Item(i));
     put(buf, body, lx, y, &truncate(&format!("{} {}", k + 1, labels[k]), 12), label);
-    let conn = if o.displaylink { format!("{} ⚠", o.name) } else { o.name.clone() };
-    put(buf, body, lx + 13, y, &truncate(&conn, 10), Style::default().fg(th.muted));
+    if let Some(c) = cols.conn {
+        let conn = if o.displaylink { format!("{} ⚠", o.name) } else { o.name.clone() };
+        put(buf, body, lx + c, y, &truncate(&conn, 10), Style::default().fg(th.muted));
+    }
     let last = o.active.is_some() && active_count(outs) <= 1;
     let (text, style) = match (&o.active, last) {
         (Some(_), true) => ("[■] only on", Style::default().fg(th.muted)),
         (Some(_), false) => ("[■] on", Style::default().fg(th.accent)),
         (None, _) => ("[ ] off", Style::default().fg(th.muted)),
     };
-    let w = put(buf, body, lx + 23, y, text, style);
-    hits.push(Rect::new(lx + 23, y, w, 1), Target::OutputToggle(i));
+    let w = put(buf, body, lx + cols.toggle, y, text, style);
+    hits.push(Rect::new(lx + cols.toggle, y, w, 1), Target::OutputToggle(i));
     let Some(a) = &o.active else { return };
-    put(buf, body, lx + 37, y, &a.mode.label(), Style::default().fg(th.fg));
-    put(buf, body, lx + 51, y, &format!("scale {}", a.scale.label()), Style::default().fg(th.fg));
-    let px = lx + 64;
+    put(buf, body, lx + cols.mode, y, &a.mode.label(), Style::default().fg(th.fg));
+    if let Some(c) = cols.scale {
+        put(buf, body, lx + c, y, &format!("scale {}", a.scale.label()), Style::default().fg(th.fg));
+    }
+    let px = lx + cols.pos;
     let avail = usize::from(body.right().saturating_sub(px));
     put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(th.muted));
+}
+
+/// Where an output row's columns start, from its left edge. The placement is what the tab is for, so
+/// it is never the one to lose room: the scale goes first, then the connector (the map and the
+/// name still say which screen it is).
+struct Cols {
+    conn: Option<u16>,
+    toggle: u16,
+    mode: u16,
+    scale: Option<u16>,
+    pos: u16,
+}
+
+impl Cols {
+    /// The richest layout whose placement (`pos_w` cells at most) fits in `avail` cells.
+    fn fit(avail: u16, pos_w: u16) -> Cols {
+        let full = Cols { conn: Some(13), toggle: 23, mode: 37, scale: Some(51), pos: 64 };
+        let no_scale = Cols { scale: None, pos: 51, ..full };
+        let compact = Cols { conn: None, toggle: 13, mode: 27, scale: None, pos: 41 };
+        [full, no_scale].into_iter().find(|c| c.pos + pos_w <= avail).unwrap_or(compact)
+    }
 }
 
 // ── Overlays ─────────────────────────────────────────────────────────

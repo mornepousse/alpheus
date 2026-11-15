@@ -17,9 +17,9 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
    └──────│   Alignment    ◀ top ▶                                   │          
           │   ✗ no change                                            │          
  Displays │                                                          │          
-   1 Lapto│ [ Cancel ]  [ Apply ]                                    │ition 0,… 
- ▶ 2 Alpha└──────────────────────────────────────────────────────────┘gin       
-   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Al… 
+   1 Lapto│ [ Cancel ]  [ Apply ]                                    │          
+ ▶ 2 Alpha└──────────────────────────────────────────────────────────┘          
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha            
                                                                                 
                                                                                 
                                                                                 

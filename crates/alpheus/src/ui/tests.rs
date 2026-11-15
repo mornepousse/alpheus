@@ -185,8 +185,7 @@ fn displays_tab() -> crate::app::App {
 fn displays_tab_rendering() {
     let mut a = displays_tab();
     a.focus = 2; // Alpha
-    // 120 columns: with the rail the body is 100 wide, enough for the longest row.
-    let (rows, hits) = draw(&a, 120, 28);
+    let (rows, hits) = draw(&a, 100, 28);
     let all = rows.join("\n");
     for expected in [
         "Profiles",
@@ -200,7 +199,6 @@ fn displays_tab_rendering() {
         "DVI-I-1 ⚠",
         "3 Bravo",
         "1920×1080@240",
-        "scale 1.0",
         "position 0, 1080",
         "origin",
         "right of Alpha",
@@ -210,9 +208,27 @@ fn displays_tab_rendering() {
     assert!(all.contains('●'), "the map marks the focused screen:\n{all}");
     assert!(hits.find(Target::DisplayProfile(2)).is_some());
     assert!(hits.find(Target::OutputToggle(3)).is_some());
-    assert!(rows[27].contains("Space  Toggle") && rows[27].contains("Enter  Adjust"), "{:?}", rows[27]);
+    assert!(rows[27].contains("Space  Toggle"), "{:?}", rows[27]);
+    assert!(draw(&a, 120, 28).0[27].contains("Enter  Adjust"));
+    assert!(!all.contains("scale 1.0"), "the scale gives way to the placement at 100 columns:\n{all}");
+    assert!(draw(&a, 120, 28).0.join("\n").contains("scale 1.0"), "and comes back when the body has room");
     a.focus = 0;
+    // The hint row, not the layout: at 100 columns the keycaps stop before "Enter  Apply".
     assert!(draw(&a, 120, 28).0[27].contains("Enter  Apply"));
+}
+
+/// Mae's window (87×26): a 67-column body beside the rail. Every output's placement is whole.
+#[test]
+fn displays_fit_mae_window_87x26() {
+    let mut a = displays_tab();
+    a.focus = 2;
+    let (rows, _) = draw(&a, 87, 26);
+    for (row, place) in [("1 Laptop", "position 0, 1080"), ("2 Alpha", "origin"), ("3 Bravo", "right of Alpha")] {
+        let line =
+            rows.iter().find(|r| r.contains(row) && r.contains("[■]")).unwrap_or_else(|| panic!("{row} missing:\n{}", rows.join("\n")));
+        assert!(line.contains(place), "{place:?} in {line:?}");
+        assert!(!line.contains('…'), "{line:?}");
+    }
 }
 
 #[test]

@@ -531,3 +531,29 @@ fn each_block_style_snapshot_at_80_columns() {
         insta::assert_snapshot!(format!("appearance_style_{style}_80"), preview.join("\n"));
     }
 }
+
+/// Mae's window: 87×26, so a 67×20 body beside the rail.
+#[test]
+fn the_theme_tab_fits_mae_window_87x26() {
+    let (a, _dir) = open("mae-window", &[("theme.toml", "theme = \"nord\"\nstyle = \"islands\"\n")]);
+    let (rows, hits) = crate::ui::testing::draw(&a, 87, 26);
+    let all = rows.join("\n");
+    // Every entry is on screen, with its tags (the wallpaper and the fifteen presets).
+    assert_eq!(a.appearance.entries.len(), 16);
+    for e in &a.appearance.entries {
+        assert!(all.contains(e.label), "{} is clipped:\n{all}", e.label);
+    }
+    assert_eq!(all.matches("dark only").count(), a.appearance.entries.iter().filter(|e| e.dark_only).count());
+    // The preview is whole: heading, bar frame, menu frame.
+    assert!(all.contains("Preview — Nord, dark") && all.contains("└────────────┘"), "{all}");
+    assert!(rows.iter().any(|r| r.contains('│') && r.contains("▐") && r.trim_end().ends_with('│')), "the mini bar's right edge:\n{all}");
+    // All six style names are whole and each hit rect is exactly its chip.
+    for s in crate::app::appearance::STYLES {
+        let label = crate::app::appearance::style_label(s);
+        let r = hits.find(Target::AppearanceStyle(s)).unwrap_or_else(|| panic!("{label} has no region"));
+        assert_eq!(r.width, label.len() as u16 + 2, "{label}: the region is the whole chip");
+        let text: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();
+        assert_eq!(text, format!(" {label} "), "{label}");
+        assert!(r.right() <= 87 - 2, "{label} stays inside the body");
+    }
+}
