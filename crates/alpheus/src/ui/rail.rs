@@ -102,10 +102,10 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &App, hits: &mut HitMap) -> Rec
 fn nav(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     draw::clear(buf, r, Style::default().bg(th.surface).fg(th.fg));
-    put(buf, r, r.x + 2, r.y + 1, "◆", Style::default().fg(th.accent).bg(th.surface));
+    put(buf, r, r.x + 2, r.y + 1, "◆", Style::default().fg(th.ink(th.accent, th.surface, 3.0)).bg(th.surface));
     put(buf, r, r.x + 4, r.y + 1, "alpheus", Style::default().fg(th.fg).bg(th.surface).add_modifier(Modifier::BOLD));
     // Under the diamond, not the name: "control center" (14 cells) must fit in the 16-column rail.
-    put(buf, r, r.x + 2, r.y + 2, "control center", Style::default().fg(th.muted).bg(th.surface));
+    put(buf, r, r.x + 1, r.y + 2, "control center", Style::default().fg(th.muted).bg(th.surface));
     for (i, t) in Tab::ALL.iter().enumerate() {
         let y = r.y + 5 + 2 * i as u16;
         if y >= r.bottom() {
@@ -115,11 +115,13 @@ fn nav(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         let hue = tab_hue(th, *t);
         let active = *t == app.tab;
         let line = th.shape == Shape::Line;
-        // Under the line style the active entry has no fill: hue text, underlined.
+        // The active entry is `on_accent` on `accent_container` (the presets' pair, 4.5:1), the tab's hue
+        // left to its icon when it reads there; under the line style it has no fill: hue text, underlined,
+        // `fg` where the hue does not read on the rail. A hue is only the ink of a glyph (3:1).
         let (bg, fg, ic, edge) = match (active, line) {
-            (false, _) => (th.surface, th.fg, hue, th.on_accent),
-            (true, false) => (hue, th.on_accent, th.on_accent, th.on_accent),
-            (true, true) => (th.surface, hue, hue, hue),
+            (false, _) => (th.surface, th.fg, th.ink(hue, th.surface, 3.0), th.on_accent),
+            (true, false) => (th.accent_container, th.on_accent, th.ink_or(hue, th.accent_container, 3.0, th.on_accent), th.on_accent),
+            (true, true) => (th.surface, th.ink(hue, th.surface, 4.5), th.ink(hue, th.surface, 3.0), th.ink(hue, th.surface, 3.0)),
         };
         if active {
             shape::band(buf, row, bg, edge, th.surface, th.shape);
@@ -134,14 +136,22 @@ fn nav(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
         }
         // One cell after the icon, so "Displays" (8) leaves a gap before its number.
         put(buf, row, row.x + 3, y, t.title(), label);
-        put(buf, row, row.right() - 2, y, &(i + 1).to_string(), Style::default().fg(if active { fg } else { th.muted }).bg(bg));
+        put(
+            buf,
+            row,
+            row.right() - 2,
+            y,
+            &(i + 1).to_string(),
+            Style::default().fg(if active { fg } else { th.ink(th.muted, th.surface, 3.0) }).bg(bg),
+        );
         hits.push(row, Target::Tab(*t));
     }
     let last = app.status.last.as_deref().unwrap_or("ready");
     let fy = r.bottom().saturating_sub(2);
     let dot = if app.status.error.is_some() || app.status.warning.is_some() { th.error } else { th.ok };
-    put(buf, r, r.x + 2, fy, "●", Style::default().fg(dot).bg(th.surface));
-    put(buf, r, r.x + 4, fy, &draw::truncate(last, usize::from(r.width.saturating_sub(5))), Style::default().fg(th.muted).bg(th.surface));
+    put(buf, r, r.x + 2, fy, "●", Style::default().fg(th.ink(dot, th.surface, 3.0)).bg(th.surface));
+    let dim = th.ink(th.muted, th.surface, 3.0);
+    put(buf, r, r.x + 4, fy, &draw::truncate(last, usize::from(r.width.saturating_sub(5))), Style::default().fg(dim).bg(th.surface));
 }
 
 /// The tab's name in its hue, one line of context, a rule; a fault right-aligned on the first line.
@@ -151,19 +161,44 @@ fn header(buf: &mut Buffer, r: Rect, app: &App) {
     let w = put(buf, r, r.x, r.y, icon(app.tab), Style::default().fg(hue));
     put(buf, r, r.x + w + 2, r.y, app.tab.title(), Style::default().fg(hue).add_modifier(Modifier::BOLD));
     put(buf, r, r.x, r.y + 1, &subtitle(app), Style::default().fg(th.muted));
-    // Each fault to the left of the previous one, so two never overwrite each other.
+    // The faults share the room right of the title, each cut with `…` keeping its start; stacked from the
+    // right, so two never overwrite each other nor the title.
+    let msgs: Vec<String> = [&app.status.error, &app.status.warning].into_iter().flatten().map(|m| format!("✗ {m}")).collect();
+    let room = usize::from(r.right().saturating_sub(r.x + w + 2 + app.tab.title().chars().count() as u16 + 2));
     let mut right = r.right();
-    for msg in [&app.status.error, &app.status.warning].into_iter().flatten() {
-        let m = format!("✗ {msg}");
-        let mw = m.chars().count() as u16;
-        let x = right.saturating_sub(mw);
-        put(buf, r, x, r.y, &m, Style::default().fg(th.error));
+    for (m, len) in msgs.iter().zip(fault_widths(&msgs, room)) {
+        let t = draw::truncate(m, len);
+        let x = right.saturating_sub(t.chars().count() as u16);
+        put(buf, r, x, r.y, &t, Style::default().fg(th.error));
         right = x.saturating_sub(2);
     }
     for k in 0..r.width {
         let (glyph, c) = if k < 12 { ("━", hue) } else { ("─", th.raised) };
         put(buf, r, r.x + k, r.y + 2, glyph, Style::default().fg(c));
     }
+}
+
+/// The width each fault gets in `room` cells (two apart): its own when everything fits; else an equal share,
+/// what a short one leaves going to the first one that is cut. A fault that would get under 4 cells is dropped (0).
+fn fault_widths(msgs: &[String], room: usize) -> Vec<usize> {
+    let full: Vec<usize> = msgs.iter().map(|m| m.chars().count()).collect();
+    let n = full.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let avail = room.saturating_sub(2 * (n - 1));
+    if full.iter().sum::<usize>() <= avail {
+        return full;
+    }
+    let share = avail / n;
+    let mut len: Vec<usize> = full.iter().map(|f| (*f).min(share)).collect();
+    let mut left = avail - len.iter().sum::<usize>();
+    for (l, f) in len.iter_mut().zip(&full) {
+        let add = (f - *l).min(left);
+        *l += add;
+        left -= add;
+    }
+    len.iter().map(|l| if *l < 4 { 0 } else { *l }).collect()
 }
 
 /// The bottom row: keys drawn as keycaps, from the content's left edge.

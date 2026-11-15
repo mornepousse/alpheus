@@ -4,7 +4,7 @@ expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
 ---
                                                                                                                         
   ◆ alpheus       󰏘  Theme                                                                                              
-  control center  Theme, mode, bar style and module colours                                                             
+ control center   Theme, mode, bar style and module colours                                                             
                   ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────  
                                                                                                                         
   󰋜 Home     1    Theme                           Preview — Catppuccin, dark                                            

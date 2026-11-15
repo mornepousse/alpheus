@@ -215,4 +215,6 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
+mod contrast_tests;
+#[cfg(test)]
 mod tests;

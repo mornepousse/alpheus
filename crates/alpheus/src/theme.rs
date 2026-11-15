@@ -4,6 +4,7 @@
 //! uses D-Bus (Mae, 2026-10-07). The file outlives the daemon, so a TUI started after the daemon
 //! stopped reads the last published mode: accepted, no cleanup. The rest of the TUI only ever sees `Theme`.
 
+use alpheus_commun::theme::contrast::ratio;
 use alpheus_commun::theme::mode_file::read_mode;
 use alpheus_commun::theme::settings::{BarStyle, resolve_dir};
 use alpheus_commun::theme::{Rgb, Roles};
@@ -130,6 +131,21 @@ impl Theme {
         Style::default().fg(self.fg).bg(self.selection).add_modifier(Modifier::BOLD)
     }
 
+    /// `c` when it reads at `need`:1 over `over`, else `fg`: a hue (or `fg_dim`) as the ink of a glyph or
+    /// a word on a fill the presets' data does not promise it on (the data fixes only `fg` on `raised`
+    /// and `pill`, a few hues on `pill` and the hues on `bar_bg`). A colour that is not RGB passes.
+    pub fn ink(&self, c: Color, over: Color, need: f32) -> Color {
+        self.ink_or(c, over, need, self.fg)
+    }
+
+    /// `ink` with another fallback, for a fill `fg` does not read on (`on_accent` on a filled control).
+    pub fn ink_or(&self, c: Color, over: Color, need: f32, alt: Color) -> Color {
+        match (c, over) {
+            (Color::Rgb(r, g, b), Color::Rgb(r2, g2, b2)) if ratio(Rgb(r, g, b), Rgb(r2, g2, b2)) < need => alt,
+            _ => c,
+        }
+    }
+
     /// A filled control (an active choice, a focused button): `on_accent` on `accent_container`.
     pub fn filled(&self) -> Style {
         Style::default().fg(self.on_accent).bg(self.accent_container).add_modifier(Modifier::BOLD)
@@ -168,6 +184,17 @@ mod tests {
     }
 
     const LEGACY: &str = "bg = \"#101010\"\nfg = \"#eeeeee\"\naccent = \"#ff8800\"\nmuted = \"#777777\"\nsurface = \"#202020\"\nerror = \"#ff0000\"\nok = \"#00ff00\"\n";
+
+    #[test]
+    fn ink_keeps_a_hue_that_reads_and_falls_back_to_fg() {
+        let th = Theme::default();
+        let (black, white, grey) = (Color::Rgb(0, 0, 0), Color::Rgb(255, 255, 255), Color::Rgb(120, 120, 120));
+        assert_eq!(th.ink(white, black, 3.0), white, "21:1 stays");
+        assert_eq!(th.ink(grey, grey, 3.0), th.fg, "1:1 falls back");
+        assert_eq!(th.ink(grey, white, 4.5), th.fg, "4.5 asked, about 4:1 given");
+        assert_eq!(th.ink(grey, white, 3.0), grey, "3 asked, about 4:1 given");
+        assert_eq!(th.ink(Color::Reset, white, 3.0), Color::Reset);
+    }
 
     #[test]
     fn every_field_takes_its_role() {

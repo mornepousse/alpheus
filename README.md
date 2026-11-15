@@ -221,19 +221,24 @@ theme, the light/dark mode, the module colours and the bar style, with a preview
 
 **The rail.** In a terminal of at least 84 columns and 26 rows (Mae's
 Super+A window is 87×26) the tabs become a left rail: the brand, then icon,
-name and number per tab, the active one filled with the tab's own hue (Home
-the accent, Sound blue, Network cyan, BT purple, Power red, Displays green,
-Theme orange), and the status line at its foot. Its controls are drawn in the
+name and number per tab, the active one filled with the theme's accent
+container, and the status line at its foot. Each tab has its own hue (Home the
+accent, Sound blue, Network cyan, BT purple, Power red, Displays green, Theme
+orange) for its header, headings, gauges and switches; a hue is only ever the
+ink of a glyph or a heading, never of text on a fill (labels on a button, a
+chip or a tag are `fg`). Its controls are drawn in the
 theme: selection bands, knob gauges for volume and brightness, switches,
-glyph buttons. Below that size the classic top tab bar and rows are drawn
-exactly as before.
+glyph buttons. Below that size the classic top tab bar and rows are drawn, as
+before except for three changes: the keycaps' order, the Displays row dropping
+its scale column at 80 columns, and the Theme tab's caption hiding when the
+rows need its room.
 
 **The Home dashboard.** When the Home body is at least 64 columns by 20 rows
-(87×26 with the rail leaves about 71×22), Home is a dashboard: a block-digit
+(87×26 with the rail leaves a 67×20 body), Home is a dashboard: a block-digit
 clock with the date, a greeting and a one-line summary, a card per setting
 (volume, brightness, energy profile) with large digits and a gauge, four tiles
 (Wi-Fi, Bluetooth, Do not disturb, Keep awake) filled with their hue when on,
-and the connections. It shows only what the control center already reads, the
+the connections and the devices. It shows only what the control center already reads, the
 same keys and clicks reach the same items as in the classic rows, and it
 opens in well under 100 ms.
 
@@ -442,7 +447,7 @@ A preset with no light variant stays dark in light mode. Every preset is
 checked for legibility in both modes by a test using WCAG contrast:
 - text reaches 4.5:1 on the bar and the popups;
 - secondary text and the state colours reach 3:1 on the bar;
-- the six presets added in the UI refresh also keep secondary text and the module hues at 3:1 on the raised cells.
+- `fg` reaches 3.5:1 on the `raised` and `pill` fills, and the six presets added in the UI refresh keep secondary text and the module hues at 3:1 on `pill` (secondary text also on `raised`); where a hue or secondary text falls short on a fill, the control center draws that glyph or word in `fg` instead (a test checks every pair the rail and its tabs draw, in every preset and mode).
 
 Where an official colour falls short in a light variant, alpheus uses a
 darker shade of it. Nord's bar sits on `nord0` rather than `nord1`, so that

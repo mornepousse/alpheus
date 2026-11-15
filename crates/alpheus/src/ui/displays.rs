@@ -106,7 +106,8 @@ pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec
 pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap, rail: bool) {
     let th = &app.theme;
     let lx = body.x + 2;
-    let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    // Under the rail the focused row's band carries the focus: `fg` on it (the accent does not read on every `selection`).
+    let label = if focused && !rail { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
     put(buf, body, lx, y, "Profiles", label);
     let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
     let mut x = lx + 11;
@@ -131,7 +132,7 @@ pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &
 /// An output's row: number and short name, connector (⚠ DisplayLink),
 /// on/off switch, mode, scale, placement.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, focused: bool, app: &App, hits: &mut HitMap) {
+pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, focused: bool, app: &App, hits: &mut HitMap, rail: bool) {
     let th = &app.theme;
     let outs = app.outputs();
     let Some(k) = outs.iter().position(|o| o.name == name) else { return };
@@ -140,18 +141,24 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     let places = placement_labels(outs);
     let lx = body.x + 2;
     let cols = Cols::fit(body.width.saturating_sub(2), places.iter().map(|p| p.chars().count()).max().unwrap_or(0) as u16);
-    let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    // Under the rail the focused row's band carries the focus: `fg` on it (the accent does not read on every `selection`).
+    let label = if focused && !rail { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    // What the row sits on: the focused row's band under the rail. A dim word or the accent only where
+    // they read there, else `fg`.
+    let under = if rail && focused && th.shape != Shape::Line { th.selection } else { th.bg };
+    let dim = th.ink(th.muted, under, 3.0);
+    let lit = th.ink(th.accent, under, 4.5);
     hits.push(Rect::new(body.x, y, body.width, 1), Target::Item(i));
     put(buf, body, lx, y, &truncate(&format!("{} {}", k + 1, labels[k]), 12), label);
     if let Some(c) = cols.conn {
         let conn = if o.displaylink { format!("{} ⚠", o.name) } else { o.name.clone() };
-        put(buf, body, lx + c, y, &truncate(&conn, 10), Style::default().fg(th.muted));
+        put(buf, body, lx + c, y, &truncate(&conn, 10), Style::default().fg(dim));
     }
     let last = o.active.is_some() && active_count(outs) <= 1;
     let (text, style) = match (&o.active, last) {
-        (Some(_), true) => ("[■] only on", Style::default().fg(th.muted)),
-        (Some(_), false) => ("[■] on", Style::default().fg(th.accent)),
-        (None, _) => ("[ ] off", Style::default().fg(th.muted)),
+        (Some(_), true) => ("[■] only on", Style::default().fg(dim)),
+        (Some(_), false) => ("[■] on", Style::default().fg(lit)),
+        (None, _) => ("[ ] off", Style::default().fg(dim)),
     };
     let w = put(buf, body, lx + cols.toggle, y, text, style);
     hits.push(Rect::new(lx + cols.toggle, y, w, 1), Target::OutputToggle(i));
@@ -162,7 +169,7 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     }
     let px = lx + cols.pos;
     let avail = usize::from(body.right().saturating_sub(px));
-    put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(th.muted));
+    put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(dim));
 }
 
 /// Where an output row's columns start, from its left edge. The placement is what the tab is for, so

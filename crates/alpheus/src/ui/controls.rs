@@ -46,7 +46,10 @@ pub fn gauge(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, mut
                 put(buf, clip, x, y, &format!("{p} %"), Style::default().fg(th.fg));
                 return None;
             }
-            let ink = if muted { th.muted } else { hue };
+            // The knob and the filled part are glyphs: the hue (or `fg_dim`) where it reads on what is under
+            // the gauge (a focused row's band), else `fg`.
+            let under = buf.cell((x, y)).map_or(th.bg, |c| if c.bg == Color::Reset { th.bg } else { c.bg });
+            let ink = th.ink(if muted { th.muted } else { hue }, under, 3.0);
             let filled = (u32::from((*p).min(100)) * u32::from(w - 1) + 50) / 100;
             for k in 0..w {
                 let k32 = u32::from(k);
@@ -61,7 +64,8 @@ pub fn gauge(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<u8>, mut
             if muted {
                 tail.push_str(" 󰝟 muted");
             }
-            put(buf, clip, x + w, y, &tail, Style::default().fg(if muted { th.muted } else { th.fg }).add_modifier(Modifier::BOLD));
+            let tail_ink = if muted { th.ink(th.muted, under, 3.0) } else { th.fg };
+            put(buf, clip, x + w, y, &tail, Style::default().fg(tail_ink).add_modifier(Modifier::BOLD));
             Some(Rect::new(x, y, w, 1))
         }
     }
@@ -85,7 +89,8 @@ pub fn switch(buf: &mut Buffer, clip: Rect, x: u16, y: u16, v: &Loadable<bool>, 
         }
         Loadable::Ready(false) => {
             let fill = if th.shape == Shape::Line { th.muted } else { th.raised };
-            shape::chip(buf, clip, x, y, " ○  off ", Ink { fg: th.muted, fill, behind, bold: false }, th.shape);
+            let fg = th.ink(th.muted, fill, 3.0);
+            shape::chip(buf, clip, x, y, " ○  off ", Ink { fg, fill, behind, bold: false }, th.shape);
         }
     }
 }
@@ -110,11 +115,22 @@ pub fn command_glyph(c: &Command) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 pub fn button(buf: &mut Buffer, clip: Rect, x: u16, y: u16, c: &Command, focused: bool, th: &Theme, hue: Color) -> u16 {
     let line = th.shape == Shape::Line;
-    let (fg, fill) = if focused { (th.on_accent, hue) } else { (hue, th.raised) };
+    // Resting: the label in `fg` on `raised` (the data's 3.5:1), only the glyph in the hue, and only where
+    // the hue reads there (3:1); focused: `on_accent` on the hue.
+    let (fg, fill) = if focused { (th.on_accent, hue) } else { (th.fg, th.raised) };
     let fill = if line { hue } else { fill };
     let behind = if focused && !line { th.selection } else { th.bg };
-    let text = format!("  {}  {:<20} 󰁔  ", command_glyph(c), c.label());
-    shape::chip(buf, clip, x, y, &text, Ink { fg, fill, behind, bold: focused }, th.shape)
+    let glyph = command_glyph(c);
+    let text = format!("  {glyph}  {:<20} 󰁔  ", c.label());
+    let w = shape::chip(buf, clip, x, y, &text, Ink { fg, fill, behind, bold: focused }, th.shape);
+    if !focused && !line {
+        let gx = x + 2 + u16::from(th.shape == Shape::Round);
+        let gh = th.ink(hue, th.raised, 3.0);
+        if let Some(cell) = buf.cell_mut((gx, y)).filter(|_| clip.contains((gx, y).into())) {
+            cell.set_fg(gh);
+        }
+    }
+    w
 }
 
 #[cfg(test)]

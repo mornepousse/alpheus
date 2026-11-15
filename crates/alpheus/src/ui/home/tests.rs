@@ -186,6 +186,23 @@ fn small_bodies_keep_the_rows() {
     }
 }
 
+/// A tall card leaves one row between its title and the big digits (below 7 inside rows there is no room).
+#[test]
+fn a_tall_card_leaves_a_row_above_its_digits() {
+    let a = ready_app();
+    for (w, h, margin) in [(120, 36, true), (87, 26, false)] {
+        let (rows, hits) = draw_at(&a, w, h, Some(T));
+        let r = item(&hits, VOLUME);
+        let inner = Rect::new(r.x + 1, r.y + 1, r.width - 2, r.height - 2);
+        assert_eq!(inner.height >= 7, margin, "{w}x{h}: inner height {}", inner.height);
+        let digits = |y: u16| inside(&rows, Rect::new(inner.x, y, inner.width, 1)).chars().any(|c| matches!(c, '█' | '▀' | '▄'));
+        assert_eq!(digits(inner.y), !margin, "{w}x{h}: the row under the title:\n{}", rows.join("\n"));
+        assert!(digits(inner.y + 1), "{w}x{h}");
+        // The gauge and the value still fit whatever the height.
+        assert!(inside(&rows, inner).contains('%'), "{w}x{h}");
+    }
+}
+
 #[test]
 fn the_focus_frame_follows_the_seven_items() {
     let mut a = ready_app();
@@ -299,6 +316,28 @@ fn tiles_and_cards_take_the_shape() {
     a.theme.shape = Shape::Flat;
     let (_, vol, _) = rects(&a);
     assert_eq!(cell(&a, vol.x, vol.y).symbol(), "┌");
+}
+
+/// Mae's window, every shape, each tile focused in turn: the label and the state row both stay.
+#[test]
+fn a_focused_tile_keeps_its_state_row_at_87x26() {
+    for shape in [Shape::Flat, Shape::Round, Shape::Arrow, Shape::Line, Shape::Float] {
+        for (i, label, state) in [
+            (WIFI, "Wi-Fi", "MON_WIFI_1"),
+            (BLUETOOTH, "Bluetooth", "CasqueBT"),
+            (DND, "Do not disturb", "off"),
+            (KEEP_AWAKE, "Keep awake", "off"),
+        ] {
+            let mut a = ready_app();
+            a.theme.shape = shape;
+            a.focus = i;
+            let (rows, hits) = draw_at(&a, 87, 26, Some(T));
+            let text = inside(&rows, item(&hits, i));
+            // The name may lose its tail to the frame's two columns (a floating tile has one less); the state row stays.
+            let name: String = label.chars().take(6).collect();
+            assert!(text.contains(&name) && text.contains(state), "{shape:?} {label} focused:\n{text}");
+        }
+    }
 }
 
 #[test]

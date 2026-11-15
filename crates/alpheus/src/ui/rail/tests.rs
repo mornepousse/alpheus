@@ -76,14 +76,14 @@ fn rail_entries_are_tab_targets() {
 }
 
 #[test]
-fn the_active_entry_takes_its_tab_hue() {
+fn the_active_entry_is_on_accent_over_accent_container_and_the_icons_keep_their_hues() {
     let mut a = ready_app();
     let th = a.theme;
     for (i, t) in Tab::ALL.iter().enumerate() {
         a.tab = *t;
         let b = cells(&a, 120, 36);
         let title = &b[(4, entry_row(i))];
-        assert_eq!((title.bg, title.fg), (tab_hue(&th, *t), th.on_accent), "{t:?}'s title");
+        assert_eq!((title.bg, title.fg), (th.accent_container, th.on_accent), "{t:?}'s title");
         for (j, u) in Tab::ALL.iter().enumerate().filter(|(j, _)| *j != i) {
             let ic = &b[(2, entry_row(j))];
             assert_eq!((ic.fg, ic.bg), (tab_hue(&th, *u), th.surface), "{u:?}'s icon while {t:?} is active");
@@ -245,6 +245,37 @@ fn two_faults_do_not_overwrite_each_other() {
     a.status.warning = Some("careful".into());
     let row = draw(&a, 120, 36).0[1].clone();
     assert!(row.contains("✗ boom") && row.contains("✗ careful"), "{row:?}");
+}
+
+#[test]
+fn a_fault_wider_than_the_header_is_cut_with_an_ellipsis_keeping_its_start() {
+    let mut a = ready_app();
+    let long = format!("theme.toml: unknown theme \"nope\": {}", "x".repeat(130));
+    a.status.error = Some(long.clone());
+    let row = draw(&a, 87, 26).0[1].clone();
+    assert!(row.contains("✗ theme.toml: unknown theme"), "{row:?}");
+    assert!(row.trim_end().ends_with('…'), "{row:?}");
+    assert_eq!(row.chars().count(), 87);
+    // The title is not overwritten.
+    assert!(row.contains("Home"), "{row:?}");
+    // Two long faults: both start visible, each cut.
+    a.status.warning = Some(format!("config.toml: {}", "y".repeat(130)));
+    let row = draw(&a, 87, 26).0[1].clone();
+    assert!(row.contains("✗ theme.toml: unknown") && row.contains("✗ config.toml:"), "{row:?}");
+    assert_eq!(row.matches('…').count(), 2, "{row:?}");
+    assert!(row.contains("Home"), "{row:?}");
+    // A short one beside a long one keeps its whole text.
+    a.status.warning = Some("careful".into());
+    let row = draw(&a, 87, 26).0[1].clone();
+    assert!(row.contains("✗ careful") && row.contains("✗ theme.toml:") && row.contains('…'), "{row:?}");
+}
+
+#[test]
+fn control_center_starts_one_column_in() {
+    let a = ready_app();
+    let rows = draw(&a, 87, 26).0;
+    assert!(rows[2].starts_with(" control center"), "{:?}", rows[2]);
+    assert_eq!(rows[2].chars().nth(14), Some('r'), "ends on column 14 of the 16-wide rail");
 }
 
 #[test]

@@ -20,7 +20,7 @@ use crate::theme::{Shape, Theme};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, BorderType, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Widget};
 
 /// The smallest body that gets the dashboard.
 pub const MIN_W: u16 = 64;
@@ -229,6 +229,8 @@ fn slider_card(buf: &mut Buffer, r: Rect, app: &App, i: usize, id: SliderId, tit
         Loadable::Failed(e) => failed(buf, inner, inner.y + 1, &e, th),
         Loadable::Ready(p) => {
             let muted = app.slider_muted(id);
+            // A tall card leaves one row between its title and the digits; the rest is laid out below it.
+            let inner = if inner.height >= 7 { Rect::new(inner.x, inner.y + 1, inner.width, inner.height - 1) } else { inner };
             // The value in big digits, then "%".
             let mut x = inner.x + 1;
             for ch in p.to_string().chars() {
@@ -299,7 +301,7 @@ fn profile_card(buf: &mut Buffer, r: Rect, app: &App, hits: &mut HitMap) {
                 let style = if active {
                     Style::default().fg(th.on_accent).bg(th.green).add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(th.muted).bg(th.pill)
+                    Style::default().fg(th.ink(th.muted, th.pill, 3.0)).bg(th.pill)
                 };
                 clear(buf, row, style);
                 let text = truncate(&format!("{glyph}  {}", profile_label(name)), usize::from(row.width.saturating_sub(1)));
@@ -343,14 +345,18 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
     let (fg, dim) = match (on, bg != th.bg) {
         (true, true) => (th.on_accent, th.on_accent),
         (true, false) => (t.hue, th.muted),
-        (false, _) => (th.fg, th.muted),
+        (false, _) => (th.fg, th.ink(th.muted, bg, 3.0)),
     };
     let r = if th.shape == Shape::Float { Rect::new(r.x, r.y, r.width - 1, r.height - 1) } else { r };
     // The focus: a frame in the hue around the tile's edge, on the page's background so it shows on
     // a filled tile too.
+    // A 3-row tile (floating, in Mae's window) has no room for a bottom edge and a state row: its frame
+    // stays open at the bottom so the glyph, name or state row is kept.
+    let open = r.height < 4;
     if focused {
         let bt = if th.shape == Shape::Round { BorderType::Rounded } else { shape::frame(th.shape, true).0 };
-        Block::bordered().border_type(bt).border_style(Style::default().fg(t.hue).bg(th.bg)).render(r, buf);
+        let sides = if open { Borders::ALL - Borders::BOTTOM } else { Borders::ALL };
+        Block::bordered().borders(sides).border_type(bt).border_style(Style::default().fg(t.hue).bg(th.bg)).render(r, buf);
     }
     let label = crate::app::toggle_label(t.id);
     let (word, wstyle) = match &state {
@@ -359,11 +365,11 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
         Loadable::Ready(true) => ("ON".to_string(), Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD)),
         Loadable::Ready(false) => ("off".to_string(), Style::default().fg(dim).bg(bg)),
     };
-    let glyph_style = Style::default().fg(if on { fg } else { t.hue }).bg(bg);
+    let glyph_style = Style::default().fg(if on { fg } else { th.ink(t.hue, bg, 3.0) }).bg(bg);
     let label_style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
     let dim_style = Style::default().fg(dim).bg(bg);
     // The last row text may use: the frame's row is kept when focused.
-    let last = r.bottom().saturating_sub(1 + u16::from(focused));
+    let last = r.bottom().saturating_sub(1 + u16::from(focused && !open));
     let y = r.y + 1;
     if r.width >= WIDE_TILE {
         // Glyph, label and state on one row; a subtitle under them; a switch at the foot.
@@ -410,7 +416,7 @@ fn tile(buf: &mut Buffer, r: Rect, app: &App, t: TileSpec, hits: &mut HitMap) {
 /// beside it (else the name alone, cut only when even that does not fit).
 #[allow(clippy::too_many_arguments)]
 fn list_row(buf: &mut Buffer, inner: Rect, y: u16, glyph: &str, hue: Color, name: &str, tag: &str, tag_style: Style, th: &Theme) {
-    put(buf, inner, inner.x + 1, y, glyph, Style::default().fg(hue));
+    put(buf, inner, inner.x + 1, y, glyph, Style::default().fg(th.ink(hue, th.bg, 3.0)));
     let nx = inner.x + 3;
     let end = inner.right().saturating_sub(1);
     let tw = width(tag);
@@ -438,7 +444,9 @@ fn connections_card(buf: &mut Buffer, r: Rect, app: &App) {
                     "WireGuard" | "VPN" => ("󰦝", th.purple),
                     _ => ("󰛳", th.muted),
                 };
-                list_row(buf, inner, y, glyph, hue, &c.name, &format!(" {} ", c.kind), Style::default().fg(hue).bg(th.pill), th);
+                // The tag is `fg_dim` (else `fg`) on `pill`; only the glyph carries the hue.
+                let tag = Style::default().fg(th.ink(th.muted, th.pill, 3.0)).bg(th.pill);
+                list_row(buf, inner, y, glyph, hue, &c.name, &format!(" {} ", c.kind), tag, th);
             }
         }
         Loadable::Failed(e) => failed(buf, inner, inner.y, e, th),

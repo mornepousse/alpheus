@@ -262,7 +262,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
                         let active = *name == p.active;
                         let text = format!(" {} ", profile_label(name));
                         let w = if rail {
-                            let (fg, fill) = if active { (th.on_accent, hue) } else { (th.muted, th.raised) };
+                            let (fg, fill) = if active { (th.on_accent, hue) } else { (th.ink(th.muted, th.raised, 3.0), th.raised) };
                             let fill = if line && !active { th.muted } else { fill };
                             shape::chip(buf, body, x, y, &text, Ink { fg, fill, behind, bold: active }, th.shape)
                         } else {
@@ -276,7 +276,7 @@ fn draw_item(buf: &mut Buffer, body: Rect, y: u16, i: usize, item: &Item, app: &
             }
         }
         Item::DisplayProfiles => displays::draw_profiles(buf, body, y, focused, app, hits, rail),
-        Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits),
+        Item::Output(name) => displays::draw_output(buf, body, y, i, name, focused, app, hits, rail),
         Item::Button(c) => {
             let w = if rail {
                 controls::button(buf, body, lx, y, c, focused, th, hue)
