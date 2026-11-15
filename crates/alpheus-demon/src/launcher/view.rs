@@ -143,8 +143,7 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
             let (emoji, name) = emoji::at(offset).unwrap_or_default();
             (None, format!("{emoji}  {name}"), "emoji".into())
         }
-        // The `$` prefix's row arrives with its own task.
-        Source::Shell => (None, String::new(), String::new()),
+        Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)), "shell".into()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
@@ -329,7 +328,17 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 }
             }
         }
-        Source::Shell => {}
+        Source::Shell => {
+            let text = l.prefixed().map_or("", |(_, t)| t);
+            let tail = [
+                (String::new(), Style::NORMAL),
+                ("enter  run in background".to_string(), Style::NORMAL),
+                ("ctrl+enter  run in terminal".to_string(), Style::NORMAL),
+            ];
+            let room = budget.saturating_sub(tail.len());
+            out.extend(capped_wrap(text, width, room).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+            out.extend(tail);
+        }
         Source::Calc => {
             out.push((l.query.trim().to_string(), Style::BOLD_ACCENT));
             match &l.calc {

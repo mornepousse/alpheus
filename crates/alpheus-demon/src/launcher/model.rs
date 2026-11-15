@@ -388,6 +388,7 @@ impl Launcher {
             self.results = match p {
                 Prefix::Search if !text.is_empty() => vec![Hit { source: Source::Search, score: u32::MAX, frecency: 0 }],
                 Prefix::Emoji => self.ranker.rank_emoji(text, usize::from(self.config.rows)),
+                Prefix::Shell if !text.is_empty() => vec![Hit { source: Source::Shell, score: u32::MAX, frecency: 0 }],
                 _ => Vec::new(),
             };
             self.calc = None;
@@ -516,9 +517,17 @@ impl Launcher {
                 Some(Source::Calc) => self.copy(false),
                 Some(Source::Search) => self.search(),
                 Some(Source::Emoji(offset)) => self.emoji(offset, false),
-                // The `$` prefix's row arrives with its own task.
-                Some(Source::Shell) | None => Outcome::Nothing,
+                Some(Source::Shell) => self.dollar(false),
+                None => Outcome::Nothing,
             },
+        }
+    }
+
+    /// The `$` row: the text after the prefix, through `sh -c`, detached or held in the terminal.
+    fn dollar(&self, terminal: bool) -> Outcome {
+        match self.prefixed() {
+            Some((Prefix::Shell, text)) if !text.is_empty() => Outcome::Activate(Activation::Shell { text: text.to_string(), terminal }),
+            _ => Outcome::Nothing,
         }
     }
 
@@ -572,6 +581,7 @@ impl Launcher {
                 Outcome::Activate(Activation::Command { index, terminal: false })
             }
             (Mode::Commands, _) => self.shell(false),
+            (_, Some(Source::Shell)) => self.dollar(true),
             (_, Some(Source::Calc)) => self.copy(true),
             (_, Some(Source::Emoji(offset))) => self.emoji(offset, true),
             (_, Some(Source::App(index))) => {

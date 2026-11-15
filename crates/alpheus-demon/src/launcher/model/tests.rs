@@ -848,3 +848,30 @@ fn a_password_dmenu_never_reads_a_prefix() {
     assert_eq!(l.prefixed(), None);
     assert!(l.results.is_empty());
 }
+
+#[test]
+fn a_dollar_shows_one_shell_row() {
+    let mut l = launcher();
+    typed(&mut l, "$ sleep 5 && notify-send hi");
+    assert_eq!(sources(&l), [Source::Shell]);
+    let text = "sleep 5 && notify-send hi".to_string();
+    assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: text.clone(), terminal: false }));
+    assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Shell { text: text.clone(), terminal: true }));
+    assert_eq!(l.click(0, false), activate(Activation::Shell { text: text.clone(), terminal: false }));
+    assert_eq!(l.click(0, true), activate(Activation::Shell { text, terminal: true }));
+    // Nothing after the prefix: no row, nothing to run.
+    let mut l = launcher();
+    typed(&mut l, "$ ");
+    assert!(l.results.is_empty());
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+}
+
+#[test]
+fn a_configured_dollar_prefix_still_enters_commands() {
+    let config = LauncherConfig::from_text("[prefixes]\ncommands = \"$\"\n").unwrap();
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    typed(&mut l, "$");
+    assert_eq!(l.mode, Mode::Commands);
+    assert!(!l.results.iter().any(|h| h.source == Source::Shell));
+}

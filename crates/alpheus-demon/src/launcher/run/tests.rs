@@ -485,3 +485,22 @@ fn typed_emoji(l: &mut Launcher) {
         l.key(crate::keys::Key::Char(c));
     }
 }
+
+#[test]
+fn the_dollar_text_never_reaches_history_or_log() {
+    let bin = bin("dollar");
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    for c in ["sh -c -- ls -la $HOME", "foot --hold -e sh -c -- ls -la $HOME"] {
+        f.ok(&format!("{SCOPE} {c}"), "");
+    }
+    let d = TempDir::new("run-dollar-state");
+    let h = d.join("launcher-history");
+    let mut l = launcher();
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
+    let text = "ls -la $HOME".to_string();
+    assert_eq!(perform(&mut l, Activation::Shell { text: text.clone(), terminal: false }, &c), Ok(Done::Close));
+    assert_eq!(perform(&mut l, Activation::Shell { text, terminal: true }, &c), Ok(Done::Close));
+    assert_eq!(f.calls(), [format!("{SCOPE} sh -c -- ls -la $HOME"), format!("{SCOPE} foot --hold -e sh -c -- ls -la $HOME")]);
+    assert!(!h.exists(), "the typed text is never recorded");
+}

@@ -16,7 +16,7 @@ use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
 use alpheus_demon::launcher::history::History;
 use alpheus_demon::launcher::matching::Mode;
-use alpheus_demon::launcher::model::{Launcher, Outcome};
+use alpheus_demon::launcher::model::{Activation, Launcher, Outcome};
 use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
@@ -1599,29 +1599,29 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             let n = fresh().results.len();
             for i in 0..n {
                 for secondary in [false, true] {
-                    outcomes.push((fresh().click(i, secondary), mode));
+                    outcomes.push((fresh().click(i, secondary), mode, false));
                 }
             }
             let mut typed = fresh();
             for c in "ls -la".chars() {
                 typed.key(Key::Char(c));
             }
-            outcomes.push((typed.key(Key::Enter), mode));
-            outcomes.push((typed.key(Key::CtrlEnter), mode));
+            outcomes.push((typed.key(Key::Enter), mode, false));
+            outcomes.push((typed.key(Key::CtrlEnter), mode, false));
             // A typed query reaches the source entries (in All only).
             let mut sourced = fresh();
             for c in "zone".chars() {
                 sourced.key(Key::Char(c));
             }
-            outcomes.push((sourced.key(Key::Enter), mode));
-            outcomes.push((sourced.key(Key::CtrlEnter), mode));
+            outcomes.push((sourced.key(Key::Enter), mode, false));
+            outcomes.push((sourced.key(Key::CtrlEnter), mode, false));
             // The `?` row (launcher 2): `open` plus the percent-encoded URL, never the raw text.
             let mut searched = fresh();
             for c in "? rust ratatui".chars() {
                 searched.key(Key::Char(c));
             }
-            outcomes.push((searched.key(Key::Enter), mode));
-            outcomes.push((searched.key(Key::CtrlEnter), mode));
+            outcomes.push((searched.key(Key::Enter), mode, false));
+            outcomes.push((searched.key(Key::CtrlEnter), mode, false));
             if mode == Mode::All {
                 // The prefix route into Commands mode (Global Constraints:
                 // `>` by default): starting in All and typing the prefix
@@ -1632,9 +1632,16 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                 for c in ">ls -la".chars() {
                     via_prefix.key(Key::Char(c));
                 }
-                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands));
+                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands, false));
+                // The `$` row (launcher 2): `sh -c` from All, for the text after the prefix only.
+                let mut dollar = fresh();
+                for c in "$ ls -la".chars() {
+                    dollar.key(Key::Char(c));
+                }
+                outcomes.push((dollar.key(Key::Enter), mode, true));
+                outcomes.push((dollar.key(Key::CtrlEnter), mode, true));
             }
-            for (o, mode) in outcomes {
+            for (o, mode, dollar) in outcomes {
                 let Outcome::Activate(a) = o else { continue };
                 let fake = FakeExecutor::new();
                 let mut l = fresh();
@@ -1663,9 +1670,17 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     } else if let Some(text) =
                         unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
                     {
-                        assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
-                        assert!(matches!(text, "ls -la" | "zone" | "? rust ratatui"), "only typed text goes through the shell: {c}");
-                        if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
+                        let held = !unwrapped.starts_with("sh");
+                        if dollar {
+                            // From All, only the text that followed the `$`.
+                            assert_eq!(mode, Mode::All, "a `$` row outside the All mode: {c}");
+                            assert_eq!(text, "ls -la", "only the text after the `$` goes through the shell: {c}");
+                            if held { "prefix terminal hold shell" } else { "prefix shell" }
+                        } else {
+                            assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
+                            assert!(matches!(text, "ls -la" | "zone" | "? rust ratatui"), "only typed text goes through the shell: {c}");
+                            if held { "terminal hold shell" } else { "shell" }
+                        }
                     } else {
                         panic!("command outside the allowlist: {c}")
                     };
@@ -1681,6 +1696,8 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         ("terminal hold command", true),
         ("shell", true),
         ("terminal hold shell", false),
+        ("prefix shell", true),
+        ("prefix terminal hold shell", false),
         ("focus", false),
         ("source entry", true),
         ("source entry", false),
@@ -1690,6 +1707,24 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+    // No click on a non-prefix result in All ever reaches `sh`: the `$` row is the only way in.
+    for query in ["", "ls -la", "zone", "firefox", "htop"] {
+        let in_all = || {
+            let mut l = Launcher::for_apps(LauncherConfig::default(), windows.clone(), History::empty(200), 1_800_000_000);
+            l.set_catalog(catalog.clone());
+            l.set_entries(entries.clone());
+            for c in query.chars() {
+                l.key(Key::Char(c));
+            }
+            l
+        };
+        for i in 0..in_all().results.len() {
+            for secondary in [false, true] {
+                let o = in_all().click(i, secondary);
+                assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "{query:?}: click {i} reached the shell");
+            }
+        }
+    }
     // The joined call lines above cannot tell one argument from several: the entry's argv, as
     // given to the executor, is the source's `run` with the line as exactly one element.
     for spawner in [Spawner::SystemdScope, Spawner::Detached] {

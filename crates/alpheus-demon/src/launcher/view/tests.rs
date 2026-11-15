@@ -666,3 +666,17 @@ fn an_emoji_row_keeps_its_name_visible() {
     typed(&mut c, ":flag");
     assert_eq!(help_text(&c), "esc close");
 }
+
+#[test]
+fn the_shell_row_and_its_help() {
+    let mut l = launcher();
+    typed(&mut l, "$ ls -la");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("Run in a shell: ls -la") && row.contains("shell"), "{row}");
+    assert_eq!(help_text(&l), "enter run \u{b7} ctrl+enter run in terminal \u{b7} esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "ls -la", "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  run in background"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "ctrl+enter  run in terminal"), "{lines:?}");
+}
