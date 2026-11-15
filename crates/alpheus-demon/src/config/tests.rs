@@ -685,3 +685,18 @@ fn battery_warn_defaults_dedups_and_sorts() {
         );
     }
 }
+
+#[test]
+fn quick_dnd_until() {
+    assert_eq!(QuickConfig::default().dnd_until_hm(), (8, 0));
+    let unchecked = QuickConfig { dnd_until: "nonsense".into(), ..QuickConfig::default() };
+    assert_eq!(unchecked.dnd_until_hm(), (8, 0), "a text the check would refuse falls back to 8:00");
+    let other = QuickConfig { dnd_until: "21:15".into(), ..QuickConfig::default() };
+    assert_eq!(other.dnd_until_hm(), (21, 15));
+    let c = BarConfig::from_text("[quick]\ndnd_until = \"7:30\"\n").unwrap();
+    assert_eq!(c.quick.dnd_until_hm(), (7, 30));
+    for bad in ["24:00", "8h", ""] {
+        let e = BarConfig::from_text(&format!("[quick]\ndnd_until = \"{bad}\"\n")).unwrap_err();
+        assert!(e.contains("quick.dnd_until"), "{bad:?}: {e}");
+    }
+}

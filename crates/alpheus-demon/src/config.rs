@@ -69,6 +69,7 @@
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
 //! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
+//! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -589,6 +590,15 @@ pub struct QuickConfig {
     /// (`resolve_mixer`; an unresolved config, a test's default, shows no row); an empty list
     /// hides the row.
     pub mixer: Option<Vec<String>>,
+    /// The do-not-disturb detail's "Until" entry, `HH:MM` (local time).
+    pub dnd_until: String,
+}
+
+impl QuickConfig {
+    /// `dnd_until` as `(hour, minute)`; 8:00 for a text `check_quick` would have refused.
+    pub fn dnd_until_hm(&self) -> (u32, u32) {
+        alpheus_commun::local_time::parse_clock(&self.dnd_until).unwrap_or((8, 0))
+    }
 }
 
 impl Default for QuickConfig {
@@ -606,6 +616,7 @@ impl Default for QuickConfig {
             poweroff: argv(&["systemctl", "poweroff"]),
             wifi_more: None,
             mixer: None,
+            dnd_until: "08:00".into(),
         }
     }
 }
@@ -694,6 +705,9 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
         if command.iter().any(|a| a.contains('\0')) {
             return Err(format!("{key}: an argument holds a NUL"));
         }
+    }
+    if alpheus_commun::local_time::parse_clock(&q.dnd_until).is_none() {
+        return Err(format!("quick.dnd_until: expected a local time HH:MM (0:00 to 23:59), not {:?}", q.dnd_until));
     }
     for (key, t) in [("quick.keep_awake", &q.keep_awake), ("quick.night_light", &q.night_light)] {
         if t.toggle.is_empty() && !t.state.is_empty() {

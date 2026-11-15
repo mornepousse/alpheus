@@ -1372,7 +1372,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 47] = [
+const NO_THREAD_NOR_COMMAND: [&str; 48] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1402,6 +1402,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 47] = [
     "quick_wifi.rs",
     "quick_secret.rs",
     "quick_bt.rs",
+    "quick_dnd.rs",
     "compositor/mango.rs",
     "sources/mango.rs",
     "compositor/sway.rs",
@@ -1990,7 +1991,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_dnd.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -2011,7 +2012,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 4, "quick.rs, quick_state.rs, quick_wifi.rs and quick_bt.rs");
+    assert_eq!(checked, 5, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs and quick_dnd.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2034,7 +2035,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         ..SoundState::default()
     };
     let profile = ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() };
-    let live = Live { sound: Some(&sound), dnd: Some(false), profile: Some(&profile), config: &config, bluetooth: None };
+    let live = Live { sound: Some(&sound), dnd: Some(false), dnd_end: None, profile: Some(&profile), config: &config, bluetooth: None };
     let sinks = vec![Sink { id: 99, label: "Speaker".into(), default: false }, Sink { id: 122, label: "AG06/AG03".into(), default: true }];
     let backlight = Backlight { device: "intel_backlight".into(), percent: 50 };
     let fresh = || {
@@ -2272,8 +2273,17 @@ fn every_quick_command_stays_on_the_allowlist() {
 #[test]
 fn the_quick_panel_has_no_panicking_path() {
     let files = source_files();
-    for name in ["quick.rs", "quick_state.rs", "quick_app.rs", "quick_wifi.rs", "quick_secret.rs", "quick_bt.rs", "session.rs", "bt_app.rs"]
-    {
+    for name in [
+        "quick.rs",
+        "quick_state.rs",
+        "quick_app.rs",
+        "quick_wifi.rs",
+        "quick_secret.rs",
+        "quick_bt.rs",
+        "quick_dnd.rs",
+        "session.rs",
+        "bt_app.rs",
+    ] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

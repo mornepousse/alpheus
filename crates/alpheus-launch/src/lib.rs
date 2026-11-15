@@ -15,6 +15,7 @@ use alpheus_commun::launcher_ipc::{
     Reply, Request, exchange_waiting, numbered_lines, wipe,
 };
 use alpheus_commun::local_time;
+pub use alpheus_commun::local_time::parse_clock;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -234,17 +235,6 @@ pub fn parse_duration(s: &str) -> Option<u32> {
     };
     let secs = hours.checked_mul(3600)?.checked_add(minutes.checked_mul(60)?)?;
     (DND_MIN_SECS..=DND_MAX_SECS).contains(&secs).then_some(secs)
-}
-
-/// `H:MM` or `HH:MM`, from 0:00 to 23:59.
-pub fn parse_clock(s: &str) -> Option<(u32, u32)> {
-    let (h, m) = s.split_once(':')?;
-    let all_digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
-    if !(1..=2).contains(&h.len()) || m.len() != 2 || !all_digits(h) || !all_digits(m) {
-        return None;
-    }
-    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
-    (h <= 23 && m <= 59).then_some((h, m))
 }
 
 /// The request an invocation sends, `now` being the Unix time (for `--until`). Only the

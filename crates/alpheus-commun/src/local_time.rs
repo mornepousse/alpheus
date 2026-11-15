@@ -47,6 +47,17 @@ pub fn next_local(hour: u32, minute: u32, now: i64) -> Option<i64> {
     None
 }
 
+/// `H:MM` or `HH:MM`, from 0:00 to 23:59.
+pub fn parse_clock(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let all_digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    if !(1..=2).contains(&h.len()) || m.len() != 2 || !all_digits(h) || !all_digits(m) {
+        return None;
+    }
+    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
+    (h <= 23 && m <= 59).then_some((h, m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +102,16 @@ mod tests {
         let now = now();
         assert_eq!(next_local(24, 0, now), None);
         assert_eq!(next_local(0, 60, now), None);
+    }
+
+    #[test]
+    fn clocks() {
+        assert_eq!(parse_clock("07:30"), Some((7, 30)));
+        assert_eq!(parse_clock("7:30"), Some((7, 30)));
+        assert_eq!(parse_clock("23:59"), Some((23, 59)));
+        assert_eq!(parse_clock("0:00"), Some((0, 0)));
+        for text in ["24:00", "12:60", "1230", "12:3", "", ":30", "+1:30"] {
+            assert_eq!(parse_clock(text), None, "{text:?}");
+        }
     }
 }

@@ -425,3 +425,17 @@ fn a_view_without_an_adapter_of_this_open_lets_the_connection_go() {
     assert!(!bluez_left(Some(3), Some(&bt_view()), Some(3)), "an adapter: kept");
     assert!(!bluez_left(Some(2), None, Some(3)), "an earlier open's close: kept");
 }
+
+#[test]
+fn dnd_request_is_the_cli_request() {
+    use crate::quick_dnd::DndChoice;
+    use alpheus_commun::launcher_ipc::{DndEnd, DndVerb};
+    let now = 1_800_000_000;
+    let at = (8, 0);
+    assert_eq!(dnd_request(DndChoice::Off, at, now), Some(Request::Dnd(DndVerb::Off)));
+    assert_eq!(dnd_request(DndChoice::For(1800), at, now), Some(Request::DndOn(DndEnd::For(1800))));
+    assert_eq!(dnd_request(DndChoice::Untimed, at, now), Some(Request::Dnd(DndVerb::On)));
+    let Some(Request::DndOn(DndEnd::Until(t))) = dnd_request(DndChoice::Until, at, now) else { panic!("until") };
+    let t = t as i64;
+    assert!(now < t && t <= now + 90_000, "{} s ahead", t - now);
+}

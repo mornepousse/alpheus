@@ -1087,7 +1087,7 @@ mod tests {
         use crate::quick::Live;
         let today = LocalTime { year: 2026, month: 10, day: 5, weekday: 1, hour: 9, minute: 30, second: 0 };
         let config = QuickConfig::default();
-        let live = Live { sound: None, dnd: None, profile: None, config: &config, bluetooth: None };
+        let live = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &config, bluetooth: None };
         let center = Center::new(&NotificationsConfig::default(), false);
         let bodies = [
             (PopupBody::Calendar(Calendar::new(&today, 1, false)), Some(ModulePopup::Calendar)),
