@@ -680,3 +680,14 @@ fn the_shell_row_and_its_help() {
     assert!(lines.iter().any(|t| t == "enter  run in background"), "{lines:?}");
     assert!(lines.iter().any(|t| t == "ctrl+enter  run in terminal"), "{lines:?}");
 }
+
+#[test]
+fn the_switcher_help_and_empty_text() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), windows());
+    assert_eq!(help_text(&l), "enter focus · tab next · esc close");
+    l = Launcher::for_windows(LauncherConfig::default(), vec![]);
+    let (_, rows) = draw(&mut l, 100);
+    let text = snapshot(&rows);
+    assert!(text.contains("no window open"), "{text}");
+    assert!(!text.contains("scanning"), "{text}");
+}

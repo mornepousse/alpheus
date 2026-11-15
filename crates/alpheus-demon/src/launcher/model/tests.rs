@@ -875,3 +875,91 @@ fn a_configured_dollar_prefix_still_enters_commands() {
     assert_eq!(l.mode, Mode::Commands);
     assert!(!l.results.iter().any(|h| h.source == Source::Shell));
 }
+
+fn focused(mut w: Toplevel) -> Toplevel {
+    w.focused = true;
+    w
+}
+
+/// The backends' order: the previous window first, the focused one last.
+fn three() -> Vec<Toplevel> {
+    vec![window("id:2", "foot", "prev"), window("id:1", "foot", "older"), focused(window("id:3", "foot", "cur"))]
+}
+
+fn switcher() -> Launcher {
+    Launcher::for_windows(LauncherConfig::default(), three())
+}
+
+#[test]
+fn the_switcher_opens_on_the_previous_window() {
+    let mut l = switcher();
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)));
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Window(0)));
+    assert_eq!(l.mode, Mode::Windows);
+    assert!(l.is_switcher());
+    assert!(l.catalog.is_none());
+}
+
+#[test]
+fn step_moves_down_and_wraps() {
+    let mut l = switcher();
+    for want in [1, 2, 0] {
+        assert_eq!(l.step(1), Outcome::Redraw);
+        assert_eq!(l.selected, want);
+    }
+    assert_eq!(l.step(-1), Outcome::Redraw);
+    assert_eq!(l.selected, 2);
+}
+
+#[test]
+fn tab_steps_in_the_switcher_and_never_switches_mode() {
+    let mut l = switcher();
+    assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+    assert_eq!(l.selected, 1);
+    assert_eq!(l.key(Key::BackTab), Outcome::Redraw);
+    assert_eq!(l.selected, 0);
+    assert_eq!(l.click_mode(Mode::All), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Windows);
+    assert!(l.is_switcher());
+}
+
+#[test]
+fn stepping_wraps_and_survives_a_window_update() {
+    let mut l = switcher();
+    let mut w = vec![window("id:4", "foot", "new")];
+    w.extend(three());
+    l.set_windows(w);
+    assert_eq!(l.selected, 0, "before any step, the top");
+    l.step(1);
+    let older = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
+        Some(Source::Window(i)) => l.windows[i].selector.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(older(&l), "id:2");
+    l.step(1);
+    assert_eq!(older(&l), "id:1");
+    let mut w = three();
+    w.reverse();
+    l.set_windows(w);
+    assert_eq!(older(&l), "id:1", "kept by identity");
+    l.set_windows(vec![window("id:2", "foot", "prev"), focused(window("id:3", "foot", "cur"))]);
+    assert_eq!(l.selected, 0, "closed: back to the top");
+}
+
+#[test]
+fn a_switcher_with_no_window_or_one() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), vec![]);
+    assert_eq!(l.step(1), Outcome::Nothing);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    let mut l = Launcher::for_windows(LauncherConfig::default(), vec![focused(window("id:3", "foot", "cur"))]);
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)));
+    assert_eq!(l.step(1), Outcome::Nothing);
+}
+
+#[test]
+fn a_typed_query_filters_then_steps() {
+    let mut l = switcher();
+    typed(&mut l, "old");
+    assert_eq!(l.results.len(), 1);
+    assert_eq!(l.step(1), Outcome::Nothing);
+}

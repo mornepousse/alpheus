@@ -186,7 +186,7 @@ pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> Launc
 /// Whether a scan's deliveries (catalog, entries) are for this model: an app launcher only, never
 /// a script menu or the calculator.
 pub(crate) fn takes_scan_deliveries(model: &Launcher) -> bool {
-    !model.is_bare()
+    !model.is_bare() && !model.is_switcher()
 }
 
 /// Only an app launcher is fed the compositor's windows: a script menu's
@@ -705,6 +705,13 @@ mod tests {
 
     fn script_model() -> Launcher {
         Launcher::for_script(LauncherConfig::default(), None, vec!["a".into()])
+    }
+
+    #[test]
+    fn a_switcher_takes_no_scan_delivery_but_is_fed_windows() {
+        let m = Launcher::for_windows(LauncherConfig::default(), vec![]);
+        assert!(!takes_scan_deliveries(&m));
+        assert!(feeds_windows(Some(&m)));
     }
 
     #[test]

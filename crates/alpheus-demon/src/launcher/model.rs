@@ -139,6 +139,8 @@ pub struct Launcher {
     /// hasty Enter must not land on that window once apps outrank it. Once `moved` is set,
     /// `identity` keeps tracking the user's choice as before, until the next refilter.
     moved: bool,
+    /// The window switcher (launcher 2): `for_windows` only. Tab steps instead of switching mode.
+    switcher: bool,
 }
 
 impl Launcher {
@@ -168,6 +170,7 @@ impl Launcher {
             by_prefix: false,
             list_rows,
             moved: false,
+            switcher: false,
         }
     }
 
@@ -178,6 +181,16 @@ impl Launcher {
         l.windows = windows;
         l.history = history;
         l.now = now;
+        l.refilter();
+        l
+    }
+
+    /// The window switcher: windows only, in the backends' order, no history and no catalog; the
+    /// selection starts on the previous window (the first one).
+    pub fn for_windows(config: LauncherConfig, windows: Vec<Toplevel>) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Windows);
+        l.switcher = true;
+        l.windows = windows;
         l.refilter();
         l
     }
@@ -210,6 +223,10 @@ impl Launcher {
         let mut l = Launcher::new(config, Mode::Calc);
         l.refilter();
         l
+    }
+
+    pub fn is_switcher(&self) -> bool {
+        self.switcher && self.mode == Mode::Windows
     }
 
     pub fn is_script(&self) -> bool {
@@ -322,6 +339,8 @@ impl Launcher {
             Key::PageDown => self.move_by(page),
             Key::Home => self.move_by(i32::MIN),
             Key::End => self.move_by(i32::MAX),
+            Key::Tab if self.is_switcher() => self.step(1),
+            Key::BackTab if self.is_switcher() => self.step(-1),
             Key::Tab => self.switch_mode(self.mode.next()),
             Key::BackTab => self.switch_mode(self.mode.previous()),
             // No binding: the preview panel they used to toggle always shows now (view.rs,
@@ -354,7 +373,7 @@ impl Launcher {
     }
 
     fn switch_mode(&mut self, m: Mode) -> Outcome {
-        if self.is_bare() || m == self.mode {
+        if self.is_bare() || self.switcher || m == self.mode {
             return Outcome::Nothing;
         }
         self.mode = m;
@@ -474,6 +493,24 @@ impl Launcher {
             return Outcome::Nothing;
         }
         let to = list::step(self.selected, delta, self.results.len(), |_| true);
+        if to == self.selected {
+            return Outcome::Nothing;
+        }
+        self.moved = true;
+        self.selected = to;
+        self.keep_visible();
+        Outcome::Redraw
+    }
+
+    /// The switcher's Tab: moves the selection by `by`, wrapping around the results (unlike
+    /// `move_by`, which clamps).
+    pub fn step(&mut self, by: i32) -> Outcome {
+        let n = i64::try_from(self.results.len()).unwrap_or(i64::MAX);
+        if n == 0 {
+            return Outcome::Nothing;
+        }
+        let to = (i64::try_from(self.selected).unwrap_or(0) + i64::from(by)).rem_euclid(n);
+        let to = usize::try_from(to).unwrap_or(0);
         if to == self.selected {
             return Outcome::Nothing;
         }

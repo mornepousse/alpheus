@@ -208,6 +208,9 @@ fn help_text(l: &Launcher) -> &'static str {
         Some((Prefix::Shell, _)) => return "enter run · ctrl+enter run in terminal · esc close",
         None => {}
     }
+    if l.is_switcher() {
+        return "enter focus · tab next · esc close";
+    }
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
         Mode::Calc if l.config.copy.is_empty() => "esc close",
@@ -392,6 +395,7 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
                     }
                 }
                 Mode::Calc => "type an expression",
+                _ if l.is_switcher() => "no window open",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",
             };
