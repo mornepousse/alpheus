@@ -7,6 +7,7 @@
 use crate::compositor::Toplevel;
 use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
+use crate::launcher::emoji;
 use crate::launcher::history::{History, source_id};
 use crate::launcher::sources::SourceEntry;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -409,6 +410,26 @@ impl Ranker {
     #[cfg(test)]
     pub fn preparations(&self) -> usize {
         self.preparations
+    }
+
+    /// The `:` prefix: the emoji whose name matches `text` (fuzzy, smart case), best score first,
+    /// the table's order between equal scores, at most `limit`. No frecency: an emoji is never
+    /// recorded. The table is walked without being copied; only the matches are kept.
+    pub fn rank_emoji(&mut self, text: &str, limit: usize) -> Vec<Hit> {
+        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
+        if pattern.atoms.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let mut hits: Vec<Hit> = emoji::entries()
+            .filter_map(|(offset, _, name)| {
+                let score = self.score(&pattern, name)?;
+                Some(Hit { source: Source::Emoji(offset), score, frecency: 0 })
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| b.score.cmp(&a.score).then(index(a.source).cmp(&index(b.source))));
+        hits.truncate(limit);
+        hits.shrink_to_fit();
+        hits
     }
 
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {

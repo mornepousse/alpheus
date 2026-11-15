@@ -8,6 +8,7 @@ use crate::compositor::Toplevel;
 use crate::keys::Key;
 use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
+use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
 use crate::launcher::prefix::{self, Prefix, search_url};
@@ -364,10 +365,7 @@ impl Launcher {
     /// The query's prefix (`?`, `:`, `$`) and its text: only in All and never under `--password`
     /// (the secret is not parsed). A configured mode prefix is taken before, by `take_prefix`.
     pub fn prefixed(&self) -> Option<(Prefix, &str)> {
-        if self.mode != Mode::All || self.password {
-            return None;
-        }
-        prefix::split(&self.query, self.config.search_enabled())
+        split_query(self.mode, self.password, &self.query, &self.config)
     }
 
     fn query_changed(&mut self) -> Outcome {
@@ -385,9 +383,13 @@ impl Launcher {
             return;
         }
         // A prefix lists only its own rows: no catalog ranking, no calculator.
-        if let Some((p, text)) = self.prefixed() {
-            let row = (p == Prefix::Search && !text.is_empty()).then_some(Hit { source: Source::Search, score: u32::MAX, frecency: 0 });
-            self.results = row.into_iter().collect();
+        // Field by field, not `prefixed()`: the ranker is borrowed mutably below.
+        if let Some((p, text)) = split_query(self.mode, self.password, &self.query, &self.config) {
+            self.results = match p {
+                Prefix::Search if !text.is_empty() => vec![Hit { source: Source::Search, score: u32::MAX, frecency: 0 }],
+                Prefix::Emoji => self.ranker.rank_emoji(text, usize::from(self.config.rows)),
+                _ => Vec::new(),
+            };
             self.calc = None;
             return;
         }
@@ -513,8 +515,9 @@ impl Launcher {
                 Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
                 Some(Source::Calc) => self.copy(false),
                 Some(Source::Search) => self.search(),
-                // Rows of the `:` and `$` prefixes arrive with their own tasks.
-                Some(Source::Emoji(_) | Source::Shell) | None => Outcome::Nothing,
+                Some(Source::Emoji(offset)) => self.emoji(offset, false),
+                // The `$` prefix's row arrives with its own task.
+                Some(Source::Shell) | None => Outcome::Nothing,
             },
         }
     }
@@ -524,6 +527,16 @@ impl Launcher {
         match self.prefixed() {
             Some((Prefix::Search, text)) if !text.is_empty() => {
                 Outcome::Activate(Activation::Open { url: search_url(&self.config.search, text) })
+            }
+            _ => Outcome::Nothing,
+        }
+    }
+
+    /// An emoji row's copy: the emoji, or with `name` its name. No `copy` command copies nothing.
+    fn emoji(&self, offset: usize, name: bool) -> Outcome {
+        match emoji::at(offset) {
+            Some((emoji, label)) if !self.config.copy.is_empty() => {
+                Outcome::Activate(Activation::Copy { text: (if name { label } else { emoji }).to_string() })
             }
             _ => Outcome::Nothing,
         }
@@ -560,6 +573,7 @@ impl Launcher {
             }
             (Mode::Commands, _) => self.shell(false),
             (_, Some(Source::Calc)) => self.copy(true),
+            (_, Some(Source::Emoji(offset))) => self.emoji(offset, true),
             (_, Some(Source::App(index))) => {
                 let action = self.app_has_actions(index).then_some(0);
                 Outcome::Activate(Activation::App { index, action })
@@ -604,6 +618,14 @@ impl Launcher {
     pub fn show_message(&mut self, m: String) {
         self.message = Some(m);
     }
+}
+
+/// `Launcher::prefixed`'s rule on loose fields.
+fn split_query<'a>(mode: Mode, password: bool, query: &'a str, config: &LauncherConfig) -> Option<(Prefix, &'a str)> {
+    if mode != Mode::All || password {
+        return None;
+    }
+    prefix::split(query, config.search_enabled())
 }
 
 /// `--password`: the typed text is overwritten before it is freed (where practical: the copies

@@ -460,3 +460,28 @@ fn open_missing_says_the_program_only() {
     assert_eq!(r, Err("xdg-open: program not found".to_string()));
     assert!(fake.calls().is_empty());
 }
+
+#[test]
+fn emoji_are_never_recorded() {
+    let bin = stubs("copy-emoji", &["wl-copy"]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    fake.ok("wl-copy", "");
+    let h = TempDir::new("run-emoji-history").join("history");
+    let mut l = launcher();
+    typed_emoji(&mut l);
+    let activation = match l.key(crate::keys::Key::Enter) {
+        crate::launcher::model::Outcome::Activate(a) => a,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(activation, Activation::Copy { .. }), "{activation:?}");
+    assert_eq!(perform(&mut l, activation, &ctx(&fake, Spawner::Detached, Some(&h), &dirs)), Ok(Done::Close));
+    assert_eq!(fake.inputs(), [("wl-copy".to_string(), "\u{1f600}".as_bytes().to_vec())]);
+    assert!(!h.exists(), "no history file written");
+}
+
+fn typed_emoji(l: &mut Launcher) {
+    for c in ":grinning face".chars() {
+        l.key(crate::keys::Key::Char(c));
+    }
+}

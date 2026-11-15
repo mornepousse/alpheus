@@ -13,6 +13,7 @@
 use crate::compositor::Toplevel;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
+use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
 use crate::launcher::prefix::{self, Prefix, search_url};
@@ -138,8 +139,12 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
         Source::Calc => (Some(CALC_ICON), calc_text(l), "calculator".into()),
         Source::Search => (Some(SEARCH_ICON), format!("Search the web: {}", l.prefixed().map_or("", |(_, t)| t)), "web".into()),
-        // Rows of the `:` and `$` prefixes arrive with their own tasks.
-        Source::Emoji(_) | Source::Shell => (None, String::new(), String::new()),
+        Source::Emoji(offset) => {
+            let (emoji, name) = emoji::at(offset).unwrap_or_default();
+            (None, format!("{emoji}  {name}"), "emoji".into())
+        }
+        // The `$` prefix's row arrives with its own task.
+        Source::Shell => (None, String::new(), String::new()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
@@ -313,7 +318,18 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
             out.extend(capped_wrap(&search_url(&l.config.search, text), width, url_budget).into_iter().map(|t| (t, Style::MUTED)));
             out.extend(tail);
         }
-        Source::Emoji(_) | Source::Shell => {}
+        Source::Emoji(offset) => {
+            if let Some((emoji, name)) = emoji::at(offset) {
+                out.extend(capped_wrap(name, width, budget.saturating_sub(4)).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+                out.push((emoji.to_string(), Style::NORMAL));
+                if !l.config.copy.is_empty() {
+                    out.push((String::new(), Style::NORMAL));
+                    out.push(("enter  copy".to_string(), Style::NORMAL));
+                    out.push(("ctrl+enter  copy name".to_string(), Style::NORMAL));
+                }
+            }
+        }
+        Source::Shell => {}
         Source::Calc => {
             out.push((l.query.trim().to_string(), Style::BOLD_ACCENT));
             match &l.calc {

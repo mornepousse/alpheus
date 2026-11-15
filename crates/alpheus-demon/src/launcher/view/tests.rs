@@ -644,7 +644,25 @@ fn a_bare_prefix_shows_its_hint_not_scanning() {
         assert!(!snapshot(&rows).contains("scanning"), "{query}");
     }
     let mut l = launcher();
-    typed(&mut l, ":zzz");
+    typed(&mut l, ":zzqx");
     let (_, rows) = draw(&mut l, 100);
     assert!(snapshot(&rows).contains("no match"));
+}
+
+#[test]
+fn an_emoji_row_keeps_its_name_visible() {
+    let mut l = launcher();
+    typed(&mut l, ":flag: France");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("flag: France") && row.contains("\u{1f1eb}\u{1f1f7}"), "{row}");
+    assert_eq!(help_text(&l), "enter copy \u{b7} ctrl+enter copy name \u{b7} esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "flag: France", "{lines:?}");
+    assert!(lines.iter().any(|t| t == "\u{1f1eb}\u{1f1f7}"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  copy") && lines.iter().any(|t| t == "ctrl+enter  copy name"), "{lines:?}");
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut c = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    typed(&mut c, ":flag");
+    assert_eq!(help_text(&c), "esc close");
 }

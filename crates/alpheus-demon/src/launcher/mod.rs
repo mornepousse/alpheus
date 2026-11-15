@@ -6,6 +6,7 @@
 pub mod calc;
 pub mod config;
 pub mod desktop;
+pub mod emoji;
 pub mod history;
 pub mod host;
 pub mod matching;

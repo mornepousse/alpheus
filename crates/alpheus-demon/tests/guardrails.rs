@@ -1372,7 +1372,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 49] = [
+const NO_THREAD_NOR_COMMAND: [&str; 51] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1422,6 +1422,8 @@ const NO_THREAD_NOR_COMMAND: [&str; 49] = [
     "dnd.rs",
     "battery_alert.rs",
     "launcher/prefix.rs",
+    "launcher/emoji.rs",
+    "launcher/emoji/",
 ];
 
 #[test]
@@ -1755,8 +1757,37 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
         }
     }
-    // Copy is reached only from a Calc hit: every other result of every mode, clicked either way,
-    // never gives one.
+    // The emoji (launcher 2): in All, `:grinning face`, Enter and Ctrl+Enter reach exactly one call,
+    // the copy program alone, the emoji or its name on its input, never in argv nor in a scope.
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for (key, input) in [(Key::Enter, "\u{1f600}"), (Key::CtrlEnter, "grinning face")] {
+            let fresh = || {
+                let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                for c in ":grinning face".chars() {
+                    l.key(Key::Char(c));
+                }
+                l
+            };
+            let mut l = fresh();
+            assert!(matches!(l.selected_hit().map(|h| h.source), Some(alpheus_demon::launcher::matching::Source::Emoji(_))));
+            let Outcome::Activate(a) = l.key(key) else { panic!("{key:?} on an emoji row activates nothing") };
+            let fake = FakeExecutor::new();
+            fake.ok("wl-copy", "");
+            let ctx = RunContext { exec: &fake, spawner, history_path: None, path_dirs: &copy_dirs };
+            assert_eq!(perform(&mut l, a, &ctx), Ok(alpheus_demon::launcher::run::Done::Close));
+            assert_eq!(fake.calls(), ["wl-copy"], "{spawner:?}: one call, the copy program alone: no scope, no shell, no text in argv");
+            assert_eq!(fake.inputs(), [("wl-copy".to_string(), input.as_bytes().to_vec())], "{spawner:?} {key:?}");
+            let spy = ArgvSpy::default();
+            let mut l = fresh();
+            let Outcome::Activate(a) = l.key(key) else { unreachable!() };
+            let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &copy_dirs });
+            let calls = spy.0.lock().unwrap().clone();
+            assert_eq!(calls, std::slice::from_ref(&config.copy), "the argv is `copy` unchanged: {calls:?}");
+        }
+    }
+    // Copy is reached only from a Calc or an emoji hit: every other result of every mode, clicked
+    // either way, never gives one.
     // A math query is part of the sweep: the positive case, the calculator's own row copies.
     let mut calc_copies = 0;
     for mode in Mode::CYCLE {
@@ -1770,10 +1801,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             for i in 0..l.results.len() {
                 for secondary in [false, true] {
-                    let is_calc = l.results[i].source == alpheus_demon::launcher::matching::Source::Calc;
+                    let source = l.results[i].source;
+                    let is_calc = source == alpheus_demon::launcher::matching::Source::Calc;
                     let o = l.click(i, secondary);
                     let copies = matches!(&o, Outcome::Activate(a) if format!("{a:?}").starts_with("Copy"));
-                    assert!(!copies || is_calc, "{mode:?} {query:?}: Copy from a result that is not the calculator");
+                    assert!(
+                        !copies || is_calc || matches!(source, alpheus_demon::launcher::matching::Source::Emoji(_)),
+                        "{mode:?} {query:?}: Copy from a result that is neither the calculator nor an emoji"
+                    );
                     if is_calc {
                         assert!(copies, "{mode:?} {query:?}: the calculator's row, clicked, copies");
                         calc_copies += 1;
@@ -2623,14 +2658,15 @@ fn the_calculator_has_no_panicking_path() {
 #[test]
 fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
     let files = source_files();
-    let name = "launcher/prefix.rs";
-    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
-    let production = production_code(t);
-    for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in {name}'s production code");
-    }
-    for p in ["log(", "log::write", "crate::log"] {
-        assert!(!production.contains(p), "{p} in {name}'s production code");
+    for name in ["launcher/prefix.rs", "launcher/emoji.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for p in ["log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
     }
 }
 

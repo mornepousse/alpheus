@@ -654,3 +654,26 @@ fn optimized_ranking_matches_a_reference_full_sort_on_a_large_tied_list() {
         "empty query: apps by frecency then name, then windows as given"
     );
 }
+
+#[test]
+fn rank_emoji_finds_by_name_and_caps() {
+    let mut r = Ranker::new();
+    let hits = r.rank_emoji("grinning face", 10);
+    assert_eq!(hits[0].source, Source::Emoji(0), "the first line of the table");
+    assert!(hits.len() <= 10 && hits.iter().all(|h| matches!(h.source, Source::Emoji(_)) && h.frecency == 0));
+    assert!(hits.windows(2).all(|w| w[0].score >= w[1].score), "by score");
+    let Source::Emoji(best) = r.rank_emoji("red heart", 5)[0].source else { panic!() };
+    assert_eq!(crate::launcher::emoji::at(best).map(|(_, name)| name), Some("red heart"), "best score first, not first in the table");
+    assert_eq!(r.rank_emoji("face", 3).len(), 3);
+    assert!(r.rank_emoji("zzqx", 10).is_empty());
+    assert!(r.rank_emoji("face", 0).is_empty());
+}
+
+#[test]
+fn rank_emoji_breaks_a_tie_by_table_order() {
+    let hits = Ranker::new().rank_emoji("face", 400);
+    for pair in hits.windows(2) {
+        let (Source::Emoji(a), Source::Emoji(b)) = (pair[0].source, pair[1].source) else { panic!() };
+        assert!(pair[0].score > pair[1].score || (pair[0].score == pair[1].score && a < b), "{pair:?}");
+    }
+}

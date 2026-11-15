@@ -780,3 +780,47 @@ fn a_prefix_hides_the_calculator() {
     typed(&mut l, "$ 2+2");
     assert_eq!(l.calc, None);
 }
+
+fn emoji_launcher(rows: u16) -> Launcher {
+    let config = LauncherConfig { rows, ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    l
+}
+
+#[test]
+fn a_colon_lists_emoji_and_copies() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":red heart");
+    assert!(!l.results.is_empty() && l.results.len() <= 5, "{:?}", sources(&l));
+    assert!(l.results.iter().all(|h| matches!(h.source, Source::Emoji(_))), "{:?}", sources(&l));
+    let Source::Emoji(offset) = l.results[0].source else { unreachable!() };
+    assert_eq!(crate::launcher::emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{2764}\u{fe0f}".into() }));
+    assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Copy { text: "red heart".into() }));
+}
+
+#[test]
+fn a_zwj_emoji_copies_the_whole_sequence() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":family: man, woman, girl");
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".into() }));
+}
+
+#[test]
+fn an_empty_copy_copies_no_emoji() {
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    typed(&mut l, ":heart");
+    assert!(matches!(l.results[0].source, Source::Emoji(_)));
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+}
+
+#[test]
+fn a_bare_colon_lists_nothing() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":");
+    assert!(l.results.is_empty());
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+}
