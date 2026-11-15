@@ -995,6 +995,39 @@ fn a_domain_outage_resends_no_wifi() {
     }
 }
 
+/// The VPN as the Wi-Fi: NetworkManager's own outage re-sends none (the row hides, an open detail
+/// closes); another domain's outage keeps it.
+#[test]
+fn a_network_outage_resends_no_vpn() {
+    let shown = SystemState {
+        network: Some(NetState::Offline),
+        vpn: Some(crate::system::VpnState::default()),
+        vpn_open: 2,
+        ..SystemState::default()
+    };
+    let down = |domain: Domain| {
+        let sends = RefCell::new(Vec::new());
+        run_supervised(
+            |publish: &mut dyn FnMut(SystemState) -> bool| {
+                publish(shown.clone());
+                Err(tag(io::Error::other("wedged"), Outage::Domain(domain)))
+            },
+            &|v: Option<SystemState>| {
+                sends.borrow_mut().push(v);
+                sends.borrow().len() < 2
+            },
+            |_| {},
+            clock(Duration::ZERO),
+            |_| {},
+        );
+        sends.into_inner().remove(1)
+    };
+    assert_eq!(down(Domain::Network), Some(SystemState { vpn: None, ..shown.clone() }), "the rest as it was, the VPN none");
+    for domain in [Domain::Bluetooth, Domain::Battery, Domain::Power] {
+        assert_eq!(down(domain), Some(shown.clone()), "{domain:?} down: the VPN kept");
+    }
+}
+
 #[test]
 fn a_bus_outage_blanks_everything_during_the_backoff() {
     let sends = RefCell::new(Vec::new());
@@ -1292,5 +1325,34 @@ fn a_network_signal_with_the_vpn_tap_closed_calls_no_vpn() {
         let path = format!("/org/freedesktop/NetworkManager/ActiveConnection/{n} ");
         let reads = bus.calls.iter().filter(|c| c.starts_with("GetAll ") && c.contains(&path)).count();
         assert_eq!(reads, 2, "active connection {n}: {:?}", bus.calls);
+    }
+}
+
+fn forget_the_calls_then_vpn_up(b: &mut FakeBus) {
+    b.calls.clear();
+    vpn_up(b);
+}
+
+/// Opened at the row then closed: a later network signal reads only the domain's own (the root and
+/// each active connection once), never the VPN reader's again.
+#[test]
+fn a_network_signal_after_the_vpn_row_closed_calls_no_vpn() {
+    let mut bus = vpn::tests::vpn_bus();
+    let state = with_names(
+        signal("/org/freedesktop/NetworkManager/ActiveConnection/20", PROPERTIES, "PropertiesChanged", Some(network::ACTIVE)),
+        &["State"],
+    );
+    let steps: [Step; 3] = [(Signal::poke(), vpn_row), (Signal::poke(), vpn_closed), (state, forget_the_calls_then_vpn_up)];
+    bus.script = VecDeque::from(steps);
+    let (seen, _) = run(&mut bus);
+    assert_eq!(seen.last().map(|s| s.vpn.is_none()), Some(true), "{seen:?}");
+    assert_eq!(calls_of(&bus, "ListConnections "), 0, "{:?}", bus.calls);
+    assert_eq!(calls_of(&bus, "GetSettings "), 0, "{:?}", bus.calls);
+    let root = format!("GetAll {NM_OWNER} {} {}", network::PATH, network::INTERFACE);
+    assert_eq!(bus.calls.iter().filter(|c| **c == root).count(), 1, "the domain's root read only: {:?}", bus.calls);
+    for n in [10, 9, 3, 2, 20] {
+        let path = format!("/org/freedesktop/NetworkManager/ActiveConnection/{n} ");
+        let reads = bus.calls.iter().filter(|c| c.starts_with("GetAll ") && c.contains(&path)).count();
+        assert_eq!(reads, 1, "active connection {n}: {:?}", bus.calls);
     }
 }

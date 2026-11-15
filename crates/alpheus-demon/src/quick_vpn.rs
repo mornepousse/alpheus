@@ -69,9 +69,18 @@ pub enum Outcome {
     Failed(&'static str),
 }
 
-/// The state of `uuid`'s active connection, if it has one.
+/// The state of `uuid`'s active connection, if it has one. Several (a down then an up: the old one
+/// may still be listed, deactivated, beside the new): the most advanced, activated before
+/// activating before deactivating before deactivated, so a stale entry never fails a fresh attempt.
 fn active_state(state: &VpnState, uuid: &str) -> Option<u32> {
-    state.active.iter().find(|a| a.uuid == uuid).map(|a| a.state)
+    let rank = |s: u32| match s {
+        ACTIVATED => 0,
+        ACTIVATING => 1,
+        DEACTIVATING => 2,
+        4 => 3,
+        _ => 4,
+    };
+    state.active.iter().filter(|a| a.uuid == uuid).map(|a| a.state).min_by_key(|s| rank(*s))
 }
 
 /// 1, 2 or 3: an active connection of any kind (it sorts first in the detail).
@@ -150,9 +159,13 @@ impl Vpn {
         self.state.as_ref().is_some_and(|s| !s.profiles.is_empty())
     }
 
-    /// The row's value: the first activated profile's name (16 cells), `…` while one is under way
-    /// (activating, or deactivating: ruling 6), else `off`.
+    /// The row's value: `failed` while an attempt's failure is shown (FAILED_SHOWN: one started by
+    /// Space on the row shows there), else the first activated profile's name (16 cells), `…` while
+    /// one is under way (activating, or deactivating: ruling 6), else `off`.
     pub fn value(&self) -> String {
+        if self.failed.is_some() {
+            return FAILED_TAG.into();
+        }
         let listed = self.listed();
         if let Some(p) = listed.iter().find(|p| p.state == Some(ACTIVATED)) {
             return truncate(&p.label, VALUE_CELLS);

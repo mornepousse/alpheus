@@ -463,19 +463,16 @@ fn the_vpn_reading_on_a_private_bus() {
     assert_eq!(next(), None, "closed: the state goes");
     std::thread::sleep(Duration::from_millis(300));
     let calls = nm.calls().len();
-    nm.change(NmChange::Vpn(1, None));
+    // One active connection remains (activating). The change is two signals (the root's
+    // ActiveConnections, the active connection's State); the domain reads the root and that active
+    // connection once for each. A VPN reader left open would read both again after each.
+    nm.change(NmChange::Vpn(1, Some(1)));
     std::thread::sleep(Duration::from_millis(500));
-    let after: Vec<String> =
-        nm.calls()[calls..].iter().filter(|c| c.starts_with("ListConnections") || c.starts_with("GetSettings")).cloned().collect();
-    assert!(after.is_empty(), "closed: no VPN call after a further change: {after:?}");
-    // The domain re-reads each active connection once for the change; a VPN reading would add a
-    // second GetAll on the same path.
     let since = nm.calls()[calls..].to_vec();
-    let mut paths: Vec<&str> =
-        since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).map(|c| c.as_str()).collect();
-    let total = paths.len();
-    paths.sort_unstable();
-    paths.dedup();
-    assert_eq!(paths.len(), total, "closed: an active connection read twice for one change: {:?}", since);
+    let lists: Vec<&String> = since.iter().filter(|c| c.starts_with("ListConnections") || c.starts_with("GetSettings")).collect();
+    assert!(lists.is_empty(), "closed: no VPN call after a further change: {lists:?}");
+    let root = since.iter().filter(|c| c.as_str() == "GetAll /org/freedesktop/NetworkManager org.freedesktop.NetworkManager").count();
+    let actives = since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).count();
+    assert_eq!((root, actives), (2, 2), "closed: the domain's own reads only, one per signal: {since:?}");
     assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
 }

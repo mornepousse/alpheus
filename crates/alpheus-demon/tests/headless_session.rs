@@ -4211,11 +4211,14 @@ fn wifi_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprlan
 /// points' reads (only the Wi-Fi detail makes them) and a saved profile's settings (the last of the
 /// detail's reads); the VPN row reads the same profiles with the same calls (quick VPN spec § 5), so
 /// then the calls must stop coming for 300 ms, which also lets the state reach the panel and be painted.
+/// The VPN reading ends on the actives the network domain reads too, so there is no call of its own
+/// to wait for: calls that never stop for DELAY (a reader re-reading in a loop) are a failure.
 fn wait_for_the_detail(nm: &FakeNetworkManager) -> bool {
     let has = |prefix: &str| nm.calls().iter().any(|c| c.starts_with(prefix));
     let read = wait_until(|| has("GetAll /org/freedesktop/NetworkManager/AccessPoint/") && has("GetSettings "));
+    let start = Instant::now();
     let mut seen = nm.calls().len();
-    loop {
+    while start.elapsed() < DELAY {
         thread::sleep(Duration::from_millis(300));
         let now = nm.calls().len();
         if now == seen {
@@ -4223,6 +4226,7 @@ fn wait_for_the_detail(nm: &FakeNetworkManager) -> bool {
         }
         seen = now;
     }
+    false
 }
 
 /// Waits until the fake NetworkManager was asked for the saved profile `n` (from 1).

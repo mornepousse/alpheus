@@ -145,10 +145,11 @@ fn a_failed_profile_is_not_cached_and_the_list_stays_stale() {
     let mut bus = vpn_bus();
     bus.failing.insert(format!("{SETTINGS}/21"));
     let (mut r, s) = open(&mut bus, VpnScope::Row);
-    assert_eq!(s.profiles.len(), 1);
+    assert_eq!(s, VpnState::default(), "the read ends on the failure: no state yet");
     bus.failing.clear();
     let s = r.reread(&mut bus).unwrap().unwrap();
     assert_eq!(count(&bus, "ListConnections"), 2, "stale: Row lists again");
+    assert_eq!(count(&bus, "GetSettings"), 3, "the first profile kept, the failed one asked again");
     assert_eq!(s.profiles.len(), 2);
     r.reread(&mut bus).unwrap();
     assert_eq!(count(&bus, "ListConnections"), 2, "then whole: not again");
@@ -168,6 +169,7 @@ fn a_hung_settings_call_ends_the_listing_after_one_timeout() {
     let (mut r, s) = open(&mut bus, VpnScope::Row);
     assert!(s.profiles.is_empty());
     assert_eq!(count(&bus, "GetSettings"), 1, "one timeout per read, not one per path: {:?}", bus.calls);
+    assert_eq!(count(&bus, "GetAll"), 0, "nor a second deadline on the actives: {:?}", bus.calls);
     r.reread(&mut bus).unwrap();
     assert_eq!(count(&bus, "GetSettings"), 2, "stale: listed again on the next read, one call");
 }
@@ -180,14 +182,26 @@ fn a_listing_that_times_out_keeps_the_list_stale_and_logs_once() {
     assert!(s.profiles.is_empty());
     assert_eq!(count(&bus, "GetSettings"), 0);
     assert!(r.logged, "the failure is noted");
-    // Active connections are still read.
-    assert_eq!(s.active.len(), 3);
+    // One deadline per hung read: the active connections are not read after it (no state yet).
+    assert_eq!(s, VpnState::default());
+    assert_eq!(count(&bus, "GetAll"), 0, "{:?}", bus.calls);
     bus.failing.clear();
     let s = r.reread(&mut bus).unwrap().unwrap();
     assert_eq!(s.profiles.len(), 2, "stale: listed again once it works");
     // Closing resets the flag: the next open logs again.
     r.rescope(&mut bus, VpnScope::Closed).unwrap();
     assert!(!r.logged);
+}
+
+#[test]
+fn a_hung_listing_after_a_state_returns_the_last_state() {
+    let mut bus = vpn_bus();
+    let (mut r, first) = open(&mut bus, VpnScope::Detail);
+    let before = count(&bus, "GetAll");
+    bus.failing.insert(crate::sources::dbus::wifi::SETTINGS_PATH.into());
+    assert_eq!(r.reread(&mut bus).unwrap().unwrap(), first, "the last state, not one with fresh actives");
+    assert_eq!(count(&bus, "GetAll"), before, "the actives are not read after a hung listing: {:?}", bus.calls);
+    assert!(r.stale, "the list stays stale");
 }
 
 #[test]

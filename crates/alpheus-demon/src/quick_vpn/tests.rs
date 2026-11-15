@@ -262,6 +262,40 @@ fn failed_shows_4_s() {
     assert_eq!(v.deadline(), Some(t + S));
 }
 
+/// Down then up at once: NetworkManager may still list the old, deactivated (4) active connection
+/// beside the new activating one for the same uuid. The most advanced state counts (2 > 1 > 3 > 4),
+/// so the stale entry never fails the fresh attempt, whatever the order.
+#[test]
+fn a_stale_deactivated_entry_never_fails_a_fresh_attempt() {
+    let t = Instant::now();
+    for active in [[(1, 4), (1, ACTIVATING)], [(1, ACTIVATING), (1, 4)]] {
+        let mut v = three(&[]);
+        v.enter(&uuid(1), t);
+        assert_eq!(set(&mut v, &active, t + S), None, "{active:?}: waiting, not failed");
+        assert!(v.attempt.as_ref().is_some_and(|a| a.activating), "{active:?}: activating seen");
+        assert_eq!(v.failed, None);
+        assert_eq!(v.listed()[0].state, Some(ACTIVATING), "{active:?}: listed as activating");
+        let both = [(1, 4), (1, DEACTIVATING), (1, ACTIVATED), (1, ACTIVATING)];
+        assert_eq!(set(&mut v, &both, t + 2 * S), None, "activated wins over all");
+        assert_eq!(v.attempt, None, "connected");
+    }
+    // Deactivating beats deactivated.
+    assert_eq!(three(&[(2, 4), (2, DEACTIVATING)]).value(), "…");
+}
+
+/// A failure started by Space on the row shows on the row too, for the same 4 s.
+#[test]
+fn the_row_reads_failed_while_marked() {
+    let t = Instant::now();
+    let mut v = three(&[]);
+    assert_eq!(v.toggle(t), run(&["nmcli", "connection", "up", "uuid", &uuid(2)], "vpn up"));
+    set(&mut v, &[(2, ACTIVATING)], t + S);
+    assert_eq!(set(&mut v, &[], t + 2 * S), Some("the activation failed"));
+    assert_eq!(v.value(), "failed");
+    v.due(t + 2 * S + FAILED_SHOWN);
+    assert_eq!(v.value(), "off", "after 4 s");
+}
+
 #[test]
 fn the_scope_is_detail_while_open_or_attempting() {
     let t = Instant::now();

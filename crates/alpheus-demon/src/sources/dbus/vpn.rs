@@ -135,6 +135,9 @@ impl VpnReader {
             self.owner = Some(nm.clone());
         }
         if self.stale || self.scope == VpnScope::Detail {
+            // A hung listing is an error here: the read ends on it (the last state kept), so a hung
+            // NetworkManager costs one deadline per read, not a second one on the actives.
+            self.stale = true;
             self.stale = !self.list(bus, &nm)?;
         }
         let root = bus.get_all(&nm, network::PATH, network::INTERFACE)?;
@@ -148,18 +151,15 @@ impl VpnReader {
     }
 
     /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
-    /// through GetSettings (never their secrets). True when the list is whole: no listing, a
-    /// service gone midway or a profile that failed (the listing stops there) leaves it stale (that
-    /// profile is not cached).
+    /// through GetSettings (never their secrets). True when the list is whole: no listing or a
+    /// service gone midway leaves it stale; a call that failed otherwise (a timeout) is an error,
+    /// the listing stopping there (that profile not cached).
     fn list(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
         let all = match bus.list_connections(nm) {
             Ok(p) => p,
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
             Err(e) if e.kind() == io::ErrorKind::NotFound || is_service_gone(&e) => return Ok(false),
-            Err(e) => {
-                self.note(&e);
-                return Ok(false);
-            }
+            Err(e) => return Err(e),
         };
         let listed = &all[..all.len().min(MAX_SAVED)];
         self.profiles.retain(|p, _| listed.contains(p));
@@ -179,10 +179,7 @@ impl VpnReader {
                 // A call that failed otherwise (a timeout: NetworkManager hung): the listing stops,
                 // so a hung service costs one deadline per read, not one per profile. The profile is
                 // not cached and the list stays stale.
-                Err(e) => {
-                    self.note(&e);
-                    return Ok(false);
-                }
+                Err(e) => return Err(e),
             }
         }
         Ok(true)

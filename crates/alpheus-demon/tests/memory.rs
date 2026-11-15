@@ -27,9 +27,9 @@ use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeVpn, Peer, PrivateBus, PwDump, SIGNATURE,
-    Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source, fake_stdin_recorder,
-    launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeVpn, NmChange, Peer, PrivateBus, PwDump,
+    SIGNATURE, Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source,
+    fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -1557,6 +1557,14 @@ fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
     false
 }
 
+/// The leak bounds of the Wi-Fi and VPN details on anonymous memory, in KB (`anon_kb`). Three
+/// release runs (2026-11-15, the final fix wave): closed over rest, Wi-Fi +84…+100 and VPN
+/// +60…+68 (the main heap: most likely the painter's glyph caches, bounded by MAX_CACHE); 10
+/// more cycles over closed, Wi-Fi +0…+40 and VPN +4…+72. A leak of 300 KB per open fails both
+/// tests at the close, one of 30 KB per open fails the cycles.
+const ANON_CLOSED: u64 = 256;
+const ANON_CYCLED: u64 = 128;
+
 /// Quick Wi-Fi spec § 7: PSS with the panel at rest, the Wi-Fi detail open on 40 visible access
 /// points (32 listed), closed, and after 10 more cycles. A fake nmcli (never the real one) takes the
 /// rescans.
@@ -1573,6 +1581,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
     let idle_own = idle - idle_shm;
+    let idle_anon = anon_kb(&d);
     let idle_map = smaps_by_mapping(&d);
     let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
     toggle();
@@ -1584,6 +1593,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
     let closed_own = closed - closed_shm;
+    let closed_anon = anon_kb(&d);
     let closed_map = smaps_by_mapping(&d);
     eprintln!("quick Wi-Fi smaps, idle to closed (KB): {}", smaps_moved(&idle_map, &closed_map));
     for n in 2..=11 {
@@ -1596,35 +1606,37 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
     let cycled_own = cycled - cycled_shm;
+    let cycled_anon = anon_kb(&d);
     eprintln!("quick Wi-Fi smaps, closed to cycled (KB): {}", smaps_moved(&closed_map, &smaps_by_mapping(&d)));
     let detail_cost = open.saturating_sub(idle);
     eprintln!(
         "quick Wi-Fi PSS (KB): {idle} at rest, {open} with the detail open on 32 networks (cost {detail_cost}), \
          {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {closed_own} closed, \
-         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled"
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled; \
+         anonymous: {idle_anon} at rest, {closed_anon} closed, {cycled_anon} cycled; file-backed (own − anonymous): \
+         {} at rest, {} closed, {} cycled",
+        idle_own.saturating_sub(idle_anon),
+        closed_own.saturating_sub(closed_anon),
+        cycled_own.saturating_sub(cycled_anon)
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
     assert!(
         detail_cost <= 1536,
         "the detail open costs {detail_cost} KB (the panel ≤ 1 MB, 40 access points read on the D-Bus thread, 32 rows): report, never raise"
     );
-    // Closed, the first open leaves ≈ 660 KB of the daemon's own, measured with the VPN row in the
-    // panel (smaps split by `smaps_moved`, two release runs, 2026-11-15: +652…+680 with 8 earlier
-    // runs of the same kind): the binary's code pages +192 and the font file's +384, touched for the
-    // first time and now resident (file-backed, clean), the main heap +68 net (its brk region
-    // remapped, 148 -> 0 and 0 -> 216; most likely the painter's glyph caches, bounded by
-    // MAX_CACHE), the D-Bus thread's arena +12, back to idle's. Before the VPN row (2026-10-12):
-    // code +128, font +320, heap +68…+76, stack +20, so the row's own share is ≈ +64 of code and
-    // +64 of font (its glyphs and rows), no heap and no arena. The bound was 640 and is 768, as
-    // Bluetooth's. The shm pools are left out of these two bounds and get their own, looser one
-    // below: the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
+    // The leak bounds are on anonymous memory only (`anon_kb`: heap, thread arenas, stacks, the
+    // binary's written data; the shm pools apart): the first open also brings in the binary's code
+    // pages and the font file's (file-backed, clean, one-time), and how many depends on page-cache
+    // fault-around (64 KB around each fault) and the tests run before, so a bound on the total PSS
+    // read +631…+704 KB one day and failed at 640 another. Total PSS and the file-backed share
+    // stay printed above, never asserted.
     assert!(
-        closed_own <= idle_own + 768,
-        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+        closed_anon <= idle_anon + ANON_CLOSED,
+        "closed {closed_anon} KB anonymous vs {idle_anon} KB at rest: more than the first open's heap (glyph caches)"
     );
     assert!(
-        cycled_own <= closed_own + 128,
-        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
+        cycled_anon <= closed_anon + ANON_CYCLED,
+        "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 10 cycles must keep nothing"
     );
     // The pools alone, looser: a pool or a buffer kept after the close shows here, the
     // compositor's mapping and unmapping of a buffer stays within it.
@@ -1717,6 +1729,7 @@ fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
     let idle_own = idle - idle_shm;
+    let idle_anon = anon_kb(&d);
     let idle_map = smaps_by_mapping(&d);
     let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Vpn)), Reply::Done);
     toggle();
@@ -1728,6 +1741,7 @@ fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
     let closed_own = closed - closed_shm;
+    let closed_anon = anon_kb(&d);
     let closed_map = smaps_by_mapping(&d);
     eprintln!("quick VPN smaps, idle to closed (KB): {}", smaps_moved(&idle_map, &closed_map));
     for n in 2..=11 {
@@ -1740,28 +1754,33 @@ fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
     let cycled_own = cycled - cycled_shm;
+    let cycled_anon = anon_kb(&d);
     eprintln!("quick VPN smaps, closed to cycled (KB): {}", smaps_moved(&closed_map, &smaps_by_mapping(&d)));
     let detail_cost = open.saturating_sub(idle);
     eprintln!(
         "quick VPN PSS (KB): {idle} at rest, {open} with the detail open on 10 profiles (cost {detail_cost}), \
          {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {closed_own} closed, \
-         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled"
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled; \
+         anonymous: {idle_anon} at rest, {closed_anon} closed, {cycled_anon} cycled; file-backed (own − anonymous): \
+         {} at rest, {} closed, {} cycled",
+        idle_own.saturating_sub(idle_anon),
+        closed_own.saturating_sub(closed_anon),
+        cycled_own.saturating_sub(cycled_anon)
     );
     assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
-    // Closed, the first open leaves +631…+704 KB of the daemon's own (5 release runs, 2026-11-15; a
-    // bound of 640 failed once at +704). The smaps split (`smaps_moved`): the binary's code pages
-    // +192 and the font file's +384 or +448 (the one step that moves: which glyph pages the first
-    // paint touches), both file-backed and clean, the main heap +56…+60 net (its brk region
-    // remapped; most likely the painter's glyph caches, bounded by MAX_CACHE), the shm pools
-    // apart. As for the Wi-Fi detail and Bluetooth's, the bound is 768: the warm-up is one-time
-    // (10 more cycles +40…+48), nothing a cycle keeps.
+    // The leak bounds are on anonymous memory only (`anon_kb`: heap, thread arenas, stacks, the
+    // binary's written data; the shm pools apart): the first open also brings in the binary's code
+    // pages and the font file's (file-backed, clean, one-time), and how many depends on page-cache
+    // fault-around (64 KB around each fault) and the tests run before, so a bound on the total PSS
+    // read +631…+704 KB one day and failed at 640 another. Total PSS and the file-backed share
+    // stay printed above, never asserted.
     assert!(
-        closed_own <= idle_own + 768,
-        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+        closed_anon <= idle_anon + ANON_CLOSED,
+        "closed {closed_anon} KB anonymous vs {idle_anon} KB at rest: more than the first open's heap (glyph caches)"
     );
     assert!(
-        cycled_own <= closed_own + 128,
-        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
+        cycled_anon <= closed_anon + ANON_CYCLED,
+        "cycled {cycled_anon} KB anonymous vs {closed_anon} KB closed: 10 cycles must keep nothing"
     );
     assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
 }
@@ -1811,6 +1830,18 @@ fn at_rest_no_wakeups_after_the_vpn_detail() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s");
     assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 5 s: its tap and its bus are quiet");
     assert!(delta <= 4, "{delta} wake-ups in 5 s");
+    // Closed, a VPN change is read by the network domain alone. Sent right after the window (it
+    // wakes the D-Bus thread, as any signal does): two signals (the root's ActiveConnections, the
+    // active connection's State), the root and the active connection read once for each; a VPN
+    // reader left open would read them again after each.
+    let calls = nm.calls().len();
+    nm.change(NmChange::Vpn(1, Some(1)));
+    std::thread::sleep(Duration::from_millis(500));
+    let since = nm.calls()[calls..].to_vec();
+    assert!(!since.iter().any(|c| c.starts_with("ListConnections") || c.starts_with("GetSettings")), "{since:?}");
+    let root = since.iter().filter(|c| c.as_str() == "GetAll /org/freedesktop/NetworkManager org.freedesktop.NetworkManager").count();
+    let actives = since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).count();
+    assert_eq!((root, actives), (2, 2), "closed: the domain's own reads only, one per signal: {since:?}");
 }
 
 /// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the
@@ -2203,6 +2234,26 @@ fn smaps_breakdown(d: &Daemon) -> String {
         }
     }
     format!("fonts {fonts}, binary {binary}, heap {heap}, other {other}")
+}
+
+/// The daemon's anonymous memory in KB (smaps `Anonymous`, every mapping but the shm pools): the
+/// heap, the thread arenas, the stacks and the binary's written data pages, never a file's page.
+/// A leak bound on it does not move with page-cache fault-around (the kernel maps up to 64 KB of
+/// a file around each fault, so the code and font pages a first open brings in depend on the
+/// tests run before it and on what the page cache holds).
+fn anon_kb(d: &Daemon) -> u64 {
+    let t = std::fs::read_to_string(format!("/proc/{}/smaps", d.pid())).unwrap();
+    let (mut pool, mut anon) = (false, 0);
+    for line in t.lines() {
+        if let Some(rest) = line.strip_prefix("Anonymous:") {
+            if !pool {
+                anon += rest.trim().trim_end_matches("kB").trim().parse::<u64>().unwrap_or(0);
+            }
+        } else if line.split_whitespace().next().is_some_and(|r| r.contains('-') && !r.ends_with(':')) {
+            pool = line.contains("/memfd:");
+        }
+    }
+    anon
 }
 
 /// PSS in KB by mapping from /proc/<pid>/smaps, keyed "<range> <perms> <name>", for `smaps_moved`.
