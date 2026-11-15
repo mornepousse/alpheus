@@ -185,7 +185,8 @@ fn keycaps_on_the_last_row() {
     let a = ready_app();
     let rows = draw(&a, 120, 36).0;
     let last: String = rows[35].chars().skip(usize::from(RAIL_W) + 2).collect();
-    assert!(last.starts_with(" F1 "), "{last:?}");
+    // The focused item's keys first, the generic ones after.
+    assert!(last.starts_with(" Space "), "{last:?}");
     assert!(last.contains(" F1  Help"), "{last:?}");
     // An unassigned key: its pair is skipped.
     let mut b = BTreeMap::new();
@@ -217,7 +218,7 @@ fn keycaps_stop_before_a_pair_that_would_not_fit() {
     assert_eq!(row.chars().count(), 84);
     for word in row.split_whitespace() {
         assert!(
-            ["F1", "Help", "Ctrl+P", "Palette", "Esc", "Back", "q", "Quit", "Space", "Toggle", "←/→", "Adjust"].contains(&word),
+            ["F1", "Help", "Ctrl+P", "Palette", "Esc", "Back", "q", "Quit", "Space", "Toggle", "-/+", "Adjust"].contains(&word),
             "cut word {word:?} in {row:?}"
         );
     }

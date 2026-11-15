@@ -114,10 +114,6 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
         pairs.push(("Enter".into(), "Confirm"));
         pairs.push(("Esc".into(), "Clear"));
     } else {
-        pairs.push((km.label(Action::Help), "Help"));
-        pairs.push((km.label(Action::Palette), "Palette"));
-        pairs.push((km.label(Action::Back), "Back"));
-        pairs.push((km.label(Action::Quit), "Quit"));
         let adjust = format!("{}/{}", km.label(Action::Decrease), km.label(Action::Increase));
         match app.tab {
             Tab::Home => {
@@ -154,6 +150,12 @@ pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
                 }
             },
         }
+        // Generic keys last: a bar too narrow for every pair drops Back, then Palette, then Help
+        // then Quit before any key that acts on the focused item.
+        pairs.push((km.label(Action::Quit), "Quit"));
+        pairs.push((km.label(Action::Help), "Help"));
+        pairs.push((km.label(Action::Palette), "Palette"));
+        pairs.push((km.label(Action::Back), "Back"));
     }
     pairs
 }

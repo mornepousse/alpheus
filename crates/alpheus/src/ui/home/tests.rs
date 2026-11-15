@@ -257,6 +257,17 @@ fn long_names_stay_inside() {
         let text = inside(&rows, r);
         let sub = text.lines().find(|l| l.contains("A very")).unwrap_or_else(|| panic!("{w}x{h}:\n{text}"));
         assert!(sub.trim_end().ends_with('…'), "{w}x{h}: {sub:?}");
+        // The 40-character SSID row of the Connections card is cut with "…" before the border.
+        let row = (y0 + 1..bottom)
+            .map(|y| (left + 1..right).map(|x| b[(x, y)].symbol()).collect::<String>())
+            .find(|t| t.contains("A very"))
+            .unwrap_or_else(|| panic!("{w}x{h}: no SSID row in the Connections card:\n{}", rows.join("\n")));
+        // Whole where the card is wide (120), cut at Mae's window (87×26).
+        if w == 87 {
+            assert!(row.trim_end().ends_with('…'), "{w}x{h}: {row:?}");
+        } else {
+            assert!(row.contains(ssid), "{w}x{h}: {row:?}");
+        }
     }
 }
 

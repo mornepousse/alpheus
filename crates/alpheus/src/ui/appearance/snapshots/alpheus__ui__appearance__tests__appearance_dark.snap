@@ -25,4 +25,4 @@ expression: "draw(&a, 100, 24).0.join(\"\\n\")"
  Module colours   None   Icons   Full   Pills                                                       
  Style            Flat   Islands   Powerline   Floating   Underline   Translucent                   
  Theme · ready                                                                                      
- F1 Help  Ctrl+P Palette  Esc Back  q Quit  ↑/↓ Choose  Enter Apply
+ ↑/↓ Choose  Enter Apply  q Quit  F1 Help  Ctrl+P Palette  Esc Back

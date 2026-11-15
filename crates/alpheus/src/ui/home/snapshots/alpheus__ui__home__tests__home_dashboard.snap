@@ -1,6 +1,5 @@
 ---
 source: crates/alpheus/src/ui/home/tests.rs
-assertion_line: 84
 expression: all
 ---
                                                                                                                         
@@ -38,4 +37,4 @@ expression: all
                   │ 󰈀 Wired connection 1                Ethernet  │ │                                                │  
   ● ready         │                                               │ │                                                │  
                   └───────────────────────────────────────────────┘ └────────────────────────────────────────────────┘  
-                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    Space  Toggle    -/+  Adjust
+                   Space  Toggle    -/+  Adjust    q  Quit    F1  Help    Ctrl+P  Palette    Esc  Back

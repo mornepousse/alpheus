@@ -37,4 +37,4 @@ expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
                                                                                                                         
   ● ready                                                                                                               
                                                                                                                         
-                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    ←/→  Choose    Enter  Apply
+                   ←/→  Choose    Enter  Apply    q  Quit    F1  Help    Ctrl+P  Palette    Esc  Back

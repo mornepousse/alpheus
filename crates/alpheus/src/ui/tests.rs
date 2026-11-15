@@ -36,7 +36,7 @@ fn home_frame() {
     assert!(rows[10].contains("Do not disturb") && rows[10].contains("[ ] off"));
     assert!(rows[14].contains("Energy profile") && rows[14].contains("Balanced"));
     assert!(rows[22].contains("Home · ready"));
-    assert!(rows[23].contains("F1 Help  Ctrl+P Palette  Esc Back  q Quit"), "{:?}", rows[23]);
+    assert!(rows[23].contains("q Quit  F1 Help  Ctrl+P Palette  Esc Back"), "{:?}", rows[23]);
     assert!(rows[23].contains("Space Toggle"));
 }
 
@@ -518,6 +518,24 @@ fn buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
     t.backend().buffer().clone()
 }
 
+/// The tab's body alone, drawn with the rail chrome on a w×h area (a body below 64×20 keeps Home's rows).
+fn rail_draw(a: &crate::app::App, w: u16, h: u16) -> (ratatui::buffer::Buffer, HitMap) {
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let mut hits = HitMap::default();
+    tabs::render(&mut buf, area, a, &mut hits, Chrome::Rail, Some(super::testing::T));
+    (buf, hits)
+}
+
+fn rail_buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    rail_draw(a, w, h).0
+}
+
+fn rail_rows(a: &crate::app::App, w: u16, h: u16) -> (Vec<String>, HitMap) {
+    let (buf, hits) = rail_draw(a, w, h);
+    ((0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect()).collect(), hits)
+}
+
 fn tab_app(t: Tab) -> crate::app::App {
     let mut a = if t == Tab::Displays { displays_tab() } else { ready_app() };
     a.go_tab(t, Instant::now());
@@ -583,13 +601,12 @@ fn power_buttons_with_glyphs() {
 fn profile_chips_take_the_shape() {
     let mut a = ready_app();
     a.theme.shape = crate::theme::Shape::Round;
-    // Beside the rail Home is the dashboard; its rows (and their chips) show while a search is typed.
-    a.search.editing = true;
-    let (rows, _) = draw(&a, 100, 30);
+    // Beside the rail Home is the dashboard; its rows (and their chips) show in a body below 64×20.
+    let (rows, _) = rail_rows(&a, 80, 19);
     let line = &rows[row_of(&rows, "Energy profile")];
     assert!(line.contains("\u{e0b6} Balanced \u{e0b4}"), "{line:?}");
     // The active chip's caps are the hue (Home: accent); a resting one's are `raised`.
-    let b = buffer(&a, 100, 30);
+    let b = rail_buffer(&a, 80, 19);
     let y = row_of(&rows, "Energy profile") as u16;
     let col = |needle: &str| line[..line.find(needle).unwrap()].chars().count() as u16;
     assert_eq!(b[(col(" Balanced ") - 1, y)].fg, a.theme.accent);
@@ -615,11 +632,10 @@ fn rail_tab_snapshots() {
 #[test]
 fn rail_controls_fit_mae_window_87x26() {
     let cut = |rows: &[String]| assert!(!rows.join("\n").contains('…'), "a cut row:\n{}", rows.join("\n"));
-    // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show while a
-    // search is typed (else the dashboard, see `home::tests::mae_window_87x26_shows_the_whole_dashboard`).
-    let mut a = tab_app(Tab::Home);
-    a.search.editing = true;
-    let (rows, hits) = draw(&a, 87, 26);
+    // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show in a body
+    // below 64×20 (else the dashboard, see `home::tests::mae_window_87x26_shows_the_whole_dashboard`).
+    let a = tab_app(Tab::Home);
+    let (rows, hits) = rail_rows(&a, 67, 19);
     cut(&rows);
     let bar = hits.find(Target::Slider { item: 0 }).unwrap();
     let line = &rows[usize::from(bar.y)];
@@ -734,4 +750,20 @@ fn bands_under_round_and_line_at_the_tab_level() {
     let label = (r.x..r.right()).find(|&x| b[(x, r.y)].symbol() == "D").unwrap();
     let m = b[(label, r.y)].modifier;
     assert!(m.contains(ratatui::style::Modifier::BOLD) && m.contains(ratatui::style::Modifier::UNDERLINED));
+}
+
+/// Review Fix 2: the keys that act on the focused item come first, so a narrow window drops the
+/// generic ones (Back, Palette, Help) before them.
+#[test]
+fn keycaps_keep_the_focused_items_keys_at_87x26() {
+    let mut a = tab_app(Tab::Home);
+    a.focus = 0;
+    let (rows, _) = draw(&a, 87, 26);
+    assert!(rows[25].contains("Adjust"), "{:?}", rows[25]);
+    assert!(rows[25].contains("Toggle"), "{:?}", rows[25]);
+    // A narrower bar drops Back, then Palette, then Help, before any of the item's keys.
+    let names: Vec<&str> = crate::ui::shortcut_pairs(&a).iter().map(|p| p.1).collect();
+    let at = |n: &str| names.iter().position(|x| *x == n).unwrap();
+    assert!(at("Adjust") < at("Help") && at("Toggle") < at("Help"), "{names:?}");
+    assert!(at("Help") < at("Palette") && at("Palette") < at("Back"), "{names:?}");
 }

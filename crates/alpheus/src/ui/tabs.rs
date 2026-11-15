@@ -34,9 +34,8 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome
     if app.tab == Tab::Appearance {
         return appearance::render(buf, body, app, hits);
     }
-    // Home as a dashboard beside the rail when its body has room (the classic chrome keeps the rows,
-    // and so does a search being typed).
-    if app.tab == Tab::Home && chrome == Chrome::Rail && home::fits(body) && !app.search.editing {
+    // Home as a dashboard beside the rail when its body has room (the classic chrome keeps the rows).
+    if app.tab == Tab::Home && chrome == Chrome::Rail && home::fits(body) {
         return home::render(buf, body, app, hits, now);
     }
     let map: Vec<Vec<MapCell>> = if app.tab == Tab::Displays {
