@@ -486,7 +486,7 @@ const DRACULA_DARK: Roles = Roles {
     },
 };
 
-/// Ember dark (UI refresh design, themes/index.md).
+/// Ember dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const EMBER_DARK: Roles = Roles {
     bar_bg: h(0x1a1412),
     pill_bg: h(0x2c221d),
@@ -515,7 +515,7 @@ const EMBER_DARK: Roles = Roles {
     },
 };
 
-/// Ember light (UI refresh design, themes/index.md).
+/// Ember light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const EMBER_LIGHT: Roles = Roles {
     bar_bg: h(0xefe4d3),
     pill_bg: h(0xe0d0b9),
@@ -544,7 +544,7 @@ const EMBER_LIGHT: Roles = Roles {
     },
 };
 
-/// Glacier dark (UI refresh design, themes/index.md).
+/// Glacier dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const GLACIER_DARK: Roles = Roles {
     bar_bg: h(0x0e1418),
     pill_bg: h(0x1a242b),
@@ -573,7 +573,7 @@ const GLACIER_DARK: Roles = Roles {
     },
 };
 
-/// Glacier light (UI refresh design, themes/index.md).
+/// Glacier light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const GLACIER_LIGHT: Roles = Roles {
     bar_bg: h(0xe4eef3),
     pill_bg: h(0xd0e0e9),
@@ -602,7 +602,7 @@ const GLACIER_LIGHT: Roles = Roles {
     },
 };
 
-/// Ink dark (UI refresh design, themes/index.md).
+/// Ink dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const INK_DARK: Roles = Roles {
     bar_bg: h(0x101010),
     pill_bg: h(0x1e1e1e),
@@ -631,7 +631,7 @@ const INK_DARK: Roles = Roles {
     },
 };
 
-/// Ink light (UI refresh design, themes/index.md).
+/// Ink light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const INK_LIGHT: Roles = Roles {
     bar_bg: h(0xecebe6),
     pill_bg: h(0xdddbd4),
@@ -660,7 +660,7 @@ const INK_LIGHT: Roles = Roles {
     },
 };
 
-/// High contrast dark (UI refresh design, themes/index.md).
+/// High contrast dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const HICON_DARK: Roles = Roles {
     bar_bg: h(0x000000),
     pill_bg: h(0x1c1c1c),
@@ -689,7 +689,7 @@ const HICON_DARK: Roles = Roles {
     },
 };
 
-/// High contrast light (UI refresh design, themes/index.md).
+/// High contrast light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const HICON_LIGHT: Roles = Roles {
     bar_bg: h(0xffffff),
     pill_bg: h(0xe6e6e6),
@@ -718,7 +718,7 @@ const HICON_LIGHT: Roles = Roles {
     },
 };
 
-/// Sorbet dark (UI refresh design, themes/index.md).
+/// Sorbet dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const SORBET_DARK: Roles = Roles {
     bar_bg: h(0x1f1a26),
     pill_bg: h(0x2f2839),
@@ -747,7 +747,7 @@ const SORBET_DARK: Roles = Roles {
     },
 };
 
-/// Sorbet light (UI refresh design, themes/index.md).
+/// Sorbet light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const SORBET_LIGHT: Roles = Roles {
     bar_bg: h(0xf6eef6),
     pill_bg: h(0xe9dcea),
@@ -776,7 +776,7 @@ const SORBET_LIGHT: Roles = Roles {
     },
 };
 
-/// Phosphor dark (UI refresh design, themes/index.md).
+/// Phosphor dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
 const PHOSPHOR_DARK: Roles = Roles {
     bar_bg: h(0x050a05),
     pill_bg: h(0x0f1a0f),
