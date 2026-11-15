@@ -143,7 +143,7 @@ fn refused_or_gone_profiles_are_cached_as_none() {
 #[test]
 fn a_failed_profile_is_not_cached_and_the_list_stays_stale() {
     let mut bus = vpn_bus();
-    bus.failing.insert(format!("{SETTINGS}/20"));
+    bus.failing.insert(format!("{SETTINGS}/21"));
     let (mut r, s) = open(&mut bus, VpnScope::Row);
     assert_eq!(s.profiles.len(), 1);
     bus.failing.clear();
@@ -152,6 +152,51 @@ fn a_failed_profile_is_not_cached_and_the_list_stays_stale() {
     assert_eq!(s.profiles.len(), 2);
     r.reread(&mut bus).unwrap();
     assert_eq!(count(&bus, "ListConnections"), 2, "then whole: not again");
+}
+
+#[test]
+fn a_hung_settings_call_ends_the_listing_after_one_timeout() {
+    let mut bus = vpn_bus();
+    let hung = format!("{SETTINGS}/20");
+    bus.failing.insert(hung.clone());
+    let paths: Vec<String> = (100..164).map(|n| format!("{SETTINGS}/{n}")).collect();
+    for p in &paths {
+        bus.settings.insert(p.clone(), None);
+        bus.failing.insert(p.clone());
+    }
+    bus.connections = Some(std::iter::once(hung).chain(paths).collect());
+    let (mut r, s) = open(&mut bus, VpnScope::Row);
+    assert!(s.profiles.is_empty());
+    assert_eq!(count(&bus, "GetSettings"), 1, "one timeout per read, not one per path: {:?}", bus.calls);
+    r.reread(&mut bus).unwrap();
+    assert_eq!(count(&bus, "GetSettings"), 2, "stale: listed again on the next read, one call");
+}
+
+#[test]
+fn a_listing_that_times_out_keeps_the_list_stale_and_logs_once() {
+    let mut bus = vpn_bus();
+    bus.failing.insert(crate::sources::dbus::wifi::SETTINGS_PATH.into());
+    let (mut r, s) = open(&mut bus, VpnScope::Row);
+    assert!(s.profiles.is_empty());
+    assert_eq!(count(&bus, "GetSettings"), 0);
+    assert!(r.logged, "the failure is noted");
+    // Active connections are still read.
+    assert_eq!(s.active.len(), 3);
+    bus.failing.clear();
+    let s = r.reread(&mut bus).unwrap().unwrap();
+    assert_eq!(s.profiles.len(), 2, "stale: listed again once it works");
+    // Closing resets the flag: the next open logs again.
+    r.rescope(&mut bus, VpnScope::Closed).unwrap();
+    assert!(!r.logged);
+}
+
+#[test]
+fn an_active_connection_that_fails_keeps_the_last_state() {
+    let mut bus = vpn_bus();
+    let (mut r, first) = open(&mut bus, VpnScope::Row);
+    assert_eq!(first.active.len(), 3);
+    bus.failing.insert(format!("{ACTIVE}/20"));
+    assert_eq!(r.reread(&mut bus).unwrap().unwrap(), first);
 }
 
 #[test]

@@ -149,7 +149,8 @@ impl VpnReader {
 
     /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
     /// through GetSettings (never their secrets). True when the list is whole: no listing, a
-    /// service gone midway or a profile that failed leaves it stale (that profile is not cached).
+    /// service gone midway or a profile that failed (the listing stops there) leaves it stale (that
+    /// profile is not cached).
     fn list(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
         let all = match bus.list_connections(nm) {
             Ok(p) => p,
@@ -162,7 +163,6 @@ impl VpnReader {
         };
         let listed = &all[..all.len().min(MAX_SAVED)];
         self.profiles.retain(|p, _| listed.contains(p));
-        let mut whole = true;
         for p in listed {
             if self.profiles.contains_key(p) {
                 continue;
@@ -176,13 +176,16 @@ impl VpnReader {
                     self.profiles.insert(p.clone(), None);
                 }
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+                // A call that failed otherwise (a timeout: NetworkManager hung): the listing stops,
+                // so a hung service costs one deadline per read, not one per profile. The profile is
+                // not cached and the list stays stale.
                 Err(e) => {
                     self.note(&e);
-                    whole = false;
+                    return Ok(false);
                 }
             }
         }
-        Ok(whole)
+        Ok(true)
     }
 }
 
