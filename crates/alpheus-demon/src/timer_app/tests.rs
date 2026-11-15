@@ -68,8 +68,14 @@ fn the_sound_spawns_its_argv_and_logs_no_command() {
     let fake = FakeExecutor::new();
     let mine = vec!["/home/someone/bin/ring".to_string(), "--user".into(), "someone".into()];
     let line = spawn_sound(&fake, &mine).unwrap_or_default();
-    assert_eq!(line, "timer: sound could not start (NotFound)");
+    assert_eq!(line, "timer: sound could not start (not found)");
     assert!(!line.contains("someone") && !line.contains("ring"), "never the command: {line}");
+    for (e, word) in [(ExecError::Io("/home/someone/x: busy".into()), "io"), (ExecError::Timeout, "timeout")] {
+        let fake = FakeExecutor::new();
+        fake.respond("ring", Err(e));
+        let line = spawn_sound(&fake, &["ring".to_string()]).unwrap_or_default();
+        assert_eq!(line, format!("timer: sound could not start ({word})"), "a kind word, never the error's text");
+    }
     let fake = FakeExecutor::new();
     assert_eq!(spawn_sound(&fake, &[]), None);
     assert!(fake.calls().is_empty(), "no sound set: nothing spawned");

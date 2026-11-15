@@ -181,6 +181,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     ModuleSpec {
         hue: Some(Hue::Yellow),
         segment: Some(|bar, _| segments::timer(bar.timer.as_ref(), bar.module_colors)),
+        popup: Some(ModulePopup::Timer),
         ..row(ModuleId::Timer, "timer", GroupKind::Timer)
     },
     ModuleSpec {

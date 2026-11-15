@@ -73,6 +73,7 @@ pub mod system;
 pub mod text;
 pub mod timer;
 pub mod timer_app;
+pub mod timer_popup;
 pub mod tray_bridge;
 pub mod watch;
 pub mod wayland;

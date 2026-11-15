@@ -595,8 +595,9 @@ fn the_resource_glyphs_are_in_the_font() {
 #[test]
 fn the_timer_glyphs_are_in_the_font() {
     use crate::timer::{BREAK, DONE, STOPWATCH, TIMER, WORK};
+    use crate::timer_popup::{PLUS, STOP};
     let mut p = fonts();
-    for c in [TIMER, WORK, BREAK, STOPWATCH, DONE] {
+    for c in [TIMER, WORK, BREAK, STOPWATCH, DONE, PLUS, STOP] {
         assert!(!p.shaped(c, false).is_empty(), "U+{:X} has no glyph in the bar's font", u32::from(c));
     }
 }

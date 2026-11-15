@@ -380,7 +380,7 @@ impl App {
 
     /// The verb's anchor: the last cell of the bar on the focused output (the positioner slides the
     /// panel left into the output), else of the first configured bar.
-    fn quick_anchor(&self) -> Option<PopupAnchor> {
+    pub(crate) fn quick_anchor(&self) -> Option<PopupAnchor> {
         let (_, focused) = self.bubbles_target();
         let s = focused
             .as_deref()

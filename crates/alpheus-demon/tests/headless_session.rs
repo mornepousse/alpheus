@@ -5788,6 +5788,90 @@ fn hotplug_applies_the_matching_profile_once() {
     assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
 }
 
+/// The timer chip: the first module of the bar, so cell 1 (≈ 8 to 16 px), as the power button alone.
+const TIMER_AT: (u32, u32) = (12, 10);
+
+/// The timer's bar (catppuccin dark) on a private session bus (the notifications tests need one):
+/// `modules` as a TOML array, `[timer] sound` touching `<runtime>/rang` (coreutils' `touch`, a
+/// private path), `extra` appended. Never the real state directory: `XDG_STATE_HOME` is the
+/// runtime's.
+fn timer_daemon(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    let toml = format!("modules = {modules}\n[timer]\nsound = [\"touch\", \"{}\"]\n{extra}", sway.runtime.join("rang").display());
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(&toml), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    (bus, sway, hypr, d)
+}
+
+/// `alpheus-launch <args>` against the daemon: its exit code, stdout and stderr.
+#[allow(dead_code)] // the verbs are Task 5's
+fn timer_verb(sway: &Sway, args: &[&str]) -> (i32, String, String) {
+    script(sway, args, "").join().unwrap()
+}
+
+/// Waits until the timer popup is on screen: its background fills a good part of the area under
+/// the chip ("timer shown" is logged when the popup is asked for, before its first buffer).
+fn timer_drawn(sway: &Sway, d: &Daemon) {
+    let bg = rgb(preset("catppuccin").unwrap().dark.popup_bg);
+    let filled = |s: &Ppm| (29..60).flat_map(|y| (14..60).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(bg)).count() > 300;
+    assert!(sway.wait_for_screen("HEADLESS-1", filled), "the timer popup drawn: {:?}", d.log());
+}
+
+/// Timer spec § 3: a click on the chip opens the popup (idle: its Timer row selected); Enter starts
+/// the countdown of the row's length (10 min), the popup stays open; Escape closes it; the state
+/// file says it runs.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_a_click_opens_the_popup_and_enter_starts_a_countdown() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-popup", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: countdown started (10 min)", DELAY), "{:?}", d.log());
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    let file = std::fs::read_to_string(sway.runtime.join("state/alpheus/timer")).unwrap();
+    assert!(file.starts_with("countdown running "), "{file:?}");
+}
+
+/// Plan decision 4, F6: with the popup open and a countdown running the loop wakes each second;
+/// once the popup is closed (a second click on the chip: Escape's key-up and repeat make one
+/// unrelated wake-up of their own) it does not wake at all, the countdown's next chip change being
+/// a minute away; the window starts at the close, so a one-second timer left armed by it shows.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_the_popups_second_tick_stops_at_close() {
+    // The whole test fits between two minute turns (the clock's redraw is a wake-up of its own).
+    while !(2..=35).contains(&alpheus_demon::clock::LocalTime::now().0.second) {
+        thread::sleep(Duration::from_millis(200));
+    }
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-tick", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: countdown started (10 min)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // Return's own key-up and repeat events settle
+    let before = d.main_thread_wakeups();
+    thread::sleep(Duration::from_secs(3));
+    let open = d.main_thread_wakeups().saturating_sub(before);
+    assert!(open >= 2, "open: the loop wakes each second, {open} in 3 s: {:?}", d.log());
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+    let (before, ticks) = (d.main_thread_wakeups(), d.main_thread_cpu_ticks());
+    thread::sleep(Duration::from_secs(3));
+    assert_no_spin(d.main_thread_cpu_ticks().saturating_sub(ticks), Duration::from_secs(3), "the loop thread");
+    let closed = d.main_thread_wakeups().saturating_sub(before);
+    assert_eq!(closed, 0, "closed: no second tick, {closed} wake-ups in 3 s: {:?}", d.log());
+}
+
 /// Each test gives its compositor a name, and the name picks its runtime directory
 /// (`alpheus-it-<pid>-<name>`): two tests sharing one would remove each other's directory and
 /// fight over the same sockets when run in parallel. Not ignored: it only reads this file.
@@ -5795,7 +5879,7 @@ fn hotplug_applies_the_matching_profile_once() {
 fn every_test_compositor_has_its_own_name() {
     // Everything above this test: its own list of starters is not a test's name.
     let source = include_str!("headless_session.rs").split("fn every_test_compositor_has_its_own_name").next().unwrap_or("");
-    let starters = ["Sway::start(", "tray_bar(", "menu_bar(", "clock_bar(", "theme_bar(", "shape_bar(", "media_daemon("];
+    let starters = ["Sway::start(", "tray_bar(", "menu_bar(", "clock_bar(", "theme_bar(", "shape_bar(", "media_daemon(", "timer_daemon("];
     let mut names = Vec::new();
     for starter in starters {
         for (at, _) in source.match_indices(starter) {

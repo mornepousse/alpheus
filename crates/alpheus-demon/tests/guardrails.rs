@@ -1378,7 +1378,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 52] = [
+const NO_THREAD_NOR_COMMAND: [&str; 53] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1431,6 +1431,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 52] = [
     "launcher/emoji.rs",
     "launcher/emoji/",
     "timer.rs",
+    "timer_popup.rs",
 ];
 
 #[test]
@@ -2721,16 +2722,29 @@ fn the_timer_is_wired_through_one_path() {
     let notifications = function_body(modules, "if want.notifications");
     assert!(modules.contains("state.timer_load("), "the timer is loaded at start");
     assert!(!notifications.contains("timer_load"), "not only with the notifications module: {notifications}");
-    let prod = production_code(&app);
-    let mut owner = String::new();
-    for line in prod.lines() {
-        if let Some(i) = line.find("fn ") {
-            owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
-        }
-        if line.contains("self.timer.model =") {
-            assert!(["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()), "the model changed in {owner}");
+    // Every file under src/: the model is assigned in timer_app.rs's three owners and nowhere else
+    // (`self.timer.model =`, `app.timer.model =`, `state.timer.model =` alike).
+    for (path, text) in source_files() {
+        let name = relative_path(&path);
+        let prod = production_code(&text);
+        let mut owner = String::new();
+        for line in prod.lines() {
+            if let Some(i) = line.find("fn ") {
+                owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
+            }
+            if line.contains(".timer.model =") && !line.contains(".timer.model ==") {
+                assert!(
+                    name == "timer_app.rs" && ["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()),
+                    "the model changed in {name}'s {owner}"
+                );
+            }
         }
     }
+    // A due end is applied before a change: a click after a resume must not pause or extend a
+    // timer that has already ended.
+    let body = function_body(&app, "pub(crate) fn timer_do(");
+    let (check, apply) = (body.find("timer_check_clock()"), body.find(".apply("));
+    assert!(check.is_some() && apply.is_some() && check < apply, "timer_do checks the clock before it applies: {body}");
 }
 
 /// Timer spec § 8: no panic in the focus timer's production code (it parses a file it did not
@@ -2738,7 +2752,7 @@ fn the_timer_is_wired_through_one_path() {
 #[test]
 fn the_timer_has_no_panicking_path() {
     let files = source_files();
-    for name in ["timer.rs", "timer_app.rs"] {
+    for name in ["timer.rs", "timer_app.rs", "timer_popup.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

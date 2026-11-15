@@ -4,16 +4,21 @@
 //! sound, the state file. No thread; the sound goes through the daemon's executor, never waited
 //! for. Logs carry fixed words and numbers only: never the sound's command, never a path.
 
+use crate::actions::Button;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
+use crate::keys::Key;
 use crate::log::write as log;
+use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::session_bus::notifications::minute_now;
 use crate::state::Msg;
 use crate::state_file;
 use crate::timer::{Change, End, Lengths, Phase, Timer as Model, incoming, length_text};
+use crate::timer_popup::{TimerAction, TimerPopup};
 use crate::wayland::App;
-use alpheus_commun::exec::Executor;
+use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::paths;
+use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::time::{Duration, Instant};
 
 /// The most a deadline looks ahead: the longest timer is a day, a running end read back from the
@@ -30,12 +35,9 @@ pub(crate) struct TimerApp {
     pub(crate) lengths: Lengths,
     /// Armed only while a timer runs.
     pub(crate) deadline: DeadlineTimer,
-    /// The popup's countdown row, in minutes (read by the popup, which comes after this wiring).
-    #[allow(dead_code)]
+    /// The popup's countdown row, in minutes: kept for the session, never saved.
     pub(crate) minutes: u32,
-    /// When a `--timer popup` verb opened the popup (its re-fired press is ignored); read by the
-    /// verb, which comes after this wiring.
-    #[allow(dead_code)]
+    /// When a `--timer popup` verb opened the popup (its re-fired press is ignored).
     pub(crate) verb_opened: Option<Instant>,
 }
 
@@ -51,6 +53,18 @@ impl TimerApp {
         }
     }
 }
+
+/// The timer popup's row of `popup::POPUPS`.
+pub(crate) const OPS: PopupOps = PopupOps {
+    kind: ModulePopup::Timer,
+    toggle: |app, qh, anchor, _| app.timer_toggle(qh, Some(anchor)),
+    key: App::timer_key,
+    pointer: App::timer_pointer,
+    // The countdown row's length outlives the popup.
+    flush: App::timer_flush,
+    // The one-second cadence ends with the popup, whatever closed it.
+    closed: App::timer_sync,
+};
 
 /// What an end does besides the log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +132,16 @@ pub(crate) fn end_line(end: End) -> &'static str {
 pub(crate) fn spawn_sound(exec: &dyn Executor, argv: &[String]) -> Option<String> {
     let (program, args) = argv.split_first()?;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    exec.spawn(program, &args).err().map(|e| format!("timer: sound could not start ({e:?})"))
+    exec.spawn(program, &args).err().map(|e| format!("timer: sound could not start ({})", spawn_error_word(&e)))
+}
+
+/// A failed spawn as a fixed word: never the error's text, which may carry a path.
+fn spawn_error_word(e: &ExecError) -> &'static str {
+    match e {
+        ExecError::NotFound => "not found",
+        ExecError::Timeout => "timeout",
+        _ => "io",
+    }
 }
 
 /// How long until `target_ms`, from `now_ms` (Unix milliseconds): zero once past, at most 25 hours.
@@ -168,6 +191,11 @@ impl App {
         if !self.timer.enabled {
             return false;
         }
+        // A due end first: a click or an Add after a resume must not pause or extend a timer that
+        // has already ended.
+        if self.timer.model.running() {
+            self.timer_check_clock();
+        }
         let before = self.timer.model;
         let after = before.apply(c, &self.timer.lengths, unix_ms());
         if after == before {
@@ -183,6 +211,108 @@ impl App {
         self.timer_chip();
         self.timer_sync();
         true
+    }
+
+    pub(crate) fn timer_shown(&self) -> bool {
+        matches!(self.popup_body(), Some(PopupBody::Timer(_)))
+    }
+
+    /// ↑ ↓ Tab Shift+Tab, ← →, Enter, Space, Escape; the repeat tells a held key.
+    fn timer_key(&mut self, k: Key) {
+        let repeat = self.keyboard.repeat;
+        let action = self.timer_with(|p, t| p.key(t, k, repeat));
+        self.timer_action(action);
+    }
+
+    /// Hovering selects, a left press acts, the wheel over the Timer row changes its length.
+    fn timer_pointer(&mut self, cell: Option<(u16, u16)>, kind: PopupPointer) {
+        let action = match (kind, cell.map(|(_, row)| row)) {
+            (PopupPointer::Motion, Some(r)) => self.timer_with(|p, t| p.hover(t, r)),
+            (PopupPointer::Press(Button::Left), Some(r)) => self.timer_with(|p, t| p.press(t, r)),
+            (PopupPointer::Scroll(steps), Some(r)) => self.timer_with(|p, t| p.scroll(t, r, steps)),
+            _ => TimerAction::Nothing,
+        };
+        self.timer_action(action);
+    }
+
+    /// `f` on the open popup and the model; Nothing when it is not open.
+    fn timer_with(&mut self, f: impl FnOnce(&mut TimerPopup, &Model) -> TimerAction) -> TimerAction {
+        let App { popup, timer, .. } = self;
+        match popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Timer(p)) => f(p, &timer.model),
+            _ => TimerAction::Nothing,
+        }
+    }
+
+    fn timer_action(&mut self, action: TimerAction) {
+        match action {
+            TimerAction::Nothing => {}
+            TimerAction::Redraw => self.timer_refresh(),
+            TimerAction::Close => self.popup_close(PopupClose::Escape),
+            TimerAction::Do(c) => {
+                self.timer_do(c);
+                self.timer_follow();
+                self.timer_refresh();
+            }
+        }
+    }
+
+    /// The open popup's actions follow the model (the selection goes back to the first when they
+    /// change).
+    fn timer_follow(&mut self) {
+        let App { popup, timer, .. } = self;
+        if let Some(PopupBody::Timer(p)) = popup.as_mut().map(|p| &mut p.body) {
+            p.follow(&timer.model);
+        }
+    }
+
+    /// The open popup repainted (`popup_draw` commits nothing when its rows did not change).
+    fn timer_refresh(&mut self) {
+        let rows = match self.popup_body() {
+            Some(PopupBody::Timer(p)) => p.render(&self.timer.model, &self.timer.lengths, unix_ms()),
+            _ => return,
+        };
+        self.popup_paint(rows);
+    }
+
+    /// Before the popup's body goes: its countdown length is kept.
+    fn timer_flush(&mut self) {
+        if let Some(PopupBody::Timer(p)) = self.popup_body() {
+            self.timer.minutes = p.minutes;
+        }
+    }
+
+    /// A press on the chip, or the verb (`anchor` None): toggles the popup under it. A click grabs
+    /// the keyboard, the verb takes it without a grab. The anchor is read before `Seen`, which can
+    /// change the chip's width (`done` to the idle glyph).
+    pub(crate) fn timer_toggle(&mut self, qh: &QueueHandle<App>, anchor: Option<PopupAnchor>) {
+        if self.timer_shown() {
+            self.popup_close(if anchor.is_some() { PopupClose::OutsideClick } else { PopupClose::Verb });
+            return;
+        }
+        if !self.timer.enabled {
+            return;
+        }
+        let (anchor, input) = match anchor {
+            Some(a) => (a, Input::Grab),
+            None => match self.quick_anchor() {
+                Some(a) => (a, Input::Keys),
+                None => {
+                    log("timer: no bar to open under");
+                    return;
+                }
+            },
+        };
+        self.timer_do(Change::Seen);
+        let popup = TimerPopup::new(self.timer.minutes, &self.timer.model);
+        let rows = popup.render(&self.timer.model, &self.timer.lengths, unix_ms());
+        let (columns, height) = rows.cells();
+        if self.popup_open(qh, anchor, PopupBody::Timer(popup), columns, height, input) {
+            self.timer.verb_opened = (input == Input::Keys).then(Instant::now);
+            self.popup_paint(rows);
+            log(&format!("timer shown ({})", self.timer.model.word()));
+            self.timer_sync();
+        }
     }
 
     /// The deadline fired: calloop dropped it (`fired` first), then the wall clock decides.
@@ -239,14 +369,15 @@ impl App {
         if self.bar.apply(Msg::Timer(chip)) {
             self.dirty = true;
         }
+        self.timer_refresh();
     }
 
     /// The deadline: the next change of the chip (or the end) while a timer runs, none otherwise.
     /// A deadline already armed for that instant stays.
     fn timer_sync(&mut self) {
         let now = unix_ms();
-        // The popup's seconds come with the popup: for now the chip's minute.
-        let at = self.timer.model.next_change(now, false).and_then(|t| Instant::now().checked_add(wait_for(t, now)));
+        // The popup's seconds come with the popup, and go with it (`closed`).
+        let at = self.timer.model.next_change(now, self.timer_shown()).and_then(|t| Instant::now().checked_add(wait_for(t, now)));
         if let (Some(armed), Some(at)) = (self.timer.deadline.deadline(), at) {
             if same_deadline(armed, at) {
                 return;
