@@ -1,0 +1,31 @@
+---
+source: crates/alpheus/src/ui/home/tests.rs
+assertion_line: 120
+expression: all
+---
+                                                                                       
+  ◆ alpheus       󰋜  Home                                                              
+  control center  The everyday switches                                                
+                  ━━━━━━━━━━━━───────────────────────────────────────────────────────  
+                                                                                       
+ ▌󰋜 Home     1     ▄█  █ █ ▄ █▀█ █▀▀   Sunday 15 November                              
+                    █  ▀▀█ ▄ █ █ ▀▀█   Good afternoon                                  
+  󰕾 Sound    2     ▀▀▀   ▀   ▀▀▀ ▀▀▀   2 connections · 1 device · Balanced             
+                  ───────────────────────────────────────────────────────────────────  
+  󰖩 Network  3    ┏ 󰕾 Volume ━━━━━━━━━┓ ┌ 󰃠 Brightness ─────┐ ┌ 󰓅 Energy ───────────┐  
+                  ┃ █▀▀ ▀▀█           ┃ │ ▀▀█ █▀█           │ │  󰓅  Performance     │  
+  󰂯 BT       4    ┃ █▀█ █▀▀           ┃ │ █▀▀ █ █           │ │                     │  
+                  ┃ ▀▀▀ ▀▀▀ %         ┃ │ ▀▀▀ ▀▀▀ %         │ │  󰾅  Balanced     ●  │  
+  󰐥 Power    5    ┃ ███████████       ┃ │ ███               │ │                     │  
+                  ┃ ███████████▔▔▔▔▔▔ ┃ │ ███▔▔▔▔▔▔▔▔▔▔▔▔▔▔ │ │  󰌪  Power saver     │  
+  󰍹 Displays 6    ┗━━━━━━━━━━━━━━━━━━━┛ └───────────────────┘ └─────────────────────┘  
+                                                                                       
+  󰏘 Theme    7     Wi-Fi            Bluetooth        Do not disturb   Keep awake       
+                   󰖩 MON_WIFI_1     󰂯 CasqueBT       󰂛 off            󰅶 off            
+                                                                                       
+                  ┌ 󰛳 Connections ────────────────┐ ┌ 󰂯 Devices ────────────────────┐  
+                  │ 󰖩 MON_WIFI_1           Wi-Fi  │ │ 󰂱 CasqueBT        ● connected │  
+                  │ 󰈀 Wired connection 1          │ │                               │  
+  ● ready         │                               │ │                               │  
+                  └───────────────────────────────┘ └───────────────────────────────┘  
+                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    Space  Toggle

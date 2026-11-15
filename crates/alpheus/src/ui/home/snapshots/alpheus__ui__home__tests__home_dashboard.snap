@@ -1,0 +1,41 @@
+---
+source: crates/alpheus/src/ui/home/tests.rs
+assertion_line: 84
+expression: all
+---
+                                                                                                                        
+  ◆ alpheus       󰋜  Home                                                                                               
+  control center  The everyday switches                                                                                 
+                  ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────  
+                                                                                                                        
+ ▌󰋜 Home     1                                                                                                          
+                   ▄▄██   ██  ██ ▄▄ ██▀▀██ ██▀▀▀▀   Sunday                                             Good afternoon   
+  󰕾 Sound    2       ██   ▀▀▀▀██ ▄▄ ██  ██ ▀▀▀▀██   15 November                   2 connections · 1 device · Balanced   
+                   ▀▀▀▀▀▀     ▀▀    ▀▀▀▀▀▀ ▀▀▀▀▀▀                                                                       
+  󰖩 Network  3    ────────────────────────────────────────────────────────────────────────────────────────────────────  
+                  ┏ 󰕾 Volume ━━━━━━━━━━━━━━━━━━━━┓ ┌ 󰃠 Brightness ────────────────┐ ┌ 󰓅 Energy ──────────────────────┐  
+  󰂯 BT       4    ┃ █▀▀ ▀▀█                      ┃ │ ▀▀█ █▀█                      │ │                                │  
+                  ┃ █▀█ █▀▀                      ┃ │ █▀▀ █ █                      │ │  󰓅  Performance                │  
+  󰐥 Power    5    ┃ ▀▀▀ ▀▀▀ %                    ┃ │ ▀▀▀ ▀▀▀ %                    │ │                                │  
+                  ┃                              ┃ │                              │ │  󰾅  Balanced                ●  │  
+  󰍹 Displays 6    ┃ █████████████████            ┃ │ ██████                       │ │                                │  
+                  ┃ █████████████████▔▔▔▔▔▔▔▔▔▔▔ ┃ │ ██████▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ │ │  󰌪  Power saver                │  
+  󰏘 Theme    7    ┃ ╵     ╵      ╵      ╵      ╵ ┃ │ ╵     ╵      ╵      ╵      ╵ │ │                                │  
+                  ┃                              ┃ │                              │ │                                │  
+                  ┃ -/+ adjust · click the gauge ┃ │                              │ │                                │  
+                  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛ └──────────────────────────────┘ └────────────────────────────────┘  
+                                                                                                                        
+                                                                                                                        
+                    󰖩 Wi-Fi           ON     󰂯 Bluetooth       ON     󰂛 Do not disturb off     󰅶 Keep awake      off    
+                                                                                                                        
+                      MON_WIFI_1               CasqueBT                 Space to turn on         Space to turn on       
+                                                                                                                        
+                                 ━━━━━●                   ━━━━━●                   ○┄┄┄┄┄                    ○┄┄┄┄┄     
+                                                                                                                        
+                                                                                                                        
+                  ┌ 󰛳 Connections ────────────────────────────────┐ ┌ 󰂯 Devices ─────────────────────────────────────┐  
+                  │ 󰖩 MON_WIFI_1                           Wi-Fi  │ │ 󰂱 CasqueBT                         ● connected │  
+                  │ 󰈀 Wired connection 1                Ethernet  │ │                                                │  
+  ● ready         │                                               │ │                                                │  
+                  └───────────────────────────────────────────────┘ └────────────────────────────────────────────────┘  
+                   F1  Help    Ctrl+P  Palette    Esc  Back    q  Quit    Space  Toggle    -/+  Adjust

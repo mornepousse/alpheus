@@ -583,6 +583,8 @@ fn power_buttons_with_glyphs() {
 fn profile_chips_take_the_shape() {
     let mut a = ready_app();
     a.theme.shape = crate::theme::Shape::Round;
+    // Beside the rail Home is the dashboard; its rows (and their chips) show while a search is typed.
+    a.search.editing = true;
     let (rows, _) = draw(&a, 100, 30);
     let line = &rows[row_of(&rows, "Energy profile")];
     assert!(line.contains("\u{e0b6} Balanced \u{e0b4}"), "{line:?}");
@@ -613,8 +615,10 @@ fn rail_tab_snapshots() {
 #[test]
 fn rail_controls_fit_mae_window_87x26() {
     let cut = |rows: &[String]| assert!(!rows.join("\n").contains('…'), "a cut row:\n{}", rows.join("\n"));
-    // Home: sliders (gauge + tail), switches, profile chips.
-    let a = tab_app(Tab::Home);
+    // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show while a
+    // search is typed (else the dashboard, see `home::tests::mae_window_87x26_shows_the_whole_dashboard`).
+    let mut a = tab_app(Tab::Home);
+    a.search.editing = true;
     let (rows, hits) = draw(&a, 87, 26);
     cut(&rows);
     let bar = hits.find(Target::Slider { item: 0 }).unwrap();

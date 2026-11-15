@@ -3,9 +3,11 @@
 
 mod appearance;
 mod controls;
+mod digits;
 mod displays;
 pub mod draw;
 pub mod hit;
+pub mod home;
 mod overlays;
 pub mod rail;
 pub mod shape;
@@ -17,6 +19,7 @@ use crate::app::App;
 use crate::app::action::{Action, Tab};
 use crate::app::appearance::Focus;
 use draw::put;
+use home::LocalTime;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -41,7 +44,13 @@ pub fn chrome(area: Rect) -> Chrome {
     if area.width >= rail::RAIL_MIN_W && area.height >= rail::RAIL_MIN_H { Chrome::Rail } else { Chrome::Classic }
 }
 
+/// Draws everything at the local time now (see `render_at`).
 pub fn render(f: &mut Frame, app: &App) -> HitMap {
+    render_at(f, app, LocalTime::now())
+}
+
+/// Draws everything; `now` is the time Home's dashboard shows (none: no clock).
+pub fn render_at(f: &mut Frame, app: &App, now: Option<LocalTime>) -> HitMap {
     let area = f.area();
     let buf = f.buffer_mut();
     let mut hits = HitMap::default();
@@ -53,12 +62,12 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
     }
     if chrome(area) == Chrome::Rail {
         let body = rail::render(buf, area, app, &mut hits);
-        tabs::render(buf, body, app, &mut hits, Chrome::Rail);
+        tabs::render(buf, body, app, &mut hits, Chrome::Rail, now);
     } else {
         let bar = |y| Rect::new(area.x, y, area.width, 1);
         let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
         tab_bar(buf, bar(area.y), app, &mut hits);
-        tabs::render(buf, body, app, &mut hits, Chrome::Classic);
+        tabs::render(buf, body, app, &mut hits, Chrome::Classic, now);
         status_line(buf, bar(area.bottom() - 2), app);
         shortcut_bar(buf, bar(area.bottom() - 1), app);
     }
@@ -174,14 +183,32 @@ pub(crate) mod testing {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Draws `app` on a w×h terminal; returns the rows and the regions.
+    /// The fixed time the tests draw with: Sunday 15 November, 14:05.
+    pub const T: LocalTime = LocalTime { hour: 14, minute: 5, weekday: 0, day: 15, month: 10 };
+
+    /// Draws `app` on a w×h terminal at `T`; returns the rows and the regions.
     pub fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, HitMap) {
+        draw_at(app, w, h, Some(T))
+    }
+
+    /// Draws `app` on a w×h terminal at `now`; returns the rows and the regions.
+    pub fn draw_at(app: &App, w: u16, h: u16, now: Option<LocalTime>) -> (Vec<String>, HitMap) {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = HitMap::default();
-        t.draw(|f| hits = render(f, app)).unwrap();
+        t.draw(|f| hits = render_at(f, app, now)).unwrap();
         let buf = t.backend().buffer();
         let rows = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect();
         (rows, hits)
+    }
+
+    /// The cells `render_at` leaves on a w×h terminal.
+    pub fn buffer_at(app: &App, w: u16, h: u16, now: Option<LocalTime>) -> Buffer {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            render_at(f, app, now);
+        })
+        .unwrap();
+        t.backend().buffer().clone()
     }
 }
 

@@ -7,6 +7,7 @@ use super::controls;
 use super::displays::{self, MapCell};
 use super::draw::{put, truncate};
 use super::hit::{HitMap, Target};
+use super::home::{self, LocalTime};
 use super::rail::tab_hue;
 use super::shape::{self, Ink};
 use crate::app::action::{Tab, profile_label};
@@ -29,9 +30,14 @@ enum Row {
     Map(usize),
 }
 
-pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome) {
+pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap, chrome: Chrome, now: Option<LocalTime>) {
     if app.tab == Tab::Appearance {
         return appearance::render(buf, body, app, hits);
+    }
+    // Home as a dashboard beside the rail when its body has room (the classic chrome keeps the rows,
+    // and so does a search being typed).
+    if app.tab == Tab::Home && chrome == Chrome::Rail && home::fits(body) && !app.search.editing {
+        return home::render(buf, body, app, hits, now);
     }
     let map: Vec<Vec<MapCell>> = if app.tab == Tab::Displays {
         let focused = displays::focused_output(app);
