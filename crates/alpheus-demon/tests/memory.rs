@@ -19,7 +19,7 @@ mod common;
 
 use alpheus_commun::displays::wire::{self, TrialState};
 use alpheus_commun::displays::{Active, Step};
-use alpheus_commun::launcher_ipc::{DmenuFlags, QuickVerb, Reply, Request, encode_request, socket_path};
+use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, QuickVerb, Reply, Request, encode_request, socket_path};
 use alpheus_commun::theme::presets::preset;
 use common::bluez::FakeBluez;
 use common::displays::{displays, output, outputs_snapshot, snapshot_until};
@@ -28,8 +28,8 @@ use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
     AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway,
-    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source, fake_stdin_recorder,
-    launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
+    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_env_recorder, fake_recorder, fake_source,
+    fake_stdin_recorder, launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
 use std::os::unix::net::UnixStream;
@@ -2920,3 +2920,131 @@ fn windows_switcher_pss_and_rest() {
 
 /// The bar without the resources timer: the clock is the only timer, which `away_from_the_minute` avoids.
 const AT_REST_NO_RESOURCES: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
+
+/// `[hooks]` with every key set to the recording stub.
+fn all_hooks() -> String {
+    let keys: String = alpheus_demon::hooks::HookId::ALL.iter().map(|id| format!("{} = [\"hook-rec\"]\n", id.key())).collect();
+    format!("[hooks]\n{keys}")
+}
+
+/// A one-output daemon on `bar_toml` with the stub `hook-rec` in its PATH (the hooks' only command).
+fn hooks_start(name: &str, bus: &PrivateBus, bar_toml: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    fake_env_recorder(&sway, "hook-rec");
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(bar_toml), system_bus: Some(&bus.address), pw_dump: PwDump::Silent, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// The quiet window behind it (`hooks::QUIET`), then `--dnd toggle` five times, 3.1 s apart (each
+/// runs its hook), then twenty back to back (at most five more run, the rest are throttled).
+fn hooks_burst(sway: &Sway, d: &Daemon) {
+    std::thread::sleep(alpheus_demon::hooks::QUIET + Duration::from_millis(500));
+    let toggle = || assert_eq!(launcher(sway, &Request::Dnd(DndVerb::Toggle)), Reply::Done, "{:?}", d.log());
+    for _ in 0..5 {
+        toggle();
+        std::thread::sleep(Duration::from_millis(3100));
+    }
+    for _ in 0..20 {
+        toggle();
+    }
+}
+
+/// What a daemon holds in memory of its own: its PSS without the shm pools, and its anonymous memory
+/// (smaps_rollup `Anonymous:`: the heap and stacks, never a file's pages or a shm pool).
+#[derive(Clone, Copy, Debug)]
+struct Own {
+    pss: u64,
+    anon: u64,
+}
+
+fn own_memory(d: &Daemon) -> Own {
+    let (total, pools) = d.pss_and_shm_kb();
+    let rollup = std::fs::read_to_string(format!("/proc/{}/smaps_rollup", d.pid())).unwrap();
+    let anon =
+        rollup.lines().find_map(|l| l.strip_prefix("Anonymous:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap();
+    Own { pss: total - pools, anon }
+}
+
+/// One daemon alone (shared libraries are counted proportionally to the processes mapping them): its
+/// memory at start and after `hooks_burst`, with the smaps split of both.
+fn hooks_run(name: &str, bus: &PrivateBus, bar_toml: &str) -> ((Own, Own), (String, String), Daemon) {
+    let (sway, _hypr, d) = hooks_start(name, bus, bar_toml);
+    std::thread::sleep(TRAY_SETTLE);
+    let (start, split_start) = (own_memory(&d), smaps_breakdown(&d));
+    hooks_burst(&sway, &d);
+    std::thread::sleep(Duration::from_secs(1)); // the last hook's process has ended
+    ((start, own_memory(&d)), (split_start, smaps_breakdown(&d)), d)
+}
+
+/// Hooks spec § 7: eleven hooks set cost nothing at start (the default modules, one output, back to
+/// back with the same bar without `[hooks]`), and a burst of fires keeps nothing: five paced runs,
+/// then twenty back to back (some run, the rest are throttled; the count is not asserted here, the
+/// bucket's own test is the end-to-end one). Both bounds are on the anonymous memory: the PSS
+/// without the shm pools is printed too, but the font file's and the binary's pages in it move by
+/// ±200 KB between two identical daemons on a machine that is doing other work (measured: the same
+/// burst read −215 and +163 KB on the font file alone), which says nothing about what hooks keep.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn hooks_pss_at_start_and_after_fires() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("hooks-start");
+    let _workstation = Workstation::serve(&bus);
+    let (plain, plain_split, _) = hooks_run("hooks-start-0", &bus, "");
+    let ((with, after), split, d) = hooks_run("hooks-start-1", &bus, &all_hooks());
+    eprintln!(
+        "hooks own memory (KB, PSS without the pools / anonymous): without [hooks] {}/{} at start, {}/{} after the same burst; with eleven set {}/{} at start (+{}/+{}), {}/{} after the burst (+{}/+{} over start); {} hook: dnd lines, {} throttled",
+        plain.0.pss,
+        plain.0.anon,
+        plain.1.pss,
+        plain.1.anon,
+        with.pss,
+        with.anon,
+        with.pss.saturating_sub(plain.0.pss),
+        with.anon.saturating_sub(plain.0.anon),
+        after.pss,
+        after.anon,
+        after.pss.saturating_sub(with.pss),
+        after.anon.saturating_sub(with.anon),
+        d.count("hook: dnd"),
+        d.count("hook: dnd throttled"),
+    );
+    eprintln!("hooks smaps without: {} -> {}; with: {} -> {}", plain_split.0, plain_split.1, split.0, split.1);
+    assert!(
+        with.anon <= plain.0.anon + 128,
+        "{} KB anonymous vs {} KB: more than 128 KB for configuration alone — report, never raise",
+        with.anon,
+        plain.0.anon
+    );
+    assert!(
+        after.anon <= with.anon + 64,
+        "{} KB anonymous after the burst vs {} KB at start: more than 64 KB kept — report, never raise",
+        after.anon,
+        with.anon
+    );
+}
+
+/// Hooks spec § 7: after the burst nothing is left armed (no repeating timer, no watch): no
+/// loop-thread and no whole-daemon wake-up in 5 s, the window starting within a second of the last
+/// toggle.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_with_hooks() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("hooks-rest");
+    let _workstation = Workstation::serve(&bus);
+    let toml = format!("modules = [{}, \"notifications\"]\n{}", resting_modules!(), all_hooks());
+    let (sway, _hypr, d) = hooks_start("hooks-rest", &bus, &toml);
+    assert!(d.wait_for("hook: started", DELAY), "{:?}", d.log());
+    const REST: Duration = Duration::from_secs(5);
+    // The burst takes ~20 s and the rest window must start within a second of its end: the whole
+    // sequence fits one minute, so the clock never ticks inside the window.
+    away_from_the_minute(Duration::from_secs(30));
+    hooks_burst(&sway, &d);
+    std::thread::sleep(Duration::from_millis(300));
+    displays_rest(&d, REST, "after the hooks' burst");
+}
