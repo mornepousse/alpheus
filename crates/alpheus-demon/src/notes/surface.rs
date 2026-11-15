@@ -22,6 +22,8 @@ use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
 use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
 use alpheus_commun::paths;
+use smithay_client_toolkit::data_device_manager::data_device::DataDevice;
+use smithay_client_toolkit::reexports::calloop::{LoopHandle, RegistrationToken};
 use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_surface};
 use smithay_client_toolkit::reexports::client::{Connection, QueueHandle};
 use smithay_client_toolkit::seat::keyboard::KeyEvent;
@@ -105,6 +107,11 @@ pub struct OpenNotes {
     pub copy: Vec<String>,
     /// `$PATH`, read at open: the copy program is looked up there.
     pub path_dirs: Vec<PathBuf>,
+    /// The seat's data device, for the selection offer Ctrl+V reads (created before the first
+    /// commit, so the compositor's selection reaches the box with its keyboard focus).
+    pub(crate) data_device: Option<DataDevice>,
+    /// A paste being read: its pipe is a source of the loop until it ends (`notes/paste.rs`).
+    pub(crate) paste: Option<(LoopHandle<'static, App>, RegistrationToken)>,
     box_layer: LayerSurface,
     scrims: Vec<Scrim>,
     /// The pad's own pool: dropped with it (a SlotPool never shrinks).
@@ -130,7 +137,20 @@ pub struct OpenNotes {
     waiting: bool,
 }
 
+impl Drop for OpenNotes {
+    fn drop(&mut self) {
+        self.stop_paste();
+    }
+}
+
 impl OpenNotes {
+    /// Drops a paste still being read: its pipe leaves the loop and closes.
+    pub(crate) fn stop_paste(&mut self) {
+        if let Some((handle, token)) = self.paste.take() {
+            handle.remove(token);
+        }
+    }
+
     /// The first edit since the last save starts the save's clock; later ones never push it back.
     pub(crate) fn stamp_dirty(&mut self) {
         if self.model.dirty && self.dirty_since.is_none() {
@@ -195,6 +215,7 @@ impl App {
         // Scrims BEFORE the box, on the box's own Overlay layer: created last, the box stacks above
         // them (the launcher's rule, launcher/surface.rs).
         let scrims = self.notes_scrims(qh);
+        let data_device = self.new_data_device(qh);
         let surface = self.compositor.create_surface(qh);
         let box_layer = self.layers.create_layer_surface(qh, surface, Layer::Overlay, Some(NAMESPACE), named.as_ref());
         box_layer.set_size(size.0, size.1);
@@ -206,6 +227,8 @@ impl App {
             dirty_since: None,
             copy,
             path_dirs,
+            data_device,
+            paste: None,
             box_layer,
             scrims,
             pool,
@@ -225,6 +248,27 @@ impl App {
         open.fit_model();
         self.notes.open = Some(open);
         self.keyboard_acquire(qh);
+    }
+
+    /// The seat's data device, when the manager and the seat both exist.
+    fn new_data_device(&self, qh: &QueueHandle<App>) -> Option<DataDevice> {
+        match (&self.data_devices, &self.seat) {
+            (Some(manager), Some(seat)) => Some(manager.get_data_device(qh, seat)),
+            _ => None,
+        }
+    }
+
+    /// A seat that appears while the pad is open (a keyboard plugged in, a virtual one: the seat
+    /// is tracked from its first capability): the data device is made then, before the keyboard
+    /// is bound, so the selection reaches the box with its focus.
+    pub(crate) fn notes_attach_data_device(&mut self, qh: &QueueHandle<App>) {
+        if self.notes.open.as_ref().is_none_or(|o| o.data_device.is_some()) {
+            return;
+        }
+        let device = self.new_data_device(qh);
+        if let Some(open) = self.notes.open.as_mut() {
+            open.data_device = device;
+        }
     }
 
     fn notes_scrims(&mut self, qh: &QueueHandle<App>) -> Vec<Scrim> {

@@ -6,6 +6,7 @@ pub mod app;
 pub mod keys;
 pub mod lines;
 pub mod model;
+pub mod paste;
 pub mod store;
 pub mod surface;
 pub mod text;

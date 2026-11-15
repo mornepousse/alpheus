@@ -780,6 +780,47 @@ impl Drop for WtypeChild {
     }
 }
 
+/// `wl-copy` serving `text` as the selection of THIS test's headless sway, and nowhere else: the
+/// one place a test starts `wl-copy` (a guardrail checks it). A bare `wayland-N` name would also
+/// open the machine's own compositor under an inherited `XDG_RUNTIME_DIR`, so the environment is
+/// cleared, the runtime directory and display are this sway's, and the socket must exist before
+/// the spawn. `mime` (`--type`): the one type offered, text by default. `--foreground` keeps the serving process the child itself (never a forked orphan),
+/// `--primary` is never passed, and the guard kills and reaps it on drop. Fictional text only.
+pub fn wl_copy(sway: &Sway, text: &str, mime: Option<&str>) -> WlCopyChild {
+    assert!(sway.runtime.join(&sway.wayland).exists(), "this test's compositor socket is not there: wl-copy would reach another one");
+    let mut command = Command::new("wl-copy");
+    command.arg("--foreground");
+    if let Some(mime) = mime {
+        command.arg("--type").arg(mime);
+    }
+    let child = command
+        .arg("--")
+        .arg(text)
+        .env_clear()
+        .env("PATH", env::var_os("PATH").unwrap_or_default())
+        .env("XDG_RUNTIME_DIR", &sway.runtime)
+        .env("WAYLAND_DISPLAY", &sway.wayland)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("wl-copy not found: run these tests inside `nix develop`");
+    WlCopyChild(Some(child))
+}
+
+/// The `wl-copy` serving a selection: killed and waited on drop, so a failed assertion never
+/// leaves it serving.
+pub struct WlCopyChild(Option<Child>);
+
+impl Drop for WlCopyChild {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 /// A program that writes its argv to <runtime>/launched-<name> and exits.
 pub fn fake_program(sway: &Sway, name: &str) -> PathBuf {
     let bin = sway.runtime.join("bin");

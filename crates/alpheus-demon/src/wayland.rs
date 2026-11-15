@@ -39,8 +39,9 @@ use smithay_client_toolkit::shm::{
 };
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry, delegate_seat,
-    delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
+    data_device_manager::DataDeviceManagerState,
+    delegate_compositor, delegate_data_device, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
+    delegate_seat, delegate_shm, delegate_xdg_popup, delegate_xdg_shell,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
@@ -425,6 +426,9 @@ pub struct App {
     pending_restore: Vec<wl_output::WlOutput>,
     /// First seat announced: the launcher binds its keyboard on it while open.
     pub(crate) seat: Option<wl_seat::WlSeat>,
+    /// The data-device manager, bound once at start: the quick notepad's paste reads the selection
+    /// through it (`notes/paste.rs`). None when the compositor has none.
+    pub(crate) data_devices: Option<DataDeviceManagerState>,
     /// wp_viewporter, if the compositor has it: scales the launcher's 1×1
     /// scrims to their output (no full-output buffer).
     pub(crate) viewporter: Option<WpViewporter>,
@@ -624,6 +628,7 @@ impl App {
             awaiting_configure: Vec::new(),
             pending_restore: Vec::new(),
             seat: None,
+            data_devices: DataDeviceManagerState::bind(globals, qh).ok(),
             viewporter,
             displays,
             loop_handle: None,
@@ -1216,6 +1221,7 @@ impl SeatHandler for App {
         // session, only the seat the bar already tracks (`self.seat`) is
         // ours — a keyboard on another seat is not.
         if c == Capability::Keyboard && tracks_seat(&self.seat, &seat) {
+            self.notes_attach_data_device(qh);
             self.keyboard_acquire(qh);
         }
     }
@@ -1410,6 +1416,7 @@ delegate_keyboard!(App);
 delegate_xdg_shell!(App);
 delegate_xdg_popup!(App);
 // wp_viewporter and wp_viewport have no events.
+delegate_data_device!(App);
 delegate_noop!(App: ignore WpViewporter);
 delegate_noop!(App: ignore WpViewport);
 delegate_registry!(App);

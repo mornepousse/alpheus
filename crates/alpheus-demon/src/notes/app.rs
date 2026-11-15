@@ -241,13 +241,6 @@ impl App {
             app.notes_redraw();
         });
     }
-
-    /// Ctrl+V. Delivery 1, task 4: nothing to read yet (the data device comes with task 6).
-    pub(crate) fn notes_paste(&mut self) {
-        let Some(open) = self.notes.open.as_mut() else { return };
-        open.model.show_message("nothing to paste".to_string());
-        self.notes_redraw();
-    }
 }
 
 #[cfg(test)]

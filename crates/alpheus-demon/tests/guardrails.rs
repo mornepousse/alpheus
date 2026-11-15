@@ -1407,7 +1407,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 58] = [
+const NO_THREAD_NOR_COMMAND: [&str; 59] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1466,6 +1466,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 58] = [
     "notes/view.rs",
     "notes/store.rs",
     "notes/surface.rs",
+    "notes/paste.rs",
 ];
 
 #[test]
@@ -3152,7 +3153,7 @@ fn log_calls_take_the_whole_statement() {
 #[test]
 fn the_notes_glue_never_logs_the_text() {
     let files = source_files();
-    for name in ["notes/surface.rs", "notes/app.rs"] {
+    for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code(t);
         for call in log_calls(&prod) {
@@ -3197,7 +3198,7 @@ fn the_notes_spawn_only_the_copy_command() {
 #[test]
 fn the_notes_glue_has_no_panicking_path() {
     let files = source_files();
-    for name in ["notes/surface.rs", "notes/app.rs"] {
+    for name in ["notes/surface.rs", "notes/app.rs", "notes/paste.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -3222,4 +3223,105 @@ fn a_bar_press_swallows_only_a_launcher_it_closed() {
     let body = function_body(&prod, "fn pointer_frame(");
     assert!(body.contains("self.click(qh, i, ev.position.0, b, launcher_was_open)"), "click gets the launcher's own state: {body}");
     assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
+}
+
+/// Quick notes, task 6: the paste pipe is a source of the loop only inside `notes/paste.rs`, and
+/// goes with the pad; the pad never owns a selection nor starts a drag.
+#[test]
+fn the_paste_pipe_lives_only_while_the_pad_is_open() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        if name.starts_with("notes/") {
+            seen += 1;
+        }
+        if name != "notes/paste.rs" {
+            assert!(!(prod.contains("insert_source(") && prod.contains("ReadPipe")), "a ReadPipe source outside notes/paste.rs: {name}");
+        }
+        for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
+            assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
+        }
+    }
+    assert!(seen >= 9, "the notes files were found: {seen}");
+    let files = source_files();
+    let surface = &files.iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs").1;
+    let prod = production_code(surface);
+    let drop = function_body(&prod, "fn drop(&mut self)");
+    assert!(drop.contains("stop_paste()"), "OpenNotes's Drop removes the paste source: {drop}");
+    let stop = function_body(&prod, "fn stop_paste(");
+    assert!(stop.contains("paste.take()") && stop.contains(".remove("), "stop_paste takes the token and removes the source: {stop}");
+    let paste = &files.iter().find(|(p, _)| relative_path(p) == "notes/paste.rs").expect("notes/paste.rs").1;
+    let paste = production_code(paste);
+    assert_eq!(paste.matches("insert_source(").count(), 1, "one source, the pipe");
+}
+
+/// The `wl-copy`/`wl-paste` spawns of the test files that are not the harness helper: a test that
+/// starts one outside `tests/common`'s `wl_copy` could reach the machine's own compositor (and its
+/// clipboard). Comments may name the programs.
+fn stray_clipboard_spawns(files: &[(String, String)]) -> Vec<String> {
+    let mut found = Vec::new();
+    for (name, text) in files {
+        if name == "guardrails.rs" {
+            continue;
+        }
+        let mut code: String = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        if name == "common/mod.rs" {
+            let body = function_body(&code, "pub fn wl_copy(").to_string();
+            code = code.replace(&body, "");
+        }
+        for program in ["wl-copy", "wl-paste"] {
+            if code.contains(program) {
+                found.push(format!("{name} names {program}"));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn stray_clipboard_spawns_are_found() {
+    let helper = "pub fn wl_copy(s: &Sway) -> C {\n    Command::new(\"wl-copy\")\n}\n";
+    let files = |a: &str, b: &str| {
+        vec![("common/mod.rs".to_string(), helper.to_string()), ("a.rs".to_string(), a.to_string()), ("b.rs".to_string(), b.to_string())]
+    };
+    assert!(stray_clipboard_spawns(&files("// wl-copy serves it\nfn t() {}\n", "fn t() {}\n")).is_empty());
+    assert_eq!(
+        stray_clipboard_spawns(&files("fn t() { Command::new(\"wl-copy\"); }\n", "fn t() { Command::new(\"wl-paste\"); }\n")),
+        ["a.rs names wl-copy", "b.rs names wl-paste"]
+    );
+    let outside = vec![("common/mod.rs".to_string(), format!("{helper}fn other() {{ Command::new(\"wl-copy\"); }}\n"))];
+    assert_eq!(stray_clipboard_spawns(&outside), ["common/mod.rs names wl-copy"]);
+}
+
+/// Quick notes (session safety): the one `wl-copy` a test starts is the harness helper, which clears
+/// the environment, names this sway's runtime directory and display, stays in the foreground and
+/// holds a guard that kills it; no other test file names the program.
+#[test]
+fn no_test_spawns_wl_copy_outside_the_harness_helper() {
+    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut files = Vec::new();
+    let mut dirs = vec![tests.clone()];
+    while let Some(d) = dirs.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                let name = path.strip_prefix(&tests).unwrap().to_string_lossy().into_owned();
+                files.push((name, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    assert!(files.iter().any(|(n, _)| n == "common/mod.rs"), "the harness was found");
+    let stray = stray_clipboard_spawns(&files);
+    assert!(stray.is_empty(), "{stray:?}");
+    let common = &files.iter().find(|(n, _)| n == "common/mod.rs").unwrap().1;
+    let helper = function_body(common, "pub fn wl_copy(");
+    for need in ["env_clear()", "\"XDG_RUNTIME_DIR\", &sway.runtime", "\"WAYLAND_DISPLAY\", &sway.wayland", "\"--foreground\""] {
+        assert!(helper.contains(need), "the wl-copy helper lacks {need}: {helper}");
+    }
+    assert!(!helper.contains("--primary"), "never the primary selection");
+    let guard = function_body(common, "impl Drop for WlCopyChild");
+    assert!(guard.contains(".kill()") && guard.contains(".wait()"), "the guard kills and reaps: {guard}");
 }

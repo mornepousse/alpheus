@@ -25,7 +25,7 @@ use common::{
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
     capture_delta, capture_gone, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder,
     harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta,
-    wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    wait_for_pid_file, wl_copy, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -5991,4 +5991,36 @@ fn a_refused_notes_file_opens_read_only() {
     assert!(d.wait_for("notes: read only (is too large)", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!(std::fs::read(&file).unwrap(), before, "never rewritten");
+}
+
+/// Quick notes, task 6: Ctrl+V pastes the seat's selection (a fictional text served by `wl-copy` on
+/// THIS sway only, through the harness helper) and the log never holds it.
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn notes_paste_from_the_selection() {
+    let (sway, d) = notes_daemon("notes-paste");
+    let _selection = wl_copy(&sway, "pasted 42", None);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "v", "-m", "ctrl", "-s", "500", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    wait_for_text(&notes_file(&sway), "pasted 42");
+    assert!(d.log().iter().all(|l| !l.contains("pasted") && !l.contains("42")), "the clipboard reached the log: {:?}", d.log());
+}
+
+/// Quick notes, task 6: a selection with no text type (an image) pastes nothing: the pad stays
+/// unedited, so no file is written.
+#[test]
+#[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
+fn notes_paste_ignores_a_selection_without_text() {
+    let (sway, d) = notes_daemon("notes-paste-image");
+    let _selection = wl_copy(&sway, "not text 77", Some("image/png"));
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "v", "-m", "ctrl", "-s", "500", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert!(!notes_file(&sway).exists(), "nothing was pasted, so nothing is saved");
 }
