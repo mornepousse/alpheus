@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+mod units;
+
 #[cfg(test)]
 mod tests;
 
@@ -38,6 +40,8 @@ pub enum CalcError {
     Overflow,
     Domain,
     Nesting,
+    /// A unit conversion that cannot be done; the message is shown as is.
+    Units(String),
 }
 
 impl fmt::Display for CalcError {
@@ -47,6 +51,7 @@ impl fmt::Display for CalcError {
             CalcError::Overflow => "overflow",
             CalcError::Domain => "not a real number",
             CalcError::Nesting => "too deeply nested",
+            CalcError::Units(message) => message,
         })
     }
 }
@@ -163,7 +168,7 @@ fn lex(input: &str) -> Option<(Vec<Tok>, Flags)> {
             i += 1;
         } else if c.is_ascii_digit() {
             toks.push(Tok::Num(lex_number(&chars, &mut i, &mut flags)?));
-        } else if c.is_alphabetic() {
+        } else if c.is_alphabetic() || c == '°' {
             // `x` between two operands is a multiplication: `2x3`, `2 x 3`.
             let after_operand = matches!(toks.last(), Some(Tok::Num(_) | Tok::RParen));
             let next_is_letter = chars.get(i + 1).is_some_and(|n| n.is_alphabetic());
@@ -173,7 +178,7 @@ fn lex(input: &str) -> Option<(Vec<Tok>, Flags)> {
                 continue;
             }
             let mut name = String::new();
-            while let Some(&n) = chars.get(i).filter(|n| n.is_alphanumeric() || **n == '_') {
+            while let Some(&n) = chars.get(i).filter(|n| n.is_alphanumeric() || **n == '_' || **n == '°') {
                 name.push(n.to_ascii_lowercase());
                 i += 1;
             }
@@ -528,13 +533,30 @@ pub fn evaluate(input: &str) -> Option<Calc> {
         return None;
     }
     let (toks, flags) = lex(input)?;
-    let mut parser = Parser { toks: &toks, pos: 0 };
+    // `<expression> <unit> to|in <unit>`: the last three tokens name the conversion.
+    let (body, conversion) = match toks.as_slice() {
+        [body @ .., Tok::Ident(a), Tok::Ident(word), Tok::Ident(b)] if matches!(word.as_str(), "to" | "in") => {
+            match (units::unit(a), units::unit(b)) {
+                (Some(from), Some(to)) => (body, Some((from, to))),
+                _ => return None,
+            }
+        }
+        all => (all, None),
+    };
+    let mut parser = Parser { toks: body, pos: 0 };
     let node = match parser.expr(0) {
-        Ok(n) if parser.pos == toks.len() => n,
+        Ok(n) if parser.pos == body.len() => n,
         Err(ParseError::Nesting) => return Some(Err(CalcError::Nesting)),
         _ => return None,
     };
-    Some(eval(&node).and_then(|v| answer(v, &flags)))
+    let value = match eval(&node) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+    let Some((from, to)) = conversion else {
+        return Some(answer(value, &flags));
+    };
+    Some(units::convert(to_f(value), from, to).map(|f| Answer { text: format!("{} {}", format_number(f), to.symbol), bases: None }))
 }
 
 fn answer(v: Value, flags: &Flags) -> Calc {

@@ -149,3 +149,61 @@ fn the_remainder_is_truncated() {
     assert_eq!(ok("-7 % 3"), "-1");
     assert_eq!(ok("7 % -3"), "1");
 }
+
+#[test]
+fn conversions() {
+    for (q, want) in [
+        ("5 km to mi", "3.10685596119 mi"),
+        ("1 mi in m", "1609.344 m"),
+        ("12 inch to cm", "30.48 cm"),
+        ("6 ft to m", "1.8288 m"),
+        ("3 ft in inch", "36 in"),
+        ("1 kg to lb", "2.20462262185 lb"),
+        ("16 oz to g", "453.59237 g"),
+        ("100 C to F", "212 °F"),
+        ("0 °C to K", "273.15 K"),
+        ("-40 F to C", "-40 °C"),
+        ("300 K to celsius", "26.85 °C"),
+        ("1 GiB to MB", "1073.741824 MB"),
+        ("1 MB to KiB", "976.5625 KiB"),
+        ("1 TB to GB", "1000 GB"),
+        ("90 min to h", "1.5 h"),
+        ("1 day to s", "86400 s"),
+        ("1500 ms to s", "1.5 s"),
+        ("(2+3) km to m", "5000 m"),
+        ("5 KM TO MI", "3.10685596119 mi"),
+    ] {
+        assert_eq!(ok(q), want, "{q}");
+    }
+}
+
+#[test]
+fn a_conversion_across_dimensions_is_an_error() {
+    assert_eq!(err("5 km to kg"), CalcError::Units("cannot convert length to mass".into()));
+    assert_eq!(err("5 B to s").to_string(), "cannot convert data size to time");
+}
+
+#[test]
+fn incomplete_conversions_are_not_expressions() {
+    for q in ["5 km", "5 km to", "5 parsecs to m", "5 to m", "km to m"] {
+        assert!(evaluate(q).is_none(), "{q}");
+    }
+}
+
+#[test]
+fn a_conversion_shows_no_bases() {
+    assert_eq!(evaluate("0x10 km to m").unwrap().unwrap().bases, None);
+}
+
+#[test]
+fn a_failing_value_stays_its_own_error() {
+    assert_eq!(err("(1/0) km to m"), CalcError::DivisionByZero);
+}
+
+#[test]
+fn unit_names_match_in_any_case() {
+    for name in ["KiB", "kib", "KIB", "°C", "Celsius", "MILES"] {
+        assert!(units::unit(name).is_some(), "{name}");
+    }
+    assert!(units::unit("parsec").is_none());
+}
