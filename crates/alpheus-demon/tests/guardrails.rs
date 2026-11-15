@@ -1992,7 +1992,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
     let mut checked = 0;
     for (p, t) in source_files() {
         let name = relative_path(&p);
-        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_dnd.rs"].contains(&name.as_str()) {
+        if !["quick.rs", "quick_state.rs", "quick_wifi.rs", "quick_bt.rs", "quick_vpn.rs", "quick_dnd.rs"].contains(&name.as_str()) {
             continue;
         }
         checked += 1;
@@ -2013,7 +2013,7 @@ fn the_quick_model_and_its_state_reader_only_read() {
             assert!(!prod.contains(never), "{never} in {name}: the quick panel's model only reads");
         }
     }
-    assert_eq!(checked, 5, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs and quick_dnd.rs");
+    assert_eq!(checked, 6, "quick.rs, quick_state.rs, quick_wifi.rs, quick_bt.rs, quick_vpn.rs and quick_dnd.rs");
 }
 
 /// Quick spec § 5: every command the panel can build — every key on every row (twice: the
@@ -2027,6 +2027,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         night_light: ToggleConfig { toggle: vec!["fake-night".into(), "--toggle".into()], state: String::new() },
         logout: vec!["fake-logout".into()],
         wifi_more: Some(vec!["fake-more".into()]),
+        vpn_more: Some(vec!["fake-vpn-more".into()]),
         mixer: Some(vec!["fake-mixer".into()]),
         ..QuickConfig::default()
     };
@@ -2160,6 +2161,50 @@ fn every_quick_command_stays_on_the_allowlist() {
         record(q.set_wifi(Some(failing), t).action);
         record(q.due(t + alpheus_demon::quick_wifi::CONNECT_TIMEOUT).run.into_iter().next().unwrap_or(QuickAction::Nothing));
     }
+    // Quick VPN spec: the VPN row and its detail with one profile of each kind, active or not; every
+    // key on every pick (twice), every press of every cell with every button (twice).
+    const UUID_VPN_1: &str = "00000000-0000-4000-8000-000000000001";
+    const UUID_VPN_2: &str = "00000000-0000-4000-8000-000000000002";
+    let vpn_state = |active: bool| VpnState {
+        profiles: vec![
+            VpnProfile { uuid: UUID_VPN_1.into(), name: "VPN-Test-1".into(), kind: VpnKind::Plugin, last_used: 10, asks: false },
+            VpnProfile { uuid: UUID_VPN_2.into(), name: "WG-Test".into(), kind: VpnKind::WireGuard, last_used: 20, asks: true },
+        ],
+        active: if active { vec![ActiveVpn { uuid: UUID_VPN_1.into(), state: 2 }] } else { Vec::new() },
+    };
+    for active in [false, true] {
+        let fresh_vpn = || {
+            let mut q = fresh();
+            q.set_vpn(Some(vpn_state(active)), t);
+            q.selected = quick::Row::Vpn;
+            q
+        };
+        for k in keys {
+            record(fresh_vpn().key(&live, k, false, t));
+        }
+        let mut opened = fresh_vpn();
+        record(opened.key(&live, Key::Enter, false, t));
+        for down in 0..=3 {
+            for k in keys {
+                let mut q = opened.clone();
+                for _ in 0..down {
+                    q.key(&live, Key::Down, false, t);
+                }
+                record(q.key(&live, k, false, t));
+                record(q.key(&live, k, false, later));
+            }
+        }
+        let n = quick::lines(&live, &opened).len() as u16;
+        for y in 0..n {
+            for x in 0..quick::WIDTH + 2 {
+                for b in [Button::Left, Button::Right, Button::Middle] {
+                    let mut q = opened.clone();
+                    record(q.press(&live, (x, y), b, t));
+                    record(q.press(&live, (x, y), b, later));
+                }
+            }
+        }
+    }
     // Quick Bluetooth spec § 2: Space on the row with rfkill holding the adapter off unblocks it.
     let bt_off = Live { bluetooth: Some(&BtState::Off), ..live };
     let mut q = Quick::new(Focus::Top, &bt_off, sinks.clone(), Some(backlight.clone()), [Some(false), None], 40);
@@ -2212,6 +2257,7 @@ fn every_quick_command_stays_on_the_allowlist() {
         "systemctl reboot",
         "systemctl poweroff",
         "fake-more",
+        "fake-vpn-more",
         "fake-mixer",
     ];
     for c in &calls {
@@ -2224,7 +2270,7 @@ fn every_quick_command_stays_on_the_allowlist() {
             ["powerprofilesctl", "set", p] => ["power-saver", "balanced", "performance"].contains(p),
             ["nmcli", "radio", "wifi", "on" | "off"] => true,
             ["nmcli", "device", "wifi", "rescan"] => true,
-            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED].contains(u),
+            ["nmcli", "connection", "up" | "down", "uuid", u] => [UUID_HOME, UUID_SAVED, UUID_VPN_1, UUID_VPN_2].contains(u),
             ["nmcli", "device", "wifi", "connect", ssid] => *ssid == "Cafe-Libre",
             ["nmcli", "--ask", "device", "wifi", "connect", ssid] => *ssid == "Bureau-Test",
             ["nmcli", "connection", "delete", "uuid", u] => *u == "22222222-3333-4444-8555-666666666666",
@@ -2262,7 +2308,10 @@ fn every_quick_command_stays_on_the_allowlist() {
         "nmcli device wifi connect Cafe-Libre",
         "nmcli --ask device wifi connect Bureau-Test",
         "nmcli connection delete uuid 22222222-3333-4444-8555-666666666666",
+        "nmcli connection up uuid 00000000-0000-4000-8000-000000000001",
+        "nmcli connection down uuid 00000000-0000-4000-8000-000000000001",
         "fake-more",
+        "fake-vpn-more",
         "fake-mixer",
         "rfkill unblock bluetooth",
     ] {
@@ -2281,6 +2330,7 @@ fn the_quick_panel_has_no_panicking_path() {
         "quick_wifi.rs",
         "quick_secret.rs",
         "quick_bt.rs",
+        "quick_vpn.rs",
         "quick_dnd.rs",
         "session.rs",
         "bt_app.rs",

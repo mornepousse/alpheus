@@ -71,12 +71,13 @@ pub enum Mail {
     Stop,
 }
 
-/// bar.toml, read at startup, and its warnings to log. `[quick] wifi_more`'s and `mixer`'s defaults come from
+/// bar.toml, read at startup, and its warnings to log. `[quick] wifi_more`'s, `vpn_more`'s and `mixer`'s defaults come from
 /// launcher.toml's `terminal`, read once here (its warnings are the launcher's, logged at its own open).
 pub fn settings(directory: &Path) -> (BarConfig, Vec<String>) {
     let (mut config, warning) = BarConfig::load(&directory.join("bar.toml"));
     let (launcher, _) = crate::launcher::config::LauncherConfig::load(&crate::launcher::config::config_path(directory));
     crate::config::resolve_wifi_more(&mut config.quick, &launcher.terminal);
+    crate::config::resolve_vpn_more(&mut config.quick, &launcher.terminal);
     crate::config::resolve_mixer(&mut config.quick, &launcher.terminal);
     (config, warning.into_iter().collect())
 }

@@ -68,6 +68,7 @@
 //! reboot = ["systemctl", "reboot"]                          # reboot and poweroff ask once more first
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
+//! vpn_more = ["foot", "-e", "nmtui-edit"]                   # More… in the VPN detail; absent: launcher.toml's terminal, then nmtui-edit; [] hides it
 //! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
 //! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
@@ -586,6 +587,9 @@ pub struct QuickConfig {
     /// networks, VPN, hotspot. None: absent from bar.toml, resolved at load time
     /// (`resolve_wifi_more`); an empty list hides the row.
     pub wifi_more: Option<Vec<String>>,
+    /// The VPN detail's `More…` (quick VPN spec), run as given: editing a profile, a secret. None:
+    /// absent from bar.toml, resolved at load time (`resolve_vpn_more`); an empty list hides the row.
+    pub vpn_more: Option<Vec<String>>,
     /// The `Mixer…` row, run as given. None: absent from bar.toml, resolved at load time
     /// (`resolve_mixer`; an unresolved config, a test's default, shows no row); an empty list
     /// hides the row.
@@ -615,6 +619,7 @@ impl Default for QuickConfig {
             reboot: argv(&["systemctl", "reboot"]),
             poweroff: argv(&["systemctl", "poweroff"]),
             wifi_more: None,
+            vpn_more: None,
             mixer: None,
             dnd_until: "08:00".into(),
         }
@@ -626,6 +631,14 @@ impl Default for QuickConfig {
 pub fn resolve_wifi_more(q: &mut QuickConfig, terminal: &[String]) {
     if q.wifi_more.is_none() {
         q.wifi_more = Some(in_terminal(terminal, "nmtui"));
+    }
+}
+
+/// `[quick] vpn_more` absent from bar.toml: the launcher's terminal, then "nmtui-edit". Given (even
+/// empty): kept as is.
+pub fn resolve_vpn_more(q: &mut QuickConfig, terminal: &[String]) {
+    if q.vpn_more.is_none() {
+        q.vpn_more = Some(in_terminal(terminal, "nmtui-edit"));
     }
 }
 
@@ -696,6 +709,7 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
         ("quick.keep_awake.toggle", q.keep_awake.toggle.as_slice()),
         ("quick.night_light.toggle", q.night_light.toggle.as_slice()),
         ("quick.wifi_more", q.wifi_more.as_deref().unwrap_or(no_more)),
+        ("quick.vpn_more", q.vpn_more.as_deref().unwrap_or(no_more)),
         ("quick.mixer", q.mixer.as_deref().unwrap_or(no_more)),
     ] {
         if command.first().is_some_and(|p| p.trim().is_empty()) {

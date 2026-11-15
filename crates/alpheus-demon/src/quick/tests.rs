@@ -4,7 +4,10 @@ use crate::quick_dnd::DndChoice;
 use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
 use crate::segments::BLUETOOTH_CONNECTED;
 use crate::segments::VOLUME_MEDIUM;
-use crate::system::{AccessPoint, BtDevice, Headset, HeadsetMode, Profile, SavedWifi, Security, WifiDevice, WifiState};
+use crate::system::{
+    AccessPoint, ActiveVpn, BtDevice, Headset, HeadsetMode, Profile, SavedWifi, Security, VpnKind, VpnProfile, VpnScope, VpnState,
+    WifiDevice, WifiState,
+};
 
 fn vol(percent: u8, muted: bool) -> Option<Volume> {
     Some(Volume { percent, muted })
@@ -1410,8 +1413,8 @@ macro_rules! rows {
 }
 
 rows! {
-    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Mic => 5, Mixer => 6, Dnd => 7,
-    Profile => 8, KeepAwake => 9, NightLight => 10, Session => 11,
+    Volume => 0, Headset => 1, Brightness => 2, Wifi => 3, Bluetooth => 4, Vpn => 5, Mic => 6, Mixer => 7, Dnd => 8,
+    Profile => 9, KeepAwake => 10, NightLight => 11, Session => 12,
 }
 
 /// `ROWS` is indexed by `Row as usize`: one entry per variant, in variant order.
@@ -1425,10 +1428,24 @@ fn one_spec_per_row_in_variant_order() {
     let names: Vec<&str> = ROWS.iter().map(|s| s.name).collect();
     assert_eq!(
         names,
-        ["volume", "headset", "brightness", "wifi", "bluetooth", "mic", "mixer", "dnd", "profile", "keep-awake", "night-light", "session"]
+        [
+            "volume",
+            "headset",
+            "brightness",
+            "wifi",
+            "bluetooth",
+            "vpn",
+            "mic",
+            "mixer",
+            "dnd",
+            "profile",
+            "keep-awake",
+            "night-light",
+            "session"
+        ]
     );
     let groups: Vec<u8> = ROWS.iter().map(|s| s.group).collect();
-    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
+    assert_eq!(groups, [0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2]);
 }
 
 /// A re-read pending on any one toggle is a deadline (the timer must be armed for it).
@@ -1632,4 +1649,262 @@ fn live_works_out_the_local_end_of_a_timed_dnd() {
     assert_eq!(live(&bar, &Dnd { on: false, ..timed }).dnd_end, None, "off: no end");
     assert_eq!(live(&bar, &Dnd { by_sharing: true, ..timed }).dnd_end, None, "sharing: no end");
     assert_eq!(live(&bar, &Dnd::user(true)).dnd_end, None, "untimed: no end");
+}
+
+fn vpn_uuid(n: usize) -> String {
+    format!("00000000-0000-4000-8000-{n:012}")
+}
+
+/// VPN-Test-1 and VPN-Test-2 (plugin) and WG-Test (WireGuard), fictional; `active`: (profile, state).
+fn vpn_state(count: usize, active: &[(usize, u32)]) -> VpnState {
+    let names = ["VPN-Test-1", "VPN-Test-2", "WG-Test"];
+    VpnState {
+        profiles: (1..=count)
+            .map(|n| VpnProfile {
+                uuid: vpn_uuid(n),
+                name: names[n - 1].into(),
+                kind: if n == 3 { VpnKind::WireGuard } else { VpnKind::Plugin },
+                last_used: n as u64 * 100,
+                asks: false,
+            })
+            .collect(),
+        active: active.iter().map(|(n, state)| ActiveVpn { uuid: vpn_uuid(*n), state: *state }).collect(),
+    }
+}
+
+fn vpn_config() -> QuickConfig {
+    QuickConfig { vpn_more: Some(vec!["fake-vpn-more".into()]), ..QuickConfig::default() }
+}
+
+#[test]
+fn the_vpn_row_sits_under_bluetooth_and_hides_without_profiles() {
+    let (mut w, t) = (World::full(), Instant::now());
+    w.bluetooth = Some(BtState::On { devices: vec![] });
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    assert!(!shown(&l, &q).contains(&Row::Vpn), "nothing read yet: hidden");
+    q.set_vpn(Some(VpnState { profiles: vec![], active: vec![] }), t);
+    assert!(!shown(&l, &q).contains(&Row::Vpn), "no profile: hidden");
+    q.set_vpn(Some(vpn_state(2, &[(2, 2)])), t);
+    assert_eq!(shown(&l, &q), [Row::Volume, Row::Brightness, Row::Bluetooth, Row::Vpn, Row::Mic, Row::Dnd, Row::Profile, Row::Session]);
+    let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Vpn)).expect("the row");
+    assert_eq!(lines(&l, &q)[at - 1], Line::Row(Row::Bluetooth), "right under Bluetooth, one block with it");
+    assert_eq!(texts(&rows(&l, &q))[at], format!(" {} VPN{}VPN-Test-2 ›", crate::segments::VPN, " ".repeat(15)));
+    assert!(describe(&l, &q).starts_with("rows: volume brightness bluetooth vpn mic"), "{}", describe(&l, &q));
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    assert_eq!(texts(&rows(&l, &q))[at], format!(" {} VPN{}off ›", crate::segments::VPN, " ".repeat(22)));
+    q.set_vpn(None, t);
+    assert!(!shown(&l, &q).contains(&Row::Vpn), "NetworkManager gone: hidden");
+}
+
+#[test]
+fn space_on_the_vpn_row_toggles() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_vpn(Some(vpn_state(3, &[])), t);
+    q.selected = Row::Vpn;
+    // The last used (WG-Test, 300) comes up; an attempt then blocks a second Space.
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), run(&["nmcli", "connection", "up", "uuid", &vpn_uuid(3)], "vpn up"));
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing);
+    q.set_vpn(Some(vpn_state(3, &[(3, 2)])), t);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), run(&["nmcli", "connection", "down", "uuid", &vpn_uuid(3)], "vpn down"));
+    assert_eq!(q.key(&l, Key::Char(' '), true, t), QuickAction::Nothing, "a held Space acts once");
+}
+
+#[test]
+fn enter_opens_the_detail_and_escape_comes_back() {
+    let (mut w, t) = (World::full(), Instant::now());
+    w.config = vpn_config();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    q.selected = Row::Vpn;
+    assert_eq!(q.vpn_scope(), VpnScope::Row);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
+    assert!(q.vpn.open);
+    assert_eq!(q.vpn_scope(), VpnScope::Detail);
+    assert_eq!(lines(&l, &q)[..3], [Line::VpnHeader, Line::Separator, Line::VpnProfile(0)]);
+    assert_eq!(texts(&rows(&l, &q))[0], " ‹ VPN");
+    assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
+    assert!(!q.vpn.open && q.selected == Row::Vpn, "back on the VPN row, the panel open");
+    assert_eq!(q.key(&l, Key::Right, false, t), QuickAction::Redraw, "→ opens it too");
+    assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Redraw);
+    assert!(!q.vpn.open);
+    // A click on the row, then on the header.
+    q.selected = Row::Volume;
+    let at = lines(&l, &q).iter().position(|x| *x == Line::Row(Row::Vpn)).expect("the row") as u16;
+    assert_eq!(q.press(&l, (5, at), Button::Left, t), QuickAction::Redraw);
+    assert!(q.vpn.open && q.selected == Row::Vpn);
+    assert_eq!(q.press(&l, (5, 0), Button::Left, t), QuickAction::Redraw);
+    assert!(!q.vpn.open && q.selected == Row::Vpn);
+    // A row of the detail acts.
+    q.key(&l, Key::Enter, false, t);
+    assert_eq!(
+        q.key(&l, Key::Enter, false, t),
+        run(&["nmcli", "connection", "up", "uuid", &vpn_uuid(1)], "vpn up"),
+        "Enter on the first profile"
+    );
+    assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "a repeat Enter runs nothing");
+}
+
+/// No key path reaches the VPN row from another detail, so `open_vpn` is asked directly: it takes
+/// the panel's one detail, as `open_bt` does.
+#[test]
+fn opening_the_vpn_closes_the_other_details() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_wifi(Some(wifi_state(true, true, true)), t);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    q.wifi.open_detail();
+    q.detail = true;
+    q.top = 3;
+    assert_eq!(q.open_vpn(&l), QuickAction::Redraw);
+    assert!(q.vpn.open && !q.detail && q.top == 0 && !q.wifi.open);
+    let mut none = quick(&w, Focus::Top);
+    assert_eq!(none.open_vpn(&l), QuickAction::Nothing, "no VPN row: nothing opens");
+    assert!(!none.vpn.open);
+}
+
+#[test]
+fn a_repeat_enter_runs_nothing() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    q.selected = Row::Vpn;
+    assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing, "a held Enter does not even open it");
+    assert!(!q.vpn.open);
+    q.key(&l, Key::Enter, false, t);
+    assert!(matches!(q.key(&l, Key::Enter, false, t), QuickAction::Run { .. }));
+    assert_eq!(q.key(&l, Key::Enter, true, t), QuickAction::Nothing);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Nothing, "one attempt at a time");
+}
+
+/// From `--quick vpn`, the first VPN state with a profile selects the row and opens the detail, once;
+/// the user's first key drops the wish.
+#[test]
+fn the_vpn_focus_opens_the_detail_on_the_first_state_with_a_profile() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Vpn);
+    assert_eq!(q.selected, Row::Volume, "nothing read yet: the first row");
+    assert_eq!(q.set_vpn(Some(VpnState { profiles: vec![], active: vec![] }), t).action, QuickAction::Redraw);
+    assert!(!q.vpn.open, "no profile: kept");
+    let news = q.set_vpn(Some(vpn_state(2, &[])), t);
+    assert_eq!(news, WifiNews { action: QuickAction::Redraw, failed: None });
+    assert!(q.vpn.open && q.selected == Row::Vpn);
+    q.key(&l, Key::Escape, false, t);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    assert!(!q.vpn.open, "once only");
+    let mut top = quick(&w, Focus::Top);
+    top.set_vpn(Some(vpn_state(2, &[])), t);
+    assert!(!top.vpn.open, "the top: no detail");
+    let mut keyed = quick(&w, Focus::Vpn);
+    keyed.key(&l, Key::Down, false, t);
+    keyed.set_vpn(Some(vpn_state(2, &[])), t);
+    assert!(!keyed.vpn.open, "a key drops it");
+    let mut clicked = quick(&w, Focus::Vpn);
+    clicked.press(&l, (5, 1), Button::Left, t);
+    clicked.set_vpn(Some(vpn_state(2, &[])), t);
+    assert!(!clicked.vpn.open, "a click drops it");
+    let mut wheeled = quick(&w, Focus::Vpn);
+    wheeled.scroll(&l, Some((5, 1)), 1, t);
+    wheeled.set_vpn(Some(vpn_state(2, &[])), t);
+    assert!(!wheeled.vpn.open, "a wheel notch drops it");
+    // follow_vpn: the same, then fitted and the window on the selection.
+    let mut f = quick(&w, Focus::Vpn);
+    f.follow_vpn(&l, Some(vpn_state(2, &[])), t);
+    assert!(f.vpn.open && f.selected == Row::Vpn);
+}
+
+#[test]
+fn the_last_profile_gone_closes_the_detail() {
+    let (mut w, t) = (World::full(), Instant::now());
+    w.config = vpn_config();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Vpn);
+    q.follow_vpn(&l, Some(vpn_state(3, &[])), t);
+    assert!(q.vpn.open);
+    q.key(&l, Key::Down, false, t);
+    assert_eq!(q.vpn.pick, crate::quick_vpn::Pick::Profile(vpn_uuid(2)));
+    // One of three gone: the pick moves to its neighbour, the detail stays.
+    let mut s = vpn_state(3, &[]);
+    s.profiles.retain(|p| p.uuid != vpn_uuid(2));
+    q.follow_vpn(&l, Some(s), t);
+    assert!(q.vpn.open);
+    assert_eq!(q.vpn.pick, crate::quick_vpn::Pick::Profile(vpn_uuid(3)));
+    // All gone: back on the rows, the row hidden, the selection on a row still shown.
+    q.top = 4;
+    q.follow_vpn(&l, Some(VpnState { profiles: vec![], active: vec![] }), t);
+    assert!(!q.vpn.open);
+    assert!(!shown(&l, &q).contains(&Row::Vpn));
+    assert!(shown(&l, &q).contains(&q.selected), "{:?}", q.selected);
+    assert_eq!(q.top, 0);
+    // NetworkManager gone closes it too.
+    let mut g = quick(&w, Focus::Vpn);
+    g.follow_vpn(&l, Some(vpn_state(2, &[])), t);
+    assert!(g.vpn.open);
+    g.follow_vpn(&l, None, t);
+    assert!(!g.vpn.open && !shown(&l, &g).contains(&Row::Vpn));
+}
+
+#[test]
+fn the_vpn_rides_the_panel_s_one_timer() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    assert_eq!(q.deadline(), None);
+    q.selected = Row::Vpn;
+    q.key(&l, Key::Char(' '), false, t);
+    assert_eq!(q.vpn_scope(), VpnScope::Detail, "an attempt widens the read");
+    assert_eq!(q.deadline(), Some(t + crate::quick_vpn::CONNECT_TIMEOUT));
+    assert_eq!(q.due(t + Duration::from_secs(19)).vpn_failed, None);
+    let due = q.due(t + crate::quick_vpn::CONNECT_TIMEOUT);
+    assert_eq!(due.vpn_failed, Some("no answer in 20 s"));
+    assert!(due.redraw);
+    assert_eq!(q.deadline(), Some(t + crate::quick_vpn::CONNECT_TIMEOUT + FAILED_SHOWN), "the failed mark");
+    assert!(q.due(t + crate::quick_vpn::CONNECT_TIMEOUT + FAILED_SHOWN).redraw);
+    assert_eq!(q.deadline(), None);
+}
+
+#[test]
+fn a_vpn_state_attempt_failure_reaches_the_news() {
+    let (w, t) = (World::full(), Instant::now());
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    q.set_vpn(Some(vpn_state(2, &[])), t);
+    q.selected = Row::Vpn;
+    q.key(&l, Key::Char(' '), false, t);
+    q.follow_vpn(&l, Some(vpn_state(2, &[(2, 1)])), t);
+    let news = q.follow_vpn(&l, Some(vpn_state(2, &[])), t);
+    assert_eq!(news.failed, Some("the activation failed"));
+}
+
+#[test]
+fn the_window_follows_the_selection_in_the_vpn_detail() {
+    let (mut w, t) = (World::full(), Instant::now());
+    w.config = vpn_config();
+    let l = w.live();
+    let mut s = vpn_state(2, &[]);
+    s.profiles = (0..16)
+        .map(|n| VpnProfile { uuid: vpn_uuid(n), name: format!("VPN-Test-{n:02}"), kind: VpnKind::Plugin, last_used: 0, asks: false })
+        .collect();
+    let mut q = Quick::new(Focus::Vpn, &l, two_sinks(), backlight(75), [None, None], 6);
+    q.follow_vpn(&l, Some(s), t);
+    assert!(q.vpn.open && q.top == 0);
+    for _ in 0..10 {
+        q.key(&l, Key::Down, false, t);
+    }
+    let all = lines(&l, &q);
+    let at = q.selected_line(&all).expect("a selected line");
+    assert_eq!(all[at], Line::VpnProfile(10));
+    assert!((q.top..q.top + 6).contains(&at), "the selection stays in view: top {} at {at}", q.top);
+    q.key(&l, Key::End, false, t);
+    let all = lines(&l, &q);
+    assert_eq!(all[q.selected_line(&all).expect("selected")], Line::VpnMore);
+    assert_eq!(q.top, all.len() - 6, "More… at the bottom of the window");
+    assert_eq!(texts(&rows(&l, &q)).last().map(|s| s.trim()), Some("More…"));
 }

@@ -1,5 +1,9 @@
 use super::*;
-use crate::grid::text_width;
+use crate::actions::Button;
+use crate::config::QuickConfig;
+use crate::grid::{Grid, Style, text_width};
+use crate::keys::Key;
+use crate::quick::Line;
 use crate::quick_wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
 use crate::system::{ActiveVpn, VpnProfile};
 use std::time::Duration;
@@ -288,4 +292,213 @@ fn space_ups_the_last_used_even_past_the_listed_16() {
     // Enter from a detail row still needs a listed row.
     let mut v = vpn((0..20).map(|n| profile(n, &format!("VPN-Test-{n:02}"), VpnKind::Plugin, 0, false)).collect(), &[]);
     assert_eq!(v.enter(&uuid(17), t), QuickAction::Nothing);
+}
+
+fn config() -> QuickConfig {
+    QuickConfig { vpn_more: Some(vec!["fake-vpn-more".into()]), ..QuickConfig::default() }
+}
+
+fn opened(v: Vpn) -> Vpn {
+    let mut v = v;
+    v.open_detail();
+    v
+}
+
+fn row(v: &Vpn, line: Line, selected: bool) -> Grid {
+    let mut g = Grid::empty(crate::quick::WIDTH + 2);
+    v.draw(&mut g, line, &v.listed(), selected);
+    g
+}
+
+#[test]
+fn the_detail_lines_and_more() {
+    let v = opened(three(&[(3, ACTIVATED)]));
+    use Line::*;
+    assert_eq!(
+        v.lines(&config()),
+        [VpnHeader, Separator, VpnProfile(0), VpnProfile(1), VpnProfile(2), Separator, VpnMore],
+        "the header, a separator, the profiles, a separator and More…"
+    );
+    assert_eq!(
+        v.lines(&QuickConfig::default()),
+        [VpnHeader, Separator, VpnProfile(0), VpnProfile(1), VpnProfile(2)],
+        "unresolved: no More…"
+    );
+    let hidden = QuickConfig { vpn_more: Some(vec![]), ..QuickConfig::default() };
+    assert_eq!(v.lines(&hidden).last(), Some(&VpnProfile(2)), "[]: no More…, no separator");
+    assert_eq!(more(&config()), ["fake-vpn-more"]);
+    assert!(more(&QuickConfig::default()).is_empty());
+    // The rows as drawn: ● on the activated one, the glyph by kind.
+    assert_eq!(row(&v, VpnProfile(0), false).text().trim_end(), format!(" ● {WIREGUARD} WG-Test"));
+    assert_eq!(row(&v, VpnProfile(1), false).text().trim_end(), format!("   {} VPN-Test-1", crate::segments::VPN));
+    assert_eq!(row(&v, VpnHeader, false).text().trim_end(), " ‹ VPN");
+    assert_eq!(row(&v, VpnMore, false).text().trim_end(), "   More…");
+    assert!(row(&v, VpnProfile(1), true).styles().chars().all(|c| c == 'S'), "selected: the band across the row");
+    assert_eq!(&row(&v, VpnProfile(0), false).styles()[1..2], "a", "● in the accent");
+    // Selection by identity.
+    let listed = v.listed();
+    assert!(v.is_selected(VpnProfile(0), &listed) && !v.is_selected(VpnProfile(1), &listed) && !v.is_selected(VpnMore, &listed));
+    let mut m = v.clone();
+    m.pick = Pick::More;
+    assert!(m.is_selected(VpnMore, &listed) && !m.is_selected(VpnProfile(0), &listed));
+}
+
+#[test]
+fn a_long_name_keeps_the_tag_column() {
+    let long = "é".repeat(150);
+    assert_eq!(long.len(), 300);
+    let mut v = opened(vpn(vec![profile(1, &long, VpnKind::Plugin, 0, false)], &[(1, ACTIVATED)]));
+    let t = Instant::now();
+    v.failed = Some((uuid(1), t + FAILED_SHOWN));
+    let width = crate::quick::WIDTH + 2;
+    let g = row(&v, Line::VpnProfile(0), false);
+    let text = g.text();
+    assert!(text.trim_end().ends_with("… failed"), "{text:?}");
+    assert_eq!(text_width(&text), width, "within the row");
+    // The tag's six cells end one cell before the end, the name never reaches them.
+    assert_eq!(&g.styles()[usize::from(width - 7)..usize::from(width - 1)], "wwwwww", "{}", g.styles());
+    assert_eq!(g.cells()[usize::from(width - 1)].ch, ' ', "the last cell stays blank");
+    assert_eq!(g.cells()[usize::from(width - 8)].ch, ' ', "a gap before the tag");
+    // The same under `…`: the column starts where `failed` does.
+    v.failed = None;
+    v.attempt = Some(Attempt { uuid: uuid(1), started: t, until: t + CONNECT_TIMEOUT, activating: false, asks: false });
+    let g = row(&v, Line::VpnProfile(0), false);
+    assert_eq!(g.cells()[usize::from(width - 7)].ch, '…');
+    assert_eq!(text_width(&g.text()), width);
+}
+
+#[test]
+fn the_tags() {
+    let t = Instant::now();
+    // Its attempt: `…`, muted.
+    let mut v = opened(three(&[]));
+    v.enter(&uuid(1), t);
+    let g = row(&v, Line::VpnProfile(0), false);
+    assert_eq!((g.cells()[27].ch, g.cells()[27].style), ('…', Style::MUTED));
+    assert!(!row(&v, Line::VpnProfile(1), false).text().contains('…'), "another profile: nothing");
+    // State 1 and 3 read from the state itself, no attempt.
+    for state in [ACTIVATING, DEACTIVATING] {
+        let v = opened(three(&[(1, state)]));
+        let g = row(&v, Line::VpnProfile(0), false);
+        assert_eq!((g.cells()[27].ch, g.cells()[27].style), ('…', Style::MUTED), "state {state}");
+        assert_eq!(g.cells()[1].ch, ' ', "no ● until activated");
+    }
+    // Activated: ●, no tag.
+    let v = opened(three(&[(1, ACTIVATED)]));
+    assert_eq!(row(&v, Line::VpnProfile(0), false).text().trim_end(), format!(" ● {} VPN-Test-1", crate::segments::VPN));
+    // `failed` in warn for FAILED_SHOWN, then nothing.
+    let mut v = opened(three(&[]));
+    v.enter(&uuid(1), t);
+    assert_eq!(set(&mut v, &[(1, 4)], t + S), Some("the activation failed"));
+    let g = row(&v, Line::VpnProfile(0), false);
+    assert!(g.text().trim_end().ends_with("failed"));
+    assert_eq!(&g.styles()[27..33], "wwwwww");
+    assert_eq!(v.deadline(), Some(t + S + FAILED_SHOWN));
+    assert_eq!(v.due(t + S + FAILED_SHOWN - Duration::from_millis(1)), (None, false), "still shown");
+    assert_eq!(v.due(t + S + FAILED_SHOWN), (None, true), "4 s later: gone");
+    assert!(!row(&v, Line::VpnProfile(0), false).text().contains("failed"));
+}
+
+#[test]
+fn keys_walk_the_profiles_then_more_and_enter_acts() {
+    let (c, t) = (config(), Instant::now());
+    let mut v = opened(three(&[(3, ACTIVATED)]));
+    assert_eq!(v.pick, Pick::Profile(uuid(3)), "the active one is first");
+    assert_eq!(v.key(&c, Key::Up, t), QuickAction::Nothing, "clamped");
+    assert_eq!(v.key(&c, Key::Down, t), QuickAction::Redraw);
+    assert_eq!(v.pick, Pick::Profile(uuid(1)));
+    assert_eq!(v.key(&c, Key::End, t), QuickAction::Redraw);
+    assert_eq!(v.pick, Pick::More, "More… after the profiles");
+    assert_eq!(v.key(&c, Key::Down, t), QuickAction::Nothing);
+    assert_eq!(v.key(&c, Key::Home, t), QuickAction::Redraw);
+    assert_eq!(v.pick, Pick::Profile(uuid(3)));
+    assert_eq!(v.key(&c, Key::Enter, t), run(&["nmcli", "connection", "down", "uuid", &uuid(3)], "vpn down"));
+    v.key(&c, Key::Down, t);
+    assert_eq!(v.key(&c, Key::Enter, t), run(&["nmcli", "connection", "up", "uuid", &uuid(1)], "vpn up"));
+    assert_eq!(v.key(&c, Key::Enter, t), QuickAction::Nothing, "a repeat Enter runs nothing");
+    v.key(&c, Key::End, t);
+    assert_eq!(
+        v.key(&c, Key::Enter, t),
+        QuickAction::RunAndClose { argv: vec!["fake-vpn-more".into()], what: "vpn more".into() },
+        "More… acts during an attempt"
+    );
+    let no_more = QuickConfig { vpn_more: Some(vec![]), ..QuickConfig::default() };
+    let mut v = opened(three(&[]));
+    v.key(&no_more, Key::End, t);
+    assert_eq!(v.pick, Pick::Profile(uuid(3)), "no More… to reach");
+    assert_eq!(v.key(&c, Key::Left, t), QuickAction::Redraw);
+    assert!(!v.open, "← closes the detail");
+    let mut v = opened(three(&[]));
+    assert_eq!(v.key(&c, Key::Escape, t), QuickAction::Redraw);
+    assert!(!v.open, "Escape closes the detail");
+    assert_eq!(v.key(&c, Key::Enter, t), QuickAction::Nothing, "closed: nothing picked");
+}
+
+#[test]
+fn presses_pick_enter_or_run() {
+    let (c, t) = (config(), Instant::now());
+    let mut v = opened(three(&[]));
+    assert_eq!(v.press(&c, Line::VpnProfile(1), Button::Right, t), QuickAction::Nothing, "left only");
+    assert_eq!(v.pick, Pick::Profile(uuid(1)), "unchanged");
+    assert_eq!(v.press(&c, Line::VpnProfile(2), Button::Left, t), run(&["nmcli", "connection", "up", "uuid", &uuid(3)], "vpn up"));
+    assert_eq!(v.pick, Pick::Profile(uuid(3)));
+    // A click while an attempt runs only moves the pick.
+    assert_eq!(v.press(&c, Line::VpnProfile(0), Button::Left, t), QuickAction::Redraw);
+    assert_eq!(v.pick, Pick::Profile(uuid(1)));
+    assert_eq!(v.press(&c, Line::VpnProfile(9), Button::Left, t), QuickAction::Nothing, "past the list");
+    assert_eq!(
+        v.press(&c, Line::VpnMore, Button::Left, t),
+        QuickAction::RunAndClose { argv: vec!["fake-vpn-more".into()], what: "vpn more".into() }
+    );
+    assert_eq!(v.pick, Pick::More);
+    assert_eq!(v.press(&c, Line::VpnHeader, Button::Left, t), QuickAction::Redraw);
+    assert!(!v.open, "the header goes back");
+}
+
+#[test]
+fn fit_closes_without_profiles_and_moves_the_pick_to_a_neighbour() {
+    let (c, t) = (config(), Instant::now());
+    // One of three gone: the pick moves to the next one down, else the one above.
+    let gone = |v: &Vpn, n: usize| {
+        let mut s = v.state.clone().expect("state");
+        s.profiles.retain(|p| p.uuid != uuid(n));
+        s
+    };
+    let mut v = opened(three(&[]));
+    v.key(&c, Key::Down, t);
+    assert_eq!(v.pick, Pick::Profile(uuid(2)));
+    let s = gone(&v, 2);
+    v.set_state(Some(s), t);
+    v.fit(&c);
+    assert_eq!(v.pick, Pick::Profile(uuid(3)), "the neighbour below");
+    let s = gone(&v, 3);
+    v.set_state(Some(s), t);
+    v.fit(&c);
+    assert_eq!(v.pick, Pick::Profile(uuid(1)), "none below: the one above");
+    // Gone while it was the last: still a profile left, so open.
+    assert!(v.open);
+    // The last profile gone: the detail closes.
+    let s = gone(&v, 1);
+    v.set_state(Some(s), t);
+    v.fit(&c);
+    assert!(!v.open && v.pick == Pick::None, "nothing left: closed");
+    // NetworkManager gone closes it too.
+    let mut v = opened(three(&[]));
+    v.set_state(None, t);
+    v.fit(&c);
+    assert!(!v.open);
+    // A pick lost with no prior order (never seen): the first.
+    let mut v = opened(three(&[]));
+    v.pick = Pick::Profile("elsewhere".into());
+    v.fit(&c);
+    assert_eq!(v.pick, Pick::Profile(uuid(1)));
+    // A closed detail is left alone.
+    let mut v = three(&[]);
+    v.fit(&c);
+    assert!(!v.open && v.pick == Pick::None);
+    // More… kept as a pick when it is configured; lost when hidden.
+    let mut v = opened(three(&[]));
+    v.pick = Pick::More;
+    v.fit(&QuickConfig { vpn_more: Some(vec![]), ..QuickConfig::default() });
+    assert_eq!(v.pick, Pick::Profile(uuid(1)));
 }

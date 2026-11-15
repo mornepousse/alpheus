@@ -1,11 +1,15 @@
 //! The quick panel's VPN (quick VPN spec), pure: the row's value, the profiles listed (active
 //! first, then by name, at most PROFILES_MAX), the exact `nmcli` commands to run and the connection
 //! attempt they start, followed to its end (`Attempt`). The state comes from the D-Bus thread
-//! (`sources/dbus/vpn.rs`) only while the panel is open. No drawing and no keys here yet.
+//! (`sources/dbus/vpn.rs`) only while the panel is open. The detail's lines, keys, clicks and rows
+//! are here too; the row on the panel and the window over the lines are `quick.rs`'s.
 
-use crate::grid::truncate;
+use crate::actions::Button;
+use crate::config::QuickConfig;
+use crate::grid::{Grid, Style, text_width, truncate};
+use crate::keys::Key;
 pub use crate::quick::FAILED_SHOWN;
-use crate::quick::{QuickAction, run};
+use crate::quick::{FAILED_TAG, Line, QuickAction, RUNNING_TAG, moved, nav, run, run_and_close, text_row};
 use crate::quick_wifi::NM_GONE;
 pub use crate::quick_wifi::{ACTIVATION_BOUND, CONNECT_TIMEOUT};
 use crate::session;
@@ -244,9 +248,26 @@ impl Vpn {
     /// The D-Bus thread's state: kept, and the attempt followed. Returns why when the attempt
     /// failed or went (for the log).
     pub fn set_state(&mut self, state: Option<VpnState>, now: Instant) -> Option<&'static str> {
+        let before: Vec<String> = if self.open { self.listed().into_iter().map(|p| p.uuid).collect() } else { Vec::new() };
         self.state = state;
+        self.pick_neighbour(&before);
         let outcome = self.attempt.as_mut()?.observe(self.state.as_ref());
         self.end(outcome, now)
+    }
+
+    /// The picked profile went from the list (`before`, in its order): the pick moves to the one
+    /// below it that is still listed, else the one above; none left, nothing picked (`fit` decides).
+    fn pick_neighbour(&mut self, before: &[String]) {
+        let Pick::Profile(picked) = &self.pick else { return };
+        let now: Vec<String> = self.listed().into_iter().map(|p| p.uuid).collect();
+        if now.contains(picked) {
+            return;
+        }
+        let Some(at) = before.iter().position(|u| u == picked) else { return };
+        let neighbour = before[at + 1..].iter().chain(before[..at].iter().rev()).find(|u| now.contains(u));
+        if let Some(u) = neighbour {
+            self.pick = Pick::Profile(u.clone());
+        }
     }
 
     /// At `now`: the attempt's deadline and the `failed` mark's end. Returns why the attempt failed
@@ -289,6 +310,156 @@ impl Vpn {
     /// log says why).
     pub fn never_started(&mut self) {
         self.attempt = None;
+    }
+}
+
+/// `[quick] vpn_more`, resolved at startup; unresolved (a test's default) or empty: no `More…`.
+pub fn more(config: &QuickConfig) -> &[String] {
+    config.vpn_more.as_deref().unwrap_or(&[])
+}
+
+/// `More…`: `vpn_more` as given, then the panel closes; nothing when it is empty.
+fn run_more(config: &QuickConfig) -> QuickAction {
+    run_and_close(more(config), "vpn more")
+}
+
+impl Vpn {
+    /// The picks in order: the profiles listed, then `More…` when shown.
+    fn picks(&self, config: &QuickConfig) -> Vec<Pick> {
+        let mut v: Vec<Pick> = self.listed().into_iter().map(|p| Pick::Profile(p.uuid)).collect();
+        if !more(config).is_empty() {
+            v.push(Pick::More);
+        }
+        v
+    }
+
+    /// Before each use: no profile left (or NetworkManager gone), the detail closes; the selection
+    /// back on a pick that exists, the first one when it has no neighbour to move to.
+    pub fn fit(&mut self, config: &QuickConfig) {
+        if !self.shows() {
+            self.close_detail();
+            return;
+        }
+        if !self.open {
+            return;
+        }
+        let picks = self.picks(config);
+        if !picks.contains(&self.pick) {
+            self.pick = picks.into_iter().next().unwrap_or_default();
+        }
+    }
+
+    /// The detail's lines: its header, a separator, the profiles, and `More…` after a separator when
+    /// configured.
+    pub fn lines(&self, config: &QuickConfig) -> Vec<Line> {
+        let mut v = vec![Line::VpnHeader, Line::Separator];
+        v.extend((0..self.listed().len()).map(Line::VpnProfile));
+        if !more(config).is_empty() {
+            v.push(Line::Separator);
+            v.push(Line::VpnMore);
+        }
+        v
+    }
+
+    pub fn is_selected(&self, line: Line, listed: &[Listed]) -> bool {
+        match (line, &self.pick) {
+            (Line::VpnProfile(i), Pick::Profile(u)) => listed.get(i).is_some_and(|p| p.uuid == *u),
+            (Line::VpnMore, Pick::More) => true,
+            _ => false,
+        }
+    }
+
+    /// Keys in the detail: ↑ ↓ Home End over the profiles and `More…` (never wrapping), Enter acts,
+    /// Escape or ← go back to the rows.
+    pub fn key(&mut self, config: &QuickConfig, k: Key, now: Instant) -> QuickAction {
+        let picks = self.picks(config);
+        let at = picks.iter().position(|p| *p == self.pick);
+        match k {
+            Key::Escape | Key::Left => {
+                self.close_detail();
+                return QuickAction::Redraw;
+            }
+            Key::Enter => {
+                return match self.pick.clone() {
+                    Pick::More => run_more(config),
+                    Pick::Profile(uuid) => self.enter(&uuid, now),
+                    Pick::None => QuickAction::Nothing,
+                };
+            }
+            _ => {}
+        }
+        let Some(to) = nav(k, at, picks.len()) else { return QuickAction::Nothing };
+        picks.into_iter().nth(to).map_or(QuickAction::Nothing, |p| moved(&mut self.pick, p))
+    }
+
+    /// A press on a detail line (the left button only): a profile is chosen and entered; `More…`
+    /// runs; the header goes back.
+    pub fn press(&mut self, config: &QuickConfig, line: Line, b: Button, now: Instant) -> QuickAction {
+        if b != Button::Left {
+            return QuickAction::Nothing;
+        }
+        match line {
+            Line::VpnHeader => {
+                self.close_detail();
+                QuickAction::Redraw
+            }
+            Line::VpnProfile(i) => {
+                let Some(p) = self.listed().into_iter().nth(i) else { return QuickAction::Nothing };
+                let before = self.pick.clone();
+                self.pick = Pick::Profile(p.uuid.clone());
+                let a = self.enter(&p.uuid, now);
+                if a == QuickAction::Nothing && self.pick != before { QuickAction::Redraw } else { a }
+            }
+            Line::VpnMore => {
+                self.pick = Pick::More;
+                run_more(config)
+            }
+            _ => QuickAction::Nothing,
+        }
+    }
+
+    /// The tag after a profile's name: "…" during its attempt or while NetworkManager activates or
+    /// deactivates it (muted), "failed" (warn) for FAILED_SHOWN after, else nothing.
+    fn tag(&self, p: &Listed) -> (&'static str, Style) {
+        if self.attempt.as_ref().is_some_and(|a| a.uuid == p.uuid) || matches!(p.state, Some(ACTIVATING | DEACTIVATING)) {
+            (RUNNING_TAG, Style::MUTED)
+        } else if self.failed.as_ref().is_some_and(|(u, _)| *u == p.uuid) {
+            (FAILED_TAG, Style::WARN)
+        } else {
+            ("", Style::NORMAL)
+        }
+    }
+
+    /// One detail line into `g` (`WIDTH + 2` wide, a pad cell each side).
+    pub fn draw(&self, g: &mut Grid, line: Line, listed: &[Listed], selected: bool) {
+        match line {
+            Line::VpnHeader => text_row(g, None, "‹ VPN", "", Style::NORMAL, false),
+            Line::VpnMore => text_row(g, Some(' '), "More…", "", Style::NORMAL, selected),
+            Line::VpnProfile(i) => {
+                if let Some(p) = listed.get(i) {
+                    let (tag, style) = self.tag(p);
+                    profile_row(g, p, tag, style, selected);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// "● ⛨ VPN-Test-1  …" (quick VPN spec): ● on an activated profile in the accent, the glyph of its
+/// kind and its name cut to fit, then the tag. The tag column is the widest tag's, `failed`, ending
+/// one cell before the row's end whatever the name; the name keeps one blank cell before it.
+fn profile_row(g: &mut Grid, p: &Listed, tag: &str, tag_style: Style, selected: bool) {
+    let end = g.width();
+    let room = [RUNNING_TAG, FAILED_TAG].into_iter().map(text_width).max().unwrap_or(0);
+    let glyph = if p.kind == VpnKind::WireGuard { WIREGUARD } else { crate::segments::VPN };
+    // The mark and its space (3 cells with the pad), the gap, the tag column, the last cell.
+    let cells = end.saturating_sub(3 + 1 + room + 1);
+    let text = truncate(&format!("{glyph} {}", p.label), cells);
+    let mark = if p.state == Some(ACTIVATED) { '●' } else { ' ' };
+    text_row(g, Some(mark), &text, "", Style::NORMAL, selected);
+    if !tag.is_empty() {
+        g.write(end.saturating_sub(room + 1), end, tag, if selected { Style::SELECTED } else { tag_style });
     }
 }
 

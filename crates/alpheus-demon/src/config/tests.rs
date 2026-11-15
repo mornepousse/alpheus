@@ -468,6 +468,32 @@ fn wifi_more_is_read_checked_and_resolved() {
     assert!(BarConfig::from_text("[quick]\nwifi_mor = []").unwrap_err().contains("wifi_mor"), "unknown key refused");
 }
 
+/// Quick VPN spec: `vpn_more` is read as `wifi_more` is, its default the launcher's terminal then
+/// `nmtui-edit`.
+#[test]
+fn vpn_more_is_read_checked_and_resolved() {
+    assert_eq!(QuickConfig::default().vpn_more, None, "absent: resolved at load time");
+    let c = BarConfig::from_text("[quick]\nvpn_more = [\"foot\", \"-e\", \"nmtui-edit\"]\n").unwrap();
+    assert_eq!(c.quick.vpn_more, Some(vec!["foot".to_string(), "-e".into(), "nmtui-edit".into()]));
+    let hidden = BarConfig::from_text("[quick]\nvpn_more = []\n").unwrap();
+    assert_eq!(hidden.quick.vpn_more, Some(vec![]), "an explicit empty list");
+    let mut q = QuickConfig::default();
+    resolve_vpn_more(&mut q, &["alacritty".to_string(), "-e".into()]);
+    assert_eq!(q.vpn_more, Some(vec!["alacritty".to_string(), "-e".into(), "nmtui-edit".into()]));
+    assert_eq!(q.wifi_more, None, "the other default is its own");
+    let mut kept = hidden.quick.clone();
+    resolve_vpn_more(&mut kept, &["foot".to_string()]);
+    assert_eq!(kept.vpn_more, Some(vec![]), "given: never replaced");
+    for (t, want) in [
+        ("[quick]\nvpn_more = [\" \"]", "quick.vpn_more: the program is blank"),
+        ("[quick]\nvpn_more = [\"foot\", \"a\\u0000b\"]", "quick.vpn_more: an argument holds a NUL"),
+    ] {
+        let e = BarConfig::from_text(t).unwrap_err();
+        assert!(e.contains(want), "{t}: {e}");
+    }
+    assert!(BarConfig::from_text("[quick]\nvpn_mor = []").unwrap_err().contains("vpn_mor"), "unknown key refused");
+}
+
 /// `mixer` is read as `wifi_more` is: as given, absent resolved at load time from the launcher's
 /// terminal then wiremix, `[]` hides the row and is never replaced.
 #[test]
