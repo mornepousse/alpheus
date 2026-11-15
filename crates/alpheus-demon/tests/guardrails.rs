@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 51] = [
+const NO_THREAD_NOR_COMMAND: [&str; 52] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1424,6 +1424,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 51] = [
     "launcher/calc/units.rs",
     "dnd.rs",
     "battery_alert.rs",
+    "hooks.rs",
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
@@ -2706,7 +2707,7 @@ fn the_power_menu_has_no_panicking_path() {
 #[test]
 fn the_calculator_has_no_panicking_path() {
     let files = source_files();
-    for name in ["launcher/calc.rs", "launcher/calc/units.rs"] {
+    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {

@@ -21,6 +21,7 @@ pub mod config;
 pub mod deadline;
 pub mod dnd;
 pub mod grid;
+pub mod hooks;
 pub mod icons;
 pub mod inotify;
 pub mod keys;
