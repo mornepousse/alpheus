@@ -70,6 +70,14 @@
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
 //! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
 //! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
+//! [timer]                                                   # the focus timer (with "timer" in modules); read at start
+//! countdown = 10                                            # minutes, the popup's Timer row at start, 1 to 180
+//! work = 25                                                 # Pomodoro, minutes, 1 to 180
+//! short_break = 5                                           # minutes, 1 to 180
+//! long_break = 15                                           # minutes, 1 to 180
+//! rounds = 4                                                # work sessions before the long break, 1 to 12
+//! sound = []                                                # argv run at each end (not under do-not-disturb); [] none
+//! idle = "glyph"                                            # "glyph" | "hidden": the chip when nothing runs
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -718,6 +726,66 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
     Ok(())
 }
 
+/// The longest `[timer]` length, in minutes.
+pub const TIMER_MINUTES_MAX: u32 = 180;
+/// The most `[timer] rounds`.
+pub const TIMER_ROUNDS_MAX: u8 = 12;
+
+/// The chip when nothing runs (timer spec § 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TimerIdle {
+    /// One dim glyph, so the mouse can reach the popup.
+    #[default]
+    Glyph,
+    /// Nothing drawn.
+    Hidden,
+}
+
+/// `[timer]` (timer spec § 7). Lengths are minutes.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TimerConfig {
+    /// The popup's Timer row at start.
+    pub countdown: u32,
+    pub work: u32,
+    pub short_break: u32,
+    pub long_break: u32,
+    /// Work sessions before the long break.
+    pub rounds: u8,
+    /// Run as given at each end, never through a shell; empty: no sound.
+    pub sound: Vec<String>,
+    pub idle: TimerIdle,
+}
+
+impl Default for TimerConfig {
+    fn default() -> Self {
+        TimerConfig { countdown: 10, work: 25, short_break: 5, long_break: 15, rounds: 4, sound: Vec::new(), idle: TimerIdle::Glyph }
+    }
+}
+
+/// `[timer]` checked: every length 1 to 180 minutes, `rounds` 1 to 12, a non-blank sound program
+/// with no NUL (as `[quick]`'s commands).
+fn check_timer(t: &TimerConfig) -> Result<(), String> {
+    for (key, v) in
+        [("timer.countdown", t.countdown), ("timer.work", t.work), ("timer.short_break", t.short_break), ("timer.long_break", t.long_break)]
+    {
+        if !(1..=TIMER_MINUTES_MAX).contains(&v) {
+            return Err(format!("{key} {v} out of range 1 to {TIMER_MINUTES_MAX} minutes"));
+        }
+    }
+    if !(1..=TIMER_ROUNDS_MAX).contains(&t.rounds) {
+        return Err(format!("timer.rounds {} out of range 1 to {TIMER_ROUNDS_MAX}", t.rounds));
+    }
+    if t.sound.first().is_some_and(|p| p.trim().is_empty()) {
+        return Err("timer.sound: the program is blank".into());
+    }
+    if t.sound.iter().any(|a| a.contains('\0')) {
+        return Err("timer.sound: an argument holds a NUL".into());
+    }
+    Ok(())
+}
+
 pub const DEFAULT_HEIGHT: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -737,6 +805,7 @@ pub struct BarConfig {
     pub notifications: NotificationsConfig,
     pub osd: OsdConfig,
     pub quick: QuickConfig,
+    pub timer: TimerConfig,
     pub displays: DisplaysConfig,
 }
 
@@ -757,6 +826,7 @@ impl Default for BarConfig {
             notifications: NotificationsConfig::default(),
             osd: OsdConfig::default(),
             quick: QuickConfig::default(),
+            timer: TimerConfig::default(),
             displays: DisplaysConfig::default(),
         }
     }
@@ -797,6 +867,8 @@ struct Raw {
     osd: OsdConfig,
     #[serde(default)]
     quick: QuickConfig,
+    #[serde(default)]
+    timer: TimerConfig,
     #[serde(default)]
     displays: DisplaysConfig,
 }
@@ -924,6 +996,7 @@ impl BarConfig {
             return Err("displays.drm_dir must be an absolute path".into());
         }
         check_quick(&b.quick)?;
+        check_timer(&b.timer)?;
         let mut battery = b.battery;
         if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
             return Err(format!("battery.warn: {w} out of range 1 to 99"));
@@ -952,6 +1025,7 @@ impl BarConfig {
             },
             osd: b.osd,
             quick: b.quick,
+            timer: b.timer,
             displays: b.displays,
         })
     }

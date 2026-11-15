@@ -71,6 +71,7 @@ pub mod state_file;
 pub mod sys;
 pub mod system;
 pub mod text;
+pub mod timer;
 pub mod tray_bridge;
 pub mod watch;
 pub mod wayland;
