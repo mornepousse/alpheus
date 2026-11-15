@@ -63,7 +63,7 @@ impl Style {
     /// An urgent workspace.
     pub const URGENT: Style = Style { fg: Tint::Urgent, bg: Tint::Bg, bold: false };
     pub const BOLD_ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: true };
-    /// Accent without bold: gauges, graphs, a live link.
+    /// Accent without bold: a live link.
     pub const ACCENT: Style = Style { fg: Tint::Accent, bg: Tint::Bg, bold: false };
     /// The second accent: checks and radios in menus.
     pub const ACCENT2: Style = Style { fg: Tint::Accent2, bg: Tint::Bg, bold: false };

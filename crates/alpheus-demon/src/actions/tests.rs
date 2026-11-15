@@ -60,7 +60,7 @@ fn wheel_scrolls_vertical_and_horizontal() {
 #[test]
 fn click_chain_coordinate_cell_zone_command() {
     let b = bar();
-    let g = b.grid("HDMI-A-1", 100); // launcher button in cell 1, "4" in cells 9 to 17
+    let g = b.grid("HDMI-A-1", 100); // launcher button in cell 1, "4" in cells 11 to 19 (x = 100 is cell 12)
     // 8 px advance at scale 1, 16 px at scale 2: same cell.
     assert_eq!(click(&b, "HDMI-A-1", &g, 100.0, 1, 8.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
     assert_eq!(click(&b, "HDMI-A-1", &g, 100.0, 2, 16.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));

@@ -582,7 +582,7 @@ fn block_styles_clip_cell_backgrounds_to_their_blocks_x_span() {
     assert_eq!(s.at(s.mid(4), s.h / 2), opaque(roles.accent_container), "flat: no blocks, no clipping");
 }
 
-/// Mae (2026-10-08): inside a pill a MUTED cell (the gauge's unlit cells, Bluetooth off, offline,
+/// Mae (2026-10-08): inside a pill a MUTED cell (Bluetooth off, offline,
 /// an outage's "–") is the pill's ink mixed 50 % toward the fill, so it reads paler than normal
 /// text, which keeps the full ink; states still win. Floating's pills blocks too.
 #[test]

@@ -62,6 +62,9 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Quick settings, Bluetooth detail open (20 devices) | +1.1–1.8 MB over the panel's module at rest, +412…+516 KB once closed | `bluetooth_detail_pss_with_20_devices_and_after`, 8 runs (8.3–8.4 MB at rest, 1 output): the D-Bus thread reads the devices only while the detail is open (no rule added). Open, the daemon's own memory +436…+540 KB and the shm pools +774…+1,240 KB (4 runs), the moving part (most likely the detail growing one row per device found while it is open, its buffers re-made at each height), all gone with the popup; the closed figure is the daemon's own (the first open's code, font and glyph-cache pages, as for the Wi-Fi detail), the pools back to idle's. 10 more cycles +40…+64 KB; 0 loop, 0 D-Bus-thread and 0 whole-daemon wake-ups at rest after (`bluetooth_at_rest_no_wakeups_after_the_detail`, 5 runs) |
 | Quick settings, Bluetooth acting connection | +54…+116 KB | `bluetooth_acting_connection_cost`, 5 runs (the detail with it against the rows without it): a second system-bus connection with the pairing agent, open only while the detail is open or a call is in flight; no thread (6 either way); 0 loop wake-ups in 5 s while it idles |
 | Quick settings, Bluetooth headset row | +12…+20 KB | `bluetooth_headset_row_cost`, 5 runs (the rows on a Bluetooth headset against a wired sink): the bluez5 device and its profiles kept from `pw-dump` (≤ 8 devices × 32 profiles), one row more |
+| UI refresh, linked in (lighter bar, quick switches, six presets in the daemon; rail, dashboard and shapes in the TUI) | within noise at start (`everything` +4…+32 KB in two pairings, −160 in the third; `plan 1` −64…−68, `+ privacy` −124…−80) vs. the delivery before this one | daemon binary 6,812,592 bytes both sides (6.50 MiB, same size, different bytes; the CPU history and the gauge are gone, the switches and labels are in), TUI binary 1.48 → 1.54 MiB (+60 KiB stripped); measured `d9b8965` vs this delivery, release, back to back, 3 runs each, separate target directories, on `startup_pss_per_source`. One `+ resources` pairing reads +272 KB because that base run read 8,271 KB against 8,607–8,611 in its two others (the same case on this delivery: 8,535–8,543); `+ sound` −156…+32 |
+| UI refresh, quick panel | module at rest 0–104 KB (base 0–100); open 316–338 KB over rest (base 256–274); closed +208…+210 KB over rest (base +126…+148, the first open's one-time warm-up); 20 more cycles −28…−4 KB over closed (base −2…+44) | `quick_pss_idle_open_and_closed`, 3 runs each: the panel costs +60…+80 KB more open and after its first open than before (most likely the switch and labelled-button drawing's code and glyph pages, not attributed with smaps); within the test's bounds (closed ≤ idle + 512 KB, 20 cycles ≤ closed + 128 KB); 0 loop and 0 whole-daemon wake-ups at rest after (`at_rest_no_wakeups_after_the_quick_panel`) |
+| Control center (TUI), first render of the dashboard | 0.43–0.75 ms | `first_render_of_the_dashboard_under_100_ms_even_with_slow_tools`, release, 3 runs (120×36, tools answering after 500 ms); budget 100 ms |
 | Bar daemon, live on the author's laptop (3 outputs) | ≈ 11.3 MB | real session, all modules — predates this merge, see note below |
 | `pw-dump` child (sound source) | ≈ 2.5 MB | silent at rest |
 | **alpheus resident total, live** | **≈ 14 MB** | bar + sound source — predates this merge, see note below |
@@ -154,7 +157,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Privacy indicators (mic, camera, screen share) | ✅ glyphs in the bar for the microphone, a camera (through PipeWire, or opened directly as `/dev/video*`, found by an inotify watch and one `/proc` scan, no polling) or screen share seen through PipeWire, and a screen cast announced by niri or Hyprland; a click lists the apps; wf-recorder under Sway and Mango is still invisible | ✅ | ➖ | ✅ | ✅ |
 | Weather | 💭 | ✅ | ✅ | ✅ | ➖ |
 | **Panels** | | | | | |
-| Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi\|bluetooth]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), Bluetooth (power, paired and nearby devices, connect, pair with codes, forget), a Bluetooth headset's Hi-Fi/Mic mode, microphone, do-not-disturb, power profile, keep-awake, night light, session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest | ✅ | ✅ | ➖ | ❌ |
+| Control center (quick settings) | ✅ a panel under the volume, network and Bluetooth modules (`alpheus-launch --quick [sound\|wifi\|bluetooth]`): volume and output, brightness, Wi-Fi (networks, saved, open and WPA-personal with a password field), Bluetooth (power, paired and nearby devices, connect, pair with codes, forget), a Bluetooth headset's Hi-Fi/Mic mode, microphone, do-not-disturb, power profile, keep-awake, night light (switches on the toggle rows), labelled session buttons; the TUI (≈ 2 MB + terminal, only while open) for the rest: a left rail, a Home dashboard, shapes that follow the bar's style | ✅ | ✅ | ➖ | ❌ |
 | Power menu | ✅ a ⏻ button at the bar's end: Lock, Log out, Reboot, Power off with the quick panel's commands (reboot and power off ask first; a double click never confirms); the panel's session buttons and the TUI too | ✅ | ✅ | ✅ | ❌ |
 | Display settings | ✅ TUI (enable, place, resolution, scale, profiles, 15 s rollback held by the daemon) through `zwlr_output_manager_v1`, no external script; profiles applied on hotplug (at most 3 a minute per set of screens, a held-back one applied when the minute ends); a trial restored when the daemon stops (lost if it crashes); DisplayLink kept at 120 Hz or below | ✅ | ➖ | ➖ | ❌ |
 | Network, Bluetooth, per-app audio | ✅ Wi-Fi and Bluetooth in the quick panel (Bluetooth: connect, pair with codes, forget, headset mode; `More…` opens nmtui for enterprise, hidden networks, VPN, hotspot); per-app audio in the TUI (wiremix) and a `Mixer…` row in the quick panel that opens it | ✅ | ➖ | ✅ | ❌ |
@@ -171,7 +174,7 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness) | ✅ volume and mute, and the microphone's mute (never its level: call apps move it), from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
 | Colours from the wallpaper (matugen) | ✅ dark and light files, live | ✅ | ✅ | ❌ | ❌ |
-| Colour themes, light/dark following the desktop | ✅ 9 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
+| Colour themes, light/dark following the desktop | ✅ 15 presets, 7 hues per theme, per-module colours, auto light/dark, live reload | ✅ | ✅ | ➖ | ➖ |
 | Bar styles (islands, powerline, floating…) | ✅ 6 styles (flat, islands, powerline, floating, underline, translucent), pills, chosen in the Theme tab, live reload | ✅ | ✅ | ➖ | ➖ |
 | Appearance settings | ✅ the TUI's Theme tab: theme, light/dark mode, module colours, bar style, with a preview | ✅ | ✅ | ❌ | ❌ |
 | Wallpaper management | 💭 | ✅ | ✅ | ❌ | ❌ |
@@ -216,6 +219,38 @@ implements `zwlr_output_manager_v1`, and a profile matching the connected
 screens is applied on hotplug), **Theme** (choose a
 theme, the light/dark mode, the module colours and the bar style, with a preview; `--tab theme`).
 
+**The rail.** In a terminal of at least 84 columns and 26 rows (Mae's
+Super+A window is 87×26) the tabs become a left rail: the brand, then icon,
+name and number per tab, the active one filled with the tab's own hue (Home
+the accent, Sound blue, Network cyan, BT purple, Power red, Displays green,
+Theme orange), and the status line at its foot. Its controls are drawn in the
+theme: selection bands, knob gauges for volume and brightness, switches,
+glyph buttons. Below that size the classic top tab bar and rows are drawn
+exactly as before.
+
+**The Home dashboard.** When the Home body is at least 64 columns by 20 rows
+(87×26 with the rail leaves about 71×22), Home is a dashboard: a block-digit
+clock with the date, a greeting and a one-line summary, a card per setting
+(volume, brightness, energy profile) with large digits and a gauge, four tiles
+(Wi-Fi, Bluetooth, Do not disturb, Keep awake) filled with their hue when on,
+and the connections. It shows only what the control center already reads, the
+same keys and clicks reach the same items as in the classic rows, and it
+opens in well under 100 ms.
+
+**Shapes.** The theme's `style` (see [Bar styles](#bar-styles)) shapes the
+control center too: `islands` cuts round caps and rounded frames, `powerline`
+arrow tips, `underline` drops the fills for coloured, underlined text,
+`floating` draws double frames with drop shadows, and `flat` and
+`translucent` stay square. `islands` and `powerline` use Nerd Font glyphs
+(U+E0B0, U+E0B4, U+E0B6), like the bar: in a terminal without a Nerd Font they
+show as boxes; `flat` needs none.
+
+![The control center's Home dashboard at 87×26, catppuccin dark, sample data](docs/images/control-center-home.png)
+
+![The Sound tab with the rail (sample data, catppuccin dark)](docs/images/control-center-sound.png)
+
+![`islands` (left) and `floating` (right) in the control center (sample data, catppuccin dark)](docs/images/control-center-shapes.png)
+
 | Key | Action |
 |---|---|
 | `1`…`7`, `Tab` / `Shift+Tab` | switch tabs |
@@ -231,7 +266,7 @@ theme, the light/dark mode, the module colours and the bar style, with a preview
 ### The bar (`alpheus-demon`)
 
 In the default `flat` style, a line of monospace characters on the theme's bar colour, modules separated by
-`│`, the active workspace on the theme's accent (see [Themes](#themes) and [Bar styles](#bar-styles)).
+a dim dot (`  ·  `), the active workspace on the theme's accent (see [Themes](#themes) and [Bar styles](#bar-styles)).
 
 ![The alpheus bar, sample data, real font, default theme (catppuccin, dark) (zoomed ×2, split in two halves)](docs/images/bar.png)
 
@@ -254,10 +289,10 @@ Shipped: **launcher** (an icon that opens it, first module by default),
 on `accent_container`, urgent in `urgent`, click to go there, wheel to move to the next one), **active
 window** (app icon and title), **media** (`▶ Title` while a player plays, `⏸ Title` paused, hidden when nothing plays; middle click play/pause, wheel next/previous; a left click opens a popup with the artist, the elapsed time and a progress bar, ⏮ ⏯ ⏭, and the players to choose from),
 **privacy** (nothing while nothing is captured; then one glyph per capture in an own block: `󰍬` microphone in orange, `󰄀` camera in green, `󰍹` screen in red, whatever `module_colors` says; the microphone glyph is dim while the default source is muted. Read from PipeWire's graph by the `pw-dump` child the sound module already runs, so a meter (pavucontrol, cava), a filter chain or a loopback never lights it, and an app muting itself in its own call still does; a screen cast announced by niri or Hyprland lights the screen too. A glyph goes 0.5 s after its capture ends, never blinking on a renegotiation. A left click opens a popup listing the apps by name (`(unnamed)` when only the compositor knows); a middle click mutes or unmutes the default microphone. A camera opened directly (`/dev/video*` outside PipeWire) lights it too: the daemon watches the device nodes with inotify (`[privacy] dev_dir`, `proc_dir`: where video devices and processes are listed) and, 300 ms after an open or close, scans its own user's `/proc/<pid>/fd` for a link to a `video*` node (never opening one; PipeWire, WirePlumber and the daemon itself excluded). **Not seen:** wf-recorder under Sway and Mango, which announce nothing, a camera held by another user's process, and a same-user process named `pipewire` or `wireplumber`; under Hyprland, a cast running before the daemon started shows only through PipeWire (niri reports it at connection). **Known:** on boards whose hardware codec nodes are named `video*` (some ARM boards), a codec in use also lights the camera; the nodes are never opened to tell them apart),
-**volume** (gauge, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
+**volume** (an icon and the percentage, wheel ±5 %; with the quick panel, a left click opens it and a right click the TUI's sound tab, else a right click
 mutes), **network** (link icon, VPN count), **Bluetooth** (device and its
-battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU graph,
-memory, temperature), **tray** (status icons of running apps as Nerd
+battery), **battery** (laptop and peripherals; `warn` below 20 %, `error` below 10 %), **resources** (CPU, memory, temperature: each an icon and a figure, no
+gauge or graph), **tray** (status icons of running apps as Nerd
 Font glyphs — or a letter —, left click activates, right click opens the
 app's menu in a popup, keyboard and mouse),
 **notifications** (a bell with the unread count, crossed under do-not-disturb, dim while another
@@ -355,7 +390,7 @@ menu with the same options.
 
 ### Themes
 
-Colours come from a **theme**: one of nine compiled-in presets, or your
+Colours come from a **theme**: one of fifteen compiled-in presets, or your
 wallpaper through [matugen](https://github.com/InioX/matugen). Each has a dark
 and a light variant. The mode follows the desktop (the portal's
 `org.freedesktop.appearance` `color-scheme`, read by the bar, which passes it
@@ -454,11 +489,9 @@ The mapping is fixed:
 | network | cyan |
 | Bluetooth | purple |
 | battery | green |
-| CPU (its graph) | orange |
+| CPU (its icon and figure) | orange |
 | RAM | yellow |
 | temperature | red |
-
-With `graph = 0`, only `full` colours the CPU (its icon is the graph).
 
 Workspaces, the clock, the tray icons, the notification bell
 (its count in the accent), the launcher button and the separators keep their colours. **States win over the hue**: a low (`warn`) or
@@ -489,7 +522,7 @@ Only `translucent` uses `opacity`; a value out of range still logs its warning u
 
 | `style` | Look |
 |---|---|
-| `flat` | one line on the bar colour, modules separated by `│` |
+| `flat` | one line on the bar colour, modules separated by a dim dot |
 | `islands` | each group of modules in its own rounded block; the bar between them is transparent |
 | `powerline` | full-height blocks joined by arrows, alternating two tones |
 | `floating` | one rounded bar, 6 px from the top and sides of the screen, with a light shadow |
@@ -723,7 +756,7 @@ resources = ["foot", "-e", "btop"]       # a left click on the resources module
 
 [resources]
 interval = 2         # seconds between two readings of /proc (1 to 60)
-graph = 20           # cells of CPU history (0 to 60; 0: no graph)
+graph = 20           # no effect since the UI refresh; kept so existing files stay valid
 sensor = ""          # an hwmon name or a thermal zone type; "": automatic
 
 [workspaces]

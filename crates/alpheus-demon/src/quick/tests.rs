@@ -150,6 +150,18 @@ fn a_press_hits_the_button_drawn_under_it() {
 }
 
 #[test]
+fn a_gap_press_on_an_unselected_session_row_selects_it() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    assert_ne!(q.selected, Row::Session);
+    let got = q.press(&l, (0, SESSION_LINE), Button::Left, Instant::now());
+    assert_eq!(got, QuickAction::Redraw, "the press lands in a gap of the row");
+    assert_eq!(q.selected, Row::Session);
+    assert!(q.confirm.is_none(), "a gap never asks");
+}
+
+#[test]
 fn the_session_row_draws_its_cells() {
     let w = World::full();
     let l = w.live();

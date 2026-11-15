@@ -59,13 +59,13 @@ const MARGIN: u16 = 1;
 const PAD: u16 = 1;
 /// Block styles: blank cells between two blocks (powerline draws its arrow there).
 const GAP: u16 = 1;
-/// Block styles: blank cells between two modules of one block, in place of " │ ".
+/// Block styles: blank cells between two modules of one block, in place of the separator.
 const INNER: u16 = 2;
 
 /// How a style spaces the modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Spacing {
-    /// " │ " between modules: `flat`, `underline`.
+    /// `SEPARATOR` between modules: `flat`, `underline`.
     Separators,
     /// Pads, gaps, blank cells: `islands`, `powerline`, `floating`, `translucent`.
     Blocks,
@@ -133,7 +133,7 @@ fn workspace_style(w: &Workspace) -> Style {
 }
 
 /// `None` if the compositor knows no workspace at all: no empty segment (no
-/// "│ │"), rather than a segment with no piece.
+/// empty stretch between two separators), rather than a segment with no piece.
 pub(crate) fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<Segment> {
     let pieces = match state {
         Feed::Waiting => vec![piece(" … ", Style::MUTED)],
@@ -157,7 +157,7 @@ pub(crate) fn workspaces(state: &Feed<CompositorState>, output: &str) -> Option<
     Some(Segment { module: ModuleId::Workspaces, pieces, elastic: false, target: None, withhold_hue: false })
 }
 
-/// `None` with no active window: no empty segment (no "│ <empty> │"),
+/// `None` with no active window: no empty segment (no separator pair around nothing),
 /// rather than an empty text piece.
 pub(crate) fn window(state: &Feed<CompositorState>, mc: ModuleColors) -> Option<Segment> {
     let pieces = match state {
