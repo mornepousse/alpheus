@@ -1622,6 +1622,15 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             outcomes.push((searched.key(Key::Enter), mode, false));
             outcomes.push((searched.key(Key::CtrlEnter), mode, false));
+            // `$ ls -la` typed in every mode: only All reads the prefix. Elsewhere it is plain text
+            // (Commands: the whole line goes through `sh`, which the checks below pin to Commands).
+            let mut dollared = fresh();
+            for c in "$ ls -la".chars() {
+                dollared.key(Key::Char(c));
+            }
+            let reads_it = mode == Mode::All;
+            outcomes.push((dollared.key(Key::Enter), mode, reads_it));
+            outcomes.push((dollared.key(Key::CtrlEnter), mode, reads_it));
             if mode == Mode::All {
                 // The prefix route into Commands mode (Global Constraints:
                 // `>` by default): starting in All and typing the prefix
@@ -1633,13 +1642,6 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     via_prefix.key(Key::Char(c));
                 }
                 outcomes.push((via_prefix.key(Key::Enter), Mode::Commands, false));
-                // The `$` row (launcher 2): `sh -c` from All, for the text after the prefix only.
-                let mut dollar = fresh();
-                for c in "$ ls -la".chars() {
-                    dollar.key(Key::Char(c));
-                }
-                outcomes.push((dollar.key(Key::Enter), mode, true));
-                outcomes.push((dollar.key(Key::CtrlEnter), mode, true));
             }
             for (o, mode, dollar) in outcomes {
                 let Outcome::Activate(a) = o else { continue };
@@ -1678,7 +1680,10 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                             if held { "prefix terminal hold shell" } else { "prefix shell" }
                         } else {
                             assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
-                            assert!(matches!(text, "ls -la" | "zone" | "? rust ratatui"), "only typed text goes through the shell: {c}");
+                            assert!(
+                                matches!(text, "ls -la" | "$ ls -la" | "zone" | "? rust ratatui"),
+                                "only typed text goes through the shell: {c}"
+                            );
                             if held { "terminal hold shell" } else { "shell" }
                         }
                     } else {
@@ -1707,6 +1712,18 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+    // The prefix is the All mode's alone: a dmenu/script box and the calculator never run it.
+    for mut l in [
+        Launcher::for_dmenu(LauncherConfig::default(), None, vec!["a".into(), "ls -la".into()], Default::default()),
+        Launcher::for_calc(LauncherConfig::default()),
+    ] {
+        for c in "$ ls -la".chars() {
+            l.key(Key::Char(c));
+        }
+        for o in [l.key(Key::Enter), l.key(Key::CtrlEnter)] {
+            assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "`$` in a dmenu or the calculator reached the shell");
+        }
+    }
     // No click on a non-prefix result in All ever reaches `sh`: the `$` row is the only way in.
     for query in ["", "ls -la", "zone", "firefox", "htop"] {
         let in_all = || {
