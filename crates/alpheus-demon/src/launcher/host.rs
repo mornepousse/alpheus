@@ -425,7 +425,10 @@ impl App {
                 let _ = entries_tx.send(Mail::Entries { generation, entries });
             },
         ) {
-            Ok(()) => self.scan_started = Some(Instant::now()),
+            Ok(()) => {
+                self.scan_started = Some(Instant::now());
+                log("launcher scan: started");
+            }
             Err(e) if !scan_refusal_is_an_error(e.kind(), running_for) => {
                 // A quick reopen while the previous open's scan is still
                 // running (`spawn_scan` allows only one at a time): no

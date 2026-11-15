@@ -2777,5 +2777,96 @@ fn at_rest_no_wakeups_after_a_calc_cycle() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a calculator cycle");
 }
 
+/// One prefix cycle: open (`--toggle`), `:face` typed, closed by a typed Escape; the n-th of each.
+/// Returns the reading taken with the box open and the query typed (one wtype process, as in
+/// `calc_cycle`).
+fn prefix_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
+    assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", ":face", "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    let open = d.pss_kb();
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+/// Launcher 2: the `:` prefix (the emoji table, 1,906 entries in the binary's read-only data) typed
+/// as `:face`, then closed. As for the calculator, `closed` is read after one warm-up cycle.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_prefixes_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("prefix-cost");
+    let (sway, _hypr, d) = start_launcher("prefix-cost", &bus, None, &many_apps(), None);
+    std::thread::sleep(Duration::from_secs(3));
+    let cold = d.pss_kb();
+    let first_open = prefix_cycle(&sway, &d, 1);
+    let closed = d.pss_kb();
+    let open = prefix_cycle(&sway, &d, 2);
+    let again = d.pss_kb();
+    eprintln!(
+        "prefixes PSS (KB): cold {cold}, first open {first_open}, warmed closed {closed} (+{} the warm-up), open with :face {open} (+{}), closed again {again}",
+        closed.saturating_sub(cold),
+        open.saturating_sub(closed)
+    );
+    assert!(open <= closed + 1536, "open costs {} KB > 1.5 MB — report, never raise", open.saturating_sub(closed));
+    assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
+}
+
+/// Launcher 2: the window switcher with three windows, opened by `--windows` and stepped 20 times
+/// (a repeated `--windows` while it is open), then closed by a typed Escape: nothing kept, and the
+/// loop sleeps after.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn windows_switcher_pss_and_rest() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("windows-cost", 1);
+    let _windows: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|n| common::sway_client::TestWindow::open(&sway, &format!("alpheus-{n}"), &format!("Fixture {n}")))
+        .collect();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(AT_REST_NO_RESOURCES), backend: Backend::Sway, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3)); // the tree read, the bar settled
+    let cycle = |n: usize| {
+        assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+        assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+        for _ in 0..20 {
+            assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+        }
+        let open = d.pss_kb();
+        assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+        assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(2));
+        open
+    };
+    let cold = d.pss_kb();
+    let first_open = cycle(1);
+    let closed = d.pss_kb();
+    let open = cycle(2);
+    let again = d.pss_kb();
+    eprintln!(
+        "window switcher PSS (KB): cold {cold}, first open {first_open}, warmed closed {closed} (+{} the warm-up), open after 20 steps {open} (+{}), closed again {again}",
+        closed.saturating_sub(cold),
+        open.saturating_sub(closed)
+    );
+    assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the window switcher");
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after the window switcher (5 s): {main_delta}");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after the window switcher");
+}
+
 /// The bar without the resources timer: the clock is the only timer, which `away_from_the_minute` avoids.
 const AT_REST_NO_RESOURCES: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";
