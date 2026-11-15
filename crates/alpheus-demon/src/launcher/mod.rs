@@ -6,10 +6,12 @@
 pub mod calc;
 pub mod config;
 pub mod desktop;
+pub mod emoji;
 pub mod history;
 pub mod host;
 pub mod matching;
 pub mod model;
+pub mod prefix;
 pub mod run;
 pub mod scan;
 pub mod socket;

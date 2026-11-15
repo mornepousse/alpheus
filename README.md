@@ -74,6 +74,10 @@ outputs). alpheus figures are release builds. Updated with every delivery.
 | Launcher, open latency | ≈ 0.8–1.3 ms median (max 1.7–2.9 ms) | request accepted → first frame committed, 20 opens, with dbus-rs |
 | Launcher, 50 open/close cycles | ≈ +0.1–0.2 MB vs. the post-warm-up baseline | 17 of them closed by a typed Escape, the rest by toggle, with dbus-rs |
 | Launcher, 100,000-line dmenu | ≈ +6.6–6.8 MB open, back to +0.5 MB 1 s after cancel | worst-case dmenu size; memory released promptly on cancel; with dbus-rs |
+| Launcher 2 (prefixes `?` `:` `$`, window switcher, 1,906 emoji), linked in | −91…+106 KB at start (`everything` of `startup_pss_per_source`, 3 pairings, the harness drifts: trust the deltas) | binary 6.63 → 6.70 MiB stripped (+64 KiB: the emoji table's text is 43 KiB of read-only data, paged in only when `:` is used, the rest code); measured `95b4242` vs this delivery, release, back to back, 3 runs each, separate target directories |
+| Launcher, open with `:face` typed | +1.2–1.3 MB over closed | `launcher_prefixes_pss_open_and_closed`, 3 runs (9.4–9.6 MB closed, 1 output, 300 synthetic apps); closed again +32…+49 KB; the first open warms code and font pages once (+0.53–0.58 MB), so closed is read after one warm-up cycle |
+| Window switcher, open after 20 paced and 20 back-to-back steps (three windows) | +1.0–1.2 MB over closed: the daemon's own memory +144…+296 KB, the box's shm pool +878 KB (its two frames, mapped 1,756 KB, shared with the compositor) | `windows_switcher_pss_and_rest`, 3 runs under headless sway (8.1–9.2 MB closed); paced and back to back read the same (a draw with both buffers busy waits for a release instead of allocating; before the final review a burst grew the pool to ≈ +4 MB); closing frees it all (closed again +7…+21 KB) |
+| Window switcher, after a cycle | 0 loop wake-ups in 5 s | same test, 3 runs: `--windows`, 20 steps, Escape |
 | Launcher command sources, linked in but none configured | within noise of the delivery before this one (−4…+92 KB closed; +0.1–0.2 MB open) | one-time cost of a bigger binary (stripped 5.54 → 5.59 MiB); measured back to back in release, 3 runs each, separate target directories |
 | Launcher, open with a 300-line command source | ≈ +2.4–2.5 MB over closed (≈ +1.9–2.4 MB with no source) | headless sway, 300 synthetic apps, `tests/memory.rs` `launcher_sources_pss_latency_and_rest`, 3 runs |
 | Launcher, a 300-line source's entries | ≈ 15–17 ms after the request (median of 21 opens) | the box shows first: open latency ≈ 1.7–2.2 ms median against 1.6–1.9 ms with no source; 0 wake-ups at rest after; the harness drifts between runs: trust the deltas |
@@ -178,9 +182,13 @@ fraction of their memory. ✅ done · 🚧 planned (delivery) · 💭 to decide 
 | Script/dmenu mode | ✅ (fuzzel's exit codes) | ➖ | ➖ | ❌ | ✅ |
 | Menu scripts' entries in the search (`[[sources]]`: a `list` command per open, `run` with the chosen line) | ✅ the entry, then its path dimmed; nothing resident, nothing per keystroke | ➖ | ✅ | ❌ | ❌ |
 | Calculator and unit conversion | ✅ type `6*7`, `2^10`, `0xff + 1` or `5 km to mi` in Mod+Space, or `alpheus-launch --calc` (a bind of your own, Super+C) to open it directly; Enter copies the answer through `wl-copy` | ✅ | ➖ | ❌ | ❌ |
-| Currencies, dates | 🚧 launcher 2 | ✅ | ➖ | ❌ | ❌ |
-| System actions, Bluetooth/sound, SSH, web search | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
-| Emoji, files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
+| Web search | ✅ `? rust ratatui` in Mod+Space, Enter opens `search` through `open` (`xdg-open`) | ➖ | ➖ | ❌ | ❌ |
+| Emoji picker | ✅ `:heart`, Enter copies it through `wl-copy`; 1,906 emoji compiled in, no resident cost | ✅ | ➖ | ❌ | ➖ |
+| Shell command line | ✅ `$ …` runs `sh -c`, detached or in the held terminal | ➖ | ➖ | ❌ | ➖ |
+| Window switcher (Alt+Tab) | ✅ `alpheus-launch --windows` from a compositor bind: the previous window first, the bind again steps | ➖ | ➖ | ❌ | ❌ |
+| Currencies, dates | 🚧 later | ✅ | ➖ | ❌ | ❌ |
+| System actions, Bluetooth/sound, SSH | 🚧 launcher 3 | ➖ | ➖ | ❌ | ❌ |
+| Files, clipboard history | 🚧 launcher 4 | ✅ | ➖ | ❌ | ➖ |
 | **Other** | | | | | |
 | Notification toasts | ✅ bubbles top centre on the focused output; a click runs the app's action, critical ones stay; replaces mako (≈ 6.7 MB) | ✅ | ✅ | ✅ | ✅ |
 | OSD (volume, brightness) | ✅ volume and mute, and the microphone's mute (never its level: call apps move it), from PipeWire's own state (any app, any key, a Bluetooth headset), laptop brightness on `alpheus-launch --osd brightness`; bottom centre on the focused output, never takes a click; replaces swayosd (≈ 7.6 MB) | ✅ | ✅ | ✅ | ✅ |
@@ -344,7 +352,7 @@ exist only while one shows. One timer is armed for the earliest expiry, and none
 do-not-disturb (kept across restarts, in `$XDG_STATE_HOME/alpheus/dnd`; `--dnd on --for 30m` (`2h`, `1h30m`; 1 minute to 24 hours) or `--dnd on --until 22:30` (local time, tomorrow if already past) ends it by itself: one timer, armed only while it runs, and a restarted daemon keeps the end or turns it off if it passed; `off` and `toggle` cancel it, an older daemon exits 3); an alpheus older than this feature reads any state file as plain on, so a rollback keeps do-not-disturb on (untimed) until you toggle it, `--clear-notifications`
 empties the history; exit code 2 when the notifications module is not in `bar.toml`, 3 when the bar
 is not running. `--osd brightness` shows the backlight's level (exit 0 also when there is none to
-show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
+show, or the `osd` module is off; 3 when the bar is not running). `--calc` opens the launcher in calculator mode (closed: it opens; open, whatever its mode, apps box or script menu: it closes, as `--toggle` does, and a `--calc` less than 250 ms after the one that opened it is ignored; exit 3 when the bar is not running or older than `--calc`). `--windows` opens the window switcher (see [The launcher](#the-launcher)); a second `--windows` while it is open steps to the next window, and it replaces any other open launcher, cancelling a waiting `--dmenu` (a password prompt included); exit 3 when the bar is not running or older than `--windows`. `--quick [sound|wifi|bluetooth]` opens or closes the quick panel on the focused output (`wifi`, `bluetooth`: on that detail; exit 0 also without the `quick` module; 3 when the bar is not running or older than `--quick` (or than its `wifi` or `bluetooth` word)); a `--quick` arriving less than 250 ms after the one that opened the panel is ignored, so a compositor that re-fires a press bind does not close it at once. A known
 limitation: right-to-left titles (Arabic, Hebrew) are drawn in logical order, not reordered. On Hyprland (any version; hyprwm/Hyprland#15729, fixed upstream in 0.56.2), the bar's keyboard interactivity stays None while a menu or the calendar grabs — detected from its `hyprland_*` globals.
 
 ### The launcher
@@ -370,6 +378,16 @@ grow PSS by well under the 1 MB budget (measured 148–220 KB across runs),
 +6.6–6.8 MB and drops back to +0.5 MB a second after it is cancelled.
 
 **Calculator.** A query that looks like arithmetic shows one row above the other results (or alone with `alpheus-launch --calc`). `+ - * / % ^`, parentheses, `x` as a multiplication, `0x`/`0b`/`0o` and `_` in numbers, `pi` and `e`, and `sqrt`, `cbrt`, `abs`, `ln`, `log`, `log2`, `exp`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `round`, `floor`, `ceil`, `min`, `max`. Integers are exact (128 bits) and fall back to floating point on overflow; results keep 12 significant digits. `%` is the truncated remainder, as in C and Rust: `-7 % 3` is `-1`. A result computed from hexadecimal, binary or octal input also shows `0x…` and `0b…`. Units convert with `<value> <unit> to <unit>` (or `in`): length (`mm cm m km inch ft yd mi`), mass (`mg g kg t oz lb`), temperature (`c f k`), data (`b kb mb gb tb pb`, `kib … pib`) and time (`ms s min h d`). Inches are typed `inch` (or `inches`): `in` is the keyword, so `12 in to cm` gives no row. A word such as `e`, `pi`, `2048`, `7zip` or `1password` never shows the row. `Enter` copies the answer (`3.10685596119 mi`), `Ctrl+Enter` copies `5 km to mi = 3.10685596119 mi`, through `copy = ["wl-copy"]` in `launcher.toml` (`[]` hides the action); the copy is not recorded in the history. Nothing resident, nothing per keystroke beyond the parse.
+
+**Prefixes.** A query that starts with `?`, `:` or `$` in the All mode lists only that prefix's rows (never under `--password`, in the Apps, Windows and Commands modes, or in script and dmenu menus, where they are plain text). A prefix alone shows a hint line, not a row.
+
+- `? rust ratatui` shows `Search the web: rust ratatui`; Enter opens `search` (default `https://duckduckgo.com/?q={query}`, the text percent-encoded as one parameter) through `open` (default `["xdg-open"]`, the URL as the last argument), in a systemd scope like an app, so the browser never dies with the bar. `search = ""` or `open = []` turns the prefix off, and a `?` query is then searched as text. Never recorded in the history.
+- `:heart` lists the emoji whose name matches (Unicode 16.0, the 1,906 fully-qualified ones without skin tones, a table in the binary's read-only data, paged in only when used; the launcher's fuzzy matcher over the name, at most `rows`). Enter copies the emoji through `copy` (`wl-copy`), `Ctrl+Enter` copies its name. Sequences (a family, a flag, a keycap) show as their pieces but are copied whole. Colour needs an emoji font in `[font] fallback` of `bar.toml` (for example `["DejaVu Sans Mono", "Noto Color Emoji"]`, the key replacing the default): the default monospace font has few. `:!x` is the matcher's negation, and an accented needle matches literally.
+- `$ sleep 5 && notify-send hi` shows `Run in a shell: …`; Enter runs `sh -c -- <text>` detached in a scope, `Ctrl+Enter` in `terminal_hold`. The text is never recorded or logged.
+
+`:` and `$` are always claimed as prefixes: a query that starts with one never ranks apps (set `[prefixes]` to something else if you search names that start with them, a configured mode prefix is taken first). The attribution of the emoji names is in `NOTICE`.
+
+**Window switcher.** `alpheus-launch --windows` (bind it to Alt+Tab in your compositor: `bind=ALT,Tab,spawn,alpheus-launch --windows` in Mango, `bindsym Mod1+Tab exec alpheus-launch --windows` in Sway) opens the windows with the previous one selected, so Enter goes back to the last window. A second `--windows` while it is open, and `Tab`, step down (`Shift+Tab` up), wrapping, so holding the modifier and pressing the key again walks the list; only a `--windows` within 250 ms of the switcher's own open is ignored (Hyprland re-fires a press bind on release). Esc closes. No modes row, no thumbnails, no scan of apps or `$PATH`, nothing resident.
 
 **Command sources.** A menu script's lines can be searched next to the apps.
 A `[[sources]]` table in `launcher.toml` names a `list` command and a `run` command. `list` runs once per open, on the thread that already scans the applications, after them: 1 s at most, 2,000 lines, 256 KiB. `run` receives the chosen line as one argument, never through a shell.
@@ -810,6 +828,8 @@ rows = 10                                        # result rows (3 to 30)
 history = 200                                    # entries kept (0 to 1000; 0: no history file)
 focus = ["wm-set", "focus-window", "{window}"]   # run to focus a window; {window} is required (address:0x… on Hyprland, id:N elsewhere)
 copy = ["wl-copy"]                               # the calculator's Enter: the text on its standard input; [] hides the action
+search = "https://duckduckgo.com/?q={query}"    # the ? prefix's URL; {query} is required, percent-encoded; "" turns ? off
+open = ["xdg-open"]                              # opens that URL (appended as the last argument); [] turns ? off
 
 [prefixes]
 commands = ">"       # non-empty, no leading space, neither a prefix of the other
@@ -876,4 +896,5 @@ warning on the status line); the rest of the file still applies.
 
 ## License
 
-[MIT](LICENSE) © 2026 Mae PUGIN
+[MIT](LICENSE) © 2026 Mae PUGIN. The launcher's emoji table is Unicode data under the
+Unicode License v3: see [NOTICE](NOTICE).

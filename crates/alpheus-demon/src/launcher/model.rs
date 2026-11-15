@@ -8,8 +8,10 @@ use crate::compositor::Toplevel;
 use crate::keys::Key;
 use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
+use crate::launcher::emoji;
 use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
+use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::list;
@@ -52,6 +54,10 @@ pub enum Activation {
     Copy {
         text: String,
     },
+    /// The `?` row: `Config::open` with this URL appended, in a scope like an app; never recorded.
+    Open {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +79,10 @@ enum Identity {
     /// Its history key (`source_key`): the source's name and the whole line.
     Entry(String),
     Calc,
+    /// The prefix rows have one position each: nothing to carry across a refilter.
+    Search,
+    Emoji(usize),
+    Shell,
 }
 
 pub struct Launcher {
@@ -121,14 +131,17 @@ pub struct Launcher {
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
-    /// (`move_by`). Set back to false by every `refilter()` — a typed character, Backspace,
-    /// Ctrl+U, Ctrl+W, Tab/BackTab, a prefix jump (Mae, 2026-10-05): the selection is on top
+    /// (`move_by`), or a switcher's Tab/Shift+Tab (`step`). Set back to false by every
+    /// `refilter()` — a typed character, Backspace,
+    /// Ctrl+U, Ctrl+W, Tab/BackTab (outside the switcher, where they step), a prefix jump (Mae, 2026-10-05): the selection is on top
     /// unless the user navigated since the last query or mode change. Until then, a catalog
     /// or window update puts the selection back on top instead of carrying it along by
     /// identity: the catalog arrives after the first window has been auto-selected, and a
     /// hasty Enter must not land on that window once apps outrank it. Once `moved` is set,
     /// `identity` keeps tracking the user's choice as before, until the next refilter.
     moved: bool,
+    /// The window switcher (launcher 2): `for_windows` only. Tab steps instead of switching mode.
+    switcher: bool,
 }
 
 impl Launcher {
@@ -158,6 +171,7 @@ impl Launcher {
             by_prefix: false,
             list_rows,
             moved: false,
+            switcher: false,
         }
     }
 
@@ -168,6 +182,16 @@ impl Launcher {
         l.windows = windows;
         l.history = history;
         l.now = now;
+        l.refilter();
+        l
+    }
+
+    /// The window switcher: windows only, in the backends' order, no history and no catalog; the
+    /// selection starts on the previous window (the first one).
+    pub fn for_windows(config: LauncherConfig, windows: Vec<Toplevel>) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Windows);
+        l.switcher = true;
+        l.windows = windows;
         l.refilter();
         l
     }
@@ -202,8 +226,17 @@ impl Launcher {
         l
     }
 
+    pub fn is_switcher(&self) -> bool {
+        self.switcher && self.mode == Mode::Windows
+    }
+
     pub fn is_script(&self) -> bool {
         self.mode == Mode::Script
+    }
+
+    /// Whether the box draws the modes row: not a script menu, the calculator or the switcher.
+    pub fn has_modes(&self) -> bool {
+        !self.is_bare() && !self.is_switcher()
     }
 
     /// A menu with no modes row and no preview: a script's, or the calculator's.
@@ -249,6 +282,9 @@ impl Launcher {
             Source::Command(i) => Identity::Command(self.catalog.as_ref()?.commands.get(i)?.clone()),
             Source::Line(i) => Identity::Line(i),
             Source::Calc => Identity::Calc,
+            Source::Search => Identity::Search,
+            Source::Emoji(i) => Identity::Emoji(i),
+            Source::Shell => Identity::Shell,
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
                 let item = e.items.get(i)?;
@@ -309,6 +345,8 @@ impl Launcher {
             Key::PageDown => self.move_by(page),
             Key::Home => self.move_by(i32::MIN),
             Key::End => self.move_by(i32::MAX),
+            Key::Tab if self.is_switcher() => self.step(1),
+            Key::BackTab if self.is_switcher() => self.step(-1),
             Key::Tab => self.switch_mode(self.mode.next()),
             Key::BackTab => self.switch_mode(self.mode.previous()),
             // No binding: the preview panel they used to toggle always shows now (view.rs,
@@ -341,12 +379,18 @@ impl Launcher {
     }
 
     fn switch_mode(&mut self, m: Mode) -> Outcome {
-        if self.is_bare() || m == self.mode {
+        if self.is_bare() || self.switcher || m == self.mode {
             return Outcome::Nothing;
         }
         self.mode = m;
         self.by_prefix = false;
         self.query_changed()
+    }
+
+    /// The query's prefix (`?`, `:`, `$`) and its text: only in All (`--password` is a dmenu, so
+    /// Script: the secret is never parsed). A configured mode prefix is taken before, by `take_prefix`.
+    pub fn prefixed(&self) -> Option<(Prefix, &str)> {
+        split_query(self.mode, &self.query, &self.config)
     }
 
     fn query_changed(&mut self) -> Outcome {
@@ -360,6 +404,18 @@ impl Launcher {
         // the secret into heap buffers the drop cannot wipe.
         if self.password {
             self.results.clear();
+            self.calc = None;
+            return;
+        }
+        // A prefix lists only its own rows: no catalog ranking, no calculator.
+        // Field by field, not `prefixed()`: the ranker is borrowed mutably below.
+        if let Some((p, text)) = split_query(self.mode, &self.query, &self.config) {
+            self.results = match p {
+                Prefix::Search if !text.is_empty() => vec![Hit { source: Source::Search, score: u32::MAX, frecency: 0 }],
+                Prefix::Emoji => self.ranker.rank_emoji(text, usize::from(self.config.rows)),
+                Prefix::Shell if !text.is_empty() => vec![Hit { source: Source::Shell, score: u32::MAX, frecency: 0 }],
+                _ => Vec::new(),
+            };
             self.calc = None;
             return;
         }
@@ -452,6 +508,24 @@ impl Launcher {
         Outcome::Redraw
     }
 
+    /// The switcher's Tab: moves the selection by `by`, wrapping around the results (unlike
+    /// `move_by`, which clamps).
+    pub fn step(&mut self, by: i32) -> Outcome {
+        let n = i64::try_from(self.results.len()).unwrap_or(i64::MAX);
+        if n == 0 {
+            return Outcome::Nothing;
+        }
+        let to = (i64::try_from(self.selected).unwrap_or(0) + i64::from(by)).rem_euclid(n);
+        let to = usize::try_from(to).unwrap_or(0);
+        if to == self.selected {
+            return Outcome::Nothing;
+        }
+        self.moved = true;
+        self.selected = to;
+        self.keep_visible();
+        Outcome::Redraw
+    }
+
     fn app_has_actions(&self, index: usize) -> bool {
         self.catalog.as_ref().and_then(|c| c.apps.get(index)).is_some_and(|e| !e.actions.is_empty())
     }
@@ -484,8 +558,39 @@ impl Launcher {
                 Some(Source::Line(i)) => self.choose_line(i),
                 Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
                 Some(Source::Calc) => self.copy(false),
+                Some(Source::Search) => self.search(),
+                Some(Source::Emoji(offset)) => self.emoji(offset, false),
+                Some(Source::Shell) => self.dollar(false),
                 None => Outcome::Nothing,
             },
+        }
+    }
+
+    /// The `$` row: the text after the prefix, through `sh -c`, detached or held in the terminal.
+    fn dollar(&self, terminal: bool) -> Outcome {
+        match self.prefixed() {
+            Some((Prefix::Shell, text)) if !text.is_empty() => Outcome::Activate(Activation::Shell { text: text.to_string(), terminal }),
+            _ => Outcome::Nothing,
+        }
+    }
+
+    /// The `?` row: the URL for the typed text.
+    fn search(&self) -> Outcome {
+        match self.prefixed() {
+            Some((Prefix::Search, text)) if !text.is_empty() => {
+                Outcome::Activate(Activation::Open { url: search_url(&self.config.search, text) })
+            }
+            _ => Outcome::Nothing,
+        }
+    }
+
+    /// An emoji row's copy: the emoji, or with `name` its name. No `copy` command copies nothing.
+    fn emoji(&self, offset: usize, name: bool) -> Outcome {
+        match emoji::at(offset) {
+            Some((emoji, label)) if !self.config.copy.is_empty() => {
+                Outcome::Activate(Activation::Copy { text: (if name { label } else { emoji }).to_string() })
+            }
+            _ => Outcome::Nothing,
         }
     }
 
@@ -519,7 +624,9 @@ impl Launcher {
                 Outcome::Activate(Activation::Command { index, terminal: false })
             }
             (Mode::Commands, _) => self.shell(false),
+            (_, Some(Source::Shell)) => self.dollar(true),
             (_, Some(Source::Calc)) => self.copy(true),
+            (_, Some(Source::Emoji(offset))) => self.emoji(offset, true),
             (_, Some(Source::App(index))) => {
                 let action = self.app_has_actions(index).then_some(0);
                 Outcome::Activate(Activation::App { index, action })
@@ -564,6 +671,14 @@ impl Launcher {
     pub fn show_message(&mut self, m: String) {
         self.message = Some(m);
     }
+}
+
+/// `Launcher::prefixed`'s rule on loose fields.
+fn split_query<'a>(mode: Mode, query: &'a str, config: &LauncherConfig) -> Option<(Prefix, &'a str)> {
+    if mode != Mode::All {
+        return None;
+    }
+    prefix::split(query, config.search_enabled())
 }
 
 /// `--password`: the typed text is overwritten before it is freed (where practical: the copies

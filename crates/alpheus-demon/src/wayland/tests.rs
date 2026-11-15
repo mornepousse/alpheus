@@ -302,6 +302,18 @@ fn plan_buffer_grows_when_both_of_two_are_busy() {
     assert_eq!(plan_buffer(&[((100, 22), true), ((100, 22), true)], (100, 22)), BufferPlan::Grow);
 }
 
+/// Launcher 2 final review: the launcher's draws wait instead of growing past two buffers (the
+/// box's pool doubled on back-to-back redraws); the first growth, from one buffer to two, stays.
+#[test]
+fn waiting_for_a_release_only_when_two_are_already_busy() {
+    let busy = ((100, 22), true);
+    assert!(!waits_for_release(&[busy], (100, 22)), "one busy buffer: a second is allocated");
+    assert!(waits_for_release(&[busy, busy], (100, 22)), "two busy: wait for a release");
+    assert!(!waits_for_release(&[busy, ((100, 22), false)], (100, 22)), "one free: reused");
+    assert!(!waits_for_release(&[busy, busy], (120, 22)), "a resize allocates anew");
+    assert!(!waits_for_release(&[], (100, 22)));
+}
+
 #[test]
 fn plan_buffer_resizes_on_a_size_change_whatever_the_busy_state() {
     // Wrong size: every previous buffer is useless either way, free or busy.

@@ -714,3 +714,281 @@ fn the_calculator_mode_copies_on_enter() {
     typed(&mut l, "2048");
     assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "2048".into() }), "no looks_like_math filter in the mode");
 }
+
+#[test]
+fn a_question_mark_shows_one_search_row() {
+    let mut l = launcher();
+    typed(&mut l, "? rust");
+    assert!(matches!(l.results[..], [Hit { source: Source::Search, .. }]), "{:?}", l.results);
+    assert_eq!(l.calc, None);
+    let open = activate(Activation::Open { url: "https://duckduckgo.com/?q=rust".into() });
+    assert_eq!(l.key(Key::Enter), open);
+    assert_eq!(l.key(Key::CtrlEnter), open);
+    assert_eq!(l.prefixed().map(|(_, t)| t), Some("rust"));
+}
+
+#[test]
+fn a_bare_prefix_lists_nothing_and_enter_does_nothing() {
+    for query in ["?", "? ", ":", "$"] {
+        let mut l = launcher();
+        typed(&mut l, query);
+        assert!(l.results.is_empty(), "{query:?}: {:?}", l.results);
+        assert_eq!(l.key(Key::Enter), Outcome::Nothing, "{query:?}");
+        assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing, "{query:?}");
+    }
+}
+
+#[test]
+fn search_disabled_searches_the_text() {
+    for config in [
+        LauncherConfig { search: String::new(), ..LauncherConfig::default() },
+        LauncherConfig { open: vec![], ..LauncherConfig::default() },
+    ] {
+        let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+        l.set_catalog(catalog());
+        typed(&mut l, "?rust");
+        assert!(!sources(&l).contains(&Source::Search), "{:?}", sources(&l));
+        assert_eq!(l.prefixed(), None);
+    }
+}
+
+#[test]
+fn prefixes_only_in_all() {
+    let mut l = launcher();
+    l.key(Key::Tab);
+    assert_eq!(l.mode, Mode::Apps);
+    typed(&mut l, "? rust");
+    assert!(!sources(&l).contains(&Source::Search));
+    assert_eq!(l.prefixed(), None);
+    let mut c = Launcher::for_calc(LauncherConfig::default());
+    typed(&mut c, "? rust");
+    assert!(!sources(&c).contains(&Source::Search));
+    assert_eq!(c.prefixed(), None);
+    let mut s = Launcher::for_script(LauncherConfig::default(), None, vec!["? rust".into()]);
+    typed(&mut s, "? rust");
+    assert_eq!(sources(&s), [Source::Line(0)], "still matches as a line");
+    assert_eq!(s.prefixed(), None);
+}
+
+#[test]
+fn a_prefix_hides_the_calculator() {
+    let mut l = launcher();
+    typed(&mut l, "? 2+2");
+    assert_eq!(l.calc, None);
+    assert_eq!(sources(&l), [Source::Search]);
+    let mut l = launcher();
+    typed(&mut l, "$ 2+2");
+    assert_eq!(l.calc, None);
+}
+
+fn emoji_launcher(rows: u16) -> Launcher {
+    let config = LauncherConfig { rows, ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    l
+}
+
+#[test]
+fn a_colon_lists_emoji_and_copies() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":red heart");
+    assert!(!l.results.is_empty() && l.results.len() <= 5, "{:?}", sources(&l));
+    assert!(l.results.iter().all(|h| matches!(h.source, Source::Emoji(_))), "{:?}", sources(&l));
+    let Source::Emoji(offset) = l.results[0].source else { unreachable!() };
+    assert_eq!(crate::launcher::emoji::at(offset).map(|(e, _)| e), Some("\u{2764}\u{fe0f}"));
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{2764}\u{fe0f}".into() }));
+    assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Copy { text: "red heart".into() }));
+}
+
+#[test]
+fn a_zwj_emoji_copies_the_whole_sequence() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":family: man, woman, girl");
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}".into() }));
+}
+
+#[test]
+fn an_empty_copy_copies_no_emoji() {
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    typed(&mut l, ":heart");
+    assert!(matches!(l.results[0].source, Source::Emoji(_)));
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+}
+
+#[test]
+fn a_bare_colon_lists_nothing() {
+    let mut l = emoji_launcher(5);
+    typed(&mut l, ":");
+    assert!(l.results.is_empty());
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+}
+
+#[test]
+fn a_configured_mode_prefix_wins_over_a_query_prefix() {
+    let config = LauncherConfig::from_text("[prefixes]\ncommands = \"$\"\n").unwrap();
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    typed(&mut l, "$");
+    assert_eq!((l.mode, l.query.as_str()), (Mode::Commands, ""), "the mode, not the shell prefix");
+    assert_eq!(l.prefixed(), None);
+    // Anything else typed first stays plain text for the `$` prefix.
+    let mut l = launcher();
+    typed(&mut l, "$");
+    assert_eq!((l.mode, l.prefixed()), (Mode::All, Some((Prefix::Shell, ""))));
+}
+
+#[test]
+fn a_password_dmenu_never_reads_a_prefix() {
+    let flags = DmenuFlags { password: true, ..DmenuFlags::default() };
+    let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], flags);
+    typed(&mut l, "? x");
+    assert_eq!(l.query, "? x");
+    assert_eq!(l.prefixed(), None);
+    assert!(l.results.is_empty());
+    let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], flags);
+    typed(&mut l, "$ x");
+    assert_eq!(l.prefixed(), None);
+    assert!(l.results.is_empty());
+    assert!(!matches!(l.key(Key::Enter), Outcome::Activate(Activation::Shell { .. })), "a password prompt never runs `$`");
+}
+
+#[test]
+fn a_dollar_shows_one_shell_row() {
+    let mut l = launcher();
+    typed(&mut l, "$ sleep 5 && notify-send hi");
+    assert_eq!(sources(&l), [Source::Shell]);
+    let text = "sleep 5 && notify-send hi".to_string();
+    assert_eq!(l.key(Key::Enter), activate(Activation::Shell { text: text.clone(), terminal: false }));
+    assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Shell { text: text.clone(), terminal: true }));
+    assert_eq!(l.click(0, false), activate(Activation::Shell { text: text.clone(), terminal: false }));
+    assert_eq!(l.click(0, true), activate(Activation::Shell { text, terminal: true }));
+    // Nothing after the prefix: no row, nothing to run.
+    let mut l = launcher();
+    typed(&mut l, "$ ");
+    assert!(l.results.is_empty());
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+}
+
+#[test]
+fn a_configured_dollar_prefix_still_enters_commands() {
+    let config = LauncherConfig::from_text("[prefixes]\ncommands = \"$\"\n").unwrap();
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    typed(&mut l, "$");
+    assert_eq!(l.mode, Mode::Commands);
+    assert!(!l.results.iter().any(|h| h.source == Source::Shell));
+}
+
+fn focused(mut w: Toplevel) -> Toplevel {
+    w.focused = true;
+    w
+}
+
+/// The backends' order: the previous window first, the focused one last.
+fn three() -> Vec<Toplevel> {
+    vec![window("id:2", "foot", "prev"), window("id:1", "foot", "older"), focused(window("id:3", "foot", "cur"))]
+}
+
+fn switcher() -> Launcher {
+    Launcher::for_windows(LauncherConfig::default(), three())
+}
+
+#[test]
+fn the_switcher_opens_on_the_previous_window() {
+    let mut l = switcher();
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)));
+    assert_eq!(l.key(Key::Enter), Outcome::Activate(Activation::Window(0)));
+    assert_eq!(l.mode, Mode::Windows);
+    assert!(l.is_switcher());
+    assert!(l.catalog.is_none());
+}
+
+#[test]
+fn step_moves_down_and_wraps() {
+    let mut l = switcher();
+    for want in [1, 2, 0] {
+        assert_eq!(l.step(1), Outcome::Redraw);
+        assert_eq!(l.selected, want);
+    }
+    assert_eq!(l.step(-1), Outcome::Redraw);
+    assert_eq!(l.selected, 2);
+}
+
+#[test]
+fn tab_steps_in_the_switcher_and_never_switches_mode() {
+    let mut l = switcher();
+    assert_eq!(l.key(Key::Tab), Outcome::Redraw);
+    assert_eq!(l.selected, 1);
+    assert_eq!(l.key(Key::BackTab), Outcome::Redraw);
+    assert_eq!(l.selected, 0);
+    assert_eq!(l.click_mode(Mode::All), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Windows);
+    assert!(l.is_switcher());
+}
+
+#[test]
+fn stepping_wraps_and_survives_a_window_update() {
+    let mut l = switcher();
+    let mut w = vec![window("id:4", "foot", "new")];
+    w.extend(three());
+    l.set_windows(w);
+    assert_eq!(l.selected, 0, "before any step, the top");
+    l.step(1);
+    let selector = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
+        Some(Source::Window(i)) => l.windows[i].selector.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(selector(&l), "id:2");
+    l.step(1);
+    assert_eq!(selector(&l), "id:1");
+    let mut w = three();
+    w.reverse();
+    l.set_windows(w);
+    assert_eq!(selector(&l), "id:1", "kept by identity");
+    l.set_windows(vec![window("id:2", "foot", "prev"), focused(window("id:3", "foot", "cur"))]);
+    assert_eq!(l.selected, 0, "closed: back to the top");
+}
+
+#[test]
+fn a_switcher_with_no_window_or_one() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), vec![]);
+    assert_eq!(l.step(1), Outcome::Nothing);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    let mut l = Launcher::for_windows(LauncherConfig::default(), vec![focused(window("id:3", "foot", "cur"))]);
+    assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)));
+    assert_eq!(l.step(1), Outcome::Nothing);
+}
+
+#[test]
+fn step_works_on_the_filtered_results_not_on_every_window() {
+    let w = vec![
+        window("id:1", "term", "alpha foo"),
+        window("id:2", "term", "bravo bar"),
+        window("id:3", "term", "charlie foo"),
+        window("id:4", "term", "delta bar"),
+    ];
+    let mut l = Launcher::for_windows(LauncherConfig::default(), w);
+    typed(&mut l, "foo");
+    assert_eq!(l.results.len(), 2, "two windows match");
+    let at = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
+        Some(Source::Window(i)) => l.windows[i].selector.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(at(&l), "id:1");
+    assert_eq!(l.step(1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:3");
+    assert_eq!(l.step(1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:1", "wraps over the two matches, never visiting id:2 or id:4");
+    assert_eq!(l.step(-1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:3");
+}
+
+#[test]
+fn a_typed_query_filters_then_steps() {
+    let mut l = switcher();
+    typed(&mut l, "old");
+    assert_eq!(l.results.len(), 1);
+    assert_eq!(l.step(1), Outcome::Nothing);
+}

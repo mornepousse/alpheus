@@ -10,6 +10,8 @@
 //! terminal = ["foot", "-e"]                        # Terminal=true apps, plain (no hold)
 //! terminal_hold = ["foot", "--hold", "-e"]          # a command or typed shell text, Enter (stays open)
 //! copy = ["wl-copy"]                               # the calculator's Enter: the result on its stdin; [] hides the action
+//! search = "https://duckduckgo.com/?q={query}"     # the `?` prefix's URL, {query} percent-encoded; "" disables `?`
+//! open = ["xdg-open"]                              # opens that URL (the URL is appended); [] disables `?`
 //! rows = 10                                        # result rows, 3 to 30
 //! history = 200                                    # entries kept, 0 to 1000; 0 disables the history
 //! focus = ["wm-set", "focus-window", "{window}"]   # {window}: address:0x… (Hyprland), id:N (niri)
@@ -72,6 +74,11 @@ pub struct LauncherConfig {
     /// The calculator's copy command (small features 1): the text goes on its stdin, never on
     /// its argv; empty hides the action.
     pub copy: Vec<String>,
+    /// The `?` prefix's URL template (launcher 2): `{query}` is replaced by the percent-encoded
+    /// text; empty disables the prefix.
+    pub search: String,
+    /// Opens the search URL: the URL is appended as the last argument; empty disables the prefix.
+    pub open: Vec<String>,
     pub rows: u16,
     /// Entries kept; 0 disables the history (never read, never written).
     pub history: usize,
@@ -87,6 +94,8 @@ impl Default for LauncherConfig {
             terminal: vec!["foot".into(), "-e".into()],
             terminal_hold: vec!["foot".into(), "--hold".into(), "-e".into()],
             copy: vec!["wl-copy".into()],
+            search: "https://duckduckgo.com/?q={query}".into(),
+            open: vec!["xdg-open".into()],
             rows: 10,
             history: 200,
             prefixes: Prefixes::default(),
@@ -102,6 +111,8 @@ struct Raw {
     terminal: Vec<String>,
     terminal_hold: Vec<String>,
     copy: Vec<String>,
+    search: String,
+    open: Vec<String>,
     rows: u16,
     history: usize,
     prefixes: Prefixes,
@@ -116,6 +127,8 @@ impl Default for Raw {
             terminal: d.terminal,
             terminal_hold: d.terminal_hold,
             copy: d.copy,
+            search: d.search,
+            open: d.open,
             rows: d.rows,
             history: d.history,
             prefixes: d.prefixes,
@@ -126,6 +139,11 @@ impl Default for Raw {
 }
 
 impl LauncherConfig {
+    /// Whether the `?` prefix is on: a URL template and a program to open it with.
+    pub fn search_enabled(&self) -> bool {
+        !self.search.is_empty() && !self.open.is_empty()
+    }
+
     /// Absent → (defaults, None); unreadable/invalid → (defaults, Some("launcher.toml …")).
     pub fn load(path: &Path) -> (LauncherConfig, Option<String>) {
         match std::fs::read_to_string(path) {
@@ -141,6 +159,7 @@ impl LauncherConfig {
     /// Validation:
     /// - terminal, terminal_hold and focus: non-empty, with a non-blank program (copy may be
     ///   empty, otherwise the same rule);
+    /// - search empty, or a `<scheme>://` URL holding "{query}"; open may be empty, otherwise the same rule as copy;
     /// - focus contains "{window}";
     /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
     /// - prefixes non-empty, not starting with whitespace, neither one a prefix of the other
@@ -155,6 +174,18 @@ impl LauncherConfig {
         }
         if r.copy.first().is_some_and(|p| p.trim().is_empty()) {
             return Err("copy: empty program (expected: [\"program\", \"argument\", …], or [] for no copy)".into());
+        }
+        if r.open.first().is_some_and(|p| p.trim().is_empty()) {
+            return Err("open: empty program (expected: [\"program\", \"argument\", …], or [] to disable `?`)".into());
+        }
+        if !r.search.is_empty() && !r.search.contains("{query}") {
+            return Err(
+                "search: no \"{query}\" placeholder (expected a URL such as \"https://duckduckgo.com/?q={query}\", or \"\" to disable `?`)"
+                    .into(),
+            );
+        }
+        if !r.search.is_empty() && !has_scheme(&r.search) {
+            return Err("search: not a URL (expected it to start with a scheme such as \"https://\", or \"\" to disable `?`)".into());
         }
         if r.focus.first().is_some_and(|p| p.contains("{window}")) {
             return Err("focus[0] (the program) must not contain \"{window}\" (it names the compositor binary, not a window)".into());
@@ -187,6 +218,8 @@ impl LauncherConfig {
             terminal: r.terminal,
             terminal_hold: r.terminal_hold,
             copy: r.copy,
+            search: r.search,
+            open: r.open,
             rows: r.rows,
             history: r.history,
             prefixes: r.prefixes,
@@ -194,6 +227,13 @@ impl LauncherConfig {
             sources: r.sources,
         })
     }
+}
+
+/// Whether `url` starts with RFC 3986's `<scheme>://` (a letter, then letters, digits, `+`, `-`, `.`).
+fn has_scheme(url: &str) -> bool {
+    let Some((scheme, _)) = url.split_once("://") else { return false };
+    scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, without a control character
@@ -277,6 +317,8 @@ mod tests {
             terminal: vec!["foot".into()],
             terminal_hold: vec!["foot".into(), "--hold".into()],
             copy: vec!["wl-copy".into()],
+            search: "https://duckduckgo.com/?q={query}".into(),
+            open: vec!["xdg-open".into()],
             rows: 6,
             history: 0,
             prefixes: Prefixes { commands: "!".into(), windows: "win:".into() },
@@ -439,6 +481,53 @@ mod tests {
         for text in ["copy = [\"\"]", "copy = [\" \", \"x\"]"] {
             let e = LauncherConfig::from_text(text).unwrap_err();
             assert!(e.contains("copy"), "{text}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_scheme_is_a_letter_then_letters_digits_plus_minus_dot() {
+        for yes in ["http://x", "a://", "a+b-c.d1://x"] {
+            assert!(has_scheme(yes), "{yes}");
+        }
+        for no in ["", "http", "http:/x", "://x", "1a://x", "a b://x", "a_b://x", "/x://y"] {
+            assert!(!has_scheme(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn search_and_open_defaults_and_validation() {
+        let d = LauncherConfig::default();
+        assert_eq!((d.search.as_str(), d.open.as_slice()), ("https://duckduckgo.com/?q={query}", ["xdg-open".to_string()].as_slice()));
+        assert!(d.search_enabled());
+        assert!(!LauncherConfig::from_text("search = \"\"").unwrap().search_enabled());
+        assert!(!LauncherConfig::from_text("open = []").unwrap().search_enabled());
+        let c = LauncherConfig::from_text("search = \"https://x/?q={query}&a={query}\"\nopen = [\"firefox\", \"--new-tab\"]").unwrap();
+        assert_eq!(
+            (c.search.as_str(), c.open.as_slice()),
+            ("https://x/?q={query}&a={query}", ["firefox".to_string(), "--new-tab".to_string()].as_slice())
+        );
+        let e = LauncherConfig::from_text("search = \"https://x/\"").unwrap_err();
+        assert!(e.contains("{query}"), "{e}");
+        // A template that is not a URL would hand the typed text to `open` as an option or a path.
+        for text in [
+            "-x={query}",
+            "{query}",
+            "//x/?q={query}",
+            "x/?q={query}",
+            "1http://x/{query}",
+            "ht tp://x/{query}",
+            "://x/{query}",
+            "{query}://x",
+        ] {
+            let e = LauncherConfig::from_text(&format!("search = {text:?}")).unwrap_err();
+            assert!(e.contains("search") && e.contains("://"), "{text}: {e}");
+        }
+        for text in ["http://x/{query}", "a+b-c.d1://x/{query}", "HTTPS://x/?q={query}"] {
+            assert!(LauncherConfig::from_text(&format!("search = {text:?}")).is_ok(), "{text}");
+        }
+        for text in ["open = [\"\"]", "open = [\" \", \"x\"]"] {
+            let e = LauncherConfig::from_text(text).unwrap_err();
+            assert!(e.contains("open"), "{text}: {e}");
         }
     }
 }

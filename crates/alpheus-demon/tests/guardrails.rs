@@ -16,7 +16,7 @@ use alpheus_demon::launcher::config::{LauncherConfig, SourceConfig};
 use alpheus_demon::launcher::desktop::{DesktopAction, DesktopEntry};
 use alpheus_demon::launcher::history::History;
 use alpheus_demon::launcher::matching::Mode;
-use alpheus_demon::launcher::model::{Launcher, Outcome};
+use alpheus_demon::launcher::model::{Activation, Launcher, Outcome};
 use alpheus_demon::launcher::run::{RunContext, SYSTEMD_RUN, Spawner, perform};
 use alpheus_demon::launcher::scan::Catalog;
 use alpheus_demon::launcher::sources::{Entries, SourceEntry};
@@ -768,6 +768,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Toggle => "toggle",
             Request::Close => "close",
             Request::Calc => "calc",
+            Request::Windows => "windows",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::DndOn(_) => "dnd-on",
@@ -784,6 +785,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Toggle,
         Request::Close,
         Request::Calc,
+        Request::Windows,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::DndOn(DndEnd::For(60)),
@@ -801,6 +803,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "toggle",
             "close",
             "calc",
+            "windows",
             "dmenu",
             "dnd",
             "dnd-on",
@@ -1372,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 48] = [
+const NO_THREAD_NOR_COMMAND: [&str; 51] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1421,6 +1424,9 @@ const NO_THREAD_NOR_COMMAND: [&str; 48] = [
     "launcher/calc/units.rs",
     "dnd.rs",
     "battery_alert.rs",
+    "launcher/prefix.rs",
+    "launcher/emoji.rs",
+    "launcher/emoji/",
 ];
 
 #[test]
@@ -1568,7 +1574,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh", "tools-menu"] {
+    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh", "tools-menu", "xdg-open"] {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1596,22 +1602,38 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             let n = fresh().results.len();
             for i in 0..n {
                 for secondary in [false, true] {
-                    outcomes.push((fresh().click(i, secondary), mode));
+                    outcomes.push((fresh().click(i, secondary), mode, false));
                 }
             }
             let mut typed = fresh();
             for c in "ls -la".chars() {
                 typed.key(Key::Char(c));
             }
-            outcomes.push((typed.key(Key::Enter), mode));
-            outcomes.push((typed.key(Key::CtrlEnter), mode));
+            outcomes.push((typed.key(Key::Enter), mode, false));
+            outcomes.push((typed.key(Key::CtrlEnter), mode, false));
             // A typed query reaches the source entries (in All only).
             let mut sourced = fresh();
             for c in "zone".chars() {
                 sourced.key(Key::Char(c));
             }
-            outcomes.push((sourced.key(Key::Enter), mode));
-            outcomes.push((sourced.key(Key::CtrlEnter), mode));
+            outcomes.push((sourced.key(Key::Enter), mode, false));
+            outcomes.push((sourced.key(Key::CtrlEnter), mode, false));
+            // The `?` row (launcher 2): `open` plus the percent-encoded URL, never the raw text.
+            let mut searched = fresh();
+            for c in "? rust ratatui".chars() {
+                searched.key(Key::Char(c));
+            }
+            outcomes.push((searched.key(Key::Enter), mode, false));
+            outcomes.push((searched.key(Key::CtrlEnter), mode, false));
+            // `$ ls -la` typed in every mode: only All reads the prefix. Elsewhere it is plain text
+            // (Commands: the whole line goes through `sh`, which the checks below pin to Commands).
+            let mut dollared = fresh();
+            for c in "$ ls -la".chars() {
+                dollared.key(Key::Char(c));
+            }
+            let reads_it = mode == Mode::All;
+            outcomes.push((dollared.key(Key::Enter), mode, reads_it));
+            outcomes.push((dollared.key(Key::CtrlEnter), mode, reads_it));
             if mode == Mode::All {
                 // The prefix route into Commands mode (Global Constraints:
                 // `>` by default): starting in All and typing the prefix
@@ -1622,9 +1644,9 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                 for c in ">ls -la".chars() {
                     via_prefix.key(Key::Char(c));
                 }
-                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands));
+                outcomes.push((via_prefix.key(Key::Enter), Mode::Commands, false));
             }
-            for (o, mode) in outcomes {
+            for (o, mode, dollar) in outcomes {
                 let Outcome::Activate(a) = o else { continue };
                 let fake = FakeExecutor::new();
                 let mut l = fresh();
@@ -1644,15 +1666,29 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     } else if terminal_hold_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
                         "terminal hold command"
+                    } else if unwrapped == "xdg-open https://duckduckgo.com/?q=rust%20ratatui" {
+                        assert_eq!(mode, Mode::All, "a web search outside the All mode: {c}");
+                        "open"
                     } else if unwrapped == entry_call {
                         assert_eq!(mode, Mode::All, "a source entry outside the All mode: {c}");
                         "source entry"
                     } else if let Some(text) =
                         unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
                     {
-                        assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
-                        assert!(matches!(text, "ls -la" | "zone"), "only typed text goes through the shell: {c}");
-                        if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
+                        let held = !unwrapped.starts_with("sh");
+                        if dollar {
+                            // From All, only the text that followed the `$`.
+                            assert_eq!(mode, Mode::All, "a `$` row outside the All mode: {c}");
+                            assert_eq!(text, "ls -la", "only the text after the `$` goes through the shell: {c}");
+                            if held { "prefix terminal hold shell" } else { "prefix shell" }
+                        } else {
+                            assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
+                            assert!(
+                                matches!(text, "ls -la" | "$ ls -la" | "zone" | "? rust ratatui"),
+                                "only typed text goes through the shell: {c}"
+                            );
+                            if held { "terminal hold shell" } else { "shell" }
+                        }
                     } else {
                         panic!("command outside the allowlist: {c}")
                     };
@@ -1668,13 +1704,51 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         ("terminal hold command", true),
         ("shell", true),
         ("terminal hold shell", false),
+        ("prefix shell", true),
+        ("prefix terminal hold shell", false),
         ("focus", false),
         ("source entry", true),
         ("source entry", false),
+        ("open", true),
+        ("open", false),
     ] {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
+    // The prefix is the All mode's alone: a dmenu/script box (a password prompt too), the
+    // calculator and the window switcher never run it.
+    let password = alpheus_commun::launcher_ipc::DmenuFlags { password: true, ..Default::default() };
+    for mut l in [
+        Launcher::for_dmenu(LauncherConfig::default(), None, vec!["a".into(), "ls -la".into()], Default::default()),
+        Launcher::for_dmenu(LauncherConfig::default(), None, vec!["ls -la".into()], password),
+        Launcher::for_calc(LauncherConfig::default()),
+        Launcher::for_windows(LauncherConfig::default(), windows.clone()),
+    ] {
+        for c in "$ ls -la".chars() {
+            l.key(Key::Char(c));
+        }
+        for o in [l.key(Key::Enter), l.key(Key::CtrlEnter)] {
+            assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "`$` outside All reached the shell");
+        }
+    }
+    // No click on a non-prefix result in All ever reaches `sh`: the `$` row is the only way in.
+    for query in ["", "ls -la", "zone", "firefox", "htop"] {
+        let in_all = || {
+            let mut l = Launcher::for_apps(LauncherConfig::default(), windows.clone(), History::empty(200), 1_800_000_000);
+            l.set_catalog(catalog.clone());
+            l.set_entries(entries.clone());
+            for c in query.chars() {
+                l.key(Key::Char(c));
+            }
+            l
+        };
+        for i in 0..in_all().results.len() {
+            for secondary in [false, true] {
+                let o = in_all().click(i, secondary);
+                assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "{query:?}: click {i} reached the shell");
+            }
+        }
+    }
     // The joined call lines above cannot tell one argument from several: the entry's argv, as
     // given to the executor, is the source's `run` with the line as exactly one element.
     for spawner in [Spawner::SystemdScope, Spawner::Detached] {
@@ -1742,8 +1816,37 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
         }
     }
-    // Copy is reached only from a Calc hit: every other result of every mode, clicked either way,
-    // never gives one.
+    // The emoji (launcher 2): in All, `:grinning face`, Enter and Ctrl+Enter reach exactly one call,
+    // the copy program alone, the emoji or its name on its input, never in argv nor in a scope.
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        for (key, input) in [(Key::Enter, "\u{1f600}"), (Key::CtrlEnter, "grinning face")] {
+            let fresh = || {
+                let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                for c in ":grinning face".chars() {
+                    l.key(Key::Char(c));
+                }
+                l
+            };
+            let mut l = fresh();
+            assert!(matches!(l.selected_hit().map(|h| h.source), Some(alpheus_demon::launcher::matching::Source::Emoji(_))));
+            let Outcome::Activate(a) = l.key(key) else { panic!("{key:?} on an emoji row activates nothing") };
+            let fake = FakeExecutor::new();
+            fake.ok("wl-copy", "");
+            let ctx = RunContext { exec: &fake, spawner, history_path: None, path_dirs: &copy_dirs };
+            assert_eq!(perform(&mut l, a, &ctx), Ok(alpheus_demon::launcher::run::Done::Close));
+            assert_eq!(fake.calls(), ["wl-copy"], "{spawner:?}: one call, the copy program alone: no scope, no shell, no text in argv");
+            assert_eq!(fake.inputs(), [("wl-copy".to_string(), input.as_bytes().to_vec())], "{spawner:?} {key:?}");
+            let spy = ArgvSpy::default();
+            let mut l = fresh();
+            let Outcome::Activate(a) = l.key(key) else { unreachable!() };
+            let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &copy_dirs });
+            let calls = spy.0.lock().unwrap().clone();
+            assert_eq!(calls, std::slice::from_ref(&config.copy), "the argv is `copy` unchanged: {calls:?}");
+        }
+    }
+    // Copy is reached only from a Calc or an emoji hit: every other result of every mode, clicked
+    // either way, never gives one.
     // A math query is part of the sweep: the positive case, the calculator's own row copies.
     let mut calc_copies = 0;
     for mode in Mode::CYCLE {
@@ -1757,10 +1860,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             for i in 0..l.results.len() {
                 for secondary in [false, true] {
-                    let is_calc = l.results[i].source == alpheus_demon::launcher::matching::Source::Calc;
+                    let source = l.results[i].source;
+                    let is_calc = source == alpheus_demon::launcher::matching::Source::Calc;
                     let o = l.click(i, secondary);
                     let copies = matches!(&o, Outcome::Activate(a) if format!("{a:?}").starts_with("Copy"));
-                    assert!(!copies || is_calc, "{mode:?} {query:?}: Copy from a result that is not the calculator");
+                    assert!(
+                        !copies || is_calc || matches!(source, alpheus_demon::launcher::matching::Source::Emoji(_)),
+                        "{mode:?} {query:?}: Copy from a result that is neither the calculator nor an emoji"
+                    );
                     if is_calc {
                         assert!(copies, "{mode:?} {query:?}: the calculator's row, clicked, copies");
                         calc_copies += 1;
@@ -2600,6 +2707,23 @@ fn the_calculator_has_no_panicking_path() {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// Launcher 2: the prefix parser runs on each keystroke and must never panic, and the query text
+/// it sees is never logged. Production code only.
+#[test]
+fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in ["launcher/prefix.rs", "launcher/emoji.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for p in ["log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
     }

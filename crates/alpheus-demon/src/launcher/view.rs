@@ -13,8 +13,10 @@
 use crate::compositor::Toplevel;
 use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
+use crate::launcher::emoji;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
+use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::list::{self, Boxed, Row, tail, wrap};
 
 pub const BOX_COLUMNS: u16 = 60;
@@ -24,6 +26,8 @@ pub const MIN_COLUMNS: u16 = 24;
 pub const COMMAND_ICON: char = '\u{f018d}';
 /// Glyph for the calculator row (md-calculator).
 pub const CALC_ICON: char = '\u{f00ec}';
+/// Glyph for the web search row (md-magnify).
+pub const SEARCH_ICON: char = '\u{f0349}';
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +49,7 @@ impl BoxLayout {
     }
 }
 
-/// Rows: top frame, modes row (not in Script), input line, `list_rows` results, help line, bottom frame.
+/// Rows: top frame, modes row (`script`: not in a script menu, the calculator or the switcher), input line, `list_rows` results, help line, bottom frame.
 /// columns = BOX_COLUMNS (+ PREVIEW_COLUMNS + 1 when `preview` and the output has room), never more than
 /// output_columns - 2 nor less than MIN_COLUMNS (or the output width if smaller); list_rows =
 /// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (the host
@@ -134,6 +138,12 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
         Source::Calc => (Some(CALC_ICON), calc_text(l), "calculator".into()),
+        Source::Search => (Some(SEARCH_ICON), format!("Search the web: {}", l.prefixed().map_or("", |(_, t)| t)), "web".into()),
+        Source::Emoji(offset) => {
+            let (emoji, name) = emoji::at(offset).unwrap_or_default();
+            (None, format!("{emoji}  {name}"), "emoji".into())
+        }
+        Source::Shell => (Some(COMMAND_ICON), format!("Run in a shell: {}", l.prefixed().map_or("", |(_, t)| t)), "shell".into()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
@@ -191,6 +201,16 @@ fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>
 }
 
 fn help_text(l: &Launcher) -> &'static str {
+    match l.prefixed() {
+        Some((Prefix::Search, _)) => return "enter search · esc close",
+        Some((Prefix::Emoji, _)) if l.config.copy.is_empty() => return "esc close",
+        Some((Prefix::Emoji, _)) => return "enter copy · ctrl+enter copy name · esc close",
+        Some((Prefix::Shell, _)) => return "enter run · ctrl+enter run in terminal · esc close",
+        None => {}
+    }
+    if l.is_switcher() {
+        return "enter focus · tab next · esc close";
+    }
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
         Mode::Calc if l.config.copy.is_empty() => "esc close",
@@ -290,6 +310,38 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push(("enter  run".to_string(), Style::NORMAL));
             }
         }
+        Source::Search => {
+            let text = l.prefixed().map_or("", |(_, t)| t);
+            let tail = [(String::new(), Style::NORMAL), ("enter  search".to_string(), Style::NORMAL)];
+            let room = budget.saturating_sub(tail.len());
+            let shown = capped_wrap(text, width, room.div_ceil(2));
+            let url_budget = room.saturating_sub(shown.len());
+            out.extend(shown.into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+            out.extend(capped_wrap(&search_url(&l.config.search, text), width, url_budget).into_iter().map(|t| (t, Style::MUTED)));
+            out.extend(tail);
+        }
+        Source::Emoji(offset) => {
+            if let Some((emoji, name)) = emoji::at(offset) {
+                out.extend(capped_wrap(name, width, budget.saturating_sub(4)).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+                out.push((emoji.to_string(), Style::NORMAL));
+                if !l.config.copy.is_empty() {
+                    out.push((String::new(), Style::NORMAL));
+                    out.push(("enter  copy".to_string(), Style::NORMAL));
+                    out.push(("ctrl+enter  copy name".to_string(), Style::NORMAL));
+                }
+            }
+        }
+        Source::Shell => {
+            let text = l.prefixed().map_or("", |(_, t)| t);
+            let tail = [
+                (String::new(), Style::NORMAL),
+                ("enter  run in background".to_string(), Style::NORMAL),
+                ("ctrl+enter  run in terminal".to_string(), Style::NORMAL),
+            ];
+            let room = budget.saturating_sub(tail.len());
+            out.extend(capped_wrap(text, width, room).into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+            out.extend(tail);
+        }
         Source::Calc => {
             out.push((l.query.trim().to_string(), Style::BOLD_ACCENT));
             match &l.calc {
@@ -320,7 +372,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
-    if !l.is_bare() {
+    if l.has_modes() {
         let mut g = blank(b);
         modes_row(l, b, &mut g);
         rows.push(g);
@@ -335,7 +387,15 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             result_row(l, b, &mut g, index);
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
+                _ if let Some((p, text)) = l.prefixed() => {
+                    if text.is_empty() {
+                        prefix::hint(p)
+                    } else {
+                        "no match"
+                    }
+                }
                 Mode::Calc => "type an expression",
+                _ if l.is_switcher() => "no window open",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",
             };
@@ -391,7 +451,7 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         let index = l.top + usize::from(row - b.list_top);
         return Some(if index < l.results.len() { Click::Result(index) } else { Click::Inside });
     }
-    if !l.is_bare() && row == 1 {
+    if l.has_modes() && row == 1 {
         if let Some((m, _, _)) = mode_spans().into_iter().find(|(_, s, e)| (*s..*e).contains(&column) && *e <= b.pane_end()) {
             return Some(Click::Mode(m));
         }

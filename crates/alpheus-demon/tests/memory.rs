@@ -2777,5 +2777,146 @@ fn at_rest_no_wakeups_after_a_calc_cycle() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after a calculator cycle");
 }
 
+/// One prefix cycle: open (`--toggle`), `:face` typed, closed by a typed Escape; the n-th of each.
+/// Returns the reading taken with the box open and the query typed (one wtype process, as in
+/// `calc_cycle`).
+fn prefix_cycle(sway: &Sway, d: &Daemon, n: usize) -> u64 {
+    assert_eq!(launcher(sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+    let typing = wtype_spawn(sway, &["-s", "300", ":face", "-s", "3000", "-k", "Escape"]);
+    std::thread::sleep(Duration::from_millis(1500));
+    let open = d.pss_kb();
+    assert_eq!(d.count("launcher closed ("), n - 1, "closed before the open reading: {:?}", d.log());
+    assert!(typing.wait().unwrap().success());
+    assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(2));
+    open
+}
+
+/// Launcher 2: the `:` prefix (the emoji table, 1,906 entries in the binary's read-only data) typed
+/// as `:face`, then closed. As for the calculator, `closed` is read after one warm-up cycle.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn launcher_prefixes_pss_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("prefix-cost");
+    let (sway, _hypr, d) = start_launcher("prefix-cost", &bus, None, &many_apps(), None);
+    std::thread::sleep(Duration::from_secs(3));
+    let cold = d.pss_kb();
+    let first_open = prefix_cycle(&sway, &d, 1);
+    let closed = d.pss_kb();
+    let open = prefix_cycle(&sway, &d, 2);
+    let again = d.pss_kb();
+    eprintln!(
+        "prefixes PSS (KB): cold {cold}, first open {first_open}, warmed closed {closed} (+{} the warm-up), open with :face {open} (+{}), closed again {again}",
+        closed.saturating_sub(cold),
+        open.saturating_sub(closed)
+    );
+    assert!(open <= closed + 1536, "open costs {} KB > 1.5 MB — report, never raise", open.saturating_sub(closed));
+    assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
+}
+
+/// Launcher 2: the window switcher with three windows, opened by `--windows` and stepped (a
+/// repeated `--windows` while it is open), then closed by a typed Escape: nothing kept, and the
+/// loop sleeps after. Final review: each step draws at once, and with both buffers still held by
+/// the compositor the launcher used to allocate a third and the box's SlotPool doubled (20
+/// unpaced steps: pools' PSS 56 → 2,654 KB). Now a draw with no free buffer waits for a release:
+/// the pools stay at the box's two frames (`pool_size`, from the box's size in the "launcher
+/// shown" line), paced (~100 ms apart) and back to back alike. The pools are bounded by their mapped
+/// size (exact; their PSS moves as the compositor maps them, printed only) and the daemon's own
+/// memory (PSS − pools' PSS) apart.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn windows_switcher_pss_and_rest() {
+    require_release(cfg!(debug_assertions));
+    let sway = Sway::start("windows-cost", 1);
+    let _windows: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|n| common::sway_client::TestWindow::open(&sway, &format!("alpheus-{n}"), &format!("Fixture {n}")))
+        .collect();
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions { bar_toml: Some(AT_REST_NO_RESOURCES), backend: Backend::Sway, ..DaemonOptions::default() },
+    );
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(3)); // the tree read, the bar settled
+    let step = || assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    // (PSS, pools' PSS, pools' mapped size) in KB.
+    let read = || {
+        let (pss, pools) = d.pss_and_shm_kb();
+        (pss, pools, d.shm_size_kb())
+    };
+    // Opens, waits past the open's debounce (a `--windows` inside it is ignored), then steps paced
+    // and back to back.
+    let cycle = |n: usize| {
+        step();
+        assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_millis(300));
+        for _ in 0..20 {
+            step();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let paced = read();
+        for _ in 0..20 {
+            step();
+        }
+        std::thread::sleep(Duration::from_millis(300)); // the last step drawn
+        let unpaced = read();
+        assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
+        assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_secs(2));
+        (paced, unpaced)
+    };
+    let cold = d.pss_kb();
+    let first = cycle(1);
+    let (closed, closed_pools, closed_size) = read();
+    let (paced, unpaced) = cycle(2);
+    let again = d.pss_kb();
+    let (w, h) = d.last_launcher_box_px().expect("the box's size in the log");
+    let frames = (2 * w * h * 4).div_ceil(1024);
+    let own = |(pss, pools, _): (u64, u64, u64)| pss.saturating_sub(pools);
+    let closed_own = closed.saturating_sub(closed_pools);
+    eprintln!(
+        "window switcher PSS (KB): cold {cold}, first open paced {} unpaced {}, warmed closed {closed} (own {closed_own}, pools {closed_pools}, \
+         mapped {closed_size}), the box's two frames {frames}; paced: own {} (+{}), pools {} (+{}), mapped {} (+{}); back to back: own {} \
+         (+{}), pools {} (+{}), mapped {} (+{}); closed again {again}",
+        first.0.0,
+        first.1.0,
+        own(paced),
+        own(paced).saturating_sub(closed_own),
+        paced.1,
+        paced.1.saturating_sub(closed_pools),
+        paced.2,
+        paced.2.saturating_sub(closed_size),
+        own(unpaced),
+        own(unpaced).saturating_sub(closed_own),
+        unpaced.1,
+        unpaced.1.saturating_sub(closed_pools),
+        unpaced.2,
+        unpaced.2.saturating_sub(closed_size),
+    );
+    assert!(frames > 0, "a box of {w}×{h} px");
+    for (what, reading) in [("paced", paced), ("back to back", unpaced)] {
+        assert!(own(reading) <= closed_own + 512, "{what}: own memory {} KB over closed {closed_own} KB + 512", own(reading));
+        assert!(
+            reading.2 <= closed_size + frames + 64,
+            "{what}: pools mapped {} KB over closed {closed_size} KB + the box's two frames {frames} KB + 64",
+            reading.2
+        );
+    }
+    // The pages too: a burst touches no more of the pools than paced steps (a third buffer would).
+    assert!(unpaced.1 <= paced.1 + 64, "back to back: pools' PSS {} KB over paced {} KB + 64", unpaced.1, paced.1);
+    assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
+    const REST: Duration = Duration::from_secs(5);
+    away_from_the_minute(REST);
+    let (main_before, ticks) = (d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the window switcher");
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("loop-thread wake-ups at rest after the window switcher (5 s): {main_delta}");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s after the window switcher");
+}
+
 /// The bar without the resources timer: the clock is the only timer, which `away_from_the_minute` avoids.
 const AT_REST_NO_RESOURCES: &str = "modules = [\"workspaces\", \"window\", \"clock\"]\n";

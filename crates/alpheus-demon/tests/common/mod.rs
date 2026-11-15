@@ -1002,6 +1002,14 @@ impl Daemon {
         line.rsplit_once(" in ")?.1.strip_suffix(" µs")?.trim().parse().ok()
     }
 
+    /// The box's physical size from the last "launcher shown on … (<w>×<h> px) in …" line.
+    pub fn last_launcher_box_px(&self) -> Option<(u64, u64)> {
+        let log = self.log.lock().unwrap();
+        let line = log.iter().rev().find(|l| l.contains("launcher shown on"))?;
+        let (w, h) = line.rsplit_once(" (")?.1.split_once(" px)")?.0.split_once('×')?;
+        Some((w.parse().ok()?, h.parse().ok()?))
+    }
+
     /// PSS in KB (/proc/<pid>/smaps_rollup).
     pub fn pss_kb(&self) -> u64 {
         let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
@@ -1027,6 +1035,24 @@ impl Daemon {
             }
         }
         (total, pools)
+    }
+
+    /// The daemon's shm pools' mapped size in KB (smaps `Size:` of its memfd mappings): unlike
+    /// their PSS, which moves as the compositor maps them and only counts the pages painted, the
+    /// size a pool was made or grown to, so a SlotPool that doubles shows exactly.
+    pub fn shm_size_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps", self.pid())).unwrap();
+        let (mut shm, mut size) = (false, 0);
+        for l in t.lines() {
+            if let Some(v) = l.strip_prefix("Size:") {
+                if shm {
+                    size += v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+                }
+            } else if l.split_whitespace().next().is_some_and(|f| f.contains('-') && !f.ends_with(':')) {
+                shm = l.contains("/memfd:");
+            }
+        }
+        size
     }
 
     /// Number of the daemon's threads.

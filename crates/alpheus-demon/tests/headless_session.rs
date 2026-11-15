@@ -208,6 +208,8 @@ fn the_system_bus_address_is_honoured() {
 }
 
 const SHOWN: &str = "launcher shown on";
+/// What a scan logs as it starts: its absence proves no scan ran only next to a control that logs it.
+const SCAN_STARTED: &str = "launcher scan: started";
 
 fn ready(d: &Daemon) {
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
@@ -294,7 +296,7 @@ fn calc_opens_the_calculator_and_enter_copies() {
     ready(&d);
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap(), (0, String::new(), String::new()));
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
-    assert_eq!(d.count("launcher scan"), 0, "the calculator scans nothing: {:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the calculator scans nothing: {:?}", d.log());
     // One wtype process: its virtual keyboard is the seat's only one (see `wtype_spawn`).
     assert!(wtype(&sway, &["-s", "300", "6*7", "-k", "Return"]).success());
     wait_for_file(&copied, DELAY);
@@ -306,7 +308,36 @@ fn calc_opens_the_calculator_and_enter_copies() {
     thread::sleep(PAST_DEBOUNCE);
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "neither calculator open scanned: {:?}", d.log());
+    // The control: an apps open logs that line, so the zeros above can go red.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
+/// Launcher 2, `?`: Enter opens the percent-encoded search URL through `open` (a stub script,
+/// never `xdg-open`), and the text typed is logged nowhere.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_question_mark_opens_the_search_url() {
+    use std::os::unix::fs::PermissionsExt;
+    let sway = Sway::start("launcher-search", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let opened = sway.runtime.join("opened");
+    let stub = sway.runtime.join("fake-open");
+    std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", opened.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = format!("open = [\"{}\"]\n", stub.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "? rust ratatui", "-k", "Return"]).success());
+    wait_for_file(&opened, DELAY);
+    assert_eq!(std::fs::read_to_string(&opened).unwrap(), "https://duckduckgo.com/?q=rust%20ratatui\n");
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("ratatui")), "the typed text is never logged: {:?}", d.log());
 }
 
 #[test]
@@ -4881,6 +4912,90 @@ fn under_sway_the_launcher_lists_and_focuses_a_window() {
     assert!(wtype(&sway, &["-s", "300", "Fixture", "-k", "Return"]).success());
     let expected = format!("wm-set focus-window id:{id}");
     assert!(wait_until(|| recorded(&sway, "wm-set").contains(&expected)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+}
+
+/// Launcher 2, `--windows`: the switcher opens on the previous window (Enter focuses it), a second
+/// `--windows` while it is open steps to the next one, and none of it scans. Three windows opened
+/// in order a, b, c: Sway's order is b, a, c (the fake `wm-set` focuses nothing, so it stays). A
+/// `--windows` right after the open is the press-bind refire and is ignored (final review); past
+/// the debounce two quick ones step twice.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn windows_focuses_the_previous_window_then_steps() {
+    let sway = Sway::start("launcher-windows", 1);
+    let _a = TestWindow::open(&sway, "alpheus-a", "Fixture a");
+    let _b = TestWindow::open(&sway, "alpheus-b", "Fixture b");
+    let _c = TestWindow::open(&sway, "alpheus-c", "Fixture c");
+    let tree = sway.ipc_raw(4, b"");
+    let id = |app: &str| con_id(&tree, app).unwrap_or_else(|| panic!("{app} in this sway's tree"));
+    let (b, c) = (id("alpheus-b"), id("alpheus-c"));
+    fake_recorder(&sway, "wm-set");
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    // The compositor thread has read the tree once the focused window's title is drawn.
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) > 30), "the title is drawn: {:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    let first = format!("wm-set focus-window id:{b}");
+    assert!(wait_until(|| recorded(&sway, "wm-set").contains(&first)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // Again: a `--windows` at once (ignored: b stays), then past the debounce two in a row step
+    // from b to a to c. Without the debounce: b, a, c, b.
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    let second = format!("wm-set focus-window id:{c}");
+    assert!(wait_until(|| recorded(&sway, "wm-set").contains(&second)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+    assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the switcher scans nothing: {:?}", d.log());
+    // The control: an apps open logs that line, so the zero above can go red.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
+}
+
+/// Final review: with both of the box's buffers still held by the compositor, a draw waits for a
+/// release instead of allocating, and is done then. Three `--windows` sent back to back go round
+/// the three windows to where two paced ones led: the screen must show that last selection, not a
+/// frame left behind by the burst.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn back_to_back_steps_end_on_the_last_selection_drawn() {
+    let sway = Sway::start("launcher-coalesce", 1);
+    let _windows: Vec<_> =
+        ["a", "b", "c"].iter().map(|n| TestWindow::open(&sway, &format!("alpheus-{n}"), &format!("Fixture {n}"))).collect();
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) > 30), "the title is drawn: {:?}", d.log());
+    // Below the bar: the box alone changes with the selection (the bar's clock may tick).
+    let below_bar = || {
+        let s = sway.screenshot("HEADLESS-1").expect("a screenshot");
+        (60..s.height).flat_map(|y| (0..s.width).map(move |x| (x, y))).map(|(x, y)| s.at(x, y).unwrap_or_default()).collect::<Vec<_>>()
+    };
+    let step = || assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    step();
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // past the open's debounce
+    let first = below_bar();
+    step();
+    std::thread::sleep(Duration::from_millis(300));
+    step();
+    std::thread::sleep(Duration::from_millis(300));
+    let paced = below_bar();
+    assert_ne!(paced, first, "two steps moved the selection");
+    // Round the three windows at once, back to the same selection.
+    step();
+    step();
+    step();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(below_bar() == paced, "after a burst of three steps the box shows the selection two paced steps showed");
 }
 
 /// Spec § 6: under Mango (a fake socket serving the real captures, outputs renamed after headless

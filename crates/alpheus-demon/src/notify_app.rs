@@ -309,6 +309,7 @@ impl App {
             Request::Toggle
             | Request::Close
             | Request::Calc
+            | Request::Windows
             | Request::Dmenu { .. }
             | Request::Osd(_)
             | Request::Quick(_)

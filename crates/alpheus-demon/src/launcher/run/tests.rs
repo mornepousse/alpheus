@@ -433,3 +433,74 @@ fn copy_with_a_failing_program_says_so() {
         Err("wl-copy: program not found".to_string())
     );
 }
+
+#[test]
+fn open_appends_the_url_and_runs_in_a_scope() {
+    let bin = stubs("open-url", &["xdg-open"]);
+    let dirs = [bin.to_path_buf()];
+    let history = TempDir::new("run-open-history");
+    let path = history.join("history");
+    let url = "https://duckduckgo.com/?q=rust%20ratatui";
+    let fake = FakeExecutor::new();
+    fake.ok(&format!("{SCOPE} xdg-open {url}"), "");
+    let mut l = launcher();
+    let done = perform(&mut l, Activation::Open { url: url.into() }, &ctx(&fake, Spawner::SystemdScope, Some(&path), &dirs));
+    assert_eq!(done, Ok(Done::Close));
+    assert_eq!(fake.calls(), [format!("{SCOPE} xdg-open {url}")]);
+    assert!(!path.exists(), "never recorded");
+}
+
+#[test]
+fn open_missing_says_the_program_only() {
+    let bin = stubs("open-missing", &[]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    let mut l = launcher();
+    let r = perform(&mut l, Activation::Open { url: "https://x/?q=secret".into() }, &ctx(&fake, Spawner::SystemdScope, None, &dirs));
+    assert_eq!(r, Err("xdg-open: program not found".to_string()));
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn emoji_are_never_recorded() {
+    let bin = stubs("copy-emoji", &["wl-copy"]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    fake.ok("wl-copy", "");
+    let h = TempDir::new("run-emoji-history").join("history");
+    let mut l = launcher();
+    typed_emoji(&mut l);
+    let activation = match l.key(crate::keys::Key::Enter) {
+        crate::launcher::model::Outcome::Activate(a) => a,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(activation, Activation::Copy { .. }), "{activation:?}");
+    assert_eq!(perform(&mut l, activation, &ctx(&fake, Spawner::Detached, Some(&h), &dirs)), Ok(Done::Close));
+    assert_eq!(fake.inputs(), [("wl-copy".to_string(), "\u{1f600}".as_bytes().to_vec())]);
+    assert!(!h.exists(), "no history file written");
+}
+
+fn typed_emoji(l: &mut Launcher) {
+    for c in ":grinning face".chars() {
+        l.key(crate::keys::Key::Char(c));
+    }
+}
+
+#[test]
+fn the_dollar_text_never_reaches_history_or_log() {
+    let bin = bin("dollar");
+    let dirs = [bin.to_path_buf()];
+    let f = FakeExecutor::new();
+    for c in ["sh -c -- ls -la $HOME", "foot --hold -e sh -c -- ls -la $HOME"] {
+        f.ok(&format!("{SCOPE} {c}"), "");
+    }
+    let d = TempDir::new("run-dollar-state");
+    let h = d.join("launcher-history");
+    let mut l = launcher();
+    let c = ctx(&f, Spawner::SystemdScope, Some(&h), &dirs);
+    let text = "ls -la $HOME".to_string();
+    assert_eq!(perform(&mut l, Activation::Shell { text: text.clone(), terminal: false }, &c), Ok(Done::Close));
+    assert_eq!(perform(&mut l, Activation::Shell { text, terminal: true }, &c), Ok(Done::Close));
+    assert_eq!(f.calls(), [format!("{SCOPE} sh -c -- ls -la $HOME"), format!("{SCOPE} foot --hold -e sh -c -- ls -la $HOME")]);
+    assert!(!h.exists(), "the typed text is never recorded");
+}

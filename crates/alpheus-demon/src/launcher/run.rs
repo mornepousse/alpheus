@@ -187,6 +187,11 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
             ctx.exec.spawn_with_input(prog, &args, &[text.as_bytes()]).map_err(|e| failure(prog, e))?;
         }
+        // The `?` row: `open` with the URL as its last argument, in a scope like an app; never
+        // recorded, and a failure names the program only (the URL holds what the user typed).
+        Activation::Open { url } => {
+            launch(ctx, l.config.open.iter().cloned().chain([url]).collect())?;
+        }
         Activation::Window(i) => {
             let selector = &l.windows.get(i).ok_or_else(gone)?.selector;
             let argv = focus_argv(&l.config.focus, selector);

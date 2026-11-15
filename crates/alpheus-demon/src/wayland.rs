@@ -200,6 +200,43 @@ fn plan_buffer(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> BufferPla
     }
 }
 
+/// Whether a draw opting in (`pick_buffer_or_wait`: the launcher's box) must wait for a release
+/// rather than allocate: `plan_buffer` says Grow while two buffers already exist. Back-to-back
+/// redraws (a key held, steps sent in a burst) otherwise allocate a third buffer each time while
+/// the dropped busy ones still hold their slots, and the SlotPool doubles (it never shrinks).
+fn waits_for_release(previous: &[((u32, u32), bool)], needed: (u32, u32)) -> bool {
+    previous.len() >= 2 && plan_buffer(previous, needed) == BufferPlan::Grow
+}
+
+/// What `pick_buffer_or_wait` found.
+pub(crate) enum Pick {
+    Buffer(usize),
+    /// Both buffers still held by the compositor: draw again once one is released.
+    Wait,
+    /// An allocation failure (logged).
+    Failed,
+}
+
+/// `pick_buffer`, except that with two buffers both busy it allocates nothing and says `Wait`:
+/// the caller redraws after the next release (the launcher, `launcher_after_dispatch`). The other
+/// surfaces (bar, popups, bubbles, OSD) keep `pick_buffer`'s third buffer: they redraw on model
+/// changes that do not come in bursts of keys.
+pub(crate) fn pick_buffer_or_wait(buffers: &mut Vec<(Buffer, u32, u32)>, pool: &mut SlotPool, w: u32, h: u32) -> Pick {
+    let states: Vec<((u32, u32), bool)> = buffers.iter().map(|(b, bw, bh)| ((*bw, *bh), b.slot().has_active_buffers())).collect();
+    if waits_for_release(&states, (w, h)) {
+        return Pick::Wait;
+    }
+    match pick_buffer(buffers, pool, w, h) {
+        Some(i) => Pick::Buffer(i),
+        None => Pick::Failed,
+    }
+}
+
+/// Whether one of `buffers` is free (released by the compositor).
+pub(crate) fn any_buffer_free(buffers: &[(Buffer, u32, u32)]) -> bool {
+    buffers.iter().any(|(b, _, _)| !b.slot().has_active_buffers())
+}
+
 /// Whether a surface may carry the tray's frame request (`tray_sync`):
 /// configured, and currently holding at least one attached buffer from the
 /// live pool — never one `draw()` skipped (not yet sized, an allocation

@@ -7,6 +7,7 @@
 use crate::compositor::Toplevel;
 use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopEntry, ExecContext, exec_argv};
+use crate::launcher::emoji;
 use crate::launcher::history::{History, source_id};
 use crate::launcher::sources::SourceEntry;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
@@ -70,6 +71,12 @@ pub enum Source {
     Entry(usize),
     /// The calculator's row (`Launcher::calc` holds its answer): first in All and alone in Calc.
     Calc,
+    /// The `?` prefix's one row (`Launcher::prefixed` holds its text): the web search.
+    Search,
+    /// An emoji row (`:`): a byte offset into the emoji table.
+    Emoji(usize),
+    /// The `$` prefix's one row: run the text in a shell.
+    Shell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,13 +336,14 @@ fn kind(s: Source) -> u8 {
         Source::Command(_) => 3,
         Source::Line(_) => 4,
         Source::Calc => 5,
+        Source::Search | Source::Emoji(_) | Source::Shell => 6,
     }
 }
 
 fn index(s: Source) -> usize {
     match s {
-        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) => i,
-        Source::Calc => 0,
+        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) | Source::Emoji(i) => i,
+        Source::Calc | Source::Search | Source::Shell => 0,
     }
 }
 
@@ -352,7 +360,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
-        Source::Calc => "",
+        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => "",
     }
 }
 
@@ -402,6 +410,26 @@ impl Ranker {
     #[cfg(test)]
     pub fn preparations(&self) -> usize {
         self.preparations
+    }
+
+    /// The `:` prefix: the emoji whose name matches `text` (fuzzy, smart case), best score first,
+    /// the table's order between equal scores, at most `limit`. No frecency: an emoji is never
+    /// recorded. The table is walked without being copied; only the matches are kept.
+    pub fn rank_emoji(&mut self, text: &str, limit: usize) -> Vec<Hit> {
+        let pattern = Pattern::parse(text, CaseMatching::Smart, Normalization::Smart);
+        if pattern.atoms.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+        let mut hits: Vec<Hit> = emoji::entries()
+            .filter_map(|(offset, _, name)| {
+                let score = self.score(&pattern, name)?;
+                Some(Hit { source: Source::Emoji(offset), score, frecency: 0 })
+            })
+            .collect();
+        hits.sort_unstable_by(|a, b| b.score.cmp(&a.score).then(index(a.source).cmp(&index(b.source))));
+        hits.truncate(limit);
+        hits.shrink_to_fit();
+        hits
     }
 
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
@@ -574,7 +602,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
             Source::Entry(i) => pr.entry_name_rank[i],
-            Source::Calc => 0,
+            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => 0,
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {

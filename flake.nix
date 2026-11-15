@@ -32,9 +32,14 @@
       }}";
       # nativeBuildInputs / buildInputs: system libraries a package links
       # (the daemon's libxkbcommon, launcher plan task 12); empty by default.
-      paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ] }:
+      # thirdParty: the package embeds third-party data (the daemon's emoji
+      # table, Unicode License v3): its licence joins MIT and NOTICE is installed.
+      paquet = pkgs: { pname, tests, description, env ? { }, nativeBuildInputs ? [ ], buildInputs ? [ ], thirdParty ? false }:
         pkgs.rustPlatform.buildRustPackage {
           inherit pname env nativeBuildInputs buildInputs;
+          postInstall = pkgs.lib.optionalString thirdParty ''
+            install -Dm644 NOTICE $out/share/doc/alpheus/NOTICE
+          '';
           version = "0.1.0";
           src = ./.;
           cargoLock.lockFile = ./Cargo.lock;
@@ -46,7 +51,7 @@
           meta = {
             inherit description;
             mainProgram = pname;
-            license = pkgs.lib.licenses.mit;
+            license = [ pkgs.lib.licenses.mit ] ++ pkgs.lib.optional thirdParty pkgs.lib.licenses.unicode-30;
             platforms = pkgs.lib.platforms.linux;
           };
         };
@@ -64,6 +69,7 @@
           tests = [ "alpheus-demon" ];
           description = "alpheus resident daemon: the bar, launcher, notifications and OSD (layer-shell; Hyprland, Sway, Mango and niri)";
           env.ALPHEUS_POLICES = fontDir pkgs;
+          thirdParty = true;
           # The system bus through dbus-rs: libdbus, found with pkg-config.
           # This nixpkgs' dbus; nixos-config makes the alpheus input follow
           # the system's nixpkgs (inputs.nixpkgs.follows), so the daemon maps

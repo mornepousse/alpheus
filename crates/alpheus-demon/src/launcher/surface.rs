@@ -19,7 +19,7 @@ use crate::log::write as log;
 use crate::painter::{self, Frame, FrameInk};
 use crate::popup::{PopupClose, box_size, cell_under_fitted};
 use crate::state::Feed;
-use crate::wayland::{App, pick_buffer};
+use crate::wayland::{App, Pick, any_buffer_free, pick_buffer_or_wait};
 use alpheus_commun::launcher_ipc::{Reply, wipe};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::calloop::{LoopHandle, RegistrationToken};
@@ -127,9 +127,9 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// panel is reserved for the app launcher from the first frame — blank while
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
-/// has one. Driven by `model.is_bare()` alone, never by the selection.
+/// has one (the switcher's has no modes row, so one row less). Driven by the model's kind alone, never by the selection.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
-    view::layout(output_columns, output_rows, model.config.rows, model.is_bare(), !model.is_bare())
+    view::layout(output_columns, output_rows, model.config.rows, !model.has_modes(), !model.is_bare())
 }
 
 /// The size a configure imposes, when it is not the one asked: a 0
@@ -149,8 +149,11 @@ pub(crate) fn plan_configure(asked: (u32, u32), configured: (u32, u32)) -> Optio
 /// argument is `OpenLauncher::pool`, the same value): sizing it for the box
 /// alone left a scrim with nowhere to allocate its buffer on a multi-output
 /// session.
+///
+/// SlotPool rounds each slot up to 64 bytes: each frame is counted rounded, or the second buffer
+/// would miss by a few bytes and the pool would double at the first redraw.
 pub(crate) fn pool_size(frame_bytes: usize, outputs: usize) -> usize {
-    2 * frame_bytes + 64 * outputs
+    2 * frame_bytes.next_multiple_of(64) + 64 * outputs
 }
 
 /// Whether a surface event belongs to the launcher: pure past the two
@@ -357,6 +360,9 @@ pub struct OpenLauncher {
     shown_logged: bool,
     /// Rows last committed: an unchanged frame is not repainted.
     last: Option<Boxed>,
+    /// A draw found both buffers held by the compositor: drawn again after the release
+    /// (`launcher_after_dispatch`), so a burst of redraws coalesces instead of growing the pool.
+    waiting: bool,
     /// The dmenu client's watch (host.rs), removed on drop.
     client_watch: Option<(LoopHandle<'static, App>, RegistrationToken)>,
 }
@@ -383,7 +389,8 @@ impl Drop for OpenLauncher {
 
 impl App {
     /// Creates the box on the focused output (by name among the bar's outputs; unknown → compositor's
-    /// choice) and the scrims; logs "launcher shown on <output> in <µs> µs" at the first commit.
+    /// choice) and the scrims; logs "launcher shown on <output> (<w>×<h> px) in <µs> µs" at the first
+    /// commit (the box's physical size: the memory tests derive its frames from it).
     pub fn launcher_open(&mut self, qh: &QueueHandle<App>, mut model: Launcher, reply: Option<Pending>, requested_at: Instant) {
         if self.launcher.is_some() {
             self.launcher_close(CloseReason::Replaced);
@@ -478,6 +485,7 @@ impl App {
             scrims,
             pool,
             buffers: Vec::new(),
+            waiting: false,
             layout,
             size,
             imposed_size: None,
@@ -584,6 +592,15 @@ impl App {
         }
     }
 
+    /// Once per pass of the loop (startup's `main_loop`): a draw that waited for a buffer is done
+    /// once one is free. The release is a Wayland event, so the pass that read it runs this: no
+    /// timer, nothing at rest (nothing waits unless a draw just found both buffers busy).
+    pub(crate) fn launcher_after_dispatch(&mut self) {
+        if self.launcher.as_ref().is_some_and(|o| o.waiting && any_buffer_free(&o.buffers)) {
+            self.launcher_draw();
+        }
+    }
+
     /// The launcher box redrawn even if its rows did not change (a new theme); its scrims are transparent.
     pub(crate) fn launcher_repaint(&mut self) {
         if let Some(open) = self.launcher.as_mut() {
@@ -603,11 +620,21 @@ impl App {
         let row_height = height * e as u32;
         let rows = view::render(&open.model, &open.layout);
         if open.last.as_ref() == Some(&rows) {
+            // Back to the frame on screen while a draw waited: nothing left to draw.
+            open.waiting = false;
             return;
         }
         let (w, h) = (open.size.0 * e as u32, open.size.1 * e as u32);
-        let OpenLauncher { buffers, pool, box_layer, .. } = open;
-        let Some(used) = pick_buffer(buffers, pool, w, h) else { return };
+        let OpenLauncher { buffers, pool, box_layer, waiting, .. } = open;
+        let used = match pick_buffer_or_wait(buffers, pool, w, h) {
+            Pick::Buffer(i) => i,
+            Pick::Wait => {
+                *waiting = true;
+                return;
+            }
+            Pick::Failed => return,
+        };
+        *waiting = false;
         let Some(px) = buffers[used].0.canvas(pool) else {
             log(&format!("launcher buffer {w}×{h}: unexpectedly busy"));
             return;
@@ -624,7 +651,7 @@ impl App {
         if !open.shown_logged {
             open.shown_logged = true;
             let place = open.output_name.as_deref().unwrap_or("the compositor's choice of output");
-            log(&format!("launcher shown on {place} in {} µs", open.requested_at.elapsed().as_micros()));
+            log(&format!("launcher shown on {place} ({w}×{h} px) in {} µs", open.requested_at.elapsed().as_micros()));
         }
     }
 
@@ -969,8 +996,11 @@ mod tests {
 
     #[test]
     fn pool_size_carries_two_frames_and_a_scrim_share_per_output() {
-        assert_eq!(pool_size(1000, 0), 2000, "no scrim at all: just the two box buffers");
-        assert_eq!(pool_size(1000, 3), 2000 + 192, "one 64-byte share per output's scrim");
+        assert_eq!(pool_size(1024, 0), 2048, "no scrim at all: just the two box buffers");
+        assert_eq!(pool_size(1024, 3), 2048 + 192, "one 64-byte share per output's scrim");
+        // SlotPool rounds every slot up to 64 bytes: a frame that is not a multiple of 64 must be
+        // counted rounded, or the second buffer does not fit and the pool doubles (final review).
+        assert_eq!(pool_size(1000, 1), 2 * 1024 + 64);
     }
 
     #[test]

@@ -77,7 +77,7 @@ fn typed(l: &mut Launcher, text: &str) {
 /// Lays out for an output of `columns` × 40 cells, like the launcher host does:
 /// the preview panel reserved for the app launcher, whatever the selection.
 fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Boxed) {
-    let b = layout(columns, 40, l.config.rows, l.is_bare(), !l.is_bare());
+    let b = layout(columns, 40, l.config.rows, !l.has_modes(), !l.is_bare());
     l.set_list_rows(usize::from(b.list_rows));
     let rows = render(l, &b);
     for (i, r) in rows.rows.iter().enumerate() {
@@ -615,4 +615,94 @@ fn the_calculator_mode_has_no_modes_row_and_its_own_help() {
     assert!(rows.rows[usize::from(b.list_top) - 1].text().contains("= 42"), "{}", snapshot(&rows));
     // Clicking where the modes row would be reaches no mode.
     assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside));
+}
+
+#[test]
+fn the_search_row_and_its_help() {
+    let mut l = launcher();
+    typed(&mut l, "? rust");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("Search the web: rust") && row.contains("web"), "{row}");
+    assert!(row.contains(SEARCH_ICON), "{row}");
+    assert_eq!(help_text(&l), "enter search · esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "rust", "{lines:?}");
+    assert!(lines[1].starts_with("https://duckduckgo.com/?q=rust"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  search"), "{lines:?}");
+}
+
+#[test]
+fn a_bare_prefix_shows_its_hint_not_scanning() {
+    for (query, hint) in [("?", "type to search the web"), (":", "type an emoji name"), ("$", "type a command to run in a shell")] {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert!(l.catalog.is_none());
+        typed(&mut l, query);
+        let (b, rows) = draw(&mut l, 100);
+        let row = rows.rows[usize::from(b.list_top) - 1].text();
+        assert!(row.contains(hint), "{query}: {}", snapshot(&rows));
+        assert!(!snapshot(&rows).contains("scanning"), "{query}");
+    }
+    let mut l = launcher();
+    typed(&mut l, ":zzqx");
+    let (_, rows) = draw(&mut l, 100);
+    assert!(snapshot(&rows).contains("no match"));
+}
+
+#[test]
+fn an_emoji_row_keeps_its_name_visible() {
+    let mut l = launcher();
+    typed(&mut l, ":flag: France");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("flag: France") && row.contains("\u{1f1eb}\u{1f1f7}"), "{row}");
+    assert_eq!(help_text(&l), "enter copy \u{b7} ctrl+enter copy name \u{b7} esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "flag: France", "{lines:?}");
+    assert!(lines.iter().any(|t| t == "\u{1f1eb}\u{1f1f7}"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  copy") && lines.iter().any(|t| t == "ctrl+enter  copy name"), "{lines:?}");
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut c = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    typed(&mut c, ":flag");
+    assert_eq!(help_text(&c), "esc close");
+}
+
+#[test]
+fn the_shell_row_and_its_help() {
+    let mut l = launcher();
+    typed(&mut l, "$ ls -la");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("Run in a shell: ls -la") && row.contains("shell"), "{row}");
+    assert_eq!(help_text(&l), "enter run \u{b7} ctrl+enter run in terminal \u{b7} esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "ls -la", "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  run in background"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "ctrl+enter  run in terminal"), "{lines:?}");
+}
+
+#[test]
+fn the_switcher_help_and_empty_text() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), windows());
+    assert_eq!(help_text(&l), "enter focus · tab next · esc close");
+    l = Launcher::for_windows(LauncherConfig::default(), vec![]);
+    let (_, rows) = draw(&mut l, 100);
+    let text = snapshot(&rows);
+    assert!(text.contains("no window open"), "{text}");
+    assert!(!text.contains("scanning"), "{text}");
+}
+
+/// Launcher 2 review: the switcher is windows only, so no All/Apps/Windows/Commands row, and no
+/// click on where it was.
+#[test]
+fn the_switcher_has_no_modes_row() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), windows());
+    let (b, rows) = draw(&mut l, 100);
+    let text = snapshot(&rows);
+    for label in ["All", "Apps", "Windows", "Commands"] {
+        assert!(!text.contains(label), "{label} in {text}");
+    }
+    assert!(rows.rows[0].text().contains('\u{276f}'), "the input row comes first: {text}");
+    assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside), "row 1 is the input now");
+    assert!(!l.has_modes());
 }
