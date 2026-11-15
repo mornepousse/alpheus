@@ -22,6 +22,7 @@ pub mod deadline;
 pub mod dnd;
 pub mod grid;
 pub mod hooks;
+pub mod hooks_app;
 pub mod icons;
 pub mod inotify;
 pub mod keys;

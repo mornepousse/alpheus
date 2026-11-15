@@ -281,3 +281,29 @@ fn reads_follows_the_modules() {
     assert!(HookId::Bluetooth.reads(&[M::Bluetooth]) && HookId::Bluetooth.reads(&[M::Quick]));
     assert_eq!(HookId::Network.needs(), "network or quick");
 }
+
+#[test]
+fn a_family_without_its_key_gives_nothing() {
+    let t0 = Instant::now();
+    // Only `started` is set: every other family is unset.
+    let mut h = hooks(&["started"], t0);
+    for _ in 0..2 {
+        assert!(h.on_msg(&bt(&["A"])).is_empty());
+        assert!(h.on_msg(&bt(&[])).is_empty());
+        assert!(h.on_msg(&power(50, Charge::Discharging)).is_empty());
+        assert!(h.on_msg(&power(40, Charge::Charging)).is_empty());
+        assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
+        assert!(h.on_msg(&profile(Profile::Performance)).is_empty());
+        assert!(h.on_mode(Mode::Dark).is_none());
+        assert!(h.on_mode(Mode::Light).is_none());
+        assert!(h.on_capture(&on(&[CaptureKind::Camera])).is_empty());
+        assert!(h.on_capture(&on(&[])).is_empty());
+    }
+}
+
+#[test]
+fn the_index_is_the_position_in_all() {
+    for (i, id) in HookId::ALL.iter().enumerate() {
+        assert_eq!(id.index(), i);
+    }
+}

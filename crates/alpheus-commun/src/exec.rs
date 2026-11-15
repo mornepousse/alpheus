@@ -288,7 +288,7 @@ fn spawn_detached(prog: &str, args: &[&str]) -> Result<u32, ExecError> {
 }
 
 /// An environment `Command::envs` can carry: names non-empty without `=` or NUL, values without NUL.
-fn env_ok(env: &[(&str, &str)]) -> bool {
+pub(crate) fn env_ok(env: &[(&str, &str)]) -> bool {
     env.iter().all(|(k, v)| !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0'))
 }
 

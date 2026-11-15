@@ -99,7 +99,7 @@ impl HookId {
     }
 
     fn index(self) -> usize {
-        HookId::ALL.iter().position(|i| *i == self).unwrap_or(0)
+        self as usize
     }
 }
 

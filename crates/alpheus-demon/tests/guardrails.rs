@@ -2707,7 +2707,7 @@ fn the_power_menu_has_no_panicking_path() {
 #[test]
 fn the_calculator_has_no_panicking_path() {
     let files = source_files();
-    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks.rs"] {
+    for name in ["launcher/calc.rs", "launcher/calc/units.rs", "hooks.rs", "hooks_app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
@@ -2973,4 +2973,65 @@ fn a_new_server_gets_the_last_battery_reading() {
     let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
+}
+
+/// Hooks spec § 3: `spawn_with_env(` starts a user's command with the event's variables; only the
+/// hooks' glue calls it (once), beside the executor's own wrapper. Production code only.
+#[test]
+fn spawn_with_env_only_runs_hooks() {
+    let mut seen = Vec::new();
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let n = production_code(&t).matches("spawn_with_env(").count();
+        if n > 0 {
+            seen.push((name, n));
+        }
+    }
+    seen.sort();
+    // nonblocking.rs declares and delegates it (twice); hooks_app.rs calls it once.
+    assert_eq!(seen.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["hooks_app.rs", "nonblocking.rs"]);
+    assert_eq!(seen[0].1, 1, "hooks_app.rs starts a hook in one place");
+}
+
+/// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
+#[test]
+fn hook_logs_carry_fixed_words_only() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks_app.rs").expect("hooks_app.rs").1;
+    let production = production_code(t);
+    let lines: Vec<&str> = production.lines().filter(|l| l.contains("log(")).collect();
+    assert!(lines.len() >= 5, "the hook log lines were not found: {}", lines.len());
+    for l in lines {
+        assert!(l.contains("\"hook: {") || l.contains("\"hooks: {") || l.contains("log(&line)"), "{l}");
+        for never in ["argv", "env", ".env", "DEVICE", "PROFILE", "name", "value"] {
+            assert!(!l.contains(never), "{never} in a hook log line: {l}");
+        }
+    }
+}
+
+/// Hooks spec § 2: each state change the hooks follow is handed to them where it happens, and each
+/// public entry point is a no-op without hooks.
+#[test]
+fn the_hooks_are_fed_where_state_changes() {
+    let files = source_files();
+    let text = |name: &str| files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1.clone();
+    for (file, signature, call) in [
+        ("startup.rs", "fn on_bar_message(", "hooks_msg("),
+        ("notify_app.rs", "fn dnd_apply(", "hooks_dnd("),
+        ("appearance.rs", "fn publish_mode(", "hooks_mode("),
+        ("privacy_app.rs", "fn privacy_changed(", "hooks_capture("),
+        ("startup.rs", "pub fn run(", "hooks_started("),
+    ] {
+        let t = text(file);
+        assert!(function_body(&t, signature).contains(call), "{signature} in {file} must call {call}");
+    }
+    let app = production_code(&text("hooks_app.rs"));
+    let mut checked = 0;
+    for (at, _) in app.match_indices("pub(crate) fn hooks_") {
+        let body = function_body(&app[at..], "pub(crate) fn hooks_");
+        let first = body.trim_start_matches('{').trim_start();
+        assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
+        checked += 1;
+    }
+    assert_eq!(checked, 5);
 }

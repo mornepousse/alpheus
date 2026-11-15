@@ -112,7 +112,7 @@ impl Executor for FakeExecutor {
     }
 
     fn spawn_with_env(&self, prog: &str, args: &[&str], env: &[(&str, &str)]) -> Result<(), ExecError> {
-        if !env.iter().all(|(k, v)| !k.is_empty() && !k.contains(['=', '\0']) && !v.contains('\0')) {
+        if !super::env_ok(env) {
             return Err(ExecError::Io("invalid environment variable".into()));
         }
         let l = line(prog, args);

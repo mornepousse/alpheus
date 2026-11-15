@@ -95,6 +95,7 @@ impl App {
         }
         self.privacy_timer_sync();
         self.dnd_sharing_follow();
+        self.hooks_capture();
     }
 
     /// The timer follows the earliest pending off; none without one (privacy spec § 4).

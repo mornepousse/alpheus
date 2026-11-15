@@ -619,3 +619,13 @@ fn spawn_with_env_refuses_a_bad_variable_before_starting() {
 fn spawn_with_env_of_a_missing_program_is_not_found() {
     assert_eq!(exec().spawn_with_env("alpheus-nonexistent-program", &[], &[("A", "x")]), Err(ExecError::NotFound));
 }
+
+#[test]
+fn env_ok_refuses_what_command_envs_cannot_carry() {
+    assert!(env_ok(&[("ALPHEUS_EVENT", "dnd"), ("ALPHEUS_X", "")]));
+    assert!(!env_ok(&[("A\0B", "v")]), "NUL in a name");
+    assert!(!env_ok(&[("A", "v\0w")]), "NUL in a value");
+    assert!(!env_ok(&[("", "v")]), "an empty name");
+    assert!(!env_ok(&[("A=B", "v")]), "a name holding =");
+    assert!(!env_ok(&[("A", "v"), ("B=", "v")]), "one bad pair among good ones");
+}

@@ -262,6 +262,7 @@ impl App {
         }
         self.privacy_feed(&m);
         self.battery_feed(&m);
+        self.hooks_msg(&m);
         note_compositor_message(self, &m);
         on_message(self, m, || LocalTime::now().0);
         if quick {
@@ -396,6 +397,7 @@ pub fn run() -> i32 {
     }
     start_modules(&mut core.state, &core.handle, &plan);
     start_sources(&mut core.state, &core.tx, &plan, &exec);
+    core.state.hooks_started();
     if let Some(server) = &launcher_server {
         match watch_launcher_socket(&core.handle, server, core.qh.clone()) {
             Ok(()) => log("launcher socket ready"),

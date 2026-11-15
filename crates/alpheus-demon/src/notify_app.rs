@@ -184,6 +184,7 @@ impl App {
                     Vec::new()
                 })
             });
+            self.hooks_dnd(on);
         }
         // No server: the muted bell shows the change itself.
         if self.notifications().is_none() && self.bar.notifications.is_some() {
