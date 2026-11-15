@@ -17,6 +17,7 @@ fn fire() -> Fire {
         id: HookId::Dnd,
         argv: vec!["hook-x".into(), "--flag".into()],
         env: vec![("ALPHEUS_EVENT", "dnd".into()), ("ALPHEUS_DND", "on".into())],
+        unset: vec!["ALPHEUS_DEVICE", "ALPHEUS_MODE"],
     }
 }
 
@@ -35,6 +36,7 @@ fn hook_spawn_in_a_scope() {
     f.ok(&format!("{SCOPE} hook-x --flag"), "");
     assert_eq!(hook_spawn(&f, Spawner::SystemdScope, &dirs(&d), &fire()), Ok(Spawned::Ran));
     assert_eq!(f.envs(), [(format!("{SCOPE} hook-x --flag"), vars())]);
+    assert_eq!(f.unsets(), [["ALPHEUS_DEVICE", "ALPHEUS_MODE"]], "the variables the event leaves unset are removed");
 }
 
 #[test]
@@ -44,6 +46,7 @@ fn hook_spawn_detached() {
     f.ok("hook-x --flag", "");
     assert_eq!(hook_spawn(&f, Spawner::Detached, &dirs(&d), &fire()), Ok(Spawned::Ran));
     assert_eq!(f.envs(), [("hook-x --flag".to_string(), vars())]);
+    assert_eq!(f.unsets(), [["ALPHEUS_DEVICE", "ALPHEUS_MODE"]]);
 }
 
 #[test]

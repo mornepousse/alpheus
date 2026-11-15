@@ -260,9 +260,11 @@ impl App {
         if let Msg::Sound(s) = &m {
             self.osd_sound(s.as_ref());
         }
+        // Hooks first: a sound or compositor source going down must be known when the privacy
+        // indicators it clears reach `hooks_capture` (hooks spec § 2).
+        self.hooks_msg(&m);
         self.privacy_feed(&m);
         self.battery_feed(&m);
-        self.hooks_msg(&m);
         note_compositor_message(self, &m);
         on_message(self, m, || LocalTime::now().0);
         if quick {

@@ -57,10 +57,10 @@ pub(crate) fn path_dirs(path: Option<&OsStr>) -> Vec<PathBuf> {
     path.map(|p| std::env::split_paths(p).filter(|d| !d.as_os_str().is_empty()).collect()).unwrap_or_default()
 }
 
-fn start(exec: &dyn Executor, argv: &[String], env: &[(&str, &str)]) -> Result<(), ExecError> {
+fn start(exec: &dyn Executor, argv: &[String], env: &[(&str, &str)], unset: &[&str]) -> Result<(), ExecError> {
     let Some((prog, args)) = argv.split_first() else { return Err(ExecError::Io("empty command".into())) };
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    exec.spawn_with_env(prog, &args, env)
+    exec.spawn_with_env(prog, &args, env, unset)
 }
 
 /// Starts the hook: the program is looked up first (`systemd-run` starts detached, so a missing one
@@ -71,19 +71,20 @@ pub(crate) fn hook_spawn(exec: &dyn Executor, spawner: Spawner, path_dirs: &[Pat
         return Err(Failure::NotFound);
     }
     let env: Vec<(&str, &str)> = fire.env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let unset = fire.unset.as_slice();
     match spawner {
         Spawner::SystemdScope => {
             let scoped: Vec<String> = SYSTEMD_RUN.iter().map(|s| s.to_string()).chain(fire.argv.iter().cloned()).collect();
-            match start(exec, &scoped, &env) {
+            match start(exec, &scoped, &env, unset) {
                 Ok(()) => Ok(Spawned::Ran),
-                Err(ExecError::NotFound) => match start(exec, &fire.argv, &env) {
+                Err(ExecError::NotFound) => match start(exec, &fire.argv, &env, unset) {
                     Ok(()) => Ok(Spawned::FellBack),
                     Err(_) => Err(Failure::Start),
                 },
                 Err(_) => Err(Failure::SystemdRun),
             }
         }
-        Spawner::Detached => match start(exec, &fire.argv, &env) {
+        Spawner::Detached => match start(exec, &fire.argv, &env, unset) {
             Ok(()) => Ok(Spawned::Ran),
             Err(ExecError::NotFound) => Err(Failure::NotFound),
             Err(_) => Err(Failure::Start),
@@ -110,9 +111,10 @@ impl App {
         }
     }
 
-    pub(crate) fn hooks_mode(&mut self, mode: Mode) {
+    /// `settled`: the mode is a chosen one or the portal has spoken (an `auto` fallback seeds nothing).
+    pub(crate) fn hooks_mode(&mut self, mode: Mode, settled: bool) {
         let Some(h) = self.hooks.as_mut() else { return };
-        if let Some(e) = h.model.on_mode(mode) {
+        if let Some(e) = h.model.on_mode(mode, settled) {
             self.hooks_event(e);
         }
     }
@@ -146,7 +148,11 @@ impl App {
     fn hooks_event(&mut self, e: Event) {
         let Some(h) = self.hooks.as_mut() else { return };
         let spawner = h.spawner;
-        match h.model.fire(e, Instant::now()) {
+        let now = Instant::now();
+        if e.id() != HookId::Started && h.model.quiet_over(now) {
+            log("hooks: quiet window over");
+        }
+        match h.model.fire(e, now) {
             Verdict::Run(f) => {
                 let dirs = path_dirs(std::env::var_os("PATH").as_deref());
                 let key = f.id.key();

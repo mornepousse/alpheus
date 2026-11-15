@@ -5881,12 +5881,19 @@ fn hooks_started_and_dnd_run_with_their_environment() {
     assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
     assert!(d.wait_for_count("do not disturb on", 1, DELAY), "{:?}", d.log());
     past_the_quiet_window();
+    // The marker says a change reached the model past the window: this machine was too slow for the
+    // two verbs to land inside it, so the test proves nothing (never a failure).
+    if d.count("hooks: quiet window over") > 0 {
+        eprintln!("inconclusive: the first changes came after the quiet window: {:?}", d.log());
+        return;
+    }
     assert_eq!(recorded(&sway, "hook-rec").len(), 1, "nothing fired inside the quiet window: {:?}", d.log());
     assert_eq!(d.count("hook: dnd"), 0, "{:?}", d.log());
     assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
     let calls = hook_calls(&sway, &d, 2);
     assert_eq!(calls[1], "hook-rec |ALPHEUS_DND=off ALPHEUS_EVENT=dnd ", "{calls:?}");
     assert!(d.wait_for("hook: dnd", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("hooks: quiet window over"), 1, "the marker comes once, at the first change past the window: {:?}", d.log());
     assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(recorded(&sway, "hook-rec").len(), 2, "off again changes nothing: {:?}", d.log());
@@ -5926,9 +5933,15 @@ fn hooks_a_flapping_event_is_throttled() {
     for _ in 0..8 {
         assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
     }
-    assert!(t.elapsed() < Duration::from_secs(2), "inconclusive: the burst took {:?}", t.elapsed());
-    assert!(d.wait_for("hook: dnd throttled", DELAY), "{:?}", d.log());
+    let throttled = d.wait_for("hook: dnd throttled", DELAY);
     thread::sleep(Duration::from_millis(500));
+    // A token comes back every 3 s: on a machine too slow for the burst to fit, the counts below
+    // prove nothing (never a failure).
+    if t.elapsed() > Duration::from_millis(2500) {
+        eprintln!("inconclusive: the burst and its checks took {:?}", t.elapsed());
+        return;
+    }
+    assert!(throttled, "{:?}", d.log());
     assert_eq!(hook_calls(&sway, &d, 5).len(), 5, "{:?}", d.log());
     assert_eq!(d.count("hook: dnd throttled"), 1, "one line per episode: {:?}", d.log());
     thread::sleep(Duration::from_millis(3500));

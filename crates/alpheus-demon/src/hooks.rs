@@ -137,6 +137,42 @@ pub enum Event {
     Displays(String),
 }
 
+/// Every variable a hook may be given. One an event does not set is removed from the hook's
+/// environment (`unset_for`), so an inherited one never passes for the event's.
+pub const VARS: [&str; 14] = [
+    "ALPHEUS_EVENT",
+    "ALPHEUS_MODE",
+    "ALPHEUS_DND",
+    "ALPHEUS_CHARGE",
+    "ALPHEUS_PERCENT",
+    "ALPHEUS_POWER_PROFILE",
+    "ALPHEUS_NETWORK",
+    "ALPHEUS_LINK",
+    "ALPHEUS_VPN",
+    "ALPHEUS_BLUETOOTH",
+    "ALPHEUS_DEVICE",
+    "ALPHEUS_CAPTURE",
+    "ALPHEUS_STATE",
+    "ALPHEUS_DISPLAY_PROFILE",
+];
+
+/// The names of `VARS` that `env` does not set.
+pub fn unset_for(env: &[(&'static str, String)]) -> Vec<&'static str> {
+    VARS.into_iter().filter(|v| env.iter().all(|(k, _)| k != v)).collect()
+}
+
+/// Six hex pairs joined by `:` or by `-`: a Bluetooth address, which is never handed to a hook
+/// (spec § 5: a device with no name of its own is shown by its address).
+fn address_like(s: &str) -> bool {
+    [':', '-'].into_iter().any(|sep| {
+        let mut n = 0;
+        s.split(sep).all(|p| {
+            n += 1;
+            p.len() == 2 && p.bytes().all(|b| b.is_ascii_hexdigit())
+        }) && n == 6
+    })
+}
+
 /// `text::clean`, then at most `VALUE_MAX` bytes cut on a character boundary.
 pub fn clean_value(s: &str) -> String {
     let mut v = text::clean(s);
@@ -213,7 +249,7 @@ impl Event {
                     BtChange::Disconnected(n) => ("disconnected", Some(n)),
                 };
                 env.push(("ALPHEUS_BLUETOOTH", word.into()));
-                if let Some(n) = device {
+                if let Some(n) = device.filter(|n| !address_like(n)) {
                     env.push(("ALPHEUS_DEVICE", clean_value(n)));
                 }
             }
@@ -238,6 +274,8 @@ pub struct Fire {
     pub id: HookId,
     pub argv: Vec<String>,
     pub env: Vec<(&'static str, String)>,
+    /// The hook variables `env` leaves unset: removed from the inherited environment.
+    pub unset: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +306,10 @@ pub struct Hooks {
     profile: Option<Profile>,
     mode: Option<Mode>,
     capture: [bool; 3],
+    /// The sound source and the compositor are down: their part of the capture is no state.
+    sound_down: bool,
+    compositor_down: bool,
+    quiet_said: bool,
 }
 
 impl Hooks {
@@ -289,6 +331,9 @@ impl Hooks {
             profile: None,
             mode: None,
             capture: [false; 3],
+            sound_down: false,
+            compositor_down: false,
+            quiet_said: false,
         })
     }
 
@@ -306,6 +351,8 @@ impl Hooks {
     pub fn on_msg(&mut self, m: &Msg) -> Vec<Event> {
         let mut out = Vec::new();
         match m {
+            Msg::Sound(s) => self.sound_down = s.is_none(),
+            Msg::Compositor(c) => self.compositor_down = c.is_none(),
             Msg::Network(Some(state)) => {
                 let (link, vpn) = match state {
                     NetState::Absent => return out,
@@ -371,15 +418,19 @@ impl Hooks {
         out
     }
 
-    /// The mode in effect: a seed, then an edge on each change.
-    pub fn on_mode(&mut self, mode: Mode) -> Option<Event> {
-        if !self.wants(HookId::ThemeMode) {
+    /// The mode in effect: a seed, then an edge on each change. `settled`: the mode is the user's
+    /// choice or the portal has answered; before that, `auto` holds a fallback that is no state.
+    pub fn on_mode(&mut self, mode: Mode, settled: bool) -> Option<Event> {
+        if !settled || !self.wants(HookId::ThemeMode) {
             return None;
         }
         self.mode.replace(mode).filter(|old| *old != mode).map(|_| Event::ThemeMode(mode))
     }
 
-    /// The indicators against the last ones (all off at start), microphone, camera, screen.
+    /// The indicators against the last ones (all off at start), microphone, camera, screen. While
+    /// the sound source is down the microphone, the camera and the screen are kept, while the
+    /// compositor is down the screen: a source down is not a state (spec § 2), and they are compared
+    /// again once it is back.
     pub fn on_capture(&mut self, c: &Capture) -> Vec<Event> {
         if !self.wants(HookId::Privacy) {
             return Vec::new();
@@ -387,13 +438,25 @@ impl Hooks {
         let now = [c.mic.active(), c.camera.active(), c.screen.active()];
         let kinds = [CaptureKind::Microphone, CaptureKind::Camera, CaptureKind::Screen];
         let mut out = Vec::new();
-        for ((kind, was), is) in kinds.into_iter().zip(self.capture).zip(now) {
-            if was != is {
-                out.push(Event::Privacy(kind, is));
+        let kept = [self.sound_down, self.sound_down, self.sound_down || self.compositor_down];
+        let mut next = self.capture;
+        for (i, kind) in kinds.into_iter().enumerate() {
+            if kept[i] {
+                continue;
             }
+            if next[i] != now[i] {
+                out.push(Event::Privacy(kind, now[i]));
+            }
+            next[i] = now[i];
         }
-        self.capture = now;
+        self.capture = next;
         out
+    }
+
+    /// True once, at the first call from `QUIET` after start on: the log's marker that the changes
+    /// after it count (the headless tests tell a change inside the window from one past it).
+    pub fn quiet_over(&mut self, now: Instant) -> bool {
+        now >= self.quiet_until && !std::mem::replace(&mut self.quiet_said, true)
     }
 
     /// Whether `e` runs now: its hook set, past the quiet window (`Started` apart), a token left.
@@ -417,7 +480,9 @@ impl Hooks {
         bucket.tokens -= 1;
         bucket.throttled = false;
         let argv = self.commands.get(id.index()).cloned().unwrap_or_default();
-        Verdict::Run(Fire { id, argv, env: e.env() })
+        let env = e.env();
+        let unset = unset_for(&env);
+        Verdict::Run(Fire { id, argv, env, unset })
     }
 }
 

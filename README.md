@@ -376,15 +376,15 @@ means no hook. Every hook gets `ALPHEUS_EVENT=<key>`, plus:
 | `power_profile` | the power profile changes | `ALPHEUS_POWER_PROFILE` = `power-saver` \| `balanced` \| `performance` | `quick` |
 | `network` | the primary connection goes online or offline, or changes kind | `ALPHEUS_NETWORK` = `online` \| `offline`, `ALPHEUS_LINK` = `wifi` \| `ethernet` \| `vpn` \| `other` \| `none` | `network` or `quick` |
 | `vpn` | a VPN becomes active, or the last one goes | `ALPHEUS_VPN` = `on` \| `off` | `network` or `quick` |
-| `bluetooth` | the adapter powers on or off, or a device connects or disconnects | `ALPHEUS_BLUETOOTH` = `on` \| `off` \| `connected` \| `disconnected`, `ALPHEUS_DEVICE` (the device's name, the last two only) | `bluetooth` or `quick` |
+| `bluetooth` | the adapter powers on or off, or a device connects or disconnects | `ALPHEUS_BLUETOOTH` = `on` \| `off` \| `connected` \| `disconnected`, `ALPHEUS_DEVICE` (the device's name, the last two only; unset for a name that is a Bluetooth address) | `bluetooth` or `quick` |
 | `privacy` | the microphone, camera or screen indicator turns on or off | `ALPHEUS_CAPTURE` = `microphone` \| `camera` \| `screen`, `ALPHEUS_STATE` = `on` \| `off` | `privacy` |
 | `displays` | a `displays.toml` profile was applied on hotplug | `ALPHEUS_DISPLAY_PROFILE` (the profile's name) | `displays` |
 
 ```toml
 [hooks]
 started = ["notify-send", "alpheus is up"]
-dnd = ["sh", "-c", "echo $ALPHEUS_DND > ~/.cache/dnd-led"]
-theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-scheme prefer-$ALPHEUS_MODE"]
+dnd = ["sh", "-c", "echo \"$ALPHEUS_DND\" > ~/.cache/dnd-led"]
+theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-scheme \"prefer-$ALPHEUS_MODE\""]
 ```
 
 - **Edges only.** A hook fires on a change, never for the start-up state: each event's first value
@@ -395,11 +395,17 @@ theme_mode = ["sh", "-c", "gsettings set org.gnome.desktop.interface color-schem
   (`hooks: power_profile never fires (needs quick)`). A source that is down is not a state: nothing
   fires for it.
 - **Rate limit.** Per event, five runs at once, then one every 3 s; a run with no token is dropped,
-  with one log line per episode.
+  with one log line per episode. A hook that re-triggers its own event settles at one run per 3 s.
+- **Finding the program.** The first word is an absolute path or a bare name looked up on the
+  daemon's own `$PATH` (not your shell's); relative paths (`./x`) and `~` are not expanded or found.
+  Quote variables in `sh -c` (`"$ALPHEUS_DEVICE"`): a name may hold spaces.
 - **A scope.** The command runs detached in its own `systemd-run --user --scope` when a user manager
   runs (as the launcher's apps), so it never dies with the bar, and bare otherwise. The event's data
   reaches it only through the environment, never as an argument; device and profile names are
-  cleaned and cut to 255 bytes.
+  cleaned and cut to 255 bytes. A hook variable the event does not set is removed from the
+  environment, so an inherited one never passes for the event's. A Bluetooth device whose name
+  is only its address gets no `ALPHEUS_DEVICE`; one that is renamed from an address-like alias to
+  its real name fires a disconnect and a connect (rename churn).
 - **Nothing logged but the event.** `hook: <key>`, `hook: <key> failed (program not found)`,
   `throttled`; never the command, an argument or a value.
 - **A change takes effect after `shell-ctl reload-bar`** (bar.toml is read at start).

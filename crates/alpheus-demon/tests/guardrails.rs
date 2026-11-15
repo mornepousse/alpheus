@@ -1902,7 +1902,7 @@ impl Executor for ArgvSpy {
     fn spawn_with_input(&self, prog: &str, args: &[&str], _input: &[&[u8]]) -> Result<(), ExecError> {
         Err(self.record(prog, args))
     }
-    fn spawn_with_env(&self, prog: &str, args: &[&str], _env: &[(&str, &str)]) -> Result<(), ExecError> {
+    fn spawn_with_env(&self, prog: &str, args: &[&str], _env: &[(&str, &str)], _unset: &[&str]) -> Result<(), ExecError> {
         Err(self.record(prog, args))
     }
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
@@ -2991,6 +2991,18 @@ fn spawn_with_env_only_runs_hooks() {
     // nonblocking.rs declares and delegates it (twice); hooks_app.rs calls it once.
     assert_eq!(seen.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["hooks_app.rs", "nonblocking.rs"]);
     assert_eq!(seen[0].1, 1, "hooks_app.rs starts a hook in one place");
+}
+
+/// Hooks final review I1: the hooks see a sound or compositor message before the privacy indicators
+/// it clears reach `hooks_capture`, so a source going down fires nothing.
+#[test]
+fn hooks_read_a_message_before_the_privacy_feed() {
+    let files = source_files();
+    let t = production_code(&files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1);
+    let body = function_body(&t, "pub(crate) fn on_bar_message(");
+    let hooks = body.find("self.hooks_msg(&m)").expect("hooks_msg");
+    let privacy = body.find("self.privacy_feed(&m)").expect("privacy_feed");
+    assert!(hooks < privacy, "{body}");
 }
 
 /// Every `log(` call of `code`, from `log(` to its closing parenthesis (strings aware, so a `)` or

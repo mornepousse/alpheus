@@ -61,9 +61,9 @@ fn the_first_value_is_a_seed() {
     assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
     assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
     assert_eq!(h.on_msg(&profile(Profile::Performance)), [Event::PowerProfile(Profile::Performance)]);
-    assert_eq!(h.on_mode(Mode::Dark), None);
-    assert_eq!(h.on_mode(Mode::Dark), None);
-    assert_eq!(h.on_mode(Mode::Light), Some(Event::ThemeMode(Mode::Light)));
+    assert_eq!(h.on_mode(Mode::Dark, true), None);
+    assert_eq!(h.on_mode(Mode::Dark, true), None);
+    assert_eq!(h.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
 }
 
 #[test]
@@ -151,6 +151,107 @@ fn capture_edges() {
     );
 }
 
+fn sound_up() -> Msg {
+    Msg::Sound(Some(crate::system::SoundState::default()))
+}
+
+fn compositor_up() -> Msg {
+    Msg::Compositor(Some(crate::compositor::CompositorState::default()))
+}
+
+#[test]
+fn the_sound_source_going_down_fires_nothing() {
+    use CaptureKind::*;
+    let mut h = hooks(&["privacy"], Instant::now());
+    assert_eq!(h.on_capture(&on(&[Microphone, Camera, Screen])).len(), 3);
+    h.on_msg(&Msg::Sound(None));
+    assert!(h.on_capture(&on(&[])).is_empty(), "down is not a state: no off");
+    assert!(h.on_msg(&sound_up()).is_empty());
+    assert!(h.on_capture(&on(&[Microphone, Camera, Screen])).is_empty(), "back with the same state: nothing");
+    h.on_msg(&Msg::Sound(None));
+    assert!(h.on_capture(&on(&[])).is_empty());
+    h.on_msg(&sound_up());
+    assert_eq!(
+        h.on_capture(&on(&[Camera, Screen])),
+        [Event::Privacy(Microphone, false)],
+        "back with a different state: the difference fires"
+    );
+}
+
+#[test]
+fn the_compositor_going_down_keeps_only_the_screen() {
+    use CaptureKind::*;
+    let mut h = hooks(&["privacy"], Instant::now());
+    h.on_capture(&on(&[Microphone, Screen]));
+    h.on_msg(&Msg::Compositor(None));
+    assert!(h.on_capture(&on(&[Microphone])).is_empty(), "the screen part is kept");
+    assert_eq!(h.on_capture(&on(&[])), [Event::Privacy(Microphone, false)], "the rest still compares");
+    h.on_msg(&compositor_up());
+    assert_eq!(h.on_capture(&on(&[])), [Event::Privacy(Screen, false)], "compared again once back");
+    h.on_msg(&Msg::Compositor(None));
+    assert!(h.on_capture(&on(&[Screen])).is_empty());
+    h.on_msg(&compositor_up());
+    assert_eq!(h.on_capture(&on(&[Screen])), [Event::Privacy(Screen, true)]);
+}
+
+#[test]
+fn a_bluetooth_address_is_never_a_device_name() {
+    for addr in ["AA:BB:CC:DD:EE:FF", "aa-bb-cc-dd-ee-ff", "00:1A:7d:da:71:13"] {
+        let env = Event::Bluetooth(BtChange::Connected(addr.into())).env();
+        assert!(env.iter().all(|(k, _)| *k != "ALPHEUS_DEVICE"), "{addr}");
+        let env = Event::Bluetooth(BtChange::Disconnected(addr.into())).env();
+        assert!(env.iter().all(|(k, _)| *k != "ALPHEUS_DEVICE"), "{addr}");
+    }
+    for name in ["AA:BB:CC:DD:EE", "AA:BB:CC:DD:EE:GG", "Test Headset", "AA:BB:CC:DD:EE:FF:00", "AA:BB-CC:DD:EE:FF"] {
+        let env = Event::Bluetooth(BtChange::Connected(name.into())).env();
+        assert!(env.iter().any(|(k, v)| *k == "ALPHEUS_DEVICE" && v == name), "{name}");
+    }
+}
+
+#[test]
+fn theme_mode_seeds_on_the_portals_first_word() {
+    let mut h = hooks(&["theme_mode"], Instant::now());
+    assert_eq!(h.on_mode(Mode::Dark, false), None, "no portal answer yet: nothing seeded");
+    assert_eq!(h.on_mode(Mode::Light, false), None, "still none, even if the fallback moves");
+    assert_eq!(h.on_mode(Mode::Dark, true), None, "the first word seeds");
+    assert_eq!(h.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
+    let mut fixed = hooks(&["theme_mode"], Instant::now());
+    assert_eq!(fixed.on_mode(Mode::Dark, true), None);
+    assert_eq!(fixed.on_mode(Mode::Light, true), Some(Event::ThemeMode(Mode::Light)));
+}
+
+#[test]
+fn a_hook_never_inherits_a_variable_its_event_does_not_set() {
+    let t0 = Instant::now();
+    let mut h = hooks(&["dnd", "bluetooth"], t0);
+    let Verdict::Run(f) = h.fire(Event::Dnd(true), t0 + QUIET) else { panic!() };
+    assert!(f.unset.contains(&"ALPHEUS_DEVICE") && f.unset.contains(&"ALPHEUS_MODE"));
+    assert!(!f.unset.contains(&"ALPHEUS_DND") && !f.unset.contains(&"ALPHEUS_EVENT"));
+    let Verdict::Run(f) = h.fire(Event::Bluetooth(BtChange::Connected("AA:BB:CC:DD:EE:FF".into())), t0 + QUIET) else { panic!() };
+    assert!(f.unset.contains(&"ALPHEUS_DEVICE"), "set nowhere: removed, an address being no name");
+    // Every variable an event can set is in VARS: set or removed, never inherited.
+    let b = Battery { percent: 1, charge: Charge::Full };
+    for e in [
+        Event::Started,
+        Event::ThemeMode(Mode::Dark),
+        Event::Dnd(true),
+        Event::BatteryCharge(b),
+        Event::PowerProfile(Profile::Balanced),
+        Event::Network(None),
+        Event::Vpn(true),
+        Event::Bluetooth(BtChange::Connected("X".into())),
+        Event::Privacy(CaptureKind::Camera, true),
+        Event::Displays("p".into()),
+    ] {
+        let env = e.env();
+        let mut all: Vec<&str> = env.iter().map(|(k, _)| *k).chain(unset_for(&env)).collect();
+        all.sort();
+        let mut want = VARS.to_vec();
+        want.sort();
+        assert_eq!(all, want, "{e:?}");
+    }
+}
+
 fn s(a: &'static str, b: &str) -> (&'static str, String) {
     (a, b.to_string())
 }
@@ -212,12 +313,26 @@ fn edges_inside_the_quiet_window_only_move_the_seed() {
 }
 
 #[test]
+fn the_quiet_window_is_marked_once_when_it_ends() {
+    let t0 = Instant::now();
+    let mut h = hooks(&["dnd"], t0);
+    assert!(!h.quiet_over(t0 + Duration::from_secs(1)));
+    assert!(h.quiet_over(t0 + QUIET));
+    assert!(!h.quiet_over(t0 + QUIET + Duration::from_secs(5)), "once");
+}
+
+#[test]
 fn started_ignores_the_quiet_window() {
     let t0 = Instant::now();
     let mut h = hooks(&["started"], t0);
     assert_eq!(
         h.fire(Event::Started, t0),
-        Verdict::Run(Fire { id: HookId::Started, argv: vec!["hook-started".into()], env: vec![s("ALPHEUS_EVENT", "started")] })
+        Verdict::Run(Fire {
+            id: HookId::Started,
+            argv: vec!["hook-started".into()],
+            env: vec![s("ALPHEUS_EVENT", "started")],
+            unset: unset_for(&[s("ALPHEUS_EVENT", "started")])
+        })
     );
 }
 
@@ -294,8 +409,8 @@ fn a_family_without_its_key_gives_nothing() {
         assert!(h.on_msg(&power(40, Charge::Charging)).is_empty());
         assert!(h.on_msg(&profile(Profile::Balanced)).is_empty());
         assert!(h.on_msg(&profile(Profile::Performance)).is_empty());
-        assert!(h.on_mode(Mode::Dark).is_none());
-        assert!(h.on_mode(Mode::Light).is_none());
+        assert!(h.on_mode(Mode::Dark, true).is_none());
+        assert!(h.on_mode(Mode::Light, true).is_none());
         assert!(h.on_capture(&on(&[CaptureKind::Camera])).is_empty());
         assert!(h.on_capture(&on(&[])).is_empty());
     }
