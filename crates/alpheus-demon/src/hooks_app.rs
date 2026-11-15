@@ -136,6 +136,12 @@ impl App {
         self.hooks_event(Event::Started);
     }
 
+    /// A profile the compositor accepted (the name is cleaned for the variable).
+    pub(crate) fn hooks_displays(&mut self, profile: &str) {
+        let Some(_) = self.hooks.as_ref() else { return };
+        self.hooks_event(Event::Displays(profile.to_string()));
+    }
+
     fn hooks_event(&mut self, e: Event) {
         let Some(h) = self.hooks.as_mut() else { return };
         let spawner = h.spawner;

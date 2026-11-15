@@ -23,9 +23,9 @@ use common::sway_client::{TestWindow, con_id};
 use common::{
     AG06_SINK, AG06_SOURCE, Backend, Daemon, DaemonOptions, FAKE_RUN_MARKER, FakeAp, FakeHyprland, FakeNetworkManager, GroupChild,
     NmChange, Peer, Ppm, PrivateBus, PwDump, SIGNATURE, SPEAKER_SINK, Sway, TempDir, UUID_HOME, UUID_NEW, Workstation, assert_no_spin,
-    capture_delta, capture_gone, default_sink_delta, fake_program, fake_pw_dump_in, fake_recorder, fake_source, fake_stdin_recorder,
-    harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta,
-    wait_for_pid_file, write_atomically, wtype, wtype_spawn,
+    capture_delta, capture_gone, default_sink_delta, fake_env_recorder, fake_program, fake_pw_dump_in, fake_recorder, fake_source,
+    fake_stdin_recorder, harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon,
+    start_daemon_with, volume_delta, wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
@@ -5786,6 +5786,54 @@ fn hotplug_applies_the_matching_profile_once() {
     assert_eq!(outputs_snapshot(&sway, &d, 2..=2), s, "unchanged 2 s later");
     let lines: Vec<String> = d.log()[quiet..].iter().filter(|l| l.contains("displays:")).cloned().collect();
     assert!(lines.is_empty(), "applied, nothing refused, no other evaluation: {lines:?}");
+}
+
+/// Hooks spec § 2, `displays`: the hook runs once the compositor accepted a profile applied on
+/// hotplug, with the profile's name in its environment; the log says `hook: displays` and never the
+/// name.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_displays_runs_once_a_profile_is_applied() {
+    let sway = Sway::start("hooks-displays", 1);
+    fake_env_recorder(&sway, "hook-rec");
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("displays.toml"), "").unwrap();
+    let d = displays_daemon_with(&sway, Some("modules = [\"workspaces\", \"displays\"]\n[hooks]\ndisplays = [\"hook-rec\"]\n"));
+    let first = outputs_snapshot(&sway, &d, 1..=1).outputs[0].description.clone();
+    let profiles: String = (2..=9)
+        .map(|n| {
+            format!(
+                "[[profile]]\nname = \"Desk {n}\"\n\
+                 [[profile.display]]\ndescription = \"Headless output {n}\"\nmode = \"1920x1080@0\"\nplacement = {{ x = 0, y = 0 }}\n\
+                 [[profile.display]]\ndescription = \"{first}\"\nmode = \"1280x720@0\"\nplacement = {{ x = 1920, y = 0 }}\n"
+            )
+        })
+        .collect();
+    std::fs::write(config.join("displays.toml"), profiles).unwrap();
+    // Past the quiet window: an edge before it only moves a seed.
+    thread::sleep(alpheus_demon::hooks::QUIET + Duration::from_millis(500));
+    sway.command("create_output");
+    let placed = |s: &Snapshot| {
+        s.outputs.len() == 2 && s.trial == TrialState::None && output(s, "HEADLESS-2").active.as_ref().is_some_and(|a| (a.x, a.y) == (0, 0))
+    };
+    snapshot_until(&sway, &d, placed);
+    let t = Instant::now();
+    while recorded(&sway, "hook-rec").is_empty() && t.elapsed() < DELAY {
+        thread::sleep(Duration::from_millis(50));
+    }
+    // Once, and only once: nothing more arrives.
+    thread::sleep(Duration::from_millis(500));
+    let calls = recorded(&sway, "hook-rec");
+    assert_eq!(calls.len(), 1, "{calls:?} {:?}", d.log());
+    let line = &calls[0];
+    assert!(line.starts_with("hook-rec |"), "{line}");
+    assert!(line.contains("ALPHEUS_EVENT=displays "), "{line}");
+    let name = line.split("ALPHEUS_DISPLAY_PROFILE=").nth(1).and_then(|r| r.get(..6)).unwrap_or("");
+    assert!((2..=9).any(|n| name == format!("Desk {n}")), "{line}");
+    let log = d.log();
+    assert!(log.iter().any(|l| l.contains("hook: displays")), "{log:?}");
+    assert!(log.iter().filter(|l| l.contains("hook")).all(|l| !l.contains("Desk")), "the name is never logged: {log:?}");
 }
 
 /// Each test gives its compositor a name, and the name picks its runtime directory

@@ -56,6 +56,8 @@ pub(crate) struct OutputsApp {
     invalid: InvalidFile,
     /// The TUI's try waiting for the compositor's answer.
     client: TryClient,
+    /// The profiles the compositor accepted, waiting for `displays_applied` to hand them to the hooks.
+    applied: Vec<String>,
 }
 
 impl OutputsApp {
@@ -70,14 +72,15 @@ impl OutputsApp {
             links: DisplayLinks::default(),
             invalid: InvalidFile::default(),
             client: TryClient::default(),
+            applied: Vec::new(),
         })
     }
 
     /// Runs the controller's actions; a configuration that cannot be built is answered as
     /// invalid, at once.
     fn run(&mut self, actions: Vec<Action>, qh: &QueueHandle<App>, now: Instant) {
-        let OutputsApp { controller, wlr, client, .. } = self;
-        if let Some(answer) = execute(controller, actions, now, &mut |g, t| wlr.send(g, t, qh).is_ok()) {
+        let OutputsApp { controller, wlr, client, applied, .. } = self;
+        if let Some(answer) = execute(controller, actions, now, &mut |g, t| wlr.send(g, t, qh).is_ok(), applied) {
             client.answer(try_reply(answer));
         }
         // A configuration the controller gave up on (the watchdog) is destroyed.
@@ -88,8 +91,8 @@ impl OutputsApp {
     /// compositor answers.
     fn verb(&mut self, request: &Request, qh: &QueueHandle<App>) -> Option<Reply> {
         let now = Instant::now();
-        let OutputsApp { controller, wlr, .. } = self;
-        let reply = verb(controller, request, now, &mut |g, t| wlr.send(g, t, qh).is_ok());
+        let OutputsApp { controller, wlr, applied, .. } = self;
+        let reply = verb(controller, request, now, &mut |g, t| wlr.send(g, t, qh).is_ok(), applied);
         self.wlr.abandon(self.controller.in_flight());
         reply
     }
@@ -102,12 +105,14 @@ fn verb_guarded(f: impl FnOnce() -> Option<Reply>) -> Option<Reply> {
 }
 
 /// Runs the controller's actions; `send` builds and sends one configuration (false: it could
-/// not be built, answered as invalid at once). Returns the try's answer when one came.
+/// not be built, answered as invalid at once). Returns the try's answer when one came; the
+/// profiles the compositor accepted are pushed on `applied`.
 pub(crate) fn execute(
     controller: &mut Controller,
     actions: Vec<Action>,
     now: Instant,
     send: &mut dyn FnMut(u64, &[Target]) -> bool,
+    applied: &mut Vec<String>,
 ) -> Option<Result<(), &'static str>> {
     let mut answer = None;
     let mut queue: VecDeque<Action> = actions.into();
@@ -121,6 +126,7 @@ pub(crate) fn execute(
             Action::Log(line) => log(line),
             Action::LogProfile(name) => log(&profile_line(&name)),
             Action::Reply(ReplyTo::Try, a) => answer = Some(a),
+            Action::ProfileApplied(name) => applied.push(name),
         }
     }
     answer
@@ -147,6 +153,7 @@ pub(crate) fn verb(
     request: &Request,
     now: Instant,
     send: &mut dyn FnMut(u64, &[Target]) -> bool,
+    applied: &mut Vec<String>,
 ) -> Option<Reply> {
     let actions = match request {
         Request::Outputs => return Some(Reply::Outputs(encode_snapshot(&snapshot(controller, now)))),
@@ -156,7 +163,7 @@ pub(crate) fn verb(
                 Err(e) => return Some(Reply::Error(format!("malformed request: {e}"))),
             };
             match controller.try_(&steps, now) {
-                Ok(actions) => return execute(controller, actions, now, send).map(try_reply),
+                Ok(actions) => return execute(controller, actions, now, send, applied).map(try_reply),
                 Err(e) => return Some(Reply::Error(e.into())),
             }
         }
@@ -167,7 +174,7 @@ pub(crate) fn verb(
         _ => return Some(Reply::Error("not a displays verb".into())),
     };
     // Keep and revert answer no try; what they send is answered by the compositor later.
-    execute(controller, actions, now, send);
+    execute(controller, actions, now, send, applied);
     Some(Reply::Done)
 }
 
@@ -257,6 +264,15 @@ impl App {
         let (links, drm_dir) = (&mut d.links, &d.drm_dir);
         links.mark(&mut heads, |name| is_displaylink(drm_dir, name));
         self.displays_event(Event::Done(heads));
+        self.displays_applied();
+    }
+
+    /// The profiles the compositor accepted since the last call go to the hooks.
+    fn displays_applied(&mut self) {
+        let Some(d) = self.displays.as_mut() else { return };
+        for name in std::mem::take(&mut d.applied) {
+            self.hooks_displays(&name);
+        }
     }
 
     /// One event to the controller, its actions run, the timer following.
@@ -266,6 +282,7 @@ impl App {
         let actions = d.controller.on_event(e, now);
         d.run(actions, &self.qh, now);
         self.displays_sync();
+        self.displays_applied();
     }
 
     /// The controller's deadline passed (the timer's source is dropped).
@@ -289,6 +306,7 @@ impl App {
         }
         d.run(actions, &app.qh, now);
         app.displays_sync();
+        app.displays_applied();
     }
 
     /// The timer on the controller's next deadline; none at rest.
@@ -313,6 +331,7 @@ impl App {
             (None, None) => reply_guarded(conn, &unavailable(module_on)),
         }
         self.displays_sync();
+        self.displays_applied();
     }
 
     /// The try's client watch fired: true once nobody waits (the watch is removed).
@@ -609,6 +628,18 @@ placement = { x = 0, y = 0 }
     }
 
     #[test]
+    fn execute_collects_the_applied_profiles() {
+        let now = Instant::now();
+        let mut c = ready(now);
+        let mut sent = Sent::default();
+        let mut applied = Vec::new();
+        let actions = vec![Action::ProfileApplied("Desk-Test".into()), Action::Log("displays: x")];
+        assert_eq!(execute(&mut c, actions, now, &mut sent.ok(), &mut applied), None, "no answer for it");
+        assert_eq!(applied, ["Desk-Test"]);
+        assert!(sent.0.is_empty());
+    }
+
+    #[test]
     fn unavailable_says_why() {
         assert_eq!(unavailable(false), Reply::Error("displays are off in bar.toml".into()));
         assert_eq!(unavailable(true), Reply::Error("the compositor has no output management".into()));
@@ -619,7 +650,7 @@ placement = { x = 0, y = 0 }
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        let s = snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok()));
+        let s = snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new()));
         assert_eq!(s.status, Status::Ready);
         assert_eq!(
             s.outputs.iter().map(|o| (o.name.as_str(), o.active.as_ref().map(|a| a.x))).collect::<Vec<_>>(),
@@ -634,13 +665,17 @@ placement = { x = 0, y = 0 }
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok()), None, "pending until the answer");
+        assert_eq!(
+            verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new()),
+            None,
+            "pending until the answer"
+        );
         assert_eq!(sent.0.len(), 1, "one configuration sent");
         let (generation, targets) = sent.0[0].clone();
         assert_eq!(targets[0].state.map(|s| s.3), Some(2.0));
         let answer = c.on_event(Event::Succeeded(generation), now);
-        assert_eq!(execute(&mut c, answer, now, &mut sent.ok()), Some(Ok(())));
-        let s = snapshot_of(verb(&mut c, &Request::Outputs, now + Duration::from_secs(3), &mut sent.ok()));
+        assert_eq!(execute(&mut c, answer, now, &mut sent.ok(), &mut Vec::new()), Some(Ok(())));
+        let s = snapshot_of(verb(&mut c, &Request::Outputs, now + Duration::from_secs(3), &mut sent.ok(), &mut Vec::new()));
         assert_eq!(s.trial, TrialState::Open { seconds_left: 12 });
     }
 
@@ -649,11 +684,11 @@ placement = { x = 0, y = 0 }
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
         assert_eq!(answer, None);
         let refused = c.on_event(Event::Failed(sent.0[0].0), now);
         assert_eq!(
-            execute(&mut c, refused, now, &mut sent.ok()).map(try_reply),
+            execute(&mut c, refused, now, &mut sent.ok(), &mut Vec::new()).map(try_reply),
             Some(Reply::Error("the compositor refused this configuration".into()))
         );
     }
@@ -663,7 +698,9 @@ placement = { x = 0, y = 0 }
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        let ask = |c: &mut Controller, body: &str, sent: &mut Sent| verb(c, &Request::OutputsTry(body.into()), now, &mut sent.ok());
+        let ask = |c: &mut Controller, body: &str, sent: &mut Sent| {
+            verb(c, &Request::OutputsTry(body.into()), now, &mut sent.ok(), &mut Vec::new())
+        };
         assert_eq!(
             ask(&mut c, &scale_two("HDMI-A-9", 0), &mut sent),
             Some(Reply::Error("the compositor refused this configuration".into()))
@@ -684,7 +721,7 @@ placement = { x = 0, y = 0 }
     fn a_try_that_cannot_be_built_is_answered_at_once() {
         let now = Instant::now();
         let mut c = ready(now);
-        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut |_, _| false);
+        let answer = verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut |_, _| false, &mut Vec::new());
         assert!(matches!(answer, Some(Reply::Error(_))), "{answer:?}");
         assert_eq!(c.in_flight(), None, "nothing waits for an answer");
     }
@@ -695,11 +732,11 @@ placement = { x = 0, y = 0 }
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok()), None);
+        assert_eq!(verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new()), None);
         let at = c.next_deadline().expect("the watchdog");
         assert!(at <= now + WATCHDOG && WATCHDOG < alpheus_commun::launcher_ipc::OUTPUTS_TRY_TIMEOUT);
         let late = c.tick(&Vec::new, at);
-        assert_eq!(execute(&mut c, late, at, &mut sent.ok()), Some(Ok(())), "possibly applied: done");
+        assert_eq!(execute(&mut c, late, at, &mut sent.ok(), &mut Vec::new()), Some(Ok(())), "possibly applied: done");
     }
 
     #[test]
@@ -708,33 +745,33 @@ placement = { x = 0, y = 0 }
             let now = Instant::now();
             let mut c = ready(now);
             let mut sent = Sent::default();
-            verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+            verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
             let answer = c.on_event(Event::Succeeded(sent.0[0].0), now);
-            execute(&mut c, answer, now, &mut sent.ok());
+            execute(&mut c, answer, now, &mut sent.ok(), &mut Vec::new());
             // The compositor's `done` after the answer: DP-1 at scale 2.
             let mut applied = moded("DP-1", 0);
             applied.scale = 2.0;
             assert!(c.on_event(Event::Done(vec![applied, moded("DP-2", 1920)]), now).is_empty());
-            assert_eq!(verb(&mut c, &request, now, &mut sent.ok()), Some(Reply::Done), "{request:?}");
+            assert_eq!(verb(&mut c, &request, now, &mut sent.ok(), &mut Vec::new()), Some(Reply::Done), "{request:?}");
             assert_eq!(sent.0.len(), 1 + sends, "{request:?}: the state from before sent back, or nothing");
             if sends == 1 {
                 // The end is reported once the compositor showed the state from before.
-                assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Busy);
+                assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new())).trial, TrialState::Busy);
                 let answer = c.on_event(Event::Succeeded(sent.0[1].0), now);
-                execute(&mut c, answer, now, &mut sent.ok());
+                execute(&mut c, answer, now, &mut sent.ok(), &mut Vec::new());
                 c.on_event(Event::Done(vec![moded("DP-1", 0), moded("DP-2", 1920)]), now);
             }
-            assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok())).trial, TrialState::Ended(end));
+            assert_eq!(snapshot_of(verb(&mut c, &Request::Outputs, now, &mut sent.ok(), &mut Vec::new())).trial, TrialState::Ended(end));
         }
         // No trial now, but one was seen (a revert racing the daemon's own deadline): nothing to do.
         let now = Instant::now();
         let mut c = ready(now);
         let mut sent = Sent::default();
-        verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok());
+        verb(&mut c, &Request::OutputsTry(scale_two("DP-1", 0)), now, &mut sent.ok(), &mut Vec::new());
         let refused = c.on_event(Event::Failed(sent.0[0].0), now);
-        execute(&mut c, refused, now, &mut sent.ok());
-        assert_eq!(verb(&mut c, &Request::OutputsKeep, now, &mut sent.ok()), Some(Reply::Done), "no trial: nothing to do");
-        assert_eq!(verb(&mut c, &Request::OutputsRevert, now, &mut sent.ok()), Some(Reply::Done));
+        execute(&mut c, refused, now, &mut sent.ok(), &mut Vec::new());
+        assert_eq!(verb(&mut c, &Request::OutputsKeep, now, &mut sent.ok(), &mut Vec::new()), Some(Reply::Done), "no trial: nothing to do");
+        assert_eq!(verb(&mut c, &Request::OutputsRevert, now, &mut sent.ok(), &mut Vec::new()), Some(Reply::Done));
         assert_eq!(sent.0.len(), 1, "nothing sent but the try");
     }
 
@@ -747,7 +784,7 @@ placement = { x = 0, y = 0 }
         let mut sent = Sent::default();
         for request in [Request::OutputsKeep, Request::OutputsRevert] {
             assert_eq!(
-                verb(&mut c, &request, now, &mut sent.ok()),
+                verb(&mut c, &request, now, &mut sent.ok(), &mut Vec::new()),
                 Some(Reply::Error("no trial in progress (the daemon restarted)".into())),
                 "{request:?}"
             );

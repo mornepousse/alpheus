@@ -3033,5 +3033,5 @@ fn the_hooks_are_fed_where_state_changes() {
         assert!(first.starts_with("let Some("), "a hooks_ entry point must start with `let Some(`: {first:.60}");
         checked += 1;
     }
-    assert_eq!(checked, 5);
+    assert_eq!(checked, 6);
 }
