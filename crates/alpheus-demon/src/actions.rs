@@ -101,7 +101,7 @@ fn module_command(bar: &Bar, m: ModuleId, b: Button) -> Option<Vec<String>> {
         (ModuleId::Volume, Button::Right) => Some(wpctl(&["set-mute", SINK, "toggle"])),
         (ModuleId::Volume, Button::WheelUp) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_UP])),
         (ModuleId::Volume, Button::WheelDown) => Some(wpctl(&["set-volume", "-l", "1.0", SINK, VOLUME_DOWN])),
-        (ModuleId::Resources, Button::Left) => Some(bar.config.actions.resources.clone()),
+        (ModuleId::Resources, Button::Right) => Some(bar.config.actions.resources.clone()),
         // The default source's mute, the quick panel's microphone command (privacy spec § 6).
         (ModuleId::Privacy, Button::Middle) => Some(wpctl(&["set-mute", crate::quick::SOURCE, "toggle"])),
         (m, Button::Left) => open_tab(bar, m),

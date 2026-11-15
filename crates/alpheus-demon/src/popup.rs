@@ -26,6 +26,7 @@ use crate::painter::{Frame, FrameInk};
 use crate::panel::Panel;
 use crate::power::Power;
 use crate::quick::Quick;
+use crate::resources_popup::ResourcesPopup;
 use crate::session_bus::codec::Layout;
 use crate::session_bus::menu::{Menu, MenuAction};
 use crate::session_bus::menu_session::MenuSession;
@@ -230,6 +231,8 @@ pub enum PopupBody {
     Power(Power),
     /// The privacy popup (privacy spec § 5): its rows are drawn from `Bar.privacy`, nothing kept here.
     Privacy,
+    /// The resources popup (resources popup spec § 2): figures and graphs per item, `Monitor…`.
+    Resources(ResourcesPopup),
 }
 
 /// A bar module whose left click toggles a popup of its own: the clock's calendar, the media
@@ -249,6 +252,8 @@ pub enum ModulePopup {
     Power,
     /// The privacy popup: the privacy module (privacy spec § 5).
     Privacy,
+    /// The resources popup: the resources module (resources popup spec § 1).
+    Resources,
 }
 
 impl ModulePopup {
@@ -289,13 +294,14 @@ pub(crate) struct PopupOps {
 /// The module popups, one row per `ModulePopup` variant, in variant order (a test checks it). A new
 /// popup: its variant, its body in `PopupBody` and `module_popup`, an `OPS` row in its `*_app.rs`,
 /// listed here, and the module's `popup` in `modules.rs`.
-static POPUPS: [PopupOps; 6] = [
+static POPUPS: [PopupOps; 7] = [
     crate::calendar_app::OPS,
     crate::media_app::OPS,
     crate::panel_app::OPS,
     crate::quick_app::OPS,
     crate::power_app::OPS,
     crate::privacy_app::OPS,
+    crate::resources_app::OPS,
 ];
 
 /// A row's hook for a popup with nothing to do there.
@@ -311,6 +317,7 @@ impl PopupBody {
             PopupBody::Quick(_) => Some(ModulePopup::Quick),
             PopupBody::Power(_) => Some(ModulePopup::Power),
             PopupBody::Privacy => Some(ModulePopup::Privacy),
+            PopupBody::Resources(_) => Some(ModulePopup::Resources),
             PopupBody::Menu(_) | PopupBody::Tooltip(_) => None,
         }
     }
@@ -769,7 +776,8 @@ impl App {
             | PopupBody::Panel(_)
             | PopupBody::Quick(_)
             | PopupBody::Power(_)
-            | PopupBody::Privacy => {
+            | PopupBody::Privacy
+            | PopupBody::Resources(_) => {
                 if let Some(p) = body.module_popup() {
                     (p.ops().key)(self, k);
                 }
@@ -821,7 +829,8 @@ impl App {
             | PopupBody::Panel(_)
             | PopupBody::Quick(_)
             | PopupBody::Power(_)
-            | PopupBody::Privacy => {
+            | PopupBody::Privacy
+            | PopupBody::Resources(_) => {
                 if let Some(p) = body.module_popup() {
                     (p.ops().pointer)(self, cell, kind);
                 }
@@ -1099,6 +1108,7 @@ mod tests {
             ),
             (PopupBody::Power(Power::new(&config).unwrap()), Some(ModulePopup::Power)),
             (PopupBody::Privacy, Some(ModulePopup::Privacy)),
+            (PopupBody::Resources(ResourcesPopup::default()), Some(ModulePopup::Resources)),
             (PopupBody::Menu(Menu::new()), None),
             (PopupBody::Tooltip("x".into()), None),
         ];
@@ -1192,7 +1202,7 @@ mod tests {
         };
     }
 
-    rows! { Calendar => 0, Media => 1, Panel => 2, Quick => 3, Power => 4, Privacy => 5 }
+    rows! { Calendar => 0, Media => 1, Panel => 2, Quick => 3, Power => 4, Privacy => 5, Resources => 6 }
 
     /// `POPUPS` is indexed by `ModulePopup as usize`: one row per variant, in variant order.
     #[test]

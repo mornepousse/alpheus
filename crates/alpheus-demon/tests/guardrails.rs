@@ -2871,6 +2871,27 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
 }
 
+/// Resources popup spec § 6: a tick applies the reading before it repaints, and repaints only
+/// while the popup is the open one (`App` cannot be built without Wayland: a source guardrail, as
+/// for the privacy feed). The timer in `startup.rs` goes through it.
+#[test]
+fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let app = src("resources_app.rs");
+    let tick = function_body(&app, "pub(crate) fn resources_tick(");
+    let (applied, shown, painted) = (tick.find("on_message("), tick.find("self.resources_shown()"), tick.find("self.resources_refresh()"));
+    assert!(
+        matches!((applied, shown, painted), (Some(a), Some(s), Some(p)) if a < s && s < p),
+        "on_message, then the open check, then the repaint: {tick}"
+    );
+    let refresh = function_body(&app, "fn resources_refresh(");
+    assert!(refresh.contains("popup_paint("), "{refresh}");
+    let startup = src("startup.rs");
+    assert!(startup.contains("state.resources_tick(reader.sample())"), "the timer goes through resources_tick");
+    assert!(!startup.contains("Msg::Resources(reader.sample())"), "no bypass of the repaint");
+}
+
 fn camera_sources() -> Vec<(&'static str, String)> {
     let files = source_files();
     ["camera_dev.rs", "camera_app.rs"]
