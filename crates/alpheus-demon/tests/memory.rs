@@ -618,6 +618,45 @@ fn resources_tick_at_the_configured_interval() {
     assert!((4..=20).contains(&delta), "{delta} loop wake-ups in 5 s at interval = 1");
 }
 
+const EVERY_ITEM: &str = "show = [\"cpu\", \"memory\", \"temperature\", \"net\", \"disk\", \"gpu\"]\n";
+
+/// Small features 2: the default three figures against all six, same tick rate.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_pss_default_and_every_item() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("res-items");
+    let bar = |extra: &str| format!("modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n{extra}");
+    let default = {
+        let (_sway, _hypr, d) = start("res-items-a", 1, &bus, None, Some(&bar("")), PwDump::Silent);
+        std::thread::sleep(Duration::from_secs(3));
+        d.pss_kb()
+    };
+    let every = {
+        let (_sway, _hypr, d) = start("res-items-b", 1, &bus, None, Some(&bar(EVERY_ITEM)), PwDump::Silent);
+        std::thread::sleep(Duration::from_secs(3));
+        d.pss_kb()
+    };
+    eprintln!("resources PSS (KB): {default} with the default items, {every} with all six");
+    assert!(every <= default + 256, "every item costs {} KB over the default", every.saturating_sub(default));
+}
+
+/// All six items tick at the configured rate: none adds a timer of its own.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_every_item_ticks_at_the_same_rate() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("cadence-all");
+    let toml = format!("modules = [\"workspaces\", \"resources\", \"clock\"]\n[resources]\ninterval = 1\n{EVERY_ITEM}");
+    let (_sway, _hypr, d) = start("cadence-all", 1, &bus, None, Some(&toml), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(2));
+    let before = d.main_thread_wakeups();
+    std::thread::sleep(Duration::from_secs(5));
+    let delta = d.main_thread_wakeups().saturating_sub(before);
+    eprintln!("loop wake-ups in 5 s at interval = 1, six items: {delta}");
+    assert!((4..=20).contains(&delta), "{delta} loop wake-ups in 5 s at interval = 1, six items");
+}
+
 /// The D-Bus source reconnects after the system bus restarts (dbus.service
 /// restarted, a crash): each reconnection must leave no thread behind.
 #[test]
