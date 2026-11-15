@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 53] = [
+const NO_THREAD_NOR_COMMAND: [&str; 56] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1429,6 +1429,9 @@ const NO_THREAD_NOR_COMMAND: [&str; 53] = [
     "launcher/emoji/",
     "notes/text.rs",
     "notes/lines.rs",
+    "notes/keys.rs",
+    "notes/model.rs",
+    "notes/view.rs",
 ];
 
 #[test]
@@ -2733,7 +2736,7 @@ fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
 
 /// Quick notes: the pad's pure files run on each key and must never panic, slice a string by range
 /// (a boundary panic's message embeds the text) nor log (the note is private). Production code only.
-const NOTES_PURE: [&str; 2] = ["notes/text.rs", "notes/lines.rs"];
+const NOTES_PURE: [&str; 5] = ["notes/text.rs", "notes/lines.rs", "notes/keys.rs", "notes/model.rs", "notes/view.rs"];
 
 #[test]
 fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
