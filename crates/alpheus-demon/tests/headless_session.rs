@@ -5896,20 +5896,20 @@ fn notes_type_close_and_find_the_file() {
     let (sway, d) = notes_daemon("notes-type");
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap(), (0, String::new(), String::new()));
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
-    assert!(wtype(&sway, &["-s", "300", "buy milk", "-k", "Return", "token 1234", "-k", "Escape"]).success());
+    assert!(wtype(&sway, &["-s", "300", "buy milk", "-k", "Return", "token qx", "-k", "Escape"]).success());
     assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
     let file = notes_file(&sway);
-    wait_for_text(&file, "buy milk\ntoken 1234");
+    wait_for_text(&file, "buy milk\ntoken qx");
     assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("1234")), "the text reached the log: {:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("qx")), "the text reached the log: {:?}", d.log());
     // Reopened: the caret is at the end.
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
     assert!(d.wait_for_count(NOTES_SHOWN, 2, DELAY), "{:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "-k", "End", " ok", "-k", "Escape"]).success());
     assert!(d.wait_for_count("notes closed (escape)", 2, DELAY), "{:?}", d.log());
-    wait_for_text(&file, "buy milk\ntoken 1234 ok");
-    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("1234")), "{:?}", d.log());
+    wait_for_text(&file, "buy milk\ntoken qx ok");
+    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("qx")), "{:?}", d.log());
 }
 
 /// Spec § 3: the pad saves itself once the typing pauses, with the pad still open.
@@ -5920,8 +5920,11 @@ fn notes_autosaves_while_open() {
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
     let keys = wtype_spawn(&sway, &["-s", "300", "draft", "-s", "4000", "-k", "Escape"]);
-    thread::sleep(Duration::from_millis(2800));
-    assert_eq!(std::fs::read_to_string(notes_file(&sway)).unwrap(), "draft", "{:?}", d.log());
+    let t = Instant::now();
+    while std::fs::read_to_string(notes_file(&sway)).unwrap_or_default() != "draft" {
+        assert!(t.elapsed() < Duration::from_millis(3500), "no autosave: {:?}", d.log());
+        thread::sleep(Duration::from_millis(20));
+    }
     assert_eq!(d.count("notes closed"), 0, "still open: {:?}", d.log());
     assert!(keys.wait().unwrap().success());
     assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
@@ -5999,14 +6002,14 @@ fn a_refused_notes_file_opens_read_only() {
 #[ignore = "headless sway, wtype and wl-clipboard (nix develop)"]
 fn notes_paste_from_the_selection() {
     let (sway, d) = notes_daemon("notes-paste");
-    let _selection = wl_copy(&sway, "pasted 42", None);
+    let _selection = wl_copy(&sway, "pasted zq", None);
     thread::sleep(Duration::from_millis(500));
     assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
     assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
     assert!(wtype(&sway, &["-s", "300", "-M", "ctrl", "v", "-m", "ctrl", "-s", "500", "-k", "Escape"]).success());
     assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
-    wait_for_text(&notes_file(&sway), "pasted 42");
-    assert!(d.log().iter().all(|l| !l.contains("pasted") && !l.contains("42")), "the clipboard reached the log: {:?}", d.log());
+    wait_for_text(&notes_file(&sway), "pasted zq");
+    assert!(d.log().iter().all(|l| !l.contains("pasted") && !l.contains("zq")), "the clipboard reached the log: {:?}", d.log());
 }
 
 /// Quick notes, task 6: a selection with no text type (an image) pastes nothing: the pad stays

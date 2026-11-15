@@ -3237,7 +3237,10 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
             seen += 1;
         }
         if name != "notes/paste.rs" {
-            assert!(!(prod.contains("insert_source(") && prod.contains("ReadPipe")), "a ReadPipe source outside notes/paste.rs: {name}");
+            assert!(
+                !((prod.contains("insert_source(") || prod.contains(".receive(")) && prod.contains("ReadPipe")),
+                "a ReadPipe source outside notes/paste.rs: {name}"
+            );
         }
         for never in ["create_copy_paste_source", "set_selection", "create_drag_and_drop_source"] {
             assert!(!prod.contains(never), "{never} in {name}: the pad never owns a selection");
@@ -3249,11 +3252,18 @@ fn the_paste_pipe_lives_only_while_the_pad_is_open() {
     let prod = production_code(surface);
     let drop = function_body(&prod, "fn drop(&mut self)");
     assert!(drop.contains("stop_paste()"), "OpenNotes's Drop removes the paste source: {drop}");
+    assert!(
+        drop.contains("selection_offer()") && drop.contains("drag_offer()") && drop.matches(".destroy()").count() == 2,
+        "OpenNotes's Drop destroys the selection and drag offers (SCTK's device drop does not): {drop}"
+    );
     let stop = function_body(&prod, "fn stop_paste(");
     assert!(stop.contains("paste.take()") && stop.contains(".remove("), "stop_paste takes the token and removes the source: {stop}");
     let paste = &files.iter().find(|(p, _)| relative_path(p) == "notes/paste.rs").expect("notes/paste.rs").1;
     let paste = production_code(paste);
     assert_eq!(paste.matches("insert_source(").count(), 1, "one source, the pipe");
+    let notes_paste = function_body(&paste, "fn notes_paste(");
+    let (ro, rx) = (notes_paste.find("read_only"), notes_paste.find(".receive("));
+    assert!(ro.is_some() && rx.is_some() && ro < rx, "a read-only pad returns before any pipe is opened: {notes_paste}");
 }
 
 /// The `wl-copy`/`wl-paste` spawns of the test files that are not the harness helper: a test that

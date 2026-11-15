@@ -140,6 +140,15 @@ pub struct OpenNotes {
 impl Drop for OpenNotes {
     fn drop(&mut self) {
         self.stop_paste();
+        // SCTK's `DataDevice::drop` only releases the device: the offers it still holds would leak.
+        if let Some(device) = self.data_device.as_ref() {
+            if let Some(offer) = device.data().selection_offer() {
+                offer.destroy();
+            }
+            if let Some(offer) = device.data().drag_offer() {
+                offer.destroy();
+            }
+        }
     }
 }
 

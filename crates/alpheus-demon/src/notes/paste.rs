@@ -62,12 +62,40 @@ pub fn done(buffer: &PasteBuffer) -> bool {
     buffer.over
 }
 
+/// What one read tells the loop to do next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Step {
+    Continue,
+    /// The end of the data, or the cap: the text goes in.
+    Stop,
+    Failed(ErrorKind),
+}
+
+/// The pure part of one read wake-up: `chunk` is the buffer the read filled.
+pub fn step(read: std::io::Result<usize>, chunk: &[u8], buffer: &mut PasteBuffer) -> Step {
+    match read {
+        Ok(n) if n > 0 => {
+            buffer.push(chunk.get(..n).unwrap_or_default());
+            if done(buffer) { Step::Stop } else { Step::Continue }
+        }
+        Ok(_) => Step::Stop,
+        Err(e) if e.kind() == ErrorKind::WouldBlock => Step::Continue,
+        Err(e) => Step::Failed(e.kind()),
+    }
+}
+
 impl App {
     /// Ctrl+V: asks the selection offer for text and reads it on the loop; nothing to paste (no
     /// manager, device, offer or text type) is a message. A second Ctrl+V drops the first read.
     pub(crate) fn notes_paste(&mut self) {
         let Some(open) = self.notes.open.as_mut() else { return };
         open.stop_paste();
+        if open.model.read_only.is_some() {
+            // No pipe for a pad that refuses the text (the model's own refusal message).
+            let out = open.model.paste("");
+            self.notes_outcome(out);
+            return;
+        }
         let offer = open.data_device.as_ref().and_then(|d| d.data().selection_offer());
         let mime = offer.as_ref().and_then(|o| o.with_mime_types(|m| pick_mime(m.iter().map(String::as_str))));
         let (Some(offer), Some(mime), Some(handle)) = (offer, mime, self.loop_handle.clone()) else {
@@ -111,21 +139,15 @@ impl App {
                 other => break other,
             }
         };
-        match read {
-            Ok(n) if n > 0 => {
-                buffer.push(chunk.get(..n).unwrap_or_default());
-                if !done(buffer) {
-                    return PostAction::Continue;
-                }
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return PostAction::Continue,
-            Err(e) => {
-                log(&format!("notes: paste failed ({:?})", e.kind()));
+        match step(read, &chunk, buffer) {
+            Step::Continue => return PostAction::Continue,
+            Step::Failed(kind) => {
+                log(&format!("notes: paste failed ({kind:?})"));
                 self.paste_finished();
                 self.notes_say("paste failed");
                 return PostAction::Remove;
             }
+            Step::Stop => {}
         }
         // The end, or the cap: the source goes (it is removed by the return), the text goes in.
         self.paste_finished();
@@ -223,6 +245,25 @@ mod tests {
         b.push("é".as_bytes()); // two bytes: one fits under the cap, one is the extra
         let (text, over) = b.finish();
         assert_eq!((text.len(), over), (CAP - 1, true), "no replacement character at the cut");
+    }
+
+    #[test]
+    fn step_stops_at_the_cap_and_the_end_and_waits_on_would_block() {
+        let mut b = PasteBuffer::default();
+        let chunk = [b'a'; 4096];
+        assert_eq!(step(Ok(10), &chunk, &mut b), Step::Continue);
+        assert_eq!(step(Err(std::io::ErrorKind::WouldBlock.into()), &chunk, &mut b), Step::Continue);
+        assert_eq!(step(Ok(0), &chunk, &mut b), Step::Stop, "EOF");
+        let mut b = PasteBuffer::default();
+        let mut last = Step::Continue;
+        for _ in 0..=CAP / 4096 {
+            last = step(Ok(4096), &chunk, &mut b);
+        }
+        assert_eq!(last, Step::Stop, "the cap");
+        assert_eq!(
+            step(Err(std::io::ErrorKind::BrokenPipe.into()), &chunk, &mut PasteBuffer::default()),
+            Step::Failed(ErrorKind::BrokenPipe)
+        );
     }
 
     #[test]
