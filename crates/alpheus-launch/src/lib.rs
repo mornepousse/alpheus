@@ -64,7 +64,7 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi, bluetooth or vpn word)/--calc (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.

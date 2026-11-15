@@ -491,9 +491,16 @@ fn help_prints_usage_and_exits_0() {
     let (code, out, err) = launch(&["--help"], Path::new("/nonexistent/alpheus-launcher.sock"), b"");
     assert_eq!((code, err.as_str()), (EXIT_OK, ""));
     assert!(out.starts_with("Usage: alpheus-launch") && out.contains("Exit codes"), "{out}");
-    for option in
-        ["--index", "--password", "--visible N", "--placeholder TEXT", "--width N", "--lines N", "--quick [sound|wifi|bluetooth|vpn]"]
-    {
+    for option in [
+        "--index",
+        "--password",
+        "--visible N",
+        "--placeholder TEXT",
+        "--width N",
+        "--lines N",
+        "--quick [sound|wifi|bluetooth|vpn]",
+        "(or its wifi, bluetooth or vpn word)",
+    ] {
         assert!(out.contains(option), "{option} undocumented: {out}");
     }
 }

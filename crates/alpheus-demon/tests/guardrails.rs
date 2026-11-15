@@ -2906,23 +2906,40 @@ fn a_new_server_gets_the_last_battery_reading() {
 fn the_vpn_logs_name_no_profile() {
     let files = source_files();
     let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
-    let mut lines = 0;
+    let mut statements = 0;
     for name in ["quick_vpn.rs", "sources/dbus/vpn.rs", "quick_app.rs"] {
         let prod = src(name);
         let own = name != "quick_app.rs";
-        for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
-            if !own && !line.to_ascii_lowercase().contains("vpn") {
+        for statement in log_statements(&prod) {
+            if !own && !statement.to_ascii_lowercase().contains("vpn") {
                 continue;
             }
-            lines += 1;
+            statements += 1;
             for word in ["name", "label", "uuid", "path", "id"] {
                 let braced = format!("{{{word}");
-                let token = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
-                assert!(!line.contains(&braced) && !token, "{name}: a log line may name a profile (`{word}`): {line}");
+                let token = statement.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!statement.contains(&braced) && !token, "{name}: a log line may name a profile (`{word}`): {statement}");
             }
         }
     }
-    assert!(lines >= 3, "the log lines were not found: the check is hollow");
+    assert!(statements >= 3, "the log lines were not found: the check is hollow");
+    // The scan itself: a log call split over several lines is one statement.
+    let split = "fn f() {\n    log(&format!(\n        \"quick: vpn {name}\",\n    ));\n    other();\n}";
+    let found = log_statements(split);
+    assert!(!found.is_empty() && found.iter().all(|f| f.contains("{name}") && !f.contains("other")), "{found:?}");
+}
+
+/// Every `log(` call and every `"quick: ` string of `text`, each from its start to the next `;`
+/// (a call may span several lines).
+fn log_statements(text: &str) -> Vec<&str> {
+    let mut found = Vec::new();
+    for start in ["log(", "\"quick: "] {
+        for (at, _) in text.match_indices(start) {
+            let end = text[at..].find(';').map_or(text.len(), |e| at + e);
+            found.push(&text[at..end]);
+        }
+    }
+    found
 }
 
 /// Quick VPN spec § 5: the D-Bus thread reads the VPNs only while the panel is open and follows it,

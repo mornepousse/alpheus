@@ -4207,16 +4207,22 @@ fn wifi_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprlan
     (bus, nm, sway, hypr, d)
 }
 
-/// Waits until the fake NetworkManager answered the detail's reads (the saved profiles come last, the
-/// Wi-Fi detail's and the VPN row's),
-/// then lets the state reach the panel and be painted.
+/// Waits until the fake NetworkManager answered the detail's reads: its own evidence is the access
+/// points' reads (only the Wi-Fi detail makes them) and a saved profile's settings (the last of the
+/// detail's reads); the VPN row reads the same profiles with the same calls (quick VPN spec § 5), so
+/// then the calls must stop coming for 300 ms, which also lets the state reach the panel and be painted.
 fn wait_for_the_detail(nm: &FakeNetworkManager) -> bool {
-    // The panel's VPN row lists and reads the saved profiles too (quick VPN spec § 5): the fixture's
-    // one profile is read twice, the Wi-Fi detail's own being the later of the two readers.
-    let count = |prefix: &str| nm.calls().iter().filter(|c| c.starts_with(prefix)).count();
-    let read = wait_until(|| count("ListConnections ") >= 2 && count("GetSettings ") >= 2);
-    thread::sleep(Duration::from_millis(300));
-    read
+    let has = |prefix: &str| nm.calls().iter().any(|c| c.starts_with(prefix));
+    let read = wait_until(|| has("GetAll /org/freedesktop/NetworkManager/AccessPoint/") && has("GetSettings "));
+    let mut seen = nm.calls().len();
+    loop {
+        thread::sleep(Duration::from_millis(300));
+        let now = nm.calls().len();
+        if now == seen {
+            return read;
+        }
+        seen = now;
+    }
 }
 
 /// Waits until the fake NetworkManager was asked for the saved profile `n` (from 1).

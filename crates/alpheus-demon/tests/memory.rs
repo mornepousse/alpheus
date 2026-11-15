@@ -1573,6 +1573,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (idle, idle_shm) = d.pss_and_shm_kb();
     let idle_own = idle - idle_shm;
+    let idle_map = smaps_by_mapping(&d);
     let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Wifi)), Reply::Done);
     toggle();
     assert!(detail_read(&nm, 1), "{:?} {:?}", nm.calls(), d.log());
@@ -1583,6 +1584,8 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (closed, closed_shm) = d.pss_and_shm_kb();
     let closed_own = closed - closed_shm;
+    let closed_map = smaps_by_mapping(&d);
+    eprintln!("quick Wi-Fi smaps, idle to closed (KB): {}", smaps_moved(&idle_map, &closed_map));
     for n in 2..=11 {
         toggle();
         assert!(detail_read(&nm, n), "{:?}", d.log());
@@ -1593,6 +1596,7 @@ fn quick_wifi_pss_detail_open_and_closed() {
     std::thread::sleep(TRAY_SETTLE);
     let (cycled, cycled_shm) = d.pss_and_shm_kb();
     let cycled_own = cycled - cycled_shm;
+    eprintln!("quick Wi-Fi smaps, closed to cycled (KB): {}", smaps_moved(&closed_map, &smaps_by_mapping(&d)));
     let detail_cost = open.saturating_sub(idle);
     eprintln!(
         "quick Wi-Fi PSS (KB): {idle} at rest, {open} with the detail open on 32 networks (cost {detail_cost}), \
@@ -1604,14 +1608,18 @@ fn quick_wifi_pss_detail_open_and_closed() {
         detail_cost <= 1536,
         "the detail open costs {detail_cost} KB (the panel ≤ 1 MB, 40 access points read on the D-Bus thread, 32 rows): report, never raise"
     );
-    // Closed, the first open leaves ≈ 540 KB of the daemon's own (smaps, three release runs,
-    // 2026-10-12): the binary's code pages +128 and the font file's +320, touched for the first time
-    // and now resident, the main stack +20, the main heap +68…+76 (most likely the painter's glyph
-    // caches, bounded by MAX_CACHE; attributed by elimination); the D-Bus thread's arena back to
-    // idle's. The shm pools are left out of these two bounds and get their own, looser one below:
-    // the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
+    // Closed, the first open leaves ≈ 660 KB of the daemon's own, measured with the VPN row in the
+    // panel (smaps split by `smaps_moved`, two release runs, 2026-11-15: +652…+680 with 8 earlier
+    // runs of the same kind): the binary's code pages +192 and the font file's +384, touched for the
+    // first time and now resident (file-backed, clean), the main heap +68 net (its brk region
+    // remapped, 148 -> 0 and 0 -> 216; most likely the painter's glyph caches, bounded by
+    // MAX_CACHE), the D-Bus thread's arena +12, back to idle's. Before the VPN row (2026-10-12):
+    // code +128, font +320, heap +68…+76, stack +20, so the row's own share is ≈ +64 of code and
+    // +64 of font (its glyphs and rows), no heap and no arena. The bound was 640 and is 768, as
+    // Bluetooth's. The shm pools are left out of these two bounds and get their own, looser one
+    // below: the compositor maps them too, and their PSS moved −56…+104 KB between two readings.
     assert!(
-        closed_own <= idle_own + 640,
+        closed_own <= idle_own + 768,
         "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
     );
     assert!(
@@ -2064,6 +2072,57 @@ fn smaps_breakdown(d: &Daemon) -> String {
         }
     }
     format!("fonts {fonts}, binary {binary}, heap {heap}, other {other}")
+}
+
+/// PSS in KB by mapping from /proc/<pid>/smaps, keyed "<range> <perms> <name>", for `smaps_moved`.
+fn smaps_by_mapping(d: &Daemon) -> std::collections::BTreeMap<String, u64> {
+    let t = std::fs::read_to_string(format!("/proc/{}/smaps", d.pid())).unwrap();
+    let (mut map, mut key) = (std::collections::BTreeMap::new(), String::new());
+    for line in t.lines() {
+        if let Some(rest) = line.strip_prefix("Pss:") {
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            *map.entry(key.clone()).or_insert(0) += kb;
+        } else if line.split_whitespace().next().is_some_and(|r| r.contains('-') && !r.ends_with(':')) {
+            let mut w = line.split_whitespace();
+            let (range, perms) = (w.next().unwrap_or(""), w.next().unwrap_or(""));
+            let name = w.nth(3).unwrap_or("[anon]");
+            key = format!("{range} {perms} {name}");
+        }
+    }
+    map
+}
+
+/// The mappings whose PSS moved by 8 KB or more between two `smaps_by_mapping` readings, with the
+/// kind of each (binary code r-x, binary data, font file, heap, stack, memfd/shm pool, other anon
+/// = thread arenas and the rest), for the report; printed, never asserted.
+fn smaps_moved(from: &std::collections::BTreeMap<String, u64>, to: &std::collections::BTreeMap<String, u64>) -> String {
+    let mut out = Vec::new();
+    let keys: std::collections::BTreeSet<&String> = from.keys().chain(to.keys()).collect();
+    for k in keys {
+        let (before, after) = (from.get(k).copied().unwrap_or(0), to.get(k).copied().unwrap_or(0));
+        let delta = after as i64 - before as i64;
+        if delta.abs() >= 8 {
+            let l = k.to_lowercase();
+            let perms = k.split_whitespace().nth(1).unwrap_or("");
+            let kind = if [".ttf", ".otf", ".ttc"].iter().any(|e| l.contains(e)) {
+                "font"
+            } else if l.contains("alpheus-demon") || l.contains("/memory-") || l.contains("deps/") {
+                if perms.contains('x') { "binary code" } else { "binary data" }
+            } else if l.contains("[heap]") {
+                "main heap"
+            } else if l.contains("[stack") {
+                "stack"
+            } else if l.contains("memfd") || l.contains("shm") || l.contains("wl_shm") {
+                "shm pool"
+            } else if l.contains(".so") {
+                "library"
+            } else {
+                "anon (thread arenas, other)"
+            };
+            out.push(format!("{kind} {} {before}->{after} ({delta:+})", k.split_whitespace().next().unwrap_or("")));
+        }
+    }
+    out.join("; ")
 }
 
 /// A click on the power button, then the line it waits for (`n` of them so far).
