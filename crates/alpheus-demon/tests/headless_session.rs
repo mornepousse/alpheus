@@ -4909,7 +4909,9 @@ fn under_sway_the_launcher_lists_and_focuses_a_window() {
 
 /// Launcher 2, `--windows`: the switcher opens on the previous window (Enter focuses it), a second
 /// `--windows` while it is open steps to the next one, and none of it scans. Three windows opened
-/// in order a, b, c: Sway's order is b, a, c (the fake `wm-set` focuses nothing, so it stays).
+/// in order a, b, c: Sway's order is b, a, c (the fake `wm-set` focuses nothing, so it stays). A
+/// `--windows` right after the open is the press-bind refire and is ignored (final review); past
+/// the debounce two quick ones step twice.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn windows_focuses_the_previous_window_then_steps() {
@@ -4919,7 +4921,7 @@ fn windows_focuses_the_previous_window_then_steps() {
     let _c = TestWindow::open(&sway, "alpheus-c", "Fixture c");
     let tree = sway.ipc_raw(4, b"");
     let id = |app: &str| con_id(&tree, app).unwrap_or_else(|| panic!("{app} in this sway's tree"));
-    let (a, b) = (id("alpheus-a"), id("alpheus-b"));
+    let (b, c) = (id("alpheus-b"), id("alpheus-c"));
     fake_recorder(&sway, "wm-set");
     let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
     ready(&d);
@@ -4932,12 +4934,16 @@ fn windows_focuses_the_previous_window_then_steps() {
     let first = format!("wm-set focus-window id:{b}");
     assert!(wait_until(|| recorded(&sway, "wm-set").contains(&first)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
     assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
-    // Again: a second `--windows` while it is open steps from b to a.
+    // Again: a `--windows` at once (ignored: b stays), then past the debounce two in a row step
+    // from b to a to c. Without the debounce: b, a, c, b.
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
     assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
     assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
-    let second = format!("wm-set focus-window id:{a}");
+    let second = format!("wm-set focus-window id:{c}");
     assert!(wait_until(|| recorded(&sway, "wm-set").contains(&second)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
     assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
     assert_eq!(d.count("launcher scan: started"), 0, "the switcher scans nothing: {:?}", d.log());

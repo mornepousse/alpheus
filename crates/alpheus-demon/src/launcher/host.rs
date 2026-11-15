@@ -121,8 +121,11 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
         (Request::Calc, None) => (Action::OpenCalc, Some(Reply::Done)),
         (Request::Calc, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Calc, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
-        // Launcher 2, decision 12: a repeated `--windows` (Alt+Tab held, or pressed again) steps to the
-        // next window whatever the time since the open: no debounce, a repeat is the point.
+        // Launcher 2, decision 12 (amended at the final review): a repeated `--windows` (Alt+Tab
+        // held, or pressed again) steps to the next window, except within the debounce of the
+        // switcher's own open — Hyprland's press-bind refire, which would move the selection off
+        // the previous window. Past it, no debounce: a repeat is the point.
+        (Request::Windows, Some(Opened::Switcher)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Windows, Some(Opened::Switcher)) => (Action::StepWindows, Some(Reply::Done)),
         // From nothing, an app launcher or a script menu: the switcher replaces it, as a script does.
         (Request::Windows, _) => (Action::OpenWindows, Some(Reply::Done)),
@@ -616,11 +619,22 @@ mod tests {
         }
     }
 
-    /// Decision 12: a repeated `--windows` steps even right after the open (a held Alt+Tab
-    /// re-fires), where a Toggle would be debounced or close.
+    /// Decision 12, amended at the final review: a `--windows` within `TOGGLE_DEBOUNCE` of the
+    /// switcher's own open is Hyprland's press-bind refire and is ignored (still answered Done),
+    /// so the previous window stays selected; past it every repeat steps, however close to the
+    /// last one (the time counts from the open, not from the last step).
     #[test]
-    fn a_repeated_windows_steps_even_within_the_debounce() {
-        assert_eq!(decide(Request::Windows, Some(Opened::Switcher), Duration::from_millis(10)), (Action::StepWindows, Some(Reply::Done)));
+    fn a_repeated_windows_steps_past_the_debounce_only() {
+        let switcher = Some(Opened::Switcher);
+        assert_eq!(decide(Request::Windows, switcher, Duration::from_millis(10)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Windows, switcher, Duration::from_millis(249)), (Action::Nothing, Some(Reply::Done)));
+        assert_eq!(decide(Request::Windows, switcher, TOGGLE_DEBOUNCE), (Action::StepWindows, Some(Reply::Done)));
+        assert_eq!(decide(Request::Windows, switcher, Duration::from_millis(300)), (Action::StepWindows, Some(Reply::Done)));
+        assert_eq!(
+            decide(Request::Windows, switcher, Duration::from_millis(310)),
+            (Action::StepWindows, Some(Reply::Done)),
+            "10 ms after the last step: steps again"
+        );
     }
 
     /// `--windows` replaces another launcher (as a script does); the state becomes the switcher.
