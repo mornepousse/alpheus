@@ -69,7 +69,7 @@ fn dark_only_tags_and_the_light_mode_fallback() {
     insta::assert_snapshot!("appearance_dark_only", draw(&a, 100, 24).0.join("\n"));
     let rows = draw(&a, 100, 24).0;
     assert!(rows[2].contains("Preview — Dracula, dark"), "the header says what is drawn: {:?}", rows[2]);
-    assert_eq!(rows.iter().filter(|r| r.contains("dark only")).count(), 2, "Nord and Dracula only");
+    assert_eq!(rows.iter().filter(|r| r.contains("dark only")).count(), 3, "Nord, Dracula and Phosphor only");
 }
 
 #[test]

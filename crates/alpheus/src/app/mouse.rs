@@ -378,6 +378,6 @@ mod tests {
         let (x, y) = center(&a, Target::Tab(Tab::Appearance));
         click(&mut a, x, y);
         assert_eq!(a.tab, Tab::Appearance);
-        assert_eq!(a.appearance.entries.len(), 10, "opened by the click");
+        assert_eq!(a.appearance.entries.len(), 16, "opened by the click");
     }
 }

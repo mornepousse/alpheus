@@ -1,6 +1,5 @@
 ---
-source: crates/alpheus/src/ui/appearance.rs
-assertion_line: 536
+source: crates/alpheus/src/ui/appearance/tests.rs
 expression: "draw(&a, 100, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
@@ -16,14 +15,14 @@ expression: "draw(&a, 100, 24).0.join(\"\\n\")"
      Solarized                   │   Low      │                                                     
    ● Nord          dark only     └────────────┘                                                     
  ❯   Dracula       dark only                                                                        
-                                                                                                    
+     Ember                                                                                          
+     Glacier                                                                                        
+     Ink                                                                                            
+     High contrast                                                                                  
+     Sorbet                                                                                         
+     Phosphor      dark only                                                                        
  Mode             Auto   Dark   Light                                                               
  Module colours   None   Icons   Full   Pills                                                       
  Style            Flat   Islands   Powerline   Floating   Underline   Translucent                   
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
  Theme · ready                                                                                      
  F1 Help  Ctrl+P Palette  Esc Back  q Quit  ↑/↓ Choose  Enter Apply

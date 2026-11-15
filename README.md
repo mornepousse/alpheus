@@ -396,11 +396,18 @@ one line in the log.
 | `solarized` | dark | light |
 | `nord` | Nord | dark only |
 | `dracula` | Dracula | dark only |
+| `ember` | Ember | Ember |
+| `glacier` | Glacier | Glacier |
+| `ink` | Ink | Ink |
+| `hicon` | High contrast | High contrast |
+| `sorbet` | Sorbet | Sorbet |
+| `phosphor` | Phosphor | dark only |
 
 A preset with no light variant stays dark in light mode. Every preset is
 checked for legibility in both modes by a test using WCAG contrast:
 - text reaches 4.5:1 on the bar and the popups;
-- secondary text and the state colours reach 3:1 on the bar.
+- secondary text and the state colours reach 3:1 on the bar;
+- the six presets added in the UI refresh also keep secondary text and the module hues at 3:1 on the raised cells.
 
 Where an official colour falls short in a light variant, alpheus uses a
 darker shade of it. Nord's bar sits on `nord0` rather than `nord1`, so that
