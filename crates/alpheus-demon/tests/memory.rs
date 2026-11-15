@@ -2816,9 +2816,15 @@ fn launcher_prefixes_pss_open_and_closed() {
     assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
 }
 
-/// Launcher 2: the window switcher with three windows, opened by `--windows` and stepped 20 times
-/// (a repeated `--windows` while it is open), then closed by a typed Escape: nothing kept, and the
-/// loop sleeps after.
+/// Launcher 2: the window switcher with three windows, opened by `--windows` and stepped (a
+/// repeated `--windows` while it is open), then closed by a typed Escape: nothing kept, and the
+/// loop sleeps after. Final review: each step draws at once, and with both buffers still held by
+/// the compositor the launcher used to allocate a third and the box's SlotPool doubled (20
+/// unpaced steps: pools' PSS 56 → 2,654 KB). Now a draw with no free buffer waits for a release:
+/// the pools stay at the box's two frames (`pool_size`, from the box's size in the "launcher
+/// shown" line), paced (~100 ms apart) and back to back alike. The pools are bounded by their mapped
+/// size (exact; their PSS moves as the compositor maps them, printed only) and the daemon's own
+/// memory (PSS − pools' PSS) apart.
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn windows_switcher_pss_and_rest() {
@@ -2835,28 +2841,72 @@ fn windows_switcher_pss_and_rest() {
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
     assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(3)); // the tree read, the bar settled
+    let step = || assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    // (PSS, pools' PSS, pools' mapped size) in KB.
+    let read = || {
+        let (pss, pools) = d.pss_and_shm_kb();
+        (pss, pools, d.shm_size_kb())
+    };
+    // Opens, waits past the open's debounce (a `--windows` inside it is ignored), then steps paced
+    // and back to back.
     let cycle = |n: usize| {
-        assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+        step();
         assert!(d.wait_for_count("launcher shown on", n, DELAY), "{:?}", d.log());
+        std::thread::sleep(Duration::from_millis(300));
         for _ in 0..20 {
-            assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+            step();
+            std::thread::sleep(Duration::from_millis(100));
         }
-        let open = d.pss_kb();
+        let paced = read();
+        for _ in 0..20 {
+            step();
+        }
+        std::thread::sleep(Duration::from_millis(300)); // the last step drawn
+        let unpaced = read();
         assert!(wtype(&sway, &["-s", "300", "-k", "Escape"]).success());
         assert!(d.wait_for_count("launcher closed (escape)", n, DELAY), "{:?}", d.log());
         std::thread::sleep(Duration::from_secs(2));
-        open
+        (paced, unpaced)
     };
     let cold = d.pss_kb();
-    let first_open = cycle(1);
-    let closed = d.pss_kb();
-    let open = cycle(2);
+    let first = cycle(1);
+    let (closed, closed_pools, closed_size) = read();
+    let (paced, unpaced) = cycle(2);
     let again = d.pss_kb();
+    let (w, h) = d.last_launcher_box_px().expect("the box's size in the log");
+    let frames = (2 * w * h * 4).div_ceil(1024);
+    let own = |(pss, pools, _): (u64, u64, u64)| pss.saturating_sub(pools);
+    let closed_own = closed.saturating_sub(closed_pools);
     eprintln!(
-        "window switcher PSS (KB): cold {cold}, first open {first_open}, warmed closed {closed} (+{} the warm-up), open after 20 steps {open} (+{}), closed again {again}",
-        closed.saturating_sub(cold),
-        open.saturating_sub(closed)
+        "window switcher PSS (KB): cold {cold}, first open paced {} unpaced {}, warmed closed {closed} (own {closed_own}, pools {closed_pools}, \
+         mapped {closed_size}), the box's two frames {frames}; paced: own {} (+{}), pools {} (+{}), mapped {} (+{}); back to back: own {} \
+         (+{}), pools {} (+{}), mapped {} (+{}); closed again {again}",
+        first.0.0,
+        first.1.0,
+        own(paced),
+        own(paced).saturating_sub(closed_own),
+        paced.1,
+        paced.1.saturating_sub(closed_pools),
+        paced.2,
+        paced.2.saturating_sub(closed_size),
+        own(unpaced),
+        own(unpaced).saturating_sub(closed_own),
+        unpaced.1,
+        unpaced.1.saturating_sub(closed_pools),
+        unpaced.2,
+        unpaced.2.saturating_sub(closed_size),
     );
+    assert!(frames > 0, "a box of {w}×{h} px");
+    for (what, reading) in [("paced", paced), ("back to back", unpaced)] {
+        assert!(own(reading) <= closed_own + 512, "{what}: own memory {} KB over closed {closed_own} KB + 512", own(reading));
+        assert!(
+            reading.2 <= closed_size + frames + 64,
+            "{what}: pools mapped {} KB over closed {closed_size} KB + the box's two frames {frames} KB + 64",
+            reading.2
+        );
+    }
+    // The pages too: a burst touches no more of the pools than paced steps (a third buffer would).
+    assert!(unpaced.1 <= paced.1 + 64, "back to back: pools' PSS {} KB over paced {} KB + 64", unpaced.1, paced.1);
     assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
     const REST: Duration = Duration::from_secs(5);
     away_from_the_minute(REST);

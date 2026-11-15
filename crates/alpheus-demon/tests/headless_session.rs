@@ -4953,6 +4953,44 @@ fn windows_focuses_the_previous_window_then_steps() {
     assert!(d.wait_for("launcher scan: started", DELAY), "an apps open scans: {:?}", d.log());
 }
 
+/// Final review: with both of the box's buffers still held by the compositor, a draw waits for a
+/// release instead of allocating, and is done then. Three `--windows` sent back to back go round
+/// the three windows to where two paced ones led: the screen must show that last selection, not a
+/// frame left behind by the burst.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn back_to_back_steps_end_on_the_last_selection_drawn() {
+    let sway = Sway::start("launcher-coalesce", 1);
+    let _windows: Vec<_> =
+        ["a", "b", "c"].iter().map(|n| TestWindow::open(&sway, &format!("alpheus-{n}"), &format!("Fixture {n}"))).collect();
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BACKEND_BAR), backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    assert!(sway.wait_for_screen("HEADLESS-1", |s| ink(s, 48, 400) > 30), "the title is drawn: {:?}", d.log());
+    // Below the bar: the box alone changes with the selection (the bar's clock may tick).
+    let below_bar = || {
+        let s = sway.screenshot("HEADLESS-1").expect("a screenshot");
+        (60..s.height).flat_map(|y| (0..s.width).map(move |x| (x, y))).map(|(x, y)| s.at(x, y).unwrap_or_default()).collect::<Vec<_>>()
+    };
+    let step = || assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    step();
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_millis(300)); // past the open's debounce
+    let first = below_bar();
+    step();
+    std::thread::sleep(Duration::from_millis(300));
+    step();
+    std::thread::sleep(Duration::from_millis(300));
+    let paced = below_bar();
+    assert_ne!(paced, first, "two steps moved the selection");
+    // Round the three windows at once, back to the same selection.
+    step();
+    step();
+    step();
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(below_bar() == paced, "after a burst of three steps the box shows the selection two paced steps showed");
+}
+
 /// Spec § 6: under Mango (a fake socket serving the real captures, outputs renamed after headless
 /// sway's), the two watch lines, the active output's title, a click on tag 1 runs `wm-set
 /// workspace 1 HEADLESS-1`.
