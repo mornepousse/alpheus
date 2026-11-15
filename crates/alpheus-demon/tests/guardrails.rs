@@ -199,6 +199,14 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
     }
 }
 
+/// Small features 1, notification rules: the rules never name an app or a text in a log, and
+/// notify.rs, the pure model, logs nothing.
+#[test]
+fn the_notification_rules_log_nothing() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify.rs")).unwrap();
+    assert!(!production_code(&text).contains("log("), "notify.rs logs nothing");
+}
+
 /// Every `.rs` file under `src/`, `tests.rs` included: for the scans of raw
 /// text, which must also see test code (no real call, no forbidden word).
 fn all_source_files() -> Vec<(PathBuf, String)> {

@@ -300,7 +300,8 @@ fn notifications_defaults_and_settings() {
             max_visible: 4,
             width: 40,
             history: 50,
-            dnd_while_sharing: false
+            dnd_while_sharing: false,
+            rules: Vec::new()
         }
     );
     assert!(d.modules.contains(&ModuleId::Notifications), "on by default");
@@ -315,7 +316,8 @@ fn notifications_defaults_and_settings() {
             max_visible: 2,
             width: 60,
             history: 0,
-            dnd_while_sharing: false
+            dnd_while_sharing: false,
+            rules: Vec::new()
         }
     );
     for t in [
@@ -599,4 +601,43 @@ fn dnd_while_sharing_defaults_off_and_reads_true() {
     let c = BarConfig::from_text("[notifications]\ndnd_while_sharing = true\n").unwrap();
     assert!(c.notifications.dnd_while_sharing);
     assert_eq!(c.notifications.history, 50, "the rest stays default");
+}
+
+#[test]
+fn notification_rules_parse() {
+    let c = BarConfig::from_text(
+        "[[notifications.rules]]\napp = \"Chatty\"\naction = \"mute\"\n\
+         [[notifications.rules]]\napp = \"Pager\"\nurgency = \"critical\"\n\
+         [[notifications.rules]]\napp = \"Slow\"\naction = \"mute\"\nurgency = \"low\"\n",
+    )
+    .unwrap();
+    let rule = |app: &str, action, urgency| NotifyRule { app: app.into(), action, urgency };
+    assert_eq!(
+        c.notifications.rules,
+        vec![
+            rule("Chatty", Some(RuleAction::Mute), None),
+            rule("Pager", None, Some(RuleUrgency::Critical)),
+            rule("Slow", Some(RuleAction::Mute), Some(RuleUrgency::Low)),
+        ]
+    );
+    assert!(BarConfig::default().notifications.rules.is_empty());
+}
+
+#[test]
+fn notification_rules_are_validated() {
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    assert!(err("[[notifications.rules]]\napp = \"\"\naction = \"mute\"\n").contains("notifications.rules[1]: app empty"));
+    assert!(
+        err("[[notifications.rules]]\napp = \"A\"\naction = \"mute\"\n[[notifications.rules]]\napp = \"B\"\n")
+            .contains("notifications.rules[2]: needs action or urgency")
+    );
+    assert!(
+        err("[[notifications.rules]]\napp = \"A\"\naction = \"drop\"\nurgency = \"low\"\n")
+            .contains("notifications.rules[1]: drop takes no urgency")
+    );
+    assert!(BarConfig::from_text("[[notifications.rules]]\napp = \"A\"\naction = \"silence\"\n").is_err());
+    assert!(BarConfig::from_text("[[notifications.rules]]\nname = \"A\"\naction = \"mute\"\n").is_err());
+    let many = |n: usize| "[[notifications.rules]]\napp = \"A\"\naction = \"mute\"\n".repeat(n);
+    assert_eq!(BarConfig::from_text(&many(32)).unwrap().notifications.rules.len(), 32);
+    assert!(err(&many(33)).contains("notifications.rules: at most 32 (got 33)"));
 }

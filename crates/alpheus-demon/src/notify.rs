@@ -5,7 +5,7 @@
 //! calls and calls the `*_text` cleaners here), starts nothing and never reads the clock (its callers
 //! pass the `Instant` and the local time, `clock::local_minutes`). Bounded: `history + MAX_LIVE` entries, each capped.
 
-use crate::config::NotificationsConfig;
+use crate::config::{NotificationsConfig, NotifyRule, RuleAction, RuleUrgency};
 use crate::grid::text_width;
 use crate::icons;
 use crate::text::invisible;
@@ -397,6 +397,25 @@ fn next_after(id: u32) -> u32 {
     id.checked_add(1).unwrap_or(1)
 }
 
+/// A `[[notifications.rules]]` entry as the center keeps it: the app lowercased once.
+#[derive(Debug, Clone)]
+struct Rule {
+    app: String,
+    action: Option<RuleAction>,
+    urgency: Option<Urgency>,
+}
+
+impl Rule {
+    fn of(r: &NotifyRule) -> Rule {
+        let urgency = r.urgency.map(|u| match u {
+            RuleUrgency::Low => Urgency::Low,
+            RuleUrgency::Normal => Urgency::Normal,
+            RuleUrgency::Critical => Urgency::Critical,
+        });
+        Rule { app: r.app.to_lowercase(), action: r.action, urgency }
+    }
+}
+
 /// The notifications: the history, the live bubbles and their expiries, the id counter, the tags,
 /// the buckets, do-not-disturb, the unread count.
 #[derive(Debug, Clone)]
@@ -411,6 +430,8 @@ pub struct Center {
     history: usize,
     /// What `notify` itself closed (a critical demoted), for the D-Bus side (`take_effects`).
     effects: Vec<Effect>,
+    /// `[[notifications.rules]]`, first match wins.
+    rules: Vec<Rule>,
 }
 
 impl Center {
@@ -424,7 +445,15 @@ impl Center {
             max_visible: usize::from(cfg.max_visible),
             history: usize::from(cfg.history),
             effects: Vec::new(),
+            rules: cfg.rules.iter().map(Rule::of).collect(),
         }
+    }
+
+    /// The first rule whose app is the whole name of the sender or its desktop entry, any case.
+    fn rule_for(&self, n: &Incoming) -> Option<&Rule> {
+        let entry = n.desktop_entry.as_deref().filter(|d| !d.is_empty());
+        let (name, entry) = (n.app_name.to_lowercase(), entry.map(str::to_lowercase));
+        self.rules.iter().find(|r| r.app == name || entry.as_deref() == Some(r.app.as_str()))
     }
 
     fn position(&self, id: u32) -> Option<usize> {
@@ -501,7 +530,17 @@ impl Center {
 
     /// Takes in one notification and returns its id: always answered, bubble or not (see the
     /// notifications spec for replacement, tags, merging, the bucket and the history).
-    pub fn notify(&mut self, n: Incoming, now: Instant, at: u32) -> u32 {
+    pub fn notify(&mut self, mut n: Incoming, now: Instant, at: u32) -> u32 {
+        // The rules come first: a drop is answered and forgotten, an urgency replaces the sender's,
+        // a mute leaves the bubble out of everything below (the merge included).
+        let (action, urgency) = self.rule_for(&n).map_or((None, None), |r| (r.action, r.urgency));
+        if action == Some(RuleAction::Drop) {
+            return if n.replaces_id != 0 { n.replaces_id } else { self.fresh_id() };
+        }
+        let muted = action == Some(RuleAction::Mute);
+        if let Some(u) = urgency {
+            n.urgency = u;
+        }
         let identity = n.desktop_entry.as_deref().filter(|d| !d.is_empty()).unwrap_or(&n.app_name).to_string();
         let critical = n.urgency == Urgency::Critical;
         let target = if n.replaces_id != 0 {
@@ -520,7 +559,7 @@ impl Center {
                     && s.entry.urgency == n.urgency
                     && now.saturating_duration_since(s.arrived) < MERGE_WINDOW
             })
-            && (self.slots[i].entry.live || !self.would_show(&identity, critical, now))
+            && (self.slots[i].entry.live || muted || !self.would_show(&identity, critical, now))
         {
             self.slots[i].arrived = now;
             let id = self.slots[i].entry.id;
@@ -538,8 +577,8 @@ impl Center {
         // recomputed); it only shows once do-not-disturb is off, unless critical.
         let had_bubble = target.is_some_and(|i| self.slots[i].entry.live);
         // The live cap never blocks a critical one: the oldest live normal bubble makes room.
-        let bubble = had_bubble || critical || (!self.dnd && self.live_count() < MAX_LIVE && self.take_token(&identity, now));
-        if critical && !had_bubble && self.live_count() >= MAX_LIVE {
+        let bubble = !muted && (had_bubble || critical || (!self.dnd && self.live_count() < MAX_LIVE && self.take_token(&identity, now)));
+        if critical && bubble && !had_bubble && self.live_count() >= MAX_LIVE {
             self.demote_oldest_normal();
         }
         let (id, revision) = match target.and_then(|i| self.slots.remove(i)) {

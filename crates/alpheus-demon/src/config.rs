@@ -46,6 +46,10 @@
 //! width = 40                                                # bubble width in cells, 24 to 80
 //! history = 50                                              # entries kept for the panel, 0 to 200 (0: none)
 //! dnd_while_sharing = false  # do not disturb while the screen is shared (needs "privacy" and "notifications" in modules); a change made meanwhile wins
+//! [[notifications.rules]]  # per app, first match wins, at most 32
+//! app = "Chatty"  # the whole app name, any case
+//! action = "mute"  # "mute": no bubble, kept and counted; "drop": ignored
+//! urgency = "low"  # "low" | "normal" | "critical": replaces the app's (not with "drop")
 //! [osd]                                                     # the volume, microphone and brightness pill (with "osd" in modules)
 //! timeout_ms = 1300                                         # how long it stays after the last change, 600 to 5000
 //! width = 32                                                # cells of the pill's row, 24 to 60
@@ -390,7 +394,7 @@ pub const NOTIFY_HISTORY_MAX: u16 = 200;
 
 /// `[notifications]` (notifications spec § 6): the bubbles' timeouts, count and width, and the
 /// history's length.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct NotificationsConfig {
     /// Seconds a bubble stays when the app sends -1.
@@ -406,6 +410,41 @@ pub struct NotificationsConfig {
     pub history: u16,
     /// Do not disturb while the privacy graph shows a screen capture (needs `privacy` in `modules`).
     pub dnd_while_sharing: bool,
+    /// `[[notifications.rules]]`: per app, first match wins, at most `NOTIFY_RULES_MAX`.
+    pub rules: Vec<NotifyRule>,
+}
+
+/// At most this many `[[notifications.rules]]`.
+pub const NOTIFY_RULES_MAX: usize = 32;
+
+/// What a rule does with a matching notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleAction {
+    /// No bubble; kept in the history and counted unread.
+    Mute,
+    /// Answered to the sender, never stored.
+    Drop,
+}
+
+/// The urgency a rule gives a matching notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleUrgency {
+    Low,
+    Normal,
+    Critical,
+}
+
+/// One `[[notifications.rules]]` entry: the app's whole name (any case) and what to do.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotifyRule {
+    pub app: String,
+    #[serde(default)]
+    pub action: Option<RuleAction>,
+    #[serde(default)]
+    pub urgency: Option<RuleUrgency>,
 }
 
 impl Default for NotificationsConfig {
@@ -418,6 +457,7 @@ impl Default for NotificationsConfig {
             width: 40,
             history: 50,
             dnd_while_sharing: false,
+            rules: Vec::new(),
         }
     }
 }
@@ -755,7 +795,7 @@ impl BarConfig {
         if !(TITLE_MAX_MIN..=TITLE_MAX_MAX).contains(&b.media.title_max) {
             return Err(format!("media.title_max {} out of range {TITLE_MAX_MIN} to {TITLE_MAX_MAX} cells", b.media.title_max));
         }
-        let n = b.notifications;
+        let n = &b.notifications;
         if !((1..=n.timeout).contains(&n.timeout_min) && (n.timeout..=NOTIFY_TIMEOUT_LIMIT).contains(&n.timeout_max)) {
             return Err(format!(
                 "notifications: need 1 ≤ timeout_min ≤ timeout ≤ timeout_max ≤ {NOTIFY_TIMEOUT_LIMIT} s (got {}, {}, {})",
@@ -770,6 +810,21 @@ impl BarConfig {
         }
         if n.history > NOTIFY_HISTORY_MAX {
             return Err(format!("notifications.history {} out of range 0 to {NOTIFY_HISTORY_MAX}", n.history));
+        }
+        if n.rules.len() > NOTIFY_RULES_MAX {
+            return Err(format!("notifications.rules: at most {NOTIFY_RULES_MAX} (got {})", n.rules.len()));
+        }
+        for (i, r) in n.rules.iter().enumerate() {
+            let at = i + 1;
+            if r.app.trim().is_empty() {
+                return Err(format!("notifications.rules[{at}]: app empty"));
+            }
+            if r.action.is_none() && r.urgency.is_none() {
+                return Err(format!("notifications.rules[{at}]: needs action or urgency"));
+            }
+            if r.action == Some(RuleAction::Drop) && r.urgency.is_some() {
+                return Err(format!("notifications.rules[{at}]: drop takes no urgency"));
+            }
         }
         let o = &b.osd;
         if !(OSD_TIMEOUT_MIN..=OSD_TIMEOUT_MAX).contains(&o.timeout_ms) {
@@ -810,7 +865,7 @@ impl BarConfig {
             tray,
             media: b.media,
             privacy: b.privacy,
-            notifications: b.notifications,
+            notifications: b.notifications.clone(),
             osd: b.osd,
             quick: b.quick,
             displays: b.displays,
