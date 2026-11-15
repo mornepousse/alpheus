@@ -277,6 +277,38 @@ fn toggle_opens_and_closes_the_launcher() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// Small features, `--calc`: the calculator opens with no scan, Enter copies the result through
+/// `copy` (a stub script, never `wl-copy`), and a second `--calc` past the debounce closes it.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn calc_opens_the_calculator_and_enter_copies() {
+    use std::os::unix::fs::PermissionsExt;
+    let sway = Sway::start("launcher-calc", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let copied = sway.runtime.join("copied");
+    let stub = sway.runtime.join("fake-copy");
+    std::fs::write(&stub, format!("#!/bin/sh\ncat > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", copied.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = format!("copy = [\"{}\"]\n", stub.display());
+    let mut d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(d.count("launcher scan"), 0, "the calculator scans nothing: {:?}", d.log());
+    // One wtype process: its virtual keyboard is the seat's only one (see `wtype_spawn`).
+    assert!(wtype(&sway, &["-s", "300", "6*7", "-k", "Return"]).success());
+    wait_for_file(&copied, DELAY);
+    assert_eq!(std::fs::read_to_string(&copied).unwrap(), "42", "the result alone on the copy program's stdin");
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // Past TOGGLE_DEBOUNCE, a second `--calc` closes an open calculator.
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
+}
+
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn typing_launches_the_fake_program() {

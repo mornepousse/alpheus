@@ -530,6 +530,23 @@ fn quick_sends_its_word_and_exits_0() {
     }
 }
 
+/// Small features spec: `--calc` sends its request and exits 0 on Done; a daemon too old for it
+/// answers the unknown request: exit 3, one request.
+#[test]
+fn calc_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("calc", Reply::Done);
+    assert_eq!(launch(&["--calc"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Calc);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("calc-old", Reply::Error("malformed request: unknown request \"calc\"".into()));
+    let (code, out, err) = launch(&["--calc"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--calc"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
 /// Spec § 1: a daemon older than `--quick` refuses the word as an unknown request: exit 3, as for
 /// the other verbs, one request, no retry.
 #[test]

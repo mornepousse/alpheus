@@ -33,7 +33,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --help]
+                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -53,12 +53,13 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --quick [sound|wifi|bluetooth]
                           open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
                           with wifi, on Bluetooth with bluetooth)
+  --calc                  open the launcher as a calculator (Enter copies the result), or close it
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--quick (or its wifi or bluetooth word) (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--quick (or its wifi or bluetooth word)/--calc (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -73,6 +74,7 @@ pub enum Invocation {
     ClearNotifications,
     Osd(OsdVerb),
     Quick(QuickVerb),
+    Calc,
     Help,
 }
 
@@ -108,6 +110,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                 };
                 choose(&mut mode, Invocation::Quick(verb))?
             }
+            "--calc" => choose(&mut mode, Invocation::Calc)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -208,7 +211,7 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
-        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --help".into());
+        return Err("only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --help".into());
     }
     *slot = Some(i);
     Ok(())
@@ -301,6 +304,7 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
         Ok(Invocation::Osd(v)) => Request::Osd(v),
         Ok(Invocation::Quick(v)) => Request::Quick(v),
+        Ok(Invocation::Calc) => Request::Calc,
         // --password: stdin is still read (a writer is never cut off), then ignored — fuzzel
         // accepts it too; no line leaves the client.
         Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin, flags.index) {
@@ -347,6 +351,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)
+            | Request::Calc
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert,
@@ -378,6 +383,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
             "--password"
         }),
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
+        Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Quick(verb) => {
             OLD_QUICK.iter().find(|(only, refusal, _)| refusal == &error && only.is_none_or(|v| v == *verb)).map(|(_, _, what)| *what)
         }
@@ -457,6 +463,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
+        assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
         assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
         assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
         assert_eq!(parse_args(&args(&["--quick", "wifi"])), Ok(Invocation::Quick(QuickVerb::Wifi)));
@@ -518,6 +525,7 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
+            (&["--calc", "--toggle"], "--quick, --calc, --help"),
             (&["--quick", "sound", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--help", "--dmenu"], "only one of"),
             (&["--dmenu", "--prompt"], "needs a value"),
@@ -550,6 +558,17 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = run(&args(&["--osd", "brightness"]), &socket, &mut std::io::empty(), &mut out, &mut err);
         assert_eq!(code, EXIT_UNREACHABLE, "{}", String::from_utf8_lossy(&err));
+    }
+
+    /// A daemon from before `--calc` refuses the word as an unknown request: exit 3, naming it.
+    #[test]
+    fn a_daemon_without_calc_is_too_old() {
+        let refusal = "malformed request: unknown request \"calc\"";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::Calc, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--calc"), "{}", String::from_utf8_lossy(&err));
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::Calc, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
     }
 
     /// An upgrade not followed by a restart: a daemon that never heard of the displays verbs

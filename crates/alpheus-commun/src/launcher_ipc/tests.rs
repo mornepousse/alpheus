@@ -41,6 +41,7 @@ fn requests() -> Vec<Request> {
         Request::Quick(QuickVerb::Sound),
         Request::Quick(QuickVerb::Wifi),
         Request::Quick(QuickVerb::Bluetooth),
+        Request::Calc,
         Request::Outputs,
         Request::OutputsTry(String::new()),
         Request::OutputsTry("step\tDP-1\t1920x1080@60 0 0 1000 0\nstep\tHDMI-A-1\toff\n".into()),
@@ -90,6 +91,7 @@ fn the_wire_format_is_the_documented_one() {
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Sound)), b"alpheus-launcher/1 quick sound\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Wifi)), b"alpheus-launcher/1 quick wifi\n");
     assert_eq!(encode_request(&Request::Quick(QuickVerb::Bluetooth)), b"alpheus-launcher/1 quick bluetooth\n");
+    assert_eq!(encode_request(&Request::Calc), b"alpheus-launcher/1 calc\n");
     assert_eq!(
         encode_request(&Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }),
         b"alpheus-launcher/1 dmenu - 0\n"
@@ -122,6 +124,7 @@ fn malformed_headers_are_refused() {
         b"alpheus-launcher/1 open\n",
         b"alpheus-launcher/1\n",
         b"alpheus-launcher/1 toggle now\n",
+        b"alpheus-launcher/1 calc now\n",
         b"alpheus-launcher/1  toggle\n",
         b"alpheus-launcher/1 dmenu x 3\n",
         b"alpheus-launcher/1 dmenu - -1\n",
@@ -469,7 +472,9 @@ fn an_unknown_trial_word_is_refused() {
 fn a_trial_waits_longer_than_the_other_verbs_and_dmenu_waits_for_the_person() {
     assert_eq!(Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }.reply_timeout(), None);
     assert_eq!(Request::OutputsTry(String::new()).reply_timeout(), Some(Duration::from_secs(7)));
-    for r in [Request::Toggle, Request::Outputs, Request::OutputsKeep, Request::OutputsRevert, Request::Quick(QuickVerb::Top)] {
+    for r in
+        [Request::Toggle, Request::Outputs, Request::OutputsKeep, Request::OutputsRevert, Request::Quick(QuickVerb::Top), Request::Calc]
+    {
         assert_eq!(r.reply_timeout(), Some(Duration::from_secs(2)), "{r:?}");
     }
 }

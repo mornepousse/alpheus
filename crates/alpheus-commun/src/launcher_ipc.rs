@@ -129,6 +129,8 @@ pub struct DmenuFlags {
 pub enum Request {
     Toggle,
     Close,
+    /// Opens the launcher as a calculator with no scan (a second one, or a toggle, closes it).
+    Calc,
     Dmenu {
         prompt: Option<String>,
         lines: Vec<String>,
@@ -244,6 +246,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
     match r {
         Request::Toggle => format!("{MAGIC} toggle\n").into_bytes(),
         Request::Close => format!("{MAGIC} close\n").into_bytes(),
+        Request::Calc => format!("{MAGIC} calc\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
         Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
@@ -279,6 +282,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
 enum Header {
     Toggle,
     Close,
+    Calc,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
     ClearNotifications,
@@ -425,6 +429,7 @@ fn bare_request(h: Header) -> Option<Request> {
     match h {
         Header::Toggle => Some(Request::Toggle),
         Header::Close => Some(Request::Close),
+        Header::Calc => Some(Request::Calc),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
         Header::Osd(v) => Some(Request::Osd(v)),
@@ -445,6 +450,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
     match words.collect::<Vec<_>>().as_slice() {
         ["toggle"] => Ok(Header::Toggle),
         ["close"] => Ok(Header::Close),
+        ["calc"] => Ok(Header::Calc),
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
         }

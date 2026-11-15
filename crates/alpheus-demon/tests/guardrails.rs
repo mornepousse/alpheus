@@ -756,6 +756,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         match r {
             Request::Toggle => "toggle",
             Request::Close => "close",
+            Request::Calc => "calc",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
             Request::ClearNotifications => "clear-notifications",
@@ -770,6 +771,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
     let all = [
         Request::Toggle,
         Request::Close,
+        Request::Calc,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
         Request::ClearNotifications,
@@ -785,6 +787,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         [
             "toggle",
             "close",
+            "calc",
             "dmenu",
             "dnd",
             "clear-notifications",
@@ -1721,12 +1724,14 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     }
     // Copy is reached only from a Calc hit: every other result of every mode, clicked either way,
     // never gives one.
+    // A math query is part of the sweep: the positive case, the calculator's own row copies.
+    let mut calc_copies = 0;
     for mode in Mode::CYCLE {
         let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
         l.set_catalog(catalog.clone());
         l.set_entries(entries.clone());
         l.click_mode(mode);
-        for query in ["", "fire", "zone", "htop", "ls -la"] {
+        for query in ["", "fire", "zone", "htop", "ls -la", "6*7"] {
             for c in query.chars() {
                 l.key(Key::Char(c));
             }
@@ -1736,11 +1741,16 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     let o = l.click(i, secondary);
                     let copies = matches!(&o, Outcome::Activate(a) if format!("{a:?}").starts_with("Copy"));
                     assert!(!copies || is_calc, "{mode:?} {query:?}: Copy from a result that is not the calculator");
+                    if is_calc {
+                        assert!(copies, "{mode:?} {query:?}: the calculator's row, clicked, copies");
+                        calc_copies += 1;
+                    }
                 }
             }
             l.key(Key::CtrlU);
         }
     }
+    assert!(calc_copies > 0, "the sweep never met a calculator row: the positive case is vacuous");
 }
 
 /// Records each call's argv as given (program first), element by element; every call fails.

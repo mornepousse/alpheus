@@ -141,6 +141,7 @@ impl App {
             Request::ClearNotifications => self.clear_notifications(),
             Request::Toggle
             | Request::Close
+            | Request::Calc
             | Request::Dmenu { .. }
             | Request::Osd(_)
             | Request::Quick(_)

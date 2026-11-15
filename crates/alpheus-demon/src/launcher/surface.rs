@@ -127,7 +127,7 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// panel is reserved for the app launcher from the first frame — blank while
 /// the selection has nothing to preview or the catalog is not in yet — so
 /// the box never changes width as the selection moves; a script menu never
-/// has one. Driven by `model.is_script()` alone, never by the selection.
+/// has one. Driven by `model.is_bare()` alone, never by the selection.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
     view::layout(output_columns, output_rows, model.config.rows, model.is_bare(), !model.is_bare())
 }

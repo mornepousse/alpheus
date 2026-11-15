@@ -138,10 +138,14 @@ impl LauncherConfig {
         }
     }
 
-    /// Validation: terminal, terminal_hold and focus non-empty with a non-blank program (copy: may be empty, else the same); focus
-    /// contains "{window}"; rows in ROWS_MIN..=ROWS_MAX; history ≤ HISTORY_MAX; prefixes
-    /// non-empty, not starting with whitespace, neither one a prefix of the other (equal
-    /// included); sources: `check_sources`.
+    /// Validation:
+    /// - terminal, terminal_hold and focus: non-empty, with a non-blank program (copy may be
+    ///   empty, otherwise the same rule);
+    /// - focus contains "{window}";
+    /// - rows in ROWS_MIN..=ROWS_MAX, history ≤ HISTORY_MAX;
+    /// - prefixes non-empty, not starting with whitespace, neither one a prefix of the other
+    ///   (equal included);
+    /// - sources: `check_sources`.
     pub fn from_text(s: &str) -> Result<LauncherConfig, String> {
         let r: Raw = toml::from_str(s).map_err(|e| e.message().to_string())?;
         for (key, command) in [("terminal", &r.terminal), ("terminal_hold", &r.terminal_hold), ("focus", &r.focus)] {

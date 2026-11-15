@@ -16,6 +16,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::Quick(QuickVerb::Top), Route::Quick),
         (Request::Toggle, Route::Launcher),
         (Request::Close, Route::Launcher),
+        (Request::Calc, Route::Launcher),
         (Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() }, Route::Launcher),
     ];
     for (request, want) in cases {
