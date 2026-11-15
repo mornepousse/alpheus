@@ -421,6 +421,7 @@ mod tests {
         let mut b = Bar::new(BarConfig::default());
         assert!(b.apply(Msg::Resources(s)));
         assert!(!b.apply(Msg::Resources(s)));
+        assert_eq!(b.resources.history.len(), 2, "both stored, though the second changed nothing");
     }
 
     #[test]
