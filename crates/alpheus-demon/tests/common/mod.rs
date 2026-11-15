@@ -1461,6 +1461,7 @@ const NM_ROOT: &str = "org.freedesktop.NetworkManager";
 const NM_WIRED_DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/1";
 const NM_ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/1";
 const NM_SETTINGS: &str = "/org/freedesktop/NetworkManager/Settings";
+const NM_ACTIVE_IFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const NM_DEVICE: &str = "org.freedesktop.NetworkManager.Device";
 const NM_WIRELESS: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const NM_ACCESS_POINT: &str = "org.freedesktop.NetworkManager.AccessPoint";
@@ -1472,6 +1473,24 @@ pub fn nm_ap_path(n: usize) -> String {
 
 fn nm_settings_path(n: usize) -> String {
     format!("/org/freedesktop/NetworkManager/Settings/{n}")
+}
+
+/// The uuid of the fake VPN `n` (from 1).
+pub fn vpn_uuid(n: usize) -> String {
+    format!("aaaaaaaa-0000-4000-8000-{n:012}")
+}
+
+fn nm_active_vpn_path(n: usize) -> String {
+    format!("/org/freedesktop/NetworkManager/ActiveConnection/{}", 100 + n)
+}
+
+/// A fictional VPN profile: a plugin's (`wireguard` false) or a WireGuard tunnel; `asks`: a secret
+/// is asked at connection time (a flag in its settings, never a secret).
+#[derive(Debug, Clone)]
+pub struct FakeVpn {
+    pub name: String,
+    pub wireguard: bool,
+    pub asks: bool,
 }
 
 /// A fictional access point (`psk`: WPA2 personal; else open).
@@ -1504,6 +1523,9 @@ pub enum NmChange {
     /// On access point `n` under the profile `uuid` (State 100), or on none (State 30); the root's
     /// PropertiesChanged.
     Connect(Option<(usize, String)>),
+    /// The VPN `n` (from 1)'s active connection set at a State, or removed (None); then the root's
+    /// PropertiesChanged on ActiveConnections and, when set, that connection's on State.
+    Vpn(usize, Option<u32>),
 }
 
 struct NmState {
@@ -1512,6 +1534,9 @@ struct NmState {
     active: Option<(usize, String)>,
     aps: Vec<FakeAp>,
     saved: Vec<(String, String)>,
+    vpns: Vec<FakeVpn>,
+    /// The VPNs with an active connection: (n, State).
+    vpn_active: Vec<(usize, u32)>,
 }
 
 /// A NetworkManager on a private bus (test code only): owns its name, answers the bar's reads (the
@@ -1526,12 +1551,18 @@ pub struct FakeNetworkManager {
 
 impl FakeNetworkManager {
     pub fn serve(bus: &PrivateBus, aps: Vec<FakeAp>, saved: Vec<(String, String)>) -> FakeNetworkManager {
+        Self::serve_with(bus, aps, saved, vec![])
+    }
+
+    /// As `serve`, with VPN profiles saved after the Wi-Fi ones (`Settings/<saved.len() + n>`, uuid
+    /// `vpn_uuid(n)`, `timestamp` n).
+    pub fn serve_with(bus: &PrivateBus, aps: Vec<FakeAp>, saved: Vec<(String, String)>, vpns: Vec<FakeVpn>) -> FakeNetworkManager {
         let peer = Peer::connect(bus);
         peer.own(NM_NAME);
         let (tx, rx) = mpsc::channel::<NmChange>();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let record = calls.clone();
-        let mut st = NmState { radio: true, device: 30, active: None, aps, saved };
+        let mut st = NmState { radio: true, device: 30, active: None, aps, saved, vpns, vpn_active: Vec::new() };
         let thread = thread::spawn(move || {
             loop {
                 match rx.try_recv() {
@@ -1612,7 +1643,10 @@ fn nm_changed(path: &str, interface: &str, changed: &str) -> dbus::Message {
 
 impl NmState {
     fn active_connections(&self) -> String {
-        let list = if self.active.is_some() { format!("[\"{NM_ACTIVE}\"]") } else { "[]".into() };
+        let mut paths: Vec<String> = self.active.iter().map(|_| NM_ACTIVE.to_string()).collect();
+        paths.extend(self.vpn_active.iter().map(|(n, _)| nm_active_vpn_path(*n)));
+        let quoted: Vec<String> = paths.iter().map(|p| format!("\"{p}\"")).collect();
+        let list = format!("[{}]", quoted.join(","));
         format!(r#""ActiveConnections":{{"type":"ao","data":{list}}}"#)
     }
 
@@ -1635,7 +1669,39 @@ impl NmState {
         ))
     }
 
+    fn vpn_settings(&self, n: usize) -> Option<String> {
+        let v = self.vpns.get(n.checked_sub(1)?)?;
+        let (kind, secret) = match (v.wireguard, v.asks) {
+            (true, true) => ("wireguard", r#","wireguard":{"private-key-flags":{"type":"u","data":1}}"#),
+            (true, false) => ("wireguard", ""),
+            (false, true) => (
+                "vpn",
+                r#","vpn":{"service-type":{"type":"s","data":"org.freedesktop.NetworkManager.openvpn"},"data":{"type":"a{ss}","data":{"password-flags":"1"}}}"#,
+            ),
+            (false, false) => ("vpn", ""),
+        };
+        Some(format!(
+            r#"{{"type":"a{{sa{{sv}}}}","data":[{{"connection":{{"id":{{"type":"s","data":"{}"}},"uuid":{{"type":"s","data":"{}"}},"type":{{"type":"s","data":"{kind}"}},"timestamp":{{"type":"t","data":{n}}}}}{secret}}}]}}"#,
+            v.name,
+            vpn_uuid(n)
+        ))
+    }
+
+    fn vpn_active_props(&self, n: usize) -> Option<String> {
+        let v = self.vpns.get(n.checked_sub(1)?)?;
+        let (_, state) = self.vpn_active.iter().find(|(i, _)| *i == n)?;
+        let kind = if v.wireguard { "wireguard" } else { "vpn" };
+        Some(format!(
+            r#"{{"type":"a{{sv}}","data":[{{"Uuid":{{"type":"s","data":"{}"}},"Type":{{"type":"s","data":"{kind}"}},"State":{{"type":"u","data":{state}}},"Vpn":{{"type":"b","data":{}}}}}]}}"#,
+            vpn_uuid(n),
+            !v.wireguard
+        ))
+    }
+
     fn settings(&self, n: usize) -> Option<String> {
+        if n > self.saved.len() {
+            return self.vpn_settings(n - self.saved.len());
+        }
         let (uuid, ssid) = self.saved.get(n.checked_sub(1)?)?;
         Some(format!(
             r#"{{"type":"a{{sa{{sv}}}}","data":[{{"connection":{{"id":{{"type":"s","data":"{ssid}"}},"uuid":{{"type":"s","data":"{uuid}"}},"type":{{"type":"s","data":"802-11-wireless"}}}},"802-11-wireless":{{"ssid":{},"mode":{{"type":"s","data":"infrastructure"}}}},"802-11-wireless-security":{{"key-mgmt":{{"type":"s","data":"wpa-psk"}}}}}}]}}"#,
@@ -1657,6 +1723,9 @@ impl NmState {
                     r#"{{"type":"a{{sv}}","data":[{{"Uuid":{{"type":"s","data":"{uuid}"}},"Type":{{"type":"s","data":"802-11-wireless"}},"State":{{"type":"u","data":2}},"Vpn":{{"type":"b","data":false}}}}]}}"#
                 )
             }),
+            ("GetAll", _, "org.freedesktop.NetworkManager.Connection.Active") => {
+                index("/org/freedesktop/NetworkManager/ActiveConnection/").and_then(|n| self.vpn_active_props(n.checked_sub(100)?))
+            }
             ("GetDevices", NM_PATH, _) => Some(paths_json(&[NM_WIRED_DEVICE.into(), NM_WIFI_DEVICE.into()])),
             ("GetAll", NM_WIRED_DEVICE, NM_DEVICE) => {
                 Some(r#"{"type":"a{sv}","data":[{"DeviceType":{"type":"u","data":1},"State":{"type":"u","data":30}}]}"#.into())
@@ -1673,7 +1742,9 @@ impl NmState {
                 Some(format!(r#"{{"type":"a{{sv}}","data":[{{"ActiveAccessPoint":{{"type":"o","data":"{active_ap}"}},"AccessPoints":{listed}}}]}}"#))
             }
             ("GetAll", _, NM_ACCESS_POINT) => index("/org/freedesktop/NetworkManager/AccessPoint/").and_then(|n| self.ap(n)),
-            ("ListConnections", NM_SETTINGS, _) => Some(paths_json(&(1..=self.saved.len()).map(nm_settings_path).collect::<Vec<_>>())),
+            ("ListConnections", NM_SETTINGS, _) => {
+                Some(paths_json(&(1..=self.saved.len() + self.vpns.len()).map(nm_settings_path).collect::<Vec<_>>()))
+            }
             ("GetSettings", _, _) => index("/org/freedesktop/NetworkManager/Settings/").and_then(|n| self.settings(n)),
             _ => None,
         };
@@ -1720,6 +1791,17 @@ impl NmState {
                 self.device = if to.is_some() { 100 } else { 30 };
                 self.active = to;
                 vec![nm_changed(NM_PATH, NM_ROOT, &self.active_connections())]
+            }
+            NmChange::Vpn(n, state) => {
+                self.vpn_active.retain(|(i, _)| *i != n);
+                if let Some(s) = state {
+                    self.vpn_active.push((n, s));
+                }
+                let mut out = vec![nm_changed(NM_PATH, NM_ROOT, &self.active_connections())];
+                if let Some(s) = state {
+                    out.push(nm_changed(&nm_active_vpn_path(n), NM_ACTIVE_IFACE, &format!(r#""State":{{"type":"u","data":{s}}}"#)));
+                }
+                out
             }
         }
     }

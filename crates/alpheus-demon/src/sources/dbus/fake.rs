@@ -5,6 +5,7 @@
 
 use super::bt::BtTap;
 use super::props::{Objects, Prop, Props, busctl};
+use super::vpn::VpnTap;
 use super::wifi::{self, WifiTap};
 use super::{BLUEZ, Bus, NM, POWER_PROFILES, Signal, UPOWER, power, service_gone, under};
 use crate::system::{Saved, SavedWifi};
@@ -92,6 +93,8 @@ pub struct FakeBus {
     pub tap: Arc<WifiTap>,
     /// The Bluetooth panel's, the same way.
     pub bt_tap: Arc<BtTap>,
+    /// The VPN reading's, the same way.
+    pub vpn_tap: Arc<VpnTap>,
     pub script: VecDeque<Step>,
     pub calls: Vec<String>,
 }
@@ -116,6 +119,7 @@ impl FakeBus {
             rules: Vec::new(),
             tap: Arc::default(),
             bt_tap: Arc::default(),
+            vpn_tap: Arc::default(),
             script: VecDeque::new(),
             calls: Vec::new(),
         }

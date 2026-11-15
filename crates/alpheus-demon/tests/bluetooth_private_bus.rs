@@ -7,6 +7,7 @@ mod common;
 use alpheus_demon::sources::dbus::bt::BtTap;
 use alpheus_demon::sources::dbus::bt_act::{AGENT_PATH, ActCall, ActError, AgentId, AgentReply, AgentRequest, BtAct, BtEvent};
 use alpheus_demon::sources::dbus::dbusrs_bus::DbusRsBus;
+use alpheus_demon::sources::dbus::vpn::VpnTap;
 use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Domain, DomainLog, session};
 use alpheus_demon::system::{BtEntry, BtScope, BtState, BtView};
@@ -22,7 +23,7 @@ fn follow(b: &PrivateBus, tap: &Arc<BtTap>) -> mpsc::Receiver<Seen> {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Bluetooth], &mut DomainLog::default(), &WifiTap::default(), &t, &mut |s| {
+        let _ = session(&mut bus, &[Domain::Bluetooth], &mut DomainLog::default(), &WifiTap::default(), &t, &VpnTap::default(), &mut |s| {
             tx.send((s.bluetooth, s.bt)).is_ok()
         });
     });

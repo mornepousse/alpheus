@@ -10,7 +10,7 @@ const ROOT: &str = "/org/freedesktop/NetworkManager";
 
 /// A fictional OpenVPN profile (uuid ...20) and a WireGuard one (the workstation's tunnel ...2),
 /// saved; the OpenVPN one active too (a plugin VPN: `Vpn` true).
-fn vpn_bus() -> FakeBus {
+pub(in crate::sources::dbus) fn vpn_bus() -> FakeBus {
     let mut bus = FakeBus::workstation();
     let (plugin, wg) = (format!("{SETTINGS}/20"), format!("{SETTINGS}/21"));
     bus.connections = Some(vec![plugin.clone(), wg.clone()]);
@@ -37,7 +37,7 @@ fn vpn_bus() -> FakeBus {
 
 impl FakeBus {
     /// The root's ActiveConnections, by number.
-    fn set_actives(&mut self, ns: &[u32]) {
+    pub(in crate::sources::dbus) fn set_actives(&mut self, ns: &[u32]) {
         let paths = ns.iter().map(|n| format!("{ACTIVE}/{n}")).collect();
         self.props_mut(ROOT, network::INTERFACE).0.insert("ActiveConnections".into(), Prop::Paths(paths));
     }

@@ -154,6 +154,8 @@ fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
         wifi_open: 0,
         bt: None,
         bt_open: 0,
+        vpn: None,
+        vpn_open: 0,
     };
     for m in messages(Some(s)) {
         on_message(&mut c, m, || AFTER);

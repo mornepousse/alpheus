@@ -670,9 +670,20 @@ fn start_sources(state: &mut App, tx: &channel::Sender<Mail>, plan: &Plan, exec:
                 Err(e) => log(&format!("quick: no Bluetooth tap ({e})")),
             }
         }
-        sources::dbus::start(want.dbus.clone(), state.quick.wifi_tap.clone(), state.quick.bt_tap.clone(), move |s| {
-            sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok())
-        });
+        // The VPN row and detail (quick VPN spec § 5): read on the network domain, with the Wi-Fi's.
+        if state.quick_enabled() && want.dbus.contains(&Domain::Network) {
+            match crate::sources::dbus::vpn::VpnTap::new() {
+                Ok(t) => state.quick.vpn_tap = Some(Arc::new(t)),
+                Err(e) => log(&format!("quick: no VPN tap ({e})")),
+            }
+        }
+        sources::dbus::start(
+            want.dbus.clone(),
+            state.quick.wifi_tap.clone(),
+            state.quick.bt_tap.clone(),
+            state.quick.vpn_tap.clone(),
+            move |s| sources::dbus::messages(s).into_iter().all(|m| tx.send(Mail::Bar(m)).is_ok()),
+        );
     }
 }
 

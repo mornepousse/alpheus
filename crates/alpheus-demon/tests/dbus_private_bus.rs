@@ -6,10 +6,16 @@ mod common;
 
 use alpheus_demon::sources::dbus::bt::BtTap;
 use alpheus_demon::sources::dbus::dbusrs_bus::{DbusRsBus, WIFI_RULES};
+use alpheus_demon::sources::dbus::vpn::VpnTap;
 use alpheus_demon::sources::dbus::wifi::WifiTap;
 use alpheus_demon::sources::dbus::{Bus, DOMAINS, Domain, DomainLog, NM, session};
-use alpheus_demon::system::{BtState, NetState, PowerState, Profile, ProfileState, SavedWifi, Security, WifiScope};
-use common::{FakeAp, FakeNetworkManager, FakePowerProfiles, NmChange, Peer, PrivateBus, UUID_HOME, UUID_NEW, Workstation, process_alive};
+use alpheus_demon::system::{
+    ActiveVpn, BtState, NetState, PowerState, Profile, ProfileState, SavedWifi, Security, VpnKind, VpnScope, WifiScope,
+};
+use common::{
+    FakeAp, FakeNetworkManager, FakePowerProfiles, FakeVpn, NmChange, Peer, PrivateBus, UUID_HOME, UUID_NEW, Workstation, process_alive,
+    vpn_uuid,
+};
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, mpsc};
@@ -103,7 +109,7 @@ fn the_session_on_an_empty_bus_hides_everything() {
     let b = PrivateBus::start("session");
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -123,9 +129,15 @@ fn the_power_profile_is_read_followed_and_hidden_on_a_private_bus() {
     let mut bus = DbusRsBus::at(&b.address, &[Domain::Power]).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Power], &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
-            tx.send(s.power).is_ok()
-        });
+        let _ = session(
+            &mut bus,
+            &[Domain::Power],
+            &mut DomainLog::default(),
+            &WifiTap::default(),
+            &BtTap::default(),
+            &VpnTap::default(),
+            &mut |s| tx.send(s.power).is_ok(),
+        );
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let all = Profile::ALL.to_vec();
@@ -193,7 +205,7 @@ fn the_recorded_workstation_reads_the_same_over_the_wire() {
     let _workstation = Workstation::serve(&b);
     let mut bus = DbusRsBus::at(&b.address, &DOMAINS).unwrap();
     let mut first = None;
-    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &mut |s| {
+    let r = session(&mut bus, &DOMAINS, &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &VpnTap::default(), &mut |s| {
         first = Some(s);
         false
     });
@@ -312,7 +324,9 @@ fn the_wifi_row_is_read_on_the_taps_word_and_followed_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &mut |s| tx.send(s.wifi).is_ok());
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &VpnTap::default(), &mut |s| {
+            tx.send(s.wifi).is_ok()
+        });
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     assert_eq!(next(), None, "closed: no Wi-Fi read");
@@ -348,7 +362,9 @@ fn the_wifi_detail_is_read_followed_and_let_go_on_a_private_bus() {
     let (tx, rx) = mpsc::channel();
     let t = tap.clone();
     std::thread::spawn(move || {
-        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &mut |s| tx.send(s.wifi).is_ok());
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &t, &BtTap::default(), &VpnTap::default(), &mut |s| {
+            tx.send(s.wifi).is_ok()
+        });
     });
     let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
     let device = |w: Option<alpheus_demon::system::WifiState>| w.and_then(|w| w.device).expect("the Wi-Fi device");
@@ -404,4 +420,53 @@ fn detail_rules(b: &PrivateBus) -> usize {
     };
     let wanted: Vec<Vec<String>> = WIFI_RULES.iter().map(|r| parts(r)).collect();
     all.values().flatten().filter(|r| wanted.contains(&parts(r))).count()
+}
+
+/// Quick VPN spec § 5: closed, no VPN is read; the loop's word reads the two profiles and the
+/// actives; an active connection's change is followed; closed again, the state goes and nothing more
+/// is asked of NetworkManager. Over the wire, through the real connection and its poll.
+#[test]
+#[ignore = "dbus-daemon (nix develop)"]
+fn the_vpn_reading_on_a_private_bus() {
+    let b = PrivateBus::start("vpn-row");
+    let vpns = vec![
+        FakeVpn { name: "Travail-Test".into(), wireguard: false, asks: true },
+        FakeVpn { name: "Maison-Test".into(), wireguard: true, asks: false },
+    ];
+    let nm = FakeNetworkManager::serve_with(&b, vec![], vec![(UUID_HOME.into(), "Maison-Test".into())], vpns);
+    let tap = Arc::new(VpnTap::new().unwrap());
+    let mut bus = DbusRsBus::at(&b.address, &[Domain::Network]).unwrap().waking(tap.clone());
+    let (tx, rx) = mpsc::channel();
+    let t = tap.clone();
+    std::thread::spawn(move || {
+        let _ = session(&mut bus, &[Domain::Network], &mut DomainLog::default(), &WifiTap::default(), &BtTap::default(), &t, &mut |s| {
+            tx.send(s.vpn).is_ok()
+        });
+    });
+    let next = || rx.recv_timeout(Duration::from_secs(5)).expect("a publication");
+    assert_eq!(next(), None, "closed: no VPN read");
+    assert!(!nm.calls().iter().any(|c| c.starts_with("ListConnections")), "{:?}", nm.calls());
+    tap.set(VpnScope::Row);
+    let row = next().expect("open: the row");
+    let seen: Vec<(&str, VpnKind, bool, u64)> = row.profiles.iter().map(|p| (p.name.as_str(), p.kind, p.asks, p.last_used)).collect();
+    assert_eq!(seen, [("Travail-Test", VpnKind::Plugin, true, 1), ("Maison-Test", VpnKind::WireGuard, false, 2)]);
+    assert_eq!(row.profiles[1].uuid, vpn_uuid(2));
+    assert!(row.active.is_empty());
+    // The tap's byte was drained: nothing more is asked at rest.
+    let calls = nm.calls().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(nm.calls().len(), calls, "no re-read at rest: {:?}", &nm.calls()[calls..]);
+    nm.change(NmChange::Vpn(1, Some(2)));
+    let up = next().expect("followed");
+    assert_eq!(up.active, [ActiveVpn { uuid: vpn_uuid(1), state: 2 }]);
+    tap.set(VpnScope::Closed);
+    assert_eq!(next(), None, "closed: the state goes");
+    std::thread::sleep(Duration::from_millis(300));
+    let calls = nm.calls().len();
+    nm.change(NmChange::Vpn(1, None));
+    std::thread::sleep(Duration::from_millis(500));
+    let after: Vec<String> =
+        nm.calls()[calls..].iter().filter(|c| c.starts_with("ListConnections") || c.starts_with("GetSettings")).cloned().collect();
+    assert!(after.is_empty(), "closed: no VPN call after a further change: {after:?}");
+    assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
 }

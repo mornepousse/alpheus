@@ -50,6 +50,9 @@ pub(crate) struct QuickApp {
     /// Shared with the D-Bus thread (`sources::dbus::bt::BtTap`): what the open quick panel shows
     /// of Bluetooth. None without the quick module or the Bluetooth domain.
     pub(crate) bt_tap: Option<Arc<crate::sources::dbus::bt::BtTap>>,
+    /// Shared with the D-Bus thread (`sources::dbus::vpn::VpnTap`): what the open quick panel shows
+    /// of the VPNs. None without the quick module or the network domain.
+    pub(crate) vpn_tap: Option<Arc<crate::sources::dbus::vpn::VpnTap>>,
     /// The quick panel's acting Bluetooth connection (bt_app.rs): only while the Bluetooth detail
     /// is open or a call is in flight. None at rest.
     pub(crate) bt_act: Option<crate::sources::dbus::bt_act::BtAct>,
@@ -72,6 +75,7 @@ impl QuickApp {
             sound_tap: None,
             wifi_tap: None,
             bt_tap: None,
+            vpn_tap: None,
             bt_act: None,
             bt_source: None,
             wifi_follow: None,
