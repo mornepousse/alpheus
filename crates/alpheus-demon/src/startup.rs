@@ -571,6 +571,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
     let timer = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
         let (h, nanos) = LocalTime::now();
         on_message(state, Msg::Clock(h), || h); // never consulted: Msg::Clock is not "from the compositor"
+        state.dnd_check_clock(); // a timed do-not-disturb's end, by the wall clock (suspend)
         TimeoutAction::ToDuration(clock::next_tick(h.second, nanos, seconds))
     });
     if mail.is_err() || timer.is_err() {
@@ -613,7 +614,7 @@ fn start_modules(state: &mut App, handle: &LoopHandle<'static, App>, plan: &Plan
     // The notifications server: do-not-disturb as it was left, then the name requested on the
     // tray's connection or on the bar's link (shared with the media module and the portal).
     if want.notifications {
-        state.dnd = crate::state_file::dnd_on(&paths::state_dir());
+        state.dnd_load(crate::notify_app::unix_now());
     }
     state.start_notifications(want.notifications);
     // The mode file for the TUI: $XDG_RUNTIME_DIR/alpheus/mode, nothing when unset.

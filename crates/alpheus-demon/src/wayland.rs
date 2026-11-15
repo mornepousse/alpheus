@@ -409,8 +409,10 @@ pub struct App {
     pub(crate) tray_frame_pending: Option<wl_surface::WlSurface>,
     /// The bar's own session link, its timer and its bookkeeping (link.rs).
     pub(crate) link: crate::link::LinkState,
-    /// Do-not-disturb: loaded at startup, changed only by `set_dnd`.
+    /// Do-not-disturb: loaded at startup, changed only by `dnd_apply`.
     pub(crate) dnd: bool,
+    /// Its timed model and the timer of its end (notify_app.rs).
+    pub(crate) dnd_timed: crate::notify_app::DndTimed,
     /// An idle callback is queued to route what a void tray call's flush drained
     /// (`Tray::take_deferred`): `open_menu`, `menu_submenu`, `menu_click`, `close_menu` return no
     /// output, so it is routed right after the current dispatch, never re-entrantly.
@@ -586,6 +588,7 @@ impl App {
             tray_frame_pending: None,
             link: crate::link::LinkState::new(),
             dnd: false,
+            dnd_timed: crate::notify_app::DndTimed::new(),
             tray_deferred_queued: false,
             tray_ready_queued: false,
             hwheel: Wheel::default(),

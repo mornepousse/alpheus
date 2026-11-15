@@ -2688,6 +2688,94 @@ fn dnd_from_alpheus_launch_is_saved_shown_and_restored() {
     assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// The bell bar on a private bus, started after `text` was written to the do-not-disturb file.
+fn bell_daemon_with_dnd_file(name: &str, text: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    write_dnd_file(&sway, text);
+    let d =
+        start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, sway, hypr, d)
+}
+
+/// Small features 1, decisions 6, 8, 11: `--dnd on --for 30m` writes `until <unix>`, survives a
+/// restart, and a file whose end is about to pass turns do-not-disturb off by the timer, removing
+/// the file.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_timed_dnd_is_saved_restored_and_ends() {
+    let (bus, sway, _hypr, mut d, ()) = bell_daemon("bell-dnd-timed", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    let before = unix_now();
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap(), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb on (ends in 30 min)", DELAY), "{:?}", d.log());
+    let text = std::fs::read_to_string(&file).unwrap();
+    let end: u64 = text.strip_prefix("until ").and_then(|t| t.strip_suffix('\n')).and_then(|t| t.parse().ok()).expect(&text);
+    assert!(end.abs_diff(before + 1800) <= 5, "{text:?} against {}", before + 1800);
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    let options = DaemonOptions { bar_toml: Some(BELL_BAR), session_bus: Some(&bus.address), ..DaemonOptions::default() };
+    let mut d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "restored at the next start: {:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text, "kept as it was");
+    d.signal(libc::SIGTERM);
+    assert_eq!(d.exit(DELAY), Some(0), "{:?}", d.log());
+    // An end two seconds away: on at start, then ended by the timer, the file removed.
+    write_dnd_file(&sway, &format!("until {}\n", unix_now() + 2));
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb off (timer ended)", Duration::from_secs(4)), "{:?}", d.log());
+    assert!(d.wait_for("bell: dnd off", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the end removes the file: {:?}", d.log());
+}
+
+/// Decision 6: at start, an end already passed and a `sharing` file read as off, and the file goes.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_past_or_sharing_dnd_file_is_cleaned_at_start() {
+    for (name, text) in [("past", format!("until {}\n", unix_now() - 10)), ("sharing", "sharing\n".to_string())] {
+        let (_bus, sway, _hypr, d) = bell_daemon_with_dnd_file(&format!("bell-dnd-clean-{name}"), &text);
+        assert!(d.wait_for("bell: dnd off", DELAY), "{name}: {:?}", d.log());
+        let file = sway.runtime.join("state/alpheus/dnd");
+        let end = Instant::now() + DELAY;
+        while file.exists() && Instant::now() < end {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!file.exists(), "{name}: the stale file is removed: {:?}", d.log());
+        assert_eq!(d.count("bell: dnd on"), 0, "{name}: {:?}", d.log());
+    }
+}
+
+/// Decision 7: `--dnd off` and `toggle` end a timed do-not-disturb.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn a_timed_dnd_is_cancelled_by_off_and_toggle() {
+    let (_bus, sway, _hypr, d, ()) = bell_daemon("bell-dnd-cancel", BELL_BAR, |_| ());
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    ready(&d);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("bell: dnd on", DELAY), "{:?}", d.log());
+    assert!(file.exists());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd off", 2, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "off: no file");
+    assert_eq!(script(&sway, &["--dnd", "on", "--for", "30m"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd on", 2, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("bell: dnd off", 3, DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "toggled off: no file");
+}
+
 /// Spec, Success criteria: with mako running nothing changes and the bell is dim; once mako stops,
 /// alpheus takes the name at once.
 #[test]
@@ -2764,12 +2852,17 @@ fn wait_for_the_server(bus: &PrivateBus) {
 /// Do-not-disturb on before the daemon starts: the empty file `$XDG_STATE_HOME/alpheus/dnd` (the
 /// harness points `XDG_STATE_HOME` at `<runtime>/state`).
 fn dnd_on_before_start(sway: &Sway) {
+    write_dnd_file(sway, "");
+}
+
+/// The same with `text` in the file (`until <unix>\n`, `sharing\n`).
+fn write_dnd_file(sway: &Sway, text: &str) {
     let dir = sway.runtime.join("state/alpheus");
     std::fs::create_dir_all(&dir).unwrap();
     for d in [sway.runtime.join("state"), dir.clone()] {
         std::fs::set_permissions(&d, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    std::fs::write(dir.join("dnd"), "").unwrap();
+    std::fs::write(dir.join("dnd"), text).unwrap();
 }
 
 /// The bell bar on catppuccin dark, serving notifications, a client connected. `on_headless`: the

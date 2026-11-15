@@ -1,10 +1,12 @@
 //! The notifications module on the bar's side: where the server starts
 //! (the tray's connection, or the bar's own link), the bell's view, do-not-disturb (the one path
-//! for every change, persisted), Clear all, and the `alpheus-launch` verbs. Runs on the loop, no
-//! thread, no command, no timer. The bubbles and the panel reach the server
+//! for every change, persisted, timed or not), Clear all, and the `alpheus-launch` verbs. Runs on
+//! the loop, no thread, no command; one timer, armed only while a timed do-not-disturb is on. The bubbles and the panel reach the server
 //! through `App::notify_do` (tray_bridge.rs).
 
 use crate::config::ModuleId;
+use crate::deadline::DeadlineTimer;
+use crate::dnd::{Dnd, parse_saved, saved_text};
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
 use crate::notify::{Center, NotifyView};
@@ -14,16 +16,49 @@ use crate::state::Msg;
 use crate::state_file;
 use crate::tray_bridge::notifications_of;
 use crate::wayland::App;
-use alpheus_commun::launcher_ipc::{DndVerb, Reply, Request};
+use alpheus_commun::launcher_ipc::{DND_MAX_SECS, DND_MIN_SECS, DndEnd, DndVerb, Reply, Request};
 use alpheus_commun::paths;
+use std::time::{Duration, Instant};
 
-/// Do-not-disturb after `verb`, from `now`.
-pub fn dnd_after(verb: DndVerb, now: bool) -> bool {
-    match verb {
-        DndVerb::On => true,
-        DndVerb::Off => false,
-        DndVerb::Toggle => !now,
+/// The timed do-not-disturb's state: the model, the timer of its end, and (delivery 7) whether a
+/// capture was showing at the last look.
+pub(crate) struct DndTimed {
+    pub(crate) model: Dnd,
+    pub(crate) timer: DeadlineTimer,
+    #[allow(dead_code)] // read by the screen-sharing edge, the next task
+    pub(crate) sharing_seen: bool,
+}
+
+impl DndTimed {
+    pub(crate) fn new() -> DndTimed {
+        DndTimed { model: Dnd::default(), timer: DeadlineTimer::new(), sharing_seen: false }
     }
+}
+
+/// The slack past the longest `--for` that an `--until` may reach: a local `HH:MM` tomorrow is at
+/// most 24 h away, and a clock change an hour either way.
+const DND_UNTIL_SLACK_SECS: u64 = 3_600;
+
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// The Unix time a requested end falls at, `now` being the Unix time. The wire is not trusted:
+/// a `For` outside 1 minute to 24 hours and an `Until` that is past, or more than 25 hours ahead,
+/// are refused (an `Until` in the past turns nothing on). Saturating: no overflow.
+pub fn dnd_end_unix(end: DndEnd, now: u64) -> Result<u64, String> {
+    match end {
+        DndEnd::For(s) if (DND_MIN_SECS..=DND_MAX_SECS).contains(&s) => Ok(now.saturating_add(u64::from(s))),
+        DndEnd::For(_) => Err("do-not-disturb lasts 1 minute to 24 hours".into()),
+        DndEnd::Until(t) if t > now && t - now <= u64::from(DND_MAX_SECS) + DND_UNTIL_SLACK_SECS => Ok(t),
+        DndEnd::Until(_) => Err("the end must be within the next 24 hours".into()),
+    }
+}
+
+/// How long to wait for an end at Unix time `until`: never more than the longest legal end (a file
+/// holding a far one is re-checked then, `dnd_tick`), so `Instant + wait` cannot overflow.
+fn dnd_wait(until: u64, now: u64) -> Duration {
+    Duration::from_secs(until.saturating_sub(now).min(u64::from(DND_MAX_SECS) + DND_UNTIL_SLACK_SECS))
 }
 
 /// The bell's log lines for a new view: what changed (both, for the first view). The headless
@@ -95,32 +130,98 @@ impl App {
         }
     }
 
-    /// The one path for every do-not-disturb change (the verb, the bell's middle click, the panel's
-    /// row): persisted ($XDG_STATE_HOME/alpheus/dnd), then given to the server. Nothing when it does
-    /// not change.
+    /// Every user path (the bell's middle click, the panel's row, the quick row): untimed, and the
+    /// user's choice wins over a capture (decision 7).
     pub(crate) fn set_dnd(&mut self, on: bool) {
-        if self.dnd == on {
+        self.dnd_apply(Dnd::user(on), "");
+    }
+
+    /// The one path for every do-not-disturb change: the state kept, logged (`why` names a
+    /// non-user cause), persisted ($XDG_STATE_HOME/alpheus/dnd), given to the server when on or off
+    /// changes, shown by the muted bell without a server, and the end's timer moved. Nothing when it
+    /// does not change.
+    pub(crate) fn dnd_apply(&mut self, next: Dnd, why: &str) {
+        let before = self.dnd_timed.model;
+        if before == next {
             return;
         }
-        self.dnd = on;
+        self.dnd_timed.model = next;
+        self.dnd = next.on;
         // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
         // line needs a server.
-        log(if on { "notifications: do not disturb on" } else { "notifications: do not disturb off" });
-        if let Err(e) = state_file::save_dnd(&paths::state_dir(), on) {
+        let state = if next.on { "on" } else { "off" };
+        let line = match (next.until, why) {
+            (Some(t), _) if next.on => {
+                format!("notifications: do not disturb {state} (ends in {} min)", t.saturating_sub(unix_now()).div_ceil(60))
+            }
+            (_, "") => format!("notifications: do not disturb {state}"),
+            _ => format!("notifications: do not disturb {state} ({why})"),
+        };
+        log(&line);
+        if let Err(e) = state_file::save_dnd(&paths::state_dir(), next.saved().map(saved_text).as_deref()) {
             log(&format!("notifications: do not disturb could not be saved ({e})"));
         }
-        self.notify_act(move |n| {
-            n.act(|c| {
-                c.set_dnd(on);
-                Vec::new()
-            })
-        });
+        if before.on != next.on {
+            let on = next.on;
+            self.notify_act(move |n| {
+                n.act(|c| {
+                    c.set_dnd(on);
+                    Vec::new()
+                })
+            });
+        }
         // No server: the muted bell shows the change itself.
         if self.notifications().is_none() && self.bar.notifications.is_some() {
             self.bell_without_server();
         }
-        // The quick panel's row follows, whichever of the four paths changed it (quick spec § 2).
+        // The quick panel's row follows, whichever of the paths changed it (quick spec § 2).
         self.quick_refresh();
+        self.dnd_timer_sync();
+    }
+
+    /// The state as it was left (startup, with the loop handle made): an end already passed, or a
+    /// capture's turning on, reads as off, and the file is rewritten (or removed) to say so.
+    pub(crate) fn dnd_load(&mut self, now: u64) {
+        let dir = paths::state_dir();
+        let read = state_file::read_dnd(&dir).map(|t| parse_saved(&t));
+        let loaded = Dnd::loaded(read, now);
+        if loaded.saved() != read {
+            if let Err(e) = state_file::save_dnd(&dir, loaded.saved().map(saved_text).as_deref()) {
+                log(&format!("notifications: do not disturb could not be saved ({e})"));
+            }
+        }
+        self.dnd_timed.model = loaded;
+        self.dnd = loaded.on;
+        self.dnd_timer_sync();
+    }
+
+    /// The end's timer: armed at the end while a timed do-not-disturb is on, removed otherwise.
+    fn dnd_timer_sync(&mut self) {
+        let now = unix_now();
+        let at = self.dnd_timed.model.until.and_then(|u| Instant::now().checked_add(dnd_wait(u, now)));
+        self.dnd_timed.timer.sync_opt(self.loop_handle.as_ref(), at, App::dnd_tick);
+    }
+
+    /// The timer fired: calloop dropped it (`fired` first), then the wall clock decides.
+    fn dnd_tick(app: &mut App, _: Instant) {
+        app.dnd_timed.timer.fired();
+        app.dnd_check_clock();
+    }
+
+    /// Whether the wall clock has reached the end: do-not-disturb goes off; if not yet (the
+    /// monotonic timer is early, or a far end was clamped) the timer is armed for the rest. Called
+    /// by the timer and by every clock tick (a suspended laptop's timer is late, decision 8).
+    pub(crate) fn dnd_check_clock(&mut self) {
+        let model = self.dnd_timed.model;
+        if model.until.is_none() {
+            return;
+        }
+        let next = model.expired(unix_now());
+        if next != model {
+            self.dnd_apply(next, "timer ended");
+        } else if !self.dnd_timed.timer.is_armed() {
+            self.dnd_timer_sync();
+        }
     }
 
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).
@@ -137,9 +238,11 @@ impl App {
             return Reply::Error("the notifications module is not in modules".into());
         }
         match request {
-            Request::Dnd(verb) => self.set_dnd(dnd_after(*verb, self.dnd)),
-            // Task 6 gives the end its meaning; until then a timed "on" is a plain "on".
-            Request::DndOn(_) => self.set_dnd(dnd_after(DndVerb::On, self.dnd)),
+            Request::Dnd(verb) => self.dnd_apply(self.dnd_timed.model.after_verb(*verb, None), ""),
+            Request::DndOn(end) => match dnd_end_unix(*end, unix_now()) {
+                Ok(t) => self.dnd_apply(self.dnd_timed.model.after_verb(DndVerb::On, Some(t)), ""),
+                Err(msg) => return Reply::Error(msg),
+            },
             Request::ClearNotifications => self.clear_notifications(),
             Request::Toggle
             | Request::Close
@@ -161,12 +264,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dnd_verbs() {
-        for now in [false, true] {
-            assert!(dnd_after(DndVerb::On, now));
-            assert!(!dnd_after(DndVerb::Off, now));
-            assert_eq!(dnd_after(DndVerb::Toggle, now), !now);
-        }
+    fn dnd_ends_are_bounded() {
+        use alpheus_commun::launcher_ipc::DndEnd::{For, Until};
+        let duration = Err("do-not-disturb lasts 1 minute to 24 hours".to_string());
+        let end = Err("the end must be within the next 24 hours".to_string());
+        assert_eq!(dnd_end_unix(For(60), 1000), Ok(1060));
+        assert_eq!(dnd_end_unix(For(86_400), 1000), Ok(87_400));
+        assert_eq!(dnd_end_unix(For(59), 1000), duration);
+        assert_eq!(dnd_end_unix(For(0), 1000), duration);
+        assert_eq!(dnd_end_unix(For(86_401), 1000), duration);
+        assert_eq!(dnd_end_unix(For(u32::MAX), u64::MAX - 5), duration, "refused before any addition");
+        assert_eq!(dnd_end_unix(For(60), u64::MAX - 5), Ok(u64::MAX), "saturates, never overflows");
+        assert_eq!(dnd_end_unix(Until(1000), 1000), end, "now is the past");
+        assert_eq!(dnd_end_unix(Until(5), 1000), end, "a past end turns nothing on");
+        assert_eq!(dnd_end_unix(Until(1001), 1000), Ok(1001));
+        assert_eq!(dnd_end_unix(Until(1000 + 90_000), 1000), Ok(91_000));
+        assert_eq!(dnd_end_unix(Until(1000 + 90_001), 1000), end);
+        assert_eq!(dnd_end_unix(Until(u64::MAX), 1000), end);
+    }
+
+    #[test]
+    fn the_timer_never_overflows_an_instant() {
+        assert_eq!(dnd_wait(100, 90), Duration::from_secs(10));
+        assert_eq!(dnd_wait(90, 100), Duration::ZERO, "an end in the past fires now");
+        assert_eq!(dnd_wait(u64::MAX, 0), Duration::from_secs(u64::from(DND_MAX_SECS) + 3_600), "a hostile file's end is clamped");
     }
 
     #[test]

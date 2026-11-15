@@ -501,6 +501,7 @@ fn timed_dnd_has_its_wire_and_old_words_stay() {
         b"alpheus-launcher/1 dnd on for x\n",
         b"alpheus-launcher/1 dnd on later 5\n",
         b"alpheus-launcher/1 dnd on for\n",
+        b"alpheus-launcher/1 dnd on for 4294967296\n", // u32::MAX + 1: the conversion refuses, never wraps
     ] {
         assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} -> {:?}", String::from_utf8_lossy(h), decode(h));
     }

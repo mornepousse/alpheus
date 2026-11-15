@@ -1006,6 +1006,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // change of screens), the watchdog (5 s, while a configuration waits for its answer) or the
         // trial (15 s), armed only while one of them is pending.
         ("outputs_app.rs", "Timer::", 1),
+        // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
+        // do-not-disturb is on.
+        ("notify_app.rs", "Timer::", 1),
         // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
         // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
         ("outputs_app.rs", "Generic::new", 1),
@@ -1358,7 +1361,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 45] = [
+const NO_THREAD_NOR_COMMAND: [&str; 46] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1404,6 +1407,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 45] = [
     "outputs_app.rs",
     "launcher/calc.rs",
     "launcher/calc/units.rs",
+    "dnd.rs",
 ];
 
 #[test]
@@ -1838,6 +1842,58 @@ fn the_startup_theme_is_resolved_again_after_the_watch_and_the_portal() {
     }
 }
 
+/// Timed do-not-disturb (small features 1, decisions 7 and 8): the timer's callback calls `fired()`
+/// before anything arms the timer again, and the clock's minute tick re-checks the wall-clock end
+/// (a suspended laptop's monotonic timer is late).
+#[test]
+fn the_dnd_tick_fires_before_checking() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let start = text.find("fn dnd_tick(").expect("dnd_tick");
+    let body = &text[start..];
+    let body = &body[..body.find("\n    }\n").expect("the end of dnd_tick")];
+    let fired = body.find(".fired()").expect("dnd_tick calls fired()");
+    let check = body.find("dnd_check_clock").expect("dnd_tick checks the clock");
+    assert!(fired < check, "fired() must come before dnd_check_clock in dnd_tick");
+}
+
+#[test]
+fn the_clock_rechecks_a_timed_dnd() {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/startup.rs")).unwrap();
+    let start = text.find("Msg::Clock(h)").expect("the clock closure");
+    let end = start + text[start..].find("TimeoutAction::ToDuration").expect("the clock closure's end");
+    assert!(text[start..end].contains("dnd_check_clock()"), "the clock tick must call dnd_check_clock()");
+}
+
+/// One path for every do-not-disturb change: `self.dnd =` only in `dnd_apply` and `dnd_load`,
+/// `state.dnd =` nowhere (startup goes through `dnd_load`).
+#[test]
+fn every_dnd_change_goes_through_dnd_apply() {
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        let prod = production_code(&t);
+        assert!(!prod.contains("state.dnd ="), "state.dnd = in {name}");
+        // notify.rs's `Center` has a `dnd` of its own (the server's copy, told by `set_dnd`).
+        if name == "notify_app.rs" || name == "notify.rs" {
+            continue;
+        }
+        assert!(!prod.contains("self.dnd ="), "self.dnd = in {name}");
+    }
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify_app.rs")).unwrap();
+    let prod = production_code(&text);
+    let mut owner = String::new();
+    let mut allowed = true;
+    for line in prod.lines() {
+        if let Some(i) = line.find("fn ") {
+            owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
+        }
+        if line.contains("self.dnd =") {
+            allowed &= owner == "dnd_apply" || owner == "dnd_load";
+        }
+    }
+    assert!(prod.contains("self.dnd ="), "dnd_apply sets it");
+    assert!(allowed, "self.dnd = outside dnd_apply and dnd_load in notify_app.rs");
+}
+
 /// No panic in the notification server's production code: its model,
 /// consumer, bubbles, panel and state files, and the signal builders in bus.rs, end their
 /// production part (before the first `#[cfg(`) with no `.expect(`, `.unwrap()` nor `panic!(`.
@@ -1851,6 +1907,7 @@ fn the_notification_server_has_no_panicking_path() {
         "notify.rs",
         "session_bus/notifications.rs",
         "notify_app.rs",
+        "dnd.rs",
         "bubbles.rs",
         "bubbles_surface.rs",
         "panel.rs",
@@ -2426,7 +2483,7 @@ fn the_quick_panel_lets_go_of_the_sound_and_its_timer_whatever_closes_it() {
     );
     let follow = function_body(&quick_app, "fn quick_follow(");
     assert!(follow.contains("self.quick_wifi_sync()") && follow.contains("self.quick_timer_sync()"), "{follow}");
-    let dnd = function_body(&notify_app, "pub(crate) fn set_dnd(");
+    let dnd = function_body(&notify_app, "pub(crate) fn dnd_apply(");
     assert!(dnd.contains("self.quick_refresh()"), "the panel's DND row follows the bell, the verb and the panel: {dnd}");
 }
 

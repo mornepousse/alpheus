@@ -18,6 +18,7 @@ pub mod clock;
 pub mod compositor;
 pub mod config;
 pub mod deadline;
+pub mod dnd;
 pub mod grid;
 pub mod icons;
 pub mod inotify;
