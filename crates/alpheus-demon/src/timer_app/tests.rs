@@ -17,8 +17,9 @@ fn sound() -> Vec<String> {
 #[test]
 fn effects_follow_dnd_serving_and_the_sound() {
     assert_eq!(effects(true, false, &sound()), Effects { notify: true, sound: true });
-    assert_eq!(effects(true, true, &sound()), Effects { notify: false, sound: false });
+    assert_eq!(effects(true, true, &sound()), Effects { notify: true, sound: false });
     assert_eq!(effects(false, false, &sound()), Effects { notify: false, sound: true });
+    assert_eq!(effects(false, true, &sound()), Effects { notify: false, sound: false });
     assert_eq!(effects(true, false, &[]), Effects { notify: true, sound: false });
 }
 

@@ -59,10 +59,10 @@ pub(crate) struct Effects {
     pub sound: bool,
 }
 
-/// Under do-not-disturb an end is silent (no notice, no sound); the notice needs the server to
-/// hold its name; the sound needs a command.
+/// The notice goes to the server whenever it holds its name (it applies do-not-disturb itself: no
+/// bubble, the history and the bell keep it); the sound needs a command and no do-not-disturb.
 pub(crate) fn effects(serving: bool, dnd: bool, sound: &[String]) -> Effects {
-    Effects { notify: serving && !dnd, sound: !dnd && !sound.is_empty() }
+    Effects { notify: serving, sound: !dnd && !sound.is_empty() }
 }
 
 /// The time a timer has in all, for the `added` line.
@@ -258,7 +258,7 @@ impl App {
     fn timer_save(&self) {
         let text = self.timer.model.saved();
         if let Err(e) = state_file::save_timer(&paths::state_dir(), text.as_deref()) {
-            log(&format!("timer: state could not be saved ({e})"));
+            log(&format!("timer: state could not be saved ({:?})", e.kind()));
         }
     }
 
