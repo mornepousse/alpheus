@@ -42,7 +42,10 @@ pub fn statvfs(path: &Path) -> Option<FsBlocks> {
     }
     // SAFETY: statvfs returned 0, so the struct is initialised.
     let st = unsafe { st.assume_init() };
-    Some(FsBlocks { blocks: st.f_blocks, free: st.f_bfree, avail: st.f_bavail })
+    // `fsblkcnt_t` is u32 on some targets and u64 on others: widen without a conversion clippy flags.
+    #[allow(clippy::unnecessary_cast)]
+    let widen = |n: libc::fsblkcnt_t| n as u64;
+    Some(FsBlocks { blocks: widen(st.f_blocks), free: widen(st.f_bfree), avail: widen(st.f_bavail) })
 }
 
 #[cfg(test)]
