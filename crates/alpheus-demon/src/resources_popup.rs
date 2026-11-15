@@ -225,10 +225,7 @@ impl ResourcesPopup {
         }
         match kind {
             PopupPointer::Motion => self.select(),
-            PopupPointer::Press(Button::Left) => {
-                self.selected = true;
-                ResourcesAction::Monitor
-            }
+            PopupPointer::Press(Button::Left) => ResourcesAction::Monitor,
             _ => ResourcesAction::Nothing,
         }
     }

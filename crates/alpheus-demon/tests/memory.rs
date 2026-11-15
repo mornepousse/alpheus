@@ -1403,7 +1403,7 @@ fn at_rest_no_wakeups_after_the_osd() {
     let bus = PrivateBus::start("osd-rest");
     let (sway, _hypr, d) = start("osd-rest", 1, &bus, None, Some(OSD_BAR), PwDump::Fifo);
     assert!(d.wait_for("osd: sound baseline", DELAY), "{:?}", d.log());
-    std::thread::sleep(Duration::from_millis(1300)); // the start-up grace
+    std::thread::sleep(Duration::from_millis(2100)); // the start-up grace
     pw_dump_send(&sway.runtime, &volume_delta(AG06_SINK, 90, false));
     assert!(d.wait_for("osd surface dropped (timeout", DELAY), "{:?}", d.log());
     std::thread::sleep(TRAY_SETTLE);
@@ -2159,6 +2159,135 @@ fn at_rest_no_wakeups_after_the_power_menu() {
     let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
     eprintln!("wake-ups at rest after the power menu (10 s): {delta} whole daemon, {main_delta} loop thread");
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the question's timer went with the menu");
+    assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// The resources popup measurements' bar: the module alone (a one-cell-wide click target at the
+/// power button's spot), a reading every second.
+const RES_POPUP_BAR: &str = "modules = [\"resources\"]\n[resources]\ninterval = 1\n";
+
+/// A click on the resources module, then the line it waits for (`n` of them so far).
+fn resources_click(sway: &Sway, d: &Daemon, line: &str, n: usize) {
+    sway.click(POWER_BUTTON.0, POWER_BUTTON.1, "button1");
+    assert!(d.wait_for_count(line, n, DELAY), "{line} x{n}: {:?}", d.log());
+}
+
+/// Resources popup spec constraints: PSS at rest, the popup open, closed, and after 20 more
+/// cycles. The first open's file-backed warm-up (code and font pages) is in `closed`, so the
+/// closed and cycled bounds read the daemon's own memory (without the shm pools, which the
+/// compositor maps too and which move on their own); the pools get a looser bound.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_popup_pss_idle_open_and_closed() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("res-popup-cost");
+    let (sway, _hypr, d) = start("res-popup-cost", 1, &bus, None, Some(RES_POPUP_BAR), PwDump::Silent);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    eprintln!("resources popup idle smaps (KB): {}", smaps_breakdown(&d));
+    resources_click(&sway, &d, "resources popup shown", 1);
+    std::thread::sleep(Duration::from_secs(1)); // configured and painted
+    let (open, open_shm) = d.pss_and_shm_kb();
+    resources_click(&sway, &d, "popup closed", 1);
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    eprintln!("resources popup closed smaps (KB): {}", smaps_breakdown(&d));
+    for n in 2..=21 {
+        resources_click(&sway, &d, "resources popup shown", n);
+        // Mapped (a press in the gap lands on no surface), and open across two ticks (interval = 1): each
+        // cycle repaints at least once, so a repaint that keeps something shows in the cycles.
+        std::thread::sleep(Duration::from_millis(2100));
+        resources_click(&sway, &d, "popup closed", n);
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    eprintln!("resources popup smaps after the cycles (KB): {}", smaps_breakdown(&d));
+    let (idle_own, closed_own, cycled_own) = (idle - idle_shm, closed - closed_shm, cycled - cycled_shm);
+    let open_cost = open.saturating_sub(idle);
+    eprintln!(
+        "resources popup PSS (KB): {idle} at rest, {open} open (cost {open_cost}), {closed} closed, {cycled} after 20 more cycles; \
+         own memory {idle_own} at rest, {closed_own} closed, {cycled_own} cycled; the pools: {idle_shm} at rest, {open_shm} open, \
+         {closed_shm} closed, {cycled_shm} cycled"
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB: report to Mae, never raise");
+    assert!(open_cost <= 1024, "the open popup costs {open_cost} KB (its pool, two buffers, the first open's warm-up: <= 1 MB)");
+    assert!(closed_own <= idle_own + 512, "closed {closed_own} KB vs {idle_own} KB (own memory): more than the first open's warm-up");
+    assert!(cycled_own <= closed_own + 128, "cycled {cycled_own} KB vs {closed_own} KB closed: 20 cycles must keep nothing");
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool must go");
+}
+
+/// The daemon's `[heap]` mapping in KB (PSS): the main thread's arena, where the loop's allocations
+/// land. Far quieter than the whole PSS, which drifts by 0.7-0.9 MB at random moments on this harness.
+fn heap_kb(d: &Daemon) -> u64 {
+    let t = std::fs::read_to_string(format!("/proc/{}/smaps", d.pid())).unwrap();
+    let (mut in_heap, mut kb) = (false, 0);
+    for l in t.lines() {
+        if let Some(v) = l.strip_prefix("Pss:") {
+            if in_heap {
+                kb += v.split_whitespace().next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+            }
+        } else if l.split_whitespace().next().is_some_and(|f| f.contains('-') && !f.ends_with(':')) {
+            in_heap = l.contains("[heap]");
+        }
+    }
+    kb
+}
+
+/// Resources popup spec § 3: the ring is fixed, so a full and wrapped one keeps nothing more than
+/// one half full at 30 s (interval = 1: 60 samples after 60 s, the ring wraps after that). The bound
+/// reads the main heap, where a per-push allocation would land (4 KiB per push shows as +160 KB);
+/// the whole own memory is printed: it moves by 0.7-0.9 MB at random on this harness, base included.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn resources_history_full_keeps_nothing_more() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("res-history");
+    let (_sway, _hypr, d) = start("res-history", 1, &bus, None, Some(RES_POPUP_BAR), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(30));
+    let (early, early_shm) = d.pss_and_shm_kb();
+    let heap_early = heap_kb(&d);
+    std::thread::sleep(Duration::from_secs(40)); // 70 s in: the ring is full and has wrapped
+    let (late, late_shm) = d.pss_and_shm_kb();
+    let heap_late = heap_kb(&d);
+    eprintln!(
+        "resources history (KB): own memory {} at 30 s, {} at 70 s; main heap {heap_early} at 30 s, {heap_late} at 70 s (ring full and wrapped)",
+        early - early_shm,
+        late - late_shm
+    );
+    assert!(heap_late <= heap_early + 64, "a full ring grew the main heap by {} KB", heap_late.saturating_sub(heap_early));
+}
+
+/// Resources popup spec constraints: once the popup closed, no timer, no wake-up. At
+/// interval = 60 no tick falls in the window, so any wake-up is the popup's.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_resources_popup() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("res-popup-rest");
+    let toml = "modules = [\"resources\"]\n[resources]\ninterval = 60\n";
+    let (sway, _hypr, d) = start("res-popup-rest", 1, &bus, None, Some(toml), PwDump::Silent);
+    let started = Instant::now();
+    for n in 1..=3 {
+        resources_click(&sway, &d, "resources popup shown", n);
+        std::thread::sleep(Duration::from_millis(300));
+        resources_click(&sway, &d, "popup closed", n);
+    }
+    assert!(started.elapsed() < Duration::from_secs(20), "the cycles took {:?}: the harness was too slow", started.elapsed());
+    std::thread::sleep(Duration::from_millis(300));
+    const REST: Duration = Duration::from_secs(10);
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    std::thread::sleep(REST);
+    assert!(
+        started.elapsed() < Duration::from_secs(55),
+        "the window ended {:?} after the start: the 60 s tick is too close, the harness was too slow",
+        started.elapsed()
+    );
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the resources popup");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    eprintln!("wake-ups at rest after the resources popup (10 s): {delta} whole daemon, {main_delta} loop thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s: the popup left a timer");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
 }
 

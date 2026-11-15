@@ -144,6 +144,24 @@ fn hot_temperatures_and_net_figures() {
     assert_eq!(style_of("1.2M"), Style::hue(Hue::Cyan));
 }
 
+/// The widest net row: `peak` and both rates at the five-cell cap (`9999G`; 1023 MiB/s itself reads
+/// `1.0G`). It must fit the inner cells and leave the
+/// icon and the name untouched.
+#[test]
+fn the_net_row_fits_at_the_maximum_rate() {
+    let c = ResourcesConfig { show: vec![Net], ..ResourcesConfig::default() };
+    let max = 10_000 * 1024 * 1024 * 1024;
+    let s = Sample { net: Some(NetRate { down: max, up: max }), ..Sample::default() };
+    let b = ResourcesPopup::default().render(&ring(&[s]), &c);
+    let row = &texts(&b)[1];
+    assert!(row.ends_with("peak 9999G \u{f01da} 9999G \u{f0552} 9999G"), "{row:?}");
+    let width = text_width(row.trim_start());
+    assert!(width <= WIDTH - 2, "{width} cells in {row:?}: the inner width is {}", WIDTH - 2);
+    let name = row.find("Network").expect("the name survives");
+    let figure = row.find("peak").expect("the figure");
+    assert!(name + "Network".len() < figure, "the figure overwrote the name: {row:?}");
+}
+
 #[test]
 fn the_span_follows_the_interval() {
     for (interval, want) in [(1u64, "last 1 min"), (60, "last 60 min")] {

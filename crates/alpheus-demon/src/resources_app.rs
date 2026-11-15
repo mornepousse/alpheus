@@ -21,6 +21,7 @@ pub(crate) const OPS: PopupOps = PopupOps {
     toggle: |app, qh, anchor, _| app.resources_toggle(qh, anchor),
     key: App::resources_key,
     pointer: App::resources_pointer,
+    // The popup owns no timer (it repaints on the bar's resources tick): nothing to flush or release.
     flush: no_hook,
     closed: no_hook,
 };
