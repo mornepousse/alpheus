@@ -40,7 +40,7 @@ const NAMESPACE: &str = "alpheus-launcher";
 const SCRIM_NAMESPACE: &str = "alpheus-launcher-scrim";
 /// Logical size assumed when no output announced one (never seen on a real
 /// compositor; keeps the box sane rather than zero-sized).
-const FALLBACK_OUTPUT_SIZE: (u32, u32) = (1280, 720);
+pub(crate) const FALLBACK_OUTPUT_SIZE: (u32, u32) = (1280, 720);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloseReason {
@@ -281,22 +281,22 @@ pub(crate) fn should_log_keyboard_error(e: &KeyboardError) -> bool {
 /// breaking "click outside" the moment a game is focused.
 /// Pulled out as its own function so the choice is a
 /// tested value, not just a literal buried in `make_scrim`.
-fn scrim_layer() -> Layer {
+pub(crate) fn scrim_layer() -> Layer {
     Layer::Overlay
 }
 
 /// A transparent 1×1 surface covering one output (outside the bar's
 /// exclusive zone): a press on it is a click outside the box.
-struct Scrim {
-    output: wl_output::WlOutput,
-    layer: LayerSurface,
-    viewport: WpViewport,
-    buffer: Option<Buffer>,
+pub(crate) struct Scrim {
+    pub(crate) output: wl_output::WlOutput,
+    pub(crate) layer: LayerSurface,
+    pub(crate) viewport: WpViewport,
+    pub(crate) buffer: Option<Buffer>,
 }
 
 impl Scrim {
     /// Attaches the 1×1 transparent buffer (once) and scales it to `size`.
-    fn show(&mut self, pool: &mut SlotPool, (w, h): (u32, u32)) {
+    pub(crate) fn show(&mut self, pool: &mut SlotPool, (w, h): (u32, u32)) {
         if self.buffer.is_none() {
             match pool.create_buffer(1, 1, 4, wl_shm::Format::Argb8888) {
                 Ok((buffer, canvas)) => {
@@ -394,6 +394,10 @@ impl App {
     pub fn launcher_open(&mut self, qh: &QueueHandle<App>, mut model: Launcher, reply: Option<Pending>, requested_at: Instant) {
         if self.launcher.is_some() {
             self.launcher_close(CloseReason::Replaced);
+        }
+        // Never open together with the quick notepad: it saves and goes.
+        if self.notes_is_open() {
+            self.notes_guarded("replaced", |app| app.notes_close(CloseReason::Replaced));
         }
         // One of the two at a time: an open popup (menu, calendar, tooltip) goes.
         self.popup_close(PopupClose::Launcher);
@@ -507,16 +511,16 @@ impl App {
             return Vec::new();
         }
         let outputs: Vec<_> = self.outputs.outputs().collect();
-        outputs.into_iter().filter_map(|output| self.make_scrim(qh, output)).collect()
+        outputs.into_iter().filter_map(|output| self.make_scrim(qh, output, SCRIM_NAMESPACE)).collect()
     }
 
-    /// One output's scrim; None without `wp_viewporter` (already logged once
-    /// at open by `launcher_scrims` — a hot-plugged output stays silent
-    /// about it too, nothing new to say).
-    fn make_scrim(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput) -> Option<Scrim> {
+    /// One output's scrim under `namespace` (the launcher's, or the quick notepad's); None without
+    /// `wp_viewporter` (already logged once at open by `launcher_scrims` — a hot-plugged output
+    /// stays silent about it too, nothing new to say).
+    pub(crate) fn make_scrim(&mut self, qh: &QueueHandle<App>, output: wl_output::WlOutput, namespace: &'static str) -> Option<Scrim> {
         let viewporter = self.viewporter.as_ref()?;
         let surface = self.compositor.create_surface(qh);
-        let layer = self.layers.create_layer_surface(qh, surface, scrim_layer(), Some(SCRIM_NAMESPACE), Some(&output));
+        let layer = self.layers.create_layer_surface(qh, surface, scrim_layer(), Some(namespace), Some(&output));
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         // 0: placed beside the bar's exclusive zone, never over the bar.
         layer.set_exclusive_zone(0);
@@ -536,7 +540,7 @@ impl App {
         if !adds_scrim(self.launcher_is_open(), self.viewporter.is_some()) {
             return;
         }
-        let Some(scrim) = self.make_scrim(qh, output) else { return };
+        let Some(scrim) = self.make_scrim(qh, output, SCRIM_NAMESPACE) else { return };
         if let Some(open) = self.launcher.as_mut() {
             open.scrims.push(scrim);
         }

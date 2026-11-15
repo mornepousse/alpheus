@@ -376,15 +376,19 @@ impl OpenPopup {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum KeyTo {
     Launcher,
+    Notes,
     Popup,
     Nobody,
 }
 
-/// The launcher first (it never coexists with a popup, but if it did, typing goes to it), then a
-/// grabbing popup; a tooltip never takes keys.
-pub(crate) fn key_to(launcher_open: bool, grabbing_popup: bool) -> KeyTo {
+/// The launcher first (it never coexists with a popup, but if it did, typing goes to it), then the
+/// quick notepad (never open with the launcher either), then a grabbing popup; a tooltip never
+/// takes keys.
+pub(crate) fn key_to(launcher_open: bool, notes_open: bool, grabbing_popup: bool) -> KeyTo {
     if launcher_open {
         KeyTo::Launcher
+    } else if notes_open {
+        KeyTo::Notes
     } else if grabbing_popup {
         KeyTo::Popup
     } else {
@@ -537,6 +541,13 @@ impl App {
                 return false; // a tooltip never closes the launcher
             }
             self.launcher_guarded("popup", |app| app.launcher_close(crate::launcher::surface::CloseReason::ClickOutside));
+        }
+        // A grabbing popup closes the quick notepad the same way (it saves); a tooltip never does.
+        if self.notes_is_open() {
+            if !grab {
+                return false;
+            }
+            self.notes_guarded("popup", |app| app.notes_close(crate::launcher::surface::CloseReason::ClickOutside));
         }
         if self.popup.is_some() {
             self.popup_close(PopupClose::Replaced);
@@ -885,9 +896,9 @@ impl App {
         true
     }
 
-    /// Whether the keyboard is needed: the launcher, or a grabbing popup.
+    /// Whether the keyboard is needed: the launcher, the quick notepad, or a grabbing popup.
     pub(crate) fn keyboard_wanted(&self) -> bool {
-        self.launcher_is_open() || self.popup.as_ref().is_some_and(|p| p.grab)
+        self.launcher_is_open() || self.notes_is_open() || self.popup.as_ref().is_some_and(|p| p.grab)
     }
 
     /// Binds the keyboard (with repeat on the event loop) on the seat if none: the launcher is open, or a
@@ -975,9 +986,12 @@ impl App {
     /// A key (press or repeat): to the launcher when it is open, else to a grabbing popup.
     pub(crate) fn key_event(&mut self, event: KeyEvent) {
         self.keyboard.time = event.time;
-        match key_to(self.launcher_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
+        match key_to(self.launcher_is_open(), self.notes_is_open(), self.popup.as_ref().is_some_and(|p| p.grab)) {
             KeyTo::Launcher => {
                 self.launcher_guarded("key", move |app| app.launcher_key(event));
+            }
+            KeyTo::Notes => {
+                self.notes_guarded("key", move |app| app.notes_key(event));
             }
             KeyTo::Popup => {
                 if let Some(k) = keys::translate(event.keysym, event.utf8.as_deref(), self.keyboard.mods) {
@@ -1012,6 +1026,9 @@ impl KeyboardHandler for App {
         self.keyboard.focus = None;
         if self.launcher_owns_box(surface) {
             self.launcher_guarded("focus", |app| app.launcher_close(crate::launcher::surface::CloseReason::FocusLost));
+        }
+        if self.notes_owns_box(surface) {
+            self.notes_guarded("focus", |app| app.notes_close(crate::launcher::surface::CloseReason::FocusLost));
         }
         self.keyboard_release_deferred();
     }
@@ -1307,10 +1324,14 @@ mod tests {
 
     #[test]
     fn keys_go_to_the_launcher_first() {
-        assert_eq!(key_to(true, true), KeyTo::Launcher);
-        assert_eq!(key_to(true, false), KeyTo::Launcher);
-        assert_eq!(key_to(false, true), KeyTo::Popup);
-        assert_eq!(key_to(false, false), KeyTo::Nobody, "a tooltip, or nothing open: the key goes nowhere");
+        assert_eq!(key_to(true, false, true), KeyTo::Launcher);
+        assert_eq!(key_to(true, false, false), KeyTo::Launcher);
+        assert_eq!(key_to(false, false, true), KeyTo::Popup);
+        assert_eq!(key_to(false, false, false), KeyTo::Nobody, "a tooltip, or nothing open: the key goes nowhere");
+        // Quick notes: the pad after the launcher (never open together), before a popup.
+        assert_eq!(key_to(false, true, false), KeyTo::Notes);
+        assert_eq!(key_to(false, true, true), KeyTo::Notes, "the pad takes the keys over a popup");
+        assert_eq!(key_to(true, true, false), KeyTo::Launcher);
     }
 
     #[test]

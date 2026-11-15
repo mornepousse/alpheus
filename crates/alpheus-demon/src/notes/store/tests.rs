@@ -115,3 +115,21 @@ fn the_save_deadline_exists_only_while_open_and_dirty() {
     assert_eq!(save_deadline(false, Some(t)), None);
     assert_eq!(save_deadline(true, Some(t)), Some(t + SAVE_AFTER));
 }
+
+/// A planted link named `notes.txt` is replaced, never followed: the decoy it points at keeps its
+/// bytes and `notes.txt` becomes a regular file of ours, 0600.
+#[test]
+fn a_planted_symlink_is_replaced_never_followed() {
+    let t = TempPath::dir("notes-symlink");
+    let dir = state_with(&t, b"old");
+    let decoy = t.join("decoy");
+    std::fs::write(&decoy, b"decoy bytes").unwrap();
+    std::fs::remove_file(dir.join(FILE)).unwrap();
+    std::os::unix::fs::symlink(&decoy, dir.join(FILE)).unwrap();
+    save(&dir, "fresh note").unwrap();
+    assert_eq!(std::fs::read(&decoy).unwrap(), b"decoy bytes", "the decoy is untouched");
+    let meta = std::fs::symlink_metadata(dir.join(FILE)).unwrap();
+    assert!(meta.file_type().is_file(), "notes.txt is a regular file now, not a link");
+    assert_eq!(mode(&dir.join(FILE)), 0o600);
+    assert_eq!(std::fs::read(dir.join(FILE)).unwrap(), b"fresh note");
+}

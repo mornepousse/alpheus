@@ -710,6 +710,7 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
         after_dispatch_windows(state);
         // A launcher draw that found both buffers busy, done now if one was released.
         state.launcher_guarded("deferred draw", |app| app.launcher_after_dispatch());
+        state.notes_guarded("deferred draw", |app| app.notes_after_dispatch());
         // Outside the dispatch: a released keyboard's last reference (`retired`).
         state.keyboard.retired.drain();
         // After the whole batch (so any `output_destroyed` paired with a

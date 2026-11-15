@@ -470,7 +470,8 @@ fn the_osd_and_the_bubbles_are_created_on_the_overlay_layer() {
 /// including `update_modifiers`'s own `self.keyboard.mods` write, touches no
 /// launcher state and needs none either) dispatches to the launcher only
 /// for its `KeyTo::Launcher` branch, guarded there; `leave` still guards its
-/// direct `launcher_close` call. No fake Wayland seat or keyboard exists to
+/// direct `launcher_close` call. The quick notepad's pad gets the same treatment through
+/// `notes_guarded`: its `KeyTo::Notes` arm in `key_event`, and its own close in `leave`. No fake Wayland seat or keyboard exists to
 /// call these trait methods directly in a unit test, so this checks the one
 /// thing that would actually regress it: the guard call disappearing from
 /// the body that still reaches launcher code.
@@ -491,6 +492,11 @@ fn seat_and_keyboard_handlers_guard_their_launcher_calls() {
     assert!(key_event.contains("launcher_guarded("), "key_event must guard its launcher call: {key_event}");
     let leave = function_body(&popup_prod, "fn leave(");
     assert!(leave.contains("launcher_guarded("), "leave must guard its launcher call: {leave}");
+    // Quick notes: the pad's calls go through its own guard, beside the launcher's.
+    let notes_arm = key_event.find("KeyTo::Notes =>").map(|at| &key_event[at..]).expect("key_event has a KeyTo::Notes arm");
+    let notes_arm = &notes_arm[..notes_arm.find("KeyTo::Popup").unwrap_or(notes_arm.len())];
+    assert!(notes_arm.contains("notes_guarded("), "key_event's KeyTo::Notes arm must guard the pad: {notes_arm}");
+    assert!(leave.contains("notes_guarded("), "leave must guard its pad call: {leave}");
 }
 
 /// `press_key`/`repeat_key` (the `KeyboardHandler` trait methods)
@@ -1023,6 +1029,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // The timed do-not-disturb's end, built in `DndTimed::new`: armed only while a timed
         // do-not-disturb is on.
         ("notify_app.rs", "Timer::", 1),
+        // The pad's save, armed only while it is open and edited (quick notes), built in
+        // `NotesApp::new`.
+        ("notes/app.rs", "Timer::", 1),
         // The Displays tab's try client's hang-up watch: only while its `outputs-try` waits for
         // the compositor's answer (the watchdog: 5 s at most), removed with the answer.
         ("outputs_app.rs", "Generic::new", 1),
@@ -1375,7 +1384,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 57] = [
+const NO_THREAD_NOR_COMMAND: [&str; 58] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1433,6 +1442,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 57] = [
     "notes/model.rs",
     "notes/view.rs",
     "notes/store.rs",
+    "notes/surface.rs",
 ];
 
 #[test]
@@ -2741,7 +2751,8 @@ const NOTES_PURE: [&str; 6] = ["notes/text.rs", "notes/lines.rs", "notes/keys.rs
 
 /// What in `line` indexes by `[...]` in a way that can panic: a `..` between a `[` and its matching
 /// `]` (a range slice, `s[a..b]`, `s[a..=b]`), or a bare index (`x[i]`: a `[` right after an
-/// identifier character, `)` or `]`; attributes follow `#`, macros `!`, array types a space).
+/// identifier character, `)`, `]`, `?`, `}` or a closing quote; attributes follow `#`, macros `!`,
+/// array types a space).
 fn panicking_index(line: &str) -> Option<String> {
     let bytes = line.as_bytes();
     let mut open: Vec<usize> = Vec::new();
@@ -2749,7 +2760,7 @@ fn panicking_index(line: &str) -> Option<String> {
         match b {
             b'[' => {
                 let prev = i.checked_sub(1).and_then(|p| bytes.get(p)).copied().unwrap_or(b' ');
-                if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b')' | b']') {
+                if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b')' | b']' | b'?' | b'}' | b'"') {
                     return Some(format!("bare index in `{}`", line.trim()));
                 }
                 open.push(i);
@@ -2769,7 +2780,7 @@ fn panicking_index(line: &str) -> Option<String> {
 
 #[test]
 fn the_index_ban_sees_ranges_and_bare_indexes() {
-    for bad in ["let x = &s[a..b];", "s[a..=b]", "let t = v[i];", "f(x)[0]", "m[i][j]", "&s[..n]", "&s[n..]", "w[..]"] {
+    for bad in ["let x = &s[a..b];", "s[a..=b]", "let t = v[i];", "f(x)[0]", "f()?[0]", "m[i][j]", "&s[..n]", "&s[n..]", "w[..]"] {
         assert!(panicking_index(bad).is_some(), "{bad}");
     }
     for good in
@@ -3061,4 +3072,88 @@ fn a_new_server_gets_the_last_battery_reading() {
     let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
+}
+
+/// Quick notes: nothing of the pad outlives it. `notes_close` takes the pad out before it syncs the
+/// timer (so it disarms) and releases the keyboard (wanted while the pad is `Some`); the save timer's
+/// callback marks it fired before anything else.
+#[test]
+fn the_notes_timer_and_pipe_live_only_while_open() {
+    let files = source_files();
+    let app = &files.iter().find(|(p, _)| relative_path(p) == "notes/app.rs").expect("notes/app.rs").1;
+    let prod = production_code(app);
+    let close = function_body(&prod, "pub(crate) fn notes_close(");
+    let take = close.find("self.notes.open.take()").expect("notes_close takes the pad out");
+    for later in ["notes_timer_sync()", "keyboard_release()"] {
+        let at = close.find(later).unwrap_or_else(|| panic!("notes_close calls {later}: {close}"));
+        assert!(take < at, "notes_close must take the pad before {later}: {close}");
+    }
+    let fire = function_body(&prod, "fn notes_save_fire(");
+    let first = fire.trim_start_matches('{').trim_start();
+    assert!(first.starts_with("app.notes.timer.fired()"), "notes_save_fire marks the timer fired first: {fire}");
+}
+
+/// Quick notes: the pad's glue never logs the note: no `log(` line names its text, its selection
+/// or its buffer.
+#[test]
+fn the_notes_glue_never_logs_the_text() {
+    let files = source_files();
+    for name in ["notes/surface.rs", "notes/app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let prod = production_code(t);
+        for line in prod.lines().filter(|l| l.contains("log(")) {
+            // A close reason's log word (`CloseReason::text`) is the one `text` allowed.
+            let line = line.replace("reason.text()", "reason");
+            for word in ["text", "selected", "pad.text", "model.pad"] {
+                assert!(!line.contains(word), "a log line in {name} names `{word}`: {}", line.trim());
+            }
+        }
+    }
+}
+
+/// Quick notes: the pad runs one command, the copy program, with the selection on its standard
+/// input; nothing else is started from `src/notes/`.
+#[test]
+fn the_notes_spawn_only_the_copy_command() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("notes/") {
+            continue;
+        }
+        seen += 1;
+        let prod = production_code(&t);
+        for never in [".spawn(", ".capture(", ".stream(", ".run("] {
+            assert!(!prod.contains(never), "{never} in {name}");
+        }
+        let n = prod.matches("spawn_with_input(").count();
+        if name == "notes/app.rs" {
+            assert_eq!(n, 1, "one spawn_with_input in notes/app.rs");
+            let body = function_body(&prod, "fn copy_call(");
+            assert!(body.contains("spawn_with_input("), "the one spawn is copy_call's: {body}");
+        } else {
+            assert_eq!(n, 0, "spawn_with_input in {name}");
+        }
+    }
+    assert!(seen >= 8, "the notes files were found: {seen}");
+}
+
+/// Quick notes (P9): the pad's glue never panics on its own either: no unwrap, expect, panic or
+/// panicking index (a boundary panic's message embeds the text, and the panic hook logs it).
+#[test]
+fn the_notes_glue_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["notes/surface.rs", "notes/app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
+    }
 }

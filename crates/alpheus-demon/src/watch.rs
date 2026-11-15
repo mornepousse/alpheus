@@ -337,12 +337,13 @@ impl App {
     }
 
     /// Every surface once, with the current roles: the bars, an open popup, the shown OSD pill, the
-    /// launcher box.
+    /// launcher box, the quick notepad's box.
     pub(crate) fn repaint_all(&mut self) {
         self.bars_repaint();
         self.popup_repaint();
         self.osd_repaint();
         let _ = self.launcher_guarded("theme", App::launcher_repaint);
+        let _ = self.notes_guarded("theme", App::notes_repaint);
     }
 }
 
