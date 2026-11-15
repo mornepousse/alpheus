@@ -1,6 +1,6 @@
 ---
-source: crates/alpheus-demon/src/segments.rs
+source: crates/alpheus-demon/src/segments/tests.rs
 expression: snapshot(&g)
 ---
-  2·  4!····+  5  │ 󰈹 Web page — Mozill… │ 󰕾 ▁▃▅▆▇▇  84% │ 󰈀 󰖂 2 │ 󰂱 CasqueBT 72% │ Sun 4 Oct 14:05 
-.AAAAuuuuuuuuummmmmm....................mmm..aaaaaa.....mmm.aaaammmaa........mmmmmmmmmmmmmmmmmGGGGG.
+  2·  4!····+  5   ·  󰈹 Web page — Mozi…  ·  󰕾 84%  ·  󰈀 󰖂 2  ·  󰂱 CasqueBT 72%  ·  Sun 4 Oct 14:05 
+.AAAAuuuuuuuuummmmmmmm..................mmmmm.....mmmmm.aaaammmmmaa........mmmmmmmmmmmmmmmmmmmGGGGG.

@@ -412,19 +412,15 @@ mod tests {
     }
 
     #[test]
-    fn resources_history_bounded_to_60_points() {
-        let mut b = Bar::new(BarConfig::default());
-        for i in 0..100u8 {
-            assert!(b.apply(Msg::Resources(Sample { cpu: Some(i), memory: Some(61), temperature: Some(60) })));
-        }
-        assert_eq!(b.resources.history.len(), HISTORY);
-        assert_eq!((b.resources.history.front(), b.resources.history.back()), (Some(&40), Some(&99)));
-        // First reading after startup: no CPU yet (it takes two readings).
+    fn a_repeated_sample_is_not_a_change() {
         let mut r = Resources::default();
-        let s = Sample { cpu: None, memory: Some(61), temperature: None };
-        assert!(r.push(s));
-        assert!(!r.push(s), "same reading, no CPU: nothing to redraw");
-        assert!(r.history.is_empty());
+        let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45) };
+        assert!(r.push(s), "the first reading");
+        assert!(!r.push(s), "the same reading again: nothing to redraw");
+        assert!(r.push(Sample { cpu: Some(13), ..s }), "the CPU moved");
+        let mut b = Bar::new(BarConfig::default());
+        assert!(b.apply(Msg::Resources(s)));
+        assert!(!b.apply(Msg::Resources(s)));
     }
 
     #[test]

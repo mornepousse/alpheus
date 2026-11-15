@@ -1,7 +1,7 @@
 use super::*;
 use crate::clock::LocalTime;
 use crate::compositor::example;
-use crate::config::{BarConfig, BatteryConfig, BatteryVisibility, ResourcesConfig};
+use crate::config::{BarConfig, BatteryConfig, BatteryVisibility};
 use crate::grid::Grid;
 use crate::layout::lay_out;
 use crate::notify::NotifyView;
@@ -10,7 +10,6 @@ use crate::session_bus::ItemKey;
 use crate::session_bus::icons::{DISCORD, STEAM, TELEGRAM};
 use crate::state::{Bar, Msg};
 use crate::system::{Battery, BtDevice, Charge, Peripheral, PeripheralKind, PowerState, Resources, Sample, Volume};
-use std::collections::VecDeque;
 
 // The segments under `module_colors = "none"` (delivery 1's look), shadowing the real ones: the
 // tests of the modules' own shapes stay as they were; the hue tests call `super::…` with a setting.
@@ -26,8 +25,8 @@ fn bluetooth(f: &Feed<BtState>) -> Option<Segment> {
 fn battery(f: &Feed<PowerState>, c: &BatteryConfig) -> Option<Segment> {
     super::battery(f, c, ModuleColors::None)
 }
-fn resources(r: &Resources, c: &ResourcesConfig) -> Option<Segment> {
-    super::resources(r, c, ModuleColors::None)
+fn resources(r: &Resources) -> Option<Segment> {
+    super::resources(r, ModuleColors::None)
 }
 
 const SUN: LocalTime = LocalTime { year: 2026, month: 10, day: 4, weekday: 0, hour: 14, minute: 5, second: 9 };
@@ -56,24 +55,20 @@ fn on(devices: &[(&str, Option<u8>)]) -> Feed<BtState> {
 }
 
 #[test]
-fn volume_icon_gauge_and_percent() {
-    // Fixed width: the number is always 3 wide, padded
-    // with spaces, so the modules to its right never shift with the
-    // volume level (5 %, 84 %, 100 % used to draw 4, 4, 5 cells wide).
-    assert_eq!(draw(&volume(&sound(84, false)).unwrap()), ("\u{f057e} ▁▃▅▆▇▇  84%".into(), "..aaaaaa.....".into()));
-    assert_eq!(draw(&volume(&sound(50, false)).unwrap()), ("\u{f0580} ▁▃▅▆▇▇  50%".into(), "..aaammm.....".into()));
-    assert_eq!(draw(&volume(&sound(0, false)).unwrap()), ("\u{f057f} ▁▃▅▆▇▇   0%".into(), "..mmmmmm.....".into()));
+fn volume_icon_and_percent() {
+    // Icon and number only (the stair gauge said the same thing twice); no padding.
+    assert_eq!(draw(&volume(&sound(62, false)).unwrap()), ("\u{f0580} 62%".into(), ".....".into()));
+    assert_eq!(draw(&volume(&sound(0, false)).unwrap()), ("\u{f057f} 0%".into(), "....".into()));
+    assert_eq!(draw(&volume(&sound(150, false)).unwrap()), ("\u{f057e} 150%".into(), "......".into()));
     assert_eq!(
-        draw(&volume(&sound(84, true)).unwrap()),
-        ("\u{f0581} ▁▃▅▆▇▇  84%".into(), "mmmmmmmmmmmmm".into()),
-        "muted: crossed out, dimmed"
+        draw(&volume(&sound(62, true)).unwrap()),
+        ("\u{f0581} muted".into(), "mmmmmmm".into()),
+        "muted: crossed out, dimmed, no figure"
     );
-    assert_eq!(
-        draw(&volume(&sound(120, false)).unwrap()).0,
-        "\u{f057e} ▁▃▅▆▇▇ 120%",
-        "above 100 %: full gauge, real value, same width as a 2-digit one"
-    );
-    assert_eq!([0, 1, 16, 17, 50, 83, 84, 100, 255].map(gauge_cells), [0, 1, 1, 2, 3, 5, 6, 6, 6]);
+    let f = sound(62, false);
+    assert_eq!(draw(&super::volume(&f, ModuleColors::None).unwrap()).1, ".....");
+    assert_eq!(draw(&super::volume(&f, ICONS).unwrap()).1, "BB...", "icon style under icons");
+    assert_eq!(draw(&super::volume(&f, FULL).unwrap()).1, "BBBBB", "icon and text style under full");
 }
 
 #[test]
@@ -198,11 +193,11 @@ fn media_is_hidden_without_a_player() {
     b.apply(Msg::Compositor(Some(example())));
     b.apply(Msg::Clock(SUN));
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 1, "no \"│ │\" without a player: {t}");
+    assert_eq!(t.matches("  ·  ").count(), 1, "no \"· ·\" without a player: {t}");
     b.apply(Msg::Media(Some(song(true, "Song"))));
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 2, "{t}");
-    assert!(t.contains(" │ \u{f040a} Song "), "{t}");
+    assert_eq!(t.matches("  ·  ").count(), 2, "{t}");
+    assert!(t.contains("  ·  \u{f040a} Song "), "{t}");
 }
 
 #[test]
@@ -319,9 +314,9 @@ fn three_modules_bar() -> Bar {
 fn each_module_segment_is_one_click_zone() {
     let g = three_modules_bar().grid("HDMI-A-1", 100);
     let t = g.text();
-    assert!(t.contains(" │ \u{f057e} ▁▃▅▆▇▇  84% │ \u{f0200} \u{f0582} 2 │ \u{f00b1} CasqueBT 72% │ Sun 4 Oct 14:05 "), "{t}");
+    assert!(t.contains("  ·  \u{f057e} 84%  ·  \u{f0200} \u{f0582} 2  ·  \u{f00b1} CasqueBT 72%  ·  Sun 4 Oct 14:05 "), "{t}");
     for (icon, module, width) in
-        [(VOLUME_HIGH, ModuleId::Volume, 13u16), (ETHERNET, ModuleId::Network, 5), (BLUETOOTH_CONNECTED, ModuleId::Bluetooth, 14)]
+        [(VOLUME_HIGH, ModuleId::Volume, 5u16), (ETHERNET, ModuleId::Network, 5), (BLUETOOTH_CONNECTED, ModuleId::Bluetooth, 14)]
     {
         let start = g.cells().iter().position(|c| c.ch == icon).unwrap() as u16;
         assert_eq!(g.target_at(start), Some(&Target::Module(module)), "first cell of {module:?}");
@@ -489,49 +484,42 @@ fn coarse_visibility_always_low_never() {
     assert!(battery(&s(true), &never).is_none(), "never: hidden when low too");
 }
 
-fn resources_with(history: &[u8], last: Sample) -> Resources {
-    Resources { history: history.iter().copied().collect(), last: Some(last) }
+fn resources_with(last: Sample) -> Resources {
+    Resources { last: Some(last) }
 }
 
 #[test]
-fn resources_graph_cpu_memory_temperature() {
-    let c = ResourcesConfig { graph: 6, ..ResourcesConfig::default() };
-    let s = Sample { cpu: Some(90), memory: Some(61), temperature: Some(67) };
+fn resources_cpu_memory_temperature() {
+    let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45) };
     assert_eq!(
-        draw(&resources(&resources_with(&[12, 38, 55, 90], s), &c).unwrap()),
-        ("  ▁▄▅█  90% \u{f035b}  6.1G \u{f050f} 67°".into(), "aaaaaaa..................".into())
+        draw(&resources(&resources_with(s)).unwrap()),
+        ("\u{f061a} 12%   \u{f035b} 6.1G   \u{f050f} 45\u{b0}".into(), "......................".into())
     );
     let first = Sample { cpu: None, memory: None, temperature: Some(91) };
-    assert_eq!(
-        draw(&resources(&resources_with(&[], first), &ResourcesConfig { graph: 0, ..c.clone() }).unwrap()),
-        ("  …% \u{f050f} 91°".into(), "....eeeeee".into()),
-        "first reading: no CPU yet; hot: error tint; graph = 0: no graph"
-    );
-    assert!(resources(&Resources::default(), &c).is_none(), "nothing read yet");
-    let full: VecDeque<u8> = (0..60).map(|i| if i < 54 { 0 } else { 100 }).collect();
-    assert_eq!(graph(&full, 6), "██████", "only the last points");
-    assert_eq!(graph(&VecDeque::from([0, 100]), 4), "  ▁█", "right-aligned, fixed width");
-    let big = Sample { cpu: Some(9), memory: Some(105), temperature: None };
-    assert_eq!(
-        draw(&resources(&resources_with(&[9], big), &ResourcesConfig { graph: 0, ..c }).unwrap()).0,
-        "  9% \u{f035b} 10.5G",
-        "same width above 10 GiB"
-    );
+    let (t, st) = draw(&resources(&resources_with(first)).unwrap());
+    assert!(t.starts_with("\u{f061a} \u{2026}%"), "first reading: no CPU yet, no padding: {t}");
+    assert!(st.ends_with("eeeeeeee"), "hot: error tint ({st})");
+    assert!(resources(&Resources::default()).is_none(), "nothing read yet");
+    let small = Sample { cpu: Some(9), memory: Some(5), temperature: None };
+    assert_eq!(draw(&resources(&resources_with(small)).unwrap()).0, "\u{f061a} 9%   \u{f035b} 0.5G");
 }
 
 #[test]
 fn resources_temperature_tint_boundary_at_84_and_85() {
-    // The error tint from HOT (85 °C, waybar's own critical threshold,
-    // Mae 2026-10-04): 84° is still normal, 85° already errs.
-    let c = ResourcesConfig { graph: 0, ..ResourcesConfig::default() };
+    // The error tint from HOT (85 \u{b0}C, waybar's own critical threshold,
+    // Mae 2026-10-04): 84\u{b0} is still normal, 85\u{b0} already errs.
     let normal = Sample { cpu: Some(50), memory: None, temperature: Some(84) };
     let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
     assert_eq!(
-        draw(&resources(&resources_with(&[], normal), &c).unwrap()),
-        (" 50% \u{f050f} 84°".into(), "..........".into()),
-        "84°: normal"
+        draw(&resources(&resources_with(normal)).unwrap()),
+        ("\u{f061a} 50%   \u{f050f} 84\u{b0}".into(), ".............".into()),
+        "84\u{b0}: normal"
     );
-    assert_eq!(draw(&resources(&resources_with(&[], hot), &c).unwrap()), (" 50% \u{f050f} 85°".into(), "....eeeeee".into()), "85°: error");
+    assert_eq!(
+        draw(&resources(&resources_with(hot)).unwrap()),
+        ("\u{f061a} 50%   \u{f050f} 85\u{b0}".into(), ".....eeeeeeee".into()),
+        "85\u{b0}: error"
+    );
 }
 
 fn full_bar() -> Bar {
@@ -560,9 +548,9 @@ fn discharging(percent: u8) -> Feed<PowerState> {
 #[test]
 fn none_is_the_look_of_delivery_1_and_icons_tints_only_the_icons() {
     let v = sound(84, false);
-    assert_eq!(draw(&super::volume(&v, ModuleColors::None).unwrap()).1, "..aaaaaa.....");
-    assert_eq!(draw(&super::volume(&v, ICONS).unwrap()).1, "BBaaaaaa.....", "blue icon (and its space), gauge and number as before");
-    assert_eq!(draw(&super::volume(&v, FULL).unwrap()).1, "BBaaaaaaBBBBB", "the number takes the blue too");
+    assert_eq!(draw(&super::volume(&v, ModuleColors::None).unwrap()).1, ".....");
+    assert_eq!(draw(&super::volume(&v, ICONS).unwrap()).1, "BB...", "blue icon (and its space), the number as before");
+    assert_eq!(draw(&super::volume(&v, FULL).unwrap()).1, "BBBBB", "the number takes the blue too");
     let n = online(Link::Wifi, 1, false);
     assert_eq!(draw(&super::network(&n, ModuleColors::None).unwrap()).1, ".aa");
     assert_eq!(draw(&super::network(&n, ICONS).unwrap()).1, "caa", "cyan icon, the VPN keeps its accent");
@@ -580,17 +568,15 @@ fn battery_and_resources_take_their_hues() {
     assert_eq!(draw(&super::battery(&f, d, ModuleColors::None).unwrap()).1, ".....");
     assert_eq!(draw(&super::battery(&f, d, ICONS).unwrap()).1, "gg...", "green icon");
     assert_eq!(draw(&super::battery(&f, d, FULL).unwrap()).1, "ggggg", "green icon and number");
-    let c = ResourcesConfig::default();
     let s = Sample { cpu: Some(50), memory: Some(61), temperature: Some(67) };
-    let r = resources_with(&[12, 90], s);
-    let none = draw(&super::resources(&r, &c, ModuleColors::None).unwrap());
-    let (text, icons) = draw(&super::resources(&r, &c, ICONS).unwrap());
-    let (_, full) = draw(&super::resources(&r, &c, FULL).unwrap());
+    let r = resources_with(s);
+    let none = draw(&super::resources(&r, ModuleColors::None).unwrap());
+    let (text, icons) = draw(&super::resources(&r, ICONS).unwrap());
+    let (_, full) = draw(&super::resources(&r, FULL).unwrap());
     assert_eq!(text, none.0, "the text never changes");
-    assert_eq!(none.1, "aaaaaaaaaaaaaaaaaaaaa..................", "none: the graph accent, nothing else");
-    // The graph (20 cells and its space) is the CPU's icon: orange in the accent's place.
-    assert_eq!(icons, "ooooooooooooooooooooo....yy......rr....", "graph, memory and thermometer icons");
-    assert_eq!(full, "oooooooooooooooooooooooooyyyyyyyyrrrrrr", "icons and texts, each in its hue");
+    assert_eq!(none.1, "......................", "none: no hue at all");
+    assert_eq!(icons, "oo...yyyy.....rrrr....", "the three icons (their leading spaces too)");
+    assert_eq!(full, "oooooyyyyyyyyyrrrrrrrr", "icons and texts, each in its hue");
 }
 
 #[test]
@@ -607,10 +593,9 @@ fn states_win_over_the_hues() {
         };
         assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, want, "charging: accent under None, green otherwise ({mc:?})");
         let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
-        let c = ResourcesConfig { graph: 0, ..ResourcesConfig::default() };
         assert_eq!(
-            draw(&super::resources(&resources_with(&[], hot), &c, mc).unwrap()).1[4..],
-            *"eeeeee",
+            draw(&super::resources(&resources_with(hot), mc).unwrap()).1[5..],
+            *"eeeeeeee",
             "hot temperature stays error under {mc:?}"
         );
         assert_eq!(
@@ -618,7 +603,7 @@ fn states_win_over_the_hues() {
             "eee",
             "limited connectivity stays error under {mc:?}"
         );
-        assert_eq!(draw(&super::volume(&sound(84, true), mc).unwrap()).1, "mmmmmmmmmmmmm", "muted stays dim under {mc:?}");
+        assert_eq!(draw(&super::volume(&sound(84, true), mc).unwrap()).1, "mmmmmmm", "muted stays dim under {mc:?}");
         assert_eq!(draw(&super::network(&Feed::Ready(NetState::Offline), mc).unwrap()).1, "m", "offline stays dim under {mc:?}");
         assert_eq!(draw(&super::bluetooth(&Feed::Down, mc).unwrap()).1, "mmm", "a source that is down stays dim under {mc:?}");
     }
@@ -641,7 +626,7 @@ fn the_grid_of_pills_is_the_grid_of_full() {
         assert_eq!(snapshot(&pills), snapshot(&full), "{w} columns");
     }
     let v = sound(84, false);
-    assert_eq!(draw(&super::volume(&v, ModuleColors::Pills).unwrap()).1, "BBaaaaaaBBBBB", "the number in blue, as under full");
+    assert_eq!(draw(&super::volume(&v, ModuleColors::Pills).unwrap()).1, "BBBBB", "the number in blue, as under full");
 }
 
 #[test]
@@ -665,36 +650,34 @@ fn narrow_screens_drop_modules_in_order() {
         (network, "\u{f0200}"),
         (bluetooth, "\u{f00b1}"),
         (battery, "\u{f008b}"),
-        (resources, "\u{f035b}"),
+        (resources, "\u{f061a}"),
     ];
     let shown = |w: u16| {
         let t = b.grid("HDMI-A-1", w).text();
         marks.iter().filter(|(_, s)| t.contains(s)).map(|(m, _)| *m).collect::<Vec<_>>()
     };
-    // The launcher button and its separator (4 cells) leave last of
-    // all: every other threshold sits 4 cells further than without it.
-    const BUTTON: u16 = 4;
-    // The power button and its separator (4 cells) leave after it: 4 cells more again.
-    const POWER_CELLS: u16 = 4;
-    assert_eq!(shown(160 + BUTTON + POWER_CELLS), [launcher, window, volume, network, bluetooth, battery, resources]);
-    assert_eq!(shown(120 + BUTTON + POWER_CELLS), [launcher, window, volume, network, bluetooth, battery], "resources leave first");
+    // Widths measured on this bar (the separator is 5 cells wide, the volume and the resources
+    // carry no gauge or graph): each width sits clear of the title's truncation band, which
+    // hides the "Web page" mark before the module itself leaves.
+    assert_eq!(shown(160), [launcher, window, volume, network, bluetooth, battery, resources]);
+    assert_eq!(shown(125), [launcher, window, volume, network, bluetooth, battery], "resources leave first");
     // Each width pins one more step of REMOVAL's order; a swap inside it
     // (title/Bluetooth, Bluetooth/network, volume/battery or
     // battery/launcher) turns one of these red (see the "prove it bites"
     // mutations).
-    assert_eq!(shown(90 + BUTTON + POWER_CELLS), [launcher, volume, network, bluetooth, battery], "then the title");
-    assert_eq!(shown(70 + BUTTON + POWER_CELLS), [launcher, volume, network, battery], "then Bluetooth");
-    assert_eq!(shown(60 + BUTTON + POWER_CELLS), [launcher, volume, battery], "then network");
-    assert_eq!(shown(50 + BUTTON + POWER_CELLS), [launcher, battery], "then volume");
-    assert_eq!(shown(40 + BUTTON + POWER_CELLS), [launcher], "then battery");
-    assert_eq!(shown(40 + POWER_CELLS), [launcher], "the button still fits whole");
-    assert_eq!(shown(39 + POWER_CELLS), Vec::<ModuleId>::new(), "the launcher button last but for ⏻");
-    for w in [160u16, 120, 90, 70, 60, 50, 40].map(|w| w + BUTTON + POWER_CELLS).into_iter().chain([40 + POWER_CELLS, 39 + POWER_CELLS]) {
+    assert_eq!(shown(105), [launcher, volume, network, bluetooth, battery], "then the title");
+    assert_eq!(shown(90), [launcher, volume, network, battery], "then Bluetooth");
+    assert_eq!(shown(75), [launcher, volume, battery], "then network");
+    assert_eq!(shown(65), [launcher, battery], "then volume");
+    assert_eq!(shown(55), [launcher], "then battery");
+    assert_eq!(shown(50), [launcher], "the button still fits whole");
+    assert_eq!(shown(49), Vec::<ModuleId>::new(), "the launcher button last but for ⏻");
+    for w in [160u16, 125, 105, 90, 75, 65, 55, 50, 49] {
         let g = b.grid("HDMI-A-1", w);
         assert_eq!(g.width(), w);
         let t = g.text();
-        assert!(w < 40 + POWER_CELLS || t.starts_with(" \u{f0349} │ "), "launcher button whole and first at {w}: {t}");
-        assert!(t.ends_with(" 14:05 │ \u{23fb} ") && t.contains(" 4!····+ "), "workspaces, clock and ⏻ whole at {w}: {t}");
+        assert!(w < 50 || t.starts_with(" \u{f0349}  ·  "), "launcher button whole and first at {w}: {t}");
+        assert!(t.ends_with(" 14:05  ·  \u{23fb} ") && t.contains(" 4!····+ "), "workspaces, clock and ⏻ whole at {w}: {t}");
     }
     insta::assert_snapshot!("full_160", snapshot(&b.grid("HDMI-A-1", 160)));
     insta::assert_snapshot!("full_120", snapshot(&b.grid("HDMI-A-1", 120)));
@@ -781,11 +764,11 @@ fn empty_tray_draws_no_segment() {
     b.apply(Msg::Compositor(Some(example())));
     b.apply(Msg::Clock(SUN));
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 1, "no \"│ │\" for an empty tray: {t}");
+    assert_eq!(t.matches("  ·  ").count(), 1, "no \"· ·\" for an empty tray: {t}");
     b.config.tray.passive = Passive::Hide;
     b.apply(Msg::Tray(vec![tray_icon(1, glyph(STEAM), Status::Passive)]));
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 1, "every icon hidden: no segment either: {t}");
+    assert_eq!(t.matches("  ·  ").count(), 1, "every icon hidden: no segment either: {t}");
     assert!(!t.contains(STEAM));
 }
 
@@ -827,23 +810,19 @@ fn full_bar_with_a_tray() -> Bar {
 
 #[test]
 fn narrow_output_drops_the_tray_in_order() {
-    // Widths measured on this bar (with the launcher button ahead of
-    // the workspaces): every module is present at 150 columns and
-    // above; the tray stays down to 108; the title stays down to
-    // 100 — truncated below that, not removed. The window title's
-    // "Web page" mark alone needs at least 11 title cells, so a
-    // narrowing title can lose the mark well before the module
-    // itself is dropped (seen here too, briefly, just under 150);
-    // the widths below are chosen clear of that truncation band.
-    // The power button and its separator: 4 cells more at every step.
-    const POWER_CELLS: u16 = 4;
-    const WIDE: u16 = 160 + POWER_CELLS;
-    const NO_RESOURCES: u16 = 130 + POWER_CELLS;
-    const NO_TRAY: u16 = 105 + POWER_CELLS;
-    const NO_TITLE: u16 = 80 + POWER_CELLS;
+    // Widths measured on this bar (with the launcher button ahead of the workspaces, the 5-cell
+    // separators and no gauge or graph): every module is present from 152 columns; the tray
+    // stays down to 125; the title stays down to 115 — truncated below that, not removed. The
+    // window title's "Web page" mark alone needs at least 11 title cells, so a narrowing title
+    // can lose the mark well before the module itself is dropped (seen here too, briefly, just
+    // under 152); the widths below are chosen clear of that truncation band.
+    const WIDE: u16 = 160;
+    const NO_RESOURCES: u16 = 135;
+    const NO_TRAY: u16 = 118;
+    const NO_TITLE: u16 = 90;
     let (window, tray, battery, resources) = (ModuleId::Window, ModuleId::Tray, ModuleId::Battery, ModuleId::Resources);
     let b = full_bar_with_a_tray();
-    let marks = [(window, "Web page"), (tray, "\u{f04d3}"), (battery, "\u{f008b}"), (resources, "\u{f035b}")];
+    let marks = [(window, "Web page"), (tray, "\u{f04d3}"), (battery, "\u{f008b}"), (resources, "\u{f061a}")];
     let shown = |w: u16| {
         let t = b.grid("HDMI-A-1", w).text();
         marks.iter().filter(|(_, s)| t.contains(s)).map(|(m, _)| *m).collect::<Vec<_>>()
@@ -855,14 +834,14 @@ fn narrow_output_drops_the_tray_in_order() {
     for w in [WIDE, NO_RESOURCES, NO_TRAY, NO_TITLE] {
         let g = b.grid("HDMI-A-1", w);
         assert_eq!(g.width(), w);
-        assert!(g.text().ends_with(" 14:05 │ \u{23fb} "), "the clock and ⏻ whole at {w}: {}", g.text());
+        assert!(g.text().ends_with(" 14:05  ·  \u{23fb} "), "the clock and ⏻ whole at {w}: {}", g.text());
     }
 }
 
 #[test]
 fn a_full_bar_with_a_tray_on_the_hdmi_screen() {
     let g = full_bar_with_a_tray().grid("HDMI-A-1", 160);
-    assert!(g.text().contains(" │ \u{f04d3} \u{f066f} K │ "), "between resources and the clock: {}", g.text());
+    assert!(g.text().contains("  ·  \u{f04d3} \u{f066f} K  ·  "), "between resources and the clock: {}", g.text());
     insta::assert_snapshot!("full_tray_160", snapshot(&g));
 }
 

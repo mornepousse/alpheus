@@ -11,7 +11,7 @@ use std::path::Path;
 pub const WALLPAPER: &str = "wallpaper";
 
 /// Human names of the presets, by `PRESETS` name.
-const NAMES: [(&str, &str); 9] = [
+const NAMES: [(&str, &str); 15] = [
     ("catppuccin", "Catppuccin"),
     ("gruvbox", "Gruvbox"),
     ("tokyo-night", "Tokyo Night"),
@@ -21,6 +21,12 @@ const NAMES: [(&str, &str); 9] = [
     ("solarized", "Solarized"),
     ("nord", "Nord"),
     ("dracula", "Dracula"),
+    ("ember", "Ember"),
+    ("glacier", "Glacier"),
+    ("ink", "Ink"),
+    ("hicon", "High contrast"),
+    ("sorbet", "Sorbet"),
+    ("phosphor", "Phosphor"),
 ];
 
 /// One line of the theme list.
@@ -146,7 +152,8 @@ mod tests {
         let labels: Vec<_> = e.iter().map(|x| x.label).collect();
         assert_eq!(&labels[1..4], ["Catppuccin", "Gruvbox", "Tokyo Night"]);
         let dark_only: Vec<_> = e.iter().filter(|x| x.dark_only).map(|x| x.label).collect();
-        assert_eq!(dark_only, ["Nord", "Dracula"]);
+        assert_eq!(dark_only, ["Nord", "Dracula", "Phosphor"]);
+        assert_eq!(e[13].label, "High contrast");
     }
 
     fn scratch(name: &str) -> alpheus_commun::temp_path::TempPath {

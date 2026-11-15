@@ -1,10 +1,11 @@
-//! Compiled-in themes (spec § 2): nine families, each a dark half and (but
-//! for Nord and Dracula) a light half of the 16 roles, taken from the
-//! official palettes. Role choices follow Catppuccin's UI style guide and
-//! map the other families by analogy (themes plan). Where an official
+//! Compiled-in themes (spec § 2): fifteen families, each a dark half and (but
+//! for Nord, Dracula and Phosphor) a light half of the 16 roles, taken from the
+//! official palettes (the last six are the UI refresh's own designs). Role
+//! choices follow Catppuccin's UI style guide and map the other families by
+//! analogy (themes plan). Where an official
 //! colour failed the contrast test, the nearest passing palette colour is
 //! used and the comment says so. Each half also carries the seven named hues
-//! (spec § 9) from the same palette. About 1.2 KB of read-only data in all.
+//! (spec § 9) from the same palette. About 1.9 KB of read-only data in all.
 
 use super::{Hues, Rgb, Roles};
 
@@ -485,6 +486,325 @@ const DRACULA_DARK: Roles = Roles {
     },
 };
 
+/// Ember dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const EMBER_DARK: Roles = Roles {
+    bar_bg: h(0x1a1412),
+    pill_bg: h(0x2c221d),
+    popup_bg: h(0x211a16),
+    raised: h(0x3b2e26),
+    selection: h(0x4d3c31),
+    fg: h(0xecdfd0),
+    fg_dim: h(0xa8927f),
+    on_accent: h(0x1a1412),
+    accent: h(0xf0a04b),
+    accent_container: h(0xf0a04b),
+    accent2: h(0xd9694a),
+    accent2_container: h(0xd9694a),
+    ok: h(0xa9c26a),
+    warn: h(0xf2c14e),
+    error: h(0xe5604d),
+    urgent: h(0xff8a3d),
+    hues: Hues {
+        red: h(0xe5604d),
+        orange: h(0xff8a3d),
+        yellow: h(0xf2c14e),
+        green: h(0xa9c26a),
+        cyan: h(0x6fbfa8),
+        blue: h(0x7ea6c9),
+        purple: h(0xc58aa8),
+    },
+};
+
+/// Ember light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const EMBER_LIGHT: Roles = Roles {
+    bar_bg: h(0xefe4d3),
+    pill_bg: h(0xe0d0b9),
+    popup_bg: h(0xf6eddf),
+    raised: h(0xd2bfa4),
+    selection: h(0xc2ad90),
+    fg: h(0x3a2a20),
+    fg_dim: h(0x6f5a49),
+    on_accent: h(0xf6eddf),
+    accent: h(0xa84f12),
+    accent_container: h(0xa84f12),
+    accent2: h(0x8f3a22),
+    accent2_container: h(0x8f3a22),
+    ok: h(0x4f6b1f),
+    warn: h(0x8f6200),
+    error: h(0xb3261e),
+    urgent: h(0xb04a08),
+    hues: Hues {
+        red: h(0xb3261e),
+        orange: h(0xb04a08),
+        yellow: h(0x8f6200),
+        green: h(0x4f6b1f),
+        cyan: h(0x1f6b5c),
+        blue: h(0x2f5d86),
+        purple: h(0x7e3f66),
+    },
+};
+
+/// Glacier dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const GLACIER_DARK: Roles = Roles {
+    bar_bg: h(0x0e1418),
+    pill_bg: h(0x1a242b),
+    popup_bg: h(0x121b21),
+    raised: h(0x263640),
+    selection: h(0x33495a),
+    fg: h(0xdbe9f1),
+    fg_dim: h(0x7f98a8),
+    on_accent: h(0x0e1418),
+    accent: h(0x7fd6f2),
+    accent_container: h(0x7fd6f2),
+    accent2: h(0x9bb8ff),
+    accent2_container: h(0x9bb8ff),
+    ok: h(0x7fe0b0),
+    warn: h(0xf0d889),
+    error: h(0xff8b9a),
+    urgent: h(0xffae7a),
+    hues: Hues {
+        red: h(0xff8b9a),
+        orange: h(0xffae7a),
+        yellow: h(0xf0d889),
+        green: h(0x7fe0b0),
+        cyan: h(0x7fd6f2),
+        blue: h(0x8fb0ff),
+        purple: h(0xb79cf5),
+    },
+};
+
+/// Glacier light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const GLACIER_LIGHT: Roles = Roles {
+    bar_bg: h(0xe4eef3),
+    pill_bg: h(0xd0e0e9),
+    popup_bg: h(0xeef5f8),
+    raised: h(0xbcd1dd),
+    selection: h(0xa8c1d0),
+    fg: h(0x1d3340),
+    fg_dim: h(0x4a6a79),
+    on_accent: h(0xeef5f8),
+    accent: h(0x00718f),
+    accent_container: h(0x00718f),
+    accent2: h(0x3a54b8),
+    accent2_container: h(0x3a54b8),
+    ok: h(0x1b7a50),
+    warn: h(0x86650a),
+    error: h(0xb8203c),
+    urgent: h(0xb04c0c),
+    hues: Hues {
+        red: h(0xb8203c),
+        orange: h(0xb04c0c),
+        yellow: h(0x86650a),
+        green: h(0x1b7a50),
+        cyan: h(0x00718f),
+        blue: h(0x3a54b8),
+        purple: h(0x6b45b0),
+    },
+};
+
+/// Ink dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const INK_DARK: Roles = Roles {
+    bar_bg: h(0x101010),
+    pill_bg: h(0x1e1e1e),
+    popup_bg: h(0x161616),
+    raised: h(0x2b2b2b),
+    selection: h(0x3b3b3b),
+    fg: h(0xe8e6e1),
+    fg_dim: h(0x8f8d88),
+    on_accent: h(0x101010),
+    accent: h(0xff5a3c),
+    accent_container: h(0xff5a3c),
+    accent2: h(0xc9c6bf),
+    accent2_container: h(0xc9c6bf),
+    ok: h(0xb5c9a0),
+    warn: h(0xe6c56b),
+    error: h(0xff5a3c),
+    urgent: h(0xff8a5c),
+    hues: Hues {
+        red: h(0xff5a3c),
+        orange: h(0xe8975c),
+        yellow: h(0xd9c27a),
+        green: h(0xa3b895),
+        cyan: h(0x8fb5b5),
+        blue: h(0x8da2c4),
+        purple: h(0xb49bb8),
+    },
+};
+
+/// Ink light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const INK_LIGHT: Roles = Roles {
+    bar_bg: h(0xecebe6),
+    pill_bg: h(0xdddbd4),
+    popup_bg: h(0xf4f3ef),
+    raised: h(0xcbc9c1),
+    selection: h(0xb9b7ae),
+    fg: h(0x1a1a1a),
+    fg_dim: h(0x5c5a55),
+    on_accent: h(0xf4f3ef),
+    accent: h(0xc2381d),
+    accent_container: h(0xc2381d),
+    accent2: h(0x3d3d3d),
+    accent2_container: h(0x3d3d3d),
+    ok: h(0x4a6b3a),
+    warn: h(0x8a6a10),
+    error: h(0xc2381d),
+    urgent: h(0xb5481a),
+    hues: Hues {
+        red: h(0xc2381d),
+        orange: h(0xb0521a),
+        yellow: h(0x84650e),
+        green: h(0x4a6b3a),
+        cyan: h(0x2f6a6a),
+        blue: h(0x3d5a8a),
+        purple: h(0x75507a),
+    },
+};
+
+/// High contrast dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const HICON_DARK: Roles = Roles {
+    bar_bg: h(0x000000),
+    pill_bg: h(0x1c1c1c),
+    popup_bg: h(0x0a0a0a),
+    raised: h(0x333333),
+    selection: h(0x4d4d4d),
+    fg: h(0xffffff),
+    fg_dim: h(0xb3b3b3),
+    on_accent: h(0x000000),
+    accent: h(0xffe600),
+    accent_container: h(0xffe600),
+    accent2: h(0x00e5ff),
+    accent2_container: h(0x00e5ff),
+    ok: h(0x3dff7a),
+    warn: h(0xffc400),
+    error: h(0xff4d4d),
+    urgent: h(0xff8a00),
+    hues: Hues {
+        red: h(0xff4d4d),
+        orange: h(0xff8a00),
+        yellow: h(0xffe600),
+        green: h(0x3dff7a),
+        cyan: h(0x00e5ff),
+        blue: h(0x5c9dff),
+        purple: h(0xd58aff),
+    },
+};
+
+/// High contrast light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const HICON_LIGHT: Roles = Roles {
+    bar_bg: h(0xffffff),
+    pill_bg: h(0xe6e6e6),
+    popup_bg: h(0xf5f5f5),
+    raised: h(0xcccccc),
+    selection: h(0xb3b3b3),
+    fg: h(0x000000),
+    fg_dim: h(0x404040),
+    on_accent: h(0xffffff),
+    accent: h(0x0033cc),
+    accent_container: h(0x0033cc),
+    accent2: h(0x7a00cc),
+    accent2_container: h(0x7a00cc),
+    ok: h(0x006b2b),
+    warn: h(0x7a5200),
+    error: h(0xb00020),
+    urgent: h(0xa64000),
+    hues: Hues {
+        red: h(0xb00020),
+        orange: h(0xa64000),
+        yellow: h(0x6e5200),
+        green: h(0x006b2b),
+        cyan: h(0x006a73),
+        blue: h(0x0033cc),
+        purple: h(0x7a00cc),
+    },
+};
+
+/// Sorbet dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const SORBET_DARK: Roles = Roles {
+    bar_bg: h(0x1f1a26),
+    pill_bg: h(0x2f2839),
+    popup_bg: h(0x272030),
+    raised: h(0x3d3449),
+    selection: h(0x4e4460),
+    fg: h(0xf1e9f7),
+    fg_dim: h(0xa99bb8),
+    on_accent: h(0x1f1a26),
+    accent: h(0xffb3d1),
+    accent_container: h(0xffb3d1),
+    accent2: h(0xa8e6cf),
+    accent2_container: h(0xa8e6cf),
+    ok: h(0xb5ead7),
+    warn: h(0xffe5a0),
+    error: h(0xff9aa2),
+    urgent: h(0xffc8a0),
+    hues: Hues {
+        red: h(0xff9aa2),
+        orange: h(0xffc8a0),
+        yellow: h(0xffe5a0),
+        green: h(0xb5ead7),
+        cyan: h(0xa0e7f0),
+        blue: h(0xa9c4ff),
+        purple: h(0xd4b3ff),
+    },
+};
+
+/// Sorbet light (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const SORBET_LIGHT: Roles = Roles {
+    bar_bg: h(0xf6eef6),
+    pill_bg: h(0xe9dcea),
+    popup_bg: h(0xfbf5fb),
+    raised: h(0xdccbde),
+    selection: h(0xcdb8d0),
+    fg: h(0x3a2f45),
+    fg_dim: h(0x6f5f7c),
+    on_accent: h(0xfbf5fb),
+    accent: h(0xb4306d),
+    accent_container: h(0xb4306d),
+    accent2: h(0x1f8a6a),
+    accent2_container: h(0x1f8a6a),
+    ok: h(0x1f7a55),
+    warn: h(0x8a6410),
+    error: h(0xc2334a),
+    urgent: h(0xb05418),
+    hues: Hues {
+        red: h(0xc2334a),
+        orange: h(0xb05418),
+        yellow: h(0x8a6410),
+        green: h(0x1f7a55),
+        cyan: h(0x17707c),
+        blue: h(0x3a5cc0),
+        purple: h(0x7a45b8),
+    },
+};
+
+/// Phosphor dark (UI refresh design, docs/specs/2026-11-15-alpheus-ui-refresh-design.md).
+const PHOSPHOR_DARK: Roles = Roles {
+    bar_bg: h(0x050a05),
+    pill_bg: h(0x0f1a0f),
+    popup_bg: h(0x081008),
+    raised: h(0x1a2a1a),
+    selection: h(0x254025),
+    fg: h(0xb8f5b0),
+    fg_dim: h(0x5fa060),
+    on_accent: h(0x050a05),
+    accent: h(0x3dff5a),
+    accent_container: h(0x3dff5a),
+    accent2: h(0xffb000),
+    accent2_container: h(0xffb000),
+    ok: h(0x3dff5a),
+    warn: h(0xffb000),
+    error: h(0xff5a4a),
+    urgent: h(0xff8c33),
+    hues: Hues {
+        red: h(0xff6a55),
+        orange: h(0xff9a3d),
+        yellow: h(0xe8d44a),
+        green: h(0x3dff5a),
+        cyan: h(0x46e8b0),
+        blue: h(0x5fb4ff),
+        purple: h(0xb894ff),
+    },
+};
+
 const CATPPUCCIN: Preset = Preset { name: "catppuccin", dark: CATPPUCCIN_DARK, light: Some(CATPPUCCIN_LIGHT) };
 const GRUVBOX: Preset = Preset { name: "gruvbox", dark: GRUVBOX_DARK, light: Some(GRUVBOX_LIGHT) };
 const TOKYO_NIGHT: Preset = Preset { name: "tokyo-night", dark: TOKYO_NIGHT_DARK, light: Some(TOKYO_NIGHT_LIGHT) };
@@ -494,9 +814,31 @@ const KANAGAWA: Preset = Preset { name: "kanagawa", dark: KANAGAWA_DARK, light: 
 const SOLARIZED: Preset = Preset { name: "solarized", dark: SOLARIZED_DARK, light: Some(SOLARIZED_LIGHT) };
 const NORD: Preset = Preset { name: "nord", dark: NORD_DARK, light: None };
 const DRACULA: Preset = Preset { name: "dracula", dark: DRACULA_DARK, light: None };
+const EMBER: Preset = Preset { name: "ember", dark: EMBER_DARK, light: Some(EMBER_LIGHT) };
+const GLACIER: Preset = Preset { name: "glacier", dark: GLACIER_DARK, light: Some(GLACIER_LIGHT) };
+const INK: Preset = Preset { name: "ink", dark: INK_DARK, light: Some(INK_LIGHT) };
+const HICON: Preset = Preset { name: "hicon", dark: HICON_DARK, light: Some(HICON_LIGHT) };
+const SORBET: Preset = Preset { name: "sorbet", dark: SORBET_DARK, light: Some(SORBET_LIGHT) };
+const PHOSPHOR: Preset = Preset { name: "phosphor", dark: PHOSPHOR_DARK, light: None };
 
 /// Every compiled-in theme, in the order the docs (and delivery 3's tab) list them.
-pub static PRESETS: &[Preset] = &[CATPPUCCIN, GRUVBOX, TOKYO_NIGHT, ROSE_PINE, EVERFOREST, KANAGAWA, SOLARIZED, NORD, DRACULA];
+pub static PRESETS: &[Preset] = &[
+    CATPPUCCIN,
+    GRUVBOX,
+    TOKYO_NIGHT,
+    ROSE_PINE,
+    EVERFOREST,
+    KANAGAWA,
+    SOLARIZED,
+    NORD,
+    DRACULA,
+    EMBER,
+    GLACIER,
+    INK,
+    HICON,
+    SORBET,
+    PHOSPHOR,
+];
 
 /// The default theme (spec § 2), and every fallback's.
 pub(crate) const DEFAULT_PRESET: &Preset = &CATPPUCCIN;
@@ -512,9 +854,28 @@ mod tests {
     use crate::theme::contrast::ratio;
 
     #[test]
-    fn the_nine_families_in_order() {
+    fn the_fifteen_families_in_order() {
         let names: Vec<&str> = PRESETS.iter().map(|p| p.name).collect();
-        assert_eq!(names, ["catppuccin", "gruvbox", "tokyo-night", "rose-pine", "everforest", "kanagawa", "solarized", "nord", "dracula"]);
+        assert_eq!(
+            names,
+            [
+                "catppuccin",
+                "gruvbox",
+                "tokyo-night",
+                "rose-pine",
+                "everforest",
+                "kanagawa",
+                "solarized",
+                "nord",
+                "dracula",
+                "ember",
+                "glacier",
+                "ink",
+                "hicon",
+                "sorbet",
+                "phosphor"
+            ]
+        );
     }
 
     #[test]
@@ -526,9 +887,9 @@ mod tests {
     }
 
     #[test]
-    fn nord_and_dracula_are_dark_only() {
+    fn dark_only_presets() {
         for p in PRESETS {
-            let dark_only = matches!(p.name, "nord" | "dracula");
+            let dark_only = matches!(p.name, "nord" | "dracula" | "phosphor");
             assert_eq!(p.light.is_none(), dark_only, "{}", p.name);
         }
     }
@@ -589,13 +950,32 @@ mod tests {
         assert_eq!(hues("dracula", false).cyan, Rgb(0x8b, 0xe9, 0xfd));
     }
 
+    /// One role and one hue per new half, against the design tables (a typo guard).
+    #[test]
+    fn new_values_come_from_the_design_tables() {
+        let dark = |name: &str| preset(name).unwrap().dark;
+        let light = |name: &str| preset(name).unwrap().light.unwrap();
+        assert_eq!(dark("ember").bar_bg, Rgb(0x1a, 0x14, 0x12));
+        assert_eq!(light("ember").accent, Rgb(0xa8, 0x4f, 0x12));
+        assert_eq!(dark("glacier").accent, Rgb(0x7f, 0xd6, 0xf2));
+        assert_eq!(light("glacier").fg, Rgb(0x1d, 0x33, 0x40));
+        assert_eq!(dark("ink").hues.red, Rgb(0xff, 0x5a, 0x3c));
+        assert_eq!(light("ink").bar_bg, Rgb(0xec, 0xeb, 0xe6));
+        assert_eq!(dark("hicon").accent, Rgb(0xff, 0xe6, 0x00));
+        assert_eq!(light("hicon").accent, Rgb(0x00, 0x33, 0xcc));
+        assert_eq!(dark("sorbet").hues.purple, Rgb(0xd4, 0xb3, 0xff));
+        assert_eq!(light("sorbet").accent2, Rgb(0x1f, 0x8a, 0x6a));
+        assert_eq!(dark("phosphor").fg, Rgb(0xb8, 0xf5, 0xb0));
+        assert_eq!(dark("phosphor").hues.cyan, Rgb(0x46, 0xe8, 0xb0));
+    }
+
     #[test]
     fn no_two_halves_are_the_same() {
         let halves: Vec<(String, Roles)> = PRESETS
             .iter()
             .flat_map(|p| std::iter::once((format!("{} dark", p.name), p.dark)).chain(p.light.map(|l| (format!("{} light", p.name), l))))
             .collect();
-        assert_eq!(halves.len(), 16);
+        assert_eq!(halves.len(), 27);
         for (i, (a, ra)) in halves.iter().enumerate() {
             for (b, rb) in &halves[i + 1..] {
                 assert_ne!(ra, rb, "{a} == {b}");
@@ -647,7 +1027,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(checked, 9 * 2 * 15);
+        assert_eq!(checked, 15 * 2 * 15);
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
@@ -665,7 +1045,75 @@ mod tests {
                 }
             }
         }
-        assert_eq!(all.len(), 16 * 2);
+        assert_eq!(all.len(), 27 * 2);
+        for (r, what) in &all {
+            println!("{what} = {r:.2}");
+        }
+        let mut failures: Vec<_> = all.iter().filter(|(r, _)| *r < MIN).collect();
+        failures.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let worst = failures.first().map(|(r, what)| format!("worst: {what} = {r:.2} < {MIN}"));
+        assert!(failures.is_empty(), "{worst:?}\n{failures:#?}");
+    }
+
+    /// The six presets of the UI refresh also keep secondary text and every module hue at 3:1 on
+    /// the cells they sit on: `fg_dim` and the seven hues on `pill_bg`, `fg_dim` on `raised`.
+    /// Every ratio is printed, the worst first in a failure.
+    #[test]
+    fn the_new_presets_pass_the_extra_ratios() {
+        const MIN: f32 = 3.0;
+        let mut all = Vec::new();
+        for p in PRESETS.iter().filter(|p| matches!(p.name, "ember" | "glacier" | "ink" | "hicon" | "sorbet" | "phosphor")) {
+            for (mode, r) in std::iter::once(("dark", p.dark)).chain(p.light.map(|l| ("light", l))) {
+                let hues = [
+                    ("red", r.hues.red),
+                    ("orange", r.hues.orange),
+                    ("yellow", r.hues.yellow),
+                    ("green", r.hues.green),
+                    ("cyan", r.hues.cyan),
+                    ("blue", r.hues.blue),
+                    ("purple", r.hues.purple),
+                ];
+                all.push((ratio(r.fg_dim, r.pill_bg), format!("{} {mode}: fg_dim on pill_bg", p.name)));
+                all.push((ratio(r.fg_dim, r.raised), format!("{} {mode}: fg_dim on raised", p.name)));
+                for (hue, c) in hues {
+                    all.push((ratio(c, r.pill_bg), format!("{} {mode}: {hue} on pill_bg", p.name)));
+                }
+            }
+        }
+        assert_eq!(all.len(), 11 * 9);
+        for (r, what) in &all {
+            println!("{what} = {r:.2}");
+        }
+        let mut failures: Vec<_> = all.iter().filter(|(r, _)| *r < MIN).collect();
+        failures.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let worst = failures.first().map(|(r, what)| format!("worst: {what} = {r:.2} < {MIN}"));
+        assert!(failures.is_empty(), "{worst:?}\n{failures:#?}");
+    }
+
+    /// Review Focus 5: the text on an accent fill reads on every hue and on `warn` (a dark-only
+    /// family is checked once).
+    #[test]
+    fn on_accent_is_legible_on_every_hue() {
+        const MIN: f32 = 3.0;
+        let mut all = Vec::new();
+        for p in PRESETS {
+            for (mode, r) in std::iter::once(("dark", p.dark)).chain(p.light.map(|l| ("light", l))) {
+                let fills = [
+                    ("red", r.hues.red),
+                    ("orange", r.hues.orange),
+                    ("yellow", r.hues.yellow),
+                    ("green", r.hues.green),
+                    ("cyan", r.hues.cyan),
+                    ("blue", r.hues.blue),
+                    ("purple", r.hues.purple),
+                    ("warn", r.warn),
+                ];
+                for (what, fill) in fills {
+                    all.push((ratio(r.on_accent, fill), format!("{} {mode}: on_accent on {what}", p.name)));
+                }
+            }
+        }
+        assert_eq!(all.len(), 27 * 8);
         for (r, what) in &all {
             println!("{what} = {r:.2}");
         }

@@ -25,6 +25,8 @@ const PREVIEW_MIN: u16 = 22;
 const PREVIEW_BLOCKS_W: u16 = 54;
 /// Column of the chips of the mode, module-colours and style rows, from the body's left edge.
 const CHIPS_X: u16 = 16;
+/// The six style chips side by side with no gap: narrower than this, they wrap onto a second line.
+const STYLES_GLUED_W: u16 = 60;
 /// Column of the "dark only" tags in a list row.
 const TAG_X: u16 = 18;
 /// Inner width of the mini menu.
@@ -33,19 +35,27 @@ const MENU_W: u16 = 12;
 pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     let th = &app.theme;
     let ap = &app.appearance;
-    put(buf, body, body.x, body.y, "Theme", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
     // The mode row sits under the list when it fits, else on the body's last row with the list
     // scrolled so the cursor stays visible. Nothing is drawn or made clickable outside `body`.
     let n = ap.entries.len();
     // A blank row sits between the list and the three chip rows when everything fits with it.
-    let gap = usize::from(usize::from(body.height) >= n + 5);
+    // A body too narrow for the six style chips on one line gives them a second one.
+    let wrap = body.width < CHIPS_X + STYLES_GLUED_W;
+    let chip_rows = 3 + usize::from(wrap);
+    // The "Theme" caption goes when its row is the one that keeps the whole list on screen (the
+    // rail's header already names the tab).
+    let head = usize::from(usize::from(body.height) >= n + 1 + chip_rows || usize::from(body.height) < n + chip_rows);
+    if head == 1 {
+        put(buf, body, body.x, body.y, "Theme", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
+    }
+    let gap = usize::from(usize::from(body.height) >= n + head + 1 + chip_rows);
     // The cursor's row always shows: on the tiniest bodies the last chip rows are clipped instead.
-    let room = usize::from(body.height).saturating_sub(4 + gap).max(1);
+    let room = usize::from(body.height).saturating_sub(head + chip_rows + gap).max(1);
     let shown = n.min(room);
     let offset = if ap.cursor >= shown { ap.cursor + 1 - shown } else { 0 };
-    let mode_y = body.y + 1 + (shown + gap) as u16;
+    let mode_y = body.y + (head + shown + gap) as u16;
     for (i, e) in ap.entries.iter().enumerate().skip(offset).take(shown) {
-        let y = body.y + 1 + (i - offset) as u16;
+        let y = body.y + (head + i - offset) as u16;
         let row = Rect::new(body.x, y, LIST_W.min(body.width), 1);
         let on_cursor = i == ap.cursor;
         let base = if on_cursor { th.selected() } else { Style::default().fg(th.fg) };
@@ -89,13 +99,18 @@ pub fn render(buf: &mut Buffer, body: Rect, app: &App, hits: &mut HitMap) {
     }
     let style_y = colors_y + 1;
     put(buf, body, body.x, style_y, "Style", Style::default().fg(th.muted).add_modifier(Modifier::BOLD));
-    // Six chips: the usual one-cell gap when they fit, chip against chip otherwise (80 columns).
+    // Six chips: the usual one-cell gap when they fit, chip against chip when only that fits (80
+    // columns), else one-cell gaps over two lines, so every chip is whole and clickable.
     let full: u16 = STYLES.iter().map(|s| style_label(*s).len() as u16 + 3).sum::<u16>() - 1;
-    let step = u16::from(body.width >= CHIPS_X + full);
-    let mut x = body.x + CHIPS_X;
+    let step = u16::from(wrap || body.width >= CHIPS_X + full);
+    let (mut x, mut y) = (body.x + CHIPS_X, style_y);
     for s in STYLES {
-        let w = put(buf, body, x, style_y, &format!(" {} ", style_label(s)), chip(s == ap.style, ap.focus == Focus::Style, th));
-        hits.push(Rect::new(x, style_y, w, 1).intersection(body), Target::AppearanceStyle(s));
+        let w = style_label(s).len() as u16 + 2;
+        if wrap && x + w > body.right() {
+            (x, y) = (body.x + CHIPS_X, y + 1);
+        }
+        put(buf, body, x, y, &format!(" {} ", style_label(s)), chip(s == ap.style, ap.focus == Focus::Style, th));
+        hits.push(Rect::new(x, y, w, 1).intersection(body), Target::AppearanceStyle(s));
         x = x.saturating_add(w + step);
     }
     if let (Some(roles), Some(entry)) = (&ap.preview, ap.cursor_entry()) {

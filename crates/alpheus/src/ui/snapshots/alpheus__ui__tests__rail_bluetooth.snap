@@ -1,0 +1,40 @@
+---
+source: crates/alpheus/src/ui/tests.rs
+expression: "draw(&tab_app(t), 120, 36).0.join(\"\\n\")"
+---
+                                                                                                                        
+  ◆ alpheus       󰂯  BT                                                                                                 
+ control center   On · 1 connected                                                                                      
+                  ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────────────────────────  
+                                                                                                                        
+  󰋜 Home     1    ▌ Bluetooth            ON   ●                                                                         
+                                                                                                                        
+  󰕾 Sound    2    CONNECTED DEVICES ────────────────────────────────────────                                            
+                    󰂱  CasqueBT                 AA:BB:CC:DD:EE:01                                                       
+  󰖩 Network  3                                                                                                          
+                      󰂯  Pair a device        󰁔                                                                         
+ ▌󰂯 BT       4                                                                                                          
+                                                                                                                        
+  󰐥 Power    5                                                                                                          
+                                                                                                                        
+  󰍹 Displays 6                                                                                                          
+                                                                                                                        
+  󰏘 Theme    7                                                                                                          
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  ● ready                                                                                                               
+                                                                                                                        
+                   Space  Toggle    Enter  Open    /  Search    q  Quit    F1  Help    Ctrl+P  Palette    Esc  Back

@@ -1,32 +1,32 @@
 ---
-source: crates/alpheus/src/ui/mod.rs
+source: crates/alpheus/src/ui/tests.rs
 expression: "draw(&a, 100, 28).0.join(\"\\n\")"
 ---
- alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme                           
                                                                                                     
-   Profiles   [ Laptop seul ]  [ Bureau ]  [ + Save current ]                                       
+  ◆ alpheus       󰍹  Displays                                                                       
+ control center   3 screens                                                                         
+                  ━━━━━━━━━━━━────────────────────────────────────────────────────────────────────  
                                                                                                     
- Map                                                                                                
-    ┌──Alpha───┐┌──Bravo──┐                                                                         
-    │    2   ● ││    3    │                                                                         
-    └──────────┘└─────────┘                                                                         
-   ┌───Laptop────┐                                                                                  
-   │             │                                                                                  
-   │      1      │                                                                                  
-   │             │                                                                                  
-   └─────────────┘                                                                                  
+  󰋜 Home     1      Profiles    Laptop seul   Bureau   + Save current                               
                                                                                                     
- Displays                                                                                           
-   1 Laptop     eDP-1     [■] on        2560×1600@60  scale 1.0    position 0, 1080                 
- ▶ 2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  scale 1.0    origin                           
-   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Alpha                   
+  󰕾 Sound    2    MAP ────────────────────────────────────────                                      
+                     ┌──Alpha───┐┌──Bravo──┐                                                        
+  󰖩 Network  3       │    2   ● ││    3    │                                                        
+                     └──────────┘└─────────┘                                                        
+  󰂯 BT       4      ┌───Laptop────┐                                                                 
+                    │             │                                                                 
+  󰐥 Power    5      │      1      │                                                                 
+                    │             │                                                                 
+ ▌󰍹 Displays 6      └─────────────┘                                                                 
                                                                                                     
-                                                                                                    
-                                                                                                    
-                                                                                                    
-                                                                                                    
+  󰏘 Theme    7    DISPLAYS ────────────────────────────────────────                                 
+                    1 Laptop     eDP-1     [■] on        2560×1600@60  position 0, 1080             
+                  ▌ 2 Alpha      DVI-I-1 ⚠ [■] on        1920×1080@60  origin                       
+                    3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha               
                                                                                                     
                                                                                                     
                                                                                                     
- Displays · ready                                                                                   
- F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Adjust
+                                                                                                    
+  ● ready                                                                                           
+                                                                                                    
+                   Space  Toggle    Enter  Adjust    q  Quit    F1  Help    Ctrl+P  Palette

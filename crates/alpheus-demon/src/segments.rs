@@ -4,7 +4,7 @@
 //! is down shows its icon then "–". The whole segment is one click zone,
 //! except the tray's: one zone per icon.
 
-use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourcesConfig, TrayConfig};
+use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
@@ -16,7 +16,6 @@ use crate::session_bus::icons::{Icon, TrayIcon};
 use crate::state::Feed;
 use crate::system::{Battery, BtState, Charge, Link, NetState, PeripheralKind, PowerState, Resources, SoundState};
 use alpheus_commun::theme::settings::ModuleColors;
-use std::collections::VecDeque;
 
 // Material Design glyphs of the Nerd Font, checked by name in the post table
 // of JetBrainsMonoNerdFontMono-Regular.ttf (3.4.0).
@@ -47,8 +46,6 @@ pub const BELL_OFF: char = '\u{f009b}'; // md-bell_off (crossed)
 /// The most unread notifications the bell counts; beyond, "99+".
 pub const UNREAD_MAX: u16 = 99;
 
-/// The volume's mini-gauge (spec § 2): one cell per sixth.
-pub const GAUGE: [char; 6] = ['▁', '▃', '▅', '▆', '▇', '▇'];
 /// Below this, a battery is low (warn tint).
 pub const LOW: u8 = 20;
 /// Below this a battery is critical (themes spec § 4: error), below LOW only low (warn).
@@ -109,11 +106,6 @@ fn trim_name(name: &str) -> &str {
     name.trim_matches(|c: char| c.is_whitespace() || c.is_control() || is_zero_width(c))
 }
 
-/// Gauge cells lit for `percent` (0 to 6, full beyond 100 %).
-pub fn gauge_cells(percent: u8) -> usize {
-    (usize::from(percent) * GAUGE.len()).div_ceil(100).min(GAUGE.len())
-}
-
 /// The launcher's button: always shown, one click zone (spec § 2).
 pub(crate) fn launcher() -> Segment {
     module_segment(ModuleId::Launcher, vec![piece(LAUNCHER.to_string(), Style::NORMAL)])
@@ -156,9 +148,8 @@ pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segmen
         Feed::Down => return Some(down(ModuleId::Volume, VOLUME_HIGH)),
         Feed::Ready(SoundState { sink: Some(v), .. }) => *v,
     };
-    let gauge: String = GAUGE.iter().collect();
     let pieces = if v.muted {
-        vec![piece(format!("{VOLUME_OFF} "), Style::MUTED), piece(gauge, Style::MUTED), piece(format!(" {:>3}%", v.percent), Style::MUTED)]
+        vec![piece(format!("{VOLUME_OFF} "), Style::MUTED), piece("muted".to_string(), Style::MUTED)]
     } else {
         let icon = if v.percent < 34 {
             VOLUME_LOW
@@ -167,12 +158,9 @@ pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segmen
         } else {
             VOLUME_HIGH
         };
-        let lit = gauge_cells(v.percent);
         vec![
             piece(format!("{icon} "), icon_style(mc, Hue::Blue, Style::NORMAL)),
-            piece(GAUGE[..lit].iter().collect::<String>(), Style::ACCENT),
-            piece(GAUGE[lit..].iter().collect::<String>(), Style::MUTED),
-            piece(format!(" {:>3}%", v.percent), text_style(mc, Hue::Blue, Style::NORMAL)),
+            piece(format!("{}%", v.percent), text_style(mc, Hue::Blue, Style::NORMAL)),
         ]
     };
     Some(module_segment(ModuleId::Volume, pieces))
@@ -271,9 +259,8 @@ const BATTERY_CHARGING: [char; 11] = [
 /// here — one cell wide).
 const DEVICE: char = '\u{f0fb0}'; // md-devices
 pub const MEMORY: char = '\u{f035b}'; // md-memory
+pub const CPU: char = '\u{f061a}'; // md-chip
 pub const THERMOMETER: char = '\u{f050f}'; // md-thermometer
-/// CPU graph, one block per point (no braille in the bar's font, Q4).
-pub const GRAPH: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 /// From this temperature (°C), the error tint (waybar's critical threshold).
 pub const HOT: i16 = 85;
 
@@ -349,40 +336,29 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     Some(module_segment(ModuleId::Battery, pieces))
 }
 
-/// The last `width` points of `history`, right-aligned in `width` cells.
-pub fn graph(history: &VecDeque<u8>, width: u16) -> String {
-    let w = usize::from(width);
-    let skip = history.len().saturating_sub(w);
-    let pad = w.saturating_sub(history.len());
-    std::iter::repeat_n(' ', pad).chain(history.iter().skip(skip).map(|p| GRAPH[(usize::from(*p) * 8 / 101).min(7)])).collect()
-}
-
-pub(crate) fn resources(r: &Resources, c: &ResourcesConfig, mc: ModuleColors) -> Option<Segment> {
+/// The resources: an icon and a figure each (CPU, memory, temperature), nothing padded. The
+/// `[resources] graph` setting is still read but ignored (the sparkline went with the refresh).
+pub(crate) fn resources(r: &Resources, mc: ModuleColors) -> Option<Segment> {
     let s = r.last?;
-    let mut pieces = Vec::new();
-    if c.graph > 0 {
-        // The graph is the CPU's icon: its orange takes the accent's place.
-        pieces.push(piece(format!("{} ", graph(&r.history, c.graph)), icon_style(mc, Hue::Orange, Style::ACCENT)));
-    }
+    let mut pieces = vec![piece(format!("{CPU} "), icon_style(mc, Hue::Orange, Style::NORMAL))];
     pieces.push(piece(
         match s.cpu {
-            Some(p) => format!("{p:>3}%"),
-            None => "  …%".to_string(),
+            Some(p) => format!("{p}%"),
+            None => "…%".to_string(),
         },
         text_style(mc, Hue::Orange, Style::NORMAL),
     ));
     if let Some(m) = s.memory {
-        // Tenths of GiB, one decimal; the whole part padded to 2 so the
-        // total stays 4 wide (the decimal part is always ".D", Q5).
-        pieces.push(piece(format!(" {MEMORY}"), icon_style(mc, Hue::Yellow, Style::NORMAL)));
-        pieces.push(piece(format!(" {:>2}.{}G", m / 10, m % 10), text_style(mc, Hue::Yellow, Style::NORMAL)));
+        // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
+        pieces.push(piece(format!("   {MEMORY}"), icon_style(mc, Hue::Yellow, Style::NORMAL)));
+        pieces.push(piece(format!(" {}.{}G", m / 10, m % 10), text_style(mc, Hue::Yellow, Style::NORMAL)));
     }
     if let Some(t) = s.temperature {
         if t >= HOT {
-            pieces.push(piece(format!(" {THERMOMETER} {t:>2}°"), Style::ERROR));
+            pieces.push(piece(format!("   {THERMOMETER} {t}°"), Style::ERROR));
         } else {
-            pieces.push(piece(format!(" {THERMOMETER}"), icon_style(mc, Hue::Red, Style::NORMAL)));
-            pieces.push(piece(format!(" {t:>2}°"), text_style(mc, Hue::Red, Style::NORMAL)));
+            pieces.push(piece(format!("   {THERMOMETER}"), icon_style(mc, Hue::Red, Style::NORMAL)));
+            pieces.push(piece(format!(" {t}°"), text_style(mc, Hue::Red, Style::NORMAL)));
         }
     }
     Some(module_segment(ModuleId::Resources, pieces))

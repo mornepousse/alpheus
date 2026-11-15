@@ -333,7 +333,7 @@ fn a_preset_resolves_per_mode() {
 #[test]
 fn a_dark_only_preset_in_light_mode_uses_its_dark_half_with_one_line() {
     let dir = TempDir::new("theme-dark-only");
-    for name in ["nord", "dracula"] {
+    for name in ["nord", "dracula", "phosphor"] {
         let s = ThemeSettings { source: ThemeSource::Preset(name), ..ThemeSettings::default() };
         let (r, w) = resolve(&s, Mode::Light, &dir);
         assert_eq!(r, named(name).dark);

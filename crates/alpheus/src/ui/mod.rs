@@ -2,10 +2,15 @@
 //! clickable regions: each component knows its own region for click testing.
 
 mod appearance;
+mod controls;
+mod digits;
 mod displays;
 pub mod draw;
 pub mod hit;
+pub mod home;
 mod overlays;
+pub mod rail;
+pub mod shape;
 mod tabs;
 
 pub use hit::{HitMap, Target};
@@ -14,6 +19,7 @@ use crate::app::App;
 use crate::app::action::{Action, Tab};
 use crate::app::appearance::Focus;
 use draw::put;
+use home::LocalTime;
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -25,7 +31,26 @@ pub const MIN_H: u16 = 8;
 /// "alpheus" and the two spaces after it, in the tab bar.
 const BRAND_W: usize = 9;
 
+/// Which chrome a terminal of this size gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// The tab bar on top, the status line and the shortcut bar at the foot.
+    Classic,
+    /// The left rail (see `rail`).
+    Rail,
+}
+
+pub fn chrome(area: Rect) -> Chrome {
+    if area.width >= rail::RAIL_MIN_W && area.height >= rail::RAIL_MIN_H { Chrome::Rail } else { Chrome::Classic }
+}
+
+/// Draws everything at the local time now (see `render_at`).
 pub fn render(f: &mut Frame, app: &App) -> HitMap {
+    render_at(f, app, LocalTime::now())
+}
+
+/// Draws everything; `now` is the time Home's dashboard shows (none: no clock).
+pub fn render_at(f: &mut Frame, app: &App, now: Option<LocalTime>) -> HitMap {
     let area = f.area();
     let buf = f.buffer_mut();
     let mut hits = HitMap::default();
@@ -35,12 +60,17 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
         put(buf, area, area.x, area.y, "alpheus: window too small", Style::default().fg(th.error));
         return hits;
     }
-    let bar = |y| Rect::new(area.x, y, area.width, 1);
-    let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
-    tab_bar(buf, bar(area.y), app, &mut hits);
-    tabs::render(buf, body, app, &mut hits);
-    status_line(buf, bar(area.bottom() - 2), app);
-    shortcut_bar(buf, bar(area.bottom() - 1), app);
+    if chrome(area) == Chrome::Rail {
+        let body = rail::render(buf, area, app, &mut hits);
+        tabs::render(buf, body, app, &mut hits, Chrome::Rail, now);
+    } else {
+        let bar = |y| Rect::new(area.x, y, area.width, 1);
+        let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
+        tab_bar(buf, bar(area.y), app, &mut hits);
+        tabs::render(buf, body, app, &mut hits, Chrome::Classic, now);
+        status_line(buf, bar(area.bottom() - 2), app);
+        shortcut_bar(buf, bar(area.bottom() - 1), app);
+    }
     overlays::render(buf, area, app, &mut hits);
     hits
 }
@@ -77,18 +107,13 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     }
 }
 
-fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
-    let th = &app.theme;
+pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     let km = &app.keymap;
-    let mut pairs: Vec<(String, &str)> = Vec::new();
+    let mut pairs: Vec<(String, &'static str)> = Vec::new();
     if app.search.editing {
         pairs.push(("Enter".into(), "Confirm"));
         pairs.push(("Esc".into(), "Clear"));
     } else {
-        pairs.push((km.label(Action::Help), "Help"));
-        pairs.push((km.label(Action::Palette), "Palette"));
-        pairs.push((km.label(Action::Back), "Back"));
-        pairs.push((km.label(Action::Quit), "Quit"));
         let adjust = format!("{}/{}", km.label(Action::Decrease), km.label(Action::Increase));
         match app.tab {
             Tab::Home => {
@@ -125,9 +150,20 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
                 }
             },
         }
+        // Generic keys last: a bar too narrow for every pair drops Back, then Palette, then Help
+        // then Quit before any key that acts on the focused item.
+        pairs.push((km.label(Action::Quit), "Quit"));
+        pairs.push((km.label(Action::Help), "Help"));
+        pairs.push((km.label(Action::Palette), "Palette"));
+        pairs.push((km.label(Action::Back), "Back"));
     }
+    pairs
+}
+
+fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
+    let th = &app.theme;
     let mut x = r.x + 1;
-    for (key, what) in pairs {
+    for (key, what) in shortcut_pairs(app) {
         if key.is_empty() {
             continue; // action with no key (unassigned in config.toml)
         }
@@ -149,16 +185,36 @@ pub(crate) mod testing {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
-    /// Draws `app` on a w×h terminal; returns the rows and the regions.
+    /// The fixed time the tests draw with: Sunday 15 November, 14:05.
+    pub const T: LocalTime = LocalTime { hour: 14, minute: 5, weekday: 0, day: 15, month: 10 };
+
+    /// Draws `app` on a w×h terminal at `T`; returns the rows and the regions.
     pub fn draw(app: &App, w: u16, h: u16) -> (Vec<String>, HitMap) {
+        draw_at(app, w, h, Some(T))
+    }
+
+    /// Draws `app` on a w×h terminal at `now`; returns the rows and the regions.
+    pub fn draw_at(app: &App, w: u16, h: u16, now: Option<LocalTime>) -> (Vec<String>, HitMap) {
         let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
         let mut hits = HitMap::default();
-        t.draw(|f| hits = render(f, app)).unwrap();
+        t.draw(|f| hits = render_at(f, app, now)).unwrap();
         let buf = t.backend().buffer();
         let rows = (0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect::<String>()).collect();
         (rows, hits)
     }
+
+    /// The cells `render_at` leaves on a w×h terminal.
+    pub fn buffer_at(app: &App, w: u16, h: u16, now: Option<LocalTime>) -> Buffer {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        t.draw(|f| {
+            render_at(f, app, now);
+        })
+        .unwrap();
+        t.backend().buffer().clone()
+    }
 }
 
+#[cfg(test)]
+mod contrast_tests;
 #[cfg(test)]
 mod tests;

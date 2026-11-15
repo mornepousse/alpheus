@@ -3,7 +3,6 @@
 //! keeps it, `segments` draws it.
 
 pub use alpheus_commun::backends::Volume;
-use std::collections::VecDeque;
 
 /// The default output and input (PipeWire), as the bar and the OSD read them (OSD spec § 2).
 /// `sink: None`: no output at all (the volume module hidden).
@@ -364,25 +363,15 @@ pub struct Sample {
     pub temperature: Option<i16>,
 }
 
-/// Points of CPU history kept (spec § 3: graph histories capped at 60).
-pub const HISTORY: usize = 60;
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Resources {
-    pub history: VecDeque<u8>,
     pub last: Option<Sample>,
 }
 
 impl Resources {
     /// Adds a reading; true if the display may have changed.
     pub fn push(&mut self, s: Sample) -> bool {
-        if let Some(c) = s.cpu {
-            if self.history.len() == HISTORY {
-                self.history.pop_front();
-            }
-            self.history.push_back(c);
-        }
-        let changed = s.cpu.is_some() || self.last != Some(s);
+        let changed = self.last != Some(s);
         self.last = Some(s);
         changed
     }

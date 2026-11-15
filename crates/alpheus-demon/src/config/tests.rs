@@ -573,3 +573,10 @@ fn config_displays_defaults_and_absolute_drm_dir() {
     assert!(err("[displays]\npower = true").contains("power"), "unknown key refused");
     assert_eq!(BarConfig::from_text("modules = [\"displays\"]").unwrap().modules, [ModuleId::Displays]);
 }
+
+#[test]
+fn resources_graph_is_accepted_and_ignored() {
+    let c = BarConfig::from_text("[resources]\ngraph = 20\n").unwrap();
+    assert_eq!(c.resources.graph, 20, "still parsed");
+    assert!(BarConfig::from_text("[resources]\ngraph = 61").unwrap_err().contains("resources.graph"), "still refused out of range");
+}

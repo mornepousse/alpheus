@@ -36,7 +36,7 @@ fn home_frame() {
     assert!(rows[10].contains("Do not disturb") && rows[10].contains("[ ] off"));
     assert!(rows[14].contains("Energy profile") && rows[14].contains("Balanced"));
     assert!(rows[22].contains("Home · ready"));
-    assert!(rows[23].contains("F1 Help  Ctrl+P Palette  Esc Back  q Quit"), "{:?}", rows[23]);
+    assert!(rows[23].contains("q Quit  F1 Help  Ctrl+P Palette  Esc Back"), "{:?}", rows[23]);
     assert!(rows[23].contains("Space Toggle"));
 }
 
@@ -189,17 +189,16 @@ fn displays_tab_rendering() {
     let all = rows.join("\n");
     for expected in [
         "Profiles",
-        "[ Laptop seul ]",
-        "[ Bureau ]",
-        "[ + Save current ]",
-        "Map",
-        "Displays",
+        " Laptop seul ",
+        " Bureau ",
+        " + Save current ",
+        "MAP",
+        "DISPLAYS",
         "1 Laptop",
         "2 Alpha",
         "DVI-I-1 ⚠",
         "3 Bravo",
         "1920×1080@240",
-        "scale 1.0",
         "position 0, 1080",
         "origin",
         "right of Alpha",
@@ -209,9 +208,27 @@ fn displays_tab_rendering() {
     assert!(all.contains('●'), "the map marks the focused screen:\n{all}");
     assert!(hits.find(Target::DisplayProfile(2)).is_some());
     assert!(hits.find(Target::OutputToggle(3)).is_some());
-    assert!(rows[27].contains("Space Toggle") && rows[27].contains("Enter Adjust"), "{:?}", rows[27]);
+    assert!(rows[27].contains("Space  Toggle"), "{:?}", rows[27]);
+    assert!(draw(&a, 120, 28).0[27].contains("Enter  Adjust"));
+    assert!(!all.contains("scale 1.0"), "the scale gives way to the placement at 100 columns:\n{all}");
+    assert!(draw(&a, 120, 28).0.join("\n").contains("scale 1.0"), "and comes back when the body has room");
     a.focus = 0;
-    assert!(draw(&a, 100, 28).0[27].contains("Enter Apply"));
+    // The hint row, not the layout: at 100 columns the keycaps stop before "Enter  Apply".
+    assert!(draw(&a, 120, 28).0[27].contains("Enter  Apply"));
+}
+
+/// Mae's window (87×26): a 67-column body beside the rail. Every output's placement is whole.
+#[test]
+fn displays_fit_mae_window_87x26() {
+    let mut a = displays_tab();
+    a.focus = 2;
+    let (rows, _) = draw(&a, 87, 26);
+    for (row, place) in [("1 Laptop", "position 0, 1080"), ("2 Alpha", "origin"), ("3 Bravo", "right of Alpha")] {
+        let line =
+            rows.iter().find(|r| r.contains(row) && r.contains("[■]")).unwrap_or_else(|| panic!("{row} missing:\n{}", rows.join("\n")));
+        assert!(line.contains(place), "{place:?} in {line:?}");
+        assert!(!line.contains('…'), "{line:?}");
+    }
 }
 
 #[test]
@@ -245,7 +262,7 @@ fn daemon_absent_shows_its_message() {
         a.on_update(fetch(&b, Domain::Displays), Instant::now());
         let all = draw(&a, 100, 24).0.join("\n");
         assert!(all.contains(shown), "{shown}:\n{all}");
-        assert!(all.contains("[ Bureau ]"), "the profiles stay visible");
+        assert!(all.contains(" Bureau "), "the profiles stay visible");
         assert!(!all.contains("1 Laptop"), "no output listed");
     }
     let mut a = displays_tab();
@@ -488,4 +505,265 @@ fn overlays_never_panic_in_a_small_window() {
             draw(&a, w, h);
         }
     }
+}
+
+// ── The rail's controls ──────────────────────────────────────────
+
+fn buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+    t.draw(|f| {
+        render(f, a);
+    })
+    .unwrap();
+    t.backend().buffer().clone()
+}
+
+/// The tab's body alone, drawn with the rail chrome on a w×h area (a body below 64×20 keeps Home's rows).
+fn rail_draw(a: &crate::app::App, w: u16, h: u16) -> (ratatui::buffer::Buffer, HitMap) {
+    let area = ratatui::layout::Rect::new(0, 0, w, h);
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    let mut hits = HitMap::default();
+    tabs::render(&mut buf, area, a, &mut hits, Chrome::Rail, Some(super::testing::T));
+    (buf, hits)
+}
+
+fn rail_buffer(a: &crate::app::App, w: u16, h: u16) -> ratatui::buffer::Buffer {
+    rail_draw(a, w, h).0
+}
+
+fn rail_rows(a: &crate::app::App, w: u16, h: u16) -> (Vec<String>, HitMap) {
+    let (buf, hits) = rail_draw(a, w, h);
+    ((0..h).map(|y| (0..w).map(|x| buf[(x, y)].symbol()).collect()).collect(), hits)
+}
+
+fn tab_app(t: Tab) -> crate::app::App {
+    let mut a = if t == Tab::Displays { displays_tab() } else { ready_app() };
+    a.go_tab(t, Instant::now());
+    a.take_requests();
+    a
+}
+
+fn row_of(rows: &[String], needle: &str) -> usize {
+    rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle:?} missing:\n{}", rows.join("\n")))
+}
+
+#[test]
+fn the_focused_row_is_a_band() {
+    let mut a = tab_app(Tab::Sound);
+    a.focus = 0;
+    let (rows, hits) = draw(&a, 120, 36);
+    assert!(!rows.join("\n").contains('▶'), "the rail has no arrow");
+    let y = hits.find(Target::Item(0)).unwrap().y;
+    let b = buffer(&a, 120, 36);
+    let row = hits.find(Target::Item(0)).unwrap();
+    for x in row.x..row.right() {
+        assert_eq!(b[(x, y)].bg, a.theme.selection, "cell {x}");
+    }
+    assert_eq!((b[(row.x, y)].symbol(), b[(row.x, y)].fg), ("▌", a.theme.blue));
+    // The row after it is not.
+    let other = hits.find(Target::Item(1)).unwrap();
+    assert_ne!(b[(other.x + 3, other.y)].bg, a.theme.selection);
+}
+
+#[test]
+fn headings_take_the_tab_hue() {
+    let a = tab_app(Tab::Network);
+    let (rows, _) = draw(&a, 120, 36);
+    let y = row_of(&rows, "ACTIVE CONNECTIONS");
+    let b = buffer(&a, 120, 36);
+    let x = rows[y].chars().position(|c| c == 'A').unwrap() as u16;
+    assert_eq!(b[(x, y as u16)].fg, a.theme.cyan);
+    assert!(rows[y].contains("ACTIVE CONNECTIONS ─"), "{:?}", rows[y]);
+    let rule = rows[y].chars().position(|c| c == '─').unwrap() as u16;
+    assert_eq!(b[(rule, y as u16)].fg, a.theme.raised);
+}
+
+#[test]
+fn power_buttons_with_glyphs() {
+    let mut a = tab_app(Tab::Power);
+    a.focus = 1;
+    let (rows, hits) = draw(&a, 120, 36);
+    assert!(rows[row_of(&rows, "  󰌾  Lock")].trim_end().ends_with('󰁔'));
+    for (glyph, label) in [("󰍃", "Log out"), ("󰤄", "Suspend"), ("󰜉", "Reboot"), ("󰐥", "Power off")] {
+        let y = row_of(&rows, &format!("  {glyph}  {label}"));
+        assert!(rows[y].trim_end().ends_with('󰁔'), "{:?}", rows[y]);
+    }
+    let b = buffer(&a, 120, 36);
+    let r = hits.find(Target::Item(1)).unwrap();
+    let drawn = (r.x + 2..).take_while(|&x| b[(x, r.y)].bg == a.theme.red).count() as u16;
+    assert!(drawn >= 26, "the focused button is filled with red ({drawn})");
+    assert_eq!(r.width, drawn + 2);
+    let other = hits.find(Target::Item(0)).unwrap();
+    assert_ne!(b[(other.x + 4, other.y)].bg, a.theme.red);
+}
+
+#[test]
+fn profile_chips_take_the_shape() {
+    let mut a = ready_app();
+    a.theme.shape = crate::theme::Shape::Round;
+    // Beside the rail Home is the dashboard; its rows (and their chips) show in a body below 64×20.
+    let (rows, _) = rail_rows(&a, 80, 19);
+    let line = &rows[row_of(&rows, "Energy profile")];
+    assert!(line.contains("\u{e0b6} Balanced \u{e0b4}"), "{line:?}");
+    // The active chip's caps are the hue (Home: accent); a resting one's are `raised`.
+    let b = rail_buffer(&a, 80, 19);
+    let y = row_of(&rows, "Energy profile") as u16;
+    let col = |needle: &str| line[..line.find(needle).unwrap()].chars().count() as u16;
+    assert_eq!(b[(col(" Balanced ") - 1, y)].fg, a.theme.accent);
+    assert_eq!(b[(col(" Performance ") - 1, y)].fg, a.theme.raised);
+}
+
+#[test]
+fn rail_tab_snapshots() {
+    for (t, name) in [
+        (Tab::Sound, "rail_sound"),
+        (Tab::Network, "rail_network"),
+        (Tab::Bluetooth, "rail_bluetooth"),
+        (Tab::Power, "rail_power"),
+        (Tab::Displays, "rail_displays"),
+        (Tab::Appearance, "rail_theme"),
+    ] {
+        insta::assert_snapshot!(name, draw(&tab_app(t), 120, 36).0.join("\n"));
+    }
+}
+
+/// Mae's window (87×26, a 67×20 body): nothing the classic layout showed whole is cut, the
+/// controls are whole, and what is clickable is what is drawn.
+#[test]
+fn rail_controls_fit_mae_window_87x26() {
+    let cut = |rows: &[String]| assert!(!rows.join("\n").contains('…'), "a cut row:\n{}", rows.join("\n"));
+    // Home's rows: sliders (gauge + tail), switches, profile chips. Beside the rail they show in a body
+    // below 64×20 (else the dashboard, see `home::tests::mae_window_87x26_shows_the_whole_dashboard`).
+    let a = tab_app(Tab::Home);
+    let (rows, hits) = rail_rows(&a, 67, 19);
+    cut(&rows);
+    let bar = hits.find(Target::Slider { item: 0 }).unwrap();
+    let line = &rows[usize::from(bar.y)];
+    let drawn: String = line.chars().skip(usize::from(bar.x)).take(usize::from(bar.width)).collect();
+    assert!(drawn.contains('●') && drawn.chars().all(|c| "━●─".contains(c)), "{drawn:?}");
+    assert!(line.contains("62%"), "{line:?}");
+    assert!(rows[row_of(&rows, "Wi-Fi")].contains(" ON   ● "));
+    assert!(rows[row_of(&rows, "Do not disturb")].contains(" ○  off "));
+    let chips = &rows[row_of(&rows, "Energy profile")];
+    for name in ["Performance", "Balanced", "Power saver"] {
+        assert!(chips.contains(name), "{chips:?}");
+        assert!(
+            hits.find(Target::ProfileOption(["Performance", "Balanced", "Power saver"].iter().position(|n| *n == name).unwrap())).is_some()
+        );
+    }
+    // Sound: the lists whole, the button whole.
+    let a = tab_app(Tab::Sound);
+    let (rows, hits) = draw(&a, 87, 26);
+    cut(&rows);
+    for s in ["OUTPUTS", "Dock D6000 Dell", "CasqueBT", "INPUTS", "Stereo Microphone", "  󰝚  Per-app mixer"] {
+        assert!(rows.join("\n").contains(s), "{s}");
+    }
+    assert!(hits.find(Target::Slider { item: 2 }).is_some());
+    for (name, tail) in [("Dock D6000 Dell", "75%"), ("CasqueBT", "62%"), ("Stereo Microphone", "100%")] {
+        let line = rows.iter().find(|r| r.contains(name) && r.contains('●')).unwrap_or_else(|| panic!("{name}"));
+        assert!(line.trim_end().ends_with(tail), "{line:?}");
+    }
+    // Network and Bluetooth: the list rows whole, the button whole.
+    let a = tab_app(Tab::Network);
+    let (rows, _) = draw(&a, 87, 26);
+    cut(&rows);
+    for s in ["󰖩  MON_WIFI_1", "wlp0s1f01", "󰈀  Wired connection 1", "enp0s0u1u2i10", "  󰖩  Choose a network"] {
+        assert!(rows.join("\n").contains(s), "{s}");
+    }
+    let a = tab_app(Tab::Bluetooth);
+    let (rows, _) = draw(&a, 87, 26);
+    cut(&rows);
+    for s in ["󰂱  CasqueBT", "AA:BB:CC:DD:EE:01", "  󰂯  Pair a device"] {
+        assert!(rows.join("\n").contains(s), "{s}");
+    }
+    // Power: five buttons whole, each hit region the drawn width + 2.
+    let a = tab_app(Tab::Power);
+    let (rows, hits) = draw(&a, 87, 26);
+    cut(&rows);
+    for (i, label) in ["Lock", "Log out", "Suspend", "Reboot", "Power off"].iter().enumerate() {
+        let r = hits.find(Target::Item(i)).unwrap();
+        let line = &rows[usize::from(r.y)];
+        assert!(line.contains(label) && line.trim_end().ends_with('󰁔'), "{line:?}");
+        let end = line.trim_end().chars().count() as u16;
+        assert_eq!(r.right(), end + 2, "hit = drawn + 2");
+    }
+    // Displays and Theme keep the rows T3's fit fixed; the headings are the rail's.
+    let a = tab_app(Tab::Displays);
+    let (rows, _) = draw(&a, 87, 26);
+    assert!(rows.join("\n").contains("MAP") && rows.join("\n").contains("DISPLAYS"));
+    let a = tab_app(Tab::Appearance);
+    assert!(!draw(&a, 87, 26).0.join("\n").contains("…"));
+}
+
+/// The chosen profile chip stands out from the focus band and from the resting chips, and follows ←/→.
+#[test]
+fn the_chosen_profile_chip_is_filled_in_the_rail() {
+    for (w, h) in [(87, 26), (120, 36)] {
+        let mut a = displays_tab();
+        a.focus = 0;
+        a.displays.profile_sel = 0;
+        for want in 0..3 {
+            a.displays.profile_sel = want;
+            let (_, hits) = draw(&a, w, h);
+            let b = buffer(&a, w, h);
+            let bg = |j: usize| {
+                let r = hits.find(Target::DisplayProfile(j)).unwrap();
+                b[(r.x + 1, r.y)].bg
+            };
+            assert_eq!(bg(want), a.theme.green, "{w}x{h}: the chosen chip is the hue");
+            for j in (0..3).filter(|j| *j != want) {
+                assert_eq!(bg(j), a.theme.raised, "{w}x{h}: a resting chip");
+            }
+            assert_ne!(bg(want), a.theme.selection);
+        }
+        // Hit regions are what is drawn: no overlap, each as wide as its label + 2.
+        let (rows, hits) = draw(&a, w, h);
+        for (j, name) in ["Laptop seul", "Bureau", "+ Save current"].iter().enumerate() {
+            let r = hits.find(Target::DisplayProfile(j)).unwrap();
+            let drawn: String = rows[usize::from(r.y)].chars().skip(usize::from(r.x)).take(usize::from(r.width)).collect();
+            assert_eq!(drawn, format!(" {name} "));
+        }
+        // ←/→ move the choice.
+        a.displays.profile_sel = 0;
+        a.profile_bar_move(1);
+        let b = buffer(&a, w, h);
+        let r = draw(&a, w, h).1.find(Target::DisplayProfile(1)).unwrap();
+        assert_eq!(b[(r.x + 1, r.y)].bg, a.theme.green);
+    }
+}
+
+#[test]
+fn bands_under_round_and_line_at_the_tab_level() {
+    let mut a = tab_app(Tab::Sound);
+    a.focus = 0;
+    a.theme.shape = crate::theme::Shape::Round;
+    let (_, hits) = draw(&a, 120, 36);
+    let r = hits.find(Target::Item(0)).unwrap();
+    let b = buffer(&a, 120, 36);
+    assert_eq!(b[(r.x, r.y)].symbol(), "\u{e0b6}");
+    assert_eq!(b[(r.right() - 1, r.y)].symbol(), "\u{e0b4}");
+    assert_eq!(b[(r.x + 3, r.y)].bg, a.theme.selection);
+    a.theme.shape = crate::theme::Shape::Line;
+    let b = buffer(&a, 120, 36);
+    assert_eq!((b[(r.x, r.y)].symbol(), b[(r.x, r.y)].fg), ("▎", a.theme.blue));
+    assert_ne!(b[(r.x + 3, r.y)].bg, a.theme.selection, "no fill under the line style");
+    let label = (r.x..r.right()).find(|&x| b[(x, r.y)].symbol() == "D").unwrap();
+    let m = b[(label, r.y)].modifier;
+    assert!(m.contains(ratatui::style::Modifier::BOLD) && m.contains(ratatui::style::Modifier::UNDERLINED));
+}
+
+/// Review Fix 2: the keys that act on the focused item come first, so a narrow window drops the
+/// generic ones (Back, Palette, Help) before them.
+#[test]
+fn keycaps_keep_the_focused_items_keys_at_87x26() {
+    let mut a = tab_app(Tab::Home);
+    a.focus = 0;
+    let (rows, _) = draw(&a, 87, 26);
+    assert!(rows[25].contains("Adjust"), "{:?}", rows[25]);
+    assert!(rows[25].contains("Toggle"), "{:?}", rows[25]);
+    // A narrower bar drops Back, then Palette, then Help, before any of the item's keys.
+    let names: Vec<&str> = crate::ui::shortcut_pairs(&a).iter().map(|p| p.1).collect();
+    let at = |n: &str| names.iter().position(|x| *x == n).unwrap();
+    assert!(at("Adjust") < at("Help") && at("Toggle") < at("Help"), "{names:?}");
+    assert!(at("Help") < at("Palette") && at("Palette") < at("Back"), "{names:?}");
 }

@@ -45,7 +45,7 @@ fn nothing_is_computed_until_the_tab_is_shown() {
     let a = ready_app();
     assert!(a.appearance.entries.is_empty() && a.appearance.preview.is_none());
     let (a, _dir) = open("lazy", &[]);
-    assert_eq!(a.appearance.entries.len(), 10);
+    assert_eq!(a.appearance.entries.len(), 16);
     assert!(a.appearance.preview.is_some());
 }
 
@@ -90,8 +90,8 @@ fn auto_previews_the_mode_the_daemon_publishes() {
 fn a_preset_without_a_light_variant_previews_its_dark_half() {
     let (mut a, _dir) = open("nord", &[("theme.toml", "mode = \"light\"\n")]);
     act(&mut a, Action::End);
-    assert_eq!(a.appearance.cursor_entry().unwrap().label, "Dracula");
-    assert_eq!(a.appearance.preview, Some(preset("dracula").unwrap().dark));
+    assert_eq!(a.appearance.cursor_entry().unwrap().label, "Phosphor");
+    assert_eq!(a.appearance.preview, Some(preset("phosphor").unwrap().dark));
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn the_cursor_is_bounded_and_page_keys_jump() {
     act(&mut a, Action::PageDown);
     assert_eq!(a.appearance.cursor, 5);
     act(&mut a, Action::End);
-    assert_eq!(a.appearance.cursor, 9, "the last theme; Down from there reaches the rows");
+    assert_eq!(a.appearance.cursor, 15, "the last theme; Down from there reaches the rows");
 }
 
 #[test]

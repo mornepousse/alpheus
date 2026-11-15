@@ -27,18 +27,18 @@ fn wide_bar_on_the_hdmi_screen() {
     let g = bar().grid("HDMI-A-1", 100);
     let (t, s) = (g.text(), g.styles());
     assert_eq!(g.width(), 100);
-    assert!(t.starts_with(" \u{f0349} │  2·  4!····+  5  │ \u{f0239} Web page — Mozilla Firefox "), "launcher button first: {t}");
-    assert!(t.ends_with(" │ Sun 4 Oct 14:05 │ \u{23fb} "), "the power button last: {t}");
-    assert!(s.starts_with("..mmmAAAAuuuuuuuuummmmmm"), "{s}");
-    assert!(s.ends_with("mmmmmmmmmmmmmGGGGGmmm.."), "{s}");
+    assert!(t.starts_with(" \u{f0349}  ·   2·  4!····+  5   ·  \u{f0239} Web page — Mozilla Firefox "), "launcher button first: {t}");
+    assert!(t.ends_with("  ·  Sun 4 Oct 14:05  ·  \u{23fb} "), "the power button last: {t}");
+    assert!(s.starts_with("..mmmmmAAAAuuuuuuuuummmmmmmm"), "{s}");
+    assert!(s.ends_with("mmmmmmmmmmmmmmmGGGGGmmmmm.."), "{s}");
     insta::assert_snapshot!("hdmi_100", snapshot(&g));
 }
 
 #[test]
 fn title_truncated_then_removed_when_space_is_short() {
-    let g = bar().grid("HDMI-A-1", 60);
+    let g = bar().grid("HDMI-A-1", 68);
     assert!(g.text().contains("Web page —…"), "{}", g.text());
-    insta::assert_snapshot!("hdmi_60", snapshot(&g));
+    insta::assert_snapshot!("hdmi_68", snapshot(&g));
     let g = bar().grid("HDMI-A-1", 40);
     let t = g.text();
     assert!(!t.contains("Web") && t.contains("14:05") && t.contains(" 4!····+ "), "{t}");
@@ -51,18 +51,18 @@ fn extreme_sizes_without_panic() {
     for w in [0u16, 1, 5, 12, 39] {
         assert_eq!(bar().grid("HDMI-A-1", w).width(), w);
     }
-    // At 44 columns the title has disappeared (see
+    // At 50 columns the title has disappeared (see
     // title_truncated_then_removed_when_space_is_short), but the
     // launcher button, workspaces, the clock and the power button are
-    // all still shown whole (1 + 16 + 15 + 1 cells, 3 separators, 2
-    // margins). At 43 the launcher button goes; at 39 the power button
+    // all still shown whole (1 + 16 + 15 + 1 cells, 3 separators of 5, 2
+    // margins). At 49 the launcher button goes; at 43 the power button
     // too (last of REMOVAL); workspaces and the clock, never removed,
     // stay whole.
-    let t = bar().grid("HDMI-A-1", 44).text();
-    assert!(t.starts_with(" \u{f0349} │ ") && t.contains(" 4!····+ ") && t.ends_with(" 14:05 │ \u{23fb} "), "{t}");
+    let t = bar().grid("HDMI-A-1", 50).text();
+    assert!(t.starts_with(" \u{f0349}  ·  ") && t.contains(" 4!····+ ") && t.ends_with(" 14:05  ·  \u{23fb} "), "{t}");
+    let t = bar().grid("HDMI-A-1", 49).text();
+    assert!(!t.contains('\u{f0349}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05  ·  \u{23fb} "), "{t}");
     let t = bar().grid("HDMI-A-1", 43).text();
-    assert!(!t.contains('\u{f0349}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05 │ \u{23fb} "), "{t}");
-    let t = bar().grid("HDMI-A-1", 39).text();
     assert!(!t.contains('\u{23fb}') && t.contains(" 4!····+ ") && t.ends_with(" 14:05 "), "{t}");
 }
 
@@ -70,10 +70,10 @@ fn extreme_sizes_without_panic() {
 fn workspaces_of_each_screen() {
     let b = bar();
     let g = b.grid("eDP-1", 60);
-    assert!(g.text().starts_with(" \u{f0349} │  1  │ "), "{}", g.text());
-    assert!(g.styles().starts_with("..mmmsss"), "visible without focus: surface");
+    assert!(g.text().starts_with(" \u{f0349}  ·   1   ·  "), "{}", g.text());
+    assert!(g.styles().starts_with("..mmmmmsss"), "visible without focus: surface");
     let g = b.grid("DVI-I-1", 60);
-    assert!(g.text().starts_with(" \u{f0349} │  3··  web·  │ "), "{}", g.text());
+    assert!(g.text().starts_with(" \u{f0349}  ·   3··  web·   ·  "), "{}", g.text());
     let t = b.grid("HEADLESS-1", 120).text();
     assert!(t.contains(" 1 ") && t.contains(" web· "), "unknown screen: every workspace ({t})");
 }
@@ -83,9 +83,9 @@ fn the_clock_has_a_zone_only_with_the_calendar() {
     let clock = Target::Module(ModuleId::Clock);
     let g = bar().grid("HDMI-A-1", 100);
     let t = g.text();
-    let start = t.chars().count() as u16 - " Sun 4 Oct 14:05 │ \u{23fb} ".chars().count() as u16 + 1;
+    let start = t.chars().count() as u16 - " Sun 4 Oct 14:05  ·  \u{23fb} ".chars().count() as u16 + 1;
     assert_eq!(g.target_at(start), Some(&clock), "the date's first cell: {t}");
-    assert_eq!(g.target_at(94), Some(&clock), "the time's last cell");
+    assert_eq!(g.target_at(92), Some(&clock), "the time's last cell");
     assert_eq!(g.target_at(start - 1), None, "the space before the date");
     assert_eq!(g.target_at(95), None, "the separator after it");
     assert_eq!(g.target_at(98), Some(&Target::Module(ModuleId::Power)), "the power button, its own zone");
@@ -103,27 +103,27 @@ fn workspace_zones() {
     let four = Target::Workspace { reference: "4".into(), output: "HDMI-A-1".into() };
     let five = Target::Workspace { reference: "5".into(), output: "HDMI-A-1".into() };
     let launcher = Target::Module(ModuleId::Launcher);
-    // Edges of each zone (launcher button at 1, "2·" at 5-8, "4!····+"
-    // at 9-17, "5" at 18-20): a bound off by one cell would let clicks
-    // through or cut them off.
+    // Edges of each zone (launcher button at 1, the 5-cell separator at 2-6, "2·" at 7-10,
+    // "4!····+" at 11-19, "5" at 20-22): a bound off by one cell would let clicks through or
+    // cut them off.
     assert_eq!(g.target_at(0), None, "margin");
     assert_eq!(g.target_at(1), Some(&launcher), "the launcher button");
     assert_eq!(g.target_at(2), None, "separator after the button");
-    assert_eq!(g.target_at(4), None, "separator after the button");
-    assert_eq!(g.target_at(5), Some(&two), "first edge of workspace 2");
-    assert_eq!(g.target_at(8), Some(&two), "last edge of workspace 2");
-    assert_eq!(g.target_at(9), Some(&four), "first edge of workspace 4");
-    assert_eq!(g.target_at(10), Some(&four));
-    assert_eq!(g.target_at(17), Some(&four), "last edge of workspace 4");
-    assert_eq!(g.target_at(20), Some(&five), "last edge of workspace 5");
-    assert_eq!(g.target_at(21), None, "on the separator, no zone");
-    assert_eq!(g.target_at(34), None, "title");
+    assert_eq!(g.target_at(6), None, "separator after the button");
+    assert_eq!(g.target_at(7), Some(&two), "first edge of workspace 2");
+    assert_eq!(g.target_at(10), Some(&two), "last edge of workspace 2");
+    assert_eq!(g.target_at(11), Some(&four), "first edge of workspace 4");
+    assert_eq!(g.target_at(12), Some(&four));
+    assert_eq!(g.target_at(19), Some(&four), "last edge of workspace 4");
+    assert_eq!(g.target_at(22), Some(&five), "last edge of workspace 5");
+    assert_eq!(g.target_at(23), None, "on the separator, no zone");
+    assert_eq!(g.target_at(36), None, "title");
     let g = bar().grid("DVI-I-1", 60);
     let web = Target::Workspace { reference: "name:web".into(), output: "DVI-I-1".into() };
-    assert_eq!(g.target_at(11), Some(&web));
+    assert_eq!(g.target_at(13), Some(&web));
     // Unknown screen: each workspace keeps ITS OWN output in the command.
     let g = bar().grid("HEADLESS-1", 120);
-    assert_eq!(g.target_at(6), Some(&Target::Workspace { reference: "1".into(), output: "eDP-1".into() }));
+    assert_eq!(g.target_at(8), Some(&Target::Workspace { reference: "1".into(), output: "eDP-1".into() }));
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn order_from_bar_toml() {
     b.config.modules = vec![ModuleId::Clock, ModuleId::Workspaces];
     let t = b.grid("HDMI-A-1", 60).text();
     assert!(t.starts_with(" Sun 4 Oct 14:05"), "{t}");
-    assert!(t.ends_with(" │  2·  4!····+  5  "), "free space before the last module: {t}");
+    assert!(t.ends_with("  ·   2·  4!····+  5  "), "free space before the last module: {t}");
     b.config.clock.date = String::new();
     assert!(b.grid("HDMI-A-1", 60).text().starts_with(" 14:05"));
 }
@@ -153,11 +153,11 @@ fn battery_config_reaches_the_segment() {
 #[test]
 fn waiting_and_down() {
     let b = Bar::new(BarConfig::default());
-    assert!(b.grid("eDP-1", 40).text().starts_with(" \u{f0349} │  …  │ …"), "nothing received: \"…\"");
+    assert!(b.grid("eDP-1", 50).text().starts_with(" \u{f0349}  ·   …   ·  …"), "nothing received: \"…\"");
     let mut b = bar();
     b.apply(Msg::Compositor(None));
-    let t = b.grid("eDP-1", 44).text();
-    assert!(t.starts_with(" \u{f0349} │  –  │ –"), "source down: \"–\" ({t})");
+    let t = b.grid("eDP-1", 50).text();
+    assert!(t.starts_with(" \u{f0349}  ·   –   ·  –"), "source down: \"–\" ({t})");
     assert!(t.contains("14:05"), "the rest of the bar carries on");
 }
 
@@ -165,17 +165,17 @@ fn waiting_and_down() {
 fn launcher_button_on_every_output_and_dropped_last() {
     let b = bar();
     for output in ["eDP-1", "HDMI-A-1", "DVI-I-1", "HEADLESS-1"] {
-        for w in [60u16, 100] {
+        for w in [70u16, 100] {
             let g = b.grid(output, w);
             assert_eq!(g.cells()[1].ch, crate::segments::LAUNCHER, "{output} at {w}: {}", g.text());
             assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "{output} at {w}");
         }
     }
-    let g = b.grid("HDMI-A-1", 44);
-    assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "44 columns: title gone, the button kept");
-    let g = b.grid("HDMI-A-1", 43);
-    assert!(!g.text().contains(crate::segments::LAUNCHER), "43 columns: the button dropped, after every module but ⏻: {}", g.text());
-    assert!((0..43).all(|x| g.target_at(x) != Some(&Target::Module(ModuleId::Launcher))), "and its click zone");
+    let g = b.grid("HDMI-A-1", 50);
+    assert_eq!(g.target_at(1), Some(&Target::Module(ModuleId::Launcher)), "50 columns: title gone, the button kept");
+    let g = b.grid("HDMI-A-1", 49);
+    assert!(!g.text().contains(crate::segments::LAUNCHER), "49 columns: the button dropped, after every module but ⏻: {}", g.text());
+    assert!((0..49).all(|x| g.target_at(x) != Some(&Target::Module(ModuleId::Launcher))), "and its click zone");
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock];
     assert!(!b.grid("HDMI-A-1", 60).text().contains(crate::segments::LAUNCHER), "removed from bar.toml: gone");
@@ -190,7 +190,7 @@ fn the_power_button_is_its_own_block_with_no_hue_removed_last_and_hidden_without
     assert_eq!(REMOVAL.last(), Some(&ModuleId::Power), "after every other removable module");
     let power = Target::Module(ModuleId::Power);
     let g = bar().grid("HDMI-A-1", 100);
-    assert!(g.text().ends_with(" │ \u{23fb} "), "{}", g.text());
+    assert!(g.text().ends_with("  ·  \u{23fb} "), "{}", g.text());
     assert_eq!(g.styles().chars().nth(98), Some('.'), "the glyph in the bar's normal ink");
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock, ModuleId::Power];
@@ -203,7 +203,7 @@ fn the_power_button_is_its_own_block_with_no_hue_removed_last_and_hidden_without
     assert!(!g.text().contains('\u{23fb}') && g.text().ends_with(" 14:05 "), "all four empty: no button: {}", g.text());
     assert!(g.zones().iter().all(|z| z.target != power), "nor its zone");
     b.config.quick.logout = vec!["fake-logout".into()];
-    assert!(b.grid("HDMI-A-1", 60).text().ends_with(" │ \u{23fb} "), "one command is enough");
+    assert!(b.grid("HDMI-A-1", 60).text().ends_with("  ·  \u{23fb} "), "one command is enough");
 }
 
 #[test]
@@ -245,19 +245,19 @@ fn modules_not_yet_delivered_are_invisible() {
     let mut b = bar();
     b.config.modules = vec![ModuleId::Workspaces, ModuleId::Volume, ModuleId::Tray, ModuleId::Clock];
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 1, "no separator for a missing module: {t}");
+    assert_eq!(t.matches("  ·  ").count(), 1, "no separator for a missing module: {t}");
 }
 
 #[test]
 fn no_empty_segment_without_window_or_known_workspace() {
     // With no active window: the window module must leave no empty
-    // segment (so no "│ <empty> │").
+    // segment (so no "· <empty> ·").
     let mut e = example();
     e.window = None;
     let mut b = bar();
     b.apply(Msg::Compositor(Some(e)));
     let t = b.grid("HDMI-A-1", 60).text();
-    assert_eq!(t.matches('│').count(), 3, "launcher, workspaces, clock and ⏻ only: {t}");
+    assert_eq!(t.matches("  ·  ").count(), 3, "launcher, workspaces, clock and ⏻ only: {t}");
 
     // With no workspace at all known to the compositor: same thing for
     // the workspaces module.
@@ -270,7 +270,7 @@ fn no_empty_segment_without_window_or_known_workspace() {
     let mut b2 = bar();
     b2.apply(Msg::Compositor(Some(e2)));
     let t2 = b2.grid("HDMI-A-1", 60).text();
-    assert_eq!(t2.matches('│').count(), 3, "launcher, window, clock and ⏻ only: {t2}");
+    assert_eq!(t2.matches("  ·  ").count(), 3, "launcher, window, clock and ⏻ only: {t2}");
 
     // While waiting or down, "…" / "–" stay shown for both modules
     // (covered by `waiting_and_down`), never removed.
@@ -326,8 +326,8 @@ fn with_no_active_window_the_right_hand_modules_stay_right() {
     assert_eq!(start_without, start_with, "volume starts at the same column either way: {}", without_window.text());
     assert_eq!(tail_without, tail_with, "volume…clock, right-aligned exactly as with a window");
     assert_eq!(
-        without_window.text().matches('│').count(),
-        with_window.text().matches('│').count() - 1,
+        without_window.text().matches("  ·  ").count(),
+        with_window.text().matches("  ·  ").count() - 1,
         "one separator fewer: no empty window segment ({})",
         without_window.text()
     );
@@ -356,7 +356,7 @@ fn narrow_screen_keeps_the_gap_at_the_window_slot_as_modules_are_removed() {
         .expect("no width drops exactly the network module while keeping volume and battery");
     let got = b.grid("HDMI-A-1", narrow);
     assert_eq!(
-        got.text().matches('│').count(),
+        got.text().matches("  ·  ").count(),
         4,
         "launcher, workspaces, volume, battery, clock (network dropped, window absent): {}",
         got.text()
@@ -421,9 +421,9 @@ fn underline_keeps_the_flat_cells_and_records_the_blocks() {
         g.groups(),
         &[
             group(GroupKind::Launcher, 1, 2, None),
-            group(GroupKind::Workspaces, 5, 21, None),
-            group(GroupKind::Title, 24, 52, Some(Hue::Purple)),
-            group(GroupKind::Status, 56, 81, Some(Hue::Blue)),
+            group(GroupKind::Workspaces, 7, 23, None),
+            group(GroupKind::Title, 28, 53, Some(Hue::Purple)),
+            group(GroupKind::Status, 58, 79, Some(Hue::Blue)),
             group(GroupKind::Clock, 84, 99, None),
         ],
         "{}",
@@ -431,13 +431,13 @@ fn underline_keeps_the_flat_cells_and_records_the_blocks() {
     );
 }
 
-/// The block styles: no "│", a pad cell inside each end of a block, one blank cell between
+/// The block styles: no dot separators, a pad cell inside each end of a block, one blank cell between
 /// blocks, the title's block around its text only (the free space stays outside it).
 #[test]
 fn block_styles_drop_the_separators_and_pad_each_block() {
     let g = styled(bar(), BarStyle::Islands).grid("HDMI-A-1", 100);
     let t = g.text();
-    assert!(!t.contains('│'), "{t}");
+    assert!(!t.contains("  ·  "), "{t}");
     assert!(t.starts_with("  \u{f0349}    2·  4!····+  5    \u{f0239} Web page — Mozilla Firefox "), "{t}");
     assert!(t.ends_with(" Sun 4 Oct 14:05   \u{23fb}  "), "the clock's block, the power button's own, then the margin: {t}");
     assert_eq!(
@@ -466,9 +466,9 @@ fn block_styles_drop_the_separators_and_pad_each_block() {
 fn a_block_holds_consecutive_modules_of_one_kind() {
     let g = styled(bar_with_right_modules(), BarStyle::Islands).grid("HDMI-A-1", 100);
     let status: Vec<&Group> = g.groups().iter().filter(|x| x.kind == GroupKind::Status).collect();
-    assert_eq!(status, [&group(GroupKind::Status, 56, 81, Some(Hue::Blue))], "volume, network and battery: one block");
-    let t: String = g.cells()[56..81].iter().filter(|c| c.ch != crate::grid::CONT).map(|c| c.ch).collect();
-    assert_eq!(t, " \u{f0580} ▁▃▅▆▇▇  55%  \u{f05a9}  \u{f0081} 80% ");
+    assert_eq!(status, [&group(GroupKind::Status, 64, 81, Some(Hue::Blue))], "volume, network and battery: one block");
+    let t: String = g.cells()[64..81].iter().filter(|c| c.ch != crate::grid::CONT).map(|c| c.ch).collect();
+    assert_eq!(t, " \u{f0580} 55%  \u{f05a9}  \u{f0081} 80% ");
     insta::assert_snapshot!("blocks_right_modules_100", snapshot(&g));
     // Without volume, the block starts with the network: cyan.
     let mut b = styled(bar_with_right_modules(), BarStyle::Islands);
@@ -612,7 +612,7 @@ fn bar_with_media(playing: bool) -> Bar {
 fn media_sits_between_the_title_and_the_volume() {
     let g = bar_with_media(true).grid("HDMI-A-1", 100);
     let t = g.text();
-    assert!(t.contains(" │ \u{f040a} Bohemian Rhapsody │ \u{f057e} ▁▃▅▆▇▇  84% │ Sun 4 Oct 14:05 "), "{t}");
+    assert!(t.contains("  ·  \u{f040a} Bohemian Rhapsody  ·  \u{f057e} 84%  ·  Sun 4 Oct 14:05 "), "{t}");
     let media = Target::Module(ModuleId::Media);
     let (start, _) = tail_from(&g, &media);
     assert_eq!(g.target_at(start + 18), Some(&media), "its last cell: 19 cells, one zone");
@@ -692,7 +692,7 @@ fn bar_with_bell(view: NotifyView) -> Bar {
 fn the_bell_sits_between_the_volume_and_the_clock() {
     let g = bar_with_bell(THREE).grid("HDMI-A-1", 100);
     let t = g.text();
-    assert!(t.contains(" │ \u{f057e} ▁▃▅▆▇▇  84% │ \u{f009a} 3 │ Sun 4 Oct 14:05 "), "{t}");
+    assert!(t.contains("  ·  \u{f057e} 84%  ·  \u{f009a} 3  ·  Sun 4 Oct 14:05 "), "{t}");
     let bell = Target::Module(ModuleId::Notifications);
     let (start, _) = tail_from(&g, &bell);
     assert_eq!(g.target_at(start + 2), Some(&bell), "its last cell: 3 cells, one zone");
@@ -820,4 +820,19 @@ fn the_displays_row_draws_nothing() {
             assert_eq!(with.grid("HDMI-A-1", width), without.grid("HDMI-A-1", width), "{style:?}, {width} cells");
         }
     }
+}
+
+#[test]
+fn flat_and_underline_separate_with_a_dim_dot() {
+    for style in [BarStyle::Flat, BarStyle::Underline] {
+        let g = styled(bar(), style).grid("HDMI-A-1", 100);
+        let (t, st): (Vec<char>, Vec<char>) = (g.text().chars().collect(), g.styles().chars().collect());
+        // The launcher button is one cell after the margin; the separator follows it.
+        let at = 2;
+        assert_eq!(t[at..at + 5].iter().collect::<String>(), "  \u{b7}  ", "{style:?}: {}", g.text());
+        assert_eq!(st[at..at + 5].iter().collect::<String>(), "mmmmm", "{style:?}");
+        assert!(!g.text().contains('\u{2502}'), "no full-height bar left");
+    }
+    let t = styled(bar(), BarStyle::Islands).grid("HDMI-A-1", 100).text();
+    assert!(!t.contains("  \u{b7}  "), "no separator under islands: {t}");
 }

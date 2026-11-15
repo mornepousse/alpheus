@@ -4,10 +4,12 @@
 use super::draw::{centered, put, truncate};
 use super::hit::{HitMap, Target};
 use super::overlays::frame;
+use super::shape::{self, Ink};
 use crate::app::displays::{panel_fields, place_label, placement_labels};
 use crate::app::{App, Item, Keep, Panel, PanelField, PlaceChoice, SaveDialog};
 use crate::displays::geometry::logical_size;
 use crate::displays::{Output, active_count, rotation_label, short_from_description, short_names};
+use crate::theme::Shape;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -101,25 +103,36 @@ pub fn map_canvas(outs: &[Output], focused: Option<&str>, width: u16) -> Vec<Vec
 }
 
 /// Profile bar row: "Profiles  [ Bureau ]  [ + Save current ]".
-pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap) {
+pub fn draw_profiles(buf: &mut Buffer, body: Rect, y: u16, focused: bool, app: &App, hits: &mut HitMap, rail: bool) {
     let th = &app.theme;
     let lx = body.x + 2;
-    let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    // Under the rail the focused row's band carries the focus: `fg` on it (the accent does not read on every `selection`).
+    let label = if focused && !rail { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
     put(buf, body, lx, y, "Profiles", label);
     let names = app.displays.profiles.iter().map(|p| p.name.clone()).chain(std::iter::once("+ Save current".to_string()));
     let mut x = lx + 11;
     for (j, name) in names.enumerate() {
-        let style = if focused && j == app.displays.profile_sel { th.selected() } else { Style::default().fg(th.accent) };
-        let w = put(buf, body, x, y, &format!("[ {name} ]"), style);
+        let chosen = focused && j == app.displays.profile_sel;
+        let (w, gap) = if rail {
+            // The rail's chips: the chosen one filled with the tab's hue, the others on `raised`.
+            let hue = super::rail::tab_hue(th, app.tab);
+            let (fg, fill) = if chosen { (th.on_accent, hue) } else { (th.fg, th.raised) };
+            let fill = if th.shape == Shape::Line && !chosen { th.muted } else { fill };
+            let behind = if focused && th.shape != Shape::Line { th.selection } else { th.bg };
+            (shape::chip(buf, body, x, y, &format!(" {name} "), Ink { fg, fill, behind, bold: chosen }, th.shape), 1)
+        } else {
+            let style = if chosen { th.selected() } else { Style::default().fg(th.accent) };
+            (put(buf, body, x, y, &format!("[ {name} ]"), style), 2)
+        };
         hits.push(Rect::new(x, y, w, 1), Target::DisplayProfile(j));
-        x = x.saturating_add(w + 2);
+        x = x.saturating_add(w + gap);
     }
 }
 
 /// An output's row: number and short name, connector (⚠ DisplayLink),
 /// on/off switch, mode, scale, placement.
 #[allow(clippy::too_many_arguments)]
-pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, focused: bool, app: &App, hits: &mut HitMap) {
+pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, focused: bool, app: &App, hits: &mut HitMap, rail: bool) {
     let th = &app.theme;
     let outs = app.outputs();
     let Some(k) = outs.iter().position(|o| o.name == name) else { return };
@@ -127,25 +140,57 @@ pub fn draw_output(buf: &mut Buffer, body: Rect, y: u16, i: usize, name: &str, f
     let labels = short_names(outs);
     let places = placement_labels(outs);
     let lx = body.x + 2;
-    let label = if focused { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    let cols = Cols::fit(body.width.saturating_sub(2), places.iter().map(|p| p.chars().count()).max().unwrap_or(0) as u16);
+    // Under the rail the focused row's band carries the focus: `fg` on it (the accent does not read on every `selection`).
+    let label = if focused && !rail { Style::default().fg(th.accent).add_modifier(Modifier::BOLD) } else { Style::default().fg(th.fg) };
+    // What the row sits on: the focused row's band under the rail. A dim word or the accent only where
+    // they read there, else `fg`.
+    let under = if rail && focused && th.shape != Shape::Line { th.selection } else { th.bg };
+    let dim = th.ink(th.muted, under, 3.0);
+    let lit = th.ink(th.accent, under, 4.5);
     hits.push(Rect::new(body.x, y, body.width, 1), Target::Item(i));
     put(buf, body, lx, y, &truncate(&format!("{} {}", k + 1, labels[k]), 12), label);
-    let conn = if o.displaylink { format!("{} ⚠", o.name) } else { o.name.clone() };
-    put(buf, body, lx + 13, y, &truncate(&conn, 10), Style::default().fg(th.muted));
+    if let Some(c) = cols.conn {
+        let conn = if o.displaylink { format!("{} ⚠", o.name) } else { o.name.clone() };
+        put(buf, body, lx + c, y, &truncate(&conn, 10), Style::default().fg(dim));
+    }
     let last = o.active.is_some() && active_count(outs) <= 1;
     let (text, style) = match (&o.active, last) {
-        (Some(_), true) => ("[■] only on", Style::default().fg(th.muted)),
-        (Some(_), false) => ("[■] on", Style::default().fg(th.accent)),
-        (None, _) => ("[ ] off", Style::default().fg(th.muted)),
+        (Some(_), true) => ("[■] only on", Style::default().fg(dim)),
+        (Some(_), false) => ("[■] on", Style::default().fg(lit)),
+        (None, _) => ("[ ] off", Style::default().fg(dim)),
     };
-    let w = put(buf, body, lx + 23, y, text, style);
-    hits.push(Rect::new(lx + 23, y, w, 1), Target::OutputToggle(i));
+    let w = put(buf, body, lx + cols.toggle, y, text, style);
+    hits.push(Rect::new(lx + cols.toggle, y, w, 1), Target::OutputToggle(i));
     let Some(a) = &o.active else { return };
-    put(buf, body, lx + 37, y, &a.mode.label(), Style::default().fg(th.fg));
-    put(buf, body, lx + 51, y, &format!("scale {}", a.scale.label()), Style::default().fg(th.fg));
-    let px = lx + 64;
+    put(buf, body, lx + cols.mode, y, &a.mode.label(), Style::default().fg(th.fg));
+    if let Some(c) = cols.scale {
+        put(buf, body, lx + c, y, &format!("scale {}", a.scale.label()), Style::default().fg(th.fg));
+    }
+    let px = lx + cols.pos;
     let avail = usize::from(body.right().saturating_sub(px));
-    put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(th.muted));
+    put(buf, body, px, y, &truncate(&places[k], avail), Style::default().fg(dim));
+}
+
+/// Where an output row's columns start, from its left edge. The placement is what the tab is for, so
+/// it is never the one to lose room: the scale goes first, then the connector (the map and the
+/// name still say which screen it is).
+struct Cols {
+    conn: Option<u16>,
+    toggle: u16,
+    mode: u16,
+    scale: Option<u16>,
+    pos: u16,
+}
+
+impl Cols {
+    /// The richest layout whose placement (`pos_w` cells at most) fits in `avail` cells.
+    fn fit(avail: u16, pos_w: u16) -> Cols {
+        let full = Cols { conn: Some(13), toggle: 23, mode: 37, scale: Some(51), pos: 64 };
+        let no_scale = Cols { scale: None, pos: 51, ..full };
+        let compact = Cols { conn: None, toggle: 13, mode: 27, scale: None, pos: 41 };
+        [full, no_scale].into_iter().find(|c| c.pos + pos_w <= avail).unwrap_or(compact)
+    }
 }
 
 // ── Overlays ─────────────────────────────────────────────────────────

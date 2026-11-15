@@ -1,5 +1,5 @@
 ---
-source: crates/alpheus/src/ui/mod.rs
+source: crates/alpheus/src/ui/tests.rs
 expression: "draw(&a, 80, 24).0.join(\"\\n\")"
 ---
  alpheus   1 Home  2 Sound  3 Network  4 BT  5 Power  6 Displays  7 Theme       
@@ -17,12 +17,12 @@ expression: "draw(&a, 80, 24).0.join(\"\\n\")"
    └───│ ⚠ DisplayLink output: known freeze risk on this machine        │       
        │                                                                │       
  Displa│ Applying…                                                      │       
-   1 La│ [ Cancel ]  [ Keep ]                                           │on 0,… 
+   1 La│ [ Cancel ]  [ Keep ]                                           │       
  ▶ 2 Al└────────────────────────────────────────────────────────────────┘       
-   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 scale 1.0    right of Al… 
+   3 Bravo      HDMI-A-1  [■] on        1920×1080@240 right of Alpha            
                                                                                 
                                                                                 
                                                                                 
                                                                                 
  Displays · ready                                                               
- F1 Help  Ctrl+P Palette  Esc Back  q Quit  Space Toggle  Enter Adjust
+ Space Toggle  Enter Adjust  q Quit  F1 Help  Ctrl+P Palette  Esc Back

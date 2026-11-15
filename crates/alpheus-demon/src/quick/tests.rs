@@ -64,6 +64,156 @@ fn texts(b: &Boxed) -> Vec<String> {
     b.rows.iter().map(|g| g.text().trim_end().to_string()).collect()
 }
 
+/// `s` centred in `w` cells (the left side takes the smaller half).
+fn centred(s: &str, w: u16) -> String {
+    let pad = usize::from(w.saturating_sub(crate::grid::text_width(s)));
+    format!("{}{s}{}", " ".repeat(pad / 2), " ".repeat(pad - pad / 2))
+}
+
+/// The session row's text as `session_cells(34, n)` lays it out, trailing spaces trimmed.
+fn session_text(buttons: &[Session]) -> String {
+    let mut out = String::from(" ");
+    let cells = session_cells(WIDTH + 2, buttons.len());
+    let form = session_form(buttons, &cells);
+    for (i, (s, (at, w))) in buttons.iter().zip(&cells).enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        assert_eq!(text_width(&out), *at);
+        out.push_str(&centred(&session_label(*s, form), *w));
+    }
+    out.trim_end().to_string()
+}
+
+#[test]
+fn session_cells_split_the_row() {
+    assert_eq!(session_cells(34, 1), [(1, 32)]);
+    assert_eq!(session_cells(34, 2), [(1, 15), (17, 16)]);
+    assert_eq!(session_cells(34, 3), [(1, 10), (12, 10), (23, 10)]);
+    assert_eq!(session_cells(34, 4), [(1, 7), (9, 7), (17, 7), (25, 8)]);
+}
+
+#[test]
+fn one_label_form_for_every_cell() {
+    let all = Session::ALL;
+    let widths = |w: u16| -> Vec<(u16, u16)> { all.iter().map(|_| (0, w)).collect() };
+    // Room for every glyph and word: all of them carry both.
+    assert_eq!(session_form(&all, &widths(10)), LabelForm::GlyphAndWord);
+    // "󰍃 Log out" needs 9: at 7 (four buttons in the panel) the words alone, even where "󰌾 Lock" would fit.
+    assert_eq!(session_form(&all, &widths(7)), LabelForm::Word);
+    assert_eq!(session_form(&all, &widths(2)), LabelForm::Glyph);
+    // The row as drawn: no button keeps a glyph the others lost.
+    let row = session_text(&all);
+    assert!(!row.contains(LOCK) && !row.contains(POWER) && row.contains("Log out"), "{row:?}");
+    assert_eq!(session_label(Session::Lock, LabelForm::GlyphAndWord), format!("{LOCK} Lock"));
+    assert_eq!(session_label(Session::Poweroff, LabelForm::Word), "Off");
+    assert_eq!(session_label(Session::Poweroff, LabelForm::Glyph), POWER.to_string());
+    // The last cell takes the remainder, yet the form is the first cells' (the narrowest).
+    let four = session_cells(WIDTH + 2, 4);
+    assert_eq!(session_form(&all, &four), LabelForm::Word);
+}
+
+#[test]
+fn a_press_hits_the_button_drawn_under_it() {
+    let now = Instant::now();
+    let with = |lock: bool, logout: bool, poweroff: bool, reboot: bool| {
+        let mut c = QuickConfig::default();
+        let set = |on: bool| if on { vec!["fake".to_string()] } else { vec![] };
+        c.lock = set(lock);
+        c.logout = set(logout);
+        c.poweroff = set(poweroff);
+        c.reboot = set(reboot);
+        c
+    };
+    let configs = [with(true, false, false, false), with(true, false, true, false), QuickConfig::default(), with(true, true, true, true)];
+    for config in configs {
+        let mut w = World::full();
+        w.config = config;
+        let l = w.live();
+        let buttons = session::configured(&w.config);
+        let cells = session_cells(WIDTH + 2, buttons.len());
+        assert_eq!(cells.len(), buttons.len());
+        for col in 0..WIDTH + 2 {
+            let mut q = quick(&w, Focus::Top);
+            q.selected = Row::Session;
+            let drawn = rows(&l, &q).rows[SESSION_LINE as usize].styles().chars().nth(usize::from(col)).unwrap();
+            let got = q.press(&l, (col, SESSION_LINE), Button::Left, now);
+            let hit = cells.iter().position(|(at, cw)| col >= *at && col < at + cw);
+            assert_eq!(drawn != '.', hit.is_some(), "{} buttons, column {col}: drawn {drawn:?}", buttons.len());
+            match hit {
+                Some(i) => {
+                    assert_eq!(q.button, buttons[i], "{} buttons, column {col}", buttons.len());
+                    match buttons[i] {
+                        Session::Lock => assert!(matches!(got, QuickAction::RunAndClose { .. }), "lock runs: column {col}"),
+                        Session::Logout => assert!(matches!(got, QuickAction::RunAndClose { .. })),
+                        _ => {
+                            assert_eq!(got, QuickAction::Redraw, "{:?} asks: column {col}", buttons[i]);
+                            assert!(q.confirm.is_some());
+                        }
+                    }
+                }
+                None => assert_eq!(got, QuickAction::Nothing, "{} buttons, gap column {col}", buttons.len()),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_gap_press_on_an_unselected_session_row_selects_it() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    assert_ne!(q.selected, Row::Session);
+    let got = q.press(&l, (0, SESSION_LINE), Button::Left, Instant::now());
+    assert_eq!(got, QuickAction::Redraw, "the press lands in a gap of the row");
+    assert_eq!(q.selected, Row::Session);
+    assert!(q.confirm.is_none(), "a gap never asks");
+}
+
+#[test]
+fn the_session_row_draws_its_cells() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    let b = rows(&l, &q);
+    assert_eq!(texts(&b)[7], session_text(&[Session::Lock, Session::Reboot, Session::Poweroff]));
+    assert_eq!(b.rows[7].styles(), format!(".{}.{}.{}.", "s".repeat(10), "s".repeat(10), "s".repeat(10)));
+    assert_eq!(b.rows[7].styles().len(), 34);
+    q.selected = Row::Session;
+    q.button = Session::Reboot;
+    let b = rows(&l, &q);
+    assert_eq!(b.rows[7].styles(), format!(".{}.{}.{}.", "s".repeat(10), "A".repeat(10), "s".repeat(10)));
+}
+
+#[test]
+fn toggle_rows_end_in_a_switch() {
+    let mut w = World::full();
+    let l = w.live();
+    let q = quick(&w, Focus::Top);
+    let b = rows(&l, &q);
+    let dnd = b.rows[4].text();
+    assert_eq!(dnd, format!(" {BELL} Do not disturb{} ○ off  ", " ".repeat(9)));
+    assert_eq!(b.rows[4].styles()[26..33], *"sssssss");
+    w.dnd = Some(true);
+    let b = rows(&w.live(), &q);
+    assert!(b.rows[4].text().ends_with(" ON  ●  "), "{:?}", b.rows[4].text());
+    assert_eq!(b.rows[4].styles()[26..33], *"AAAAAAA");
+    let mut c = QuickConfig::default();
+    c.night_light.toggle = vec!["fake-night".into()];
+    w.config = c;
+    let q = quick(&w, Focus::Top);
+    let b = rows(&w.live(), &q);
+    let night = b.rows.iter().find(|g| g.text().contains("Night light")).unwrap();
+    assert_eq!(night.styles().chars().nth(32), Some('m'));
+    assert_eq!(night.text().chars().nth(32), Some('·'));
+    // The microphone: live is on, muted is off.
+    let live = rows(&w.live(), &q);
+    assert!(live.rows[3].text().contains(" ON  ●"));
+    w.sound.source = vol(100, true);
+    let muted = rows(&w.live(), &q);
+    assert!(muted.rows[3].text().contains(" ○ off"));
+}
+
 #[test]
 fn every_row_shows_in_the_spec_order_with_its_separators() {
     let w = World::full();
@@ -89,10 +239,20 @@ fn every_row_shows_in_the_spec_order_with_its_separators() {
     let t = texts(&b);
     assert_eq!(t[0], format!(" {VOLUME_MEDIUM} {}{}  64%  ›", "━".repeat(14), "─".repeat(8)), "64 % of 22 cells: 14; › with two sinks");
     assert_eq!(t[1], format!(" {BRIGHTNESS} {}{}  75%", "━".repeat(16), "─".repeat(6)));
-    assert_eq!(t[3], format!(" {MIC_ON} Microphone{}live", " ".repeat(16)));
-    assert_eq!(t[4], format!(" {BELL} Do not disturb{}○", " ".repeat(15)));
+    assert_eq!(t[3], format!(" {MIC_ON} Microphone{} ON  ●", " ".repeat(13)), "the microphone is a switch, on while live");
+    assert_eq!(t[4], format!(" {BELL} Do not disturb{} ○ off", " ".repeat(9)));
     assert_eq!(t[5], format!(" {PROFILE} Power profile{}balanced ›", " ".repeat(7)));
-    assert_eq!(t[7], format!("   {LOCK}    {REBOOT}    {POWER}"), "lock, reboot, power off: logout is empty by default");
+    assert_eq!(
+        t[7],
+        format!(
+            " {} {} {}",
+            centred(&format!("{LOCK} Lock"), 10),
+            centred(&format!("{REBOOT} Reboot"), 10),
+            centred(&format!("{POWER} Off"), 10)
+        )
+        .trim_end(),
+        "lock, reboot, power off: logout is empty by default"
+    );
     // Selected: the band spans the whole row, its track included; the bar cells keep their own
     // foreground on it (a band that skipped the track looked broken).
     let selected = b.rows[0].cells();
@@ -108,7 +268,7 @@ fn every_row_shows_in_the_spec_order_with_its_separators() {
         .collect();
     assert_eq!(track, format!("{}{}", "a".repeat(14), "m".repeat(8)), "the bar in its colours, on the band");
     assert_eq!(b.rows[1].styles(), format!(".a.{}{}{}", "a".repeat(16), "m".repeat(6), ".".repeat(9)));
-    assert_eq!(&b.rows[4].styles()[32..33], "m", "○ in fg_dim");
+    assert_eq!(&b.rows[4].styles()[26..33], "sssssss", "the off switch on a pill");
 }
 
 #[test]
@@ -123,11 +283,11 @@ fn marks_warn_and_dim() {
     let b = rows(&w.live(), &q);
     let t = texts(&b);
     // Volume, brightness, separator, mic, DND, profile, keep awake, night light, separator, session.
-    assert_eq!(t[3], format!(" {MIC_OFF} Microphone{}muted", " ".repeat(15)));
-    assert_eq!(&b.rows[3].styles()[28..33], "wwwww", "muted in warn");
-    assert_eq!(t[4], format!(" {BELL} Do not disturb{}●", " ".repeat(15)));
-    assert_eq!(&b.rows[4].styles()[32..33], "a", "● in the accent");
-    assert_eq!(t[6], format!(" {KEEP_AWAKE} Keep awake{}●", " ".repeat(19)));
+    assert_eq!(t[3], format!(" {MIC_OFF} Microphone{} ○ off", " ".repeat(13)), "Decision 8: a muted microphone is the off switch");
+    assert_eq!(&b.rows[3].styles()[26..33], "sssssss", "no longer warn");
+    assert_eq!(t[4], format!(" {BELL} Do not disturb{} ON  ●", " ".repeat(9)));
+    assert_eq!(&b.rows[4].styles()[26..33], "AAAAAAA", "ON filled in the accent");
+    assert_eq!(t[6], format!(" {KEEP_AWAKE} Keep awake{} ON  ●", " ".repeat(13)));
     assert_eq!(t[7], format!(" {NIGHT_LIGHT} Night light{}·", " ".repeat(18)), "unknown state");
     // The volume row is selected: its track on the band, in its own foreground.
     let track = |b: &Boxed| b.rows[0].cells()[3..25].iter().map(|c| c.style.fg).collect::<Vec<_>>();
@@ -160,7 +320,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
     c.logout = vec!["fake-logout".into()];
     let one = Live { config: &c, ..l };
     let b = rows(&one, &Quick::new(Focus::Top, &one, two_sinks(), None, [None, None], 40));
-    assert_eq!(texts(&b).last().cloned(), Some(format!("   {LOGOUT}")), "one button: log out");
+    assert_eq!(texts(&b).last().cloned(), Some(session_text(&[Session::Logout])), "one button: log out");
     let k =
         QuickConfig { keep_awake: ToggleConfig { toggle: vec!["fake-keep-awake".into()], state: String::new() }, ..QuickConfig::default() };
     assert_eq!(
@@ -580,7 +740,11 @@ fn the_window_follows_the_selection_when_the_lines_do_not_fit() {
     assert_eq!(rows(&l, &q).rows.len(), 3, "three rows of room");
     q.key(&l, Key::End, false, t);
     assert_eq!(q.top, 5, "8 lines, 3 shown: the last three");
-    assert_eq!(texts(&rows(&l, &q)).last().cloned(), Some(format!("   {LOCK}    {REBOOT}    {POWER}")), "the session row in view");
+    assert_eq!(
+        texts(&rows(&l, &q)).last().cloned(),
+        Some(session_text(&[Session::Lock, Session::Reboot, Session::Poweroff])),
+        "the session row in view"
+    );
     q.key(&l, Key::Home, false, t);
     assert_eq!(q.top, 0);
 }
@@ -912,7 +1076,11 @@ fn moving_away_cancels_the_confirmation_and_coming_back_asks_again() {
     q.key(&l, Key::Enter, false, t);
     assert_eq!(q.press(&l, (10, DND_LINE), Button::Left, t), QuickAction::ToggleDnd, "a press on another row");
     assert_eq!(q.confirm, None, "cancels it");
-    assert_eq!(q.press(&l, (SESSION_AT + SESSION_GAP, SESSION_LINE), Button::Left, t), QuickAction::Redraw, "a press on reboot asks");
+    assert_eq!(
+        q.press(&l, (session_cells(WIDTH + 2, 3)[1].0, SESSION_LINE), Button::Left, t),
+        QuickAction::Redraw,
+        "a press on reboot asks"
+    );
     assert_eq!(
         q.press(&l, (20, SESSION_LINE), Button::Left, t + CONFIRM_AFTER),
         QuickAction::RunAndClose { argv: argv(&["systemctl", "reboot"]), what: "reboot".into() },
