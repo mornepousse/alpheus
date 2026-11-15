@@ -410,6 +410,7 @@ pub struct App {
     /// The bar's own session link, its timer and its bookkeeping (link.rs).
     pub(crate) link: crate::link::LinkState,
     /// Do-not-disturb: loaded at startup, changed only by `dnd_apply`.
+    /// Mirrors `dnd_timed.model.on`; `dnd_apply` and `dnd_load` set both together.
     pub(crate) dnd: bool,
     /// Its timed model and the timer of its end (notify_app.rs).
     pub(crate) dnd_timed: crate::notify_app::DndTimed,

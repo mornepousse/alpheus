@@ -585,6 +585,14 @@ fn the_osd_glyphs_are_in_the_font() {
 }
 
 #[test]
+fn the_resource_glyphs_are_in_the_font() {
+    let mut p = fonts();
+    for c in [crate::segments::DOWNLOAD, crate::segments::UPLOAD, crate::segments::HARDDISK, crate::segments::GPU] {
+        assert!(!p.shaped(c, false).is_empty(), "U+{:X} has no glyph in the bar's font", u32::from(c));
+    }
+}
+
+#[test]
 fn only_useful_faces_are_loaded() {
     // Regular + bold of the family, plus regular + bold of DejaVu Sans
     // Mono (the default fallback): ≈ 2 MB, DejaVu's own share close to

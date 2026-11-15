@@ -92,6 +92,20 @@ fn actions_and_resources_defaults_and_settings() {
 }
 
 #[test]
+fn resources_show_defaults_and_validation() {
+    use crate::config::ResourceItem::*;
+    let d = BarConfig::default();
+    assert_eq!(d.resources.show, [Cpu, Memory, Temperature]);
+    assert_eq!(d.resources.gpu_sensor, "");
+    assert_eq!(BarConfig::from_text("[resources]\nshow = [\"gpu\", \"net\"]\n").unwrap().resources.show, [Gpu, Net]);
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    assert!(err("[resources]\nshow = [\"cpu\", \"cpu\"]").contains("resources.show: duplicate \"cpu\""));
+    assert!(err("[resources]\nshow = [\"fan\"]").contains("unknown variant"));
+    let e = err("[resources]\nshow = []");
+    assert!(e.contains("resources.show empty") && e.contains("remove \"resources\" from modules instead"), "{e}");
+}
+
+#[test]
 fn actions_and_resources_refused_with_reason() {
     let err = |t: &str| BarConfig::from_text(t).unwrap_err();
     assert!(err("[resources]\ninterval = 0").contains("resources.interval"));
@@ -670,5 +684,20 @@ fn battery_warn_defaults_dedups_and_sorts() {
             BarConfig::from_text(&format!("[battery]\nwarn = [{bad}]")).unwrap_err(),
             format!("battery.warn: {bad} out of range 1 to 99")
         );
+    }
+}
+
+#[test]
+fn quick_dnd_until() {
+    assert_eq!(QuickConfig::default().dnd_until_hm(), (8, 0));
+    let unchecked = QuickConfig { dnd_until: "nonsense".into(), ..QuickConfig::default() };
+    assert_eq!(unchecked.dnd_until_hm(), (8, 0), "a text the check would refuse falls back to 8:00");
+    let other = QuickConfig { dnd_until: "21:15".into(), ..QuickConfig::default() };
+    assert_eq!(other.dnd_until_hm(), (21, 15));
+    let c = BarConfig::from_text("[quick]\ndnd_until = \"7:30\"\n").unwrap();
+    assert_eq!(c.quick.dnd_until_hm(), (7, 30));
+    for bad in ["24:00", "8h", ""] {
+        let e = BarConfig::from_text(&format!("[quick]\ndnd_until = \"{bad}\"\n")).unwrap_err();
+        assert!(e.contains("quick.dnd_until"), "{bad:?}: {e}");
     }
 }

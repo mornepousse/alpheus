@@ -152,7 +152,7 @@ pub(crate) static MODULES: [ModuleSpec; COUNT] = [
     },
     ModuleSpec {
         hue: Some(Hue::Orange),
-        segment: Some(|bar, _| segments::resources(&bar.resources, bar.module_colors)),
+        segment: Some(|bar, _| segments::resources(&bar.resources, &bar.config.resources.show, bar.module_colors)),
         needs: Needs::RESOURCES,
         ..row(ModuleId::Resources, "resources", GroupKind::Resources)
     },

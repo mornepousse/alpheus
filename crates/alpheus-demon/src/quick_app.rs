@@ -14,8 +14,10 @@ use crate::grid::Target;
 use crate::keys::Key;
 use crate::launcher::host::toggle_is_debounced;
 use crate::log::write as log;
+use crate::notify_app::unix_now;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
 use crate::quick::{self, Backlight, Focus, Live, Quick, QuickAction, Toggle, WifiNews};
+use crate::quick_dnd::DndChoice;
 use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
@@ -23,7 +25,8 @@ use crate::state::{Bar, Msg};
 use crate::system::{BtScope, BtView, Headset, Sink, SoundState, WifiScope, WifiState};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
-use alpheus_commun::launcher_ipc::{QuickVerb, Reply, Request};
+use alpheus_commun::launcher_ipc::{DndEnd, DndVerb, QuickVerb, Reply, Request};
+use alpheus_commun::local_time::next_local;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::Path;
 use std::sync::Arc;
@@ -450,7 +453,7 @@ impl App {
         let backlight = self.quick_backlight();
         let toggles = [self.quick_toggle_state(Toggle::KeepAwake), self.quick_toggle_state(Toggle::NightLight)];
         let built = {
-            let live = quick::live(&self.bar, self.dnd);
+            let live = quick::live(&self.bar, &self.dnd_timed.model);
             let mut q = Quick::new(focus, &live, sinks, backlight, toggles, room);
             q.set_headset(headset);
             (!q.is_empty(&live)).then(|| {
@@ -517,8 +520,8 @@ impl App {
 
     /// `f` on the open panel and what it reads; Nothing when the panel is not open.
     pub(crate) fn quick_with(&mut self, f: impl FnOnce(&mut Quick, &Live) -> QuickAction) -> QuickAction {
-        let App { popup, bar, dnd, .. } = self;
-        let live = quick::live(bar, *dnd);
+        let App { popup, bar, dnd_timed, .. } = self;
+        let live = quick::live(bar, &dnd_timed.model);
         match popup.as_mut().map(|p| &mut p.body) {
             Some(PopupBody::Quick(q)) => f(q, &live),
             _ => QuickAction::Nothing,
@@ -553,6 +556,18 @@ impl App {
                 self.set_dnd(on);
                 log(&format!("quick: do not disturb {}", if on { "on" } else { "off" }));
             }
+            // The detail's choice, as the CLI would send it (notify_app.rs).
+            QuickAction::Dnd(c) => {
+                let until = self.bar.config.quick.dnd_until_hm();
+                match dnd_request(c, until, unix_now() as i64) {
+                    Some(r) => match self.notifications_verb(&r) {
+                        Reply::Error(m) => log(&format!("quick: do not disturb refused ({m})")),
+                        _ => log(&format!("quick: do not disturb {}", dnd_word(c, until))),
+                    },
+                    None => log("quick: do not disturb refused (no such local time)"),
+                }
+                self.quick_refresh();
+            }
         }
     }
 
@@ -586,8 +601,8 @@ impl App {
             return;
         }
         let rows = {
-            let App { popup, bar, dnd, .. } = &mut *self;
-            let live = quick::live(bar, *dnd);
+            let App { popup, bar, dnd_timed, .. } = &mut *self;
+            let live = quick::live(bar, &dnd_timed.model);
             match popup.as_mut().map(|p| &mut p.body) {
                 Some(PopupBody::Quick(q)) => {
                     q.fit(&live);
@@ -745,9 +760,9 @@ impl App {
         if let Some((open, state)) = taken_wifi(m) {
             let now = Instant::now();
             let current = self.quick.wifi_tap.as_ref().map(|t| t.snapshot().1);
-            let App { popup, bar, dnd, quick, .. } = &mut *self;
+            let App { popup, bar, dnd_timed, quick, .. } = &mut *self;
             let news = match popup.as_mut().map(|p| &mut p.body) {
-                Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, *dnd), open, state, current, now),
+                Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, &dnd_timed.model), open, state, current, now),
                 _ => {
                     // The follower's open is the one the tap still has (it never went Closed).
                     if open_current(open, current)
@@ -773,9 +788,9 @@ impl App {
             if bluez_left(open, view.as_ref(), current) {
                 self.bt_drop();
             }
-            let App { popup, bar, dnd, .. } = &mut *self;
+            let App { popup, bar, dnd_timed, .. } = &mut *self;
             let action = match popup.as_mut().map(|p| &mut p.body) {
-                Some(PopupBody::Quick(q)) => panel_bt(q, &quick::live(bar, *dnd), open, view, current, now),
+                Some(PopupBody::Quick(q)) => panel_bt(q, &quick::live(bar, &dnd_timed.model), open, view, current, now),
                 _ => None,
             };
             if let Some(action) = action {
@@ -784,6 +799,30 @@ impl App {
         }
         self.quick_bt_sync();
         self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. } | Msg::Bluetooth(_) | Msg::Bt { .. })
+    }
+}
+
+/// The request the CLI sends for `c` (`alpheus-launch --dnd …`, `launcher_ipc::Request`). None: the
+/// `Until` time cannot be placed.
+pub(crate) fn dnd_request(c: DndChoice, until: (u32, u32), now: i64) -> Option<Request> {
+    Some(match c {
+        DndChoice::Off => Request::Dnd(DndVerb::Off),
+        DndChoice::For(s) => Request::DndOn(DndEnd::For(s)),
+        DndChoice::Until => {
+            let at = next_local(until.0, until.1, now)?;
+            Request::DndOn(DndEnd::Until(u64::try_from(at).ok()?))
+        }
+        DndChoice::Untimed => Request::Dnd(DndVerb::On),
+    })
+}
+
+/// The log's word for `c`: `off`, `on`, `for N min`, `until HH:MM`.
+fn dnd_word(c: DndChoice, until: (u32, u32)) -> String {
+    match c {
+        DndChoice::Off => "off".into(),
+        DndChoice::For(s) => format!("for {} min", s / 60),
+        DndChoice::Until => format!("until {:02}:{:02}", until.0, until.1),
+        DndChoice::Untimed => "on".into(),
     }
 }
 

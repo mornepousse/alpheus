@@ -187,7 +187,7 @@ fn full() -> Bar {
     b.apply(Msg::Network(Some(NetState::Offline)));
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] })));
-    b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+    b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60), ..Sample::default() }));
     b
 }
 

@@ -1,5 +1,6 @@
 use super::*;
 use crate::grid::Tint;
+use crate::quick_dnd::DndChoice;
 use crate::quick_wifi::{OFF_NOTE, STRENGTH, WIFI_OFF, WIFI_ON};
 use crate::segments::BLUETOOTH_CONNECTED;
 use crate::segments::VOLUME_MEDIUM;
@@ -26,6 +27,7 @@ fn backlight(percent: u8) -> Option<Backlight> {
 struct World {
     sound: SoundState,
     dnd: Option<bool>,
+    dnd_end: Option<(u8, u8)>,
     profile: ProfileState,
     config: QuickConfig,
     bluetooth: Option<BtState>,
@@ -38,6 +40,7 @@ impl World {
         World {
             sound: SoundState { sink: vol(64, false), source: vol(100, false), ..SoundState::default() },
             dnd: Some(false),
+            dnd_end: None,
             profile: ProfileState { active: Some(Profile::Balanced), offered: Profile::ALL.to_vec() },
             config: QuickConfig::default(),
             bluetooth: None,
@@ -48,6 +51,7 @@ impl World {
         Live {
             sound: Some(&self.sound),
             dnd: self.dnd,
+            dnd_end: self.dnd_end,
             profile: Some(&self.profile),
             config: &self.config,
             bluetooth: self.bluetooth.as_ref(),
@@ -334,7 +338,7 @@ fn a_row_whose_tool_hardware_or_command_is_missing_is_not_shown() {
 #[test]
 fn with_nothing_to_show_the_panel_is_empty() {
     let c = QuickConfig { lock: vec![], reboot: vec![], poweroff: vec![], ..QuickConfig::default() };
-    let l = Live { sound: None, dnd: None, profile: None, config: &c, bluetooth: None };
+    let l = Live { sound: None, dnd: None, dnd_end: None, profile: None, config: &c, bluetooth: None };
     let q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 40);
     assert!(q.is_empty(&l), "nothing to open: the wiring logs it and opens nothing");
     assert!(lines(&l, &q).is_empty());
@@ -1469,4 +1473,163 @@ fn the_mixer_row_runs_its_command_then_closes() {
     let mut q = quick(&w, Focus::Top);
     q.selected = Row::Mixer;
     assert_eq!(q.key(&l, Key::Left, false, t), QuickAction::Nothing, "arrows do nothing");
+}
+
+#[test]
+fn enter_and_right_open_the_dnd_detail_and_space_still_toggles() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    let t = Instant::now();
+    q.selected = Row::Dnd;
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::ToggleDnd);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Redraw);
+    assert!(q.dnd.open);
+    assert_eq!(q.dnd.selected, 1, "off: opens on 30 minutes");
+    let b = rows(&l, &q);
+    let t_ = texts(&b);
+    assert!(t_[0].trim_start().starts_with("‹ Do not disturb"), "{:?}", t_[0]);
+    assert_eq!(b.separators, [1]);
+    let labels = ["Off", "30 minutes", "1 hour", "2 hours", "Until 08:00", "Until I turn it off"];
+    for (i, label) in labels.iter().enumerate() {
+        let mark = if i == 0 { "●" } else { " " };
+        assert!(t_[2 + i].starts_with(&format!(" {mark} ")) && t_[2 + i].ends_with(label), "line {i}: {:?}", t_[2 + i]);
+    }
+    assert_eq!(q.key(&l, Key::Escape, false, t), QuickAction::Redraw);
+    assert!(!q.dnd.open);
+    assert_eq!(q.selected, Row::Dnd);
+    assert_eq!(q.key(&l, Key::Right, false, t), QuickAction::Redraw);
+    assert!(q.dnd.open, "→ opens it again");
+}
+
+#[test]
+fn a_choice_applies_and_goes_back() {
+    let w = World::full();
+    let l = w.live();
+    let mut q = quick(&w, Focus::Top);
+    let t = Instant::now();
+    q.selected = Row::Dnd;
+    q.key(&l, Key::Enter, false, t);
+    q.key(&l, Key::Down, false, t);
+    assert_eq!(q.key(&l, Key::Enter, false, t), QuickAction::Dnd(DndChoice::For(3600)));
+    assert!(!q.dnd.open);
+    assert_eq!(q.selected, Row::Dnd);
+    q.key(&l, Key::Enter, false, t);
+    // Lines: 0 header, 1 separator, 2.. the choices; Untimed is the last of the six.
+    assert_eq!(q.press(&l, (10, 7), Button::Left, t), QuickAction::Dnd(DndChoice::Untimed));
+    assert!(!q.dnd.open);
+    q.key(&l, Key::Enter, false, t);
+    assert_eq!(q.press(&l, (10, 0), Button::Left, t), QuickAction::Redraw, "the header goes back");
+    assert!(!q.dnd.open);
+    assert_eq!(q.selected, Row::Dnd);
+    q.key(&l, Key::Enter, false, t);
+    assert_eq!(q.key(&l, Key::Char(' '), false, t), QuickAction::Nothing, "Space does nothing in the detail");
+    assert_eq!(q.press(&l, (10, 7), Button::Right, t), QuickAction::Nothing, "nor the right button");
+    assert!(q.dnd.open);
+}
+
+#[test]
+fn a_press_on_the_switch_opens_the_detail() {
+    let w = World::full();
+    let l = w.live();
+    let t = Instant::now();
+    let mut q = quick(&w, Focus::Top);
+    assert_eq!(q.press(&l, (10, DND_LINE), Button::Left, t), QuickAction::ToggleDnd);
+    assert!(!q.dnd.open);
+    assert_eq!(q.press(&l, (27, DND_LINE), Button::Left, t), QuickAction::Redraw);
+    assert!(q.dnd.open);
+    let mut q = quick(&w, Focus::Top);
+    assert_eq!(q.press(&l, (25, DND_LINE), Button::Left, t), QuickAction::ToggleDnd, "just left of the switch");
+    for col in [26, 33] {
+        let mut q = quick(&w, Focus::Top);
+        assert_eq!(q.press(&l, (col, DND_LINE), Button::Left, t), QuickAction::Redraw, "column {col} is the switch's");
+        assert!(q.dnd.open);
+    }
+    // The cells drawn are the cells that hit: the switch's pill starts where the press opens.
+    let b = rows(&l, &q);
+    assert_eq!(b.rows[DND_LINE as usize].styles().find('s'), Some(26));
+}
+
+#[test]
+fn the_marks_follow_the_state_while_open() {
+    let mut w = World::full();
+    let t = Instant::now();
+    let mut q = quick(&w, Focus::Top);
+    q.selected = Row::Dnd;
+    q.key(&w.live(), Key::Enter, false, t);
+    w.dnd = Some(true);
+    let b = rows(&w.live(), &q);
+    let t_ = texts(&b);
+    assert!(t_[7].contains("● ") && t_[7].ends_with("Until I turn it off"), "{:?}", t_[7]);
+    assert!(!t_[2].contains('●'), "{:?}", t_[2]);
+    assert!(q.dnd.open, "still open");
+    q.fit(&w.live());
+    assert!(q.dnd.open);
+    // A timed end at the configured time marks `Until`.
+    w.dnd_end = Some((8, 0));
+    let timed = texts(&rows(&w.live(), &q));
+    assert!(timed[6].contains("● ") && timed[6].ends_with("Until 08:00"), "{:?}", timed[6]);
+    assert!(!timed[7].contains('●'), "{:?}", timed[7]);
+    // The row going (no notifications module) closes it.
+    w.dnd = None;
+    q.fit(&w.live());
+    assert!(!q.dnd.open);
+    assert_ne!(q.selected, Row::Dnd, "the row is gone: the selection fell back");
+}
+
+#[test]
+fn left_goes_back_and_the_header_shows_a_timed_end() {
+    let mut w = World::full();
+    let t = Instant::now();
+    let mut q = quick(&w, Focus::Top);
+    q.selected = Row::Dnd;
+    q.key(&w.live(), Key::Enter, false, t);
+    assert!(!texts(&rows(&w.live(), &q))[0].contains("until"), "untimed: no end on the header");
+    w.dnd = Some(true);
+    w.dnd_end = Some((7, 5));
+    let header = texts(&rows(&w.live(), &q))[0].clone();
+    assert!(header.ends_with("until 07:05"), "{header:?}");
+    assert_eq!(q.key(&w.live(), Key::Left, false, t), QuickAction::Redraw);
+    assert!(!q.dnd.open);
+    assert_eq!(q.selected, Row::Dnd);
+}
+
+#[test]
+fn a_timed_dnd_shows_its_end_in_the_switch() {
+    let mut w = World::full();
+    let t = Instant::now();
+    w.dnd = Some(true);
+    w.dnd_end = Some((14, 30));
+    let q = quick(&w, Focus::Top);
+    let b = rows(&w.live(), &q);
+    let row = b.rows[DND_LINE as usize].text();
+    assert!(row.ends_with(" until 14:30 ●  "), "{row:?}");
+    assert_eq!(b.rows[DND_LINE as usize].styles()[18..33], *"AAAAAAAAAAAAAAA");
+    // The press area is the drawn pill: its first cell opens the detail, the cell before toggles.
+    let mut q2 = quick(&w, Focus::Top);
+    assert_eq!(q2.press(&w.live(), (19, DND_LINE), Button::Left, t), QuickAction::Redraw);
+    assert!(q2.dnd.open);
+    let mut q3 = quick(&w, Focus::Top);
+    assert_eq!(q3.press(&w.live(), (17, DND_LINE), Button::Left, t), QuickAction::ToggleDnd);
+    assert!(!q3.dnd.open);
+    let header = texts(&rows(&w.live(), &q2))[0].clone();
+    assert!(header.trim_start().starts_with("‹ Do not disturb") && header.ends_with("until 14:30"), "{header:?}");
+    w.dnd_end = None;
+    let b = rows(&w.live(), &q);
+    assert!(b.rows[DND_LINE as usize].text().ends_with(" ON  ●  "));
+}
+
+#[test]
+fn live_works_out_the_local_end_of_a_timed_dnd() {
+    use crate::dnd::Dnd;
+    let bar = Bar::new(crate::config::BarConfig::default());
+    let until = 1_800_000_000u64;
+    let lt = crate::clock::LocalTime::from_epoch(until as i64);
+    let timed = Dnd { on: true, until: Some(until), by_sharing: false };
+    let l = live(&bar, &timed);
+    assert_eq!(l.dnd, Some(true));
+    assert_eq!(l.dnd_end, Some((lt.hour, lt.minute)));
+    assert_eq!(live(&bar, &Dnd { on: false, ..timed }).dnd_end, None, "off: no end");
+    assert_eq!(live(&bar, &Dnd { by_sharing: true, ..timed }).dnd_end, None, "sharing: no end");
+    assert_eq!(live(&bar, &Dnd::user(true)).dnd_end, None, "untimed: no end");
 }

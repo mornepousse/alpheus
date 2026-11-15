@@ -582,7 +582,14 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
     // Resources: a reading of /proc every `interval` seconds, on the loop
     // (a few µs), only if the module is shown.
     if plan.want.resources {
-        let mut reader = resources::Reader::new(Path::new("/"), &plan.resources_config.sensor);
+        let mut reader = resources::Reader::new(
+            resources::Roots {
+                root: "/".into(),
+                home: std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from),
+                statfs: crate::sys::statvfs,
+            },
+            &plan.resources_config,
+        );
         let period = resources_period(&plan.resources_config);
         let r = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
             on_message(state, Msg::Resources(reader.sample()), || LocalTime::now().0);

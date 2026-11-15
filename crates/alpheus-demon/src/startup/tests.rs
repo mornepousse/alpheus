@@ -160,7 +160,7 @@ fn system_messages_redraw_once_and_only_resources_resets_the_clock() {
     }
     on_message(&mut c, Msg::Sound(Some(SoundState::default())), || AFTER);
     assert_eq!(c.bar.clock, None, "network, bluetooth, battery, sound: not a clock-refreshing event");
-    on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None }), || AFTER);
+    on_message(&mut c, Msg::Resources(Sample { cpu: Some(5), memory: Some(61), temperature: None, ..Sample::default() }), || AFTER);
     after_dispatch(&mut c);
     assert_eq!(c.redraws, 1, "a burst of system messages: one redraw");
     assert_eq!(c.bar.clock, Some(AFTER), "a resources tick also puts the clock right (B-m4)");
@@ -179,7 +179,7 @@ fn a_compositor_event_or_a_resources_tick_resets_the_clock() {
     // change yet) still gets the clock corrected by the next reading.
     assert!(dispatch_msg(&mut b, Msg::Clock(BEFORE), || AFTER), "clock put back stale for this part of the test");
     assert_eq!(b.clock, Some(BEFORE));
-    let sample = Sample { cpu: Some(10), memory: Some(50), temperature: Some(40) };
+    let sample = Sample { cpu: Some(10), memory: Some(50), temperature: Some(40), ..Sample::default() };
     assert!(dispatch_msg(&mut b, Msg::Resources(sample), || AFTER));
     assert_eq!(b.clock, Some(AFTER), "a resources tick follows the clock too, with no compositor event needed");
 }

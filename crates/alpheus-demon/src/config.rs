@@ -23,6 +23,8 @@
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
+//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem), "gpu"
+//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
@@ -67,6 +69,7 @@
 //! poweroff = ["systemctl", "poweroff"]
 //! wifi_more = ["foot", "-e", "nmtui"]                       # More… in the Wi-Fi detail; absent: launcher.toml's terminal then nmtui; [] hides it
 //! mixer = ["foot", "-e", "wiremix"]                        # Mixer… in the panel; absent: launcher.toml's terminal then wiremix; [] hides it
+//! dnd_until = "08:00"                                       # the do-not-disturb detail's "Until" entry, HH:MM
 //! [displays]                                                # the screens through the output protocol (with "displays" in modules)
 //! auto = true                                               # apply the displays.toml profile matching the connected screens
 //! drm_dir = "/sys/class/drm"                                # where DRM connectors are listed (DisplayLink detection; read, never watched)
@@ -283,6 +286,32 @@ impl Default for ActionsConfig {
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
+/// One figure of the resources module, in the order `[resources] show` lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceItem {
+    Cpu,
+    Memory,
+    Temperature,
+    Net,
+    Disk,
+    Gpu,
+}
+
+impl ResourceItem {
+    /// The word `bar.toml` uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            ResourceItem::Cpu => "cpu",
+            ResourceItem::Memory => "memory",
+            ResourceItem::Temperature => "temperature",
+            ResourceItem::Net => "net",
+            ResourceItem::Disk => "disk",
+            ResourceItem::Gpu => "gpu",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResourcesConfig {
@@ -293,11 +322,21 @@ pub struct ResourcesConfig {
     /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
     /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).
     pub sensor: String,
+    /// The figures shown, in this order (never empty, no repeat).
+    pub show: Vec<ResourceItem>,
+    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia); empty = automatic.
+    pub gpu_sensor: String,
 }
 
 impl Default for ResourcesConfig {
     fn default() -> Self {
-        ResourcesConfig { interval: 2, graph: 20, sensor: String::new() }
+        ResourcesConfig {
+            interval: 2,
+            graph: 20,
+            sensor: String::new(),
+            show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
+            gpu_sensor: String::new(),
+        }
     }
 }
 
@@ -551,6 +590,15 @@ pub struct QuickConfig {
     /// (`resolve_mixer`; an unresolved config, a test's default, shows no row); an empty list
     /// hides the row.
     pub mixer: Option<Vec<String>>,
+    /// The do-not-disturb detail's "Until" entry, `HH:MM` (local time).
+    pub dnd_until: String,
+}
+
+impl QuickConfig {
+    /// `dnd_until` as `(hour, minute)`; 8:00 for a text `check_quick` would have refused.
+    pub fn dnd_until_hm(&self) -> (u32, u32) {
+        alpheus_commun::local_time::parse_clock(&self.dnd_until).unwrap_or((8, 0))
+    }
 }
 
 impl Default for QuickConfig {
@@ -568,6 +616,7 @@ impl Default for QuickConfig {
             poweroff: argv(&["systemctl", "poweroff"]),
             wifi_more: None,
             mixer: None,
+            dnd_until: "08:00".into(),
         }
     }
 }
@@ -656,6 +705,9 @@ fn check_quick(q: &QuickConfig) -> Result<(), String> {
         if command.iter().any(|a| a.contains('\0')) {
             return Err(format!("{key}: an argument holds a NUL"));
         }
+    }
+    if alpheus_commun::local_time::parse_clock(&q.dnd_until).is_none() {
+        return Err(format!("quick.dnd_until: expected a local time HH:MM (0:00 to 23:59), not {:?}", q.dnd_until));
     }
     for (key, t) in [("quick.keep_awake", &q.keep_awake), ("quick.night_light", &q.night_light)] {
         if t.toggle.is_empty() && !t.state.is_empty() {
@@ -792,6 +844,14 @@ impl BarConfig {
         }
         if b.resources.graph > GRAPH_MAX {
             return Err(format!("resources.graph {} out of range 0 to {GRAPH_MAX} cells", b.resources.graph));
+        }
+        if b.resources.show.is_empty() {
+            return Err("resources.show empty (remove \"resources\" from modules instead; or list at least one of cpu, memory, temperature, net, disk, gpu)".into());
+        }
+        for (i, item) in b.resources.show.iter().enumerate() {
+            if b.resources.show[..i].contains(item) {
+                return Err(format!("resources.show: duplicate {:?}", item.name()));
+            }
         }
         for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {

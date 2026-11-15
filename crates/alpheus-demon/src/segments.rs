@@ -4,7 +4,7 @@
 //! is down shows its icon then "–". The whole segment is one click zone,
 //! except the tray's: one zone per icon.
 
-use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, TrayConfig};
+use crate::config::{BatteryConfig, BatteryVisibility, ModuleId, Passive, QuickConfig, ResourceItem, TrayConfig};
 use crate::grid::{Hue, Style, Target, truncate};
 use crate::layout::{Piece, Segment, piece};
 use crate::media::MediaView;
@@ -261,6 +261,10 @@ const DEVICE: char = '\u{f0fb0}'; // md-devices
 pub const MEMORY: char = '\u{f035b}'; // md-memory
 pub const CPU: char = '\u{f061a}'; // md-chip
 pub const THERMOMETER: char = '\u{f050f}'; // md-thermometer
+pub const DOWNLOAD: char = '\u{f01da}'; // md-download
+pub const UPLOAD: char = '\u{f0552}'; // md-upload
+pub const HARDDISK: char = '\u{f02ca}'; // md-harddisk
+pub const GPU: char = '\u{f08ae}'; // md-expansion-card
 /// From this temperature (°C), the error tint (waybar's critical threshold).
 pub const HOT: i16 = 85;
 
@@ -336,30 +340,86 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     Some(module_segment(ModuleId::Battery, pieces))
 }
 
-/// The resources: an icon and a figure each (CPU, memory, temperature), nothing padded. The
-/// `[resources] graph` setting is still read but ignored (the sparkline went with the refresh).
-pub(crate) fn resources(r: &Resources, mc: ModuleColors) -> Option<Segment> {
-    let s = r.last?;
-    let mut pieces = vec![piece(format!("{CPU} "), icon_style(mc, Hue::Orange, Style::NORMAL))];
-    pieces.push(piece(
-        match s.cpu {
-            Some(p) => format!("{p}%"),
-            None => "…%".to_string(),
-        },
-        text_style(mc, Hue::Orange, Style::NORMAL),
-    ));
-    if let Some(m) = s.memory {
-        // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
-        pieces.push(piece(format!("   {MEMORY}"), icon_style(mc, Hue::Yellow, Style::NORMAL)));
-        pieces.push(piece(format!(" {}.{}G", m / 10, m % 10), text_style(mc, Hue::Yellow, Style::NORMAL)));
+/// A byte rate, at most five cells: `0B`..`999B`, then `K`, `M`, `G` (1024 steps, one decimal under
+/// 10, none above), the number capped at 9999 (`9999G`).
+pub(crate) fn rate(bytes_per_s: u64) -> String {
+    if bytes_per_s < 1000 {
+        return format!("{bytes_per_s}B");
     }
-    if let Some(t) = s.temperature {
-        if t >= HOT {
-            pieces.push(piece(format!("   {THERMOMETER} {t}°"), Style::ERROR));
-        } else {
-            pieces.push(piece(format!("   {THERMOMETER}"), icon_style(mc, Hue::Red, Style::NORMAL)));
-            pieces.push(piece(format!(" {t}°"), text_style(mc, Hue::Red, Style::NORMAL)));
+    let mut v = bytes_per_s as f64 / 1024.0;
+    for unit in ['K', 'M', 'G'] {
+        if unit == 'G' {
+            v = v.min(9999.0);
         }
+        if unit == 'G' || v.round() < 1000.0 {
+            return if (v * 10.0).round() < 100.0 { format!("{v:.1}{unit}") } else { format!("{v:.0}{unit}") };
+        }
+        v /= 1024.0;
+    }
+    unreachable!()
+}
+
+fn figure(pieces: &mut Vec<Piece>, gap: &str, icon: char, hue: Hue, text: String, mc: ModuleColors) {
+    pieces.push(piece(format!("{gap}{icon}"), icon_style(mc, hue, Style::NORMAL)));
+    pieces.push(piece(format!(" {text}"), text_style(mc, hue, Style::NORMAL)));
+}
+
+/// A temperature: its hue, the error tint as a whole from `HOT`.
+fn temperature_figure(pieces: &mut Vec<Piece>, gap: &str, icon: char, t: i16, hue: Hue, mc: ModuleColors) {
+    if t >= HOT {
+        pieces.push(piece(format!("{gap}{icon} {t}°"), Style::ERROR));
+    } else {
+        figure(pieces, gap, icon, hue, format!("{t}°"), mc);
+    }
+}
+
+/// The resources: an icon and a figure each, in the order `show` lists them, nothing padded. An item
+/// whose source has no figure is skipped (the CPU alone shows `…%` before its first reading); None
+/// when no item is left. The `[resources] graph` setting is still read but ignored.
+pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) -> Option<Segment> {
+    let s = r.last?;
+    let mut pieces: Vec<Piece> = Vec::new();
+    for &item in show {
+        // The first piece has no leading gap; the others are three cells apart.
+        let gap = if pieces.is_empty() { "" } else { "   " };
+        match item {
+            ResourceItem::Cpu => {
+                let text = s.cpu.map_or_else(|| "…%".to_string(), |p| format!("{p}%"));
+                // The CPU's icon owns its trailing space (the bar has always drawn it so).
+                pieces.push(piece(format!("{gap}{CPU} "), icon_style(mc, Hue::Orange, Style::NORMAL)));
+                pieces.push(piece(text, text_style(mc, Hue::Orange, Style::NORMAL)));
+            }
+            // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
+            ResourceItem::Memory => {
+                if let Some(m) = s.memory {
+                    figure(&mut pieces, gap, MEMORY, Hue::Yellow, format!("{}.{}G", m / 10, m % 10), mc);
+                }
+            }
+            ResourceItem::Temperature => {
+                if let Some(t) = s.temperature {
+                    temperature_figure(&mut pieces, gap, THERMOMETER, t, Hue::Red, mc);
+                }
+            }
+            ResourceItem::Net => {
+                if let Some(n) = s.net {
+                    figure(&mut pieces, gap, DOWNLOAD, Hue::Cyan, format!("{} ", rate(n.down)), mc);
+                    figure(&mut pieces, "", UPLOAD, Hue::Cyan, rate(n.up), mc);
+                }
+            }
+            ResourceItem::Disk => {
+                if let Some(d) = s.disk {
+                    figure(&mut pieces, gap, HARDDISK, Hue::Blue, format!("{d}%"), mc);
+                }
+            }
+            ResourceItem::Gpu => {
+                if let Some(t) = s.gpu {
+                    temperature_figure(&mut pieces, gap, GPU, t, Hue::Purple, mc);
+                }
+            }
+        }
+    }
+    if pieces.is_empty() {
+        return None;
     }
     Some(module_segment(ModuleId::Resources, pieces))
 }

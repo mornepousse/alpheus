@@ -351,6 +351,13 @@ pub struct WifiState {
     pub stale: bool,
 }
 
+/// Network throughput since the previous reading, bytes per second.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NetRate {
+    pub down: u64,
+    pub up: u64,
+}
+
 /// One reading of /proc and /sys. `cpu: None` on the first one (it takes two).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Sample {
@@ -361,6 +368,12 @@ pub struct Sample {
     pub memory: Option<u16>,
     /// °C.
     pub temperature: Option<i16>,
+    /// Throughput of the default route's interface; None until two readings or without a route.
+    pub net: Option<NetRate>,
+    /// Percent of `$HOME`'s filesystem in use, like `df`.
+    pub disk: Option<u8>,
+    /// GPU temperature, °C.
+    pub gpu: Option<i16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

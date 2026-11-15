@@ -12,12 +12,15 @@
 
 use crate::actions::Button;
 use crate::backlight::Reread;
+use crate::clock::LocalTime;
 use crate::config::{ModuleId, QuickConfig, ToggleConfig};
+use crate::dnd::Dnd;
 use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed};
 use crate::osd::{self, BRIGHTNESS, MIC_OFF, MIC_ON, PERCENT_CELLS, volume_glyph};
 use crate::quick_bt::{Bt, BtOrder, Code};
+use crate::quick_dnd::{DndChoice, DndDetail};
 use crate::quick_wifi::Wifi;
 use crate::segments::BELL;
 use crate::session::{self, Activation};
@@ -195,6 +198,10 @@ pub enum Line {
     BtNote(&'static str),
     /// The pairing code under its device.
     BtCode,
+    /// The do-not-disturb detail's "‹ Do not disturb".
+    DndHeader,
+    /// The n-th of the do-not-disturb detail's choices (`quick_dnd::CHOICES`).
+    DndChoice(usize),
 }
 
 /// The backlight as the panel shows it: its device (`brightnessctl --device=`) and level.
@@ -211,6 +218,8 @@ pub struct Live<'a> {
     pub sound: Option<&'a SoundState>,
     /// Do-not-disturb; None without the notifications module (no row).
     pub dnd: Option<bool>,
+    /// The local `(hour, minute)` a timed do-not-disturb ends at; None when untimed or off.
+    pub dnd_end: Option<(u8, u8)>,
     /// power-profiles-daemon's state; None while the system bus is down.
     pub profile: Option<&'a ProfileState>,
     pub config: &'a QuickConfig,
@@ -219,13 +228,20 @@ pub struct Live<'a> {
 }
 
 /// The bar's state as the panel reads it.
-pub fn live(bar: &Bar, dnd: bool) -> Live<'_> {
+pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
     Live {
         sound: match &bar.sound {
             Feed::Ready(s) => Some(s),
             _ => None,
         },
-        dnd: bar.config.modules.contains(&ModuleId::Notifications).then_some(dnd),
+        dnd: bar.config.modules.contains(&ModuleId::Notifications).then_some(dnd.on),
+        dnd_end: match dnd.until {
+            Some(until) if dnd.on && !dnd.by_sharing => {
+                let t = LocalTime::from_epoch(until as i64);
+                Some((t.hour, t.minute))
+            }
+            _ => None,
+        },
         profile: match &bar.profile {
             Feed::Ready(p) => Some(p),
             _ => None,
@@ -266,6 +282,8 @@ pub enum QuickAction {
     },
     /// Calls on BlueZ's acting connection, or the agent's answers (quick_bt.rs), in order.
     Bluetooth(Vec<BtOrder>),
+    /// A choice of the do-not-disturb detail: the wiring applies it (`quick_app::dnd_request`).
+    Dnd(DndChoice),
 }
 
 /// The question the panel waits on for a second activation: "Reboot? ⏎", "Power off? ⏎", or a
@@ -463,6 +481,8 @@ pub struct Quick {
     pub wifi: Wifi,
     /// The Bluetooth row and its detail (quick_bt.rs).
     pub bt: Bt,
+    /// The do-not-disturb detail (quick_dnd.rs).
+    pub dnd: DndDetail,
 }
 
 pub(crate) fn argv(parts: &[&str]) -> Vec<String> {
@@ -520,7 +540,11 @@ const ROWS: [RowSpec; 12] = [
         name: "dnd",
         group: 1,
         present: |live, _| live.dnd.is_some(),
-        draw: |g, live, _, selected| draw_mark(g, BELL, "Do not disturb", live.dnd, selected),
+        draw: |g, live, _, selected| {
+            text_row(g, Some(BELL), "Do not disturb", "", Style::NORMAL, selected);
+            let (text, style) = dnd_switch(live);
+            write_cell(g, &text, style);
+        },
     },
     RowSpec {
         row: Row::Profile,
@@ -561,6 +585,9 @@ pub fn shown(live: &Live, q: &Quick) -> Vec<Row> {
 pub fn lines(live: &Live, q: &Quick) -> Vec<Line> {
     if q.bt.open {
         return q.bt.lines();
+    }
+    if q.dnd.open {
+        return q.dnd.lines();
     }
     if q.wifi.open {
         return q.wifi.lines(live.config);
@@ -615,6 +642,7 @@ impl Quick {
             failed: Vec::new(),
             wifi: Wifi { focus_pending: focus == Focus::Wifi, ..Wifi::default() },
             bt: Bt::default(),
+            dnd: DndDetail::default(),
         };
         let rows = shown(live, &q);
         q.selected = match focus {
@@ -652,6 +680,11 @@ impl Quick {
             self.back_on(Row::Bluetooth);
         }
         self.bt.fit();
+        if self.dnd.open && !present(Row::Dnd, live, self) {
+            // The row went (the notifications module is not read): back on the rows.
+            self.dnd.open = false;
+            self.back_on(Row::Dnd);
+        }
         let was_open = self.wifi.open;
         self.wifi.fit(live.config);
         if self.wifi.open {
@@ -717,6 +750,7 @@ impl Quick {
             Line::Sink(i) => self.sinks.get(i).is_some_and(|s| Some(s.id) == self.sink),
             l @ (Line::Network(_) | Line::WifiMore | Line::Password) => self.wifi.is_selected(l, &nets),
             l @ (Line::BtHeader | Line::BtDevice(_)) => self.bt.is_selected(l, &devices),
+            Line::DndChoice(i) => i == self.dnd.selected,
             _ => false,
         })
     }
@@ -756,6 +790,12 @@ impl Quick {
             let a = self.bt.key(k, &mut self.confirm, now);
             if !self.bt.open {
                 self.back_on(Row::Bluetooth);
+            }
+            a
+        } else if self.dnd.open {
+            let a = self.dnd.key(live, k);
+            if !self.dnd.open {
+                self.back_on(Row::Dnd);
             }
             a
         } else if self.wifi.open {
@@ -808,7 +848,8 @@ impl Quick {
             (Row::Bluetooth, Key::Enter | Key::Right) => self.open_bt(live),
             (Row::Mic, Key::Char(' ') | Key::Enter) => run(&["wpctl", "set-mute", SOURCE, "toggle"], "microphone mute"),
             (Row::Mixer, Key::Char(' ') | Key::Enter) => run_and_close(live.config.mixer.as_deref().unwrap_or(&[]), "mixer"),
-            (Row::Dnd, Key::Char(' ') | Key::Enter) => QuickAction::ToggleDnd,
+            (Row::Dnd, Key::Char(' ')) => QuickAction::ToggleDnd,
+            (Row::Dnd, Key::Enter | Key::Right) => self.open_dnd(live),
             (Row::Profile, Key::Enter) => cycle(live),
             (Row::KeepAwake, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::KeepAwake, now),
             (Row::NightLight, Key::Char(' ') | Key::Enter) => self.toggle(live, Toggle::NightLight, now),
@@ -920,6 +961,19 @@ impl Quick {
                     self.back_on(Row::Bluetooth);
                 }
                 a
+            }
+            (l @ (Line::DndHeader | Line::DndChoice(_)), _) => {
+                let a = self.dnd.press(live, l, b);
+                if !self.dnd.open {
+                    self.back_on(Row::Dnd);
+                }
+                a
+            }
+            (Line::Row(Row::Dnd), Button::Left) => {
+                self.selected = Row::Dnd;
+                // The switch's drawn cells open the detail; the rest of the row toggles.
+                let width = text_width(&dnd_switch(live).0);
+                if cell.0 >= WIDTH + 2 - 1 - width { self.open_dnd(live) } else { QuickAction::ToggleDnd }
             }
             (Line::Row(Row::Volume), Button::Right) => {
                 self.selected = Row::Volume;
@@ -1170,6 +1224,17 @@ impl Quick {
         self.bt.open_detail()
     }
 
+    /// Enter, →, or a press on the switch of the do-not-disturb row: its detail in place of the rows.
+    fn open_dnd(&mut self, live: &Live) -> QuickAction {
+        if !present(Row::Dnd, live, self) {
+            return QuickAction::Nothing;
+        }
+        self.detail = false;
+        self.top = 0;
+        self.dnd.open(live);
+        QuickAction::Redraw
+    }
+
     /// What the Bluetooth reading covers while the panel is open: the detail's lists, else the row.
     pub fn bt_scope(&self) -> BtScope {
         self.bt.scope(true)
@@ -1309,6 +1374,7 @@ pub fn rows(live: &Live, q: &Quick) -> Boxed {
             l @ (Line::BtHeader | Line::BtDevice(_) | Line::BtNearby | Line::BtNote(_) | Line::BtCode) => {
                 q.bt.draw(&mut g, l, &devices, q.confirm.as_ref(), q.bt.is_selected(l, &devices))
             }
+            l @ (Line::DndHeader | Line::DndChoice(_)) => q.dnd.draw(&mut g, live, l),
         }
         out.rows.push(g);
     }
@@ -1378,10 +1444,24 @@ pub(crate) fn switch(on: Option<bool>) -> (&'static str, Style) {
     }
 }
 
+/// The do-not-disturb row's right side: the switch, or ` until HH:MM ● ` while a timed one is on.
+pub(crate) fn dnd_switch(live: &Live) -> (String, Style) {
+    if let (Some(true), Some((h, m))) = (live.dnd, live.dnd_end) {
+        return (format!(" until {h:02}:{m:02} ● "), Style::ACTIVE);
+    }
+    let (text, style) = switch(live.dnd);
+    (text.to_string(), style)
+}
+
 /// `switch(on)` right-aligned to end one cell before the row's end.
 fn write_switch(g: &mut Grid, on: Option<bool>) {
-    let end = g.width();
     let (text, style) = switch(on);
+    write_cell(g, text, style);
+}
+
+/// `text` right-aligned to end one cell before the row's end.
+fn write_cell(g: &mut Grid, text: &str, style: Style) {
+    let end = g.width();
     g.write(end.saturating_sub(text_width(text) + 1), end, text, style);
 }
 
