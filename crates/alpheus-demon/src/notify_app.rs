@@ -313,6 +313,7 @@ impl App {
             | Request::Dmenu { .. }
             | Request::Osd(_)
             | Request::Quick(_)
+            | Request::Notes
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep

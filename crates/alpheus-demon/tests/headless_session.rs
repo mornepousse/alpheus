@@ -5859,3 +5859,136 @@ fn quick_the_dnd_detail_sets_a_timed_do_not_disturb() {
     let text = std::fs::read_to_string(sway.runtime.join("state/alpheus/dnd")).unwrap();
     assert!(text.starts_with("until "), "{text:?}");
 }
+
+// Quick notes, task 5: `alpheus-launch --notes` end to end, on the Sway backend.
+
+const NOTES_SHOWN: &str = "notes shown on";
+
+fn notes_daemon(name: &str) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    (sway, d)
+}
+
+fn notes_file(sway: &Sway) -> PathBuf {
+    sway.runtime.join("state/alpheus/notes.txt")
+}
+
+/// Waits until `path` reads `want` (the save lands a moment after the close line).
+fn wait_for_text(path: &Path, want: &str) {
+    let t = Instant::now();
+    loop {
+        let got = std::fs::read_to_string(path).unwrap_or_default();
+        if got == want {
+            return;
+        }
+        assert!(t.elapsed() < DELAY, "{} reads {got:?}, wanted {want:?}", path.display());
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Spec § 1, § 3, § 5: typed text (a newline included) is on disk after the close, private (file
+/// 0600, directory 0700), the log never holds it, and a reopen puts the caret at the end.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_type_close_and_find_the_file() {
+    let (sway, d) = notes_daemon("notes-type");
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap(), (0, String::new(), String::new()));
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "buy milk", "-k", "Return", "token 1234", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    let file = notes_file(&sway);
+    wait_for_text(&file, "buy milk\ntoken 1234");
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("1234")), "the text reached the log: {:?}", d.log());
+    // Reopened: the caret is at the end.
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(NOTES_SHOWN, 2, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "End", " ok", "-k", "Escape"]).success());
+    assert!(d.wait_for_count("notes closed (escape)", 2, DELAY), "{:?}", d.log());
+    wait_for_text(&file, "buy milk\ntoken 1234 ok");
+    assert!(d.log().iter().all(|l| !l.contains("milk") && !l.contains("1234")), "{:?}", d.log());
+}
+
+/// Spec § 3: the pad saves itself once the typing pauses, with the pad still open.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_autosaves_while_open() {
+    let (sway, d) = notes_daemon("notes-autosave");
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    let keys = wtype_spawn(&sway, &["-s", "300", "draft", "-s", "4000", "-k", "Escape"]);
+    thread::sleep(Duration::from_millis(2800));
+    assert_eq!(std::fs::read_to_string(notes_file(&sway)).unwrap(), "draft", "{:?}", d.log());
+    assert_eq!(d.count("notes closed"), 0, "still open: {:?}", d.log());
+    assert!(keys.wait().unwrap().success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    // Past the debounce, the verb closes an open pad.
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for_count(NOTES_SHOWN, 2, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("notes closed (toggle)", DELAY), "{:?}", d.log());
+}
+
+/// Spec § 1: two verbs 50 ms apart open once; a click outside the box closes it and the text is kept.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn notes_toggle_is_debounced_and_a_click_outside_closes() {
+    let (sway, d) = notes_daemon("notes-debounce");
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notes: toggle debounced", DELAY), "{:?}", d.log());
+    assert_eq!(d.count(NOTES_SHOWN), 1, "{:?}", d.log());
+    assert_eq!(d.count("notes closed"), 0, "{:?}", d.log());
+    // One continuous wtype: its keyboard leaving would close the pad as `focus lost`.
+    let keys = wtype_spawn(&sway, &["-s", "300", "kept", "-s", "8000"]);
+    thread::sleep(Duration::from_millis(1200));
+    sway.click(5, 700, "button1");
+    assert!(d.wait_for("notes closed (click outside)", DELAY), "{:?}", d.log());
+    wait_for_text(&notes_file(&sway), "kept");
+    drop(keys);
+}
+
+/// Spec § 1: opening one box closes the other, in both directions.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn notes_replaces_the_launcher_and_back() {
+    let (sway, d) = notes_daemon("notes-replaces");
+    let menu = script(&sway, &["--dmenu"], "a\nb\n");
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert_eq!(menu.join().unwrap().0, 1, "the dmenu client is cancelled");
+    assert!(d.wait_for("launcher closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    thread::sleep(PAST_DEBOUNCE);
+    assert_eq!(script(&sway, &["--toggle"], "").join().unwrap().0, 0);
+    assert!(d.wait_for("notes closed (replaced)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+}
+
+/// Spec § 3: a file the pad refuses (too large) opens read only, and is never rewritten.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_refused_notes_file_opens_read_only() {
+    let sway = Sway::start("notes-refused", 1);
+    let file = notes_file(&sway);
+    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    std::fs::set_permissions(file.parent().unwrap(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let before = vec![b'a'; 70_000];
+    std::fs::write(&file, &before).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(script(&sway, &["--notes"], "").join().unwrap().0, 0);
+    assert!(d.wait_for(NOTES_SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "x", "-k", "Escape"]).success());
+    assert!(d.wait_for("notes closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notes: read only (is too large)", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(std::fs::read(&file).unwrap(), before, "never rewritten");
+}

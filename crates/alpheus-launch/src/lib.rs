@@ -35,7 +35,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --windows | --help]
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --windows | --notes | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -60,12 +60,13 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           with wifi, on Bluetooth with bluetooth)
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   --windows               open the window switcher (the previous window selected), or select the next window when it is open
+  --notes                 open or close the quick notepad (its text is kept in $XDG_STATE_HOME/alpheus/notes.txt)
   -h, --help              show this help
 
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc/--windows (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc/--windows/--notes (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
@@ -89,6 +90,7 @@ pub enum Invocation {
     Quick(QuickVerb),
     Calc,
     Windows,
+    Notes,
     Help,
 }
 
@@ -136,6 +138,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             }
             "--calc" => choose(&mut mode, Invocation::Calc)?,
             "--windows" => choose(&mut mode, Invocation::Windows)?,
+            "--notes" => choose(&mut mode, Invocation::Notes)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
             "-p" | "--prompt" => {
                 let value = it.next().ok_or_else(|| format!("{arg} needs a value"))?;
@@ -257,6 +260,7 @@ pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
         Invocation::Quick(v) => Request::Quick(v),
         Invocation::Calc => Request::Calc,
         Invocation::Windows => Request::Windows,
+        Invocation::Notes => Request::Notes,
         Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
     })
 }
@@ -305,7 +309,8 @@ fn utf8(arg: &OsString) -> Result<&str, String> {
 fn choose(slot: &mut Option<Invocation>, i: Invocation) -> Result<(), String> {
     if slot.is_some() {
         return Err(
-            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --help".into()
+            "only one of --toggle, --close, --dmenu, --dnd, --clear-notifications, --osd, --quick, --calc, --windows, --notes, --help"
+                .into(),
         );
     }
     *slot = Some(i);
@@ -405,7 +410,8 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
             | Invocation::Osd(_)
             | Invocation::Quick(_)
             | Invocation::Calc
-            | Invocation::Windows),
+            | Invocation::Windows
+            | Invocation::Notes),
         ) => match request_of(i, unix_now()) {
             Ok(request) => request,
             Err(m) => return fail(stderr, &m),
@@ -459,6 +465,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             | Request::Quick(_)
             | Request::Calc
             | Request::Windows
+            | Request::Notes
             | Request::OutputsTry(_)
             | Request::OutputsKeep
             | Request::OutputsRevert,
@@ -492,6 +499,7 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
         Request::Windows if error == "malformed request: unknown request \"windows\"" => Some("--windows"),
+        Request::Notes if error == "malformed request: unknown request \"notes\"" => Some("--notes"),
         // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
         Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
             Some(if matches!(end, DndEnd::For(_)) { "--dnd on --for" } else { "--dnd on --until" })
@@ -577,6 +585,7 @@ mod tests {
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
         assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
         assert_eq!(parse_args(&args(&["--windows"])), Ok(Invocation::Windows));
+        assert_eq!(parse_args(&args(&["--notes"])), Ok(Invocation::Notes));
         assert_eq!(parse_args(&args(&["--quick"])), Ok(Invocation::Quick(QuickVerb::Top)));
         assert_eq!(parse_args(&args(&["--quick", "sound"])), Ok(Invocation::Quick(QuickVerb::Sound)));
         assert_eq!(parse_args(&args(&["--quick", "wifi"])), Ok(Invocation::Quick(QuickVerb::Wifi)));
@@ -638,8 +647,9 @@ mod tests {
             (&["--quick", "network"], "unknown option"),
             (&["--quick", "wifi", "sound"], "unknown option"),
             (&["--quick", "--close"], "only one of"),
-            (&["--calc", "--toggle"], "--quick, --calc, --windows, --help"),
+            (&["--calc", "--toggle"], "--quick, --calc, --windows, --notes, --help"),
             (&["--windows", "--toggle"], "--windows"),
+            (&["--notes", "--toggle"], "--notes"),
             (&["--quick", "sound", "-p", "x"], "--prompt only goes with --dmenu"),
             (&["--help", "--dmenu"], "only one of"),
             (&["--dmenu", "--prompt"], "needs a value"),
@@ -694,6 +704,17 @@ mod tests {
         assert!(String::from_utf8_lossy(&err).contains("--windows"), "{}", String::from_utf8_lossy(&err));
         let mut err = Vec::new();
         assert_eq!(reply_to_exit(&Request::Windows, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+    }
+
+    /// A daemon from before `--notes` refuses the word as an unknown request: exit 3, naming it.
+    #[test]
+    fn a_daemon_without_notes_is_too_old() {
+        let refusal = "malformed request: unknown request \"notes\"";
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::Notes, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+        assert!(String::from_utf8_lossy(&err).contains("--notes"), "{}", String::from_utf8_lossy(&err));
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::Notes, Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
     }
 
     /// An upgrade not followed by a restart: a daemon that never heard of the displays verbs

@@ -14,6 +14,7 @@ use crate::notes::model::{Notes, NotesOutcome};
 use crate::notes::store;
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
+use alpheus_commun::launcher_ipc::{Reply, Request};
 use alpheus_commun::paths;
 use smithay_client_toolkit::reexports::client::QueueHandle;
 use std::path::PathBuf;
@@ -112,6 +113,16 @@ fn guarded_with<R>(what: &str, f: impl FnOnce() -> R, log: &mut dyn FnMut(&str))
 }
 
 impl App {
+    /// `alpheus-launch --notes` (`launcher/socket_glue.rs`, `watch_connection`): toggles the pad.
+    /// Done; a request that is not the pad's is answered Done too (`route` never sends one).
+    pub(crate) fn notes_verb(&mut self, qh: &QueueHandle<App>, request: &Request) -> Reply {
+        if matches!(request, Request::Notes) {
+            let requested_at = Instant::now();
+            self.notes_guarded("verb", |app| app.notes_toggle(qh, requested_at));
+        }
+        Reply::Done
+    }
+
     /// The verb: open, close, or nothing within the debounce.
     pub(crate) fn notes_toggle(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
         let since = self.notes.open.as_ref().map(|o| o.requested_at.elapsed());
@@ -315,6 +326,10 @@ mod tests {
         assert_eq!(n.status(), "saved");
         let ro = Notes::new(String::new(), Some(crate::notes::model::Refusal::NotOurs));
         assert!(!wants_save(&ro), "a refused file is never written");
+        // The model refuses edits itself; this is the second layer, so force `dirty`.
+        let mut ro = ro;
+        ro.dirty = true;
+        assert!(!wants_save(&ro), "an edited read-only pad is still never written");
     }
 
     #[test]

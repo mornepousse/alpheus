@@ -145,6 +145,7 @@ pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)
+            | Request::Notes
             | Request::Outputs
             | Request::OutputsTry(_)
             | Request::OutputsKeep
@@ -599,6 +600,7 @@ mod tests {
             (Request::Dnd(DndVerb::Toggle), None, not_ours(), refused()),
             (Request::ClearNotifications, Some(Script), not_ours(), refused()),
             (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
+            (Request::Notes, Some(Apps), not_ours(), refused()),
             (Request::Calc, None, Action::OpenCalc, done()),
             (Request::Calc, Some(Apps), Action::Close(R::Toggle), done()),
             (Request::Calc, Some(Script), Action::Close(R::Toggle), done()),
