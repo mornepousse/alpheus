@@ -859,6 +859,13 @@ fn the_timer_is_a_block_of_its_own_before_the_clock() {
     let g = styled(b, BarStyle::Islands).grid("HDMI-A-1", 60);
     let kinds: Vec<(GroupKind, Option<Hue>)> = g.groups().iter().map(|x| (x.kind, x.hue)).collect();
     assert_eq!(kinds, [(GroupKind::Workspaces, None), (GroupKind::Timer, Some(Hue::Yellow)), (GroupKind::Clock, None)]);
+    // An idle chip's block takes no hue; a running one does.
+    let mut idle = bar();
+    idle.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];
+    idle.module_colors = ModuleColors::Pills;
+    idle.apply(Msg::Timer(Some(crate::timer::TimerChip { glyph: crate::timer::TIMER, text: None, look: crate::timer::ChipLook::Idle })));
+    let g = styled(idle, BarStyle::Islands).grid("HDMI-A-1", 60);
+    assert_eq!(g.groups().iter().find(|x| x.kind == GroupKind::Timer).map(|x| x.hue), Some(None));
     // Nothing without a chip: exactly the bar without the module.
     let mut gone = bar();
     gone.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];

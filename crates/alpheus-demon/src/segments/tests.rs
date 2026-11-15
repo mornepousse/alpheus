@@ -969,4 +969,7 @@ fn the_timer_chip_by_look() {
     let s = super::timer(Some(&running), FULL).unwrap();
     assert_eq!((s.module, &s.target), (ModuleId::Timer, &Some(Target::Module(ModuleId::Timer))), "one click zone");
     assert!(super::timer(None, FULL).is_none());
+    for (c, withheld) in [(&running, false), (&paused, true), (&done, false), (&idle, true)] {
+        assert_eq!(super::timer(Some(c), FULL).unwrap().withhold_hue, withheld, "{:?}", c.look);
+    }
 }

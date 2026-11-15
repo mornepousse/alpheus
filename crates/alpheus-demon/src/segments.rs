@@ -157,7 +157,10 @@ pub(crate) fn timer(chip: Option<&TimerChip>, mc: ModuleColors) -> Option<Segmen
         Some(t) => vec![piece(format!("{} ", c.glyph), icon), piece(t.clone(), text)],
         None => vec![piece(c.glyph.to_string(), icon)],
     };
-    Some(module_segment(ModuleId::Timer, pieces))
+    let mut segment = module_segment(ModuleId::Timer, pieces);
+    // Dim states take no hue behind them under `pills` (as a paused media block).
+    segment.withhold_hue = matches!(c.look, ChipLook::Idle | ChipLook::Paused);
+    Some(segment)
 }
 
 pub(crate) fn volume(feed: &Feed<SoundState>, mc: ModuleColors) -> Option<Segment> {
