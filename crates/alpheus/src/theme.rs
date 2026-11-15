@@ -5,7 +5,7 @@
 //! stopped reads the last published mode: accepted, no cleanup. The rest of the TUI only ever sees `Theme`.
 
 use alpheus_commun::theme::mode_file::read_mode;
-use alpheus_commun::theme::settings::resolve_dir;
+use alpheus_commun::theme::settings::{BarStyle, resolve_dir};
 use alpheus_commun::theme::{Rgb, Roles};
 use ratatui::style::{Color, Modifier, Style};
 use std::path::Path;
@@ -29,6 +29,49 @@ pub struct Theme {
     pub accent_container: Color,
     pub error: Color,
     pub ok: Color,
+    pub warn: Color,
+    /// `raised`: a card or a tile at rest.
+    pub raised: Color,
+    /// `pill_bg`: a card's body.
+    pub pill: Color,
+    pub accent2: Color,
+    pub red: Color,
+    pub orange: Color,
+    pub yellow: Color,
+    pub green: Color,
+    pub cyan: Color,
+    pub blue: Color,
+    pub purple: Color,
+    /// theme.toml's `style` also shapes the TUI.
+    pub shape: Shape,
+}
+
+/// How controls are cut, from theme.toml's `style`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Shape {
+    /// flat, translucent: square fills.
+    #[default]
+    Flat,
+    /// islands: round caps, rounded frames.
+    Round,
+    /// powerline: arrow tips.
+    Arrow,
+    /// underline: no fills, coloured text over a line.
+    Line,
+    /// floating: double frames and drop shadows.
+    Float,
+}
+
+impl Shape {
+    pub fn of(style: BarStyle) -> Shape {
+        match style {
+            BarStyle::Flat | BarStyle::Translucent => Shape::Flat,
+            BarStyle::Islands => Shape::Round,
+            BarStyle::Powerline => Shape::Arrow,
+            BarStyle::Underline => Shape::Line,
+            BarStyle::Floating => Shape::Float,
+        }
+    }
 }
 
 pub(crate) fn color(Rgb(r, g, b): Rgb) -> Color {
@@ -48,6 +91,18 @@ impl From<Roles> for Theme {
             accent_container: color(r.accent_container),
             error: color(r.error),
             ok: color(r.ok),
+            warn: color(r.warn),
+            raised: color(r.raised),
+            pill: color(r.pill_bg),
+            accent2: color(r.accent2),
+            red: color(r.hues.red),
+            orange: color(r.hues.orange),
+            yellow: color(r.hues.yellow),
+            green: color(r.hues.green),
+            cyan: color(r.hues.cyan),
+            blue: color(r.hues.blue),
+            purple: color(r.hues.purple),
+            shape: Shape::Flat,
         }
     }
 }
@@ -65,8 +120,9 @@ impl Theme {
     /// informational notes (a missing light file, a preset without a light variant), which the
     /// daemon logs once.
     pub fn load(dir: &Path, runtime: Option<&Path>) -> (Theme, Vec<String>) {
-        let (_, resolved) = resolve_dir(dir, || Some(read_mode(runtime)));
-        (resolved.roles.into(), resolved.warnings)
+        let (settings, resolved) = resolve_dir(dir, || Some(read_mode(runtime)));
+        let theme = Theme { shape: Shape::of(settings.style), ..resolved.roles.into() };
+        (theme, resolved.warnings)
     }
 
     /// A selected tab, row or choice: normal text on `selection`.
@@ -121,9 +177,47 @@ mod tests {
             [t.bg, t.fg, t.muted, t.surface, t.accent, t.selection, t.on_accent, t.accent_container, t.error, t.ok],
             [r.bar_bg, r.fg, r.fg_dim, r.popup_bg, r.accent, r.selection, r.on_accent, r.accent_container, r.error, r.ok].map(rgb)
         );
-        let other = Roles { selection: Rgb(1, 2, 3), ..r };
+        assert_eq!(
+            [t.warn, t.raised, t.pill, t.accent2, t.red, t.orange, t.yellow, t.green, t.cyan, t.blue, t.purple],
+            [
+                r.warn,
+                r.raised,
+                r.pill_bg,
+                r.accent2,
+                r.hues.red,
+                r.hues.orange,
+                r.hues.yellow,
+                r.hues.green,
+                r.hues.cyan,
+                r.hues.blue,
+                r.hues.purple
+            ]
+            .map(rgb)
+        );
+        assert_eq!(t.shape, Shape::Flat);
+        let other = Roles { selection: Rgb(1, 2, 3), raised: Rgb(4, 5, 6), ..r };
         assert_eq!(Theme::from(other).selection, Color::Rgb(1, 2, 3));
+        assert_eq!(Theme::from(other).raised, Color::Rgb(4, 5, 6));
         assert_eq!(Theme::default(), Theme::from(Roles::default()));
+    }
+
+    #[test]
+    fn shape_of_each_style() {
+        use BarStyle as B;
+        let got = [B::Flat, B::Translucent, B::Islands, B::Powerline, B::Underline, B::Floating].map(Shape::of);
+        assert_eq!(got, [Shape::Flat, Shape::Flat, Shape::Round, Shape::Arrow, Shape::Line, Shape::Float]);
+    }
+
+    #[test]
+    fn load_reads_the_style() {
+        let (t, w) = Theme::load(&dir("style-pl", &[("theme.toml", "style = \"powerline\"\nmode = \"dark\"\n")]), None);
+        assert_eq!(t.shape, Shape::Arrow);
+        assert_eq!(w, Vec::<String>::new());
+        let plain = Theme::from(preset("catppuccin").unwrap().dark);
+        assert_eq!(Theme { shape: Shape::Flat, ..t }, plain, "the colours are the preset's");
+        let (none, _) = Theme::load(&dir("style-none", &[]), None);
+        assert_eq!(none.shape, Shape::Flat);
+        assert_eq!(none, plain);
     }
 
     #[test]

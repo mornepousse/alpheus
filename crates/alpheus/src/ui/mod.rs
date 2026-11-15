@@ -6,6 +6,7 @@ mod displays;
 pub mod draw;
 pub mod hit;
 mod overlays;
+pub mod shape;
 mod tabs;
 
 pub use hit::{HitMap, Target};
