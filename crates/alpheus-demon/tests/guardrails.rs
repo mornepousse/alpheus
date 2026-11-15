@@ -751,7 +751,7 @@ fn only_the_source_runner_captures_and_never_through_a_shell() {
 /// the launcher's guard, and never reach `decide` in practice.
 #[test]
 fn adding_a_request_variant_must_update_this_exhaustive_match() {
-    use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb, Request};
+    use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb, Request};
     fn verb(r: &Request) -> &'static str {
         match r {
             Request::Toggle => "toggle",
@@ -759,6 +759,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             Request::Calc => "calc",
             Request::Dmenu { .. } => "dmenu",
             Request::Dnd(_) => "dnd",
+            Request::DndOn(_) => "dnd-on",
             Request::ClearNotifications => "clear-notifications",
             Request::Osd(_) => "osd",
             Request::Quick(_) => "quick",
@@ -774,6 +775,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
         Request::Calc,
         Request::Dmenu { prompt: None, lines: vec![], flags: DmenuFlags::default() },
         Request::Dnd(DndVerb::Toggle),
+        Request::DndOn(DndEnd::For(60)),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
@@ -790,6 +792,7 @@ fn adding_a_request_variant_must_update_this_exhaustive_match() {
             "calc",
             "dmenu",
             "dnd",
+            "dnd-on",
             "clear-notifications",
             "osd",
             "quick",

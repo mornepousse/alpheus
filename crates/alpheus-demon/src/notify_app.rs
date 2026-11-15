@@ -138,6 +138,8 @@ impl App {
         }
         match request {
             Request::Dnd(verb) => self.set_dnd(dnd_after(*verb, self.dnd)),
+            // Task 6 gives the end its meaning; until then a timed "on" is a plain "on".
+            Request::DndOn(_) => self.set_dnd(dnd_after(DndVerb::On, self.dnd)),
             Request::ClearNotifications => self.clear_notifications(),
             Request::Toggle
             | Request::Close

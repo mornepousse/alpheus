@@ -11,9 +11,10 @@
 //! cases where a caller may fall back to another menu.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT, Reply, Request, exchange_waiting,
-    numbered_lines, wipe,
+    DND_MAX_SECS, DND_MIN_SECS, DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, MAX_PROMPT, OsdVerb, QuickVerb, REPLY_TIMEOUT,
+    Reply, Request, exchange_waiting, numbered_lines, wipe,
 };
+use alpheus_commun::local_time;
 use std::ffi::OsString;
 use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
@@ -33,7 +34,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --help]
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -48,6 +49,9 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
   --placeholder TEXT, --width N, --lines N
                           with --dmenu: accepted for fuzzel's sake, ignored
   --dnd on|off|toggle     the bar's do-not-disturb (notifications module)
+  --for DURATION, --until HH:MM
+                          with --dnd on: end it after 30m, 2h or 1h30m (1m to 24h), or at the
+                          next local HH:MM; either one replaces an earlier end
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
   --quick [sound|wifi|bluetooth]
@@ -59,18 +63,25 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
 Exit codes: 0 done or chosen (--osd: also when there is nothing to show; --quick: also without the quick module), 1 menu cancelled,
 2 error (another menu open, bad usage, no answer, the bar restarting mid-request, the notifications
 module not in bar.toml), 3 alpheus-demon not running (launcher unreachable), or older than
---index/--password/--visible/--quick (or its wifi or bluetooth word)/--calc (restarted since the upgrade? until then, use another menu).
+--index/--password/--visible/--for/--until/--quick (or its wifi or bluetooth word)/--calc (restarted since the upgrade? until then, use another menu).
 
 --dmenu waits for a choice with no timeout of its own: as long as the
 person takes to pick a line, however long that is.
 ";
+
+/// How a timed `--dnd on` ends, as typed: a length, or a local time of day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndArg {
+    For(u32),
+    Until(u32, u32),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
     Toggle,
     Close,
     Dmenu { prompt: Option<String>, flags: DmenuFlags },
-    Dnd(DndVerb),
+    Dnd(DndVerb, Option<EndArg>),
     ClearNotifications,
     Osd(OsdVerb),
     Quick(QuickVerb),
@@ -89,6 +100,8 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
     let mut flags = DmenuFlags::default();
     // The first dmenu-only option seen, for the message when --dmenu is missing.
     let mut dmenu_only: Option<&'static str> = None;
+    // `--for` / `--until`, as typed (the first one's flag and value, and whether both came).
+    let mut end: Option<(&'static str, EndArg)> = None;
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
         let arg = utf8(arg)?;
@@ -96,7 +109,7 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             "--toggle" => choose(&mut mode, Invocation::Toggle)?,
             "--close" => choose(&mut mode, Invocation::Close)?,
             "--dmenu" => choose(&mut mode, Invocation::Dmenu { prompt: None, flags: DmenuFlags::default() })?,
-            "--dnd" => choose(&mut mode, Invocation::Dnd(verb_arg(&mut it, "--dnd", "on, off or toggle", DndVerb::parse)?))?,
+            "--dnd" => choose(&mut mode, Invocation::Dnd(verb_arg(&mut it, "--dnd", "on, off or toggle", DndVerb::parse)?, None))?,
             "--clear-notifications" => choose(&mut mode, Invocation::ClearNotifications)?,
             "--osd" => choose(&mut mode, Invocation::Osd(verb_arg(&mut it, "--osd", "brightness", OsdVerb::parse)?))?,
             "--quick" => {
@@ -109,6 +122,14 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                     None => QuickVerb::Top,
                 };
                 choose(&mut mode, Invocation::Quick(verb))?
+            }
+            "--for" => {
+                let value = it.next().ok_or_else(|| "--for needs a duration".to_string())?;
+                set_end(&mut end, "--for", utf8(value)?)?;
+            }
+            "--until" => {
+                let value = it.next().ok_or_else(|| "--until needs a time".to_string())?;
+                set_end(&mut end, "--until", utf8(value)?)?;
             }
             "--calc" => choose(&mut mode, Invocation::Calc)?,
             "-h" | "--help" => choose(&mut mode, Invocation::Help)?,
@@ -140,6 +161,10 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
                     dmenu_only.get_or_insert("--prompt");
                     continue;
                 }
+                if let (flag @ ("--for" | "--until"), Some(value)) = (name, inline) {
+                    set_end(&mut end, if flag == "--for" { "--for" } else { "--until" }, value)?;
+                    continue;
+                }
                 if let ("--visible", Some(value)) = (name, inline) {
                     set_visible(&mut flags, value)?;
                     dmenu_only.get_or_insert("--visible");
@@ -156,6 +181,12 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
             }
         }
     }
+    // The end belongs to `--dnd on` alone.
+    let mode = match (mode, end) {
+        (mode, None) => mode,
+        (Some(Invocation::Dnd(DndVerb::On, _)), Some((_, arg))) => Some(Invocation::Dnd(DndVerb::On, Some(arg))),
+        (_, Some((flag, _))) => return Err(format!("{flag} only goes with --dnd on")),
+    };
     match (mode, dmenu_only) {
         // A masked entry has no list to point into: refused rather than silently answered -1.
         (Some(Invocation::Dmenu { .. }), _) if flags.index && flags.password => Err("--password and --index do not go together".into()),
@@ -166,6 +197,74 @@ pub fn parse_args(args: &[OsString]) -> Result<Invocation, String> {
         (_, Some(option)) => Err(format!("{option} only goes with --dmenu")),
         (mode, None) => Ok(mode.unwrap_or(Invocation::Toggle)),
     }
+}
+
+/// `--for D` or `--until HH:MM`: parsed now (a bad value is a usage error), one of them only.
+/// Where it belongs (`--dnd on`) is checked once every argument is read.
+fn set_end(slot: &mut Option<(&'static str, EndArg)>, flag: &'static str, value: &str) -> Result<(), String> {
+    let arg = if flag == "--for" {
+        EndArg::For(parse_duration(value).ok_or_else(|| format!("--for takes 1m to 24h, like 30m, 2h or 1h30m, not {value:?}"))?)
+    } else {
+        let (h, m) = parse_clock(value).ok_or_else(|| format!("--until takes a local time HH:MM, not {value:?}"))?;
+        EndArg::Until(h, m)
+    };
+    if slot.is_some() {
+        return Err("--for and --until do not go together".into());
+    }
+    *slot = Some((flag, arg));
+    Ok(())
+}
+
+/// `<n>h`, `<n>m` or `<n>h<n>m` (digits only) in seconds, from `DND_MIN_SECS` to `DND_MAX_SECS`.
+pub fn parse_duration(s: &str) -> Option<u32> {
+    fn digits(s: &str) -> Option<u32> {
+        if s.is_empty() || s.len() > 6 || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    }
+    let (hours, rest) = match s.split_once('h') {
+        Some((h, rest)) => (digits(h)?, rest),
+        None => (0, s),
+    };
+    let minutes = match (rest.strip_suffix('m'), rest.is_empty()) {
+        (Some(m), _) => digits(m)?,
+        (None, true) if s.contains('h') => 0,
+        _ => return None,
+    };
+    let secs = hours.checked_mul(3600)?.checked_add(minutes.checked_mul(60)?)?;
+    (DND_MIN_SECS..=DND_MAX_SECS).contains(&secs).then_some(secs)
+}
+
+/// `H:MM` or `HH:MM`, from 0:00 to 23:59.
+pub fn parse_clock(s: &str) -> Option<(u32, u32)> {
+    let (h, m) = s.split_once(':')?;
+    let all_digits = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    if !(1..=2).contains(&h.len()) || m.len() != 2 || !all_digits(h) || !all_digits(m) {
+        return None;
+    }
+    let (h, m) = (h.parse().ok()?, m.parse().ok()?);
+    (h <= 23 && m <= 59).then_some((h, m))
+}
+
+/// The request an invocation sends, `now` being the Unix time (for `--until`). Only the
+/// invocations that carry one: Help and Dmenu are `run`'s own.
+pub fn request_of(i: Invocation, now: i64) -> Result<Request, String> {
+    Ok(match i {
+        Invocation::Toggle => Request::Toggle,
+        Invocation::Close => Request::Close,
+        Invocation::Dnd(v, None) => Request::Dnd(v),
+        Invocation::Dnd(_, Some(EndArg::For(secs))) => Request::DndOn(DndEnd::For(secs)),
+        Invocation::Dnd(_, Some(EndArg::Until(h, m))) => {
+            let at = local_time::next_local(h, m, now).ok_or("no such local time")?;
+            Request::DndOn(DndEnd::Until(u64::try_from(at).map_err(|_| "no such local time")?))
+        }
+        Invocation::ClearNotifications => Request::ClearNotifications,
+        Invocation::Osd(v) => Request::Osd(v),
+        Invocation::Quick(v) => Request::Quick(v),
+        Invocation::Calc => Request::Calc,
+        Invocation::Help | Invocation::Dmenu { .. } => return Err("not a plain request".into()),
+    })
 }
 
 /// `--visible N`: decimal digits only (at most 12, as the wire's numbers), given once.
@@ -272,6 +371,10 @@ fn read_lines(stdin: &mut dyn Read, numbered: bool) -> Result<(Vec<String>, Vec<
     Ok((lines, positions))
 }
 
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+}
+
 /// One line on stderr; the exit code for a plain failure.
 fn fail(stderr: &mut dyn Write, m: &str) -> i32 {
     let _ = writeln!(stderr, "alpheus-launch: {m}");
@@ -298,13 +401,18 @@ pub fn run(args: &[OsString], socket: &Path, stdin: &mut dyn Read, stdout: &mut 
         Ok(Invocation::Help) => {
             return if stdout.write_all(USAGE.as_bytes()).and_then(|()| stdout.flush()).is_ok() { EXIT_OK } else { EXIT_ERROR };
         }
-        Ok(Invocation::Toggle) => Request::Toggle,
-        Ok(Invocation::Close) => Request::Close,
-        Ok(Invocation::Dnd(v)) => Request::Dnd(v),
-        Ok(Invocation::ClearNotifications) => Request::ClearNotifications,
-        Ok(Invocation::Osd(v)) => Request::Osd(v),
-        Ok(Invocation::Quick(v)) => Request::Quick(v),
-        Ok(Invocation::Calc) => Request::Calc,
+        Ok(
+            i @ (Invocation::Toggle
+            | Invocation::Close
+            | Invocation::Dnd(..)
+            | Invocation::ClearNotifications
+            | Invocation::Osd(_)
+            | Invocation::Quick(_)
+            | Invocation::Calc),
+        ) => match request_of(i, unix_now()) {
+            Ok(request) => request,
+            Err(m) => return fail(stderr, &m),
+        },
         // --password: stdin is still read (a writer is never cut off), then ignored — fuzzel
         // accepts it too; no line leaves the client.
         Ok(Invocation::Dmenu { prompt, flags }) => match read_lines(stdin, flags.index) {
@@ -348,6 +456,7 @@ fn reply_to_exit(request: &Request, reply: Reply, positions: &[usize], stdout: &
             Request::Toggle
             | Request::Close
             | Request::Dnd(_)
+            | Request::DndOn(_)
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)
@@ -384,6 +493,10 @@ fn too_old_for(request: &Request, error: &str) -> Option<&'static str> {
         }),
         _ if request.refused_as_unknown_displays_verb(error) => Some("displays"),
         Request::Calc if error == "malformed request: unknown request \"calc\"" => Some("--calc"),
+        // `dnd on for 60` is the unknown request "dnd" to a daemon that knows only `dnd <word>`.
+        Request::DndOn(end) if error == "malformed request: unknown request \"dnd\"" => {
+            Some(if matches!(end, DndEnd::For(_)) { "--dnd on --for" } else { "--dnd on --until" })
+        }
         Request::Quick(verb) => {
             OLD_QUICK.iter().find(|(only, refusal, _)| refusal == &error && only.is_none_or(|v| v == *verb)).map(|(_, _, what)| *what)
         }
@@ -458,9 +571,9 @@ mod tests {
         );
         assert_eq!(parse_args(&args(&["-h"])), Ok(Invocation::Help));
         assert_eq!(parse_args(&args(&["--help"])), Ok(Invocation::Help));
-        assert_eq!(parse_args(&args(&["--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On)));
-        assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off)));
-        assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle)));
+        assert_eq!(parse_args(&args(&["--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On, None)));
+        assert_eq!(parse_args(&args(&["--dnd", "off"])), Ok(Invocation::Dnd(DndVerb::Off, None)));
+        assert_eq!(parse_args(&args(&["--dnd", "toggle"])), Ok(Invocation::Dnd(DndVerb::Toggle, None)));
         assert_eq!(parse_args(&args(&["--clear-notifications"])), Ok(Invocation::ClearNotifications));
         assert_eq!(parse_args(&args(&["--osd", "brightness"])), Ok(Invocation::Osd(OsdVerb::Brightness)));
         assert_eq!(parse_args(&args(&["--calc"])), Ok(Invocation::Calc));
@@ -592,5 +705,83 @@ mod tests {
                 assert_eq!(reply_to_exit(&request, Reply::Error(other.clone()), &[], &mut Vec::new(), &mut err), EXIT_ERROR, "{other}");
             }
         }
+    }
+
+    #[test]
+    fn durations() {
+        for (text, secs) in [("30m", 1800), ("2h", 7200), ("1h30m", 5400), ("1m", 60), ("24h", 86_400)] {
+            assert_eq!(parse_duration(text), Some(secs), "{text}");
+        }
+        for text in ["0m", "24h1m", "90", "", "h", "1.5h", "-1h", "1m30s"] {
+            assert_eq!(parse_duration(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn clocks() {
+        assert_eq!(parse_clock("07:30"), Some((7, 30)));
+        assert_eq!(parse_clock("7:30"), Some((7, 30)));
+        assert_eq!(parse_clock("23:59"), Some((23, 59)));
+        assert_eq!(parse_clock("0:00"), Some((0, 0)));
+        for text in ["24:00", "12:60", "1230", "12:3", "", ":30", "+1:30"] {
+            assert_eq!(parse_clock(text), None, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn timed_dnd_invocations() {
+        assert_eq!(parse_args(&args(&["--dnd", "on", "--for", "30m"])), Ok(Invocation::Dnd(DndVerb::On, Some(EndArg::For(1800)))));
+        assert_eq!(parse_args(&args(&["--dnd", "on", "--for=30m"])), Ok(Invocation::Dnd(DndVerb::On, Some(EndArg::For(1800)))));
+        assert_eq!(parse_args(&args(&["--for", "30m", "--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On, Some(EndArg::For(1800)))));
+        assert_eq!(parse_args(&args(&["--dnd", "on", "--until", "07:30"])), Ok(Invocation::Dnd(DndVerb::On, Some(EndArg::Until(7, 30)))));
+        assert_eq!(parse_args(&args(&["--dnd", "on", "--until=7:30"])), Ok(Invocation::Dnd(DndVerb::On, Some(EndArg::Until(7, 30)))));
+        assert_eq!(parse_args(&args(&["--dnd", "on"])), Ok(Invocation::Dnd(DndVerb::On, None)));
+        let refusals: [(&[&str], &str); 8] = [
+            (&["--dnd", "on", "--for", "0m"], "--for takes 1m to 24h, like 30m, 2h or 1h30m, not \"0m\""),
+            (&["--dnd", "on", "--until", "25:00"], "--until takes a local time HH:MM, not \"25:00\""),
+            (&["--dnd", "off", "--for", "30m"], "--for only goes with --dnd on"),
+            (&["--dnd", "toggle", "--until", "07:30"], "--until only goes with --dnd on"),
+            (&["--for", "30m"], "--for only goes with --dnd on"),
+            (&["--until", "07:30"], "--until only goes with --dnd on"),
+            (&["--dnd", "on", "--for", "30m", "--until", "07:30"], "--for and --until do not go together"),
+            (&["--dnd", "on", "--for"], "--for needs a duration"),
+        ];
+        for (a, message) in refusals {
+            assert_eq!(parse_args(&args(a)), Err(message.to_string()), "{a:?}");
+        }
+    }
+
+    #[test]
+    fn request_of_converts_the_end() {
+        assert_eq!(request_of(Invocation::Dnd(DndVerb::On, Some(EndArg::For(60))), 0), Ok(Request::DndOn(DndEnd::For(60))));
+        assert_eq!(request_of(Invocation::Dnd(DndVerb::Off, None), 0), Ok(Request::Dnd(DndVerb::Off)));
+        assert_eq!(request_of(Invocation::Dnd(DndVerb::On, None), 0), Ok(Request::Dnd(DndVerb::On)));
+        let now = 1_763_000_000;
+        match request_of(Invocation::Dnd(DndVerb::On, Some(EndArg::Until(7, 30))), now) {
+            Ok(Request::DndOn(DndEnd::Until(t))) => assert!(t as i64 > now && t as i64 <= now + 90_000, "{t}"),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(request_of(Invocation::Toggle, 0), Ok(Request::Toggle));
+    }
+
+    /// A daemon from before timed do-not-disturb reads `dnd on for 60` as an unknown request:
+    /// exit 3, naming the flag; the same refusal of the plain verb is an ordinary error.
+    #[test]
+    fn a_daemon_without_timed_dnd_is_too_old() {
+        let refusal = "malformed request: unknown request \"dnd\"";
+        for (request, flag) in
+            [(Request::DndOn(DndEnd::For(60)), "--dnd on --for"), (Request::DndOn(DndEnd::Until(1_763_229_600)), "--dnd on --until")]
+        {
+            let mut err = Vec::new();
+            assert_eq!(reply_to_exit(&request, Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_UNREACHABLE);
+            assert!(String::from_utf8_lossy(&err).contains(flag), "{}", String::from_utf8_lossy(&err));
+        }
+        let mut err = Vec::new();
+        assert_eq!(reply_to_exit(&Request::Dnd(DndVerb::On), Reply::Error(refusal.into()), &[], &mut Vec::new(), &mut err), EXIT_ERROR);
+        let mut err = Vec::new();
+        assert_eq!(
+            reply_to_exit(&Request::DndOn(DndEnd::For(60)), Reply::Error("nope".into()), &[], &mut Vec::new(), &mut err),
+            EXIT_ERROR
+        );
     }
 }

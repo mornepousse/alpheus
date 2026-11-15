@@ -33,6 +33,18 @@ pub fn socket_path(runtime_dir: &Path) -> PathBuf {
     runtime_dir.join(SOCKET_NAME)
 }
 
+/// The shortest and longest timed do-not-disturb, in seconds (1 minute, 24 hours).
+pub const DND_MIN_SECS: u32 = 60;
+pub const DND_MAX_SECS: u32 = 86_400;
+
+/// When a timed do-not-disturb ends: after this many seconds, or at this Unix time (the client
+/// resolves a local `HH:MM` itself, so the daemon needs no time zone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DndEnd {
+    For(u32),
+    Until(u64),
+}
+
 /// `--dnd`'s word: the bar's do-not-disturb (notifications spec).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DndVerb {
@@ -138,6 +150,9 @@ pub enum Request {
     },
     /// The notifications module's do-not-disturb (notifications spec): answered Done.
     Dnd(DndVerb),
+    /// Do-not-disturb on, ending at `DndEnd` (small features spec): answered Done. An older daemon
+    /// refuses it as an unknown `dnd` request.
+    DndOn(DndEnd),
     /// Empties the notification history (notifications spec): answered Done.
     ClearNotifications,
     /// The OSD (OSD spec § 2): read the backlight once and show it. Answered Done, also with the
@@ -248,6 +263,8 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Close => format!("{MAGIC} close\n").into_bytes(),
         Request::Calc => format!("{MAGIC} calc\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
+        Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
+        Request::DndOn(DndEnd::Until(at)) => format!("{MAGIC} dnd on until {at}\n").into_bytes(),
         Request::ClearNotifications => format!("{MAGIC} clear-notifications\n").into_bytes(),
         Request::Osd(v) => format!("{MAGIC} osd {}\n", v.word()).into_bytes(),
         Request::Quick(v) => match v.word() {
@@ -285,6 +302,7 @@ enum Header {
     Calc,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
+    DndOn(DndEnd),
     ClearNotifications,
     Osd(OsdVerb),
     Quick(QuickVerb),
@@ -431,6 +449,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Close => Some(Request::Close),
         Header::Calc => Some(Request::Calc),
         Header::Dnd(v) => Some(Request::Dnd(v)),
+        Header::DndOn(end) => Some(Request::DndOn(end)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
         Header::Osd(v) => Some(Request::Osd(v)),
         Header::Quick(v) => Some(Request::Quick(v)),
@@ -454,6 +473,12 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
         }
+        ["dnd", "on", "for", secs] => {
+            let secs = u32::try_from(number(secs, "do-not-disturb seconds")?)
+                .map_err(|_| IpcError::Malformed(format!("do-not-disturb seconds out of range: {:?}", cut(secs))))?;
+            Ok(Header::DndOn(DndEnd::For(secs)))
+        }
+        ["dnd", "on", "until", at] => Ok(Header::DndOn(DndEnd::Until(number(at, "do-not-disturb end")? as u64))),
         ["clear-notifications"] => Ok(Header::ClearNotifications),
         ["osd", word] => {
             OsdVerb::parse(word).map(Header::Osd).ok_or_else(|| IpcError::Malformed(format!("unknown osd word {:?}", cut(word))))

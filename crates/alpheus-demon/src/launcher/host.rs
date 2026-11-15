@@ -109,6 +109,7 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         // before they could reach here. Answered all the same, never a panic.
         (
             Request::Dnd(_)
+            | Request::DndOn(_)
             | Request::ClearNotifications
             | Request::Osd(_)
             | Request::Quick(_)

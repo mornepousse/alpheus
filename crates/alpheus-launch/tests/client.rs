@@ -3,7 +3,7 @@
 //! reply. Never the session's real socket.
 
 use alpheus_commun::launcher_ipc::{
-    DmenuFlags, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, encode_reply, socket_path,
+    DmenuFlags, DndEnd, DndVerb, MAX_DMENU_BYTES, MAX_LINES, QuickVerb, Reply, Request, RequestDecoder, encode_reply, socket_path,
 };
 use alpheus_launch::{CLIENT_REPLY_TIMEOUT, EXIT_CANCELLED, EXIT_ERROR, EXIT_OK, EXIT_UNREACHABLE, run};
 use std::ffi::OsString;
@@ -503,6 +503,8 @@ fn dnd_and_clear_send_their_request_and_exit_0() {
         (&["--dnd", "on"][..], Request::Dnd(DndVerb::On)),
         (&["--dnd", "off"], Request::Dnd(DndVerb::Off)),
         (&["--dnd", "toggle"], Request::Dnd(DndVerb::Toggle)),
+        (&["--dnd", "on", "--for", "30m"], Request::DndOn(DndEnd::For(1800))),
+        (&["--dnd", "on", "--for=1h30m"], Request::DndOn(DndEnd::For(5400))),
         (&["--clear-notifications"], Request::ClearNotifications),
     ];
     for (i, (args, expected)) in cases.into_iter().enumerate() {

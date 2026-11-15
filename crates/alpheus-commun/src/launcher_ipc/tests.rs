@@ -35,6 +35,8 @@ fn requests() -> Vec<Request> {
         Request::Dnd(DndVerb::On),
         Request::Dnd(DndVerb::Off),
         Request::Dnd(DndVerb::Toggle),
+        Request::DndOn(DndEnd::For(1800)),
+        Request::DndOn(DndEnd::Until(1_763_229_600)),
         Request::ClearNotifications,
         Request::Osd(OsdVerb::Brightness),
         Request::Quick(QuickVerb::Top),
@@ -485,4 +487,22 @@ fn exchange_tells_a_missing_socket_from_other_failures() {
     let e = exchange(&path, &Request::Toggle, REPLY_TIMEOUT).unwrap_err();
     assert_eq!(e.kind(), io::ErrorKind::NotFound);
     assert!(e.to_string().contains("not running"), "{e}");
+}
+
+#[test]
+fn timed_dnd_has_its_wire_and_old_words_stay() {
+    assert_eq!(encode_request(&Request::DndOn(DndEnd::For(1800))), b"alpheus-launcher/1 dnd on for 1800\n");
+    assert_eq!(encode_request(&Request::DndOn(DndEnd::Until(1_763_229_600))), b"alpheus-launcher/1 dnd on until 1763229600\n");
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on for 1800\n"), Ok(Some(Request::DndOn(DndEnd::For(1800)))));
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on until 1763229600\n"), Ok(Some(Request::DndOn(DndEnd::Until(1_763_229_600)))));
+    assert_eq!(decode(b"alpheus-launcher/1 dnd on\n"), Ok(Some(Request::Dnd(DndVerb::On))));
+    for h in [
+        &b"alpheus-launcher/1 dnd off for 60\n"[..],
+        b"alpheus-launcher/1 dnd on for x\n",
+        b"alpheus-launcher/1 dnd on later 5\n",
+        b"alpheus-launcher/1 dnd on for\n",
+    ] {
+        assert!(matches!(decode(h), Err(IpcError::Malformed(_))), "{:?} -> {:?}", String::from_utf8_lossy(h), decode(h));
+    }
+    assert_eq!((DND_MIN_SECS, DND_MAX_SECS), (60, 86_400));
 }

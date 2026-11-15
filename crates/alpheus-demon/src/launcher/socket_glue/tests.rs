@@ -1,5 +1,5 @@
 use super::*;
-use alpheus_commun::launcher_ipc::{DmenuFlags, DndVerb, OsdVerb, QuickVerb};
+use alpheus_commun::launcher_ipc::{DmenuFlags, DndEnd, DndVerb, OsdVerb, QuickVerb};
 
 /// Each verb to the one that answers it: the displays verbs to the output controller, never to
 /// the launcher (which would close or open on them).
@@ -11,6 +11,7 @@ fn each_verb_goes_to_its_handler() {
         (Request::OutputsKeep, Route::Displays),
         (Request::OutputsRevert, Route::Displays),
         (Request::Dnd(DndVerb::Toggle), Route::Notifications),
+        (Request::DndOn(DndEnd::For(60)), Route::Notifications),
         (Request::ClearNotifications, Route::Notifications),
         (Request::Osd(OsdVerb::Brightness), Route::Osd),
         (Request::Quick(QuickVerb::Top), Route::Quick),
