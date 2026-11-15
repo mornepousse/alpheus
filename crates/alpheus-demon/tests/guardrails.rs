@@ -1715,16 +1715,20 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
     assert!(!seen.contains(&("focus", true)), "focus never in a scope");
-    // The prefix is the All mode's alone: a dmenu/script box and the calculator never run it.
+    // The prefix is the All mode's alone: a dmenu/script box (a password prompt too), the
+    // calculator and the window switcher never run it.
+    let password = alpheus_commun::launcher_ipc::DmenuFlags { password: true, ..Default::default() };
     for mut l in [
         Launcher::for_dmenu(LauncherConfig::default(), None, vec!["a".into(), "ls -la".into()], Default::default()),
+        Launcher::for_dmenu(LauncherConfig::default(), None, vec!["ls -la".into()], password),
         Launcher::for_calc(LauncherConfig::default()),
+        Launcher::for_windows(LauncherConfig::default(), windows.clone()),
     ] {
         for c in "$ ls -la".chars() {
             l.key(Key::Char(c));
         }
         for o in [l.key(Key::Enter), l.key(Key::CtrlEnter)] {
-            assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "`$` in a dmenu or the calculator reached the shell");
+            assert!(!matches!(o, Outcome::Activate(Activation::Shell { .. })), "`$` outside All reached the shell");
         }
     }
     // No click on a non-prefix result in All ever reaches `sh`: the `$` row is the only way in.

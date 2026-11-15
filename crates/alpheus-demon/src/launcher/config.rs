@@ -229,10 +229,6 @@ impl LauncherConfig {
     }
 }
 
-/// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, without a control character
-/// or U+FFFD, unique; `list` and `run`
-/// non-empty with a non-blank program; `run[0]` without "{line}"; "{line}" exactly once in `run`,
-/// as a whole element (no partial substitution: a line is never split nor reinterpreted).
 /// Whether `url` starts with RFC 3986's `<scheme>://` (a letter, then letters, digits, `+`, `-`, `.`).
 fn has_scheme(url: &str) -> bool {
     let Some((scheme, _)) = url.split_once("://") else { return false };
@@ -240,6 +236,10 @@ fn has_scheme(url: &str) -> bool {
         && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
+/// At most MAX_SOURCES; each name 1 to NAME_MAX characters, not blank, without a control character
+/// or U+FFFD, unique; `list` and `run`
+/// non-empty with a non-blank program; `run[0]` without "{line}"; "{line}" exactly once in `run`,
+/// as a whole element (no partial substitution: a line is never split nor reinterpreted).
 fn check_sources(sources: &[SourceConfig]) -> Result<(), String> {
     if sources.len() > MAX_SOURCES {
         return Err(format!("sources: {} configured, at most {MAX_SOURCES}", sources.len()));

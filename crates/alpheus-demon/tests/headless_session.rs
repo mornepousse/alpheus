@@ -208,6 +208,8 @@ fn the_system_bus_address_is_honoured() {
 }
 
 const SHOWN: &str = "launcher shown on";
+/// What a scan logs as it starts: its absence proves no scan ran only next to a control that logs it.
+const SCAN_STARTED: &str = "launcher scan: started";
 
 fn ready(d: &Daemon) {
     assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
@@ -294,7 +296,7 @@ fn calc_opens_the_calculator_and_enter_copies() {
     ready(&d);
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap(), (0, String::new(), String::new()));
     assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
-    assert_eq!(d.count("launcher scan: started"), 0, "the calculator scans nothing: {:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the calculator scans nothing: {:?}", d.log());
     // One wtype process: its virtual keyboard is the seat's only one (see `wtype_spawn`).
     assert!(wtype(&sway, &["-s", "300", "6*7", "-k", "Return"]).success());
     wait_for_file(&copied, DELAY);
@@ -306,6 +308,11 @@ fn calc_opens_the_calculator_and_enter_copies() {
     thread::sleep(PAST_DEBOUNCE);
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "neither calculator open scanned: {:?}", d.log());
+    // The control: an apps open logs that line, so the zeros above can go red.
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
@@ -4946,11 +4953,11 @@ fn windows_focuses_the_previous_window_then_steps() {
     let second = format!("wm-set focus-window id:{c}");
     assert!(wait_until(|| recorded(&sway, "wm-set").contains(&second)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
     assert!(d.wait_for_count("launcher closed (activated)", 2, DELAY), "{:?}", d.log());
-    assert_eq!(d.count("launcher scan: started"), 0, "the switcher scans nothing: {:?}", d.log());
+    assert_eq!(d.count(SCAN_STARTED), 0, "the switcher scans nothing: {:?}", d.log());
     // The control: an apps open logs that line, so the zero above can go red.
     assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
     assert!(d.wait_for_count(SHOWN, 3, DELAY), "{:?}", d.log());
-    assert!(d.wait_for("launcher scan: started", DELAY), "an apps open scans: {:?}", d.log());
+    assert!(d.wait_for(SCAN_STARTED, DELAY), "an apps open scans: {:?}", d.log());
 }
 
 /// Final review: with both of the box's buffers still held by the compositor, a draw waits for a

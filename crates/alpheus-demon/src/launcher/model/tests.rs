@@ -847,6 +847,11 @@ fn a_password_dmenu_never_reads_a_prefix() {
     assert_eq!(l.query, "? x");
     assert_eq!(l.prefixed(), None);
     assert!(l.results.is_empty());
+    let mut l = Launcher::for_dmenu(LauncherConfig::default(), None, vec![], flags);
+    typed(&mut l, "$ x");
+    assert_eq!(l.prefixed(), None);
+    assert!(l.results.is_empty());
+    assert!(!matches!(l.key(Key::Enter), Outcome::Activate(Activation::Shell { .. })), "a password prompt never runs `$`");
 }
 
 #[test]
