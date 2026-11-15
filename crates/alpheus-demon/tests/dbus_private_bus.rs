@@ -468,5 +468,14 @@ fn the_vpn_reading_on_a_private_bus() {
     let after: Vec<String> =
         nm.calls()[calls..].iter().filter(|c| c.starts_with("ListConnections") || c.starts_with("GetSettings")).cloned().collect();
     assert!(after.is_empty(), "closed: no VPN call after a further change: {after:?}");
+    // The domain re-reads each active connection once for the change; a VPN reading would add a
+    // second GetAll on the same path.
+    let since = nm.calls()[calls..].to_vec();
+    let mut paths: Vec<&str> =
+        since.iter().filter(|c| c.starts_with("GetAll ") && c.contains("/ActiveConnection/")).map(|c| c.as_str()).collect();
+    let total = paths.len();
+    paths.sort_unstable();
+    paths.dedup();
+    assert_eq!(paths.len(), total, "closed: an active connection read twice for one change: {:?}", since);
     assert!(nm.calls().iter().all(|c| !c.starts_with("GetSecrets")));
 }

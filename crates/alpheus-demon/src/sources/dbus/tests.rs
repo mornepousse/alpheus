@@ -1269,3 +1269,28 @@ fn the_network_domains_reread_refreshes_the_open_vpn() {
     let actives: Vec<Option<usize>> = seen.iter().map(|s| s.vpn.as_ref().map(|v| v.active.len())).collect();
     assert_eq!(actives, [None, Some(3), Some(2)], "{seen:?}");
 }
+
+/// A network signal with the VPN tap Closed: the network domain re-reads as it always does, and
+/// the VPN reader asks NetworkManager nothing (no list, no settings, no active connection's
+/// properties beyond what the domain's own link read takes).
+#[test]
+fn a_network_signal_with_the_vpn_tap_closed_calls_no_vpn() {
+    let mut bus = vpn::tests::vpn_bus();
+    let state = with_names(
+        signal("/org/freedesktop/NetworkManager/ActiveConnection/20", PROPERTIES, "PropertiesChanged", Some(network::ACTIVE)),
+        &["State"],
+    );
+    let steps: [Step; 1] = [(state, vpn_up)];
+    bus.script = VecDeque::from(steps);
+    let (seen, _) = run(&mut bus);
+    assert!(seen.iter().all(|s| s.vpn.is_none()), "{seen:?}");
+    assert_eq!(calls_of(&bus, "ListConnections "), 0, "{:?}", bus.calls);
+    assert_eq!(calls_of(&bus, "GetSettings "), 0, "{:?}", bus.calls);
+    // The domain reads each active connection once at the start and once after the signal; a VPN
+    // reading would add more.
+    for n in [10, 9, 3, 2, 20] {
+        let path = format!("/org/freedesktop/NetworkManager/ActiveConnection/{n} ");
+        let reads = bus.calls.iter().filter(|c| c.starts_with("GetAll ") && c.contains(&path)).count();
+        assert_eq!(reads, 2, "active connection {n}: {:?}", bus.calls);
+    }
+}
