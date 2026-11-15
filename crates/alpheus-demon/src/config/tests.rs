@@ -92,6 +92,19 @@ fn actions_and_resources_defaults_and_settings() {
 }
 
 #[test]
+fn resources_show_defaults_and_validation() {
+    use crate::config::ResourceItem::*;
+    let d = BarConfig::default();
+    assert_eq!(d.resources.show, [Cpu, Memory, Temperature]);
+    assert_eq!(d.resources.gpu_sensor, "");
+    assert_eq!(BarConfig::from_text("[resources]\nshow = [\"gpu\", \"net\"]\n").unwrap().resources.show, [Gpu, Net]);
+    let err = |t: &str| BarConfig::from_text(t).unwrap_err();
+    assert!(err("[resources]\nshow = [\"cpu\", \"cpu\"]").contains("resources.show: duplicate \"cpu\""));
+    assert!(err("[resources]\nshow = [\"fan\"]").contains("unknown variant"));
+    assert!(err("[resources]\nshow = []").contains("resources.show empty"));
+}
+
+#[test]
 fn actions_and_resources_refused_with_reason() {
     let err = |t: &str| BarConfig::from_text(t).unwrap_err();
     assert!(err("[resources]\ninterval = 0").contains("resources.interval"));

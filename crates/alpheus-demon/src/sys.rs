@@ -1,7 +1,10 @@
 //! The one `poll(2)` wrapper: the compositor sockets, the D-Bus thread and the launcher's
 //! hang-up check all wait through it, so the `unsafe` and the interrupted-call retry live once.
 
+use std::ffi::CString;
 use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
 
 /// `poll(2)` on `fds`, in milliseconds (`-1`: no timeout, `0`: a look), retried when a signal
 /// interrupts it. The number of descriptors with a non-zero `revents`; the events are left in
@@ -18,6 +21,28 @@ pub fn poll(fds: &mut [libc::pollfd], timeout_ms: i32) -> io::Result<usize> {
             return Err(e);
         }
     }
+}
+
+/// A filesystem's size in blocks (the unit cancels out in the percentage).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FsBlocks {
+    pub blocks: u64,
+    pub free: u64,
+    /// Free for an unprivileged user.
+    pub avail: u64,
+}
+
+/// `statvfs(3)` of `path`; None when the call fails or the path has a NUL byte.
+pub fn statvfs(path: &Path) -> Option<FsBlocks> {
+    let c = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut st = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `c` is a NUL-terminated string living through the call; `st` is written in full on success.
+    if unsafe { libc::statvfs(c.as_ptr(), st.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: statvfs returned 0, so the struct is initialised.
+    let st = unsafe { st.assume_init() };
+    Some(FsBlocks { blocks: st.f_blocks, free: st.f_bfree, avail: st.f_bavail })
 }
 
 #[cfg(test)]
@@ -69,5 +94,13 @@ mod tests {
         let mut fds = [watching(&a)];
         assert_eq!(poll(&mut fds, 5000).unwrap(), 1, "the signal did not end the wait");
         helper.join().unwrap();
+    }
+
+    #[test]
+    fn statvfs_reads_a_real_filesystem_and_refuses_a_missing_path() {
+        let fs = statvfs(&std::env::temp_dir()).expect("the temp dir's filesystem");
+        assert!(fs.blocks > 0 && fs.free <= fs.blocks && fs.avail <= fs.free);
+        assert_eq!(statvfs(Path::new("/nonexistent/alpheus")), None);
+        assert_eq!(statvfs(Path::new("a\0b")), None);
     }
 }

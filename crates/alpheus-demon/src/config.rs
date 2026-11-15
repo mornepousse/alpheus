@@ -23,6 +23,8 @@
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
+//! show = ["cpu", "memory", "temperature"]   # in this order; also "net", "disk" ($HOME's filesystem), "gpu"
+//! gpu_sensor = ""   # GPU hwmon name (amdgpu, nouveau, i915, xe, nvidia); "": automatic
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
@@ -283,6 +285,32 @@ impl Default for ActionsConfig {
 /// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
+/// One figure of the resources module, in the order `[resources] show` lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceItem {
+    Cpu,
+    Memory,
+    Temperature,
+    Net,
+    Disk,
+    Gpu,
+}
+
+impl ResourceItem {
+    /// The word `bar.toml` uses.
+    pub fn name(self) -> &'static str {
+        match self {
+            ResourceItem::Cpu => "cpu",
+            ResourceItem::Memory => "memory",
+            ResourceItem::Temperature => "temperature",
+            ResourceItem::Net => "net",
+            ResourceItem::Disk => "disk",
+            ResourceItem::Gpu => "gpu",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ResourcesConfig {
@@ -293,11 +321,21 @@ pub struct ResourcesConfig {
     /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
     /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).
     pub sensor: String,
+    /// The figures shown, in this order (never empty, no repeat).
+    pub show: Vec<ResourceItem>,
+    /// GPU hwmon `name` (amdgpu, nouveau, i915, xe, nvidia); empty = automatic.
+    pub gpu_sensor: String,
 }
 
 impl Default for ResourcesConfig {
     fn default() -> Self {
-        ResourcesConfig { interval: 2, graph: 20, sensor: String::new() }
+        ResourcesConfig {
+            interval: 2,
+            graph: 20,
+            sensor: String::new(),
+            show: vec![ResourceItem::Cpu, ResourceItem::Memory, ResourceItem::Temperature],
+            gpu_sensor: String::new(),
+        }
     }
 }
 
@@ -792,6 +830,14 @@ impl BarConfig {
         }
         if b.resources.graph > GRAPH_MAX {
             return Err(format!("resources.graph {} out of range 0 to {GRAPH_MAX} cells", b.resources.graph));
+        }
+        if b.resources.show.is_empty() {
+            return Err("resources.show empty (expected at least one of cpu, memory, temperature, net, disk, gpu)".into());
+        }
+        for (i, item) in b.resources.show.iter().enumerate() {
+            if b.resources.show[..i].contains(item) {
+                return Err(format!("resources.show: duplicate {:?}", item.name()));
+            }
         }
         for (key, command) in [("actions.open_tab", &b.actions.open_tab), ("actions.resources", &b.actions.resources)] {
             if command.first().is_none_or(|p| p.trim().is_empty()) {

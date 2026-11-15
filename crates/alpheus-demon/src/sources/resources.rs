@@ -11,7 +11,9 @@
 //! have no down state). `root` is "/" in the daemon, a temporary tree in
 //! tests.
 
+use crate::config::{ResourceItem, ResourcesConfig};
 use crate::log::write as log;
+use crate::sys::FsBlocks;
 use crate::system::Sample;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -148,8 +150,31 @@ pub fn pick_sensor(root: &Path, hint: &str) -> Vec<PathBuf> {
 /// wrong `hint`, hardware without one).
 const RETRY_EMPTY_EVERY_TICKS: u32 = 30;
 
+/// `statvfs(3)`, injectable: tests never ask the real filesystem.
+pub type StatFs = fn(&Path) -> Option<FsBlocks>;
+
+/// Where the reader looks: `root` is "/" in the daemon and a temporary tree in tests, `home` the
+/// directory whose filesystem the disk figure measures (None: no figure), `statfs` the call.
+pub struct Roots {
+    pub root: PathBuf,
+    pub home: Option<PathBuf>,
+    pub statfs: StatFs,
+}
+
+/// Disk in use like `df`: used / (used + available), rounded up, so a nearly full disk never reads
+/// lower than `df`'s. None for a filesystem with no blocks. Computed in u128: no overflow.
+pub fn disk_percent(fs: FsBlocks) -> Option<u8> {
+    let used = u128::from(fs.blocks.saturating_sub(fs.free));
+    let denom = used + u128::from(fs.avail);
+    if fs.blocks == 0 || denom == 0 {
+        return None;
+    }
+    Some(((used * 100).div_ceil(denom)).min(100) as u8)
+}
+
 pub struct Reader {
-    root: PathBuf,
+    roots: Roots,
+    show: Vec<ResourceItem>,
     hint: String,
     /// Each match, alongside the canonicalised `/sys/devices/...` path it
     /// resolved to at the time: hwmon numbers are not stable across a
@@ -197,24 +222,31 @@ impl NoMatchLog {
 
 impl Reader {
     /// Resolves the sensors once, by name, at startup.
-    pub fn new(root: &Path, hint: &str) -> Reader {
+    pub fn new(roots: Roots, config: &ResourcesConfig) -> Reader {
         let mut r = Reader {
-            root: root.to_path_buf(),
-            hint: hint.to_string(),
+            roots,
+            show: config.show.clone(),
+            hint: config.sensor.clone(),
             sensors: Vec::new(),
             previous: None,
             retry_in: 0,
             no_match_log: NoMatchLog::default(),
         };
-        r.resolve();
+        if r.shows(ResourceItem::Temperature) {
+            r.resolve();
+        }
         r
+    }
+
+    fn shows(&self, item: ResourceItem) -> bool {
+        self.show.contains(&item)
     }
 
     /// Re-runs `pick_sensor` and canonicalises every match; logs once if the
     /// result is empty, and arms the throttled empty-list retry.
     fn resolve(&mut self) {
         self.sensors =
-            pick_sensor(&self.root, &self.hint).into_iter().filter_map(|p| std::fs::canonicalize(&p).ok().map(|c| (p, c))).collect();
+            pick_sensor(&self.roots.root, &self.hint).into_iter().filter_map(|p| std::fs::canonicalize(&p).ok().map(|c| (p, c))).collect();
         if self.sensors.is_empty() {
             self.retry_in = RETRY_EMPTY_EVERY_TICKS;
         }
@@ -245,25 +277,61 @@ impl Reader {
         self.sensors.iter().filter_map(|(p, _)| read_temperature(p)).max()
     }
 
+    /// One reading; each figure only when its item is in `show` (the others stay None, nothing read).
     pub fn sample(&mut self) -> Sample {
-        let now = first_line(&self.root.join("proc/stat")).and_then(|l| parse_stat(&l));
-        let cpu = match (self.previous, now) {
-            (Some(a), Some(b)) => cpu_percent(a, b),
-            _ => None,
-        };
-        self.previous = now;
-        let memory = std::fs::read_to_string(self.root.join("proc/meminfo")).ok().and_then(|t| parse_meminfo(&t));
-        Sample { cpu, memory, temperature: self.temperature() }
+        let mut sample = Sample::default();
+        if self.shows(ResourceItem::Cpu) {
+            let now = first_line(&self.roots.root.join("proc/stat")).and_then(|l| parse_stat(&l));
+            sample.cpu = match (self.previous, now) {
+                (Some(a), Some(b)) => cpu_percent(a, b),
+                _ => None,
+            };
+            self.previous = now;
+        }
+        if self.shows(ResourceItem::Memory) {
+            sample.memory = std::fs::read_to_string(self.roots.root.join("proc/meminfo")).ok().and_then(|t| parse_meminfo(&t));
+        }
+        if self.shows(ResourceItem::Temperature) {
+            sample.temperature = self.temperature();
+        }
+        if self.shows(ResourceItem::Disk) {
+            // A failing call leaves the figure out; the next tick asks again.
+            sample.disk = self.roots.home.as_deref().and_then(self.roots.statfs).and_then(disk_percent);
+        }
+        sample
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const STAT_A: &str = include_str!("../../tests/fixtures/proc-stat-a.txt");
     const STAT_B: &str = include_str!("../../tests/fixtures/proc-stat-b.txt");
     const MEMINFO: &str = include_str!("../../tests/fixtures/proc-meminfo.txt");
+
+    fn refuse(_: &Path) -> Option<FsBlocks> {
+        panic!("statvfs read for an item not in show")
+    }
+
+    fn roots(root: &Path, home: Option<&str>, statfs: StatFs) -> Roots {
+        Roots { root: root.to_path_buf(), home: home.map(PathBuf::from), statfs }
+    }
+
+    fn default_reader(root: &Path, hint: &str) -> Reader {
+        let config = ResourcesConfig { sensor: hint.to_string(), ..ResourcesConfig::default() };
+        Reader::new(roots(root, None, refuse), &config)
+    }
+
+    fn disk_reader(root: &Path, home: Option<&str>, statfs: StatFs) -> Reader {
+        let config = ResourcesConfig { show: vec![ResourceItem::Disk], ..ResourcesConfig::default() };
+        Reader::new(roots(root, home, statfs), &config)
+    }
+
+    fn fake(p: &Path) -> Option<FsBlocks> {
+        (p == Path::new("/fictional/home")).then_some(FsBlocks { blocks: 1000, free: 380, avail: 380 })
+    }
 
     fn put(root: &Path, file: &str, text: &str) {
         let p = root.join(file);
@@ -418,17 +486,17 @@ mod tests {
             vec![t.0.join("sys/class/hwmon/hwmon10/temp1_input"), t.0.join("sys/class/hwmon/hwmon9/temp1_input")],
             "both packages matched"
         );
-        let mut reader = Reader::new(&t.0, "");
+        let mut reader = default_reader(&t.0, "");
         assert_eq!(reader.sample().temperature, Some(71), "the hotter package");
     }
 
     #[test]
     fn the_reader_first_without_cpu_then_38() {
         let t = workstation("reader");
-        let mut r = Reader::new(&t.0, "");
-        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(101), temperature: Some(66) });
+        let mut r = default_reader(&t.0, "");
+        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(101), temperature: Some(66), ..Sample::default() });
         put(&t.0, "proc/stat", STAT_B);
-        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(101), temperature: Some(66) });
+        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(101), temperature: Some(66), ..Sample::default() });
         put(&t.0, "sys/class/hwmon/hwmon9/temp1_input", "-5000\n");
         assert_eq!(r.sample().temperature, Some(-5));
     }
@@ -436,7 +504,7 @@ mod tests {
     #[test]
     fn hwmon_renumbering_is_not_cached_across_a_reload() {
         let t = workstation("renumber");
-        let mut r = Reader::new(&t.0, "");
+        let mut r = default_reader(&t.0, "");
         assert_eq!(r.sample().temperature, Some(66), "hwmon9, coretemp");
         // Never a boot-stable number: the same sensor comes back under a
         // different hwmonN (a reboot, or a dock's hwmon shifting the index).
@@ -446,7 +514,7 @@ mod tests {
 
     #[test]
     fn nothing_readable_gives_an_empty_sample() {
-        let mut r = Reader::new(Path::new("/nonexistent"), "");
+        let mut r = default_reader(Path::new("/nonexistent"), "");
         assert_eq!(r.sensor(), None);
         assert_eq!(r.sample(), Sample::default());
     }
@@ -473,7 +541,7 @@ mod tests {
         put(&r, "proc/stat", STAT_A);
         put(&r, "proc/meminfo", MEMINFO);
         let t = Tree(r);
-        let mut reader = Reader::new(&t.0, "");
+        let mut reader = default_reader(&t.0, "");
         assert_eq!(reader.sample().temperature, Some(66), "device A, coretemp");
         // hwmon9 repointed to device B: the class symlink itself is never
         // absent at any point an outside observer could check `.exists()`.
@@ -489,7 +557,7 @@ mod tests {
         put(&r, "proc/stat", STAT_A);
         put(&r, "proc/meminfo", MEMINFO);
         let t = Tree(r);
-        let mut reader = Reader::new(&t.0, "coretemp"); // nothing matches yet
+        let mut reader = default_reader(&t.0, "coretemp"); // nothing matches yet
         assert_eq!(reader.sample().temperature, None);
         // The sensor appears later (driver module loaded, device
         // hot-plugged): picked up eventually, but not re-scanned on every
@@ -510,5 +578,50 @@ mod tests {
         assert!(!log.note(true), "and again: still quiet");
         assert!(!log.note(false), "a match: nothing to log, and this resets the state");
         assert!(log.note(true), "empty again after a match: worth a line again");
+    }
+
+    #[test]
+    fn disk_percent_rounds_up_like_df() {
+        let fs = |blocks, free, avail| FsBlocks { blocks, free, avail };
+        assert_eq!(disk_percent(fs(1000, 380, 380)), Some(62));
+        assert_eq!(disk_percent(fs(1000, 400, 350)), Some(64));
+        assert_eq!(disk_percent(fs(1000, 1000, 1000)), Some(0));
+        assert_eq!(disk_percent(fs(1000, 0, 0)), Some(100));
+        assert_eq!(disk_percent(fs(0, 0, 0)), None);
+        assert_eq!(disk_percent(fs(u64::MAX, 0, 0)), Some(100), "no overflow");
+    }
+
+    #[test]
+    fn the_disk_of_home_through_the_injected_statfs() {
+        let t = workstation("disk");
+        assert_eq!(disk_reader(&t.0, Some("/fictional/home"), fake).sample().disk, Some(62));
+        assert_eq!(disk_reader(&t.0, None, fake).sample().disk, None, "no $HOME, no figure");
+    }
+
+    #[test]
+    fn a_failing_statfs_hides_the_disk_and_is_retried() {
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn flaky(_: &Path) -> Option<FsBlocks> {
+            (CALLS.fetch_add(1, Ordering::SeqCst) > 0).then_some(FsBlocks { blocks: 1000, free: 380, avail: 380 })
+        }
+        let t = workstation("flaky");
+        let mut r = disk_reader(&t.0, Some("/fictional/home"), flaky);
+        assert_eq!(r.sample().disk, None);
+        assert_eq!(r.sample().disk, Some(62));
+    }
+
+    #[test]
+    fn nothing_is_read_for_an_item_not_in_show() {
+        let t = workstation("noread");
+        let mut r = disk_reader(&t.0, Some("/fictional/home"), fake);
+        r.sample();
+        put(&t.0, "proc/stat", STAT_B); // a second reading would give a CPU figure if cpu were read
+        let s = r.sample();
+        assert_eq!((s.cpu, s.memory, s.temperature), (None, None, None));
+        assert_eq!(r.sensor(), None, "no sensor resolved without Temperature");
+        // A $HOME is known, yet the default show has no Disk: `refuse` would panic on a statvfs.
+        let mut d = Reader::new(roots(&t.0, Some("/fictional/home"), refuse), &ResourcesConfig::default());
+        d.sample();
+        assert_eq!(d.sample().disk, None);
     }
 }

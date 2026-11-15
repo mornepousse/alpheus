@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn a_repeated_sample_is_not_a_change() {
         let mut r = Resources::default();
-        let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45) };
+        let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45), ..Sample::default() };
         assert!(r.push(s), "the first reading");
         assert!(!r.push(s), "the same reading again: nothing to redraw");
         assert!(r.push(Sample { cpu: Some(13), ..s }), "the CPU moved");

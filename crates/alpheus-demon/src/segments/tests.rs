@@ -490,17 +490,17 @@ fn resources_with(last: Sample) -> Resources {
 
 #[test]
 fn resources_cpu_memory_temperature() {
-    let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45) };
+    let s = Sample { cpu: Some(12), memory: Some(61), temperature: Some(45), ..Sample::default() };
     assert_eq!(
         draw(&resources(&resources_with(s)).unwrap()),
         ("\u{f061a} 12%   \u{f035b} 6.1G   \u{f050f} 45\u{b0}".into(), "......................".into())
     );
-    let first = Sample { cpu: None, memory: None, temperature: Some(91) };
+    let first = Sample { cpu: None, memory: None, temperature: Some(91), ..Sample::default() };
     let (t, st) = draw(&resources(&resources_with(first)).unwrap());
     assert!(t.starts_with("\u{f061a} \u{2026}%"), "first reading: no CPU yet, no padding: {t}");
     assert!(st.ends_with("eeeeeeee"), "hot: error tint ({st})");
     assert!(resources(&Resources::default()).is_none(), "nothing read yet");
-    let small = Sample { cpu: Some(9), memory: Some(5), temperature: None };
+    let small = Sample { cpu: Some(9), memory: Some(5), temperature: None, ..Sample::default() };
     assert_eq!(draw(&resources(&resources_with(small)).unwrap()).0, "\u{f061a} 9%   \u{f035b} 0.5G");
 }
 
@@ -508,8 +508,8 @@ fn resources_cpu_memory_temperature() {
 fn resources_temperature_tint_boundary_at_84_and_85() {
     // The error tint from HOT (85 \u{b0}C, waybar's own critical threshold,
     // Mae 2026-10-04): 84\u{b0} is still normal, 85\u{b0} already errs.
-    let normal = Sample { cpu: Some(50), memory: None, temperature: Some(84) };
-    let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
+    let normal = Sample { cpu: Some(50), memory: None, temperature: Some(84), ..Sample::default() };
+    let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85), ..Sample::default() };
     assert_eq!(
         draw(&resources(&resources_with(normal)).unwrap()),
         ("\u{f061a} 50%   \u{f050f} 84\u{b0}".into(), ".............".into()),
@@ -531,7 +531,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 93, charge: Charge::Charging }), peripherals: vec![] })));
     for cpu in [12, 38, 55, 90] {
-        b.apply(Msg::Resources(Sample { cpu: Some(cpu), memory: Some(61), temperature: Some(67) }));
+        b.apply(Msg::Resources(Sample { cpu: Some(cpu), memory: Some(61), temperature: Some(67), ..Sample::default() }));
     }
     b
 }
@@ -568,7 +568,7 @@ fn battery_and_resources_take_their_hues() {
     assert_eq!(draw(&super::battery(&f, d, ModuleColors::None).unwrap()).1, ".....");
     assert_eq!(draw(&super::battery(&f, d, ICONS).unwrap()).1, "gg...", "green icon");
     assert_eq!(draw(&super::battery(&f, d, FULL).unwrap()).1, "ggggg", "green icon and number");
-    let s = Sample { cpu: Some(50), memory: Some(61), temperature: Some(67) };
+    let s = Sample { cpu: Some(50), memory: Some(61), temperature: Some(67), ..Sample::default() };
     let r = resources_with(s);
     let none = draw(&super::resources(&r, ModuleColors::None).unwrap());
     let (text, icons) = draw(&super::resources(&r, ICONS).unwrap());
@@ -592,7 +592,7 @@ fn states_win_over_the_hues() {
             ModuleColors::Full | ModuleColors::Pills => "ggggg",
         };
         assert_eq!(draw(&super::battery(&charging, d, mc).unwrap()).1, want, "charging: accent under None, green otherwise ({mc:?})");
-        let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85) };
+        let hot = Sample { cpu: Some(50), memory: None, temperature: Some(85), ..Sample::default() };
         assert_eq!(
             draw(&super::resources(&resources_with(hot), mc).unwrap()).1[5..],
             *"eeeeeeee",

@@ -82,7 +82,7 @@ fn full_bar() -> Bar {
     b.apply(Msg::Network(Some(NetState::Online { link: Link::Wifi, vpns: 0, limited: false })));
     b.apply(Msg::Bluetooth(Some(BtState::On { devices: vec![BtDevice { name: "CasqueBT".into(), battery: Some(72) }] })));
     b.apply(Msg::Battery(Some(PowerState { laptop: Some(Battery { percent: 60, charge: Charge::Discharging }), peripherals: vec![] })));
-    b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60) }));
+    b.apply(Msg::Resources(Sample { cpu: Some(12), memory: Some(61), temperature: Some(60), ..Sample::default() }));
     b.apply(Msg::Notifications(NotifyView { unread: 2, dnd: false, serving: true }));
     // A shown microphone, so the privacy module has a zone (privacy spec § 6).
     let mic = Capture { mic: Indicator { names: vec!["firefox".into()], unnamed: false }, ..Capture::default() };
