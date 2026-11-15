@@ -5,7 +5,7 @@
 //! with no timeout; a zero-timeout `poll` only drains a burst.
 
 use crate::compositor::CompositorState;
-use crate::compositor::sway::state;
+use crate::compositor::sway::Model;
 use std::io::{self, BufReader, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -17,6 +17,8 @@ pub const MAGIC: &[u8; 6] = b"i3-ipc";
 pub const MAX_REPLY: usize = 4 << 20;
 /// The SUBSCRIBE payload: the two event kinds the bar follows.
 pub const SUBSCRIPTION: &str = "[\"workspace\",\"window\"]";
+/// An i3-ipc window event's type (the high bit marks an event).
+const WINDOW_EVENT: u32 = 0x8000_0003;
 /// The requests' connection only (spec § 3); the event connection has none.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 /// Events drained in one go before the state is read again: an endless stream of events still
@@ -100,10 +102,10 @@ fn ask(s: &mut UnixStream, m: Message) -> io::Result<Vec<u8>> {
     Ok(payload)
 }
 
-fn snapshot(requests: &mut UnixStream) -> io::Result<CompositorState> {
+fn snapshot(requests: &mut UnixStream, model: &mut Model) -> io::Result<CompositorState> {
     let workspaces = ask(requests, Message::GetWorkspaces)?;
     let tree = ask(requests, Message::GetTree)?;
-    state(&workspaces, &tree).map_err(io::Error::other)
+    model.state(&workspaces, &tree).map_err(io::Error::other)
 }
 
 /// `{"success": true}`, and nothing else, is an accepted subscription.
@@ -120,6 +122,14 @@ fn readable_now(s: &UnixStream) -> io::Result<bool> {
     Ok(ready > 0 && fd.revents != 0)
 }
 
+/// A window event (the workspace events, which carry whole workspaces, are never parsed) goes to
+/// the model's focus history.
+fn follow(model: &mut Model, (kind, payload): (u32, Vec<u8>)) {
+    if kind == WINDOW_EVENT {
+        model.event(&payload);
+    }
+}
+
 pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) -> io::Result<()> {
     // The events first: one that happens while the state is read waits in the socket.
     let mut events = UnixStream::connect(socket)?;
@@ -131,20 +141,23 @@ pub fn session(socket: &Path, publish: &mut dyn FnMut(CompositorState) -> bool) 
     let mut requests = UnixStream::connect(socket)?;
     requests.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     requests.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    let mut last = snapshot(&mut requests)?;
+    // The focus history lives as long as the session: a new session starts from the tree.
+    let mut model = Model::default();
+    let mut last = snapshot(&mut requests, &mut model)?;
     if !publish(last.clone()) {
         return Ok(());
     }
     let mut events = BufReader::new(events);
     loop {
-        // Blocks with no timeout: no wake-up at rest. The event's content is not read: any event means "read again".
-        read_frame(&mut events)?;
+        // Blocks with no timeout: no wake-up at rest. Any event means "read again"; a window
+        // event's focus change also feeds the focus history.
+        follow(&mut model, read_frame(&mut events)?);
         let mut drained = 1;
         while drained < MAX_BURST && (!events.buffer().is_empty() || readable_now(events.get_ref())?) {
-            read_frame(&mut events)?;
+            follow(&mut model, read_frame(&mut events)?);
             drained += 1;
         }
-        let now = snapshot(&mut requests)?;
+        let now = snapshot(&mut requests, &mut model)?;
         if now != last {
             if !publish(now.clone()) {
                 return Ok(());

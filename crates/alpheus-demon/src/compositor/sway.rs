@@ -2,12 +2,13 @@
 //! GET_TREE, both read again after each burst of events. Workspaces in GET_WORKSPACES' order; the
 //! window counts, the focused window and the launcher's list from the tree, walked without
 //! recursion (bounded depth) along each container's `focus` array, most recent first. The
-//! scratchpad (`__i3` output, `__i3_scratch` workspace) is skipped.
+//! scratchpad (`__i3` output, `__i3_scratch` workspace) is skipped. `Model` keeps one focus
+//! history across workspaces (Sway's arrays are per container) for the launcher's order.
 
 use super::{CompositorState, MAX_NESTING, Toplevel, Window, Workspace, too_deep};
 use crate::text::clean;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Spec § 3 bounds: what is past them is dropped, never an error.
 pub const MAX_WORKSPACES: usize = 64;
@@ -99,50 +100,113 @@ fn windows(tree: &Value) -> Vec<Found> {
     out
 }
 
+/// One snapshot alone, with no focus history: the order of the `focus` arrays.
 pub fn state(workspaces: &[u8], tree: &[u8]) -> Result<CompositorState, String> {
-    let list = parse("workspaces", workspaces)?;
-    let list = list.as_array().ok_or_else(|| "the sway workspaces reply is not a list".to_string())?;
-    let found = windows(&parse("tree", tree)?);
-    let mut counts: HashMap<&str, u16> = HashMap::new();
-    for w in &found {
-        let n = counts.entry(w.workspace.as_str()).or_default();
-        *n = n.saturating_add(1);
+    Model::default().state(workspaces, tree)
+}
+
+/// The part of a window event the history reads; everything else is skipped.
+#[derive(serde::Deserialize)]
+struct WindowEvent {
+    change: String,
+    container: Container,
+}
+
+#[derive(serde::Deserialize)]
+struct Container {
+    id: u64,
+}
+
+/// Sway keeps a focus order per container only; the model keeps one across workspaces, fed by
+/// the window events' `focus` changes and each tree's focused window.
+#[derive(Debug, Default)]
+pub struct Model {
+    /// Con ids that had focus, oldest first, the most recent last; at most MAX_WINDOWS, and after
+    /// each tree only ids it holds.
+    mru: Vec<u64>,
+}
+
+impl Model {
+    fn focus(&mut self, id: u64) {
+        self.mru.retain(|m| *m != id);
+        self.mru.push(id);
+        if self.mru.len() > MAX_WINDOWS {
+            self.mru.drain(..self.mru.len() - MAX_WINDOWS);
+        }
     }
-    let workspaces = list
-        .iter()
-        .filter(|w| text(w, "name") != Some(SCRATCHPAD))
-        .take(MAX_WORKSPACES)
-        .map(|w| {
-            let name = text(w, "name").unwrap_or("");
-            let num = w.get("num").and_then(Value::as_i64).unwrap_or(-1);
-            Workspace {
-                name: clean(name),
-                // `wm-set workspace` takes both under Sway; the raw name, so that it finds it.
-                reference: if num >= 0 { num.to_string() } else { format!("name:{name}") },
-                output: clean(text(w, "output").unwrap_or("")),
-                windows: counts.get(name).copied().unwrap_or(0),
-                urgent: flag(w, "urgent"),
-                visible: flag(w, "visible"),
-                focused: flag(w, "focused"),
-            }
-        })
-        .collect();
-    let window = found.iter().find(|w| w.focused).map(|w| Window { class: w.class.clone(), title: w.title.clone() });
-    // Most recent first, the first moved to the end: Hyprland's order (previous first, the
-    // focused window, or the most recent while nothing is focused, last).
-    let toplevels = found
-        .iter()
-        .skip(1)
-        .chain(found.first())
-        .map(|w| Toplevel {
-            selector: format!("id:{}", w.id),
-            class: w.class.clone(),
-            title: w.title.clone(),
-            workspace: clean(&w.workspace),
-            focused: w.focused,
-        })
-        .collect();
-    Ok(CompositorState { workspaces, window, toplevels, ..Default::default() })
+
+    /// One event's payload: a window `focus` change moves its container to the end of the
+    /// history. Anything else, or an unreadable payload, changes nothing (an event is otherwise
+    /// only a cue to read the state again).
+    pub fn event(&mut self, payload: &[u8]) {
+        if too_deep(payload) {
+            return;
+        }
+        if let Ok(e) = serde_json::from_slice::<WindowEvent>(payload)
+            && e.change == "focus"
+        {
+            self.focus(e.container.id);
+        }
+    }
+
+    pub fn state(&mut self, workspaces: &[u8], tree: &[u8]) -> Result<CompositorState, String> {
+        let list = parse("workspaces", workspaces)?;
+        let list = list.as_array().ok_or_else(|| "the sway workspaces reply is not a list".to_string())?;
+        let found = windows(&parse("tree", tree)?);
+        if let Some(w) = found.iter().find(|w| w.focused) {
+            self.focus(w.id);
+        }
+        let present: HashSet<u64> = found.iter().map(|w| w.id).collect();
+        self.mru.retain(|id| present.contains(id));
+        let mut counts: HashMap<&str, u16> = HashMap::new();
+        for w in &found {
+            let n = counts.entry(w.workspace.as_str()).or_default();
+            *n = n.saturating_add(1);
+        }
+        let workspaces = list
+            .iter()
+            .filter(|w| text(w, "name") != Some(SCRATCHPAD))
+            .take(MAX_WORKSPACES)
+            .map(|w| {
+                let name = text(w, "name").unwrap_or("");
+                let num = w.get("num").and_then(Value::as_i64).unwrap_or(-1);
+                Workspace {
+                    name: clean(name),
+                    // `wm-set workspace` takes both under Sway; the raw name, so that it finds it.
+                    reference: if num >= 0 { num.to_string() } else { format!("name:{name}") },
+                    output: clean(text(w, "output").unwrap_or("")),
+                    windows: counts.get(name).copied().unwrap_or(0),
+                    urgent: flag(w, "urgent"),
+                    visible: flag(w, "visible"),
+                    focused: flag(w, "focused"),
+                }
+            })
+            .collect();
+        let window = found.iter().find(|w| w.focused).map(|w| Window { class: w.class.clone(), title: w.title.clone() });
+        let toplevels = self
+            .order(&found)
+            .into_iter()
+            .map(|w| Toplevel {
+                selector: format!("id:{}", w.id),
+                class: w.class.clone(),
+                title: w.title.clone(),
+                workspace: clean(&w.workspace),
+                focused: w.focused,
+            })
+            .collect();
+        Ok(CompositorState { workspaces, window, toplevels, ..Default::default() })
+    }
+
+    /// Hyprland's order: the previous window first, older ones next, windows never seen focused
+    /// after them (in the walk's order, the `focus` arrays'), the newest (focused, or the most
+    /// recent while nothing is) last. With no history, the walk's first is the newest.
+    fn order<'a>(&self, found: &'a [Found]) -> Vec<&'a Found> {
+        let by_id: HashMap<u64, &Found> = found.iter().map(|w| (w.id, w)).collect();
+        let mut recent: Vec<&Found> = self.mru.iter().filter_map(|id| by_id.get(id).copied()).collect();
+        let newest = recent.pop().or_else(|| found.first());
+        let ranked: HashSet<u64> = recent.iter().map(|w| w.id).chain(newest.map(|w| w.id)).collect();
+        recent.iter().rev().copied().chain(found.iter().filter(|w| !ranked.contains(&w.id))).chain(newest).collect()
+    }
 }
 
 #[cfg(test)]
@@ -255,6 +319,66 @@ mod tests {
         let e = state(WORKSPACES, &none).unwrap();
         assert_eq!(e.toplevels.last().map(|t| t.title.as_str()), Some("Fixture A"));
         assert!(!e.toplevels.iter().any(|t| t.focused));
+    }
+
+    /// Two workspaces: A (10) on 1, B (20) and C (21) on 2, `focused` flagged.
+    fn two_workspaces(focused: u64) -> String {
+        let con = |id: u64, name: &str| {
+            format!(r#"{{"id":{id},"type":"con","name":"{name}","pid":1,"app_id":"{name}","focused":{},"nodes":[]}}"#, id == focused)
+        };
+        format!(
+            r#"{{"id":1,"type":"root","name":"root","focus":[2],"nodes":[{{"id":2,"type":"output","name":"HEADLESS-1","focus":[4,3],"nodes":[{{"id":3,"type":"workspace","name":"1","focus":[10],"nodes":[{a}]}},{{"id":4,"type":"workspace","name":"2","focus":[21,20],"nodes":[{b},{c}]}}]}}]}}"#,
+            a = con(10, "a"),
+            b = con(20, "b"),
+            c = con(21, "c")
+        )
+    }
+
+    /// A window event as sway sends it (the container trimmed).
+    fn focus_event(id: u64) -> String {
+        format!(r#"{{"change":"focus","container":{{"id":{id},"type":"con","nodes":[]}}}}"#)
+    }
+
+    /// Final review: one most-recent order across workspaces, fed by the focus events. Focus B
+    /// (workspace 2), A (1), C (2): A, the previous window, first; B; C focused last. The per-
+    /// container `focus` arrays alone would give B, A, C.
+    #[test]
+    fn toplevels_follow_one_global_focus_history() {
+        let ws =
+            br#"[{"num":1,"name":"1","output":"HEADLESS-1"},{"num":2,"name":"2","output":"HEADLESS-1","focused":true,"visible":true}]"#;
+        let order = |e: &CompositorState| e.toplevels.iter().map(|t| t.selector.clone()).collect::<Vec<_>>();
+        assert_eq!(order(&state(ws, two_workspaces(21).as_bytes()).unwrap()), ["id:20", "id:10", "id:21"], "no history: the arrays");
+        let mut m = Model::default();
+        for id in [20, 10, 21] {
+            m.event(focus_event(id).as_bytes());
+        }
+        m.event(br#"{"change":"title","container":{"id":10}}"#);
+        assert_eq!(order(&m.state(ws, two_workspaces(21).as_bytes()).unwrap()), ["id:10", "id:20", "id:21"]);
+        // A burst read once: B then A focused, only the last tree read.
+        m.event(focus_event(20).as_bytes());
+        m.event(focus_event(10).as_bytes());
+        assert_eq!(order(&m.state(ws, two_workspaces(10).as_bytes()).unwrap()), ["id:20", "id:21", "id:10"]);
+        // B closed: dropped from the history; an unreadable event changes nothing.
+        let without_b =
+            two_workspaces(10).replace(r#"{"id":20,"type":"con","name":"b","pid":1,"app_id":"b","focused":false,"nodes":[]},"#, "");
+        m.event(b"not json");
+        assert_eq!(order(&m.state(ws, without_b.as_bytes()).unwrap()), ["id:21", "id:10"]);
+        assert_eq!(m.mru, [21, 10], "the history holds only windows of the last tree");
+        // A focus the tree never had (a window already gone) is not kept either.
+        m.event(focus_event(99).as_bytes());
+        m.state(ws, without_b.as_bytes()).unwrap();
+        assert_eq!(m.mru, [21, 10]);
+    }
+
+    /// The history is capped like the windows read (MAX_WINDOWS), oldest dropped first.
+    #[test]
+    fn the_focus_history_is_bounded() {
+        let mut m = Model::default();
+        for id in 0..(MAX_WINDOWS as u64 + 50) {
+            m.event(focus_event(id).as_bytes());
+        }
+        assert_eq!(m.mru.len(), MAX_WINDOWS);
+        assert_eq!(m.mru.first(), Some(&50));
     }
 
     #[test]

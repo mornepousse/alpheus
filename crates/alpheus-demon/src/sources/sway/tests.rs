@@ -184,3 +184,19 @@ fn a_deep_reply_is_bounded_on_the_compositor_stack() {
     assert!(e.to_string().contains("unreadable sway tree"), "{e}");
     assert!(r.states.try_recv().is_err(), "nothing published");
 }
+
+/// Final review: the session feeds the window events to the model's focus history. C (10) then A
+/// (7, the tree's focused window) focused: C previous first, B never seen, A last; the arrays
+/// alone give B, C, A.
+#[test]
+fn focus_events_order_the_launchers_windows() {
+    let f = FakeSway::start("focus", Script::default());
+    let r = run(&f);
+    let first = r.states.recv_timeout(DELAY).unwrap();
+    let order = |e: &CompositorState| e.toplevels.iter().map(|t| t.selector.clone()).collect::<Vec<_>>();
+    assert_eq!(order(&first), ["id:8", "id:10", "id:7"]);
+    f.push(&reply(0x8000_0003, br#"{"change":"focus","container":{"id":10}}"#));
+    f.push(&reply(0x8000_0003, br#"{"change":"focus","container":{"id":7}}"#));
+    let next = r.states.recv_timeout(DELAY).unwrap();
+    assert_eq!(order(&next), ["id:10", "id:8", "id:7"]);
+}
