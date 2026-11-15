@@ -1,6 +1,8 @@
 //! The launcher's calculator (small features 1): a pure evaluator, no state, no I/O.
 //! A hand-written lexer, a recursive-descent parser carrying a depth counter, and
 //! evaluation over exact `i128` values that fall back to `f64`.
+//! `%` is the truncated remainder, as in Rust and C: it takes the sign of the left operand
+//! (`-7 % 3` is `-1`).
 
 use std::fmt;
 
@@ -555,10 +557,16 @@ pub fn looks_like_math(input: &str) -> bool {
         return false;
     }
     let plain = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit() || c == '_');
-    let plain_number = match input.split_once('.') {
-        Some((a, b)) => plain(a) && plain(b),
-        None => plain(input),
-    };
+    // A sign or a balanced pair of parentheses around a plain number is still plain.
+    let core = input
+        .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '+' | '-' | '('))
+        .trim_end_matches(|c: char| c.is_whitespace() || c == ')');
+    let balanced = input.matches('(').count() == input.matches(')').count();
+    let plain_number = balanced
+        && match core.split_once('.') {
+            Some((a, b)) => plain(a) && plain(b),
+            None => plain(core),
+        };
     if plain_number {
         return false;
     }

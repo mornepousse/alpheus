@@ -121,3 +121,31 @@ fn looks_like_math_refuses_words_and_plain_numbers() {
         assert!(!looks_like_math(q), "{q:?}");
     }
 }
+
+#[test]
+fn looks_like_math_refuses_signed_and_parenthesised_plain_numbers() {
+    for q in ["-5", "+5", "(5)", "-(5)", "-3.5", "( 42 )"] {
+        assert!(!looks_like_math(q), "{q:?}");
+    }
+    for q in ["(5", "5)", "-5+1", "(5)+1"] {
+        assert!(looks_like_math(q), "{q:?}");
+    }
+}
+
+#[test]
+fn hostile_inputs_neither_panic_nor_crawl() {
+    let start = std::time::Instant::now();
+    let minuses = format!("{}1", "-".repeat(255));
+    assert_eq!(ok(&minuses), "-1");
+    assert_eq!(err("9^9^9^9"), CalcError::Overflow);
+    // i128::MAX + 1 leaves the exact range: a float, or an error, never a panic.
+    let r = evaluate("170141183460469231731687303715884105727 + 1").unwrap();
+    assert!(r.is_ok() || r.is_err());
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn the_remainder_is_truncated() {
+    assert_eq!(ok("-7 % 3"), "-1");
+    assert_eq!(ok("7 % -3"), "1");
+}
