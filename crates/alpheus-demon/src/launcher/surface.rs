@@ -417,7 +417,8 @@ impl App {
         let (columns, rows) = output_cells(output_size.0, output_size.1, advance, row_height, scale);
         // The single copy of the scan's $PATH lives on the model
         // (`Launcher::path_dirs`, read by both the preview and
-        // `RunContext`). For the app launcher, `launcher_open_apps`
+        // `RunContext`). For the app launcher and the calculator (which
+        // also sets `path_dirs`), `launcher_open_apps`
         // (host.rs) already set it, on `model`, from the one `ScanEnv` it
         // reads for the scan itself — read a second time here, it would
         // just be overwritten with the same value a few lines later. A script menu runs nothing through

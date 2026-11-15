@@ -86,7 +86,7 @@ pub enum Action {
 
 /// open: None (closed), Some(false) (apps or the calculator), Some(true) (script). `since_open` is the time elapsed
 /// since the launcher opened (ignored when `open` is None). The Reply, when Some, is sent at once
-/// on this connection: Toggle/Close → Done (Toggle closes an open script launcher: its own client gets
+/// on this connection: Toggle/Close/Calc → Done (Toggle and Calc close an open script launcher: its own client gets
 /// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
 /// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
 pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Action, Option<Reply>) {

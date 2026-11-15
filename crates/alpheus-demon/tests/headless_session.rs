@@ -303,7 +303,7 @@ fn calc_opens_the_calculator_and_enter_copies() {
     // Past TOGGLE_DEBOUNCE, a second `--calc` closes an open calculator.
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
     assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
-    thread::sleep(Duration::from_millis(300));
+    thread::sleep(PAST_DEBOUNCE);
     assert_eq!(script(&sway, &["--calc"], "").join().unwrap().0, 0);
     assert!(d.wait_for("launcher closed (toggle)", DELAY), "{:?}", d.log());
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
@@ -4039,8 +4039,8 @@ fn quick_the_verb_toggles_the_panel_and_its_keys_work_without_a_grab() {
     assert_eq!(rest_over_5_s(&d), 0, "nothing left awake");
 }
 
-/// Past the daemon's TOGGLE_DEBOUNCE (250 ms): a verb that really toggles.
-const PAST_DEBOUNCE: Duration = Duration::from_millis(300);
+/// Twice the daemon's TOGGLE_DEBOUNCE (250 ms, crate-private): a verb that really toggles.
+const PAST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// Hyprland re-fires a press bind, so two verbs back to back are one key press:
 /// the second is debounced and the panel stays open; a third, past the window, closes it.
