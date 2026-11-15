@@ -27,6 +27,7 @@ use common::{
     harness_bar_toml, launcher, process_alive, pw_dump_send, recorded, recorded_stdin, start_daemon, start_daemon_with, volume_delta,
     wait_for_pid_file, write_atomically, wtype, wtype_spawn,
 };
+use common::{FakeVpn, vpn_uuid};
 use dbus::arg::{PropMap, RefArg, Variant};
 use std::cell::Cell;
 use std::ffi::OsString;
@@ -4206,10 +4207,14 @@ fn wifi_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprlan
     (bus, nm, sway, hypr, d)
 }
 
-/// Waits until the fake NetworkManager answered the detail's reads (the saved profiles come last),
+/// Waits until the fake NetworkManager answered the detail's reads (the saved profiles come last, the
+/// Wi-Fi detail's and the VPN row's),
 /// then lets the state reach the panel and be painted.
 fn wait_for_the_detail(nm: &FakeNetworkManager) -> bool {
-    let read = wait_until(|| nm.calls().iter().any(|c| c.starts_with("GetSettings ")));
+    // The panel's VPN row lists and reads the saved profiles too (quick VPN spec § 5): the fixture's
+    // one profile is read twice, the Wi-Fi detail's own being the later of the two readers.
+    let count = |prefix: &str| nm.calls().iter().filter(|c| c.starts_with(prefix)).count();
+    let read = wait_until(|| count("ListConnections ") >= 2 && count("GetSettings ") >= 2);
     thread::sleep(Duration::from_millis(300));
     read
 }
@@ -4392,7 +4397,11 @@ fn quick_wifi_a_panel_reopened_during_a_followed_attempt_takes_it_back_on_the_de
     a_new_network_attempt(&nm, &sway, &d);
     nm.change(NmChange::AddSaved(UUID_NEW.into(), "Cafe-Libre".into()));
     assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
-    let (calls, woken) = (nm.calls().len(), d.thread_wakeups("D-Bus").expect("the D-Bus thread"));
+    // The access points' reads: a tap that changed scope reads them again. The reopen's VPN poke
+    // makes the D-Bus thread re-read the Wi-Fi at its own scope too (a poke does not say which tap
+    // spoke): the device and its wireless properties, never the access points.
+    let wifi_reads = |nm: &FakeNetworkManager| nm.calls().iter().filter(|c| c.contains("AccessPoint")).count();
+    let calls = wifi_reads(&nm);
     close_the_panel(&sway, &d);
     thread::sleep(Duration::from_millis(500));
     sway.click(NETWORK_AT.0, NETWORK_AT.1, "button1");
@@ -4400,7 +4409,10 @@ fn quick_wifi_a_panel_reopened_during_a_followed_attempt_takes_it_back_on_the_de
     let rescans = || recorded(&sway, "nmcli").iter().filter(|c| *c == "nmcli device wifi rescan").count();
     assert!(wait_until(|| rescans() == 2), "the detail opened again: {:?} {:?}", recorded(&sway, "nmcli"), d.log());
     thread::sleep(Duration::from_millis(500));
-    assert_eq!(nm.calls().len(), calls, "nothing read again: {:?}", &nm.calls()[calls..]);
+    assert_eq!(wifi_reads(&nm), calls, "the Wi-Fi tap changed scope: {:?}", nm.calls());
+    // The VPN row's reads are done by now: the Wi-Fi tap, on the detail all along, wakes nothing more.
+    let woken = d.thread_wakeups("D-Bus").expect("the D-Bus thread");
+    thread::sleep(Duration::from_millis(500));
     assert_eq!(d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(woken), 0, "the tap never changed scope");
     let connects = || recorded(&sway, "nmcli").iter().filter(|c| c.starts_with("nmcli device wifi connect")).count();
     assert_eq!(connects(), 1, "no second attempt: {:?}", recorded(&sway, "nmcli"));
@@ -5743,4 +5755,93 @@ fn quick_the_dnd_detail_sets_a_timed_do_not_disturb() {
     assert!(d.wait_for("notifications: do not disturb on (ends in 30 min)", DELAY), "{:?}", d.log());
     let text = std::fs::read_to_string(sway.runtime.join("state/alpheus/dnd")).unwrap();
     assert!(text.starts_with("until "), "{text:?}");
+}
+
+/// The panel alone (the VPN needs no module), `More…` a fake, no backlight device (never /sys).
+fn vpn_bar(sway: &Sway) -> String {
+    format!(
+        "modules = [\"quick\", \"clock\"]\n[quick]\nvpn_more = [\"fake-vpn-more\"]\n[osd]\nbacklight_dir = \"{}\"\n",
+        sway.runtime.join("no-backlight").display()
+    )
+}
+
+/// The quick panel's VPNs: a private system bus with the fake NetworkManager (fictional: VPN-Test-01
+/// OpenVPN and WG-Test WireGuard, neither active), a fake `nmcli` recording its argv, the `Fifo`
+/// fake pw-dump. `wifi_daemon`'s set-up with the VPN profiles added.
+fn vpn_daemon(name: &str) -> (PrivateBus, FakeNetworkManager, Sway, FakeHyprland, Daemon) {
+    let bus = PrivateBus::start(name);
+    let aps = vec![FakeAp::new("Maison-Test", 80, true)];
+    let vpns = vec![
+        FakeVpn { name: "VPN-Test-01".into(), wireguard: false, asks: false },
+        FakeVpn { name: "WG-Test".into(), wireguard: true, asks: false },
+    ];
+    let nm = FakeNetworkManager::serve_with(&bus, aps, vec![(UUID_HOME.into(), "Maison-Test".into())], vpns);
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    fake_stdin_recorder(&sway, "nmcli");
+    fake_recorder(&sway, "fake-vpn-more");
+    let toml = vpn_bar(&sway);
+    let options =
+        DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
+    let d = start_daemon_with(&sway, &options);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (bus, nm, sway, hypr, d)
+}
+
+/// No profile name of the fixture in the daemon's log.
+fn no_vpn_name_logged(d: &Daemon) -> bool {
+    !d.log().iter().any(|l| ["VPN-Test-01", "WG-Test"].iter().any(|s| l.contains(s)))
+}
+
+/// Quick VPN spec § 1, § 3: `--quick vpn` opens the panel on the VPN detail; Enter on the first
+/// profile records `connection up uuid …`; once NetworkManager says activated, Enter records
+/// `connection down uuid …`; no profile name reaches the log.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_vpn_the_verb_opens_the_detail_and_enter_brings_a_profile_up_then_down() {
+    let (_bus, nm, sway, _hypr, d) = vpn_daemon("quick-vpn-verb");
+    assert_eq!(quick_verb(&sway, &["--quick", "vpn"]), EXIT_OK);
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_the_profile(&nm, 2), "{:?}", nm.calls());
+    keys(&sway, &["Return"]);
+    let up = format!("nmcli connection up uuid {}", vpn_uuid(1));
+    assert!(wait_for_call(&sway, "nmcli", &up), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(d.wait_for("quick: vpn up", DELAY), "{:?}", d.log());
+    nm.change(NmChange::Vpn(1, Some(1)));
+    thread::sleep(Duration::from_millis(300));
+    nm.change(NmChange::Vpn(1, Some(2)));
+    thread::sleep(Duration::from_millis(500));
+    keys(&sway, &["Return"]);
+    let down = format!("nmcli connection down uuid {}", vpn_uuid(1));
+    assert!(wait_for_call(&sway, "nmcli", &down), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    assert!(d.wait_for("quick: vpn down", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("quick: vpn connection failed"), 0, "{:?}", d.log());
+    assert!(no_vpn_name_logged(&d), "never a profile name in the log: {:?}", d.log());
+}
+
+/// Quick VPN spec § 3: an activation that fails (activating, then gone) is logged once, with a fixed
+/// reason, and the rest stays quiet: closed, nothing wakes.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_vpn_a_failed_activation_is_logged_and_the_rest_stays_quiet() {
+    let (_bus, nm, sway, _hypr, d) = vpn_daemon("quick-vpn-fail");
+    assert_eq!(quick_verb(&sway, &["--quick", "vpn"]), EXIT_OK);
+    assert!(d.wait_for("quick shown", DELAY), "{:?}", d.log());
+    assert!(wait_for_the_profile(&nm, 3), "{:?}", nm.calls());
+    keys(&sway, &["Down", "Return"]);
+    let up = format!("nmcli connection up uuid {}", vpn_uuid(2));
+    assert!(wait_for_call(&sway, "nmcli", &up), "{:?} {:?}", recorded(&sway, "nmcli"), d.log());
+    nm.change(NmChange::Vpn(2, Some(1)));
+    thread::sleep(Duration::from_millis(300));
+    nm.change(NmChange::Vpn(2, None));
+    assert!(d.wait_for("quick: vpn connection failed (the activation failed)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("quick: vpn connection failed"), 1, "{:?}", d.log());
+    assert!(no_vpn_name_logged(&d), "{:?}", d.log());
+    close_the_panel(&sway, &d);
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_secs(1)); // the close settles (wtype's keyboard going, the D-Bus thread's last word)
+    assert_eq!(rest_over_5_s(&d), 0, "closed: the failed mark's timer went with the panel");
 }

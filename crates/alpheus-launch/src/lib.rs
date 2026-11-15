@@ -35,7 +35,7 @@ pub const CLIENT_REPLY_TIMEOUT: Duration = REPLY_TIMEOUT;
 
 const USAGE: &str = "\
 Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [--password] [--visible N]
-                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth] | --calc | --help]
+                      | --dnd on|off|toggle [--for 1h30m | --until HH:MM] | --clear-notifications | --osd brightness | --quick [sound|wifi|bluetooth|vpn] | --calc | --help]
 
   (no option), --toggle   open the launcher, or close it if it is open
   --close                 close the launcher
@@ -55,9 +55,9 @@ Usage: alpheus-launch [--toggle | --close | --dmenu [--prompt TEXT] [--index] [-
                           next local HH:MM; either one replaces an earlier end
   --clear-notifications   empty the bar's notification history
   --osd brightness        show the laptop's backlight level (read once; never changed)
-  --quick [sound|wifi|bluetooth]
+  --quick [sound|wifi|bluetooth|vpn]
                           open or close the bar's quick settings (at the volume with sound, on the Wi-Fi
-                          with wifi, on Bluetooth with bluetooth)
+                          with wifi, on Bluetooth with bluetooth, on the VPNs with vpn)
   --calc                  open the launcher as a calculator (Enter copies the result), or close it
   -h, --help              show this help
 
@@ -509,12 +509,14 @@ const NO_VISIBLE_REFUSAL: &str = "malformed request: unknown dmenu flag \"visibl
 /// unknown request, `parse_header`'s unknown quick word): the verb it concerns (None: any), the
 /// refusal and the name for the message. Exit 3, as for the other verbs, so a key bound to it can
 /// fall back. A new word adds a row, nothing else.
-const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 3] = [
+const OLD_QUICK: [(Option<QuickVerb>, &str, &str); 4] = [
     (None, "malformed request: unknown request \"quick\"", "--quick"),
     // Quick settings delivery 1's daemon.
     (Some(QuickVerb::Wifi), "malformed request: unknown quick word \"wifi\"", "--quick wifi"),
     // Delivery 2's daemon.
     (Some(QuickVerb::Bluetooth), "malformed request: unknown quick word \"bluetooth\"", "--quick bluetooth"),
+    // Delivery 3's daemon.
+    (Some(QuickVerb::Vpn), "malformed request: unknown quick word \"vpn\"", "--quick vpn"),
 ];
 
 /// Whether `error` means "this daemon is older than the flags this request carries": the oldest

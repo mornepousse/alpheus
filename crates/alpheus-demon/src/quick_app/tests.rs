@@ -441,3 +441,88 @@ fn dnd_request_is_the_cli_request() {
     let local = crate::clock::LocalTime::from_epoch(t);
     assert_eq!((u32::from(local.hour), u32::from(local.minute)), at, "the end falls on the configured wall-clock time");
 }
+
+fn vpn_around() -> crate::system::VpnState {
+    use crate::system::{VpnKind, VpnProfile, VpnState};
+    VpnState {
+        profiles: vec![VpnProfile {
+            uuid: "00000000-0000-4000-8000-000000000001".into(),
+            name: "VPN-Test-1".into(),
+            kind: VpnKind::Plugin,
+            last_used: 1,
+            asks: false,
+        }],
+        active: vec![],
+    }
+}
+
+/// As for the Wi-Fi: a VPN state read for an earlier open never reaches the panel (quick VPN spec § 5).
+#[test]
+fn a_vpn_state_of_an_earlier_open_is_dropped() {
+    let t = Instant::now();
+    let bar = Bar::new(BarConfig::default());
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
+    let current = Some(7);
+    let mut q = Quick::new(Focus::Vpn, &live, vec![], None, [None, None], 20);
+    assert_eq!(panel_vpn(&mut q, &live, Some(6), Some(vpn_around()), current, t), None, "the open before's: dropped");
+    assert_eq!(panel_vpn(&mut q, &live, Some(6), None, current, t), None, "the close's None: dropped");
+    assert!(q.vpn.focus_pending && q.vpn.state.is_none(), "nothing taken");
+    let news = panel_vpn(&mut q, &live, Some(7), Some(vpn_around()), current, t).expect("this open's");
+    assert_eq!(news.action, QuickAction::Redraw, "the detail opened");
+    assert!(q.vpn.open && q.selected == Row::Vpn);
+    assert!(panel_vpn(&mut q, &live, None, None, current, t).is_some(), "the bus down: the panel hears it");
+    assert!(!q.vpn.shows());
+}
+
+/// A bar message's VPN state is taken out of it, with its open (the bar never keeps one).
+#[test]
+fn the_vpn_state_is_taken_out_of_the_message() {
+    let mut m = Msg::Vpn { open: Some(4), state: Some(vpn_around()) };
+    assert_eq!(taken_vpn(&mut m).map(|(open, s)| (open, s.is_some())), Some((Some(4), true)));
+    assert!(matches!(m, Msg::Vpn { state: None, .. }));
+    assert!(taken_vpn(&mut Msg::Wifi { open: None, state: None }).is_none());
+}
+
+/// An nmcli that never started (not found) ends the VPN attempt at once, as for a Wi-Fi one; another
+/// error (it may have started) keeps it.
+#[test]
+fn an_nmcli_never_started_ends_the_vpn_attempt() {
+    let t = Instant::now();
+    let bar = Bar::new(BarConfig::default());
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
+    let up = |q: &mut Quick| {
+        let uuid = "00000000-0000-4000-8000-000000000001";
+        let QuickAction::Run { argv, what } = q.vpn.enter(uuid, t) else { panic!("a profile up") };
+        (argv, what)
+    };
+    let mut q = Quick::new(Focus::Vpn, &live, vec![], None, [None, None], 20);
+    q.set_vpn(Some(vpn_around()), t);
+    let (argv, what) = up(&mut q);
+    assert!(q.vpn.attempt.is_some());
+    assert!(spawn_logged(&FakeExecutor::new(), Some(&mut q), &argv, &what).is_some_and(|l| l.contains("could not start")));
+    assert!(q.vpn.attempt.is_none() && q.vpn.failed.is_none(), "ended at once, no `failed` mark");
+    let fake = FakeExecutor::new();
+    fake.respond(&argv.join(" "), Err(ExecError::Io("busy".into())));
+    let mut q = Quick::new(Focus::Vpn, &live, vec![], None, [None, None], 20);
+    q.set_vpn(Some(vpn_around()), t);
+    let (argv, what) = up(&mut q);
+    spawn_logged(&fake, Some(&mut q), &argv, &what);
+    assert!(q.vpn.attempt.is_some(), "Io: maybe started, kept");
+}
+
+/// A panel's transient VPN state (attempt, `failed`, the focus asked for) leaves with it: the next
+/// open starts clean (the panel is built per open; no follower outlives it, unlike the Wi-Fi's).
+#[test]
+fn a_new_panel_starts_with_no_vpn_attempt() {
+    let t = Instant::now();
+    let bar = Bar::new(BarConfig::default());
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
+    let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+    q.set_vpn(Some(vpn_around()), t);
+    q.vpn.enter("00000000-0000-4000-8000-000000000001", t);
+    q.vpn.failed = Some(("x".into(), t));
+    assert!(q.vpn.attempt.is_some());
+    drop(q);
+    let q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
+    assert!(q.vpn.attempt.is_none() && q.vpn.failed.is_none() && !q.vpn.focus_pending && !q.vpn.open);
+}

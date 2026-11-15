@@ -2899,3 +2899,46 @@ fn a_new_server_gets_the_last_battery_reading() {
     let view = function_body(&app, "pub(crate) fn notify_view(");
     assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
 }
+
+/// Quick VPN spec § 2: a log line never names a profile (its name, label, uuid or object path): the
+/// VPN's own files, and the VPN lines of the glue.
+#[test]
+fn the_vpn_logs_name_no_profile() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let mut lines = 0;
+    for name in ["quick_vpn.rs", "sources/dbus/vpn.rs", "quick_app.rs"] {
+        let prod = src(name);
+        let own = name != "quick_app.rs";
+        for line in prod.lines().filter(|l| l.contains("log(") || l.contains("\"quick: ")) {
+            if !own && !line.to_ascii_lowercase().contains("vpn") {
+                continue;
+            }
+            lines += 1;
+            for word in ["name", "label", "uuid", "path", "id"] {
+                let braced = format!("{{{word}");
+                let token = line.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|t| t == word);
+                assert!(!line.contains(&braced) && !token, "{name}: a log line may name a profile (`{word}`): {line}");
+            }
+        }
+    }
+    assert!(lines >= 3, "the log lines were not found: the check is hollow");
+}
+
+/// Quick VPN spec § 5: the D-Bus thread reads the VPNs only while the panel is open and follows it,
+/// and the VPN state goes to the panel alone.
+#[test]
+fn the_vpn_tap_follows_the_panel() {
+    let files = source_files();
+    let quick_app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "quick_app.rs").expect("quick_app.rs").1);
+    let closed = function_body(&quick_app, "pub(crate) fn quick_closed(");
+    assert!(closed.contains("VpnScope::Closed"), "{closed}");
+    for f in ["pub(crate) fn quick_refresh(", "pub(crate) fn quick_toggle("] {
+        assert!(function_body(&quick_app, f).contains("self.quick_vpn_sync()"), "{f}: the tap follows the panel");
+    }
+    let take = function_body(&quick_app, "pub(crate) fn quick_take(");
+    assert!(take.contains("taken_vpn(") && take.contains("panel_vpn("), "{take}");
+    assert!(take.contains("Msg::Vpn { .. }"), "a VPN message refreshes the panel it shows: {take}");
+    let tick = function_body(&quick_app, "pub(crate) fn quick_tick(");
+    assert!(tick.contains("vpn_failed"), "the attempt's timeout is logged: {tick}");
+}

@@ -22,7 +22,7 @@ use crate::quick_state;
 use crate::quick_wifi::{Attempt, NM_GONE, Outcome, Wifi, starts_attempt};
 use crate::sources::dbus::wifi::WifiTap;
 use crate::state::{Bar, Msg};
-use crate::system::{BtScope, BtView, Headset, Sink, SoundState, WifiScope, WifiState};
+use crate::system::{BtScope, BtView, Headset, Sink, SoundState, VpnScope, VpnState, WifiScope, WifiState};
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
 use alpheus_commun::launcher_ipc::{DndEnd, DndVerb, QuickVerb, Reply, Request};
@@ -135,6 +135,15 @@ pub(crate) fn taken_wifi(m: &mut Msg) -> Option<(Option<u64>, Option<WifiState>)
     }
 }
 
+/// The VPN state a bar message carries for the open panel (quick VPN spec § 5), taken out of it
+/// with the open it was read for: the bar never keeps one. None: not a VPN message.
+pub(crate) fn taken_vpn(m: &mut Msg) -> Option<(Option<u64>, Option<VpnState>)> {
+    match m {
+        Msg::Vpn { open, state } => Some((*open, state.take())),
+        _ => None,
+    }
+}
+
 /// A panel state read for `open` belongs to the tap's current open (`current`, from
 /// `Tap::snapshot`); one read for an earlier open (a close's last word, a re-read under the
 /// scope before) does not. Untagged (the system bus down), or with no tap: it
@@ -157,6 +166,19 @@ pub(crate) fn panel_wifi(
     now: Instant,
 ) -> Option<WifiNews> {
     open_current(open, current).then(|| q.follow_wifi(live, state, now))
+}
+
+/// The open panel's part of a VPN message: `Quick::follow_vpn` on a state of this open
+/// (`open_current`), nothing for an earlier open's.
+pub(crate) fn panel_vpn(
+    q: &mut Quick,
+    live: &Live,
+    open: Option<u64>,
+    state: Option<VpnState>,
+    current: Option<u64>,
+    now: Instant,
+) -> Option<WifiNews> {
+    open_current(open, current).then(|| q.follow_vpn(live, state, now))
 }
 
 /// The Bluetooth view a bar message carries for the open panel (quick Bluetooth spec § 5), taken out
@@ -310,6 +332,9 @@ pub(crate) fn spawn_logged(exec: &dyn Executor, q: Option<&mut Quick>, argv: &[S
                 Some(q) => {
                     if e == ExecError::NotFound && starts_attempt(what) {
                         q.wifi.never_started();
+                    }
+                    if e == ExecError::NotFound && what == "vpn up" {
+                        q.vpn.never_started();
                     }
                     q.note_failure(program)
                 }
@@ -479,6 +504,7 @@ impl App {
             self.quick_resume();
             self.quick_wifi_sync();
             self.quick_bt_sync();
+            self.quick_vpn_sync();
         } else {
             self.quick_closed();
         }
@@ -516,6 +542,7 @@ impl App {
             QuickVerb::Sound => Focus::Sound,
             QuickVerb::Wifi => Focus::Wifi,
             QuickVerb::Bluetooth => Focus::Bluetooth,
+            QuickVerb::Vpn => Focus::Vpn,
         };
         let qh = self.qh.clone();
         self.quick_toggle(&qh, None, focus);
@@ -622,6 +649,7 @@ impl App {
         self.quick_timer_sync();
         self.quick_wifi_sync();
         self.quick_bt_sync();
+        self.quick_vpn_sync();
     }
 
     /// The timer follows the panel's earliest pending re-read, question or Wi-Fi deadline; with the
@@ -645,6 +673,17 @@ impl App {
             _ => WifiScope::Closed,
         };
         tap.set(wifi_scope(panel, self.quick.wifi_follow.as_ref()));
+    }
+
+    /// The D-Bus thread follows what the open panel shows of the VPNs (quick VPN spec § 5): the row's
+    /// state, or the detail's lists (and while a connection is under way); closed, nothing. A change
+    /// wakes the thread once; the same scope again, nothing.
+    pub(crate) fn quick_vpn_sync(&self) {
+        let Some(tap) = &self.quick.vpn_tap else { return };
+        tap.set(match self.popup_body() {
+            Some(PopupBody::Quick(q)) => q.vpn_scope(),
+            _ => VpnScope::Closed,
+        });
     }
 
     /// The follower's `outcome` (Mae's ruling P1, `followed`), logged; the tap and the timer then
@@ -675,6 +714,9 @@ impl App {
         };
         if let Some(why) = due.wifi_failed {
             log(&format!("quick: wifi connection failed ({why})"));
+        }
+        if let Some(why) = due.vpn_failed {
+            log(&format!("quick: vpn connection failed ({why})"));
         }
         // A Bluetooth call's deadline: its pairing cancelled, its answer forgotten, `failed`.
         for line in &due.bt_logs {
@@ -740,6 +782,10 @@ impl App {
             tap.set(BtScope::Closed);
         }
         self.bt_close();
+        // Nothing of the VPNs outlives the panel either (no follower: its attempt goes with it).
+        if let Some(tap) = &self.quick.vpn_tap {
+            tap.set(VpnScope::Closed);
+        }
         let at = self.quick.wifi_follow.as_ref().map(WifiFollow::deadline);
         self.quick.timer.sync_opt(self.loop_handle.as_ref(), at, App::quick_tick);
     }
@@ -801,8 +847,26 @@ impl App {
                 self.quick_action(action);
             }
         }
+        // The VPN state goes to the open panel only, dropped with none (never kept by the bar).
+        if let Some((open, state)) = taken_vpn(m) {
+            let now = Instant::now();
+            let current = self.quick.vpn_tap.as_ref().map(|t| t.snapshot().1);
+            let App { popup, bar, dnd_timed, .. } = &mut *self;
+            let news = match popup.as_mut().map(|p| &mut p.body) {
+                Some(PopupBody::Quick(q)) => panel_vpn(q, &quick::live(bar, &dnd_timed.model), open, state, current, now),
+                _ => None,
+            };
+            if let Some(news) = news {
+                if let Some(why) = news.failed {
+                    log(&format!("quick: vpn connection failed ({why})"));
+                }
+                self.quick_action(news.action);
+            }
+        }
         self.quick_bt_sync();
-        self.quick_shown() && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. } | Msg::Bluetooth(_) | Msg::Bt { .. })
+        self.quick_vpn_sync();
+        self.quick_shown()
+            && matches!(m, Msg::Sound(_) | Msg::Profile(_) | Msg::Wifi { .. } | Msg::Bluetooth(_) | Msg::Bt { .. } | Msg::Vpn { .. })
     }
 }
 

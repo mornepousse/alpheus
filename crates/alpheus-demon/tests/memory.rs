@@ -1543,12 +1543,13 @@ fn forty_networks() -> Vec<FakeAp> {
     (1..=40).map(|n| FakeAp::new(&format!("Reseau-Test-{n:02}"), (n * 2) as u8, n % 3 != 0)).collect()
 }
 
-/// Waits until the fake NetworkManager has listed the saved profiles `n` times: the `n`-th open of
-/// the detail is read (they come last).
+/// Waits until the fake NetworkManager has listed the saved profiles twice for each of `n` opens:
+/// the `n`-th open of the detail is read (they come last). The panel's VPN row lists them too, once
+/// per open (quick VPN spec § 5), beside the Wi-Fi detail's own listing.
 fn detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
     let t = Instant::now();
     while t.elapsed() < DELAY {
-        if nm.calls().iter().filter(|c| c.starts_with("ListConnections ")).count() >= n {
+        if nm.calls().iter().filter(|c| c.starts_with("ListConnections ")).count() >= 2 * n {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));

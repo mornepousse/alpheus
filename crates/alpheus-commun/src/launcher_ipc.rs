@@ -102,10 +102,12 @@ pub enum QuickVerb {
     Wifi,
     /// `--quick bluetooth`: the Bluetooth detail.
     Bluetooth,
+    /// `--quick vpn`: the VPN detail.
+    Vpn,
 }
 
 impl QuickVerb {
-    pub const ALL: [QuickVerb; 4] = [QuickVerb::Top, QuickVerb::Sound, QuickVerb::Wifi, QuickVerb::Bluetooth];
+    pub const ALL: [QuickVerb; 5] = [QuickVerb::Top, QuickVerb::Sound, QuickVerb::Wifi, QuickVerb::Bluetooth, QuickVerb::Vpn];
 
     /// The word after `quick` (wire) and `--quick` (command line); None for the top.
     pub fn word(self) -> Option<&'static str> {
@@ -114,10 +116,11 @@ impl QuickVerb {
             QuickVerb::Sound => Some("sound"),
             QuickVerb::Wifi => Some("wifi"),
             QuickVerb::Bluetooth => Some("bluetooth"),
+            QuickVerb::Vpn => Some("vpn"),
         }
     }
 
-    /// A word after `quick`: "sound", "wifi" or "bluetooth".
+    /// A word after `quick`: "sound", "wifi", "bluetooth" or "vpn".
     pub fn parse(s: &str) -> Option<QuickVerb> {
         QuickVerb::ALL.into_iter().find(|v| v.word() == Some(s))
     }
