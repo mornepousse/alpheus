@@ -26,7 +26,7 @@
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
-//! warn = [20, 10, 5]  # notify when the laptop battery, discharging, reaches each %; the lowest is critical; [] turns it off (needs "notifications")
+//! warn = [20, 10, 5]  # notify when the laptop battery, discharging, reaches each %; the lowest is critical (a single one too); [] turns it off; read at start, no hot reload (needs "notifications")
 //! [tray]
 //! passive = "dim"                                           # "dim" | "show" | "hide": items that say they are idle
 //! tooltips = true                                           # the item's name after ½ s of hovering

@@ -15,6 +15,7 @@ use crate::session_bus::notifications::{Notifications, minute_now};
 use crate::session_bus::router::TrayOutput;
 use crate::state::Msg;
 use crate::state_file;
+use crate::system::Battery;
 use crate::tray_bridge::notifications_of;
 use crate::wayland::App;
 use alpheus_commun::launcher_ipc::{DND_MAX_SECS, DND_MIN_SECS, DndEnd, DndVerb, Reply, Request};
@@ -145,6 +146,10 @@ impl App {
         for line in bell_lines(before, view) {
             log(line);
         }
+        // The name was just acquired: an alert held back for want of a server goes out now.
+        if view.serving && !before.is_some_and(|b| b.serving) {
+            self.battery_deliver(None);
+        }
     }
 
     /// Every user path (the bell's middle click, the panel's row, the quick row): untimed, and the
@@ -255,22 +260,27 @@ impl App {
     }
 
     /// A power reading (before the bar keeps it): the laptop's battery against `[battery] warn`.
-    /// An alert becomes a notification while this daemon holds the name; otherwise one log line.
     pub(crate) fn battery_feed(&mut self, m: &Msg) {
-        let Msg::Battery(Some(state)) = m else { return };
-        let Some(alert) = self.battery_alerts.as_mut().and_then(|a| a.feed(state.laptop)) else { return };
-        if self.notifications().is_some_and(|n| n.held()) {
-            let n = incoming(alert);
-            self.notify_act(move |s| {
-                s.act(|c| {
-                    c.notify(n, Instant::now(), minute_now());
-                    c.take_effects()
-                })
-            });
-            log(&format!("battery: alert at {} %", alert.threshold));
-        } else {
-            log(&format!("battery: alert at {} % skipped (not serving)", alert.threshold));
+        if let Msg::Battery(Some(state)) = m {
+            self.battery_deliver(Some(state.laptop));
         }
+    }
+
+    /// Feeds a reading (None: the last one again, when the server just started serving). An alert
+    /// counts as given only while this daemon holds the name; before that it stays armed.
+    fn battery_deliver(&mut self, reading: Option<Option<Battery>>) {
+        let serving = self.notifications().is_some_and(|n| n.held());
+        let Some(alerts) = self.battery_alerts.as_mut() else { return };
+        let laptop = reading.unwrap_or_else(|| alerts.last());
+        let Some(alert) = alerts.feed(laptop, serving) else { return };
+        let n = incoming(alert);
+        self.notify_act(move |s| {
+            s.act(|c| {
+                c.notify(n, Instant::now(), minute_now());
+                c.take_effects()
+            })
+        });
+        log(&format!("battery: alert at {} %", alert.threshold));
     }
 
     /// Clear all: every notification goes (their NotificationClosed sent while the name is held).

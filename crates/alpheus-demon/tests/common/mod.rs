@@ -1361,7 +1361,10 @@ impl Workstation {
 /// The recorded display device with its `Percentage` and `State` replaced.
 fn rewrite_display(json: &str, percent: f64, state: u32) -> String {
     let mut v: serde_json::Value = serde_json::from_str(json).unwrap();
-    let props = &mut v["data"][0];
+    let props = v
+        .pointer_mut("/data/0")
+        .filter(|p| p["Percentage"]["data"].is_number() && p["State"]["data"].is_number())
+        .expect("dbus-upower-display.json no longer has data[0].Percentage/State numbers: update rewrite_display");
     props["Percentage"]["data"] = serde_json::json!(percent);
     props["State"]["data"] = serde_json::json!(state);
     v.to_string()

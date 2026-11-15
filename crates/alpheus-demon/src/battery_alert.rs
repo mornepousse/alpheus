@@ -19,6 +19,9 @@ pub struct BatteryAlerts {
     thresholds: Vec<u8>,
     /// The lowest threshold alerted since the last charge.
     fired: Option<u8>,
+    /// The latest reading, so an alert held back while the server was not serving can go out
+    /// when it starts (`last`).
+    last: Option<Battery>,
 }
 
 impl BatteryAlerts {
@@ -26,14 +29,22 @@ impl BatteryAlerts {
         let mut thresholds = warn.to_vec();
         thresholds.sort_unstable_by(|a, b| b.cmp(a));
         thresholds.dedup();
-        BatteryAlerts { thresholds, fired: None }
+        BatteryAlerts { thresholds, fired: None, last: None }
+    }
+
+    /// The latest reading seen.
+    pub fn last(&self) -> Option<Battery> {
+        self.last
     }
 
     /// A reading of the laptop's battery. Discharging: the lowest threshold at or above the
     /// percentage and below the last one alerted gives the alert (a jump past two gives one).
-    /// Any charge re-arms; an unknown state or no battery changes nothing.
-    pub fn feed(&mut self, laptop: Option<Battery>) -> Option<Alert> {
+    /// The alert counts as given only when `serving` (someone can show it): otherwise the state
+    /// stays armed and `last` re-offers it later. Any charge re-arms; an unknown state or no
+    /// battery changes nothing.
+    pub fn feed(&mut self, laptop: Option<Battery>, serving: bool) -> Option<Alert> {
         let b = laptop?;
+        self.last = Some(b);
         match b.charge {
             Charge::Charging | Charge::Full | Charge::PendingCharge => {
                 self.fired = None;
@@ -43,6 +54,9 @@ impl BatteryAlerts {
             Charge::Discharging => {
                 let below = self.fired.unwrap_or(u8::MAX);
                 let t = self.thresholds.iter().copied().filter(|&t| b.percent <= t && t < below).min()?;
+                if !serving {
+                    return None;
+                }
                 self.fired = Some(t);
                 Some(Alert { threshold: t, percent: b.percent, critical: self.thresholds.last() == Some(&t) })
             }
@@ -93,61 +107,71 @@ mod tests {
     #[test]
     fn crossing_each_threshold_alerts_once() {
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(d(25)), None);
-        assert_eq!(a.feed(d(20)), alert(20, 20, false));
-        assert_eq!(a.feed(d(19)), None);
-        assert_eq!(a.feed(d(10)), alert(10, 10, false));
-        assert_eq!(a.feed(d(9)), None);
-        assert_eq!(a.feed(d(5)), alert(5, 5, true));
-        assert_eq!(a.feed(d(4)), None);
+        assert_eq!(a.feed(d(25), true), None);
+        assert_eq!(a.feed(d(20), true), alert(20, 20, false));
+        assert_eq!(a.feed(d(19), true), None);
+        assert_eq!(a.feed(d(10), true), alert(10, 10, false));
+        assert_eq!(a.feed(d(9), true), None);
+        assert_eq!(a.feed(d(5), true), alert(5, 5, true));
+        assert_eq!(a.feed(d(4), true), None);
     }
 
     #[test]
     fn a_start_below_alerts_once_for_the_lowest_crossed() {
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(d(8)), alert(10, 8, false));
-        assert_eq!(a.feed(d(7)), None);
-        assert_eq!(a.feed(d(5)), alert(5, 5, true));
+        assert_eq!(a.feed(d(8), true), alert(10, 8, false));
+        assert_eq!(a.feed(d(7), true), None);
+        assert_eq!(a.feed(d(5), true), alert(5, 5, true));
     }
 
     #[test]
     fn a_jump_past_two_thresholds_alerts_once() {
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(d(25)), None);
-        assert_eq!(a.feed(d(9)), alert(10, 9, false));
-        assert_eq!(a.feed(d(9)), None);
+        assert_eq!(a.feed(d(25), true), None);
+        assert_eq!(a.feed(d(9), true), alert(10, 9, false));
+        assert_eq!(a.feed(d(9), true), None);
     }
 
     #[test]
     fn jitter_around_a_threshold_alerts_once() {
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(d(20)), alert(20, 20, false));
-        assert_eq!(a.feed(d(21)), None);
-        assert_eq!(a.feed(d(20)), None);
+        assert_eq!(a.feed(d(20), true), alert(20, 20, false));
+        assert_eq!(a.feed(d(21), true), None);
+        assert_eq!(a.feed(d(20), true), None);
     }
 
     #[test]
     fn charging_or_full_rearms() {
         for charge in [Charge::Charging, Charge::Full, Charge::PendingCharge] {
             let mut a = BatteryAlerts::new(&[20, 10, 5]);
-            assert_eq!(a.feed(d(20)), alert(20, 20, false));
-            assert_eq!(a.feed(at(15, charge)), None);
-            assert_eq!(a.feed(d(15)), alert(20, 15, false), "{charge:?}");
+            assert_eq!(a.feed(d(20), true), alert(20, 20, false));
+            assert_eq!(a.feed(at(15, charge), true), None);
+            assert_eq!(a.feed(d(15), true), alert(20, 15, false), "{charge:?}");
         }
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(d(20)), alert(20, 20, false));
-        assert_eq!(a.feed(c(15)), None);
-        assert_eq!(a.feed(d(15)), alert(20, 15, false), "a plain charge re-arms");
-        assert_eq!(a.feed(at(15, Charge::Unknown)), None);
-        assert_eq!(a.feed(d(15)), None, "unknown re-arms nothing");
+        assert_eq!(a.feed(d(20), true), alert(20, 20, false));
+        assert_eq!(a.feed(c(15), true), None);
+        assert_eq!(a.feed(d(15), true), alert(20, 15, false), "a plain charge re-arms");
+        assert_eq!(a.feed(at(15, Charge::Unknown), true), None);
+        assert_eq!(a.feed(d(15), true), None, "unknown re-arms nothing");
+    }
+
+    #[test]
+    fn an_alert_while_not_serving_waits_for_the_server() {
+        let mut a = BatteryAlerts::new(&[20, 10, 5]);
+        assert_eq!(a.feed(d(8), false), None);
+        assert_eq!(a.last(), d(8));
+        assert_eq!(a.feed(a.last(), true), alert(10, 8, false), "served: exactly one, for 10 %");
+        assert_eq!(a.feed(d(8), true), None);
+        assert_eq!(a.feed(a.last(), true), None);
     }
 
     #[test]
     fn no_battery_or_no_threshold_never_alerts() {
         let mut a = BatteryAlerts::new(&[20, 10, 5]);
-        assert_eq!(a.feed(None), None);
+        assert_eq!(a.feed(None, true), None);
         let mut a = BatteryAlerts::new(&[]);
-        assert_eq!(a.feed(d(1)), None);
+        assert_eq!(a.feed(d(1), true), None);
     }
 
     #[test]

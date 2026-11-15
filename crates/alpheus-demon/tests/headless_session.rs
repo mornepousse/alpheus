@@ -5654,7 +5654,8 @@ fn every_test_compositor_has_its_own_name() {
 }
 
 /// Small features 1, task 9: a laptop at 8 % at start, discharging, alerts once, for the lowest
-/// threshold crossed (10 %), once the server holds the name.
+/// threshold crossed (10 %), once the server holds the name (whichever of the reading and
+/// the name comes first: an alert is never lost to the start-up order).
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
@@ -5677,5 +5678,4 @@ fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
     assert!(d.wait_for("battery: alert at 10 %", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
-    assert_eq!(d.count("skipped (not serving)"), 0, "{:?}", d.log());
 }

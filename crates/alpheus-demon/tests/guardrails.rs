@@ -2823,3 +2823,13 @@ fn on_bar_message_feeds_the_battery_alerts() {
         }
     }
 }
+
+/// Small features 1, task 9: a server that just started serving re-offers the last battery
+/// reading (an alert held back before the name was held must not be lost).
+#[test]
+fn a_new_server_gets_the_last_battery_reading() {
+    let files = source_files();
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "notify_app.rs").expect("notify_app.rs").1);
+    let view = function_body(&app, "pub(crate) fn notify_view(");
+    assert!(view.contains("view.serving") && view.contains("self.battery_deliver(None)"), "{view}");
+}
