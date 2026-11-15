@@ -309,6 +309,30 @@ fn calc_opens_the_calculator_and_enter_copies() {
     assert_eq!(d.exit(Duration::from_millis(100)), None, "the bar keeps running");
 }
 
+/// Launcher 2, `?`: Enter opens the percent-encoded search URL through `open` (a stub script,
+/// never `xdg-open`), and the text typed is logged nowhere.
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn a_question_mark_opens_the_search_url() {
+    use std::os::unix::fs::PermissionsExt;
+    let sway = Sway::start("launcher-search", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let opened = sway.runtime.join("opened");
+    let stub = sway.runtime.join("fake-open");
+    std::fs::write(&stub, format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{0}.tmp' && mv '{0}.tmp' '{0}'\n", opened.display())).unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let toml = format!("open = [\"{}\"]\n", stub.display());
+    let d = start_daemon_with(&sway, &DaemonOptions { launcher_toml: Some(&toml), ..DaemonOptions::default() });
+    ready(&d);
+    assert_eq!(launcher(&sway, &Request::Toggle), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "? rust ratatui", "-k", "Return"]).success());
+    wait_for_file(&opened, DELAY);
+    assert_eq!(std::fs::read_to_string(&opened).unwrap(), "https://duckduckgo.com/?q=rust%20ratatui\n");
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    assert!(d.log().iter().all(|l| !l.contains("ratatui")), "the typed text is never logged: {:?}", d.log());
+}
+
 #[test]
 #[ignore = "headless sway and wtype (nix develop)"]
 fn typing_launches_the_fake_program() {

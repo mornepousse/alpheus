@@ -70,6 +70,12 @@ pub enum Source {
     Entry(usize),
     /// The calculator's row (`Launcher::calc` holds its answer): first in All and alone in Calc.
     Calc,
+    /// The `?` prefix's one row (`Launcher::prefixed` holds its text): the web search.
+    Search,
+    /// An emoji row (`:`): a byte offset into the emoji table.
+    Emoji(usize),
+    /// The `$` prefix's one row: run the text in a shell.
+    Shell,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -329,13 +335,14 @@ fn kind(s: Source) -> u8 {
         Source::Command(_) => 3,
         Source::Line(_) => 4,
         Source::Calc => 5,
+        Source::Search | Source::Emoji(_) | Source::Shell => 6,
     }
 }
 
 fn index(s: Source) -> usize {
     match s {
-        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) => i,
-        Source::Calc => 0,
+        Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) | Source::Emoji(i) => i,
+        Source::Calc | Source::Search | Source::Shell => 0,
     }
 }
 
@@ -352,7 +359,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
-        Source::Calc => "",
+        Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => "",
     }
 }
 
@@ -574,7 +581,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
             Source::Entry(i) => pr.entry_name_rank[i],
-            Source::Calc => 0,
+            Source::Calc | Source::Search | Source::Emoji(_) | Source::Shell => 0,
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {

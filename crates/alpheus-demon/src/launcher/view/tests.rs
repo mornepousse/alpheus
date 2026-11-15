@@ -616,3 +616,35 @@ fn the_calculator_mode_has_no_modes_row_and_its_own_help() {
     // Clicking where the modes row would be reaches no mode.
     assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside));
 }
+
+#[test]
+fn the_search_row_and_its_help() {
+    let mut l = launcher();
+    typed(&mut l, "? rust");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("Search the web: rust") && row.contains("web"), "{row}");
+    assert!(row.contains(SEARCH_ICON), "{row}");
+    assert_eq!(help_text(&l), "enter search · esc close");
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "rust", "{lines:?}");
+    assert!(lines[1].starts_with("https://duckduckgo.com/?q=rust"), "{lines:?}");
+    assert!(lines.iter().any(|t| t == "enter  search"), "{lines:?}");
+}
+
+#[test]
+fn a_bare_prefix_shows_its_hint_not_scanning() {
+    for (query, hint) in [("?", "type to search the web"), (":", "type an emoji name"), ("$", "type a command to run in a shell")] {
+        let mut l = Launcher::for_apps(LauncherConfig::default(), windows(), History::empty(200), NOW);
+        assert!(l.catalog.is_none());
+        typed(&mut l, query);
+        let (b, rows) = draw(&mut l, 100);
+        let row = rows.rows[usize::from(b.list_top) - 1].text();
+        assert!(row.contains(hint), "{query}: {}", snapshot(&rows));
+        assert!(!snapshot(&rows).contains("scanning"), "{query}");
+    }
+    let mut l = launcher();
+    typed(&mut l, ":zzz");
+    let (_, rows) = draw(&mut l, 100);
+    assert!(snapshot(&rows).contains("no match"));
+}

@@ -1372,7 +1372,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 48] = [
+const NO_THREAD_NOR_COMMAND: [&str; 49] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1421,6 +1421,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 48] = [
     "launcher/calc/units.rs",
     "dnd.rs",
     "battery_alert.rs",
+    "launcher/prefix.rs",
 ];
 
 #[test]
@@ -1568,7 +1569,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
     let bin = std::env::temp_dir().join(format!("alpheus-guardrails-{}-bin", std::process::id()));
     std::fs::create_dir_all(&bin).unwrap();
     let _bin_guard = RemoveOnDrop(bin.clone());
-    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh", "tools-menu"] {
+    for p in ["firefox", "foot", "nautilus", "htop", "nvim", "sh", "tools-menu", "xdg-open"] {
         use std::os::unix::fs::PermissionsExt;
         std::fs::write(bin.join(p), "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(bin.join(p), std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1612,6 +1613,13 @@ fn every_launcher_activation_stays_on_the_allowlist() {
             }
             outcomes.push((sourced.key(Key::Enter), mode));
             outcomes.push((sourced.key(Key::CtrlEnter), mode));
+            // The `?` row (launcher 2): `open` plus the percent-encoded URL, never the raw text.
+            let mut searched = fresh();
+            for c in "? rust ratatui".chars() {
+                searched.key(Key::Char(c));
+            }
+            outcomes.push((searched.key(Key::Enter), mode));
+            outcomes.push((searched.key(Key::CtrlEnter), mode));
             if mode == Mode::All {
                 // The prefix route into Commands mode (Global Constraints:
                 // `>` by default): starting in All and typing the prefix
@@ -1644,6 +1652,9 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                     } else if terminal_hold_commands.contains(&unwrapped) {
                         assert_eq!(mode, Mode::Commands, "a $PATH command outside the Commands mode: {c}");
                         "terminal hold command"
+                    } else if unwrapped == "xdg-open https://duckduckgo.com/?q=rust%20ratatui" {
+                        assert_eq!(mode, Mode::All, "a web search outside the All mode: {c}");
+                        "open"
                     } else if unwrapped == entry_call {
                         assert_eq!(mode, Mode::All, "a source entry outside the All mode: {c}");
                         "source entry"
@@ -1651,7 +1662,7 @@ fn every_launcher_activation_stays_on_the_allowlist() {
                         unwrapped.strip_prefix("sh -c -- ").or_else(|| unwrapped.strip_prefix("foot --hold -e sh -c -- "))
                     {
                         assert_eq!(mode, Mode::Commands, "a shell outside the Commands mode: {c}");
-                        assert!(matches!(text, "ls -la" | "zone"), "only typed text goes through the shell: {c}");
+                        assert!(matches!(text, "ls -la" | "zone" | "? rust ratatui"), "only typed text goes through the shell: {c}");
                         if unwrapped.starts_with("sh") { "shell" } else { "terminal hold shell" }
                     } else {
                         panic!("command outside the allowlist: {c}")
@@ -1671,6 +1682,8 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         ("focus", false),
         ("source entry", true),
         ("source entry", false),
+        ("open", true),
+        ("open", false),
     ] {
         assert!(seen.contains(&expected), "{expected:?} never reached: {seen:?}");
     }
@@ -2602,6 +2615,22 @@ fn the_calculator_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Launcher 2: the prefix parser runs on each keystroke and must never panic, and the query text
+/// it sees is never logged. Production code only.
+#[test]
+fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    let name = "launcher/prefix.rs";
+    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
+    }
+    for p in ["log(", "log::write", "crate::log"] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
     }
 }
 

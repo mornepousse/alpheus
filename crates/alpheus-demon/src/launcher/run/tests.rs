@@ -433,3 +433,30 @@ fn copy_with_a_failing_program_says_so() {
         Err("wl-copy: program not found".to_string())
     );
 }
+
+#[test]
+fn open_appends_the_url_and_runs_in_a_scope() {
+    let bin = stubs("open-url", &["xdg-open"]);
+    let dirs = [bin.to_path_buf()];
+    let history = TempDir::new("run-open-history");
+    let path = history.join("history");
+    let url = "https://duckduckgo.com/?q=rust%20ratatui";
+    let fake = FakeExecutor::new();
+    fake.ok(&format!("{SCOPE} xdg-open {url}"), "");
+    let mut l = launcher();
+    let done = perform(&mut l, Activation::Open { url: url.into() }, &ctx(&fake, Spawner::SystemdScope, Some(&path), &dirs));
+    assert_eq!(done, Ok(Done::Close));
+    assert_eq!(fake.calls(), [format!("{SCOPE} xdg-open {url}")]);
+    assert!(!path.exists(), "never recorded");
+}
+
+#[test]
+fn open_missing_says_the_program_only() {
+    let bin = stubs("open-missing", &[]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    let mut l = launcher();
+    let r = perform(&mut l, Activation::Open { url: "https://x/?q=secret".into() }, &ctx(&fake, Spawner::SystemdScope, None, &dirs));
+    assert_eq!(r, Err("xdg-open: program not found".to_string()));
+    assert!(fake.calls().is_empty());
+}

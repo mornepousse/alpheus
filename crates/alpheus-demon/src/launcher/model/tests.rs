@@ -714,3 +714,69 @@ fn the_calculator_mode_copies_on_enter() {
     typed(&mut l, "2048");
     assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "2048".into() }), "no looks_like_math filter in the mode");
 }
+
+#[test]
+fn a_question_mark_shows_one_search_row() {
+    let mut l = launcher();
+    typed(&mut l, "? rust");
+    assert!(matches!(l.results[..], [Hit { source: Source::Search, .. }]), "{:?}", l.results);
+    assert_eq!(l.calc, None);
+    let open = activate(Activation::Open { url: "https://duckduckgo.com/?q=rust".into() });
+    assert_eq!(l.key(Key::Enter), open);
+    assert_eq!(l.key(Key::CtrlEnter), open);
+    assert_eq!(l.prefixed().map(|(_, t)| t), Some("rust"));
+}
+
+#[test]
+fn a_bare_prefix_lists_nothing_and_enter_does_nothing() {
+    for query in ["?", "? ", ":", "$"] {
+        let mut l = launcher();
+        typed(&mut l, query);
+        assert!(l.results.is_empty(), "{query:?}: {:?}", l.results);
+        assert_eq!(l.key(Key::Enter), Outcome::Nothing, "{query:?}");
+        assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing, "{query:?}");
+    }
+}
+
+#[test]
+fn search_disabled_searches_the_text() {
+    for config in [
+        LauncherConfig { search: String::new(), ..LauncherConfig::default() },
+        LauncherConfig { open: vec![], ..LauncherConfig::default() },
+    ] {
+        let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+        l.set_catalog(catalog());
+        typed(&mut l, "?rust");
+        assert!(!sources(&l).contains(&Source::Search), "{:?}", sources(&l));
+        assert_eq!(l.prefixed(), None);
+    }
+}
+
+#[test]
+fn prefixes_only_in_all() {
+    let mut l = launcher();
+    l.key(Key::Tab);
+    assert_eq!(l.mode, Mode::Apps);
+    typed(&mut l, "? rust");
+    assert!(!sources(&l).contains(&Source::Search));
+    assert_eq!(l.prefixed(), None);
+    let mut c = Launcher::for_calc(LauncherConfig::default());
+    typed(&mut c, "? rust");
+    assert!(!sources(&c).contains(&Source::Search));
+    assert_eq!(c.prefixed(), None);
+    let mut s = Launcher::for_script(LauncherConfig::default(), None, vec!["? rust".into()]);
+    typed(&mut s, "? rust");
+    assert_eq!(sources(&s), [Source::Line(0)], "still matches as a line");
+    assert_eq!(s.prefixed(), None);
+}
+
+#[test]
+fn a_prefix_hides_the_calculator() {
+    let mut l = launcher();
+    typed(&mut l, "? 2+2");
+    assert_eq!(l.calc, None);
+    assert_eq!(sources(&l), [Source::Search]);
+    let mut l = launcher();
+    typed(&mut l, "$ 2+2");
+    assert_eq!(l.calc, None);
+}

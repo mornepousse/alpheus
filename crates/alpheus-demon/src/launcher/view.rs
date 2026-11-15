@@ -15,6 +15,7 @@ use crate::grid::{Grid, Style, text_width, truncate};
 use crate::icons;
 use crate::launcher::matching::{Mode, Source, app_for_window, command_path, exec_program};
 use crate::launcher::model::Launcher;
+use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::list::{self, Boxed, Row, tail, wrap};
 
 pub const BOX_COLUMNS: u16 = 60;
@@ -24,6 +25,8 @@ pub const MIN_COLUMNS: u16 = 24;
 pub const COMMAND_ICON: char = '\u{f018d}';
 /// Glyph for the calculator row (md-calculator).
 pub const CALC_ICON: char = '\u{f00ec}';
+/// Glyph for the web search row (md-magnify).
+pub const SEARCH_ICON: char = '\u{f0349}';
 const PROMPT: &str = "❯";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +137,9 @@ fn describe(l: &Launcher, s: Source) -> (Option<char>, String, String) {
         Source::Command(i) => (Some(COMMAND_ICON), commands[i].clone(), "command".into()),
         Source::Line(i) => (None, l.lines[i].clone(), String::new()),
         Source::Calc => (Some(CALC_ICON), calc_text(l), "calculator".into()),
+        Source::Search => (Some(SEARCH_ICON), format!("Search the web: {}", l.prefixed().map_or("", |(_, t)| t)), "web".into()),
+        // Rows of the `:` and `$` prefixes arrive with their own tasks.
+        Source::Emoji(_) | Source::Shell => (None, String::new(), String::new()),
         // Reached only if the entry vanished: `result_row` draws the real row.
         Source::Entry(i) => {
             (None, l.entries.as_ref().and_then(|e| e.items.get(i)).map_or_else(String::new, |e| e.entry.clone()), String::new())
@@ -191,6 +197,13 @@ fn entry_row(g: &mut Grid, start: u16, end: u16, entry: &str, path: Option<&str>
 }
 
 fn help_text(l: &Launcher) -> &'static str {
+    match l.prefixed() {
+        Some((Prefix::Search, _)) => return "enter search · esc close",
+        Some((Prefix::Emoji, _)) if l.config.copy.is_empty() => return "esc close",
+        Some((Prefix::Emoji, _)) => return "enter copy · ctrl+enter copy name · esc close",
+        Some((Prefix::Shell, _)) => return "enter run · ctrl+enter run in terminal · esc close",
+        None => {}
+    }
     match l.mode {
         Mode::Script => "enter choose · esc cancel",
         Mode::Calc if l.config.copy.is_empty() => "esc close",
@@ -290,6 +303,17 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
                 out.push(("enter  run".to_string(), Style::NORMAL));
             }
         }
+        Source::Search => {
+            let text = l.prefixed().map_or("", |(_, t)| t);
+            let tail = [(String::new(), Style::NORMAL), ("enter  search".to_string(), Style::NORMAL)];
+            let room = budget.saturating_sub(tail.len());
+            let shown = capped_wrap(text, width, room.div_ceil(2));
+            let url_budget = room.saturating_sub(shown.len());
+            out.extend(shown.into_iter().map(|t| (t, Style::BOLD_ACCENT)));
+            out.extend(capped_wrap(&search_url(&l.config.search, text), width, url_budget).into_iter().map(|t| (t, Style::MUTED)));
+            out.extend(tail);
+        }
+        Source::Emoji(_) | Source::Shell => {}
         Source::Calc => {
             out.push((l.query.trim().to_string(), Style::BOLD_ACCENT));
             match &l.calc {
@@ -335,6 +359,13 @@ pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
             result_row(l, b, &mut g, index);
         } else if r == 0 && l.results.is_empty() && !l.password {
             let text = match l.mode {
+                _ if let Some((p, text)) = l.prefixed() => {
+                    if text.is_empty() {
+                        prefix::hint(p)
+                    } else {
+                        "no match"
+                    }
+                }
                 Mode::Calc => "type an expression",
                 _ if l.catalog.is_none() && !l.is_script() => "scanning…",
                 _ => "no match",

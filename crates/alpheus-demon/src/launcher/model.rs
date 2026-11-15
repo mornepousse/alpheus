@@ -10,6 +10,7 @@ use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
+use crate::launcher::prefix::{self, Prefix, search_url};
 use crate::launcher::scan::Catalog;
 use crate::launcher::sources::Entries;
 use crate::list;
@@ -52,6 +53,10 @@ pub enum Activation {
     Copy {
         text: String,
     },
+    /// The `?` row: `Config::open` with this URL appended, in a scope like an app; never recorded.
+    Open {
+        url: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +78,10 @@ enum Identity {
     /// Its history key (`source_key`): the source's name and the whole line.
     Entry(String),
     Calc,
+    /// The prefix rows have one position each: nothing to carry across a refilter.
+    Search,
+    Emoji(usize),
+    Shell,
 }
 
 pub struct Launcher {
@@ -249,6 +258,9 @@ impl Launcher {
             Source::Command(i) => Identity::Command(self.catalog.as_ref()?.commands.get(i)?.clone()),
             Source::Line(i) => Identity::Line(i),
             Source::Calc => Identity::Calc,
+            Source::Search => Identity::Search,
+            Source::Emoji(i) => Identity::Emoji(i),
+            Source::Shell => Identity::Shell,
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
                 let item = e.items.get(i)?;
@@ -349,6 +361,15 @@ impl Launcher {
         self.query_changed()
     }
 
+    /// The query's prefix (`?`, `:`, `$`) and its text: only in All and never under `--password`
+    /// (the secret is not parsed). A configured mode prefix is taken before, by `take_prefix`.
+    pub fn prefixed(&self) -> Option<(Prefix, &str)> {
+        if self.mode != Mode::All || self.password {
+            return None;
+        }
+        prefix::split(&self.query, self.config.search_enabled())
+    }
+
     fn query_changed(&mut self) -> Outcome {
         self.message = None;
         self.refilter();
@@ -360,6 +381,13 @@ impl Launcher {
         // the secret into heap buffers the drop cannot wipe.
         if self.password {
             self.results.clear();
+            self.calc = None;
+            return;
+        }
+        // A prefix lists only its own rows: no catalog ranking, no calculator.
+        if let Some((p, text)) = self.prefixed() {
+            let row = (p == Prefix::Search && !text.is_empty()).then_some(Hit { source: Source::Search, score: u32::MAX, frecency: 0 });
+            self.results = row.into_iter().collect();
             self.calc = None;
             return;
         }
@@ -484,8 +512,20 @@ impl Launcher {
                 Some(Source::Line(i)) => self.choose_line(i),
                 Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
                 Some(Source::Calc) => self.copy(false),
-                None => Outcome::Nothing,
+                Some(Source::Search) => self.search(),
+                // Rows of the `:` and `$` prefixes arrive with their own tasks.
+                Some(Source::Emoji(_) | Source::Shell) | None => Outcome::Nothing,
             },
+        }
+    }
+
+    /// The `?` row: the URL for the typed text.
+    fn search(&self) -> Outcome {
+        match self.prefixed() {
+            Some((Prefix::Search, text)) if !text.is_empty() => {
+                Outcome::Activate(Activation::Open { url: search_url(&self.config.search, text) })
+            }
+            _ => Outcome::Nothing,
         }
     }
 
