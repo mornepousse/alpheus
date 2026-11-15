@@ -846,7 +846,7 @@ impl BarConfig {
             return Err(format!("resources.graph {} out of range 0 to {GRAPH_MAX} cells", b.resources.graph));
         }
         if b.resources.show.is_empty() {
-            return Err("resources.show empty (expected at least one of cpu, memory, temperature, net, disk, gpu)".into());
+            return Err("resources.show empty (remove \"resources\" from modules instead; or list at least one of cpu, memory, temperature, net, disk, gpu)".into());
         }
         for (i, item) in b.resources.show.iter().enumerate() {
             if b.resources.show[..i].contains(item) {

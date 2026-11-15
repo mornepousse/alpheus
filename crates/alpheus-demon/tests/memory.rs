@@ -620,7 +620,9 @@ fn resources_tick_at_the_configured_interval() {
 
 const EVERY_ITEM: &str = "show = [\"cpu\", \"memory\", \"temperature\", \"net\", \"disk\", \"gpu\"]\n";
 
-/// Small features 2: the default three figures against all six, same tick rate.
+/// Small features 2: the one-time cost of all six items over the default three (two fresh
+/// daemons, same tick rate), then, in the six-item daemon, what ~60 more passes keep. PSS
+/// without the shm pools: the compositor maps those too, so they move on their own.
 #[test]
 #[ignore = "headless sway and dbus-daemon (nix develop)"]
 fn resources_pss_default_and_every_item() {
@@ -632,13 +634,21 @@ fn resources_pss_default_and_every_item() {
         std::thread::sleep(Duration::from_secs(3));
         d.pss_kb()
     };
-    let every = {
-        let (_sway, _hypr, d) = start("res-items-b", 1, &bus, None, Some(&bar(EVERY_ITEM)), PwDump::Silent);
-        std::thread::sleep(Duration::from_secs(3));
-        d.pss_kb()
-    };
-    eprintln!("resources PSS (KB): {default} with the default items, {every} with all six");
-    assert!(every <= default + 256, "every item costs {} KB over the default", every.saturating_sub(default));
+    let (_sway, _hypr, d) = start("res-items-b", 1, &bus, None, Some(&bar(EVERY_ITEM)), PwDump::Silent);
+    std::thread::sleep(Duration::from_secs(3));
+    let (settled, settled_shm) = d.pss_and_shm_kb();
+    std::thread::sleep(Duration::from_secs(60));
+    let (later, later_shm) = d.pss_and_shm_kb();
+    let (own_settled, own_later) = (settled - settled_shm, later - later_shm);
+    eprintln!(
+        "resources PSS (KB): {default} with the default items, {settled} with all six; own memory {own_settled} settled, {own_later} after ~60 more passes"
+    );
+    assert!(settled <= default + 384, "every item costs {} KB over the default", settled.saturating_sub(default));
+    assert!(
+        own_later <= own_settled + 64,
+        "~60 passes with all six items grew the daemon's own memory by {} KB",
+        own_later.saturating_sub(own_settled)
+    );
 }
 
 /// All six items tick at the configured rate: none adds a timer of its own.

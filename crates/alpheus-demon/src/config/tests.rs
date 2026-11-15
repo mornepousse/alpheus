@@ -101,7 +101,8 @@ fn resources_show_defaults_and_validation() {
     let err = |t: &str| BarConfig::from_text(t).unwrap_err();
     assert!(err("[resources]\nshow = [\"cpu\", \"cpu\"]").contains("resources.show: duplicate \"cpu\""));
     assert!(err("[resources]\nshow = [\"fan\"]").contains("unknown variant"));
-    assert!(err("[resources]\nshow = []").contains("resources.show empty"));
+    let e = err("[resources]\nshow = []");
+    assert!(e.contains("resources.show empty") && e.contains("remove \"resources\" from modules instead"), "{e}");
 }
 
 #[test]

@@ -438,4 +438,6 @@ fn dnd_request_is_the_cli_request() {
     let Some(Request::DndOn(DndEnd::Until(t))) = dnd_request(DndChoice::Until, at, now) else { panic!("until") };
     let t = t as i64;
     assert!(now < t && t <= now + 90_000, "{} s ahead", t - now);
+    let local = crate::clock::LocalTime::from_epoch(t);
+    assert_eq!((u32::from(local.hour), u32::from(local.minute)), at, "the end falls on the configured wall-clock time");
 }
