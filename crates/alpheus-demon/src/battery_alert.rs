@@ -64,7 +64,7 @@ impl BatteryAlerts {
     }
 }
 
-/// The notification an alert becomes: sticky (no expiry), `device.warning`, critical at the lowest threshold.
+/// The notification an alert becomes: `device.warning`; only the critical alert is sticky (no expiry), the others take the server's default timeout.
 pub fn incoming(a: Alert) -> Incoming {
     Incoming {
         app_name: "alpheus".into(),

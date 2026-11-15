@@ -204,7 +204,10 @@ fn the_mango_and_sway_backends_have_no_panicking_path() {
 #[test]
 fn the_notification_rules_log_nothing() {
     let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/notify.rs")).unwrap();
-    assert!(!production_code(&text).contains("log("), "notify.rs logs nothing");
+    let prod = production_code(&text);
+    for log in ["log(", "log::write", "crate::log"] {
+        assert!(!prod.contains(log), "notify.rs logs nothing ({log})");
+    }
 }
 
 /// Every `.rs` file under `src/`, `tests.rs` included: for the scans of raw

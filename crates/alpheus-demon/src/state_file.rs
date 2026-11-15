@@ -104,6 +104,7 @@ pub fn read_dnd(state_dir: &Path) -> Option<String> {
 const DND_READ_CAP: u64 = 64;
 
 /// Whether do-not-disturb is saved on (any file is "on").
+#[cfg(test)]
 pub fn dnd_on(state_dir: &Path) -> bool {
     read_dnd(state_dir).is_some()
 }
