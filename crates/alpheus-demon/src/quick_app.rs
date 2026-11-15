@@ -453,7 +453,7 @@ impl App {
         let backlight = self.quick_backlight();
         let toggles = [self.quick_toggle_state(Toggle::KeepAwake), self.quick_toggle_state(Toggle::NightLight)];
         let built = {
-            let live = quick::live(&self.bar, self.dnd);
+            let live = quick::live(&self.bar, &self.dnd_timed.model);
             let mut q = Quick::new(focus, &live, sinks, backlight, toggles, room);
             q.set_headset(headset);
             (!q.is_empty(&live)).then(|| {
@@ -520,8 +520,8 @@ impl App {
 
     /// `f` on the open panel and what it reads; Nothing when the panel is not open.
     pub(crate) fn quick_with(&mut self, f: impl FnOnce(&mut Quick, &Live) -> QuickAction) -> QuickAction {
-        let App { popup, bar, dnd, .. } = self;
-        let live = quick::live(bar, *dnd);
+        let App { popup, bar, dnd_timed, .. } = self;
+        let live = quick::live(bar, &dnd_timed.model);
         match popup.as_mut().map(|p| &mut p.body) {
             Some(PopupBody::Quick(q)) => f(q, &live),
             _ => QuickAction::Nothing,
@@ -601,8 +601,8 @@ impl App {
             return;
         }
         let rows = {
-            let App { popup, bar, dnd, .. } = &mut *self;
-            let live = quick::live(bar, *dnd);
+            let App { popup, bar, dnd_timed, .. } = &mut *self;
+            let live = quick::live(bar, &dnd_timed.model);
             match popup.as_mut().map(|p| &mut p.body) {
                 Some(PopupBody::Quick(q)) => {
                     q.fit(&live);
@@ -760,9 +760,9 @@ impl App {
         if let Some((open, state)) = taken_wifi(m) {
             let now = Instant::now();
             let current = self.quick.wifi_tap.as_ref().map(|t| t.snapshot().1);
-            let App { popup, bar, dnd, quick, .. } = &mut *self;
+            let App { popup, bar, dnd_timed, quick, .. } = &mut *self;
             let news = match popup.as_mut().map(|p| &mut p.body) {
-                Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, *dnd), open, state, current, now),
+                Some(PopupBody::Quick(q)) => panel_wifi(q, &quick::live(bar, &dnd_timed.model), open, state, current, now),
                 _ => {
                     // The follower's open is the one the tap still has (it never went Closed).
                     if open_current(open, current)
@@ -788,9 +788,9 @@ impl App {
             if bluez_left(open, view.as_ref(), current) {
                 self.bt_drop();
             }
-            let App { popup, bar, dnd, .. } = &mut *self;
+            let App { popup, bar, dnd_timed, .. } = &mut *self;
             let action = match popup.as_mut().map(|p| &mut p.body) {
-                Some(PopupBody::Quick(q)) => panel_bt(q, &quick::live(bar, *dnd), open, view, current, now),
+                Some(PopupBody::Quick(q)) => panel_bt(q, &quick::live(bar, &dnd_timed.model), open, view, current, now),
                 _ => None,
             };
             if let Some(action) = action {

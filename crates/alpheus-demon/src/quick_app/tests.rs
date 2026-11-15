@@ -80,7 +80,7 @@ fn a_follower_ends_with_its_attempt_and_deletes_only_a_failed_new_profile() {
 fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
     let t = Instant::now();
     let bar = Bar::new(BarConfig::default());
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     let mut first = panel_on("Cafe-Libre");
     let QuickAction::Run { .. } = first.wifi.key(&QuickConfig::default(), Key::Enter, t) else { panic!("an open network") };
     let follow = WifiFollow::leaving(&mut first.wifi).expect("a new network: followed");
@@ -105,7 +105,7 @@ fn a_panel_reopened_on_the_wifi_takes_the_attempt_back_and_opens_the_detail() {
 fn only_a_state_read_for_this_open_reaches_the_panel() {
     let t = Instant::now();
     let bar = Bar::new(BarConfig::default());
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     let rescan = quick::run(&["nmcli", "device", "wifi", "rescan"], "wifi rescan");
     let current = Some(7);
     let mut q = Quick::new(Focus::Wifi, &live, vec![], None, [None, None], 20);
@@ -168,7 +168,7 @@ fn the_state_read_at_open_shows_a_microphone_the_bar_never_heard_of() {
     let (sinks, _, redraw) = opened_sound(&mut bar, opened);
     assert_eq!(sinks.len(), 2, "the list goes to the panel");
     assert!(!redraw, "the bar draws the sink alone: unchanged");
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     assert_eq!(live.sound.and_then(|s| s.source), vol(60, true), "the microphone, muted");
     assert_eq!(live.sound.and_then(|s| s.sinks.as_ref()), None, "the bar never keeps a list");
     let q = Quick::new(Focus::Sound, &live, sinks, None, [None, None], 20);
@@ -182,16 +182,16 @@ fn a_pw_dump_outage_closes_the_outputs_detail() {
     let mut bar = Bar::new(BarConfig::default());
     bar.apply(Msg::Sound(Some(SoundState { sink: vol(64, false), ..SoundState::default() })));
     let sinks = vec![sink(99, "Speaker", false), sink(122, "AG06", true)];
-    let mut q = Quick::new(Focus::Sound, &quick::live(&bar, false), sinks, None, [None, None], 20);
+    let mut q = Quick::new(Focus::Sound, &quick::live(&bar, &crate::dnd::Dnd::default()), sinks, None, [None, None], 20);
     let now = Instant::now();
-    assert_eq!(q.key(&quick::live(&bar, false), crate::keys::Key::Enter, false, now), QuickAction::Redraw);
+    assert_eq!(q.key(&quick::live(&bar, &crate::dnd::Dnd::default()), crate::keys::Key::Enter, false, now), QuickAction::Redraw);
     assert!(q.detail, "the outputs detail is open");
     let mut down = Msg::Sound(None);
     if let Some(s) = taken_sinks(&mut down) {
         q.set_sinks(s);
     }
     bar.apply(down);
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     q.fit(&live); // quick_refresh, after the message
     assert!(!q.detail, "the detail closed");
     let enter = q.key(&live, crate::keys::Key::Enter, false, now);
@@ -224,7 +224,7 @@ fn an_empty_model_at_open_leaves_the_bar_alone() {
     bar.apply(Msg::Sound(None));
     let (sinks, _, redraw) = opened_sound(&mut bar, SoundState { sinks: Some(vec![]), ..SoundState::default() });
     assert!(sinks.is_empty() && !redraw);
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     assert!(live.sound.is_none(), "still down");
     let q = Quick::new(Focus::Sound, &live, sinks, None, [None, None], 20);
     let rows = shown(&live, &q);
@@ -252,7 +252,7 @@ fn wifi_around() -> WifiState {
 /// A panel with the Wi-Fi detail open on `wifi_around`, `ssid` picked.
 fn panel_on(ssid: &str) -> Quick {
     let bar = Bar::new(BarConfig::default());
-    let mut q = Quick::new(Focus::Top, &quick::live(&bar, false), vec![], None, [None, None], 20);
+    let mut q = Quick::new(Focus::Top, &quick::live(&bar, &crate::dnd::Dnd::default()), vec![], None, [None, None], 20);
     q.wifi = Wifi { state: Some(wifi_around()), ..Wifi::default() };
     q.wifi.open_detail();
     q.wifi.pick = Pick::Network(ssid.as_bytes().to_vec());
@@ -334,14 +334,14 @@ fn the_headset_goes_to_the_panel_never_the_bar() {
     let mut bar = Bar::new(BarConfig::default());
     let (_, headset, _) = opened_sound(&mut bar, SoundState { sink: vol(40, false), headset: casque(), ..SoundState::default() });
     assert_eq!(headset, casque());
-    assert_eq!(quick::live(&bar, false).sound.and_then(|s| s.headset.clone()), None, "the bar keeps none");
+    assert_eq!(quick::live(&bar, &crate::dnd::Dnd::default()).sound.and_then(|s| s.headset.clone()), None, "the bar keeps none");
     let mut m = Msg::Sound(Some(SoundState { headset: casque(), sinks: Some(vec![]), ..SoundState::default() }));
     assert_eq!(taken_headset(&mut m), Some(casque()));
     assert!(matches!(&m, Msg::Sound(Some(s)) if s.headset.is_none()), "taken out of the message");
     let mut base = Msg::Sound(Some(SoundState { headset: casque(), ..SoundState::default() }));
     assert_eq!(taken_headset(&mut base), None, "a base-scope message says nothing of the headset");
     assert!(matches!(&base, Msg::Sound(Some(s)) if s.headset.is_none()), "and still never keeps one");
-    let l = quick::live(&bar, false);
+    let l = quick::live(&bar, &crate::dnd::Dnd::default());
     let mut q = Quick::new(Focus::Sound, &l, Vec::new(), None, [None, None], 20);
     q.set_headset(casque());
     if let Some(h) = taken_headset(&mut base) {
@@ -369,7 +369,7 @@ fn a_bt_message_goes_to_the_panel_and_leaves_nothing_for_the_bar() {
 #[test]
 fn only_a_view_read_for_this_open_reaches_the_panel() {
     let (t, bar) = (Instant::now(), bar_bt_on());
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
     assert_eq!(panel_bt(&mut q, &live, Some(6), Some(bt_view()), Some(7), t), None, "the open before's: dropped");
     assert!(q.bt.view.is_none());
@@ -385,7 +385,7 @@ fn only_a_view_read_for_this_open_reaches_the_panel() {
 #[test]
 fn bt_scope_follows_the_panel() {
     let bar = bar_bt_on();
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     assert_eq!(bt_scope_for(None, true), BtScope::Closed);
     let mut q = Quick::new(Focus::Top, &live, vec![], None, [None, None], 20);
     assert_eq!(bt_scope_for(Some(&q), false), BtScope::Closed, "no row: nothing read");
@@ -399,7 +399,7 @@ fn bt_scope_follows_the_panel() {
 fn bluez_restarting_closes_the_detail_and_lets_the_connection_go() {
     use crate::bt_app::{adapter_seen, connection_wanted, opens_for};
     let (t, bar) = (Instant::now(), bar_bt_on());
-    let live = quick::live(&bar, false);
+    let live = quick::live(&bar, &crate::dnd::Dnd::default());
     let mut q = Quick::new(Focus::Bluetooth, &live, vec![], None, [None, None], 20);
     panel_bt(&mut q, &live, Some(3), Some(bt_view()), Some(3), t).expect("this open's");
     assert!(q.bt.open && adapter_seen(&q) && connection_wanted(Some(&q), 0));

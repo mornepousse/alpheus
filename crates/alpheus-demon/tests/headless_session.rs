@@ -3871,6 +3871,11 @@ const VOLUME_AT: (u32, u32) = (16, 10);
 /// power-profiles-daemon (the D-Bus source settles instead of retrying), the `Fifo` fake pw-dump,
 /// fake `wpctl`, `brightnessctl` and `alpheus-toggle` recording their calls, a fake backlight.
 fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
+    quick_daemon_on(name, QUICK_BAR, extra)
+}
+
+/// `quick_daemon` with its own `modules` line.
+fn quick_daemon_on(name: &str, modules: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Daemon) {
     let bus = PrivateBus::start(name);
     let sway = Sway::start(name, 1);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
@@ -3881,7 +3886,7 @@ fn quick_daemon(name: &str, extra: &str) -> (PrivateBus, Sway, FakeHyprland, Dae
         fake_recorder(&sway, program);
     }
     fake_backlight(&sway, "intel_backlight", 9696, 19393);
-    let toml = format!("{QUICK_BAR}[osd]\nbacklight_dir = \"{}\"\n{extra}", sway.runtime.join("backlight").display());
+    let toml = format!("{modules}[osd]\nbacklight_dir = \"{}\"\n{extra}", sway.runtime.join("backlight").display());
     let options =
         DaemonOptions { bar_toml: Some(&toml), system_bus: Some(&bus.address), pw_dump: PwDump::Fifo, ..DaemonOptions::default() };
     let d = start_daemon_with(&sway, &options);
@@ -5716,4 +5721,26 @@ fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
     assert!(d.wait_for("battery: alert at 10 %", DELAY), "{:?}", d.log());
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
+}
+
+/// Small features 2, task 5: the panel's do-not-disturb detail, Enter on its default choice, sets a
+/// 30-minute do-not-disturb through the one path (the log lines and the state file say so).
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn quick_the_dnd_detail_sets_a_timed_do_not_disturb() {
+    let (_bus, sway, _hypr, d) =
+        quick_daemon_on("quick-dnd-timed", "modules = [\"volume\", \"quick\", \"notifications\", \"clock\"]\n", "");
+    assert_eq!(quick_verb(&sway, &["--quick"]), EXIT_OK);
+    assert!(d.wait_for("quick shown (rows: ", DELAY), "{:?}", d.log());
+    let line = d.log().into_iter().find(|l| l.contains("quick shown (rows: ")).unwrap();
+    let rows = line.split("(rows: ").nth(1).unwrap().split(';').next().unwrap();
+    let downs = rows.split_whitespace().position(|r| r == "dnd").expect(&line);
+    assert!(wait_until(|| sway.seat_focus() == Some(0)), "open: the bar is Exclusive");
+    let mut names = vec!["Down"; downs];
+    names.extend(["Return", "Return"]);
+    keys(&sway, &names);
+    assert!(d.wait_for("quick: do not disturb for 30 min", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb on (ends in 30 min)", DELAY), "{:?}", d.log());
+    let text = std::fs::read_to_string(sway.runtime.join("state/alpheus/dnd")).unwrap();
+    assert!(text.starts_with("until "), "{text:?}");
 }

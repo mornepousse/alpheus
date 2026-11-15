@@ -12,7 +12,9 @@
 
 use crate::actions::Button;
 use crate::backlight::Reread;
+use crate::clock::LocalTime;
 use crate::config::{ModuleId, QuickConfig, ToggleConfig};
+use crate::dnd::Dnd;
 use crate::grid::{Grid, Style, Target, text_width};
 use crate::keys::Key;
 use crate::list::{self, Boxed};
@@ -226,14 +228,20 @@ pub struct Live<'a> {
 }
 
 /// The bar's state as the panel reads it.
-pub fn live(bar: &Bar, dnd: bool) -> Live<'_> {
+pub fn live<'a>(bar: &'a Bar, dnd: &Dnd) -> Live<'a> {
     Live {
         sound: match &bar.sound {
             Feed::Ready(s) => Some(s),
             _ => None,
         },
-        dnd: bar.config.modules.contains(&ModuleId::Notifications).then_some(dnd),
-        dnd_end: None,
+        dnd: bar.config.modules.contains(&ModuleId::Notifications).then_some(dnd.on),
+        dnd_end: match dnd.until {
+            Some(until) if dnd.on && !dnd.by_sharing => {
+                let t = LocalTime::from_epoch(until as i64);
+                Some((t.hour, t.minute))
+            }
+            _ => None,
+        },
         profile: match &bar.profile {
             Feed::Ready(p) => Some(p),
             _ => None,
@@ -1436,8 +1444,11 @@ pub(crate) fn switch(on: Option<bool>) -> (&'static str, Style) {
     }
 }
 
-/// The do-not-disturb row's right side: the switch (Task 5 adds the timed form).
+/// The do-not-disturb row's right side: the switch, or ` until HH:MM ● ` while a timed one is on.
 pub(crate) fn dnd_switch(live: &Live) -> (String, Style) {
+    if let (Some(true), Some((h, m))) = (live.dnd, live.dnd_end) {
+        return (format!(" until {h:02}:{m:02} ● "), Style::ACTIVE);
+    }
     let (text, style) = switch(live.dnd);
     (text.to_string(), style)
 }

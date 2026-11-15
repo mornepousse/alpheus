@@ -1593,3 +1593,43 @@ fn left_goes_back_and_the_header_shows_a_timed_end() {
     assert!(!q.dnd.open);
     assert_eq!(q.selected, Row::Dnd);
 }
+
+#[test]
+fn a_timed_dnd_shows_its_end_in_the_switch() {
+    let mut w = World::full();
+    let t = Instant::now();
+    w.dnd = Some(true);
+    w.dnd_end = Some((14, 30));
+    let q = quick(&w, Focus::Top);
+    let b = rows(&w.live(), &q);
+    let row = b.rows[DND_LINE as usize].text();
+    assert!(row.ends_with(" until 14:30 ●  "), "{row:?}");
+    assert_eq!(b.rows[DND_LINE as usize].styles()[18..33], *"AAAAAAAAAAAAAAA");
+    // The press area is the drawn pill: its first cell opens the detail, the cell before toggles.
+    let mut q2 = quick(&w, Focus::Top);
+    assert_eq!(q2.press(&w.live(), (19, DND_LINE), Button::Left, t), QuickAction::Redraw);
+    assert!(q2.dnd.open);
+    let mut q3 = quick(&w, Focus::Top);
+    assert_eq!(q3.press(&w.live(), (17, DND_LINE), Button::Left, t), QuickAction::ToggleDnd);
+    assert!(!q3.dnd.open);
+    let header = texts(&rows(&w.live(), &q2))[0].clone();
+    assert!(header.trim_start().starts_with("‹ Do not disturb") && header.ends_with("until 14:30"), "{header:?}");
+    w.dnd_end = None;
+    let b = rows(&w.live(), &q);
+    assert!(b.rows[DND_LINE as usize].text().ends_with(" ON  ●  "));
+}
+
+#[test]
+fn live_works_out_the_local_end_of_a_timed_dnd() {
+    use crate::dnd::Dnd;
+    let bar = Bar::new(crate::config::BarConfig::default());
+    let until = 1_800_000_000u64;
+    let lt = crate::clock::LocalTime::from_epoch(until as i64);
+    let timed = Dnd { on: true, until: Some(until), by_sharing: false };
+    let l = live(&bar, &timed);
+    assert_eq!(l.dnd, Some(true));
+    assert_eq!(l.dnd_end, Some((lt.hour, lt.minute)));
+    assert_eq!(live(&bar, &Dnd { on: false, ..timed }).dnd_end, None, "off: no end");
+    assert_eq!(live(&bar, &Dnd { by_sharing: true, ..timed }).dnd_end, None, "sharing: no end");
+    assert_eq!(live(&bar, &Dnd::user(true)).dnd_end, None, "untimed: no end");
+}
