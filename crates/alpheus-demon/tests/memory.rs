@@ -27,8 +27,8 @@ use common::fake_mango::FakeMango;
 use common::mpris::{FakePlayer, Spec as PlayerSpec};
 use common::sni::{FakeItem, Spec};
 use common::{
-    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, Peer, PrivateBus, PwDump, SIGNATURE, Sway,
-    TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source, fake_stdin_recorder,
+    AG06_SINK, Backend, Daemon, DaemonOptions, FakeAp, FakeHyprland, FakeNetworkManager, FakeVpn, Peer, PrivateBus, PwDump, SIGNATURE,
+    Sway, TempDir, UUID_HOME, Workstation, assert_no_spin, capture_delta, capture_gone, fake_recorder, fake_source, fake_stdin_recorder,
     launcher, pw_dump_send, start_daemon_with, volume_delta, write_atomically, wtype, wtype_spawn,
 };
 use std::io::Write;
@@ -1680,6 +1680,137 @@ fn at_rest_no_wakeups_after_the_wifi_detail() {
     assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 10 s");
     assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 10 s: its tap and its bus are quiet");
     assert!(delta <= 8, "{delta} wake-ups in 10 s");
+}
+
+/// Ten fictional VPN profiles (OpenVPN-style and WireGuard alternating), no Wi-Fi profile saved, so
+/// `VPN-Test-NN` is `Settings/NN`.
+fn ten_vpns() -> Vec<FakeVpn> {
+    (1..=10).map(|n| FakeVpn { name: format!("VPN-Test-{n:02}"), wireguard: n % 2 == 0, asks: n % 3 == 0 }).collect()
+}
+
+/// Waits until the fake NetworkManager has answered `GetSettings` of the 10th profile `n` times:
+/// the `n`-th open of the VPN detail has read every profile (the last one comes last).
+fn vpn_detail_read(nm: &FakeNetworkManager, n: usize) -> bool {
+    let call = "GetSettings /org/freedesktop/NetworkManager/Settings/10";
+    let t = Instant::now();
+    while t.elapsed() < DELAY {
+        if nm.calls().iter().filter(|c| c.as_str() == call).count() >= n {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Quick VPN spec § 7: PSS with the panel at rest, the VPN detail open on 10 profiles, closed, and
+/// after 10 more cycles. A fake nmcli (never the real one) is there; nothing is brought up.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn quick_vpn_pss_detail_open_with_10_profiles_and_after() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("vpn-cost");
+    let nm = FakeNetworkManager::serve_with(&bus, vec![], vec![], ten_vpns());
+    let backlight = fake_backlight("vpn-cost-backlight");
+    let (sway, _hypr, d) = start("vpn-cost", 1, &bus, None, Some(&wifi_bar(&backlight.0)), PwDump::Fifo);
+    fake_stdin_recorder(&sway, "nmcli");
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (idle, idle_shm) = d.pss_and_shm_kb();
+    let idle_own = idle - idle_shm;
+    let idle_map = smaps_by_mapping(&d);
+    let toggle = || assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Vpn)), Reply::Done);
+    toggle();
+    assert!(vpn_detail_read(&nm, 1), "{:?} {:?}", nm.calls(), d.log());
+    std::thread::sleep(Duration::from_secs(1)); // published, configured and painted
+    let (open, _) = d.pss_and_shm_kb();
+    toggle();
+    assert!(d.wait_for("popup closed", DELAY), "{:?}", d.log());
+    std::thread::sleep(TRAY_SETTLE);
+    let (closed, closed_shm) = d.pss_and_shm_kb();
+    let closed_own = closed - closed_shm;
+    let closed_map = smaps_by_mapping(&d);
+    eprintln!("quick VPN smaps, idle to closed (KB): {}", smaps_moved(&idle_map, &closed_map));
+    for n in 2..=11 {
+        toggle();
+        assert!(vpn_detail_read(&nm, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        toggle();
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+    }
+    std::thread::sleep(TRAY_SETTLE);
+    let (cycled, cycled_shm) = d.pss_and_shm_kb();
+    let cycled_own = cycled - cycled_shm;
+    eprintln!("quick VPN smaps, closed to cycled (KB): {}", smaps_moved(&closed_map, &smaps_by_mapping(&d)));
+    let detail_cost = open.saturating_sub(idle);
+    eprintln!(
+        "quick VPN PSS (KB): {idle} at rest, {open} with the detail open on 10 profiles (cost {detail_cost}), \
+         {closed} closed, {cycled} after 10 more cycles; without the shm pools: {idle_own} at rest, {closed_own} closed, \
+         {cycled_own} cycled; the pools: {idle_shm} at rest, {closed_shm} closed, {cycled_shm} cycled"
+    );
+    assert!(open < STARTUP_MAX_KB, "{open} KB >= 15 MB — report to Mae, never raise");
+    // Closed, the first open leaves +631…+704 KB of the daemon's own (5 release runs, 2026-11-15; a
+    // bound of 640 failed once at +704). The smaps split (`smaps_moved`): the binary's code pages
+    // +192 and the font file's +384 or +448 (the one step that moves: which glyph pages the first
+    // paint touches), both file-backed and clean, the main heap +56…+60 net (its brk region
+    // remapped; most likely the painter's glyph caches, bounded by MAX_CACHE), the shm pools
+    // apart. As for the Wi-Fi detail and Bluetooth's, the bound is 768: the warm-up is one-time
+    // (10 more cycles +40…+48), nothing a cycle keeps.
+    assert!(
+        closed_own <= idle_own + 768,
+        "closed {closed_own} KB vs {idle_own} KB without the pools: more than the first open's code, font and glyph caches"
+    );
+    assert!(
+        cycled_own <= closed_own + 128,
+        "cycled {cycled_own} KB vs {closed_own} KB closed without the pools: 10 cycles must keep nothing"
+    );
+    assert!(closed_shm <= idle_shm + 128, "the pools closed {closed_shm} KB vs {idle_shm} KB at rest: the popup's pool kept");
+}
+
+/// Quick VPN spec § 7: once the VPN detail closed, no timer, no wake-up (the loop's nor the D-Bus
+/// thread's), no spin.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn at_rest_no_wakeups_after_the_vpn_detail() {
+    require_release(cfg!(debug_assertions));
+    let bus = PrivateBus::start("vpn-rest");
+    let nm = FakeNetworkManager::serve_with(&bus, vec![], vec![], ten_vpns());
+    let backlight = fake_backlight("vpn-rest-backlight");
+    let (sway, _hypr, d) = start("vpn-rest", 1, &bus, None, Some(&wifi_bar(&backlight.0)), PwDump::Fifo);
+    fake_stdin_recorder(&sway, "nmcli");
+    assert!(d.wait_for("launcher socket ready", DELAY), "{:?}", d.log());
+    const REST: Duration = Duration::from_secs(5);
+    // As the Wi-Fi test: three cycles at least, the window away from the minute's tick and starting
+    // within a second of the last close (a stray one-second timer must fall inside it).
+    let mut n = 0;
+    loop {
+        n += 1;
+        if n >= 3 {
+            away_from_the_minute(REST + Duration::from_secs(5));
+        }
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Vpn)), Reply::Done);
+        assert!(vpn_detail_read(&nm, n), "{:?}", d.log());
+        std::thread::sleep(PAST_DEBOUNCE);
+        assert_eq!(launcher(&sway, &Request::Quick(QuickVerb::Vpn)), Reply::Done);
+        assert!(d.wait_for_count("popup closed", n, DELAY), "{:?}", d.log());
+        if n >= 3 && fits_the_minute(REST + Duration::from_secs(1)) {
+            break;
+        }
+        assert!(n < 6, "the minute's tick always too close to the window");
+    }
+    let closed_at = Instant::now();
+    std::thread::sleep(Duration::from_millis(300));
+    let (before, main_before, ticks) = (d.wakeups(), d.main_thread_wakeups(), d.cpu_ticks());
+    assert!(closed_at.elapsed() < Duration::from_millis(900), "the window starts within a second of the close");
+    let dbus_before = d.thread_wakeups("D-Bus").expect("the D-Bus thread");
+    std::thread::sleep(REST);
+    assert_no_spin(d.cpu_ticks() - ticks, REST, "after the VPN detail");
+    let delta = d.wakeups().saturating_sub(before);
+    let main_delta = d.main_thread_wakeups().saturating_sub(main_before);
+    let dbus_delta = d.thread_wakeups("D-Bus").expect("the D-Bus thread").saturating_sub(dbus_before);
+    eprintln!("wake-ups at rest after the VPN detail (5 s): {delta} whole daemon, {main_delta} loop thread, {dbus_delta} D-Bus thread");
+    assert_eq!(main_delta, 0, "{main_delta} loop-thread wake-ups in 5 s");
+    assert_eq!(dbus_delta, 0, "{dbus_delta} D-Bus-thread wake-ups in 5 s: its tap and its bus are quiet");
+    assert!(delta <= 4, "{delta} wake-ups in 5 s");
 }
 
 /// The Bluetooth measurements' bar: the bluetooth module and the panel (the D-Bus thread and the
