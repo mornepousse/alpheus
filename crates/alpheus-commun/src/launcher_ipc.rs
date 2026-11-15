@@ -143,6 +143,8 @@ pub enum Request {
     Close,
     /// Opens the launcher as a calculator with no scan (a second one, or a toggle, closes it).
     Calc,
+    /// Opens the window switcher (the previous window selected), or steps to the next one when it is open.
+    Windows,
     Dmenu {
         prompt: Option<String>,
         lines: Vec<String>,
@@ -262,6 +264,7 @@ pub fn encode_request(r: &Request) -> Vec<u8> {
         Request::Toggle => format!("{MAGIC} toggle\n").into_bytes(),
         Request::Close => format!("{MAGIC} close\n").into_bytes(),
         Request::Calc => format!("{MAGIC} calc\n").into_bytes(),
+        Request::Windows => format!("{MAGIC} windows\n").into_bytes(),
         Request::Dnd(v) => format!("{MAGIC} dnd {}\n", v.word()).into_bytes(),
         Request::DndOn(DndEnd::For(secs)) => format!("{MAGIC} dnd on for {secs}\n").into_bytes(),
         Request::DndOn(DndEnd::Until(at)) => format!("{MAGIC} dnd on until {at}\n").into_bytes(),
@@ -300,6 +303,7 @@ enum Header {
     Toggle,
     Close,
     Calc,
+    Windows,
     Dmenu { prompt: Option<usize>, body: usize, flags: DmenuFlags },
     Dnd(DndVerb),
     DndOn(DndEnd),
@@ -448,6 +452,7 @@ fn bare_request(h: Header) -> Option<Request> {
         Header::Toggle => Some(Request::Toggle),
         Header::Close => Some(Request::Close),
         Header::Calc => Some(Request::Calc),
+        Header::Windows => Some(Request::Windows),
         Header::Dnd(v) => Some(Request::Dnd(v)),
         Header::DndOn(end) => Some(Request::DndOn(end)),
         Header::ClearNotifications => Some(Request::ClearNotifications),
@@ -470,6 +475,7 @@ fn parse_header(line: &[u8]) -> Result<Header, IpcError> {
         ["toggle"] => Ok(Header::Toggle),
         ["close"] => Ok(Header::Close),
         ["calc"] => Ok(Header::Calc),
+        ["windows"] => Ok(Header::Windows),
         ["dnd", word] => {
             DndVerb::parse(word).map(Header::Dnd).ok_or_else(|| IpcError::Malformed(format!("unknown do-not-disturb word {:?}", cut(word))))
         }

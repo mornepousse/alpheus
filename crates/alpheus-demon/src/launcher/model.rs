@@ -131,8 +131,9 @@ pub struct Launcher {
     list_rows: usize,
     /// Whether the user has navigated the selection since the last query or mode change: an
     /// arrow key, PageUp/PageDown, Home/End or the wheel, and only on a non-empty list
-    /// (`move_by`). Set back to false by every `refilter()` — a typed character, Backspace,
-    /// Ctrl+U, Ctrl+W, Tab/BackTab, a prefix jump (Mae, 2026-10-05): the selection is on top
+    /// (`move_by`), or a switcher's Tab/Shift+Tab (`step`). Set back to false by every
+    /// `refilter()` — a typed character, Backspace,
+    /// Ctrl+U, Ctrl+W, Tab/BackTab (outside the switcher, where they step), a prefix jump (Mae, 2026-10-05): the selection is on top
     /// unless the user navigated since the last query or mode change. Until then, a catalog
     /// or window update puts the selection back on top instead of carrying it along by
     /// identity: the catalog arrives after the first window has been auto-selected, and a
@@ -231,6 +232,11 @@ impl Launcher {
 
     pub fn is_script(&self) -> bool {
         self.mode == Mode::Script
+    }
+
+    /// Whether the box draws the modes row: not a script menu, the calculator or the switcher.
+    pub fn has_modes(&self) -> bool {
+        !self.is_bare() && !self.is_switcher()
     }
 
     /// A menu with no modes row and no preview: a script's, or the calculator's.

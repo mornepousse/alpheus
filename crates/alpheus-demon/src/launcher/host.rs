@@ -7,7 +7,7 @@
 use crate::compositor::Toplevel;
 use crate::launcher::config::{LauncherConfig, config_path};
 use crate::launcher::history::History;
-use crate::launcher::model::Launcher;
+use crate::launcher::model::{Launcher, Outcome};
 use crate::launcher::scan::{self, Catalog, ScanEnv, SourcePlan};
 use crate::launcher::socket::Conn;
 use crate::launcher::sources::Entries;
@@ -74,6 +74,10 @@ pub enum Action {
     OpenApps,
     /// `--calc`: the calculator, with no scan.
     OpenCalc,
+    /// `--windows`: the window switcher, with no scan.
+    OpenWindows,
+    /// `--windows` while the switcher is open: select the next window.
+    StepWindows,
     Close(CloseReason),
     /// Replaces an open app launcher (closed with CloseReason::Replaced) or opens fresh;
     /// the connection is kept (`Conn::into_pending`) for the answer.
@@ -84,12 +88,32 @@ pub enum Action {
     },
 }
 
-/// open: None (closed), Some(false) (apps or the calculator), Some(true) (script). `since_open` is the time elapsed
+/// What is open, for `decide`: the app launcher (the calculator counts as one), a script menu, or the
+/// window switcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    Apps,
+    Script,
+    Switcher,
+}
+
+/// The open model's kind.
+pub fn opened(model: &Launcher) -> Opened {
+    if model.is_script() {
+        Opened::Script
+    } else if model.is_switcher() {
+        Opened::Switcher
+    } else {
+        Opened::Apps
+    }
+}
+
+/// open: None (closed), else what is open (`Opened`). `since_open` is the time elapsed
 /// since the launcher opened (ignored when `open` is None). The Reply, when Some, is sent at once
 /// on this connection: Toggle/Close/Calc → Done (Toggle and Calc close an open script launcher: its own client gets
 /// Cancelled through launcher_close, unless debounced — see `TOGGLE_DEBOUNCE`); Dmenu while a script
 /// is open → (Nothing, Some(Busy)); Dmenu otherwise → (OpenScript, None).
-pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Action, Option<Reply>) {
+pub fn decide(request: Request, open: Option<Opened>, since_open: Duration) -> (Action, Option<Reply>) {
     match (request, open) {
         (Request::Toggle, None) => (Action::OpenApps, Some(Reply::Done)),
         // Small features, decision 1: a second `--calc` closes the calculator, as a Toggle does,
@@ -97,13 +121,18 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
         (Request::Calc, None) => (Action::OpenCalc, Some(Reply::Done)),
         (Request::Calc, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Calc, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
+        // Launcher 2, decision 12: a repeated `--windows` (Alt+Tab held, or pressed again) steps to the
+        // next window whatever the time since the open: no debounce, a repeat is the point.
+        (Request::Windows, Some(Opened::Switcher)) => (Action::StepWindows, Some(Reply::Done)),
+        // From nothing, an app launcher or a script menu: the switcher replaces it, as a script does.
+        (Request::Windows, _) => (Action::OpenWindows, Some(Reply::Done)),
         // The socket still answers Done (review/brief: alpheus-launch must exit 0), but no Close
         // action: the Hyprland press-bind refire must not take the box right back down.
         (Request::Toggle, Some(_)) if toggle_is_debounced(since_open) => (Action::Nothing, Some(Reply::Done)),
         (Request::Toggle, Some(_)) => (Action::Close(CloseReason::Toggle), Some(Reply::Done)),
         (Request::Close, None) => (Action::Nothing, Some(Reply::Done)),
         (Request::Close, Some(_)) => (Action::Close(CloseReason::Close), Some(Reply::Done)),
-        (Request::Dmenu { .. }, Some(true)) => (Action::Nothing, Some(Reply::Busy)),
+        (Request::Dmenu { .. }, Some(Opened::Script)) => (Action::Nothing, Some(Reply::Busy)),
         (Request::Dmenu { prompt, lines, flags }, _) => (Action::OpenScript { prompt, lines, flags }, None),
         // Not the launcher's: `watch_connection` answers them
         // before they could reach here. Answered all the same, never a panic.
@@ -122,14 +151,15 @@ pub fn decide(request: Request, open: Option<bool>, since_open: Duration) -> (Ac
     }
 }
 
-/// The launcher's state after `action` (None closed, Some(false) apps, Some(true) script).
-pub fn open_after(open: Option<bool>, action: &Action) -> Option<bool> {
+/// The launcher's state after `action`.
+pub fn open_after(open: Option<Opened>, action: &Action) -> Option<Opened> {
     match action {
-        Action::Nothing => open,
+        Action::Nothing | Action::StepWindows => open,
         // The calculator is not a script: it stands for the apps' state (Dmenu replaces it).
-        Action::OpenApps | Action::OpenCalc => Some(false),
+        Action::OpenApps | Action::OpenCalc => Some(Opened::Apps),
         Action::Close(_) => None,
-        Action::OpenScript { .. } => Some(true),
+        Action::OpenScript { .. } => Some(Opened::Script),
+        Action::OpenWindows => Some(Opened::Switcher),
     }
 }
 
@@ -275,7 +305,7 @@ impl App {
         // daemon logs (spec § 3) covers request accepted → first frame, not
         // just the part after this request was fully read.
         let requested_at = conn.accepted_at();
-        let open = self.launcher.as_ref().map(|o| o.model.is_script());
+        let open = self.launcher.as_ref().map(|o| opened(&o.model));
         let since_open = self.launcher.as_ref().map_or(Duration::ZERO, |o| o.requested_at.elapsed());
         match decide(request, open, since_open) {
             (Action::OpenScript { prompt, lines, flags }, _) => {
@@ -296,6 +326,18 @@ impl App {
                 match action {
                     Action::OpenApps => self.launcher_open_apps(qh, requested_at),
                     Action::OpenCalc => self.launcher_open_calc(qh, requested_at),
+                    Action::OpenWindows => {
+                        if self.launcher_is_open() {
+                            self.launcher_close(CloseReason::Replaced);
+                        }
+                        self.launcher_open_windows(qh, requested_at);
+                    }
+                    Action::StepWindows => {
+                        let stepped = self.launcher.as_mut().is_some_and(|o| o.model.step(1) == Outcome::Redraw);
+                        if stepped {
+                            self.launcher_redraw();
+                        }
+                    }
                     Action::Close(reason) => self.launcher_close(reason),
                     Action::Nothing | Action::OpenScript { .. } => {}
                 }
@@ -327,6 +369,13 @@ impl App {
         let config = read_config(&paths::config_dir(), &mut |m| log(m));
         let mut model = Launcher::for_calc(config);
         model.path_dirs = ScanEnv::from_env(|k| std::env::var_os(k)).path_dirs;
+        self.launcher_open(qh, model, None, requested_at);
+    }
+
+    /// `--windows`: the window switcher. No scan, no history, no `$PATH`.
+    fn launcher_open_windows(&mut self, qh: &QueueHandle<App>, requested_at: Instant) {
+        let config = read_config(&paths::config_dir(), &mut |m| log(m));
+        let model = Launcher::for_windows(config, self.launcher_toplevels());
         self.launcher_open(qh, model, None, requested_at);
     }
 
@@ -522,34 +571,74 @@ mod tests {
     #[test]
     fn every_request_in_every_state() {
         use CloseReason as R;
+        use Opened::{Apps, Script, Switcher};
         let script =
             Action::OpenScript { prompt: Some("Pick: ".into()), lines: vec!["a".into(), "b".into()], flags: DmenuFlags::default() };
+        let not_ours = || Action::Nothing;
+        let refused = || Some(Reply::Error("not a launcher request".into()));
+        let done = || Some(Reply::Done);
         let rows = [
-            (Request::Toggle, None, Action::OpenApps, Some(Reply::Done)),
-            (Request::Toggle, Some(false), Action::Close(R::Toggle), Some(Reply::Done)),
-            (Request::Toggle, Some(true), Action::Close(R::Toggle), Some(Reply::Done)),
-            (Request::Close, None, Action::Nothing, Some(Reply::Done)),
-            (Request::Close, Some(false), Action::Close(R::Close), Some(Reply::Done)),
-            (Request::Close, Some(true), Action::Close(R::Close), Some(Reply::Done)),
+            (Request::Toggle, None, Action::OpenApps, done()),
+            (Request::Toggle, Some(Apps), Action::Close(R::Toggle), done()),
+            (Request::Toggle, Some(Script), Action::Close(R::Toggle), done()),
+            (Request::Toggle, Some(Switcher), Action::Close(R::Toggle), done()),
+            (Request::Close, None, Action::Nothing, done()),
+            (Request::Close, Some(Apps), Action::Close(R::Close), done()),
+            (Request::Close, Some(Script), Action::Close(R::Close), done()),
+            (Request::Close, Some(Switcher), Action::Close(R::Close), done()),
             (dmenu(), None, script.clone(), None),
-            (dmenu(), Some(false), script.clone(), None),
-            (dmenu(), Some(true), Action::Nothing, Some(Reply::Busy)),
-            (Request::Dnd(DndVerb::Toggle), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::ClearNotifications, Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::Osd(OsdVerb::Brightness), None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::Calc, None, Action::OpenCalc, Some(Reply::Done)),
-            (Request::Calc, Some(false), Action::Close(R::Toggle), Some(Reply::Done)),
-            (Request::Calc, Some(true), Action::Close(R::Toggle), Some(Reply::Done)),
-            (Request::Quick(QuickVerb::Sound), Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::Outputs, None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::OutputsTry(String::new()), Some(true), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::OutputsKeep, None, Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
-            (Request::OutputsRevert, Some(false), Action::Nothing, Some(Reply::Error("not a launcher request".into()))),
+            (dmenu(), Some(Apps), script.clone(), None),
+            (dmenu(), Some(Script), Action::Nothing, Some(Reply::Busy)),
+            (dmenu(), Some(Switcher), script.clone(), None),
+            (Request::Dnd(DndVerb::Toggle), None, not_ours(), refused()),
+            (Request::ClearNotifications, Some(Script), not_ours(), refused()),
+            (Request::Osd(OsdVerb::Brightness), None, not_ours(), refused()),
+            (Request::Calc, None, Action::OpenCalc, done()),
+            (Request::Calc, Some(Apps), Action::Close(R::Toggle), done()),
+            (Request::Calc, Some(Script), Action::Close(R::Toggle), done()),
+            (Request::Calc, Some(Switcher), Action::Close(R::Toggle), done()),
+            (Request::Windows, None, Action::OpenWindows, done()),
+            (Request::Windows, Some(Apps), Action::OpenWindows, done()),
+            (Request::Windows, Some(Script), Action::OpenWindows, done()),
+            (Request::Windows, Some(Switcher), Action::StepWindows, done()),
+            (Request::Quick(QuickVerb::Sound), Some(Apps), not_ours(), refused()),
+            (Request::Outputs, None, not_ours(), refused()),
+            (Request::OutputsTry(String::new()), Some(Script), not_ours(), refused()),
+            (Request::OutputsKeep, None, not_ours(), refused()),
+            (Request::OutputsRevert, Some(Switcher), not_ours(), refused()),
         ];
         for (request, open, action, reply) in rows {
             let label = format!("{request:?} while {open:?}");
             assert_eq!(decide(request, open, PAST_DEBOUNCE), (action, reply), "{label}");
         }
+    }
+
+    /// Decision 12: a repeated `--windows` steps even right after the open (a held Alt+Tab
+    /// re-fires), where a Toggle would be debounced or close.
+    #[test]
+    fn a_repeated_windows_steps_even_within_the_debounce() {
+        assert_eq!(decide(Request::Windows, Some(Opened::Switcher), Duration::from_millis(10)), (Action::StepWindows, Some(Reply::Done)));
+    }
+
+    /// `--windows` replaces another launcher (as a script does); the state becomes the switcher.
+    #[test]
+    fn windows_replaces_another_launcher() {
+        for open in [Opened::Apps, Opened::Script] {
+            let (action, reply) = decide(Request::Windows, Some(open), Duration::from_millis(10));
+            assert_eq!((action.clone(), reply), (Action::OpenWindows, Some(Reply::Done)), "{open:?}");
+            assert_eq!(open_after(Some(open), &action), Some(Opened::Switcher));
+        }
+        assert_eq!(open_after(Some(Opened::Script), &Action::OpenWindows), Some(Opened::Switcher));
+        assert_eq!(open_after(Some(Opened::Switcher), &Action::StepWindows), Some(Opened::Switcher), "a step keeps the state");
+    }
+
+    /// A Toggle closes a switcher as it closes an app launcher.
+    #[test]
+    fn toggle_closes_a_switcher_as_an_app_launcher() {
+        let model = Launcher::for_windows(LauncherConfig::default(), vec![]);
+        assert_eq!(opened(&model), Opened::Switcher);
+        assert_eq!(decide(Request::Toggle, Some(opened(&model)), PAST_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
+        assert_eq!(opened(&Launcher::for_calc(LauncherConfig::default())), Opened::Apps, "the calculator counts as Apps");
     }
 
     /// Small features, decision 1: `--calc` opens the calculator; a second one closes it, unless it
@@ -559,7 +648,7 @@ mod tests {
     fn a_second_calc_closes_the_calculator_unless_debounced() {
         let (action, reply) = decide(Request::Calc, None, Duration::ZERO);
         assert_eq!((action.clone(), reply), (Action::OpenCalc, Some(Reply::Done)));
-        assert_eq!(open_after(None, &action), Some(false), "no script: the apps' state");
+        assert_eq!(open_after(None, &action), Some(Opened::Apps), "no script: the apps' state");
         let open = open_after(None, &action);
         assert_eq!(decide(Request::Calc, open, Duration::from_millis(100)), (Action::Nothing, Some(Reply::Done)));
         assert_eq!(decide(Request::Calc, open, PAST_DEBOUNCE), (Action::Close(CloseReason::Toggle), Some(Reply::Done)));
@@ -582,7 +671,7 @@ mod tests {
     /// replies Done, so `alpheus-launch` exits 0.
     #[test]
     fn a_toggle_within_the_debounce_window_is_ignored_but_still_acked() {
-        let (action, reply) = decide(Request::Toggle, Some(false), Duration::from_millis(100));
+        let (action, reply) = decide(Request::Toggle, Some(Opened::Apps), Duration::from_millis(100));
         assert_eq!(action, Action::Nothing, "the Hyprland press-bind refire must not close the box");
         assert_eq!(reply, Some(Reply::Done), "alpheus-launch must still exit 0");
     }
@@ -590,7 +679,7 @@ mod tests {
     /// Past the debounce window, a Toggle is a real one again and closes.
     #[test]
     fn a_toggle_past_the_debounce_window_closes() {
-        let (action, reply) = decide(Request::Toggle, Some(false), Duration::from_millis(300));
+        let (action, reply) = decide(Request::Toggle, Some(Opened::Apps), Duration::from_millis(300));
         assert_eq!(action, Action::Close(CloseReason::Toggle));
         assert_eq!(reply, Some(Reply::Done));
     }
@@ -606,7 +695,7 @@ mod tests {
         let (action, reply) = decide(Request::Toggle, None, Duration::ZERO);
         assert_eq!(reply, Some(Reply::Done));
         let open = open_after(None, &action);
-        assert_eq!(open, Some(false));
+        assert_eq!(open, Some(Opened::Apps));
         let (action, reply) = decide(Request::Toggle, open, Duration::from_millis(100));
         assert_eq!(reply, Some(Reply::Done));
         assert_eq!(open_after(open, &action), open, "the second, quick Toggle changes nothing");
@@ -616,13 +705,13 @@ mod tests {
 
     #[test]
     fn a_dmenu_replaces_an_app_launcher_and_a_second_dmenu_is_busy() {
-        let (action, reply) = decide(dmenu(), Some(false), PAST_DEBOUNCE);
+        let (action, reply) = decide(dmenu(), Some(Opened::Apps), PAST_DEBOUNCE);
         assert!(matches!(action, Action::OpenScript { .. }) && reply.is_none(), "the connection is kept for the answer");
-        let open = open_after(Some(false), &action);
-        assert_eq!(open, Some(true));
+        let open = open_after(Some(Opened::Apps), &action);
+        assert_eq!(open, Some(Opened::Script));
         let (action, reply) = decide(dmenu(), open, PAST_DEBOUNCE);
         assert_eq!((action.clone(), reply), (Action::Nothing, Some(Reply::Busy)));
-        assert_eq!(open_after(open, &action), Some(true), "the first script menu stays open");
+        assert_eq!(open_after(open, &action), Some(Opened::Script), "the first script menu stays open");
     }
 
     #[test]

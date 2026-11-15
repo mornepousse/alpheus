@@ -549,6 +549,23 @@ fn calc_sends_its_request_and_an_old_daemon_exits_3() {
     assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
+/// Launcher 2: `--windows` sends its request and exits 0 on Done; a daemon too old for it answers
+/// the unknown request: exit 3, one request.
+#[test]
+fn windows_sends_its_request_and_an_old_daemon_exits_3() {
+    let (socket, daemon) = answering("windows", Reply::Done);
+    assert_eq!(launch(&["--windows"], &socket, b""), (EXIT_OK, String::new(), String::new()));
+    assert_eq!(daemon.join().unwrap(), Request::Windows);
+    let (socket, connections, stop, daemon) =
+        replying_daemon("windows-old", Reply::Error("malformed request: unknown request \"windows\"".into()));
+    let (code, out, err) = launch(&["--windows"], &socket, b"");
+    assert_eq!((code, out.as_str()), (EXIT_UNREACHABLE, ""), "{err}");
+    assert!(err.contains("--windows"), "{err}");
+    stop.store(true, Ordering::SeqCst);
+    daemon.join().unwrap();
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+}
+
 /// Spec § 1: a daemon older than `--quick` refuses the word as an unknown request: exit 3, as for
 /// the other verbs, one request, no retry.
 #[test]

@@ -4907,6 +4907,40 @@ fn under_sway_the_launcher_lists_and_focuses_a_window() {
     assert!(wait_until(|| recorded(&sway, "wm-set").contains(&expected)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
 }
 
+/// Launcher 2, `--windows`: the switcher opens on the previous window (Enter focuses it), a second
+/// `--windows` while it is open steps to the next one, and none of it scans. Three windows opened
+/// in order a, b, c: Sway's order is b, a, c (the fake `wm-set` focuses nothing, so it stays).
+#[test]
+#[ignore = "headless sway and wtype (nix develop)"]
+fn windows_focuses_the_previous_window_then_steps() {
+    let sway = Sway::start("launcher-windows", 1);
+    let _a = TestWindow::open(&sway, "alpheus-a", "Fixture a");
+    let _b = TestWindow::open(&sway, "alpheus-b", "Fixture b");
+    let _c = TestWindow::open(&sway, "alpheus-c", "Fixture c");
+    let tree = sway.ipc_raw(4, b"");
+    let id = |app: &str| con_id(&tree, app).unwrap_or_else(|| panic!("{app} in this sway's tree"));
+    let (a, b) = (id("alpheus-a"), id("alpheus-b"));
+    fake_recorder(&sway, "wm-set");
+    let d = start_daemon_with(&sway, &DaemonOptions { backend: Backend::Sway, ..DaemonOptions::default() });
+    ready(&d);
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // the compositor thread has read the tree
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(d.wait_for(SHOWN, DELAY), "{:?}", d.log());
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    let first = format!("wm-set focus-window id:{b}");
+    assert!(wait_until(|| recorded(&sway, "wm-set").contains(&first)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+    assert!(d.wait_for("launcher closed (activated)", DELAY), "{:?}", d.log());
+    // Again: a second `--windows` while it is open steps from b to a.
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(d.wait_for_count(SHOWN, 2, DELAY), "{:?}", d.log());
+    assert_eq!(launcher(&sway, &Request::Windows), Reply::Done);
+    assert!(wtype(&sway, &["-s", "300", "-k", "Return"]).success());
+    let second = format!("wm-set focus-window id:{a}");
+    assert!(wait_until(|| recorded(&sway, "wm-set").contains(&second)), "{:?} {:?}", recorded(&sway, "wm-set"), d.log());
+    assert_eq!(d.count("launcher scan"), 0, "the switcher scans nothing: {:?}", d.log());
+}
+
 /// Spec § 6: under Mango (a fake socket serving the real captures, outputs renamed after headless
 /// sway's), the two watch lines, the active output's title, a click on tag 1 runs `wm-set
 /// workspace 1 HEADLESS-1`.

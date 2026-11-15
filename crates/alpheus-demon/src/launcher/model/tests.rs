@@ -931,17 +931,17 @@ fn stepping_wraps_and_survives_a_window_update() {
     l.set_windows(w);
     assert_eq!(l.selected, 0, "before any step, the top");
     l.step(1);
-    let older = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
+    let selector = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
         Some(Source::Window(i)) => l.windows[i].selector.clone(),
         other => panic!("{other:?}"),
     };
-    assert_eq!(older(&l), "id:2");
+    assert_eq!(selector(&l), "id:2");
     l.step(1);
-    assert_eq!(older(&l), "id:1");
+    assert_eq!(selector(&l), "id:1");
     let mut w = three();
     w.reverse();
     l.set_windows(w);
-    assert_eq!(older(&l), "id:1", "kept by identity");
+    assert_eq!(selector(&l), "id:1", "kept by identity");
     l.set_windows(vec![window("id:2", "foot", "prev"), focused(window("id:3", "foot", "cur"))]);
     assert_eq!(l.selected, 0, "closed: back to the top");
 }
@@ -954,6 +954,30 @@ fn a_switcher_with_no_window_or_one() {
     let mut l = Launcher::for_windows(LauncherConfig::default(), vec![focused(window("id:3", "foot", "cur"))]);
     assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Window(0)));
     assert_eq!(l.step(1), Outcome::Nothing);
+}
+
+#[test]
+fn step_works_on_the_filtered_results_not_on_every_window() {
+    let w = vec![
+        window("id:1", "term", "alpha foo"),
+        window("id:2", "term", "bravo bar"),
+        window("id:3", "term", "charlie foo"),
+        window("id:4", "term", "delta bar"),
+    ];
+    let mut l = Launcher::for_windows(LauncherConfig::default(), w);
+    typed(&mut l, "foo");
+    assert_eq!(l.results.len(), 2, "two windows match");
+    let at = |l: &Launcher| match l.selected_hit().map(|h| h.source) {
+        Some(Source::Window(i)) => l.windows[i].selector.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(at(&l), "id:1");
+    assert_eq!(l.step(1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:3");
+    assert_eq!(l.step(1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:1", "wraps over the two matches, never visiting id:2 or id:4");
+    assert_eq!(l.step(-1), Outcome::Redraw);
+    assert_eq!(at(&l), "id:3");
 }
 
 #[test]

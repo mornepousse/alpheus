@@ -77,7 +77,7 @@ fn typed(l: &mut Launcher, text: &str) {
 /// Lays out for an output of `columns` × 40 cells, like the launcher host does:
 /// the preview panel reserved for the app launcher, whatever the selection.
 fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Boxed) {
-    let b = layout(columns, 40, l.config.rows, l.is_bare(), !l.is_bare());
+    let b = layout(columns, 40, l.config.rows, !l.has_modes(), !l.is_bare());
     l.set_list_rows(usize::from(b.list_rows));
     let rows = render(l, &b);
     for (i, r) in rows.rows.iter().enumerate() {
@@ -690,4 +690,19 @@ fn the_switcher_help_and_empty_text() {
     let text = snapshot(&rows);
     assert!(text.contains("no window open"), "{text}");
     assert!(!text.contains("scanning"), "{text}");
+}
+
+/// Launcher 2 review: the switcher is windows only, so no All/Apps/Windows/Commands row, and no
+/// click on where it was.
+#[test]
+fn the_switcher_has_no_modes_row() {
+    let mut l = Launcher::for_windows(LauncherConfig::default(), windows());
+    let (b, rows) = draw(&mut l, 100);
+    let text = snapshot(&rows);
+    for label in ["All", "Apps", "Windows", "Commands"] {
+        assert!(!text.contains(label), "{label} in {text}");
+    }
+    assert!(rows.rows[0].text().contains('\u{276f}'), "the input row comes first: {text}");
+    assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside), "row 1 is the input now");
+    assert!(!l.has_modes());
 }

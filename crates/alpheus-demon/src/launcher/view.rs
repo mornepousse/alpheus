@@ -49,7 +49,7 @@ impl BoxLayout {
     }
 }
 
-/// Rows: top frame, modes row (not in Script), input line, `list_rows` results, help line, bottom frame.
+/// Rows: top frame, modes row (`script`: not in a script menu, the calculator or the switcher), input line, `list_rows` results, help line, bottom frame.
 /// columns = BOX_COLUMNS (+ PREVIEW_COLUMNS + 1 when `preview` and the output has room), never more than
 /// output_columns - 2 nor less than MIN_COLUMNS (or the output width if smaller); list_rows =
 /// min(config_rows, what the output height leaves), at least 1. `preview` reserves the panel (the host
@@ -372,7 +372,7 @@ fn preview_lines(l: &Launcher, width: u16, budget: usize) -> Vec<(String, Style)
 pub fn render(l: &Launcher, b: &BoxLayout) -> Boxed {
     let mut rows = vec![blank(b)];
     let end = b.pane_end();
-    if !l.is_bare() {
+    if l.has_modes() {
         let mut g = blank(b);
         modes_row(l, b, &mut g);
         rows.push(g);
@@ -451,7 +451,7 @@ pub fn hit(l: &Launcher, b: &BoxLayout, column: u16, row: u16) -> Option<Click> 
         let index = l.top + usize::from(row - b.list_top);
         return Some(if index < l.results.len() { Click::Result(index) } else { Click::Inside });
     }
-    if !l.is_bare() && row == 1 {
+    if l.has_modes() && row == 1 {
         if let Some((m, _, _)) = mode_spans().into_iter().find(|(_, s, e)| (*s..*e).contains(&column) && *e <= b.pane_end()) {
             return Some(Click::Mode(m));
         }
