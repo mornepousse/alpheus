@@ -4,13 +4,14 @@
 //! the loop, no thread, no command; one timer, armed only while a timed do-not-disturb is on. The bubbles and the panel reach the server
 //! through `App::notify_do` (tray_bridge.rs).
 
+use crate::battery_alert::incoming;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
 use crate::dnd::{Dnd, parse_saved, saved_text};
 use crate::link::{Host, LinkOutput, LinkUser, host};
 use crate::log::write as log;
 use crate::notify::{Center, NotifyView};
-use crate::session_bus::notifications::Notifications;
+use crate::session_bus::notifications::{Notifications, minute_now};
 use crate::session_bus::router::TrayOutput;
 use crate::state::Msg;
 use crate::state_file;
@@ -250,6 +251,25 @@ impl App {
             self.dnd_apply(next, "timer ended");
         } else if !self.dnd_timed.timer.is_armed() {
             self.dnd_timer_sync();
+        }
+    }
+
+    /// A power reading (before the bar keeps it): the laptop's battery against `[battery] warn`.
+    /// An alert becomes a notification while this daemon holds the name; otherwise one log line.
+    pub(crate) fn battery_feed(&mut self, m: &Msg) {
+        let Msg::Battery(Some(state)) = m else { return };
+        let Some(alert) = self.battery_alerts.as_mut().and_then(|a| a.feed(state.laptop)) else { return };
+        if self.notifications().is_some_and(|n| n.held()) {
+            let n = incoming(alert);
+            self.notify_act(move |s| {
+                s.act(|c| {
+                    c.notify(n, Instant::now(), minute_now());
+                    c.take_effects()
+                })
+            });
+            log(&format!("battery: alert at {} %", alert.threshold));
+        } else {
+            log(&format!("battery: alert at {} % skipped (not serving)", alert.threshold));
         }
     }
 

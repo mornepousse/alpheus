@@ -651,3 +651,17 @@ fn notification_rule_apps_are_trimmed_and_bounded() {
     assert!(BarConfig::from_text(&rule(&"a".repeat(65))).unwrap_err().contains("rules[1]: app too long"));
     assert!(BarConfig::from_text(&rule("a\\u0007b")).unwrap_err().contains("control characters"));
 }
+
+#[test]
+fn battery_warn_defaults_dedups_and_sorts() {
+    assert_eq!(BarConfig::default().battery.warn, [20, 10, 5]);
+    assert_eq!(BarConfig::from_text("").unwrap().battery.warn, [20, 10, 5]);
+    assert!(BarConfig::from_text("[battery]\nwarn = []").unwrap().battery.warn.is_empty());
+    assert_eq!(BarConfig::from_text("[battery]\nwarn = [5, 20, 10, 20]").unwrap().battery.warn, [20, 10, 5]);
+    for bad in [0, 100] {
+        assert_eq!(
+            BarConfig::from_text(&format!("[battery]\nwarn = [{bad}]")).unwrap_err(),
+            format!("battery.warn: {bad} out of range 1 to 99")
+        );
+    }
+}

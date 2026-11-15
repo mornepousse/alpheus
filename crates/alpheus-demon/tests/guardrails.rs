@@ -1369,7 +1369,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 46] = [
+const NO_THREAD_NOR_COMMAND: [&str; 47] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1416,6 +1416,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 46] = [
     "launcher/calc.rs",
     "launcher/calc/units.rs",
     "dnd.rs",
+    "battery_alert.rs",
 ];
 
 #[test]
@@ -2803,4 +2804,22 @@ fn the_bluetooth_row_reuses_the_modules_glyphs() {
         assert!(!quick_bt.contains(copy), "a copy of a module glyph in quick_bt.rs: {copy}");
     }
     assert!(quick_bt.contains("segments::{BLUETOOTH, BLUETOOTH_CONNECTED}"), "quick_bt.rs takes the module's glyphs");
+}
+
+/// Small features 1, task 9: the alerts' production code cannot panic, and `on_bar_message` feeds
+/// them before the bar keeps the message.
+#[test]
+fn on_bar_message_feeds_the_battery_alerts() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let startup = src("startup.rs");
+    let body = function_body(&startup, "pub(crate) fn on_bar_message(");
+    let (fed, kept) = (body.find("self.battery_feed(&m)"), body.find("on_message("));
+    assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "battery_feed, then on_message: {body}");
+    let feed = function_body(&src("notify_app.rs"), "pub(crate) fn battery_feed(").to_string();
+    for text in [src("battery_alert.rs"), feed] {
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!text.contains(p), "{p} in the battery alerts");
+        }
+    }
 }

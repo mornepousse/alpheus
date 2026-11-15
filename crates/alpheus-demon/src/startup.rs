@@ -261,6 +261,7 @@ impl App {
             self.osd_sound(s.as_ref());
         }
         self.privacy_feed(&m);
+        self.battery_feed(&m);
         note_compositor_message(self, &m);
         on_message(self, m, || LocalTime::now().0);
         if quick {

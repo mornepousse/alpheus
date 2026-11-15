@@ -26,6 +26,7 @@
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
 //! coarse = "low"                                            # "always" | "low" | "never": peripherals with only a coarse level
+//! warn = [20, 10, 5]  # notify when the laptop battery, discharging, reaches each %; the lowest is critical; [] turns it off (needs "notifications")
 //! [tray]
 //! passive = "dim"                                           # "dim" | "show" | "hide": items that say they are idle
 //! tooltips = true                                           # the item's name after ½ s of hovering
@@ -312,7 +313,7 @@ pub enum BatteryVisibility {
     Never,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BatteryConfig {
     /// Peripherals with a real percentage (spec Q7's default: always shown,
@@ -322,11 +323,14 @@ pub struct BatteryConfig {
     /// icon (error tint when low, normal otherwise), "low" (default) shows
     /// it only when Low, Critical or Action, "never" hides it.
     pub coarse: BatteryVisibility,
+    /// Percentages at which the discharging laptop battery notifies (sorted descending and
+    /// de-duplicated at load, 1 to 99); the lowest is critical; empty turns it off.
+    pub warn: Vec<u8>,
 }
 
 impl Default for BatteryConfig {
     fn default() -> Self {
-        BatteryConfig { peripherals: BatteryVisibility::Always, coarse: BatteryVisibility::Low }
+        BatteryConfig { peripherals: BatteryVisibility::Always, coarse: BatteryVisibility::Low, warn: vec![20, 10, 5] }
     }
 }
 
@@ -860,6 +864,12 @@ impl BarConfig {
             return Err("displays.drm_dir must be an absolute path".into());
         }
         check_quick(&b.quick)?;
+        let mut battery = b.battery;
+        if let Some(w) = battery.warn.iter().find(|w| !(1..=99).contains(*w)) {
+            return Err(format!("battery.warn: {w} out of range 1 to 99"));
+        }
+        battery.warn.sort_unstable_by(|a, b| b.cmp(a));
+        battery.warn.dedup();
         let tray = TrayConfig { icons: tray_icons(b.tray.icons)?, ..b.tray };
         Ok(BarConfig {
             modules,
@@ -869,7 +879,7 @@ impl BarConfig {
             workspaces: b.workspaces,
             actions: b.actions,
             resources: b.resources,
-            battery: b.battery,
+            battery,
             tray,
             media: b.media,
             privacy: b.privacy,

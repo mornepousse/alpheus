@@ -5652,3 +5652,30 @@ fn every_test_compositor_has_its_own_name() {
     let shared: Vec<_> = names.windows(2).filter(|w| w[0] == w[1]).map(|w| w[0]).collect();
     assert!(shared.is_empty(), "compositor names used by two tests: {shared:?}");
 }
+
+/// Small features 1, task 9: a laptop at 8 % at start, discharging, alerts once, for the lowest
+/// threshold crossed (10 %), once the server holds the name.
+#[test]
+#[ignore = "headless sway and dbus-daemon (nix develop)"]
+fn battery_low_at_start_alerts_once_for_the_lowest_threshold() {
+    let system = PrivateBus::start("battery-alert-system");
+    let _workstation = Workstation::serve_with_display(&system, 8.0, 2);
+    let bus = PrivateBus::start("battery-alert-session");
+    let sway = Sway::start("battery-alert", 1);
+    let _hypr = FakeHyprland::start(&sway.runtime, SIGNATURE);
+    let toml = "modules = [\"battery\", \"notifications\", \"clock\"]\n";
+    let d = start_daemon_with(
+        &sway,
+        &DaemonOptions {
+            bar_toml: Some(toml),
+            system_bus: Some(&system.address),
+            session_bus: Some(&bus.address),
+            ..DaemonOptions::default()
+        },
+    );
+    assert!(d.wait_for("bell: serving", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("battery: alert at 10 %", DELAY), "{:?}", d.log());
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("battery: alert"), 1, "{:?}", d.log());
+    assert_eq!(d.count("skipped (not serving)"), 0, "{:?}", d.log());
+}
