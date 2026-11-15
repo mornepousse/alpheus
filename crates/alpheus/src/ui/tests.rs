@@ -185,7 +185,8 @@ fn displays_tab() -> crate::app::App {
 fn displays_tab_rendering() {
     let mut a = displays_tab();
     a.focus = 2; // Alpha
-    let (rows, hits) = draw(&a, 100, 28);
+    // 120 columns: with the rail the body is 100 wide, enough for the longest row.
+    let (rows, hits) = draw(&a, 120, 28);
     let all = rows.join("\n");
     for expected in [
         "Profiles",
@@ -209,9 +210,9 @@ fn displays_tab_rendering() {
     assert!(all.contains('●'), "the map marks the focused screen:\n{all}");
     assert!(hits.find(Target::DisplayProfile(2)).is_some());
     assert!(hits.find(Target::OutputToggle(3)).is_some());
-    assert!(rows[27].contains("Space Toggle") && rows[27].contains("Enter Adjust"), "{:?}", rows[27]);
+    assert!(rows[27].contains("Space  Toggle") && rows[27].contains("Enter  Adjust"), "{:?}", rows[27]);
     a.focus = 0;
-    assert!(draw(&a, 100, 28).0[27].contains("Enter Apply"));
+    assert!(draw(&a, 120, 28).0[27].contains("Enter  Apply"));
 }
 
 #[test]

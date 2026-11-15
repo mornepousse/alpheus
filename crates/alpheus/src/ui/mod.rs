@@ -6,6 +6,7 @@ mod displays;
 pub mod draw;
 pub mod hit;
 mod overlays;
+pub mod rail;
 pub mod shape;
 mod tabs;
 
@@ -26,6 +27,19 @@ pub const MIN_H: u16 = 8;
 /// "alpheus" and the two spaces after it, in the tab bar.
 const BRAND_W: usize = 9;
 
+/// Which chrome a terminal of this size gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Chrome {
+    /// The tab bar on top, the status line and the shortcut bar at the foot.
+    Classic,
+    /// The left rail (see `rail`).
+    Rail,
+}
+
+pub fn chrome(area: Rect) -> Chrome {
+    if area.width >= rail::RAIL_MIN_W && area.height >= rail::RAIL_MIN_H { Chrome::Rail } else { Chrome::Classic }
+}
+
 pub fn render(f: &mut Frame, app: &App) -> HitMap {
     let area = f.area();
     let buf = f.buffer_mut();
@@ -36,12 +50,17 @@ pub fn render(f: &mut Frame, app: &App) -> HitMap {
         put(buf, area, area.x, area.y, "alpheus: window too small", Style::default().fg(th.error));
         return hits;
     }
-    let bar = |y| Rect::new(area.x, y, area.width, 1);
-    let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
-    tab_bar(buf, bar(area.y), app, &mut hits);
-    tabs::render(buf, body, app, &mut hits);
-    status_line(buf, bar(area.bottom() - 2), app);
-    shortcut_bar(buf, bar(area.bottom() - 1), app);
+    if chrome(area) == Chrome::Rail {
+        let body = rail::render(buf, area, app, &mut hits);
+        tabs::render(buf, body, app, &mut hits);
+    } else {
+        let bar = |y| Rect::new(area.x, y, area.width, 1);
+        let body = Rect::new(area.x + 1, area.y + 2, area.width - 2, area.height - 4);
+        tab_bar(buf, bar(area.y), app, &mut hits);
+        tabs::render(buf, body, app, &mut hits);
+        status_line(buf, bar(area.bottom() - 2), app);
+        shortcut_bar(buf, bar(area.bottom() - 1), app);
+    }
     overlays::render(buf, area, app, &mut hits);
     hits
 }
@@ -78,10 +97,9 @@ fn status_line(buf: &mut Buffer, r: Rect, app: &App) {
     }
 }
 
-fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
-    let th = &app.theme;
+pub(crate) fn shortcut_pairs(app: &App) -> Vec<(String, &'static str)> {
     let km = &app.keymap;
-    let mut pairs: Vec<(String, &str)> = Vec::new();
+    let mut pairs: Vec<(String, &'static str)> = Vec::new();
     if app.search.editing {
         pairs.push(("Enter".into(), "Confirm"));
         pairs.push(("Esc".into(), "Clear"));
@@ -127,8 +145,13 @@ fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
             },
         }
     }
+    pairs
+}
+
+fn shortcut_bar(buf: &mut Buffer, r: Rect, app: &App) {
+    let th = &app.theme;
     let mut x = r.x + 1;
-    for (key, what) in pairs {
+    for (key, what) in shortcut_pairs(app) {
         if key.is_empty() {
             continue; // action with no key (unassigned in config.toml)
         }

@@ -43,6 +43,9 @@ pub fn chip(buf: &mut Buffer, clip: Rect, x: u16, y: u16, text: &str, ink: Ink, 
 
 /// A full-width band (a focused row, an active rail entry), cut by the shape.
 pub fn band(buf: &mut Buffer, r: Rect, fill: Color, edge: Color, behind: Color, shape: Shape) {
+    if r.is_empty() {
+        return;
+    }
     let y = r.y;
     match shape {
         Shape::Flat | Shape::Float => {
@@ -82,6 +85,9 @@ pub fn frame(shape: Shape, focused: bool) -> (BorderType, Borders) {
 /// shadow when floating, a left bar and no fill under the line style.
 /// Returns the colour the tile's content sits on.
 pub fn tile_fill(buf: &mut Buffer, r: Rect, fill: Color, behind: Color, shape: Shape) -> Color {
+    if r.is_empty() {
+        return if shape == Shape::Line { behind } else { fill };
+    }
     match shape {
         Shape::Line => {
             clear(buf, r, Style::default().bg(behind));
@@ -278,6 +284,22 @@ mod tests {
         let mut b = buf();
         assert_eq!(tile_fill(&mut b, r, FILL, BEHIND, Shape::Flat), FILL);
         assert_eq!(b[(2, 0)].bg, FILL);
+    }
+
+    #[test]
+    fn empty_rects_draw_nothing_and_never_underflow() {
+        let shapes = [Shape::Flat, Shape::Round, Shape::Arrow, Shape::Line, Shape::Float];
+        for r in [Rect::new(0, 0, 0, 3), Rect::new(0, 0, 5, 0), Rect::new(0, 0, 0, 0)] {
+            for shape in shapes {
+                let mut b = buf();
+                let before = b.clone();
+                band(&mut b, r, FILL, EDGE, BEHIND, shape);
+                assert_eq!(b, before, "band {shape:?} on {r:?}");
+                let on = tile_fill(&mut b, r, FILL, BEHIND, shape);
+                assert_eq!(b, before, "tile_fill {shape:?} on {r:?}");
+                assert_eq!(on, if shape == Shape::Line { BEHIND } else { FILL }, "{shape:?}: the content colour is still reported");
+            }
+        }
     }
 
     #[test]
