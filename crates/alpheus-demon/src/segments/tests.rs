@@ -880,6 +880,7 @@ fn rate_units() {
         (1_258_291, "1.2M"),
         (5_368_709_120, "5.0G"),
         (2_000_000_000_000, "1863G"),
+        (u64::MAX, "9999G"),
     ] {
         assert_eq!(rate(b), want, "{b}");
     }
@@ -928,4 +929,12 @@ fn extra_items_take_their_hues() {
     assert_eq!(st, "c".repeat(12) + &"B".repeat(8) + &"p".repeat(8));
     let (_, st) = items(&r, &[Net, Disk, Gpu], ModuleColors::None).unwrap();
     assert_eq!(st, ".".repeat(28));
+}
+
+#[test]
+fn net_icons_are_tinted_under_icons_and_the_figures_plain() {
+    let s = Sample { net: Some(NetRate { down: 1_258_291, up: 81_920 }), ..Sample::default() };
+    let (t, st) = items(&resources_with(s), &[ResourceItem::Net], ICONS).unwrap();
+    assert_eq!(t, "\u{f01da} 1.2M \u{f0552} 80K");
+    assert_eq!(st, "c......c....");
 }

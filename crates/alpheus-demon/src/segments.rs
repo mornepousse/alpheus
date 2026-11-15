@@ -340,14 +340,17 @@ pub(crate) fn battery(feed: &Feed<PowerState>, config: &BatteryConfig, mc: Modul
     Some(module_segment(ModuleId::Battery, pieces))
 }
 
-/// A byte rate, at most four cells: `0B`..`999B`, then `K`, `M`, `G` (1024 steps, one decimal under
-/// 10, none above, `1863G` the widest).
+/// A byte rate, at most five cells: `0B`..`999B`, then `K`, `M`, `G` (1024 steps, one decimal under
+/// 10, none above), the number capped at 9999 (`9999G`).
 pub(crate) fn rate(bytes_per_s: u64) -> String {
     if bytes_per_s < 1000 {
         return format!("{bytes_per_s}B");
     }
     let mut v = bytes_per_s as f64 / 1024.0;
     for unit in ['K', 'M', 'G'] {
+        if unit == 'G' {
+            v = v.min(9999.0);
+        }
         if unit == 'G' || v.round() < 1000.0 {
             return if (v * 10.0).round() < 100.0 { format!("{v:.1}{unit}") } else { format!("{v:.0}{unit}") };
         }
@@ -379,7 +382,6 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
     for &item in show {
         // The first piece has no leading gap; the others are three cells apart.
         let gap = if pieces.is_empty() { "" } else { "   " };
-        let mut item_pieces = |icon: char, hue: Hue, text: String| figure(&mut pieces, gap, icon, hue, text, mc);
         match item {
             ResourceItem::Cpu => {
                 let text = s.cpu.map_or_else(|| "…%".to_string(), |p| format!("{p}%"));
@@ -390,7 +392,7 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
             // Tenths of GiB, one decimal (the decimal part is always ".D", Q5).
             ResourceItem::Memory => {
                 if let Some(m) = s.memory {
-                    item_pieces(MEMORY, Hue::Yellow, format!("{}.{}G", m / 10, m % 10));
+                    figure(&mut pieces, gap, MEMORY, Hue::Yellow, format!("{}.{}G", m / 10, m % 10), mc);
                 }
             }
             ResourceItem::Temperature => {
@@ -400,12 +402,13 @@ pub(crate) fn resources(r: &Resources, show: &[ResourceItem], mc: ModuleColors) 
             }
             ResourceItem::Net => {
                 if let Some(n) = s.net {
-                    item_pieces(DOWNLOAD, Hue::Cyan, format!("{} {UPLOAD} {}", rate(n.down), rate(n.up)));
+                    figure(&mut pieces, gap, DOWNLOAD, Hue::Cyan, format!("{} ", rate(n.down)), mc);
+                    figure(&mut pieces, "", UPLOAD, Hue::Cyan, rate(n.up), mc);
                 }
             }
             ResourceItem::Disk => {
                 if let Some(d) = s.disk {
-                    item_pieces(HARDDISK, Hue::Blue, format!("{d}%"));
+                    figure(&mut pieces, gap, HARDDISK, Hue::Blue, format!("{d}%"), mc);
                 }
             }
             ResourceItem::Gpu => {
