@@ -3056,7 +3056,10 @@ fn hook_logs_carry_fixed_words_only() {
     let statements = log_statements(&production);
     assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
     for s in statements {
-        assert!(s.contains("\"hook: {") || s.contains("\"hooks: {") || s.contains("log(&line)"), "{s}");
+        assert!(
+            s.contains("\"hook: {") || s.contains("\"hooks: {") || s.contains("log(&line)") || s == "log(\"hooks: quiet window over\")",
+            "{s}"
+        );
         for never in ["argv", "env", ".env", "DEVICE", "PROFILE", "name", "value"] {
             assert!(!s.contains(never), "{never} in a hook log statement: {s}");
         }
