@@ -701,3 +701,45 @@ fn quick_dnd_until() {
         assert!(e.contains("quick.dnd_until"), "{bad:?}: {e}");
     }
 }
+
+#[test]
+fn hooks_default_to_none() {
+    let d = BarConfig::default();
+    assert!(d.hooks.is_empty());
+    assert_eq!(d.hooks, HooksConfig::default());
+    assert!(BarConfig::from_text("").unwrap().hooks.is_empty());
+}
+
+#[test]
+fn hooks_are_read_in_order() {
+    let keys = [
+        "started",
+        "theme_mode",
+        "dnd",
+        "battery_charge",
+        "battery_level",
+        "power_profile",
+        "network",
+        "vpn",
+        "bluetooth",
+        "privacy",
+        "displays",
+    ];
+    let text = format!("[hooks]\n{}", keys.iter().map(|k| format!("{k} = [\"hook-{k}\"]\n")).collect::<String>());
+    let c = BarConfig::from_text(&text).unwrap();
+    assert!(!c.hooks.is_empty());
+    let got: Vec<(&str, Vec<String>)> = c.hooks.commands().iter().map(|(k, v)| (*k, v.to_vec())).collect();
+    let want: Vec<(&str, Vec<String>)> = keys.iter().map(|k| (*k, vec![format!("hook-{k}")])).collect();
+    assert_eq!(got, want);
+    assert!(BarConfig::from_text("[hooks]\n").unwrap().hooks.is_empty());
+}
+
+#[test]
+fn hooks_check_their_commands() {
+    let e = BarConfig::from_text("[hooks]\ndnd = [\" \"]").unwrap_err();
+    assert!(e.contains("hooks.dnd: the program is blank"), "{e}");
+    let e = BarConfig::from_text("[hooks]\nvpn = [\"x\", \"a\\u0000b\"]").unwrap_err();
+    assert!(e.contains("hooks.vpn: an argument holds a NUL"), "{e}");
+    assert!(BarConfig::from_text("[hooks]\nwifi = [\"x\"]").is_err(), "unknown field");
+    assert!(BarConfig::from_text("[hooks]\ndnd = []").is_ok());
+}

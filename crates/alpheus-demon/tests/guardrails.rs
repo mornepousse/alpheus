@@ -1901,6 +1901,9 @@ impl Executor for ArgvSpy {
     fn spawn_with_input(&self, prog: &str, args: &[&str], _input: &[&[u8]]) -> Result<(), ExecError> {
         Err(self.record(prog, args))
     }
+    fn spawn_with_env(&self, prog: &str, args: &[&str], _env: &[(&str, &str)]) -> Result<(), ExecError> {
+        Err(self.record(prog, args))
+    }
     fn stream(&self, prog: &str, args: &[&str]) -> Result<Stream, ExecError> {
         Err(self.record(prog, args))
     }
