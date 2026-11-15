@@ -499,6 +499,9 @@ pub struct App {
     /// The power menu's timer (power spec § 4): armed only while it is open and the reboot or
     /// power-off question (3 s) is pending.
     pub(crate) power_timer: DeadlineTimer,
+    /// The focus timer's model, lengths and deadline (timer_app.rs); the deadline is armed only
+    /// while a timer runs.
+    pub(crate) timer: crate::timer_app::TimerApp,
     /// The privacy indicators' off-delay (privacy spec § 4): the bar's, armed only while an
     /// indicator is pending off, popup open or not.
     pub(crate) privacy_timer: DeadlineTimer,
@@ -597,6 +600,7 @@ impl App {
             .contains(&ModuleId::Displays)
             .then(|| crate::outputs_app::OutputsApp::bind(globals, qh, &bar.config.displays))
             .flatten();
+        let timer = crate::timer_app::TimerApp::new(&bar.config);
         let battery_alerts = crate::battery_alert::alerts_wanted(&bar.config.modules, &bar.config.battery.warn)
             .then(|| crate::battery_alert::BatteryAlerts::new(&bar.config.battery.warn));
         // Optional: without it, no popup (menus, tooltips, calendar); the bar is unaffected.
@@ -651,6 +655,7 @@ impl App {
             osd: crate::osd_surface::OsdSurface::new(),
             quick: crate::quick_app::QuickApp::new(),
             power_timer: DeadlineTimer::new(),
+            timer,
             privacy_timer: DeadlineTimer::new(),
             camera: crate::camera_app::Camera::new(),
             menu: Default::default(),
@@ -901,19 +906,25 @@ impl App {
         }
         let e = self.surfaces[i].scale;
         let advance = self.fonts.advance(e);
-        let (toggles, media, dnd) = {
+        let (toggles, media, dnd, timer) = {
             let Some(grid) = &self.surfaces[i].last else { return };
             let target = grid.target_at(painter::column_under(x, e, advance));
             (
                 target.is_some_and(|t| actions::toggles_launcher(t, b)),
                 target.and_then(|t| actions::media_control(t, b)),
                 target.is_some_and(|t| actions::toggles_dnd(t, b)),
+                target.is_some_and(|t| actions::timer_middle(t, b)),
             )
         };
         // The bell's middle button: do-not-disturb flips inside the daemon (notifications spec § 4),
         // through the one path that persists it.
         if dnd {
             self.set_dnd(!self.dnd);
+            return;
+        }
+        // The timer chip's middle button: pause or resume, or dismiss `done` (timer spec decision 16).
+        if timer {
+            self.timer_middle_click();
             return;
         }
         // The media module's middle button and wheel: D-Bus, never a command (spec § 1).

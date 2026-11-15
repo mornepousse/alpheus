@@ -146,6 +146,12 @@ pub fn toggles_dnd(target: &Target, b: Button) -> bool {
     b == Button::Middle && *target == Target::Module(ModuleId::Notifications)
 }
 
+/// The timer chip's middle button (timer spec decision 16): handled inside the daemon, nothing is
+/// run. The left button is the popup's, right and the wheel do nothing.
+pub fn timer_middle(target: &Target, b: Button) -> bool {
+    b == Button::Middle && *target == Target::Module(ModuleId::Timer)
+}
+
 /// The media module's middle button and wheel (spec § 1): a D-Bus call to the active player
 /// (`Mpris::control`), never a command; the left button is its popup's (`ModulePopup`).
 pub fn media_control(target: &Target, b: Button) -> Option<Control> {

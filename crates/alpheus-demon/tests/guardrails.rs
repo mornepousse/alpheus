@@ -1008,6 +1008,9 @@ fn nothing_resident_while_the_launcher_is_closed() {
         // Bluetooth call's 30 s deadline (suspended while a code shows), its 4 s `failed` or the 3 s
         // forget question (quick delivery 3) is.
         ("quick_app.rs", "Timer::", 1),
+        // The focus timer's one DeadlineTimer, built in `TimerApp::new`: armed only while a timer
+        // runs (at its end, and at each minute of the chip).
+        ("timer_app.rs", "Timer::", 1),
         // The notification bubbles' expiry, built in `BubbleSurface::new`: armed only while a live
         // bubble (shown, or hidden by do-not-disturb) has a finite timeout; the OSD's hide timer,
         // built in `OsdSurface::new`: armed only while the pill shows.
@@ -2691,6 +2694,51 @@ fn every_power_menu_activation_is_a_configured_session() {
 fn the_power_menu_has_no_panicking_path() {
     let files = source_files();
     for name in ["power.rs", "power_app.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// The focus timer's wiring: the deadline's callback calls `fired()` before the clock check; the
+/// clock's tick re-checks the wall-clock end (a suspended laptop's deadline is late); the state is
+/// loaded whenever `timer` is in `modules`, not only with `notifications`; the model changes in
+/// `timer_do`, `timer_check_clock` and `timer_load` only.
+#[test]
+fn the_timer_is_wired_through_one_path() {
+    let src = |f: &str| std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join(f)).unwrap();
+    let app = src("timer_app.rs");
+    let tick = function_body(&app, "fn timer_tick(");
+    let (fired, check) = (tick.find(".fired()"), tick.find("timer_check_clock"));
+    assert!(fired.is_some() && check.is_some() && fired < check, "fired() before the check: {tick}");
+    let startup = src("startup.rs");
+    let at = startup.find("Msg::Clock(h)").expect("the clock closure");
+    let end = at + startup[at..].find("TimeoutAction::ToDuration").expect("the clock closure's end");
+    assert!(startup[at..end].contains("timer_check_clock()"), "the clock tick must re-check the timer");
+    let modules = function_body(&startup, "fn start_modules(");
+    let notifications = function_body(modules, "if want.notifications");
+    assert!(modules.contains("state.timer_load("), "the timer is loaded at start");
+    assert!(!notifications.contains("timer_load"), "not only with the notifications module: {notifications}");
+    let prod = production_code(&app);
+    let mut owner = String::new();
+    for line in prod.lines() {
+        if let Some(i) = line.find("fn ") {
+            owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
+        }
+        if line.contains("self.timer.model =") {
+            assert!(["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()), "the model changed in {owner}");
+        }
+    }
+}
+
+/// Timer spec § 8: no panic in the focus timer's production code (it parses a file it did not
+/// write, and does arithmetic on wall-clock times).
+#[test]
+fn the_timer_has_no_panicking_path() {
+    let files = source_files();
+    for name in ["timer.rs", "timer_app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!("] {
