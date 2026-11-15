@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 56] = [
+const NO_THREAD_NOR_COMMAND: [&str; 57] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1432,6 +1432,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 56] = [
     "notes/keys.rs",
     "notes/model.rs",
     "notes/view.rs",
+    "notes/store.rs",
 ];
 
 #[test]
@@ -2736,7 +2737,47 @@ fn the_launcher_prefixes_have_no_panicking_path_and_log_nothing() {
 
 /// Quick notes: the pad's pure files run on each key and must never panic, slice a string by range
 /// (a boundary panic's message embeds the text) nor log (the note is private). Production code only.
-const NOTES_PURE: [&str; 5] = ["notes/text.rs", "notes/lines.rs", "notes/keys.rs", "notes/model.rs", "notes/view.rs"];
+const NOTES_PURE: [&str; 6] = ["notes/text.rs", "notes/lines.rs", "notes/keys.rs", "notes/model.rs", "notes/view.rs", "notes/store.rs"];
+
+/// What in `line` indexes by `[...]` in a way that can panic: a `..` between a `[` and its matching
+/// `]` (a range slice, `s[a..b]`, `s[a..=b]`), or a bare index (`x[i]`: a `[` right after an
+/// identifier character, `)` or `]`; attributes follow `#`, macros `!`, array types a space).
+fn panicking_index(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    let mut open: Vec<usize> = Vec::new();
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'[' => {
+                let prev = i.checked_sub(1).and_then(|p| bytes.get(p)).copied().unwrap_or(b' ');
+                if prev.is_ascii_alphanumeric() || matches!(prev, b'_' | b')' | b']') {
+                    return Some(format!("bare index in `{}`", line.trim()));
+                }
+                open.push(i);
+            }
+            b']' => {
+                if let Some(start) = open.pop() {
+                    if line.get(start..i).is_some_and(|inner| inner.contains("..")) {
+                        return Some(format!("range inside brackets in `{}`", line.trim()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+#[test]
+fn the_index_ban_sees_ranges_and_bare_indexes() {
+    for bad in ["let x = &s[a..b];", "s[a..=b]", "let t = v[i];", "f(x)[0]", "m[i][j]", "&s[..n]", "&s[n..]", "w[..]"] {
+        assert!(panicking_index(bad).is_some(), "{bad}");
+    }
+    for good in
+        ["let a: [u8; 4] = [0; 4];", "#[derive(Debug)]", "let v = vec![1, 2];", "s.get(a..b)", "for i in 0..n {}", "fn f(x: &[u8]) {}"]
+    {
+        assert!(panicking_index(good).is_none(), "{good}");
+    }
+}
 
 #[test]
 fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
@@ -2744,10 +2785,40 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
     for name in NOTES_PURE {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
-        for p in [".expect(", ".unwrap()", "panic!(", "[..", "..]", "log(", "log::write", "crate::log"] {
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+        }
     }
+}
+
+/// Quick notes: the notes file is written only through `state_file` (atomic, private, never a
+/// followed link), and only `store.rs` calls its writers.
+#[test]
+fn notes_files_are_written_only_through_state_file() {
+    let mut seen = 0;
+    for (p, t) in source_files() {
+        let name = relative_path(&p);
+        if !name.starts_with("notes/") {
+            continue;
+        }
+        seen += 1;
+        let production = production_code(&t);
+        for never in ["File::create", "OpenOptions", "fs::write", "fs::rename"] {
+            assert!(!production.contains(never), "{never} in {name}");
+        }
+        if name != "notes/store.rs" {
+            for only_store in ["write_private", "remove_private"] {
+                assert!(!production.contains(only_store), "{only_store} in {name}");
+            }
+        }
+    }
+    assert!(seen >= 7, "the notes files were found: {seen}");
 }
 
 /// Quick settings delivery 3: Bluetooth's D-Bus files run on the D-Bus

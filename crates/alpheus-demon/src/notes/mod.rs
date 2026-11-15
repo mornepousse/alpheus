@@ -4,5 +4,6 @@
 pub mod keys;
 pub mod lines;
 pub mod model;
+pub mod store;
 pub mod text;
 pub mod view;
