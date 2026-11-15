@@ -293,12 +293,31 @@ fn notifications_defaults_and_settings() {
     let d = BarConfig::default();
     assert_eq!(
         d.notifications,
-        NotificationsConfig { timeout: 5, timeout_min: 2, timeout_max: 20, max_visible: 4, width: 40, history: 50 }
+        NotificationsConfig {
+            timeout: 5,
+            timeout_min: 2,
+            timeout_max: 20,
+            max_visible: 4,
+            width: 40,
+            history: 50,
+            dnd_while_sharing: false
+        }
     );
     assert!(d.modules.contains(&ModuleId::Notifications), "on by default");
     assert_eq!(BarConfig::from_text("height = 22").unwrap().notifications, NotificationsConfig::default(), "absent: defaults");
     let c = BarConfig::from_text("[notifications]\ntimeout = 8\ntimeout_max = 30\nmax_visible = 2\nwidth = 60\nhistory = 0\n").unwrap();
-    assert_eq!(c.notifications, NotificationsConfig { timeout: 8, timeout_min: 2, timeout_max: 30, max_visible: 2, width: 60, history: 0 });
+    assert_eq!(
+        c.notifications,
+        NotificationsConfig {
+            timeout: 8,
+            timeout_min: 2,
+            timeout_max: 30,
+            max_visible: 2,
+            width: 60,
+            history: 0,
+            dnd_while_sharing: false
+        }
+    );
     for t in [
         "[notifications]\ntimeout_min = 1\ntimeout = 1\ntimeout_max = 1",
         "[notifications]\ntimeout_max = 600",
@@ -572,4 +591,12 @@ fn config_displays_defaults_and_absolute_drm_dir() {
     }
     assert!(err("[displays]\npower = true").contains("power"), "unknown key refused");
     assert_eq!(BarConfig::from_text("modules = [\"displays\"]").unwrap().modules, [ModuleId::Displays]);
+}
+
+#[test]
+fn dnd_while_sharing_defaults_off_and_reads_true() {
+    assert!(!BarConfig::default().notifications.dnd_while_sharing);
+    let c = BarConfig::from_text("[notifications]\ndnd_while_sharing = true\n").unwrap();
+    assert!(c.notifications.dnd_while_sharing);
+    assert_eq!(c.notifications.history, 50, "the rest stays default");
 }

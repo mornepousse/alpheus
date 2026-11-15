@@ -45,6 +45,7 @@
 //! max_visible = 4                                           # bubbles at once, 1 to 8 (newest on top)
 //! width = 40                                                # bubble width in cells, 24 to 80
 //! history = 50                                              # entries kept for the panel, 0 to 200 (0: none)
+//! dnd_while_sharing = false  # do not disturb while the screen is shared (needs "privacy" in modules); a change made meanwhile wins
 //! [osd]                                                     # the volume, microphone and brightness pill (with "osd" in modules)
 //! timeout_ms = 1300                                         # how long it stays after the last change, 600 to 5000
 //! width = 32                                                # cells of the pill's row, 24 to 60
@@ -403,11 +404,21 @@ pub struct NotificationsConfig {
     pub width: u16,
     /// Entries the panel keeps (0 to 200; 0: none).
     pub history: u16,
+    /// Do not disturb while the privacy graph shows a screen capture (needs `privacy` in `modules`).
+    pub dnd_while_sharing: bool,
 }
 
 impl Default for NotificationsConfig {
     fn default() -> Self {
-        NotificationsConfig { timeout: 5, timeout_min: 2, timeout_max: 20, max_visible: 4, width: 40, history: 50 }
+        NotificationsConfig {
+            timeout: 5,
+            timeout_min: 2,
+            timeout_max: 20,
+            max_visible: 4,
+            width: 40,
+            history: 50,
+            dnd_while_sharing: false,
+        }
     }
 }
 

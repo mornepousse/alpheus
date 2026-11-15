@@ -25,7 +25,6 @@ use std::time::{Duration, Instant};
 pub(crate) struct DndTimed {
     pub(crate) model: Dnd,
     pub(crate) timer: DeadlineTimer,
-    #[allow(dead_code)] // read by the screen-sharing edge, the next task
     pub(crate) sharing_seen: bool,
 }
 
@@ -38,6 +37,23 @@ impl DndTimed {
 /// The slack past the longest `--for` that an `--until` may reach: a local `HH:MM` tomorrow is at
 /// most 24 h away, and a clock change an hour either way.
 const DND_UNTIL_SLACK_SECS: u64 = 3_600;
+
+/// The log line of a change: the cause when there is one, else the end of a timed one.
+fn dnd_line(next: Dnd, why: &str, now: u64) -> String {
+    let state = if next.on { "on" } else { "off" };
+    match (why, next.until) {
+        ("", Some(t)) if next.on => {
+            format!("notifications: do not disturb {state} (ends in {} min)", t.saturating_sub(now).div_ceil(60))
+        }
+        ("", _) => format!("notifications: do not disturb {state}"),
+        _ => format!("notifications: do not disturb {state} ({why})"),
+    }
+}
+
+/// `Some(now)` when a capture started or ended since `seen`; None when nothing changed.
+pub fn sharing_edge(seen: bool, now: bool) -> Option<bool> {
+    (seen != now).then_some(now)
+}
 
 pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -149,15 +165,7 @@ impl App {
         self.dnd = next.on;
         // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
         // line needs a server.
-        let state = if next.on { "on" } else { "off" };
-        let line = match (next.until, why) {
-            (Some(t), _) if next.on => {
-                format!("notifications: do not disturb {state} (ends in {} min)", t.saturating_sub(unix_now()).div_ceil(60))
-            }
-            (_, "") => format!("notifications: do not disturb {state}"),
-            _ => format!("notifications: do not disturb {state} ({why})"),
-        };
-        log(&line);
+        log(&dnd_line(next, why, unix_now()));
         if let Err(e) = state_file::save_dnd(&paths::state_dir(), next.saved().map(saved_text).as_deref()) {
             log(&format!("notifications: do not disturb could not be saved ({e})"));
         }
@@ -177,6 +185,22 @@ impl App {
         // The quick panel's row follows, whichever of the paths changed it (quick spec § 2).
         self.quick_refresh();
         self.dnd_timer_sync();
+    }
+
+    /// `[notifications] dnd_while_sharing`: on a capture's start or end (an edge, never a level),
+    /// do-not-disturb follows through `Dnd::after_sharing`, which keeps the user's choice (decision 7).
+    /// Nothing without the option or the `privacy` module.
+    pub(crate) fn dnd_sharing_follow(&mut self) {
+        let cfg = &self.bar.config;
+        if !cfg.notifications.dnd_while_sharing || !cfg.modules.contains(&ModuleId::Privacy) {
+            return;
+        }
+        let Some(now) = sharing_edge(self.dnd_timed.sharing_seen, self.bar.privacy.shown().screen.active()) else {
+            return;
+        };
+        self.dnd_timed.sharing_seen = now;
+        let why = if now { "screen shared" } else { "screen sharing ended" };
+        self.dnd_apply(self.dnd_timed.model.after_sharing(now), why);
     }
 
     /// The state as it was left (startup, with the loop handle made): an end already passed, or a
@@ -288,6 +312,25 @@ mod tests {
         assert_eq!(dnd_wait(100, 90), Duration::from_secs(10));
         assert_eq!(dnd_wait(90, 100), Duration::ZERO, "an end in the past fires now");
         assert_eq!(dnd_wait(u64::MAX, 0), Duration::from_secs(u64::from(DND_MAX_SECS) + 3_600), "a hostile file's end is clamped");
+    }
+
+    #[test]
+    fn sharing_reacts_to_edges_only() {
+        assert_eq!(sharing_edge(false, true), Some(true));
+        assert_eq!(sharing_edge(true, false), Some(false));
+        assert_eq!(sharing_edge(true, true), None);
+        assert_eq!(sharing_edge(false, false), None);
+    }
+
+    #[test]
+    fn the_log_names_the_cause_before_the_end() {
+        let sharing = Dnd { on: true, until: None, by_sharing: true };
+        assert_eq!(dnd_line(sharing, "screen shared", 0), "notifications: do not disturb on (screen shared)");
+        assert_eq!(dnd_line(Dnd::default(), "screen sharing ended", 0), "notifications: do not disturb off (screen sharing ended)");
+        let timed = Dnd { on: true, until: Some(600), by_sharing: false };
+        assert_eq!(dnd_line(timed, "", 0), "notifications: do not disturb on (ends in 10 min)");
+        assert_eq!(dnd_line(timed, "odd cause", 0), "notifications: do not disturb on (odd cause)", "a cause is never swallowed");
+        assert_eq!(dnd_line(Dnd::user(true), "", 0), "notifications: do not disturb on");
     }
 
     #[test]

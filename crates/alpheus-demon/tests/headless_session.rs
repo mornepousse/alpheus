@@ -5262,6 +5262,71 @@ fn privacy_hyprland_screencast_lights_the_screen() {
     assert!(gone.is_some_and(|t| t <= Duration::from_secs(3)), "gone within 3 s: {gone:?} {:?}", d.log());
 }
 
+const SHARING_BAR: &str = "modules = [\"privacy\", \"notifications\", \"clock\"]\n";
+const SHARING_ON: &str = "[notifications]\ndnd_while_sharing = true\n";
+
+fn sharing_daemon(name: &str, extra: &str) -> (Sway, FakeHyprland, Daemon) {
+    let (sway, hypr, d) = privacy_daemon_with(name, SHARING_BAR, extra, &[privacy_orange(), privacy_red()]);
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    (sway, hypr, d)
+}
+
+/// Small features 1, decision 7: a screencast turns do-not-disturb on, its end turns it off.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn dnd_while_sharing_follows_a_hyprland_screencast() {
+    let (sway, hypr, d) = sharing_daemon("dnd-sharing", SHARING_ON);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for("notifications: do not disturb on (screen shared)", DELAY), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sharing\n");
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    assert!(d.wait_for("do not disturb off (screen sharing ended)", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the file is gone");
+}
+
+/// Decision 7: the user's word wins over the capture, either way.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn the_users_choice_wins_over_sharing() {
+    let (sway, hypr, d) = sharing_daemon("dnd-user-wins", SHARING_ON);
+    let file = sway.runtime.join("state/alpheus/dnd");
+    // Off by hand during a cast: the end leaves it off, and says nothing.
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for("do not disturb on (screen shared)", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    // Another change of what the bar shows while the cast goes on: an edge, not a level, so the
+    // cast does not turn it back on.
+    firefox_records(&sway, &d);
+    thread::sleep(Duration::from_secs(1));
+    assert_eq!(d.count("(screen shared)"), 1, "an edge, never a level: {:?}", d.log());
+    assert!(!file.exists(), "off by hand, off still: {:?}", d.log());
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen sharing ended"), 0, "{:?}", d.log());
+    assert!(!file.exists(), "still off: {:?}", d.log());
+    pw_dump_send(&sway.runtime, &capture_gone(200, 300));
+    assert!(glyph_gone_after(&sway, privacy_orange(), Instant::now()).is_some(), "{:?}", d.log());
+    // On by hand during a cast (the cast turned it on, then the user said on): the end keeps it.
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    assert!(d.wait_for_count("do not disturb on (screen shared)", 2, DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen sharing ended"), 0, "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "", "still on, untimed: {:?}", d.log());
+}
+
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn without_the_option_a_screencast_leaves_dnd_alone() {
+    let (sway, hypr, d) = sharing_daemon("dnd-no-option", "");
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    thread::sleep(Duration::from_secs(3));
+    assert_eq!(d.count("screen shared"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists());
+}
+
 /// Privacy spec § 8: once a capture ended and its glyph went, the loop sleeps (no timer left).
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]

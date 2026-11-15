@@ -2662,6 +2662,18 @@ fn the_privacy_module_has_no_panicking_path() {
     }
 }
 
+/// Small features 1, decision 7: every change of what the privacy graph shows ends in
+/// `privacy_changed`, which hands the screen's edge to do-not-disturb after the timer sync
+/// (`privacy_tick` and `privacy_feed` both reach it).
+#[test]
+fn privacy_changed_follows_sharing_for_dnd() {
+    let files = source_files();
+    let app = production_code(&files.iter().find(|(p, _)| relative_path(p) == "privacy_app.rs").expect("privacy_app.rs").1);
+    let changed = function_body(&app, "pub(crate) fn privacy_changed(");
+    let (sync, follow) = (changed.find("self.privacy_timer_sync()"), changed.find("self.dnd_sharing_follow()"));
+    assert!(matches!((sync, follow), (Some(s), Some(f)) if s < f), "dnd_sharing_follow after the timer sync: {changed}");
+}
+
 /// Privacy spec § 4: the off-delay's timer is the bar's, not the popup's. It follows
 /// `Privacy::deadline` after every change, popup open or not (so `popup_close` never lets it go),
 /// and the tick forgets its dropped source before applying what is due.

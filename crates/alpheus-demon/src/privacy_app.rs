@@ -94,6 +94,7 @@ impl App {
             Follow::Nothing => {}
         }
         self.privacy_timer_sync();
+        self.dnd_sharing_follow();
     }
 
     /// The timer follows the earliest pending off; none without one (privacy spec § 4).
