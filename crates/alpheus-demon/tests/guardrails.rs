@@ -2735,7 +2735,13 @@ fn the_timer_is_wired_through_one_path() {
             if let Some(i) = line.find("fn ") {
                 owner = line[i + 3..].split('(').next().unwrap_or_default().to_string();
             }
-            if line.contains(".timer.model =") && !line.contains(".timer.model ==") {
+            // `x.timer.model =`, a destructured `timer.model =` (not part of a longer name) and
+            // `mem::replace(&mut …timer.model`.
+            let assigns = line.match_indices("timer.model =").any(|(i, _)| {
+                let before = line[..i].chars().next_back();
+                !line[i..].starts_with("timer.model ==") && before.is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+            }) || (["replace(&mut", "swap(&mut"].iter().any(|f| line.contains(f)) && line.contains("timer.model"));
+            if assigns {
                 assert!(
                     name == "timer_app.rs" && ["timer_do", "timer_check_clock", "timer_load"].contains(&owner.as_str()),
                     "the model changed in {name}'s {owner}"
@@ -2743,11 +2749,11 @@ fn the_timer_is_wired_through_one_path() {
             }
         }
     }
-    // A due end is applied before a change: a click after a resume must not pause or extend a
-    // timer that has already ended.
+    // A due end is applied before a change (the pure `change_step`): a click after a resume must
+    // not pause or extend a timer that has already ended; timer_do never applies a change itself.
     let body = function_body(&app, "pub(crate) fn timer_do(");
-    let (check, apply) = (body.find("timer_check_clock()"), body.find(".apply("));
-    assert!(check.is_some() && apply.is_some() && check < apply, "timer_do checks the clock before it applies: {body}");
+    assert!(body.contains("change_step("), "timer_do goes through change_step: {body}");
+    assert!(!body.contains(".apply("), "timer_do applies no change but through change_step: {body}");
 }
 
 /// Timer spec § 8: no panic in the focus timer's production code (it parses a file it did not

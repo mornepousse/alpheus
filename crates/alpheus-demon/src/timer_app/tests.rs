@@ -125,3 +125,21 @@ fn a_deadline_already_armed_for_that_instant_stays() {
     assert!(!same_deadline(t, t + Duration::from_millis(6)));
     assert!(!same_deadline(t + Duration::from_millis(6), t));
 }
+
+/// A change after a resume applies the end that passed first: Pause on a countdown whose end is
+/// behind us is "ended" (done), never "paused"; a change before the end is just the change.
+#[test]
+fn a_due_end_is_applied_before_the_change() {
+    let ended = Model::Countdown { run: Run::Running(T0 - 1), total: 60_000 };
+    let (due, end, after) = change_step(ended, Change::Pause, &L, T0);
+    assert_eq!(end, Some(End::Countdown { total: 60_000 }));
+    assert_eq!((due, after), (Model::Idle { done: true }, Model::Idle { done: true }), "nothing left to pause");
+    let (_, end, after) = change_step(ended, Change::Add(60_000), &L, T0);
+    assert_eq!((end, after), (Some(End::Countdown { total: 60_000 }), Model::Idle { done: true }), "nor to extend");
+    let running = Model::Countdown { run: Run::Running(T0 + 30_000), total: 60_000 };
+    let (due, end, after) = change_step(running, Change::Pause, &L, T0);
+    assert_eq!((due, end), (running, None));
+    assert_eq!(after, Model::Countdown { run: Run::Paused(30_000), total: 60_000 });
+    let (due, end, after) = change_step(IDLE, Change::Seen, &L, T0);
+    assert_eq!((due, end, after), (IDLE, None, IDLE));
+}

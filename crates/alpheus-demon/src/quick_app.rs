@@ -378,14 +378,19 @@ impl App {
         quick_state::read(&c.state, Path::new("/proc"), &|k| std::env::var_os(k))
     }
 
+    /// The bar a verb opens under: the focused output's, else the first configured one.
+    pub(crate) fn verb_bar(&self) -> Option<&crate::wayland::Surface> {
+        let (_, focused) = self.bubbles_target();
+        focused
+            .as_deref()
+            .and_then(|n| self.surfaces.iter().find(|s| s.name == n && s.configured))
+            .or_else(|| self.surfaces.iter().find(|s| s.configured))
+    }
+
     /// The verb's anchor: the last cell of the bar on the focused output (the positioner slides the
     /// panel left into the output), else of the first configured bar.
     pub(crate) fn quick_anchor(&self) -> Option<PopupAnchor> {
-        let (_, focused) = self.bubbles_target();
-        let s = focused
-            .as_deref()
-            .and_then(|n| self.surfaces.iter().find(|s| s.name == n && s.configured))
-            .or_else(|| self.surfaces.iter().find(|s| s.configured))?;
+        let s = self.verb_bar()?;
         let columns = s.last.as_ref().map_or(1, |g| g.width()).max(1);
         Some(PopupAnchor { output: s.name.clone(), start: columns - 1, end: columns })
     }

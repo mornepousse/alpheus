@@ -7,6 +7,7 @@
 use crate::actions::Button;
 use crate::config::ModuleId;
 use crate::deadline::DeadlineTimer;
+use crate::grid::Target;
 use crate::keys::Key;
 use crate::log::write as log;
 use crate::popup::{Anchor as PopupAnchor, Input, ModulePopup, PopupBody, PopupClose, PopupOps, PopupPointer};
@@ -163,6 +164,14 @@ pub(crate) fn step(model: Model, l: &Lengths, now: u64) -> (Model, Option<End>, 
     (next, end, end.is_some())
 }
 
+/// A change at `now` with a due end applied first: the timer after that end (and what ended), then
+/// after the change. A click or an Add after a resume cannot pause or extend a timer that already
+/// ended.
+pub(crate) fn change_step(model: Model, c: Change, l: &Lengths, now: u64) -> (Model, Option<End>, Model) {
+    let (due, end, _) = step(model, l, now);
+    (due, end, due.apply(c, l, now))
+}
+
 /// What a state file read at start makes of the timer.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Loaded {
@@ -193,14 +202,20 @@ impl App {
         if !self.timer.enabled {
             return false;
         }
-        // A due end first: a click or an Add after a resume must not pause or extend a timer that
-        // has already ended.
-        if self.timer.model.running() {
-            self.timer_check_clock();
+        // A due end first (`change_step`): a click or an Add after a resume must not pause or
+        // extend a timer that has already ended.
+        let (before, end, after) = change_step(self.timer.model, c, &self.timer.lengths, unix_ms());
+        if let Some(end) = end {
+            self.timer.model = before;
+            self.timer_save();
+            log(end_line(end));
+            self.timer_end(end);
         }
-        let before = self.timer.model;
-        let after = before.apply(c, &self.timer.lengths, unix_ms());
         if after == before {
+            if end.is_some() {
+                self.timer_chip();
+                self.timer_sync();
+            }
             return false;
         }
         self.timer.model = after;
@@ -291,25 +306,21 @@ impl App {
             TimerAction::Close => self.popup_close(PopupClose::Escape),
             TimerAction::Do(c) => {
                 self.timer_do(c);
-                self.timer_follow();
                 self.timer_refresh();
             }
         }
     }
 
-    /// The open popup's actions follow the model (the selection goes back to the first when they
-    /// change).
-    fn timer_follow(&mut self) {
-        let App { popup, timer, .. } = self;
-        if let Some(PopupBody::Timer(p)) = popup.as_mut().map(|p| &mut p.body) {
-            p.follow(&timer.model);
-        }
-    }
-
-    /// The open popup repainted (`popup_draw` commits nothing when its rows did not change).
+    /// The open popup repainted (`popup_draw` commits nothing when its rows did not change). Its
+    /// actions follow the model first, whoever changed it (a verb, the deadline, the clock): the
+    /// selection goes back to the first when they change.
     fn timer_refresh(&mut self) {
-        let rows = match self.popup_body() {
-            Some(PopupBody::Timer(p)) => p.render(&self.timer.model, &self.timer.lengths, unix_ms()),
+        let App { popup, timer, .. } = self;
+        let rows = match popup.as_mut().map(|p| &mut p.body) {
+            Some(PopupBody::Timer(p)) => {
+                p.follow(&timer.model);
+                p.render(&timer.model, &timer.lengths, unix_ms())
+            }
             _ => return,
         };
         self.popup_paint(rows);
@@ -335,7 +346,7 @@ impl App {
         }
         let (anchor, input) = match anchor {
             Some(a) => (a, Input::Grab),
-            None => match self.quick_anchor() {
+            None => match self.timer_anchor() {
                 Some(a) => (a, Input::Keys),
                 None => {
                     log("timer: no bar to open under");
@@ -343,7 +354,8 @@ impl App {
                 }
             },
         };
-        self.timer_do(Change::Seen);
+        // `Seen` comes once the popup is open (the anchor was read before it: `done` and the idle
+        // glyph differ in width), and the rows and the chip are made again after it.
         let popup = TimerPopup::new(self.timer.minutes, &self.timer.model);
         let rows = popup.render(&self.timer.model, &self.timer.lengths, unix_ms());
         let (columns, height) = rows.cells();
@@ -351,7 +363,20 @@ impl App {
             self.timer.verb_opened = (input == Input::Keys).then(Instant::now);
             self.popup_paint(rows);
             log(&format!("timer shown ({})", self.timer.model.word()));
+            self.timer_do(Change::Seen);
+            self.timer_refresh();
             self.timer_sync();
+        }
+    }
+
+    /// The verb's anchor (plan decision 17): the chip's zone on the last grid of the focused bar,
+    /// else (`idle = "hidden"`: no chip) the bar's right end, as the quick panel's.
+    fn timer_anchor(&self) -> Option<PopupAnchor> {
+        let s = self.verb_bar()?;
+        let zone = s.last.as_ref().and_then(|g| g.zones().iter().find(|z| z.target == Target::Module(ModuleId::Timer)));
+        match zone {
+            Some(z) => Some(PopupAnchor { output: s.name.clone(), start: z.start, end: z.end }),
+            None => self.quick_anchor(),
         }
     }
 

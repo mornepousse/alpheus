@@ -5951,8 +5951,9 @@ fn timer_verbs_need_the_module() {
     assert!(d.wait_for("timer: nothing to skip", DELAY), "{:?}", d.log());
 }
 
-/// Plan decision 17: `--timer popup` opens the popup under the bar's right end, a second within
-/// 250 ms is the press bind's refire and is ignored, a later one closes it.
+/// Plan decision 17: `--timer popup` opens the popup under the chip (not the bar's right end: the
+/// drawn background fills the area under the chip's cell), a second within 250 ms is the press
+/// bind's refire and is ignored, a later one closes it.
 #[test]
 #[ignore = "headless sway, grim and dbus-daemon (nix develop)"]
 fn timer_popup_verb_opens_and_closes_it() {
@@ -5960,11 +5961,28 @@ fn timer_popup_verb_opens_and_closes_it() {
     ready(&d);
     assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
     assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("timer: popup debounced", DELAY), "{:?}", d.log());
     thread::sleep(Duration::from_millis(300));
     assert_eq!(timer_verb(&sway, &["--timer", "popup"]), (EXIT_OK, String::new(), String::new()));
     assert!(d.wait_for("popup closed (verb)", DELAY), "{:?}", d.log());
+}
+
+/// A popup opened while idle follows a change made elsewhere: after `--timer start 5m` its first
+/// action is Pause, so Enter pauses and never restarts the countdown.
+#[test]
+#[ignore = "headless sway, grim, dbus-daemon and wtype (nix develop)"]
+fn timer_the_open_popup_follows_a_change_made_outside() {
+    let (_bus, sway, _hypr, d) = timer_daemon("timer-follow", "[\"timer\", \"clock\"]", "");
+    sway.click(TIMER_AT.0, TIMER_AT.1, "button1");
+    assert!(d.wait_for("timer shown (idle)", DELAY), "{:?}", d.log());
+    timer_drawn(&sway, &d);
+    assert_eq!(timer_verb(&sway, &["--timer", "start", "5m"]), (EXIT_OK, String::new(), String::new()));
+    assert!(d.wait_for("timer: countdown started (5 min)", DELAY), "{:?}", d.log());
+    keys(&sway, &["Return"]);
+    assert!(d.wait_for("timer: paused", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("timer: countdown started"), 1, "Enter never restarted it: {:?}", d.log());
 }
 
 /// Each test gives its compositor a name, and the name picks its runtime directory
