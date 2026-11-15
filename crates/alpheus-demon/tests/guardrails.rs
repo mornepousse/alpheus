@@ -1375,7 +1375,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 51] = [
+const NO_THREAD_NOR_COMMAND: [&str; 52] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1427,6 +1427,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 51] = [
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
+    "resources_popup.rs",
 ];
 
 #[test]
@@ -2087,6 +2088,17 @@ fn the_osd_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Resources popup: no panic in the model's production code.
+#[test]
+fn the_resources_popup_has_no_panicking_path() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources_popup.rs").expect("resources_popup.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in resources_popup.rs's production code");
     }
 }
 

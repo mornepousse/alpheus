@@ -41,8 +41,8 @@ pub struct Graph {
     pub series: Vec<Series>,
 }
 
-/// Points in permille (0..=1000), oldest first, right-aligned: the last one at the right edge;
-/// `points.len()` is the number of columns the width is split into.
+/// Points in permille (0..=1000), `points.len()` columns, oldest first: the last one at the right
+/// edge, the width split evenly over the columns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series {
     pub points: Vec<Option<u16>>,
