@@ -1352,7 +1352,7 @@ fn the_portal_is_read_through_exactly_two_members() {
 /// (no executor, no `actions::run`; naming `actions::Button`, as the
 /// popups do, is fine): the applications act, the bar only asks them.
 /// Files named before they exist are checked once they do.
-const NO_THREAD_NOR_COMMAND: [&str; 43] = [
+const NO_THREAD_NOR_COMMAND: [&str; 44] = [
     "session_bus/",
     "media.rs",
     "notify.rs",
@@ -1396,6 +1396,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 43] = [
     "bt_app.rs",
     "outputs/",
     "outputs_app.rs",
+    "launcher/calc.rs",
 ];
 
 #[test]
@@ -2423,6 +2424,19 @@ fn the_power_menu_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Small features 1: the calculator's evaluator runs on each keystroke of the launcher's
+/// query and must never panic, whatever is typed. Production code only.
+#[test]
+fn the_calculator_has_no_panicking_path() {
+    let files = source_files();
+    let name = "launcher/calc.rs";
+    let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in {name}'s production code");
     }
 }
 

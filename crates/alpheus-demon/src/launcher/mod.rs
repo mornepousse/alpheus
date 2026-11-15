@@ -3,6 +3,7 @@
 //! freed at close. Pure parts first (configuration, history, sources,
 //! matching, model, view), the Wayland side last.
 
+pub mod calc;
 pub mod config;
 pub mod desktop;
 pub mod history;
