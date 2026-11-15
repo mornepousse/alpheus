@@ -2427,15 +2427,17 @@ fn the_wifi_password_goes_to_stdin_only_and_is_wiped_after() {
     assert!(!secret.contains("derive(Debug") && !secret.contains("derive(Clone"), "its own Debug (no byte) and Clone");
 }
 
-/// Quick Wi-Fi spec § 6: no panic in the Wi-Fi reader (the D-Bus thread's): bounded, cleaned, never
-/// unwrapped.
+/// Quick Wi-Fi spec § 6 and quick VPN spec: no panic in the panel readers (the D-Bus thread's):
+/// bounded, cleaned, never unwrapped.
 #[test]
-fn the_wifi_reader_has_no_panicking_path() {
+fn the_panel_readers_have_no_panicking_path() {
     let files = source_files();
-    let t = &files.iter().find(|(p, _)| relative_path(p) == "sources/dbus/wifi.rs").expect("sources/dbus/wifi.rs").1;
-    let production = production_code(t);
-    for p in [".expect(", ".unwrap()", "panic!("] {
-        assert!(!production.contains(p), "{p} in sources/dbus/wifi.rs's production code");
+    for name in ["sources/dbus/wifi.rs", "sources/dbus/vpn.rs"] {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!("] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
     }
 }
 

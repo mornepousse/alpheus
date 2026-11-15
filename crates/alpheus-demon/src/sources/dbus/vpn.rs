@@ -2,9 +2,14 @@
 //! kind, last use and whether a secret is asked at connection time. No secret is ever decoded.
 
 use super::props::Props;
-use super::wifi::valid_uuid;
-use crate::system::{VpnKind, VpnProfile};
+pub use super::tap::VpnTap;
+use super::wifi::{MAX_SAVED, valid_uuid};
+use super::{Bus, NM, is_service_gone, network, optional};
+use crate::log::write as log;
+use crate::system::{ActiveVpn, Saved, VpnKind, VpnProfile, VpnScope, VpnState};
 use crate::text;
+use std::collections::BTreeMap;
+use std::io;
 
 /// The longest profile name kept, in bytes (NetworkManager's own limit).
 pub const NAME_MAX: usize = 255;
@@ -42,49 +47,144 @@ pub fn saved_vpn(connection: Option<&Props>, asks: bool) -> Option<VpnProfile> {
     Some(VpnProfile { uuid, name, kind, last_used, asks })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sources::dbus::props::busctl as fixture;
+/// An active connection of the root's list, as a VPN: a plugin's (`Vpn` true) or a WireGuard
+/// tunnel's (`Type` `wireguard`, `Vpn` false), with a uuid the panel may pass to nmcli.
+fn active_vpn(a: &Props) -> Option<ActiveVpn> {
+    let vpn = a.bool("Vpn") == Some(true) || matches!(a.str("Type"), Some("vpn" | "wireguard"));
+    let uuid = a.str("Uuid").filter(|u| valid_uuid(u))?;
+    vpn.then(|| ActiveVpn { uuid: uuid.to_string(), state: a.int("State").and_then(|n| u32::try_from(n).ok()).unwrap_or(0) })
+}
 
-    fn connection(json: &str) -> Props {
-        fixture::get_all(&format!(r#"{{"type":"a{{sv}}","data":[{json}]}}"#))
+/// The D-Bus thread's VPN reading for one session: profiles and active VPN connections, read only
+/// while the quick panel is open, through NetworkManager's unique name. Closed, it is back to its
+/// default: nothing kept. Secrets are never asked for.
+#[derive(Debug, Default)]
+pub struct VpnReader {
+    scope: VpnScope,
+    /// NetworkManager's unique name when the profiles below were read: another owner, other objects.
+    owner: Option<String>,
+    /// The profiles by connection path (at most MAX_SAVED); None for any other kind, or a
+    /// connection that is gone or not this user's.
+    profiles: BTreeMap<String, Option<VpnProfile>>,
+    /// The connections must be listed again: a new open, a new owner, or a listing that stopped.
+    stale: bool,
+    /// The last state read.
+    last: Option<VpnState>,
+    /// One failed read is logged per open.
+    logged: bool,
+}
+
+impl VpnReader {
+    pub fn scope(&self) -> VpnScope {
+        self.scope
     }
 
-    #[test]
-    fn a_hostile_name_is_cleaned_cut_and_never_empty() {
-        let with = |id: &str| {
-            let id = serde_json::to_string(id).unwrap();
-            let json = format!(
-                r#"{{"id":{{"type":"s","data":{id}}},"uuid":{{"type":"s","data":"11111111-2222-4333-8444-555555555555"}},"type":{{"type":"s","data":"vpn"}}}}"#
-            );
-            saved_vpn(Some(&connection(&json)), false).unwrap().name
+    /// The loop asked for `scope` (a poke). The same scope: read again. Another open one: the list
+    /// is marked stale, and read. Closed: forgotten, nothing read. Err when the bus went away.
+    pub fn rescope(&mut self, bus: &mut dyn Bus, scope: VpnScope) -> io::Result<Option<VpnState>> {
+        if scope == self.scope && scope != VpnScope::Closed {
+            return self.reread(bus);
+        }
+        if scope == VpnScope::Closed {
+            *self = VpnReader::default();
+            return Ok(None);
+        }
+        self.stale = true;
+        self.scope = scope;
+        self.reread(bus)
+    }
+
+    /// The state again: None when closed. A failed read keeps the last state, or an empty one
+    /// before the first (logged once per open); the bus going away is an error.
+    pub fn reread(&mut self, bus: &mut dyn Bus) -> io::Result<Option<VpnState>> {
+        if self.scope == VpnScope::Closed {
+            return Ok(None);
+        }
+        let s = match self.read(bus) {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+            Err(e) => {
+                self.note(&e);
+                self.last.clone().unwrap_or_default()
+            }
         };
-        assert_eq!(with("\u{202e}a\u{7}b"), "ab");
-        let long = with(&"é".repeat(300));
-        assert!(long.len() <= NAME_MAX && !long.is_empty());
-        assert_eq!(with("\u{7}"), "?");
-        assert_eq!(with(""), "?", "an empty id");
-        let bad = connection(r#"{"uuid":{"type":"s","data":"-x"},"type":{"type":"s","data":"vpn"}}"#);
-        assert_eq!(saved_vpn(Some(&bad), false), None);
+        self.last = Some(s.clone());
+        Ok(Some(s))
     }
 
-    #[test]
-    fn last_use_is_zero_when_absent_or_negative() {
-        let with = |ts: &str| {
-            let json = format!(
-                r#"{{"uuid":{{"type":"s","data":"11111111-2222-4333-8444-555555555555"}},"type":{{"type":"s","data":"vpn"}}{ts}}}"#
-            );
-            saved_vpn(Some(&connection(&json)), false).unwrap().last_used
+    /// The error's kind only: never a name, a path or a message.
+    fn note(&mut self, e: &io::Error) {
+        if !std::mem::replace(&mut self.logged, true) {
+            log(&format!("D-Bus VPN: read failed ({:?})", e.kind()));
+        }
+    }
+
+    fn forget(&mut self) {
+        self.owner = None;
+        self.profiles.clear();
+        self.stale = true;
+    }
+
+    fn read(&mut self, bus: &mut dyn Bus) -> io::Result<VpnState> {
+        let Some(nm) = bus.owner(NM)? else {
+            self.forget();
+            return Ok(VpnState::default());
         };
-        assert_eq!(with(""), 0, "absent");
-        assert_eq!(with(r#","timestamp":{"type":"x","data":-5}"#), 0, "negative");
-        assert_eq!(with(r#","timestamp":{"type":"t","data":1700000000}"#), 1700000000);
+        if self.owner.as_deref() != Some(nm.as_str()) {
+            self.forget();
+            self.owner = Some(nm.clone());
+        }
+        if self.stale || self.scope == VpnScope::Detail {
+            self.stale = !self.list(bus, &nm)?;
+        }
+        let root = bus.get_all(&nm, network::PATH, network::INTERFACE)?;
+        let mut active = Vec::new();
+        for path in root.paths("ActiveConnections").iter().take(MAX_ACTIVE) {
+            if let Some(a) = optional(bus.get_all(&nm, path, network::ACTIVE))?.as_ref().and_then(active_vpn) {
+                active.push(a);
+            }
+        }
+        Ok(VpnState { profiles: self.profiles.values().flatten().cloned().collect(), active })
     }
 
-    #[test]
-    fn secret_flags() {
-        assert!(secret_asked(1) && secret_asked(2) && secret_asked(3));
-        assert!(!secret_asked(0) && !secret_asked(4) && !secret_asked(5));
+    /// The saved connections listed (the first MAX_SAVED): the ones gone dropped, the new ones read
+    /// through GetSettings (never their secrets). True when the list is whole: no listing, a
+    /// service gone midway or a profile that failed leaves it stale (that profile is not cached).
+    fn list(&mut self, bus: &mut dyn Bus, nm: &str) -> io::Result<bool> {
+        let all = match bus.list_connections(nm) {
+            Ok(p) => p,
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+            Err(e) if e.kind() == io::ErrorKind::NotFound || is_service_gone(&e) => return Ok(false),
+            Err(e) => {
+                self.note(&e);
+                return Ok(false);
+            }
+        };
+        let listed = &all[..all.len().min(MAX_SAVED)];
+        self.profiles.retain(|p, _| listed.contains(p));
+        let mut whole = true;
+        for p in listed {
+            if self.profiles.contains_key(p) {
+                continue;
+            }
+            match bus.get_settings(nm, p) {
+                Ok(s) => {
+                    self.profiles.insert(p.clone(), s.and_then(|s| if let Saved::Vpn(v) = s { Some(v) } else { None }));
+                }
+                Err(e) if is_service_gone(&e) => return Ok(false),
+                Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied) => {
+                    self.profiles.insert(p.clone(), None);
+                }
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(e),
+                Err(e) => {
+                    self.note(&e);
+                    whole = false;
+                }
+            }
+        }
+        Ok(whole)
     }
 }
+
+#[cfg(test)]
+mod tests;
