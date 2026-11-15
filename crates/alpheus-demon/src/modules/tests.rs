@@ -18,7 +18,7 @@ macro_rules! rows {
 rows! {
     Launcher => 0, Workspaces => 1, Window => 2, Media => 3, Privacy => 4, Volume => 5, Network => 6,
     Bluetooth => 7, Battery => 8, Resources => 9, Tray => 10, Notifications => 11, Osd => 12,
-    Quick => 13, Displays => 14, Clock => 15, Power => 16,
+    Quick => 13, Displays => 14, Timer => 15, Clock => 16, Power => 17,
 }
 
 /// The table is indexed by `ModuleId as usize`: one row per variant, in variant order.
@@ -59,6 +59,7 @@ fn needs_combine_and_test_by_flag() {
     assert!(n.contains(Needs::SOUND) && n.contains(Needs::TRAY) && !n.contains(Needs::MEDIA));
     assert!(n.contains(Needs::NONE));
     assert_eq!(Needs::of(&[]), Needs::NONE);
+    assert_eq!(Needs::of(&[ModuleId::Timer]), Needs::NONE, "the timer reads no source");
     assert_eq!(Needs::of(&[ModuleId::Volume, ModuleId::Tray]), n);
 }
 

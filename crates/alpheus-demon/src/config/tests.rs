@@ -258,7 +258,7 @@ fn media_refused_with_reason() {
 #[test]
 fn the_privacy_module_sits_after_media_and_parses() {
     let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
-    assert_eq!(ModuleId::ALL.len(), 17);
+    assert_eq!(ModuleId::ALL.len(), 18);
     assert_eq!(at(ModuleId::Privacy), at(ModuleId::Media) + 1, "right after media");
     assert_eq!(ModuleId::Privacy.name(), "privacy");
     assert!(BarConfig::default().modules.contains(&ModuleId::Privacy), "on by default");
@@ -728,4 +728,12 @@ fn timer_defaults_and_bounds() {
     }
     assert!(err("[timer]\nidle = \"dim\"").contains("unknown variant"));
     assert!(err("[timer]\nbeep = true").contains("beep"), "unknown key refused");
+}
+
+#[test]
+fn the_timer_module_sits_just_before_the_clock() {
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock));
+    assert_eq!(ModuleId::Timer.name(), "timer");
+    assert!(BarConfig::default().modules.contains(&ModuleId::Timer));
 }

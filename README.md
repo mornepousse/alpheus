@@ -724,7 +724,7 @@ center starts (restart it to apply an edit); `displays.toml` when the control ce
 ```toml
 # bar.toml — default values
 modules = ["launcher", "workspaces", "window", "media", "privacy", "volume", "network",
-           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "clock", "power"]
+           "bluetooth", "battery", "resources", "tray", "notifications", "osd", "quick", "displays", "timer", "clock", "power"]
 height = 22
 
 [font]

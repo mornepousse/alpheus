@@ -836,3 +836,61 @@ fn flat_and_underline_separate_with_a_dim_dot() {
     let t = styled(bar(), BarStyle::Islands).grid("HDMI-A-1", 100).text();
     assert!(!t.contains("  \u{b7}  "), "no separator under islands: {t}");
 }
+
+// ---- the timer chip (timer spec § 2) ----
+
+fn with_timer(mut b: Bar) -> Bar {
+    let chip = crate::timer::TimerChip { glyph: crate::timer::TIMER, text: Some("25m".into()), look: crate::timer::ChipLook::Running };
+    b.apply(Msg::Timer(Some(chip)));
+    b
+}
+
+#[test]
+fn the_timer_is_a_block_of_its_own_before_the_clock() {
+    assert_eq!(ModuleId::Timer.spec().group, GroupKind::Timer);
+    assert_eq!(ModuleId::Timer.spec().hue, Some(Hue::Yellow));
+    let at = |m| ModuleId::ALL.iter().position(|x| *x == m).unwrap();
+    assert_eq!(at(ModuleId::Timer) + 1, at(ModuleId::Clock), "just before the clock");
+    assert_eq!(REMOVAL[REMOVAL.len() - 4..], [ModuleId::Launcher, ModuleId::Timer, ModuleId::Privacy, ModuleId::Power]);
+    // Its own yellow block under a block style.
+    let mut b = with_timer(bar());
+    b.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];
+    b.module_colors = ModuleColors::Pills;
+    let g = styled(b, BarStyle::Islands).grid("HDMI-A-1", 60);
+    let kinds: Vec<(GroupKind, Option<Hue>)> = g.groups().iter().map(|x| (x.kind, x.hue)).collect();
+    assert_eq!(kinds, [(GroupKind::Workspaces, None), (GroupKind::Timer, Some(Hue::Yellow)), (GroupKind::Clock, None)]);
+    // Nothing without a chip: exactly the bar without the module.
+    let mut gone = bar();
+    gone.config.modules = vec![ModuleId::Workspaces, ModuleId::Timer, ModuleId::Clock];
+    let mut absent = bar();
+    absent.config.modules = vec![ModuleId::Workspaces, ModuleId::Clock];
+    assert_eq!(gone.grid("HDMI-A-1", 60), absent.grid("HDMI-A-1", 60));
+}
+
+/// On a narrow bar the timer leaves after the launcher and before the privacy indicators.
+#[test]
+fn the_timer_leaves_after_the_launcher_and_before_privacy() {
+    for style in BarStyle::ALL {
+        let mut b = styled(bar_with_right_modules(), style);
+        let at = b.config.modules.iter().position(|m| *m == ModuleId::Clock).unwrap();
+        b.config.modules.splice(at..at, [ModuleId::Timer, ModuleId::Privacy]);
+        b.config.modules.push(ModuleId::Power);
+        let b = with_timer(with_mic(b));
+        let (mut timer_gone, mut privacy_gone) = (false, false);
+        for w in (30u16..=140).rev() {
+            let g = b.grid("HDMI-A-1", w);
+            let shown = |m: ModuleId| g.zones().iter().any(|z| z.target == Target::Module(m));
+            if !shown(ModuleId::Timer) {
+                timer_gone = true;
+                assert!(!shown(ModuleId::Launcher), "{style:?} at {w}: the launcher leaves first");
+            }
+            if !shown(ModuleId::Privacy) {
+                privacy_gone = true;
+            }
+            if shown(ModuleId::Timer) {
+                assert!(shown(ModuleId::Privacy), "{style:?} at {w}: the timer leaves before the privacy indicators");
+            }
+        }
+        assert!(timer_gone && privacy_gone, "{style:?}: narrow enough to lose both");
+    }
+}

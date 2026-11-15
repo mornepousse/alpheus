@@ -3,7 +3,7 @@
 //! setting is read once at startup and costs nothing if unused.
 //!
 //! ```toml
-//! modules = ["launcher", "workspaces", "window", "clock"]   # order and presence, left to right
+//! modules = ["launcher", "workspaces", "window", "timer", "clock"]   # order and presence, left to right; "timer" (the focus timer's chip) sits just before "clock" by default
 //! height = 22                                               # logical px
 //! [font]
 //! family = "JetBrainsMono Nerd Font Mono"                   # absent: a monospace font from the system
@@ -118,6 +118,9 @@ pub enum ModuleId {
     /// The screens (displays spec § 1): read and changed through the output management protocol, the
     /// matching profile applied on hotplug. No segment in the bar.
     Displays,
+    /// The focus timer (timer spec): a chip with a countdown, a Pomodoro or a stopwatch, a popup
+    /// under it and `alpheus-launch --timer`. One dim glyph at rest unless `[timer] idle = "hidden"`.
+    Timer,
     Clock,
     /// The power button (power spec § 1): ⏻ at the bar's end, a left click opens its menu with
     /// `[quick]`'s lock, logout, reboot and poweroff. No segment when all four are empty.
