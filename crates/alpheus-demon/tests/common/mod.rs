@@ -1057,6 +1057,20 @@ impl Daemon {
         t.lines().find_map(|l| l.strip_prefix("Pss:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
     }
 
+    /// Anonymous memory in KB (/proc/<pid>/smaps_rollup `Anonymous:`): heap, stacks, anonymous maps.
+    /// Neither the shm pools (shmem) nor the file-backed pages are in it, so it does not move with
+    /// what other processes share or with the page cache's fault-around: the figure leak bounds use.
+    pub fn anonymous_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines().find_map(|l| l.strip_prefix("Anonymous:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
+    /// File-backed PSS in KB (`Pss_File:`): code, read-only data and font pages, shared proportionally.
+    pub fn file_pss_kb(&self) -> u64 {
+        let t = fs::read_to_string(format!("/proc/{}/smaps_rollup", self.pid())).unwrap();
+        t.lines().find_map(|l| l.strip_prefix("Pss_File:")).and_then(|v| v.split_whitespace().next()).unwrap().parse().unwrap()
+    }
+
     /// PSS in KB, the whole daemon's then its shm pools' (memfd mappings), from one pass over
     /// /proc/<pid>/smaps so the two cannot skew. The compositor maps the pools too, so their PSS
     /// moves by a buffer as it maps and unmaps one: a bound on what the daemon itself keeps leaves
