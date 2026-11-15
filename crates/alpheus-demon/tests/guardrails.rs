@@ -435,6 +435,26 @@ fn scrims_are_created_before_the_box_so_it_stacks_above_them() {
     let scrims_at = body.find("self.launcher_scrims(qh)").expect("the scrims are created in launcher_open");
     let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in launcher_open");
     assert!(scrims_at < box_at, "the scrims must be created before the box, so it stacks above them");
+    // Quick notes: the pad's box follows the same rule, its scrims under their own namespace.
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "notes/surface.rs").expect("notes/surface.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "pub(crate) fn notes_open(");
+    let scrims_at = body.find("self.notes_scrims(qh)").expect("the scrims are created in notes_open");
+    let box_at = body.find("Layer::Overlay, Some(NAMESPACE)").expect("the box's layer surface is created in notes_open");
+    assert!(scrims_at < box_at, "the pad's scrims must be created before its box, so it stacks above them");
+    assert!(prod.contains("const SCRIM_NAMESPACE: &str = \"alpheus-notes-scrim\";"), "the pad's scrims are alpheus-notes-scrim");
+}
+
+/// Quick notes: a daemon stopping saves the pad (an edit not yet autosaved, or after a failed
+/// autosave) through its close, guarded, before the surfaces go.
+#[test]
+fn shutting_down_closes_and_saves_the_pad() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "fn shut_down(");
+    let close = body.find("notes_guarded(\"shutdown\", |app| app.notes_close(").expect("shut_down closes the pad, guarded");
+    let drop_at = body.find("drop(core.state)").expect("shut_down drops the app");
+    assert!(close < drop_at, "the pad is saved before the app goes");
 }
 
 /// OSD spec § 1 and the bubbles' (notifications spec § 3): the pill and the bubbles live on the
@@ -3093,6 +3113,37 @@ fn the_notes_timer_and_pipe_live_only_while_open() {
     assert!(first.starts_with("app.notes.timer.fired()"), "notes_save_fire marks the timer fired first: {fire}");
 }
 
+/// Each `log(` call in `text`, whole: from `log(` to the end of its statement (its matching
+/// parenthesis, however many lines its arguments take).
+fn log_calls(text: &str) -> Vec<&str> {
+    let mut calls = Vec::new();
+    for (at, _) in text.match_indices("log(") {
+        let mut depth = 0u32;
+        let mut end = text.len();
+        for (j, c) in text[at + 3..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + 3 + j + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        calls.push(&text[at..end]);
+    }
+    calls
+}
+
+#[test]
+fn log_calls_take_the_whole_statement() {
+    let text = "log(\"a\");\nlog(&format!(\n    \"b {}\",\n    pad.text().len()\n));\nother(x);";
+    assert_eq!(log_calls(text), ["log(\"a\")", "log(&format!(\n    \"b {}\",\n    pad.text().len()\n))"]);
+}
+
 /// Quick notes: the pad's glue never logs the note: no `log(` line names its text, its selection
 /// or its buffer.
 #[test]
@@ -3101,11 +3152,11 @@ fn the_notes_glue_never_logs_the_text() {
     for name in ["notes/surface.rs", "notes/app.rs"] {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let prod = production_code(t);
-        for line in prod.lines().filter(|l| l.contains("log(")) {
+        for call in log_calls(&prod) {
             // A close reason's log word (`CloseReason::text`) is the one `text` allowed.
-            let line = line.replace("reason.text()", "reason");
+            let call = call.replace("reason.text()", "reason");
             for word in ["text", "selected", "pad.text", "model.pad"] {
-                assert!(!line.contains(word), "a log line in {name} names `{word}`: {}", line.trim());
+                assert!(!call.contains(word), "a log call in {name} names `{word}`: {call}");
             }
         }
     }
@@ -3156,4 +3207,16 @@ fn the_notes_glue_has_no_panicking_path() {
             }
         }
     }
+}
+
+/// Quick notes (controller's ruling, fix round 1): a press on the bar while the pad is open closes
+/// it, and the launcher button then opens the launcher — opening one closes the other. Only the
+/// launcher's own close swallows its button (`click`'s `launcher_was_open`).
+#[test]
+fn a_bar_press_swallows_only_a_launcher_it_closed() {
+    let (_, text) = source_files().into_iter().find(|(p, _)| relative_path(p) == "wayland.rs").expect("wayland.rs");
+    let prod = production_code(&text);
+    let body = function_body(&prod, "fn pointer_frame(");
+    assert!(body.contains("self.click(qh, i, ev.position.0, b, launcher_was_open)"), "click gets the launcher's own state: {body}");
+    assert!(!body.contains("launcher_was_open || notes_was_open"), "the pad's close never swallows the launcher button");
 }

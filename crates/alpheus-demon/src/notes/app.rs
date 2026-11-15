@@ -10,7 +10,7 @@ use crate::launcher::scan::has_program;
 use crate::launcher::surface::CloseReason;
 use crate::log::write as log;
 use crate::notes::keys::NoteKey;
-use crate::notes::model::NotesOutcome;
+use crate::notes::model::{Notes, NotesOutcome};
 use crate::notes::store;
 use crate::wayland::App;
 use alpheus_commun::exec::{ExecError, Executor};
@@ -75,6 +75,24 @@ pub(crate) fn copy_call(copy: &[String], path_dirs: &[PathBuf], exec: &dyn Execu
     exec.spawn_with_input(prog, &args, &[text.as_bytes()]).map_err(|e| copy_failure(prog, &e))
 }
 
+/// Whether the pad has something to write: edited, and not read only (a refused file is never
+/// overwritten).
+pub(crate) fn wants_save(model: &Notes) -> bool {
+    model.dirty && model.read_only.is_none()
+}
+
+/// The flags after a save: written → `saved`; failed → `not saved`, still edited, so the next
+/// autosave or the close (shutdown included) tries again.
+pub(crate) fn after_save(model: &mut Notes, result: &std::io::Result<()>) {
+    match result {
+        Ok(()) => {
+            model.dirty = false;
+            model.save_failed = false;
+        }
+        Err(_) => model.save_failed = true,
+    }
+}
+
 /// A held key repeats moves and edits, never a copy, a cut, a paste or the close (P8): each repeat
 /// would start another copy program or reopen the clipboard.
 pub(crate) fn repeat_ignored(key: NoteKey) -> bool {
@@ -123,7 +141,7 @@ impl App {
             let _ = guarded_with(
                 "close",
                 move || {
-                    if open.model.dirty && open.model.read_only.is_none() {
+                    if wants_save(&open.model) {
                         if let Err(e) = store::save(&paths::state_dir(), open.model.pad.text()) {
                             log(&format!("notes: not saved ({:?})", e.kind()));
                         }
@@ -185,21 +203,16 @@ impl App {
     /// saved`, tried again after the next edit or at the close.
     pub(crate) fn notes_save(&mut self) {
         let Some(open) = self.notes.open.as_mut() else { return };
-        if !open.model.dirty || open.model.read_only.is_some() {
+        if !wants_save(&open.model) {
             return;
         }
         // Stamped again by the next edit, either way: a failure must not re-arm at once.
         open.dirty_since = None;
-        match store::save(&paths::state_dir(), open.model.pad.text()) {
-            Ok(()) => {
-                open.model.dirty = false;
-                open.model.save_failed = false;
-            }
-            Err(e) => {
-                open.model.save_failed = true;
-                log(&format!("notes: not saved ({:?})", e.kind()));
-            }
+        let result = store::save(&paths::state_dir(), open.model.pad.text());
+        if let Err(e) = &result {
+            log(&format!("notes: not saved ({:?})", e.kind()));
         }
+        after_save(&mut open.model, &result);
     }
 
     /// The save timer: armed `SAVE_AFTER` after the first unsaved edit, only while the pad is open.
@@ -285,6 +298,23 @@ mod tests {
         for k in [NoteKey::Char('a'), NoteKey::Backspace, NoteKey::Enter, NoteKey::SelectAll] {
             assert!(!repeat_ignored(k), "{k:?} repeats");
         }
+    }
+
+    #[test]
+    fn a_failed_save_stays_edited_so_the_close_saves_again() {
+        let mut n = Notes::new(String::new(), None);
+        assert!(!wants_save(&n), "nothing typed: nothing to write");
+        n.key(NoteKey::Char('a'));
+        assert!(wants_save(&n));
+        after_save(&mut n, &Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        assert!(n.save_failed && n.dirty, "not saved, still edited");
+        assert!(wants_save(&n), "the close (or shutdown) writes it again");
+        assert_eq!(n.status(), "not saved");
+        after_save(&mut n, &Ok(()));
+        assert!(!n.dirty && !n.save_failed && !wants_save(&n));
+        assert_eq!(n.status(), "saved");
+        let ro = Notes::new(String::new(), Some(crate::notes::model::Refusal::NotOurs));
+        assert!(!wants_save(&ro), "a refused file is never written");
     }
 
     #[test]

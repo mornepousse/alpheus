@@ -304,7 +304,7 @@ impl Scrim {
                     self.buffer = Some(buffer);
                 }
                 Err(e) => {
-                    log(&format!("launcher scrim buffer: {e}"));
+                    log(&format!("scrim buffer: {e}"));
                     return;
                 }
             }

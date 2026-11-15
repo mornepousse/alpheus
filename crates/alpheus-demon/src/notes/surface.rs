@@ -508,6 +508,19 @@ mod tests {
     }
 
     #[test]
+    fn a_scale_change_keeps_a_compositor_imposed_size_untouched() {
+        // Without an imposed size: the whole output.
+        let (free, free_size) = notes_resized_layout(None, (1920, 1080), 8.25, 22, 1, &frame1());
+        assert_eq!(free, view::layout(232, 49));
+        assert_eq!(free_size, notes_layout_size(&free, 8.25, 22, 1, &frame1()), "no constraint: sized from the output alone");
+        // With one: the imposed logical size wins, whatever the output is.
+        let (within, wanted) = notes_resized_layout(Some((400, 250)), (1920, 1080), 8.25, 22, 1, &frame1());
+        assert_eq!(wanted, (400, 250), "the compositor's own size, unaffected by the output");
+        assert_eq!(within, notes_layout_within((400, 250), 8.25, 22, 1, &frame1()), "the same refit a configure uses");
+        assert_ne!(within, free);
+    }
+
+    #[test]
     fn a_press_maps_to_the_text_cells() {
         let full = view::layout(232, 49);
         let size = notes_layout_size(&full, 8.25, 22, 1, &frame1());

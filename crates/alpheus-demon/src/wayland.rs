@@ -1300,13 +1300,12 @@ impl PointerHandler for App {
                     if launcher_was_open {
                         self.launcher_guarded("click outside", |app| app.launcher_close(CloseReason::ClickOutside));
                     }
-                    // The quick notepad too: a click on the bar is a click outside it, and the same
-                    // press must not open the launcher in its place.
-                    let notes_was_open = self.notes_is_open();
-                    if notes_was_open {
+                    // The quick notepad too: a click on the bar is a click outside it. The launcher
+                    // button then opens the launcher (opening one closes the other): only the
+                    // launcher's own close swallows its button.
+                    if self.notes_is_open() {
                         self.notes_guarded("click outside", |app| app.notes_close(CloseReason::ClickOutside));
                     }
-                    let was_open = launcher_was_open || notes_was_open;
                     let pressed_icon = self.tray_key_at(i, ev.position.0);
                     // A press that hits no icon drops
                     // `menu.last_icon` — a failed Activate answered late, for whatever icon was
@@ -1352,7 +1351,7 @@ impl PointerHandler for App {
                     }
                     if let Some(b) = b {
                         if !self.tray_gesture_at(i, ev.position, actions::tray_gesture(b), b) {
-                            self.click(qh, i, ev.position.0, b, was_open);
+                            self.click(qh, i, ev.position.0, b, launcher_was_open);
                         }
                     }
                 }

@@ -722,13 +722,15 @@ fn main_loop(state: &mut App, event_loop: &mut EventLoop<'static, App>, qh: &Que
     dispatch_failure
 }
 
-/// Closes the launcher, drops the app (its surfaces), the socket, flushes the connection and says
+/// Closes the launcher and the quick notepad (which saves), drops the app (its surfaces), the socket, flushes the connection and says
 /// the shutdown is over.
 fn shut_down(mut core: Core, launcher_server: Option<Rc<Server>>) {
     // A script still waiting gets "cancelled" (exit 1), not a cut connection.
     // Guarded like every launcher entry point: a launcher bug must not turn a
     // clean stop into a crash.
     core.state.launcher_guarded("shutdown", |app| app.launcher_close(CloseReason::Close));
+    // The quick notepad saves what was typed (even after a failed autosave) and goes, guarded too.
+    core.state.notes_guarded("shutdown", |app| app.notes_close(CloseReason::Close));
     // A trial left open would outlive the daemon: its state from before goes out with the flush.
     let state = &mut core.state;
     crate::launcher::host::guarded("displays shutdown", || state.displays_shutdown());
