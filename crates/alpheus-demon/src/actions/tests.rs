@@ -62,12 +62,12 @@ fn click_chain_coordinate_cell_zone_command() {
     let b = bar();
     let g = b.grid("HDMI-A-1", 100); // launcher button in cell 1, "4" in cells 9 to 17
     // 8 px advance at scale 1, 16 px at scale 2: same cell.
-    assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 1, 8.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
-    assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 2, 16.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+    assert_eq!(click(&b, "HDMI-A-1", &g, 100.0, 1, 8.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+    assert_eq!(click(&b, "HDMI-A-1", &g, 100.0, 2, 16.0, Button::Left), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
     assert_eq!(click(&b, "HDMI-A-1", &g, 4.0, 1, 8.0, Button::Left), None, "margin");
     assert_eq!(click(&b, "HDMI-A-1", &g, 12.0, 1, 8.0, Button::Left), None, "launcher button: no command");
     assert_eq!(click(&b, "HDMI-A-1", &g, 400.0, 1, 8.0, Button::Left), None, "title");
-    assert_eq!(click(&b, "HDMI-A-1", &g, 84.0, 1, 8.0, Button::WheelDown), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
+    assert_eq!(click(&b, "HDMI-A-1", &g, 100.0, 1, 8.0, Button::WheelDown), argv(&["wm-set", "workspace", "4", "HDMI-A-1"]));
 }
 
 fn bar() -> Bar {

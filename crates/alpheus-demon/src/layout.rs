@@ -1,7 +1,7 @@
 //! From state to a screen's grid. Each module produces a segment; segments
-//! are laid out left to right in bar.toml order, separated by "│". The
+//! are laid out left to right in bar.toml order, separated by a dim "·". The
 //! window module is elastic: it takes the free space. With no active
-//! window, the window module has no segment at all (no empty "│ │"), but
+//! window, the window module has no segment at all (no empty "· ·"), but
 //! the free space still goes where it sits in the configured order — just
 //! before the segment that follows it — so the right-hand modules stay
 //! right-aligned instead of collapsing left; only with the window module
@@ -12,7 +12,7 @@
 //! clock and the notifications bell always stay.
 //!
 //! Groups (shapes spec § 2): consecutive modules of one kind (`ModuleSpec::group`) make one
-//! block, never across the free space. `flat` and `underline` keep the "│" separators; the block
+//! block, never across the free space. `flat` and `underline` keep the "·" separators; the block
 //! styles put one blank pad cell inside each end of a block, one blank cell between blocks
 //! (powerline's arrow cell) and two blank cells between the modules of one block. The grid records the
 //! blocks (`Grid::groups`) for every style but `flat`, whose grid is exactly today's.
@@ -51,7 +51,8 @@ const MIN_TITLE: u16 = 8;
 const MAX_DOTS: u16 = 4;
 /// A longer workspace name is truncated.
 const MAX_NAME: u16 = 12;
-const SEPARATOR: &str = " │ ";
+/// A dim dot between modules (flat and underline): they read as groups, not boxes.
+const SEPARATOR: &str = "  ·  ";
 /// Margin of one cell at each end.
 const MARGIN: u16 = 1;
 /// Block styles: blank cells inside each end of a block.

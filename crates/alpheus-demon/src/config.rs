@@ -21,7 +21,7 @@
 //! resources = ["foot", "-e", "btop"]
 //! [resources]
 //! interval = 2                                              # seconds between readings, 1 to 60
-//! graph = 20                                                # cells of CPU history, 0 to 60 (0: no graph)
+//! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
 //! sensor = ""                                               # hwmon name or thermal zone type; "": automatic
 //! [battery]
 //! peripherals = "always"                                    # "always" | "low" | "never": peripherals with a real percentage
@@ -274,7 +274,7 @@ impl Default for ActionsConfig {
     }
 }
 
-/// Most points of CPU history (spec § 3: graph histories capped at 60).
+/// Largest `[resources] graph` still accepted (the setting is ignored since the UI refresh).
 pub const GRAPH_MAX: u16 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -282,7 +282,7 @@ pub const GRAPH_MAX: u16 = 60;
 pub struct ResourcesConfig {
     /// Seconds between two readings of /proc (1 to 60).
     pub interval: u64,
-    /// Cells of CPU history shown, one point per cell (0 to 60; 0 = no graph).
+    /// Accepted (0 to 60) and ignored: the CPU sparkline is gone; kept so an existing `bar.toml` still loads.
     pub graph: u16,
     /// Temperature sensor: an hwmon `name` (coretemp, k10temp…) or a thermal
     /// zone `type` (x86_pkg_temp…); empty = automatic (Q3).

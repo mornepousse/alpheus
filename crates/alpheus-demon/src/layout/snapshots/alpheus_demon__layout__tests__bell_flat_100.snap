@@ -1,6 +1,6 @@
 ---
-source: crates/alpheus-demon/src/layout.rs
+source: crates/alpheus-demon/src/layout/tests.rs
 expression: snapshot(&g)
 ---
-  2·  4!····+  5  │ 󰈹 Web page — Mozilla Firefox            │ 󰕾 ▁▃▅▆▇▇  84% │ 󰂚 3 │ Sun 4 Oct 14:05 
-.AAAAuuuuuuuuummmmmm.......................................mmm..aaaaaa.....mmm.aammmmmmmmmmmmmGGGGG.
+  2·  4!····+  5   ·  󰈹 Web page — Mozilla Firefox             ·  󰕾 84%  ·  󰂚 3  ·  Sun 4 Oct 14:05 
+.AAAAuuuuuuuuummmmmmmm.......................................mmmmm.....mmmmm.aammmmmmmmmmmmmmmGGGGG.

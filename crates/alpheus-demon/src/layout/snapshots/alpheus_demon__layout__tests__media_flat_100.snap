@@ -1,6 +1,6 @@
 ---
-source: crates/alpheus-demon/src/layout.rs
+source: crates/alpheus-demon/src/layout/tests.rs
 expression: snapshot(&g)
 ---
-  2·  4!····+  5  │ 󰈹 Web page — Mozilla F… │ 󰐊 Bohemian Rhapsody │ 󰕾 ▁▃▅▆▇▇  84% │ Sun 4 Oct 14:05 
-.AAAAuuuuuuuuummmmmm.......................mmm...................mmm..aaaaaa.....mmmmmmmmmmmmmGGGGG.
+  2·  4!····+  5   ·  󰈹 Web page — Mozilla F…  ·  󰐊 Bohemian Rhapsody  ·  󰕾 84%  ·  Sun 4 Oct 14:05 
+.AAAAuuuuuuuuummmmmmmm.......................mmmmm...................mmmmm.....mmmmmmmmmmmmmmmGGGGG.
