@@ -5317,6 +5317,21 @@ fn the_users_choice_wins_over_sharing() {
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "", "still on, untimed: {:?}", d.log());
 }
 
+/// The option needs `notifications` too (`dnd_load` runs only with it): without the module, a
+/// screencast leaves do-not-disturb alone, and nothing is written.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn sharing_without_the_notifications_module_leaves_dnd_alone() {
+    let (sway, hypr, d) =
+        privacy_daemon_with("dnd-no-module", "modules = [\"privacy\", \"clock\"]\n", SHARING_ON, &[privacy_orange(), privacy_red()]);
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(d.count("screen shared"), 0, "{:?}", d.log());
+    assert!(!sway.runtime.join("state/alpheus/dnd").exists());
+}
+
 #[test]
 #[ignore = "headless sway and grim (nix develop)"]
 fn without_the_option_a_screencast_leaves_dnd_alone() {

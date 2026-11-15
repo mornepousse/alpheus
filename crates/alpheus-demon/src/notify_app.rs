@@ -163,12 +163,13 @@ impl App {
         }
         self.dnd_timed.model = next;
         self.dnd = next.on;
-        // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
-        // line needs a server.
-        log(&dnd_line(next, why, unix_now()));
+        // Saved before the line is logged, so whoever waits for the line finds the file written.
         if let Err(e) = state_file::save_dnd(&paths::state_dir(), next.saved().map(saved_text).as_deref()) {
             log(&format!("notifications: do not disturb could not be saved ({e})"));
         }
+        // Logged whether a server runs or not (no session bus, mako holding the name): the bell's own
+        // line needs a server.
+        log(&dnd_line(next, why, unix_now()));
         if before.on != next.on {
             let on = next.on;
             self.notify_act(move |n| {
@@ -189,10 +190,14 @@ impl App {
 
     /// `[notifications] dnd_while_sharing`: on a capture's start or end (an edge, never a level),
     /// do-not-disturb follows through `Dnd::after_sharing`, which keeps the user's choice (decision 7).
-    /// Nothing without the option or the `privacy` module.
+    /// Nothing without the option, the `privacy` module or the `notifications` module (the state is
+    /// loaded and served only with it).
     pub(crate) fn dnd_sharing_follow(&mut self) {
         let cfg = &self.bar.config;
-        if !cfg.notifications.dnd_while_sharing || !cfg.modules.contains(&ModuleId::Privacy) {
+        if !cfg.notifications.dnd_while_sharing
+            || !cfg.modules.contains(&ModuleId::Privacy)
+            || !cfg.modules.contains(&ModuleId::Notifications)
+        {
             return;
         }
         let Some(now) = sharing_edge(self.dnd_timed.sharing_seen, self.bar.privacy.shown().screen.active()) else {
