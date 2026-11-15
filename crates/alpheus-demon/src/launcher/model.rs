@@ -6,6 +6,7 @@
 
 use crate::compositor::Toplevel;
 use crate::keys::Key;
+use crate::launcher::calc::{Calc, evaluate, looks_like_math};
 use crate::launcher::config::LauncherConfig;
 use crate::launcher::history::{History, source_key};
 use crate::launcher::matching::{Hit, Mode, Query, Ranker, Source};
@@ -46,6 +47,11 @@ pub enum Activation {
     },
     /// A command-source entry (sources spec § 3): its source's `run` with the whole line.
     Entry(usize),
+    /// The calculator's text (small features 1) for the clipboard: handed to `Config::copy` on its
+    /// stdin, never on an argv.
+    Copy {
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +72,7 @@ enum Identity {
     Line(usize),
     /// Its history key (`source_key`): the source's name and the whole line.
     Entry(String),
+    Calc,
 }
 
 pub struct Launcher {
@@ -103,6 +110,10 @@ pub struct Launcher {
     pub history: History,
     pub now: u64,
     pub results: Vec<Hit>,
+    /// The calculator's answer for the query (small features 1): None outside `Mode::All` and
+    /// `Mode::Calc`, for a query that is no expression, or in All for one that does not look like
+    /// math. Set by `rank`, with the row it makes.
+    pub calc: Option<Calc>,
     ranker: Ranker,
     /// The current mode was entered by typing its prefix: Backspace on the
     /// empty query goes back to All.
@@ -142,6 +153,7 @@ impl Launcher {
             history: History::empty(0),
             now: 0,
             results: Vec::new(),
+            calc: None,
             ranker: Ranker::new(),
             by_prefix: false,
             list_rows,
@@ -183,8 +195,20 @@ impl Launcher {
         l
     }
 
+    /// The calculator alone (`--calc`): no windows, no history, no catalog, no modes.
+    pub fn for_calc(config: LauncherConfig) -> Launcher {
+        let mut l = Launcher::new(config, Mode::Calc);
+        l.refilter();
+        l
+    }
+
     pub fn is_script(&self) -> bool {
         self.mode == Mode::Script
+    }
+
+    /// A menu with no modes row and no preview: a script's, or the calculator's.
+    pub fn is_bare(&self) -> bool {
+        matches!(self.mode, Mode::Script | Mode::Calc)
     }
 
     /// Refilters; keeps the selection on the same item if it is still present (by identity,
@@ -224,6 +248,7 @@ impl Launcher {
             Source::App(i) => Identity::App(self.catalog.as_ref()?.apps.get(i)?.id.clone()),
             Source::Command(i) => Identity::Command(self.catalog.as_ref()?.commands.get(i)?.clone()),
             Source::Line(i) => Identity::Line(i),
+            Source::Calc => Identity::Calc,
             Source::Entry(i) => {
                 let e = self.entries.as_ref()?;
                 let item = e.items.get(i)?;
@@ -316,7 +341,7 @@ impl Launcher {
     }
 
     fn switch_mode(&mut self, m: Mode) -> Outcome {
-        if self.is_script() || m == self.mode {
+        if self.is_bare() || m == self.mode {
             return Outcome::Nothing;
         }
         self.mode = m;
@@ -335,6 +360,7 @@ impl Launcher {
         // the secret into heap buffers the drop cannot wipe.
         if self.password {
             self.results.clear();
+            self.calc = None;
             return;
         }
         let (apps, commands) = match &self.catalog {
@@ -364,6 +390,15 @@ impl Launcher {
             && self.query.trim().is_empty()
         {
             self.results.truncate(n);
+        }
+        // The calculator row: first in All (for a query that looks like math), alone in Calc.
+        self.calc = match self.mode {
+            Mode::All => evaluate(&self.query).filter(|_| looks_like_math(&self.query)),
+            Mode::Calc => evaluate(&self.query),
+            _ => None,
+        };
+        if self.calc.is_some() {
+            self.results.insert(0, Hit { source: Source::Calc, score: u32::MAX, frecency: 0 });
         }
     }
 
@@ -448,8 +483,21 @@ impl Launcher {
                 Some(Source::Command(index)) => Outcome::Activate(Activation::Command { index, terminal: true }),
                 Some(Source::Line(i)) => self.choose_line(i),
                 Some(Source::Entry(i)) => Outcome::Activate(Activation::Entry(i)),
+                Some(Source::Calc) => self.copy(false),
                 None => Outcome::Nothing,
             },
+        }
+    }
+
+    /// The calculator row's copy: the result, or with `expression` the query and the result
+    /// ("2+2 = 4"). An error answer, or no `copy` command, copies nothing.
+    fn copy(&self, expression: bool) -> Outcome {
+        match &self.calc {
+            Some(Ok(answer)) if !self.config.copy.is_empty() => {
+                let text = if expression { format!("{} = {}", self.query.trim(), answer.text) } else { answer.text.clone() };
+                Outcome::Activate(Activation::Copy { text })
+            }
+            _ => Outcome::Nothing,
         }
     }
 
@@ -471,6 +519,7 @@ impl Launcher {
                 Outcome::Activate(Activation::Command { index, terminal: false })
             }
             (Mode::Commands, _) => self.shell(false),
+            (_, Some(Source::Calc)) => self.copy(true),
             (_, Some(Source::App(index))) => {
                 let action = self.app_has_actions(index).then_some(0);
                 Outcome::Activate(Activation::App { index, action })

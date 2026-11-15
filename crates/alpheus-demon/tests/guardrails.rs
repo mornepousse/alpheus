@@ -1670,6 +1670,77 @@ fn every_launcher_activation_stays_on_the_allowlist() {
         assert_eq!(argv, ["tools-menu", "--run", line], "{spawner:?}: the line is one argv element, as is");
         assert!(!argv.iter().any(|a| a == "sh" || a == "-c"), "never through a shell: {argv:?}");
     }
+    // The calculator (small features 1): Enter and Ctrl+Enter on its row, in its own mode and in All,
+    // reach exactly one call, the configured `copy` command, the text on its input and never in its
+    // argv, never in a scope, never through a shell; and Copy comes from the calculator row alone.
+    let copy_bin = bin.join("copy-stub");
+    std::fs::create_dir_all(&copy_bin).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(copy_bin.join("wl-copy"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(copy_bin.join("wl-copy"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let copy_dirs = [copy_bin];
+    let config = LauncherConfig::default();
+    for spawner in [Spawner::SystemdScope, Spawner::Detached] {
+        let fresh = |in_calc_mode: bool| {
+            if in_calc_mode {
+                Launcher::for_calc(config.clone())
+            } else {
+                let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+                l.set_catalog(catalog.clone());
+                l.set_entries(entries.clone());
+                l
+            }
+        };
+        for in_calc_mode in [true, false] {
+            for (key, input) in [(Key::Enter, "42"), (Key::CtrlEnter, "6*7 = 42")] {
+                let mut l = fresh(in_calc_mode);
+                for c in "6*7".chars() {
+                    l.key(Key::Char(c));
+                }
+                assert_eq!(l.selected_hit().map(|h| h.source), Some(alpheus_demon::launcher::matching::Source::Calc));
+                let Outcome::Activate(a) = l.key(key) else { panic!("{key:?} on the calculator row activates nothing") };
+                let fake = FakeExecutor::new();
+                fake.ok("wl-copy", "");
+                let ctx = RunContext { exec: &fake, spawner, history_path: None, path_dirs: &copy_dirs };
+                assert_eq!(perform(&mut l, a, &ctx), Ok(alpheus_demon::launcher::run::Done::Close));
+                assert_eq!(fake.calls(), ["wl-copy"], "{spawner:?}: one call, the copy program alone: no scope, no shell, no text in argv");
+                assert_eq!(fake.inputs(), [("wl-copy".to_string(), input.as_bytes().to_vec())], "{spawner:?} {key:?}");
+                let spy = ArgvSpy::default();
+                let mut l = fresh(in_calc_mode);
+                for c in "6*7".chars() {
+                    l.key(Key::Char(c));
+                }
+                let Outcome::Activate(a) = l.key(key) else { unreachable!() };
+                let _ = perform(&mut l, a, &RunContext { exec: &spy, spawner, history_path: None, path_dirs: &copy_dirs });
+                let calls = spy.0.lock().unwrap().clone();
+                assert_eq!(calls, std::slice::from_ref(&config.copy), "the argv is `copy` unchanged: {calls:?}");
+            }
+        }
+    }
+    // Copy is reached only from a Calc hit: every other result of every mode, clicked either way,
+    // never gives one.
+    for mode in Mode::CYCLE {
+        let mut l = Launcher::for_apps(config.clone(), windows.clone(), History::empty(200), 1_800_000_000);
+        l.set_catalog(catalog.clone());
+        l.set_entries(entries.clone());
+        l.click_mode(mode);
+        for query in ["", "fire", "zone", "htop", "ls -la"] {
+            for c in query.chars() {
+                l.key(Key::Char(c));
+            }
+            for i in 0..l.results.len() {
+                for secondary in [false, true] {
+                    let is_calc = l.results[i].source == alpheus_demon::launcher::matching::Source::Calc;
+                    let o = l.click(i, secondary);
+                    let copies = matches!(&o, Outcome::Activate(a) if format!("{a:?}").starts_with("Copy"));
+                    assert!(!copies || is_calc, "{mode:?} {query:?}: Copy from a result that is not the calculator");
+                }
+            }
+            l.key(Key::CtrlU);
+        }
+    }
 }
 
 /// Records each call's argv as given (program first), element by element; every call fails.

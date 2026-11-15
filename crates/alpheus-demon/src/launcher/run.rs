@@ -177,6 +177,16 @@ pub fn perform(l: &mut Launcher, a: Activation, ctx: &RunContext) -> Result<Done
             let terminal = terminal.then_some(&l.config.terminal_hold[..]);
             launch(ctx, shell_argv(&text, terminal))?;
         }
+        // The calculator's text on the copy program's stdin (never its argv, never a scope, never
+        // recorded): a missing program is said, and the box stays open.
+        Activation::Copy { text } => {
+            let (prog, args) = l.config.copy.split_first().ok_or_else(|| "copy: no program configured".to_string())?;
+            if !has_program(ctx.path_dirs, prog) {
+                return Err(failure(prog, ExecError::NotFound));
+            }
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            ctx.exec.spawn_with_input(prog, &args, &[text.as_bytes()]).map_err(|e| failure(prog, e))?;
+        }
         Activation::Window(i) => {
             let selector = &l.windows.get(i).ok_or_else(gone)?.selector;
             let argv = focus_argv(&l.config.focus, selector);

@@ -23,6 +23,8 @@ pub enum Mode {
     Windows,
     Commands,
     Script,
+    /// The calculator alone (`alpheus-launch --calc`): no list, no modes row, not in `CYCLE`.
+    Calc,
 }
 
 impl Mode {
@@ -36,10 +38,11 @@ impl Mode {
             Mode::Windows => "Windows",
             Mode::Commands => "Commands",
             Mode::Script => "Script",
+            Mode::Calc => "Calculator",
         }
     }
 
-    /// Next mode along CYCLE, wrapping; Script stays Script.
+    /// Next mode along CYCLE, wrapping; Script and Calc stay as they are.
     pub fn next(self) -> Mode {
         self.step(1)
     }
@@ -65,6 +68,8 @@ pub enum Source {
     Line(usize),
     /// A command-source entry (sources spec § 3): an index into `Query::entries`.
     Entry(usize),
+    /// The calculator's row (`Launcher::calc` holds its answer): first in All and alone in Calc.
+    Calc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -323,12 +328,14 @@ fn kind(s: Source) -> u8 {
         Source::Entry(_) => 2,
         Source::Command(_) => 3,
         Source::Line(_) => 4,
+        Source::Calc => 5,
     }
 }
 
 fn index(s: Source) -> usize {
     match s {
         Source::App(i) | Source::Window(i) | Source::Command(i) | Source::Line(i) | Source::Entry(i) => i,
+        Source::Calc => 0,
     }
 }
 
@@ -345,6 +352,7 @@ fn name<'a>(q: &Query<'a>, s: Source) -> &'a str {
         Source::Command(i) => &q.commands[i],
         Source::Line(i) => &q.lines[i],
         Source::Entry(i) => &q.entries[i].entry,
+        Source::Calc => "",
     }
 }
 
@@ -397,6 +405,10 @@ impl Ranker {
     }
 
     pub fn rank(&mut self, q: &Query) -> Vec<Hit> {
+        // The calculator mode lists nothing of the catalog: its one row is the model's.
+        if q.mode == Mode::Calc {
+            return Vec::new();
+        }
         let catalog_key = (q.apps.len(), q.commands.len(), q.lines.len(), q.entries.len(), q.now);
         let mut prepared = match self.prepared.take() {
             Some(p) if p.catalog_key == catalog_key => p,
@@ -478,7 +490,7 @@ impl Ranker {
                 let remaining = MAX_RESULTS.saturating_sub(hits.len());
                 hits.extend((0..q.lines.len()).take(remaining).map(|i| Hit { source: Source::Line(i), score: 0, frecency: 0 }));
             }
-            Mode::All | Mode::Apps | Mode::Windows => {}
+            Mode::All | Mode::Apps | Mode::Windows | Mode::Calc => {}
         }
         hits
     }
@@ -562,6 +574,7 @@ fn finish(hits: Vec<Hit>, q: &Query, pr: &Prepared) -> Vec<Hit> {
             Source::Command(i) => pr.command_name_rank[i],
             Source::Line(i) => pr.line_name_rank[i],
             Source::Entry(i) => pr.entry_name_rank[i],
+            Source::Calc => 0,
         }
     };
     let cmp = |&ia: &usize, &ib: &usize| -> Ordering {

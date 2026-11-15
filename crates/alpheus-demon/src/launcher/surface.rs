@@ -129,7 +129,7 @@ pub(crate) fn plan_redraw(current: (u32, u32), wanted: (u32, u32), configured: b
 /// the box never changes width as the selection moves; a script menu never
 /// has one. Driven by `model.is_script()` alone, never by the selection.
 pub(crate) fn open_layout(output_columns: u16, output_rows: u16, model: &Launcher) -> BoxLayout {
-    view::layout(output_columns, output_rows, model.config.rows, model.is_script(), !model.is_script())
+    view::layout(output_columns, output_rows, model.config.rows, model.is_bare(), !model.is_bare())
 }
 
 /// The size a configure imposes, when it is not the one asked: a 0

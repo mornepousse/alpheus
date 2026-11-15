@@ -383,3 +383,53 @@ fn a_source_entry_whose_program_is_missing_says_so_and_records_nothing() {
     let r = perform(&mut l, Activation::Entry(5), &ctx(&f, Spawner::Detached, Some(&h), &dirs));
     assert_eq!(r, Err("the list changed: try again".to_string()));
 }
+
+#[test]
+fn copy_hands_the_text_on_stdin_never_on_argv() {
+    let bin = stubs("copy-stdin", &["wl-copy"]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    fake.ok("wl-copy", "");
+    let mut l = launcher();
+    assert_eq!(perform(&mut l, Activation::Copy { text: "4".into() }, &ctx(&fake, Spawner::SystemdScope, None, &dirs)), Ok(Done::Close));
+    assert_eq!(fake.calls(), ["wl-copy"], "no scope, no argument");
+    assert_eq!(fake.inputs(), [("wl-copy".to_string(), b"4".to_vec())]);
+}
+
+#[test]
+fn copy_runs_the_configured_command_with_its_arguments() {
+    let bin = stubs("copy-args", &["xclip"]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    fake.ok("xclip -sel c", "");
+    let config = LauncherConfig { copy: v(&["xclip", "-sel", "c"]), ..LauncherConfig::default() };
+    let mut l = Launcher::for_calc(config);
+    assert_eq!(perform(&mut l, Activation::Copy { text: "2+2 = 4".into() }, &ctx(&fake, Spawner::Detached, None, &dirs)), Ok(Done::Close));
+    assert_eq!(fake.calls(), ["xclip -sel c"]);
+    assert_eq!(fake.inputs(), [("xclip -sel c".to_string(), b"2+2 = 4".to_vec())]);
+}
+
+#[test]
+fn copy_with_a_missing_program_stays_open() {
+    let bin = stubs("copy-missing", &[]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new();
+    let mut l = launcher();
+    assert_eq!(
+        perform(&mut l, Activation::Copy { text: "4".into() }, &ctx(&fake, Spawner::Detached, None, &dirs)),
+        Err("wl-copy: program not found".to_string())
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn copy_with_a_failing_program_says_so() {
+    let bin = stubs("copy-fails", &["wl-copy"]);
+    let dirs = [bin.to_path_buf()];
+    let fake = FakeExecutor::new(); // no response: the fake answers NotFound
+    let mut l = launcher();
+    assert_eq!(
+        perform(&mut l, Activation::Copy { text: "4".into() }, &ctx(&fake, Spawner::Detached, None, &dirs)),
+        Err("wl-copy: program not found".to_string())
+    );
+}

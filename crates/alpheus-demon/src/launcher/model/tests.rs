@@ -1,4 +1,5 @@
 use super::*;
+use crate::launcher::calc::Answer;
 use crate::launcher::config::SourceConfig;
 use crate::launcher::desktop::{DesktopAction, DesktopEntry};
 use crate::launcher::sources::SourceEntry;
@@ -613,4 +614,103 @@ fn a_moved_selection_stays_on_its_entry_when_entries_arrive_again() {
     l.set_entries(entries(&["Zone B", "Zone A"]));
     assert_eq!(sources(&l), [Source::Entry(1), Source::Entry(0)], "ranked again: \"Zone A\" (now index 1) first");
     assert_eq!(l.selected_hit().map(|h| h.source), Some(Source::Entry(0)), "still \"Zone B\", now index 0");
+}
+
+fn with_calculator_app() -> Launcher {
+    let mut l = Launcher::for_apps(LauncherConfig::default(), vec![], History::empty(200), NOW);
+    l.set_catalog(Catalog { apps: vec![app("calc.desktop", "Calculator 2+2", &[])], commands: vec![] });
+    l
+}
+
+#[test]
+fn a_math_query_puts_the_calculator_first() {
+    let mut l = with_calculator_app();
+    typed(&mut l, "2+2");
+    assert_eq!(l.results[0].source, Source::Calc);
+    assert_eq!(l.calc, Some(Ok(Answer { text: "4".into(), bases: None })));
+    assert!(l.results.iter().any(|h| h.source == Source::App(0)), "the app is still listed after it: {:?}", sources(&l));
+    assert_eq!(l.selected, 0);
+}
+
+#[test]
+fn a_plain_word_or_number_shows_no_calculator_row() {
+    for query in ["firefox", "2048", "e", "7zip", "Steam 2", "Doom 2", "gimp-2.10", "x264", "-5"] {
+        let mut l = launcher();
+        typed(&mut l, query);
+        assert!(!sources(&l).contains(&Source::Calc), "{query}: {:?}", sources(&l));
+        assert_eq!(l.calc, None, "{query}");
+    }
+}
+
+#[test]
+fn enter_on_the_calculator_row_copies_the_result() {
+    let mut l = launcher();
+    typed(&mut l, "2+2");
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "4".into() }));
+}
+
+#[test]
+fn ctrl_enter_copies_the_expression_and_the_result() {
+    let mut l = launcher();
+    typed(&mut l, " 2+2 ");
+    assert_eq!(l.key(Key::CtrlEnter), activate(Activation::Copy { text: "2+2 = 4".into() }));
+}
+
+#[test]
+fn an_error_row_activates_nothing() {
+    let mut l = launcher();
+    typed(&mut l, "1/0");
+    assert_eq!(l.results[0].source, Source::Calc);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+}
+
+#[test]
+fn an_empty_copy_hides_the_action() {
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config, windows(), History::empty(200), NOW);
+    l.set_catalog(catalog());
+    typed(&mut l, "2+2");
+    assert_eq!(l.results[0].source, Source::Calc);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing);
+    assert_eq!(l.key(Key::CtrlEnter), Outcome::Nothing);
+}
+
+#[test]
+fn no_calculator_in_the_commands_mode() {
+    let mut l = launcher();
+    typed(&mut l, ">");
+    assert_eq!(l.mode, Mode::Commands);
+    typed(&mut l, "2+2");
+    assert!(!sources(&l).contains(&Source::Calc));
+    assert_eq!(l.calc, None);
+}
+
+#[test]
+fn the_calculator_mode_shows_only_the_result() {
+    let mut l = Launcher::for_calc(LauncherConfig::default());
+    assert!(l.is_bare());
+    assert!(l.results.is_empty());
+    typed(&mut l, "pi");
+    assert_eq!(l.results.len(), 1);
+    assert_eq!(l.calc, Some(Ok(Answer { text: "3.14159265359".into(), bases: None })));
+    l.set_catalog(catalog());
+    assert_eq!(l.results.len(), 1);
+    assert_eq!(l.key(Key::Tab), Outcome::Nothing);
+    assert_eq!(l.key(Key::BackTab), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Calc);
+    assert_eq!(l.click_mode(Mode::Apps), Outcome::Nothing);
+    assert_eq!(l.mode, Mode::Calc);
+    // No prefix jump either.
+    l.key(Key::CtrlU);
+    typed(&mut l, ">");
+    assert_eq!(l.mode, Mode::Calc);
+    assert_eq!(l.key(Key::Enter), Outcome::Nothing, "'>' is no expression");
+}
+
+#[test]
+fn the_calculator_mode_copies_on_enter() {
+    let mut l = Launcher::for_calc(LauncherConfig::default());
+    typed(&mut l, "2048");
+    assert_eq!(l.key(Key::Enter), activate(Activation::Copy { text: "2048".into() }), "no looks_like_math filter in the mode");
 }

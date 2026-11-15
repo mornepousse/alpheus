@@ -77,7 +77,7 @@ fn typed(l: &mut Launcher, text: &str) {
 /// Lays out for an output of `columns` × 40 cells, like the launcher host does:
 /// the preview panel reserved for the app launcher, whatever the selection.
 fn draw(l: &mut Launcher, columns: u16) -> (BoxLayout, Boxed) {
-    let b = layout(columns, 40, l.config.rows, l.is_script(), !l.is_script());
+    let b = layout(columns, 40, l.config.rows, l.is_bare(), !l.is_bare());
     l.set_list_rows(usize::from(b.list_rows));
     let rows = render(l, &b);
     for (i, r) in rows.rows.iter().enumerate() {
@@ -362,6 +362,9 @@ fn every_mode_help_line_fits_the_narrow_box() {
     let s = Launcher::for_script(LauncherConfig::default(), None, vec![]);
     let text = help_text(&s);
     assert!(text.chars().count() <= limit, "Script: {text:?} is {} chars, limit {limit}", text.chars().count());
+    let c = Launcher::for_calc(LauncherConfig::default());
+    let text = help_text(&c);
+    assert!(text.chars().count() <= limit, "Calc: {text:?} is {} chars, limit {limit}", text.chars().count());
 }
 
 /// Windows mode never has a `.desktop` action to run: Ctrl+Enter on a window is just Enter
@@ -556,4 +559,60 @@ fn a_typed_query_lists_the_entry_with_its_path_and_previews_it() {
     assert!(first.contains("Vibrant  Apparence › Schéma couleurs"), "{first:?}");
     let all = snapshot(&rows);
     assert!(all.contains("enter  run"), "the preview says what Enter does: {all}");
+}
+
+#[test]
+fn the_calculator_row_reads_equals_and_calculator() {
+    let mut l = launcher();
+    typed(&mut l, "2+2");
+    let (b, rows) = draw(&mut l, 100);
+    let row = rows.rows[usize::from(b.list_top) - 1].text();
+    assert!(row.contains("= 4") && row.contains("calculator"), "{row}");
+    assert!(row.contains(CALC_ICON), "{row}");
+    // The preview: the query, the answer, then both actions.
+    let lines: Vec<String> = panel(&rows, &b).iter().map(|t| t.trim().to_string()).collect();
+    assert_eq!(lines[0], "2+2", "{lines:?}");
+    assert_eq!(lines[1], "= 4");
+    assert!(lines.iter().any(|t| t == "enter  copy") && lines.iter().any(|t| t == "ctrl+enter  copy expression"), "{lines:?}");
+}
+
+#[test]
+fn an_error_row_reads_error_in_the_error_style() {
+    let mut l = launcher();
+    typed(&mut l, "1/0");
+    let (b, rows) = draw(&mut l, 100);
+    let row = &rows.rows[usize::from(b.list_top) - 1];
+    assert!(row.text().contains("error: division by zero"), "{}", row.text());
+    let lines = panel(&rows, &b);
+    assert!(lines.iter().all(|t| !t.starts_with("enter")), "nothing to copy: {lines:?}");
+}
+
+#[test]
+fn an_empty_copy_leaves_the_actions_out_of_the_preview_and_the_help() {
+    let config = LauncherConfig { copy: vec![], ..LauncherConfig::default() };
+    let mut l = Launcher::for_apps(config.clone(), windows(), History::empty(200), NOW);
+    typed(&mut l, "2+2");
+    let (b, rows) = draw(&mut l, 100);
+    let lines = panel(&rows, &b);
+    assert!(lines.iter().all(|t| !t.contains("copy")), "{lines:?}");
+    let mut c = Launcher::for_calc(config);
+    typed(&mut c, "2+2");
+    assert_eq!(help_text(&c), "esc close");
+}
+
+#[test]
+fn the_calculator_mode_has_no_modes_row_and_its_own_help() {
+    let mut l = Launcher::for_calc(LauncherConfig::default());
+    let (b, rows) = draw(&mut l, 100);
+    assert_eq!(b.list_top, 2, "no modes row");
+    assert_eq!(b.preview_columns, 0, "no preview");
+    assert!(!rows.rows.iter().any(|r| r.text().contains("All")), "{}", snapshot(&rows));
+    assert!(rows.rows[usize::from(b.list_top) - 1].text().contains("type an expression"), "{}", snapshot(&rows));
+    assert!(!snapshot(&rows).contains("scanning"));
+    assert_eq!(help_text(&l), "enter copy · ctrl+enter copy expression · esc close");
+    typed(&mut l, "6*7");
+    let (b, rows) = draw(&mut l, 100);
+    assert!(rows.rows[usize::from(b.list_top) - 1].text().contains("= 42"), "{}", snapshot(&rows));
+    // Clicking where the modes row would be reaches no mode.
+    assert_eq!(hit(&l, &b, 3, 1), Some(Click::Inside));
 }

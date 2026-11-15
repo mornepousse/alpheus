@@ -177,7 +177,7 @@ pub(crate) fn read_config(config_dir: &Path, log: &mut dyn FnMut(&str)) -> Launc
 /// Only an app launcher is fed the compositor's windows: a script menu's
 /// model has nothing to rank them against (`Launcher::is_script`).
 pub(crate) fn feeds_windows(open: Option<&Launcher>) -> bool {
-    open.is_some_and(|m| !m.is_script())
+    open.is_some_and(|m| !m.is_bare())
 }
 
 /// Whether `Launcher::set_windows` is worth calling: it rebuilds the
