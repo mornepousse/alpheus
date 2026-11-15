@@ -5051,7 +5051,19 @@ fn privacy_daemon(name: &str, modules: &str) -> (Sway, FakeHyprland, Daemon) {
 /// `privacy_daemon` with `extra` appended to bar.toml (a `[privacy]` section pointing at fake
 /// roots) and `quiet` the hues that must be absent from the bar once it is up.
 fn privacy_daemon_with(name: &str, modules: &str, extra: &str, quiet: &[[u8; 3]]) -> (Sway, FakeHyprland, Daemon) {
+    privacy_daemon_before(name, modules, extra, quiet, |_| ())
+}
+
+/// `privacy_daemon_with`, `before` running once sway is up and before the daemon starts.
+fn privacy_daemon_before(
+    name: &str,
+    modules: &str,
+    extra: &str,
+    quiet: &[[u8; 3]],
+    before: impl FnOnce(&Sway),
+) -> (Sway, FakeHyprland, Daemon) {
     let sway = Sway::start(name, 1);
+    before(&sway);
     let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
     let config = sway.runtime.join("config/alpheus");
     std::fs::create_dir_all(&config).unwrap();
@@ -5283,6 +5295,32 @@ fn dnd_while_sharing_follows_a_hyprland_screencast() {
     assert!(hypr.write("screencast>>0,monitor\n"));
     assert!(d.wait_for("do not disturb off (screen sharing ended)", DELAY), "{:?}", d.log());
     assert!(!file.exists(), "the file is gone");
+}
+
+/// Decision 7 (controller's ruling): a timed do-not-disturb that ends while a screen is shared
+/// hands over to sharing, so it stays on, and the cast's end turns it off.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn a_timed_dnd_ending_during_a_share_hands_over_to_sharing() {
+    let (sway, hypr, d) = {
+        let name = "dnd-timed-share";
+        let (sway, hypr, d) = privacy_daemon_before(name, SHARING_BAR, SHARING_ON, &[privacy_orange(), privacy_red()], |sway| {
+            write_dnd_file(sway, &format!("until {}\n", unix_now() + 20))
+        });
+        (sway, hypr, d)
+    };
+    let file = sway.runtime.join("state/alpheus/dnd");
+    assert!(wait_until(|| hypr.write("screencast>>0,monitor\n")), "the daemon never connected to the fake Hyprland: {:?}", d.log());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("until "), "timed at start: {:?}", d.log());
+    assert!(hypr.write("screencast>>1,monitor\n"));
+    wait_for_the_glyph(&sway, &d, privacy_red());
+    assert!(std::fs::read_to_string(&file).unwrap().starts_with("until "), "still timed while the share runs: {:?}", d.log());
+    assert!(d.wait_for("notifications: do not disturb on (screen shared)", Duration::from_secs(25)), "{:?}", d.log());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "sharing\n");
+    assert_eq!(d.count("do not disturb off"), 0, "handed over, never off: {:?}", d.log());
+    assert!(hypr.write("screencast>>0,monitor\n"));
+    assert!(d.wait_for("do not disturb off (screen sharing ended)", DELAY), "{:?}", d.log());
+    assert!(!file.exists(), "the cast's end turned it off: {:?}", d.log());
 }
 
 /// Decision 7: the user's word wins over the capture, either way.

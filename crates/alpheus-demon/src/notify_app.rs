@@ -194,16 +194,18 @@ impl App {
         self.dnd_timer_sync();
     }
 
+    /// The option is on and both modules it needs are.
+    fn dnd_sharing_enabled(&self) -> bool {
+        let cfg = &self.bar.config;
+        cfg.notifications.dnd_while_sharing && cfg.modules.contains(&ModuleId::Privacy) && cfg.modules.contains(&ModuleId::Notifications)
+    }
+
     /// `[notifications] dnd_while_sharing`: on a capture's start or end (an edge, never a level),
     /// do-not-disturb follows through `Dnd::after_sharing`, which keeps the user's choice (decision 7).
     /// Nothing without the option, the `privacy` module or the `notifications` module (the state is
     /// loaded and served only with it).
     pub(crate) fn dnd_sharing_follow(&mut self) {
-        let cfg = &self.bar.config;
-        if !cfg.notifications.dnd_while_sharing
-            || !cfg.modules.contains(&ModuleId::Privacy)
-            || !cfg.modules.contains(&ModuleId::Notifications)
-        {
+        if !self.dnd_sharing_enabled() {
             return;
         }
         let Some(now) = sharing_edge(self.dnd_timed.sharing_seen, self.bar.privacy.shown().screen.active()) else {
@@ -243,7 +245,7 @@ impl App {
         app.dnd_check_clock();
     }
 
-    /// Whether the wall clock has reached the end: do-not-disturb goes off; if not yet (the
+    /// Whether the wall clock has reached the end: do-not-disturb goes off (or, during a share with the option on, hands over to sharing); if not yet (the
     /// monotonic timer is early, or a far end was clamped) the timer is armed for the rest. Called
     /// by the timer and by every clock tick (a suspended laptop's timer is late, decision 8).
     pub(crate) fn dnd_check_clock(&mut self) {
@@ -251,9 +253,10 @@ impl App {
         if model.until.is_none() {
             return;
         }
-        let next = model.expired(unix_now());
+        let sharing = self.dnd_sharing_enabled() && self.dnd_timed.sharing_seen;
+        let next = model.expired(unix_now(), sharing);
         if next != model {
-            self.dnd_apply(next, "timer ended");
+            self.dnd_apply(next, if sharing { "screen shared" } else { "timer ended" });
         } else if !self.dnd_timed.timer.is_armed() {
             self.dnd_timer_sync();
         }

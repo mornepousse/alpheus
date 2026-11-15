@@ -84,10 +84,18 @@ impl Dnd {
         }
     }
 
-    /// Off once `now` reaches the end (the wall clock: the monotonic timer drifts across a suspend).
-    pub fn expired(self, now: u64) -> Dnd {
+    /// Off once `now` reaches the end (the wall clock: the monotonic timer drifts across a suspend);
+    /// with a screen shared and `dnd_while_sharing` on (`sharing`), it hands over to sharing instead,
+    /// so the capture's end turns it off as usual.
+    pub fn expired(self, now: u64, sharing: bool) -> Dnd {
         match self.until {
-            Some(t) if self.on && now >= t => Dnd::default(),
+            Some(t) if self.on && now >= t => {
+                if sharing {
+                    Dnd { on: true, until: None, by_sharing: true }
+                } else {
+                    Dnd::default()
+                }
+            }
             _ => self,
         }
     }
@@ -161,12 +169,21 @@ mod tests {
 
     #[test]
     fn expiry() {
-        assert_eq!(timed(100).expired(99), timed(100));
-        assert_eq!(timed(100).expired(100), OFF);
-        assert_eq!(timed(100).expired(u64::MAX), OFF);
-        assert_eq!(UNTIMED.expired(u64::MAX), UNTIMED, "no end, no expiry");
-        assert_eq!(SHARING.expired(u64::MAX), SHARING);
-        assert_eq!(OFF.expired(5), OFF);
+        assert_eq!(timed(100).expired(99, false), timed(100));
+        assert_eq!(timed(100).expired(100, false), OFF);
+        assert_eq!(timed(100).expired(u64::MAX, false), OFF);
+        assert_eq!(UNTIMED.expired(u64::MAX, false), UNTIMED, "no end, no expiry");
+        assert_eq!(SHARING.expired(u64::MAX, false), SHARING);
+        assert_eq!(OFF.expired(5, false), OFF);
+    }
+
+    #[test]
+    fn an_end_during_a_share_hands_over_to_sharing() {
+        assert_eq!(timed(100).expired(100, true), SHARING);
+        assert_eq!(timed(100).expired(99, true), timed(100), "not yet: unchanged");
+        assert_eq!(UNTIMED.expired(u64::MAX, true), UNTIMED);
+        assert_eq!(OFF.expired(5, true), OFF);
+        assert_eq!(timed(100).expired(100, true).after_sharing(false), OFF, "the cast's end turns it off");
     }
 
     #[test]
