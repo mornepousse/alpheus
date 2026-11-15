@@ -397,13 +397,14 @@ pub fn run() -> i32 {
     }
     start_modules(&mut core.state, &core.handle, &plan);
     start_sources(&mut core.state, &core.tx, &plan, &exec);
-    core.state.hooks_started();
     if let Some(server) = &launcher_server {
         match watch_launcher_socket(&core.handle, server, core.qh.clone()) {
             Ok(()) => log("launcher socket ready"),
             Err(e) => log(&format!("launcher socket: {e} — the bar runs without a launcher")),
         }
     }
+    // After the socket watch: a `started` hook may call `alpheus-launch`.
+    core.state.hooks_started();
     if !start_guard(signals, core.tx.clone()) {
         return 1;
     }

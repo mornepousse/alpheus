@@ -24,6 +24,7 @@ pub(crate) struct HooksApp {
 
 impl HooksApp {
     pub(crate) fn new(cfg: &crate::config::HooksConfig) -> Option<HooksApp> {
+        // The spawner is chosen once, at start, as the launcher does.
         Hooks::new(cfg, Instant::now()).map(|model| HooksApp { model, spawner: spawner(&paths::runtime_dir()) })
     }
 }

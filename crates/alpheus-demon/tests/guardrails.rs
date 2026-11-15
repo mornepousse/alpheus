@@ -2993,20 +2993,74 @@ fn spawn_with_env_only_runs_hooks() {
     assert_eq!(seen[0].1, 1, "hooks_app.rs starts a hook in one place");
 }
 
+/// Every `log(` call of `code`, from `log(` to its closing parenthesis (strings aware, so a `)` or
+/// a `;` inside a format string ends nothing), however many lines it spans.
+fn log_statements(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for (at, _) in code.match_indices("log(") {
+        // Not `catalog(`, `dialog(`…: the call is a whole word.
+        if code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let (mut in_str, mut escaped, mut depth, mut end) = (false, false, 0usize, code.len());
+        for (i, c) in code[at..].char_indices() {
+            match (in_str, escaped, c) {
+                (true, true, _) => escaped = false,
+                (true, false, '\\') => escaped = true,
+                (true, false, '"') => in_str = false,
+                (false, _, '"') => in_str = true,
+                (false, _, '(') => depth += 1,
+                (false, _, ')') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = at + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push(code[at..end].to_string());
+    }
+    out
+}
+
+#[test]
+fn log_statements_span_lines_and_ignore_a_semicolon_in_a_string() {
+    let code = "log(&format!(\n    \"hook: {key}; {}\",\n    argv\n));\nlet x = 1;\ncatalog(\"a\");\nlog(&line);";
+    let found = log_statements(code);
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found[0].contains("argv") && found[0].ends_with("))"), "{found:?}");
+    assert_eq!(found[1], "log(&line)");
+}
+
 /// Hooks spec § 5: a hook's log lines hold fixed words only, never a command, a variable or a name.
+/// Whole statements, so a `format!` split over several lines is read as one.
 #[test]
 fn hook_logs_carry_fixed_words_only() {
     let files = source_files();
     let t = &files.iter().find(|(p, _)| relative_path(p) == "hooks_app.rs").expect("hooks_app.rs").1;
     let production = production_code(t);
-    let lines: Vec<&str> = production.lines().filter(|l| l.contains("log(")).collect();
-    assert!(lines.len() >= 5, "the hook log lines were not found: {}", lines.len());
-    for l in lines {
-        assert!(l.contains("\"hook: {") || l.contains("\"hooks: {") || l.contains("log(&line)"), "{l}");
+    let statements = log_statements(&production);
+    assert!(statements.len() >= 5, "the hook log statements were not found: {}", statements.len());
+    for s in statements {
+        assert!(s.contains("\"hook: {") || s.contains("\"hooks: {") || s.contains("log(&line)"), "{s}");
         for never in ["argv", "env", ".env", "DEVICE", "PROFILE", "name", "value"] {
-            assert!(!l.contains(never), "{never} in a hook log line: {l}");
+            assert!(!s.contains(never), "{never} in a hook log statement: {s}");
         }
     }
+}
+
+/// Hooks spec § 3: `started` runs once the launcher's socket is watched, so a `started` hook can
+/// call `alpheus-launch`.
+#[test]
+fn hooks_start_after_the_launcher_socket_watch() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "startup.rs").expect("startup.rs").1;
+    let body = function_body(t, "pub fn run(");
+    let watch = body.find("watch_launcher_socket(").expect("the socket watch in run");
+    let started = body.find("hooks_started(").expect("hooks_started in run");
+    assert!(watch < started, "hooks_started() must come after the launcher socket watch");
 }
 
 /// Hooks spec § 2: each state change the hooks follow is handed to them where it happens, and each

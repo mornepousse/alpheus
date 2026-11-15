@@ -88,6 +88,8 @@ impl HookId {
     pub fn needs(self) -> &'static str {
         match self {
             HookId::Started | HookId::ThemeMode => "",
+            // Every path to `dnd_apply` needs the module: the bell, the quick panel's row (shown only
+            // with it), the verb and `dnd_while_sharing`.
             HookId::Dnd => "notifications",
             HookId::BatteryCharge | HookId::BatteryLevel => "battery",
             HookId::PowerProfile => "quick",

@@ -5836,6 +5836,142 @@ fn hooks_displays_runs_once_a_profile_is_applied() {
     assert!(log.iter().filter(|l| l.contains("hook")).all(|l| !l.contains("Desk")), "the name is never logged: {log:?}");
 }
 
+/// A bar with hook stubs: `hook-rec` records its arguments and `ALPHEUS_*` variables. `before` runs
+/// once sway is up and the stub is written, before the daemon starts.
+fn hooks_daemon(name: &str, bar_toml: &str, before: impl FnOnce(&Sway)) -> (Sway, Daemon) {
+    let sway = Sway::start(name, 1);
+    fake_env_recorder(&sway, "hook-rec");
+    before(&sway);
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar_toml), backend: Backend::Sway, ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    (sway, d)
+}
+
+/// Waits for `hook-rec` to have recorded `n` calls, then returns them.
+fn hook_calls(sway: &Sway, d: &Daemon, n: usize) -> Vec<String> {
+    assert!(
+        wait_until(|| recorded(sway, "hook-rec").len() >= n),
+        "{n} calls never recorded: {:?} {:?}",
+        recorded(sway, "hook-rec"),
+        d.log()
+    );
+    recorded(sway, "hook-rec")
+}
+
+/// Past the quiet window: an edge before it only moves a seed.
+fn past_the_quiet_window() {
+    thread::sleep(alpheus_demon::hooks::QUIET + Duration::from_millis(500));
+}
+
+const HOOKS_DND_BAR: &str = "modules = [\"notifications\", \"clock\"]\n[hooks]\nstarted = [\"hook-rec\", \"up\"]\ndnd = [\"hook-rec\"]\n";
+
+/// Hooks spec §§ 2 to 4: `started` runs with its variable and its arguments; a do-not-disturb loaded
+/// `on` fires nothing (inside the quiet window); a later change fires once with `ALPHEUS_DND`, and
+/// the same verb again, which changes nothing, fires nothing. The log names the event only.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_started_and_dnd_run_with_their_environment() {
+    let (sway, d) = hooks_daemon("hooks-dnd", HOOKS_DND_BAR, dnd_on_before_start);
+    assert!(d.wait_for("hook: started", DELAY), "{:?}", d.log());
+    ready(&d);
+    assert_eq!(hook_calls(&sway, &d, 1), ["hook-rec up|ALPHEUS_EVENT=started "]);
+    // Inside the quiet window, two real changes (off, then on again) only move the seed. This is
+    // the quiet window's test, not a seed test: the loaded state is never an edge either way.
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    assert_eq!(script(&sway, &["--dnd", "on"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for_count("do not disturb on", 1, DELAY), "{:?}", d.log());
+    past_the_quiet_window();
+    assert_eq!(recorded(&sway, "hook-rec").len(), 1, "nothing fired inside the quiet window: {:?}", d.log());
+    assert_eq!(d.count("hook: dnd"), 0, "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    let calls = hook_calls(&sway, &d, 2);
+    assert_eq!(calls[1], "hook-rec |ALPHEUS_DND=off ALPHEUS_EVENT=dnd ", "{calls:?}");
+    assert!(d.wait_for("hook: dnd", DELAY), "{:?}", d.log());
+    assert_eq!(script(&sway, &["--dnd", "off"], "").join().unwrap().0, EXIT_OK);
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(recorded(&sway, "hook-rec").len(), 2, "off again changes nothing: {:?}", d.log());
+    assert_eq!(d.count("hook: dnd"), 1, "{:?}", d.log());
+}
+
+/// Hooks spec § 2, `theme_mode`: a `theme.toml` change of the mode fires once the quiet window has
+/// passed, with `ALPHEUS_MODE`; the first value is only a seed.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_theme_mode_follows_a_theme_toml_change() {
+    let (sway, d) = hooks_daemon("hooks-mode", "modules = [\"clock\"]\n[hooks]\ntheme_mode = [\"hook-rec\"]\n", |sway| {
+        let config = sway.runtime.join("config/alpheus");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    });
+    assert!(d.wait_for("theme: catppuccin, dark", DELAY), "{:?}", d.log());
+    ready(&d);
+    past_the_quiet_window();
+    assert!(recorded(&sway, "hook-rec").is_empty(), "the first mode is a seed: {:?}", d.log());
+    write_atomically(&sway.runtime.join("config/alpheus"), "theme.toml", "theme = \"catppuccin\"\nmode = \"light\"\n");
+    let calls = hook_calls(&sway, &d, 1);
+    assert_eq!(calls, ["hook-rec |ALPHEUS_EVENT=theme_mode ALPHEUS_MODE=light "], "{:?}", d.log());
+    assert!(d.wait_for("hook: theme_mode", DELAY), "{:?}", d.log());
+}
+
+/// Hooks spec § 4: a flapping event runs five times, then is throttled with one log line per
+/// episode, and runs again once a token has come back.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_a_flapping_event_is_throttled() {
+    let bar = "modules = [\"notifications\", \"clock\"]\n[hooks]\ndnd = [\"hook-rec\"]\n";
+    let (sway, d) = hooks_daemon("hooks-throttle", bar, |_| ());
+    ready(&d);
+    past_the_quiet_window();
+    let t = Instant::now();
+    for _ in 0..8 {
+        assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    }
+    assert!(t.elapsed() < Duration::from_secs(2), "inconclusive: the burst took {:?}", t.elapsed());
+    assert!(d.wait_for("hook: dnd throttled", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(hook_calls(&sway, &d, 5).len(), 5, "{:?}", d.log());
+    assert_eq!(d.count("hook: dnd throttled"), 1, "one line per episode: {:?}", d.log());
+    thread::sleep(Duration::from_millis(3500));
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert_eq!(hook_calls(&sway, &d, 6).len(), 6, "a token came back: {:?}", d.log());
+}
+
+/// Hooks spec § 5: a program that does not exist is said by kind only, never by its name or arguments.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_a_missing_program_is_logged_by_kind_only() {
+    let bar = "modules = [\"clock\"]\n[hooks]\nstarted = [\"/nonexistent/hook-x\", \"secret-arg\"]\n";
+    let (_sway, d) = hooks_daemon("hooks-missing", bar, |_| ());
+    assert!(d.wait_for("hook: started failed (program not found)", DELAY), "{:?}", d.log());
+    ready(&d);
+    let log = d.log();
+    assert!(log.iter().all(|l| !l.contains("hook-x") && !l.contains("secret-arg")), "{log:?}");
+}
+
+/// Hooks spec § 1: without `[hooks]` nothing hook-related runs, and nothing is said.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_an_empty_table_runs_nothing() {
+    let (sway, d) = hooks_daemon("hooks-none", "modules = [\"notifications\", \"clock\"]\n", |_| ());
+    ready(&d);
+    past_the_quiet_window();
+    assert_eq!(script(&sway, &["--dnd", "toggle"], "").join().unwrap().0, EXIT_OK);
+    assert!(d.wait_for("do not disturb on", DELAY), "{:?}", d.log());
+    let log = d.log();
+    assert!(log.iter().all(|l| !l.contains("hook: ") && !l.contains("hooks: ")), "{log:?}");
+    assert!(recorded(&sway, "hook-rec").is_empty());
+}
+
+/// Hooks spec § 2: a hook whose source the configured `modules` never read is said once at start.
+#[test]
+#[ignore = "headless sway (nix develop)"]
+fn hooks_say_what_never_fires() {
+    let bar = "modules = [\"clock\"]\n[hooks]\npower_profile = [\"hook-rec\"]\n";
+    let (_sway, d) = hooks_daemon("hooks-never", bar, |_| ());
+    assert!(d.wait_for("hooks: power_profile never fires (needs quick)", DELAY), "{:?}", d.log());
+    assert_eq!(d.count("hooks: power_profile never fires"), 1, "{:?}", d.log());
+}
+
 /// Each test gives its compositor a name, and the name picks its runtime directory
 /// (`alpheus-it-<pid>-<name>`): two tests sharing one would remove each other's directory and
 /// fight over the same sockets when run in parallel. Not ignored: it only reads this file.
