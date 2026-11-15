@@ -1440,16 +1440,29 @@ pub(crate) fn session_word(s: Session) -> &'static str {
     }
 }
 
-/// The first of "G word", "word", "G" that fits `w` cells.
-pub(crate) fn session_label(s: Session, w: u16) -> String {
-    let word = session_word(s);
-    let full = format!("{} {word}", s.glyph());
-    if text_width(&full) <= w {
-        full
-    } else if text_width(word) <= w {
-        word.to_string()
-    } else {
-        s.glyph().to_string()
+/// How the buttons are labelled, the same for every cell of the row: the richest form that fits all of
+/// them (a mix of "󰌾 Lock", "Log out" and "󰐥 Off" reads as a mistake).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LabelForm {
+    GlyphAndWord,
+    Word,
+    Glyph,
+}
+
+/// The richest form whose labels all fit their `cells`.
+pub(crate) fn session_form(buttons: &[Session], cells: &[(u16, u16)]) -> LabelForm {
+    [LabelForm::GlyphAndWord, LabelForm::Word]
+        .into_iter()
+        .find(|f| buttons.iter().zip(cells).all(|(s, (_, w))| text_width(&session_label(*s, *f)) <= *w))
+        .unwrap_or(LabelForm::Glyph)
+}
+
+/// A button's label in `form`.
+pub(crate) fn session_label(s: Session, form: LabelForm) -> String {
+    match form {
+        LabelForm::GlyphAndWord => format!("{} {}", s.glyph(), session_word(s)),
+        LabelForm::Word => session_word(s).to_string(),
+        LabelForm::Glyph => s.glyph().to_string(),
     }
 }
 
@@ -1463,10 +1476,12 @@ fn session_row(g: &mut Grid, live: &Live, q: &Quick, selected: bool) {
         return;
     }
     let buttons = q.buttons(live);
-    for (s, (at, w)) in buttons.iter().zip(session_cells(end, buttons.len())) {
+    let cells = session_cells(end, buttons.len());
+    let form = session_form(&buttons, &cells);
+    for (s, (at, w)) in buttons.iter().zip(cells) {
         let style = if selected && *s == q.button { Style::ACTIVE } else { Style::SURFACE };
         g.write(at, at + w, &" ".repeat(usize::from(w)), style);
-        let label = session_label(*s, w);
+        let label = session_label(*s, form);
         let x = at + w.saturating_sub(text_width(&label)) / 2;
         g.write(x, at + w, &label, style);
     }

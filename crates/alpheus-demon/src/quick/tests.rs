@@ -74,12 +74,13 @@ fn centred(s: &str, w: u16) -> String {
 fn session_text(buttons: &[Session]) -> String {
     let mut out = String::from(" ");
     let cells = session_cells(WIDTH + 2, buttons.len());
+    let form = session_form(buttons, &cells);
     for (i, (s, (at, w))) in buttons.iter().zip(&cells).enumerate() {
         if i > 0 {
             out.push(' ');
         }
         assert_eq!(text_width(&out), *at);
-        out.push_str(&centred(&session_label(*s, *w), *w));
+        out.push_str(&centred(&session_label(*s, form), *w));
     }
     out.trim_end().to_string()
 }
@@ -93,15 +94,23 @@ fn session_cells_split_the_row() {
 }
 
 #[test]
-fn session_labels_shrink_to_their_cell() {
-    for s in Session::ALL {
-        assert!(session_label(s, 10).starts_with(s.glyph()), "{s:?} keeps its glyph at 10");
-        assert_eq!(session_label(s, 2), s.glyph().to_string(), "{s:?} glyph alone at 2");
-    }
-    assert_eq!(session_label(Session::Lock, 7), format!("{LOCK} Lock"));
-    assert_eq!(session_label(Session::Logout, 7), "Log out");
-    assert_eq!(session_label(Session::Reboot, 7), "Reboot");
-    assert_eq!(session_label(Session::Poweroff, 7), format!("{POWER} Off"));
+fn one_label_form_for_every_cell() {
+    let all = Session::ALL;
+    let widths = |w: u16| -> Vec<(u16, u16)> { all.iter().map(|_| (0, w)).collect() };
+    // Room for every glyph and word: all of them carry both.
+    assert_eq!(session_form(&all, &widths(10)), LabelForm::GlyphAndWord);
+    // "󰍃 Log out" needs 9: at 7 (four buttons in the panel) the words alone, even where "󰌾 Lock" would fit.
+    assert_eq!(session_form(&all, &widths(7)), LabelForm::Word);
+    assert_eq!(session_form(&all, &widths(2)), LabelForm::Glyph);
+    // The row as drawn: no button keeps a glyph the others lost.
+    let row = session_text(&all);
+    assert!(!row.contains(LOCK) && !row.contains(POWER) && row.contains("Log out"), "{row:?}");
+    assert_eq!(session_label(Session::Lock, LabelForm::GlyphAndWord), format!("{LOCK} Lock"));
+    assert_eq!(session_label(Session::Poweroff, LabelForm::Word), "Off");
+    assert_eq!(session_label(Session::Poweroff, LabelForm::Glyph), POWER.to_string());
+    // The last cell takes the remainder, yet the form is the first cells' (the narrowest).
+    let four = session_cells(WIDTH + 2, 4);
+    assert_eq!(session_form(&all, &four), LabelForm::Word);
 }
 
 #[test]

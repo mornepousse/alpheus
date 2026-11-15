@@ -259,7 +259,7 @@ const BATTERY_CHARGING: [char; 11] = [
 /// here — one cell wide).
 const DEVICE: char = '\u{f0fb0}'; // md-devices
 pub const MEMORY: char = '\u{f035b}'; // md-memory
-pub const CPU: char = '\u{f061a}'; // md-cpu-64-bit
+pub const CPU: char = '\u{f061a}'; // md-chip
 pub const THERMOMETER: char = '\u{f050f}'; // md-thermometer
 /// From this temperature (°C), the error tint (waybar's critical threshold).
 pub const HOT: i16 = 85;
