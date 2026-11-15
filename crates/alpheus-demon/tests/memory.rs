@@ -2588,10 +2588,12 @@ fn displays_pss_after_hotplug_cycles() {
 }
 
 /// `NOTIFY_BAR` plus what small features 1 adds to the configuration: 32 rules, four battery
-/// thresholds and `dnd_while_sharing` (the last needs `privacy`, so it only sits there).
+/// thresholds and `dnd_while_sharing`, with `battery` and `privacy` in `modules` for the last two.
+const SMALL_BASE_BAR: &str = "modules = [\"workspaces\", \"window\", \"notifications\", \"battery\", \"privacy\", \"clock\"]\n";
+
 fn small_features_bar() -> String {
     let rules: String = (0..32).map(|i| format!("[[notifications.rules]]\napp = \"Chatty app {i}\"\naction = \"mute\"\n")).collect();
-    format!("{NOTIFY_BAR}[battery]\nwarn = [30, 20, 10, 5]\n[notifications]\ndnd_while_sharing = true\n{rules}")
+    format!("{SMALL_BASE_BAR}[battery]\nwarn = [30, 20, 10, 5]\n[notifications]\ndnd_while_sharing = true\n{rules}")
 }
 
 /// Small features 1: the rules, the battery thresholds and the option cost nothing at start (3
@@ -2602,7 +2604,7 @@ fn small_features_cost_nothing_at_start() {
     require_release(cfg!(debug_assertions));
     let bus = PrivateBus::start("small-cost");
     let mut kb = Vec::new();
-    for (name, toml) in [("small-cost-a", NOTIFY_BAR.to_string()), ("small-cost-b", small_features_bar())] {
+    for (name, toml) in [("small-cost-a", SMALL_BASE_BAR.to_string()), ("small-cost-b", small_features_bar())] {
         let session = PrivateBus::start(&format!("{name}-session"));
         let (_sway, _hypr, d) = start(name, 3, &bus, Some(&session), Some(&toml), PwDump::Silent);
         wait_for_the_notification_server(&session);
@@ -2610,7 +2612,9 @@ fn small_features_cost_nothing_at_start() {
         kb.push(d.pss_kb());
     }
     let (base, with) = (kb[0], kb[1]);
-    eprintln!("small features PSS at start (KB): {base} notifications alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing");
+    eprintln!(
+        "small features PSS at start (KB): {base} notifications, battery and privacy alone, {with} with 32 rules, 4 thresholds and dnd_while_sharing"
+    );
     assert!(with <= base + 128, "{with} KB vs {base} KB: more than 128 KB for configuration alone — report, never raise");
 }
 
@@ -2652,6 +2656,7 @@ fn launcher_calc_pss_open_and_closed() {
         closed.saturating_sub(cold),
         open.saturating_sub(closed)
     );
+    assert!(closed <= cold + 768, "closed after the warm-up {closed} KB vs cold {cold} KB: more than 768 KB — report, never raise");
     assert!(open <= closed + 1536, "open costs {} KB > 1.5 MB — report, never raise", open.saturating_sub(closed));
     assert!(again <= closed + 256, "closed again {again} KB vs {closed} KB before: more than 256 KB kept");
 }
