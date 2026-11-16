@@ -2983,12 +2983,12 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The clipboard history's pure files run on each copy and must never panic (a boundary panic's
 /// message embeds the text), slice a string by range nor log (a copy is private). Production code
 /// only; Tasks 2 and 3 append theirs.
-const CLIPBOARD_PURE: [&str; 2] = ["clipboard/history.rs", "clipboard/offer.rs"];
+const CLIPBOARD_PURE: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs"];
 
 #[test]
 fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
     let files = source_files();
-    for name in CLIPBOARD_PURE {
+    for name in CLIPBOARD_PURE.iter().copied() {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
@@ -3009,7 +3009,7 @@ fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
 /// The hint types that mark a password-manager copy are named in `clipboard/offer.rs`'s `SENSITIVE`
 /// and nowhere else: no code path can request such an offer's data.
 #[test]
-fn the_sensitive_hint_type_is_never_received() {
+fn the_clipboard_sensitive_hint_type_is_never_received() {
     let hints = ["x-kde-passwordManagerHint", "application/x-nspasteboard-concealed-type", "ExcludeClipboardContentFromMonitorProcessing"];
     let mut seen = 0;
     for (p, t) in source_files() {

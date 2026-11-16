@@ -125,3 +125,10 @@ fn debug_never_prints_text() {
     }
     assert!(format!("{entry:?}").contains(&id.to_string()));
 }
+
+#[test]
+fn rows_preview_drops_invisible_characters() {
+    let mut h = History::default();
+    h.push("pay\u{202e}me\u{2066}now\u{2069} \u{200b}ok".into());
+    assert_eq!(h.rows()[0].preview, "paymenow ok");
+}

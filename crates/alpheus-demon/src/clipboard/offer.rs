@@ -77,6 +77,9 @@ impl Drop for ReadBuffer {
 
 impl ReadBuffer {
     pub fn push(&mut self, chunk: &[u8]) {
+        // Room for the cap and the byte past it at once: the buffer never reallocates, so no
+        // freed, unwiped fragment is left behind.
+        self.bytes.reserve_exact((MAX_BYTES + 1).saturating_sub(self.bytes.capacity()));
         let room = (MAX_BYTES + 1).saturating_sub(self.bytes.len());
         let take = chunk.len().min(room);
         self.bytes.extend_from_slice(chunk.get(..take).unwrap_or_default());

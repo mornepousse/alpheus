@@ -201,7 +201,7 @@ fn row(e: &Entry) -> ClipRow {
     for c in head.chars() {
         if c.is_whitespace() {
             space = true;
-        } else if !c.is_control() {
+        } else if !c.is_control() && !crate::text::invisible(c) {
             if space && !preview.is_empty() {
                 preview.push(' ');
             }

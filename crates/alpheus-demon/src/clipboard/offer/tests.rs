@@ -90,3 +90,21 @@ fn buffer_keeps_one_byte_past_the_cap_and_no_more() {
     assert_eq!(b.bytes.len(), MAX_BYTES + 1);
     assert!(b.over());
 }
+
+#[test]
+fn verdict_order_is_sensitive_then_own_then_quiet() {
+    assert_eq!(verdict([MARKER, "x-kde-passwordManagerHint", "text/plain"], true), Verdict::Skip(Skip::Sensitive));
+    assert_eq!(verdict([MARKER, "text/plain"], true), Verdict::Skip(Skip::Own));
+}
+
+#[test]
+fn the_buffer_never_reallocates() {
+    let mut b = ReadBuffer::default();
+    b.push(b"a");
+    let cap = b.bytes.capacity();
+    assert!(cap > MAX_BYTES, "room for the cap and the one byte past it from the first push");
+    for _ in 0..10 {
+        b.push(&[b'a'; 1024]);
+        assert_eq!(b.bytes.capacity(), cap);
+    }
+}
