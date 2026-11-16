@@ -1,7 +1,7 @@
 //! The clipboard history on `App` (clipboard spec): the control, the history, the read deadline
 //! and the episode flags. Logs fixed words only: never a text, a length, a type or a count.
 
-use crate::clipboard::control::{self, Control, Offer, Reading, read_once};
+use crate::clipboard::control::{self, Control, Offer, Reading, is_current, read_once};
 use crate::clipboard::history::History;
 use crate::clipboard::offer::{READ_DEADLINE, Step, Verdict, in_quiet_window, verdict};
 use crate::deadline::DeadlineTimer;
@@ -74,16 +74,22 @@ impl App {
         }
     }
 
-    /// A new selection (or none): the previous read is dropped, then the offer is read or destroyed.
+    /// A new selection (or none): a newer one drops the previous read, then its offer is read or destroyed.
     pub(crate) fn clipboard_selection(&mut self, offer: Option<Offer>) {
-        self.clipboard_guarded("selection", |app| app.clipboard_selection_inner(offer));
+        let mut offer = offer;
+        self.clipboard_guarded("selection", |app| app.clipboard_selection_inner(&mut offer));
+        // A panic left the offer unconsumed: it is destroyed all the same.
+        if let Some(offer) = offer {
+            offer.destroy();
+        }
     }
 
-    fn clipboard_selection_inner(&mut self, offer: Option<Offer>) {
+    /// Takes the offer out of `slot` once it is consumed (read, or destroyed).
+    fn clipboard_selection_inner(&mut self, slot: &mut Option<Offer>) {
+        // No selection only clears the current one: a read in flight is kept (an app that copies
+        // then quits sends it right after), and the deadline bounds it. Only a newer one drops it.
+        let Some(offer) = slot.take() else { return };
         self.clipboard_stop_read();
-        let Some(offer) = offer else {
-            return self.clipboard_timer_sync();
-        };
         let Some(c) = self.clipboard.as_ref() else {
             return offer.destroy();
         };
@@ -97,8 +103,11 @@ impl App {
     }
 
     /// One wake-up of the pipe: more data, or the end of the read.
-    pub(crate) fn clipboard_read_wake(&mut self, file: &mut impl Read) -> PostAction {
-        let Some(reading) = self.clipboard.as_mut().and_then(|c| c.control.reading.get_mut()) else {
+    pub(crate) fn clipboard_read_wake(&mut self, generation: u64, file: &mut impl Read) -> PostAction {
+        let current = self.clipboard.as_ref().and_then(|c| c.control.reading.get()).map(|r| r.generation);
+        // A source that is no longer the pending read never touches its bytes.
+        let Some(reading) = self.clipboard.as_mut().and_then(|c| c.control.reading.get_mut()).filter(|_| is_current(current, generation))
+        else {
             return PostAction::Remove;
         };
         match read_once(file, &mut reading.buffer) {
@@ -196,7 +205,7 @@ impl App {
     pub(crate) fn clipboard_device_finished(&mut self) {
         self.clipboard_stop_read();
         if let Some(c) = self.clipboard.as_mut() {
-            c.control.device_finished();
+            c.control.detach();
             log("clipboard: the data device finished");
         }
         self.clipboard_timer_sync();
@@ -207,7 +216,8 @@ impl App {
         self.clipboard_stop_read();
         self.clipboard_timer_sync();
         if let Some(c) = self.clipboard.as_mut() {
-            c.history.clear();
+            // Everything, pins included.
+            c.history = History::default();
             c.control.detach();
         }
     }

@@ -2983,15 +2983,15 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
     }
 }
 
-/// The clipboard history's pure files run on each copy and must never panic (a boundary panic's
+/// The clipboard history's pure files (and `control.rs`, which never logs either) run on each copy and must never panic (a boundary panic's
 /// message embeds the text), slice a string by range nor log (a copy is private). Production code
 /// only; Tasks 2 and 3 append theirs.
-const CLIPBOARD_PURE: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
+const CLIPBOARD_NO_PANIC_NO_LOG: &[&str] = &["clipboard/history.rs", "clipboard/offer.rs", "clipboard/control.rs"];
 
 #[test]
 fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
     let files = source_files();
-    for name in CLIPBOARD_PURE.iter().copied() {
+    for name in CLIPBOARD_NO_PANIC_NO_LOG.iter().copied() {
         let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
         let production = production_code(t);
         for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
@@ -3911,20 +3911,49 @@ fn clipboard_logs_only_fixed_words() {
             continue;
         }
         let prod = production_code(&t);
-        let mut rest = prod.as_str();
-        while let Some(at) = rest.find("log(") {
-            let after = &rest[at + 4..];
-            // The call's first string literal is its template; no positional argument follows it
-            // (the names are captured inline, and the allowed ones are listed).
-            let open = after.find('"').expect("a log call has a literal") + 1;
-            let close = open + after[open..].find('"').expect("the literal ends");
-            let template = &after[open..close];
-            assert!(ALLOWED.contains(&template), "a log line outside the fixed words: {template}");
-            let next = after[close + 1..].trim_start().chars().next();
-            assert!(next == Some(')'), "an argument after the template of {template}");
-            calls += 1;
-            rest = &after[close..];
+        for token in ["log(", "log::write("] {
+            let mut rest = prod.as_str();
+            while let Some(at) = rest.find(token) {
+                let after = &rest[at + token.len()..];
+                // Only a literal (or a `format!` of one) is logged, and nothing follows it.
+                let trimmed = after.trim_start();
+                let body = trimmed.strip_prefix("&format!(").unwrap_or(trimmed).trim_start();
+                assert!(body.starts_with('"'), "a log call that is not a literal: {}", &after[..after.len().min(40)]);
+                let inner = &body[1..];
+                let close = inner.find('"').expect("the literal ends");
+                let template = &inner[..close];
+                assert!(ALLOWED.contains(&template), "a log line outside the fixed words: {template}");
+                for word in ["text", "mime", "buffer", "bytes", "len"] {
+                    assert!(!template.contains(word), "{word} in the log line {template}");
+                }
+                let next = inner[close + 1..].trim_start().chars().next();
+                assert!(next == Some(')'), "an argument after the template of {template}");
+                calls += 1;
+                rest = &inner[close..];
+            }
         }
     }
     assert!(calls >= 6, "the log calls were found: {calls}");
+}
+
+/// A `selection(None)` leaves a read in flight alone (an app that copies then quits sends it right
+/// after): the read is dropped only once a real offer is taken, never before.
+#[test]
+fn a_cleared_selection_does_not_drop_a_read() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_selection_inner(");
+    let (take, stop) = (body.find("let Some(offer) = slot.take() else { return }"), body.find("clipboard_stop_read()"));
+    assert!(take.is_some() && take < stop, "returns on None before any read is stopped: {body}");
+}
+
+/// Shutdown wipes the whole history, pins included (`clear` keeps the pinned ones).
+#[test]
+fn the_clipboard_shutdown_wipes_pins_too() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "clipboard/app.rs").expect("app.rs").1;
+    let prod = production_code(t);
+    let body = function_body(&prod, "fn clipboard_shutdown(");
+    assert!(body.contains("History::default()") && !body.contains(".clear()"), "{body}");
 }

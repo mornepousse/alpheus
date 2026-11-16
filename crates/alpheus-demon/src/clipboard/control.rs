@@ -132,12 +132,15 @@ pub(crate) struct Reading {
     pub(crate) token: RegistrationToken,
     pub(crate) buffer: ReadBuffer,
     pub(crate) started: Instant,
+    /// Which read this is: a source of an older one that still wakes is ignored.
+    pub(crate) generation: u64,
 }
 
 pub(crate) struct Control {
     manager: Manager,
     device: Option<Device>,
     pub(crate) reading: Slot<Reading>,
+    next_generation: u64,
 }
 
 pub(crate) const EXT_NAME: &str = "ext-data-control-v1";
@@ -151,7 +154,7 @@ pub(crate) fn bind(globals: &GlobalList, qh: &QueueHandle<App>) -> Option<(Contr
         let m = globals.bind::<ZwlrDataControlManagerV1, _, _>(qh, 1..=1, ()).ok()?;
         (Manager::Wlr(m), "wlr-data-control-unstable-v1")
     };
-    Some((Control { manager, device: None, reading: Slot::default() }, name))
+    Some((Control { manager, device: None, reading: Slot::default(), next_generation: 0 }, name))
 }
 
 impl Control {
@@ -166,17 +169,26 @@ impl Control {
         });
     }
 
-    /// The seat is gone, or the compositor finished the device: it is released.
+    /// The seat is gone, or the compositor finished the device: it is destroyed (a finished
+    /// device is inert, its destroy request is still due).
     pub(crate) fn detach(&mut self) {
         if let Some(device) = self.device.take() {
             device.destroy();
         }
     }
+}
 
-    /// The compositor already destroyed the device (`finished`): only forgotten.
-    pub(crate) fn device_finished(&mut self) {
-        self.device = None;
+/// Puts `new` in the slot; the read it replaces, if any, is handed to `remove` (its loop source
+/// goes), so two sources never feed one buffer.
+pub(crate) fn replace_and_remove<T>(slot: &mut Slot<T>, new: T, remove: impl FnOnce(T)) {
+    if let Some(old) = slot.replace(new) {
+        remove(old);
     }
+}
+
+/// Whether a wake-up from the source of `generation` belongs to the pending read.
+pub(crate) fn is_current(pending: Option<u64>, generation: u64) -> bool {
+    pending == Some(generation)
 }
 
 /// One 4 KiB read per wake-up (the pipe is level-triggered): the step the loop takes next.
@@ -190,6 +202,7 @@ pub(crate) fn read_once(file: &mut impl Read, buffer: &mut ReadBuffer) -> Step {
     };
     let step = step(read, &chunk, buffer);
     chunk.fill(0);
+    std::hint::black_box(&mut chunk);
     step
 }
 
@@ -197,6 +210,8 @@ pub(crate) fn read_once(file: &mut impl Read, buffer: &mut ReadBuffer) -> Step {
 /// The offer is destroyed at once. The deadline is armed here and by every way the read ends.
 pub(crate) fn start_read(app: &mut App, offer: Offer, mime: &'static str) {
     app.clipboard_stop_read();
+    // The loop handle exists before any device does: seat events (SCTK's `new_capability`) run
+    // only in dispatch, after startup stored it. Without one, the offer is simply dropped.
     let Some(handle) = app.loop_handle.clone() else {
         offer.destroy();
         return;
@@ -209,12 +224,17 @@ pub(crate) fn start_read(app: &mut App, offer: Offer, mime: &'static str) {
     drop(writer);
     offer.destroy();
     let pipe = ReadPipe::from(OwnedFd::from(reader));
+    let generation = app.clipboard.as_mut().map_or(0, |c| {
+        c.control.next_generation += 1;
+        c.control.next_generation
+    });
     let inserted = handle.insert_source(pipe, move |(), file, app: &mut App| {
         let mut pipe: &std::fs::File = file.as_ref();
-        app.clipboard_guarded("read", |app| app.clipboard_read_wake(&mut pipe)).unwrap_or(PostAction::Remove)
+        app.clipboard_guarded("read", |app| app.clipboard_read_wake(generation, &mut pipe)).unwrap_or(PostAction::Remove)
     });
     if let (Ok(token), Some(c)) = (inserted, app.clipboard.as_mut()) {
-        c.control.reading.replace(Reading { token, buffer: ReadBuffer::default(), started: Instant::now() });
+        let reading = Reading { token, buffer: ReadBuffer::default(), started: Instant::now(), generation };
+        replace_and_remove(&mut c.control.reading, reading, |old| handle.remove(old.token));
     }
     app.clipboard_timer_sync();
 }
@@ -296,5 +316,23 @@ mod tests {
         assert_eq!(slot.get(), Some(&2));
         assert_eq!(slot.take(), Some(2));
         assert_eq!(slot.get(), None);
+    }
+
+    #[test]
+    fn replacing_a_read_removes_the_old_source() {
+        let mut slot: Slot<u32> = Slot::default();
+        let mut removed = Vec::new();
+        replace_and_remove(&mut slot, 1, |old| removed.push(old));
+        assert!(removed.is_empty());
+        replace_and_remove(&mut slot, 2, |old| removed.push(old));
+        assert_eq!(removed, [1]);
+        assert_eq!(slot.get(), Some(&2));
+    }
+
+    #[test]
+    fn a_stale_source_is_not_current() {
+        assert!(is_current(Some(3), 3));
+        assert!(!is_current(Some(3), 2));
+        assert!(!is_current(None, 3));
     }
 }
