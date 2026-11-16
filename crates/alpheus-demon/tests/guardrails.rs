@@ -1478,6 +1478,7 @@ const NO_THREAD_NOR_COMMAND: &[&str] = &[
     "notes/store.rs",
     "notes/surface.rs",
     "notes/paste.rs",
+    "clipboard/",
 ];
 
 #[test]
@@ -2975,6 +2976,32 @@ fn the_notes_pure_parts_have_no_panicking_path_and_log_nothing() {
         for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
             let allowed = if name == "notes/text.rs" && p == ".replace_range(" { checked_replace_range(&production) } else { 0 };
             assert_eq!(production.matches(p).count(), allowed, "{p} in {name}'s production code");
+        }
+    }
+}
+
+/// The clipboard history's pure files run on each copy and must never panic (a boundary panic's
+/// message embeds the text), slice a string by range nor log (a copy is private). Production code
+/// only; Tasks 2 and 3 append theirs.
+const CLIPBOARD_PURE: [&str; 1] = ["clipboard/history.rs"];
+
+#[test]
+fn the_clipboard_pure_parts_have_no_panicking_path_and_log_nothing() {
+    let files = source_files();
+    for name in CLIPBOARD_PURE {
+        let t = &files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1;
+        let production = production_code(t);
+        for p in [".expect(", ".unwrap()", "panic!(", "log(", "log::write", "crate::log"] {
+            assert!(!production.contains(p), "{p} in {name}'s production code");
+        }
+        for line in production.lines() {
+            let code = line.split("//").next().unwrap_or("");
+            if let Some(why) = panicking_index(code) {
+                panic!("{why} in {name}'s production code");
+            }
+            for p in [".replace_range(", ".split_at(", ".truncate(", ".split_off("] {
+                assert!(!code.contains(p) || code.contains("is_char_boundary"), "{p} in {name}'s production code");
+            }
         }
     }
 }
