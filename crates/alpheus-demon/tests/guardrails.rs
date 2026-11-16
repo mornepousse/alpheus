@@ -3405,4 +3405,10 @@ fn the_launcher_guard_never_logs_a_panic_payload() {
         assert!(!guard.contains(leak), "the launcher's guard must never read the panic's message ({leak}): {guard}");
     }
     assert!(!prod.contains("panic_text"), "launcher/host.rs formats no panic payload");
+    // The scan threads read .desktop files and source lines: a payload there can quote them.
+    let scan = &files.iter().find(|(p, _)| relative_path(p) == "launcher/scan.rs").expect("launcher/scan.rs").1;
+    let scan = production_code(scan);
+    for leak in ["panic_text", "downcast", "Err(p)", "Err(payload)", "|p|"] {
+        assert!(!scan.contains(leak), "launcher/scan.rs must never read a panic's message ({leak})");
+    }
 }
