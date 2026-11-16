@@ -120,7 +120,7 @@ nothing else breaks. At most 3 profiles are applied automatically per set of scr
 | Command | Who runs it | Configurable | Expects |
 |---|---|---|---|
 | `alpheus-toggle <tab>` (`sound`, `network`, `bluetooth`, `home`) | the bar, on a click on volume, network, Bluetooth or battery | yes: `[actions] open_tab`, `{tab}` replaced | open (or toggle) the TUI at that tab, typically `alpheus --tab <tab>` in a floating terminal. Without the script a click does nothing, so set `open_tab` (for example to `["foot", "--app-id", "alpheus-tui", "-e", "alpheus", "--tab", "{tab}"]`) |
-| `foot -e btop` | the bar, left click on the resources module | yes: `[actions] resources` | any terminal command |
+| `foot -e btop` | the bar, right click on the resources module, and the popup's `Monitor…` row | yes: `[actions] resources` | any terminal command |
 | `foot` / `foot --hold` | the launcher, for terminal apps (`terminal`, `terminal_hold`) | yes: `launcher.toml` | a terminal that accepts a command after its arguments |
 | `systemd-run --user --scope --quiet --collect -- <command>` | the launcher, to start apps | no (falls back to a detached spawn when `systemd-run` is not installed) | systemd with a user manager |
 | `loginctl lock-session`, `systemctl reboot`, `systemctl poweroff` | the quick panel and the ⏻ menu | yes: `[quick] lock`, `reboot`, `poweroff` (empty hides the entry); `logout` is empty by default | any command; reboot and power off ask for confirmation first |

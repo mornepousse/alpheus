@@ -374,11 +374,58 @@ pub struct Sample {
     pub disk: Option<u8>,
     /// GPU temperature, °C.
     pub gpu: Option<i16>,
+    /// Installed memory, in tenths of GiB (read with `memory`, never alone).
+    pub memory_total: Option<u16>,
+}
+
+/// Samples kept for the resources popup's graphs.
+pub const HISTORY: usize = 60;
+
+/// The last HISTORY samples, oldest first; inline, written in place.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct History {
+    ring: [Sample; HISTORY],
+    next: usize,
+    len: usize,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self { ring: [Sample::default(); HISTORY], next: 0, len: 0 }
+    }
+}
+
+impl History {
+    pub fn push(&mut self, s: Sample) {
+        self.ring[self.next] = s;
+        self.next = (self.next + 1) % HISTORY;
+        self.len = (self.len + 1).min(HISTORY);
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The kept samples, oldest first.
+    pub fn iter(&self) -> impl Iterator<Item = &Sample> + '_ {
+        // Full: the oldest sits at `next`. Not full: the samples are ring[..len], in order.
+        let (first, second) = if self.len == HISTORY {
+            (&self.ring[self.next..], &self.ring[..self.next])
+        } else {
+            (&self.ring[..self.len], &self.ring[..0])
+        };
+        first.iter().chain(second.iter())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Resources {
     pub last: Option<Sample>,
+    pub history: History,
 }
 
 impl Resources {
@@ -386,6 +433,49 @@ impl Resources {
     pub fn push(&mut self, s: Sample) -> bool {
         let changed = self.last != Some(s);
         self.last = Some(s);
+        self.history.push(s);
         changed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_ring_keeps_the_last_sixty_and_push_reports_last_only() {
+        let mut r = Resources::default();
+        for i in 0..70u8 {
+            r.push(Sample { cpu: Some(i), ..Sample::default() });
+        }
+        assert_eq!(r.history.len(), 60);
+        let cpus: Vec<u8> = r.history.iter().map(|s| s.cpu.unwrap()).collect();
+        assert_eq!(cpus, (10..70).collect::<Vec<u8>>(), "oldest first");
+        let s = Sample { cpu: Some(5), ..Sample::default() };
+        assert!(r.push(s));
+        assert!(!r.push(s), "the same reading again");
+        assert_eq!(r.history.len(), 60);
+        assert_eq!(r.history.iter().last(), Some(&s), "the newest last");
+        let mut r = Resources::default();
+        r.push(Sample::default());
+        assert_eq!(r.history.iter().last(), Some(&Sample::default()), "an all-None sample is stored");
+        assert_eq!(r.history.len(), 1);
+        assert!(!r.history.is_empty());
+    }
+
+    #[test]
+    fn a_partial_ring_iterates_what_was_pushed() {
+        let mut h = History::default();
+        assert!(h.is_empty());
+        for i in 0..5u8 {
+            h.push(Sample { cpu: Some(i), ..Sample::default() });
+        }
+        let cpus: Vec<u8> = h.iter().map(|s| s.cpu.unwrap()).collect();
+        assert_eq!(cpus, vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_history_stays_small() {
+        assert!(std::mem::size_of::<History>() <= 3 * 1024, "{}", std::mem::size_of::<History>());
     }
 }

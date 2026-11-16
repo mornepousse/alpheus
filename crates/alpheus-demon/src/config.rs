@@ -18,7 +18,7 @@
 //! command = ["wm-set", "workspace", "{workspace}", "{output}"]
 //! [actions]                                                 # clicks on the system modules
 //! open_tab = ["alpheus-toggle", "{tab}"]                    # {tab}: home, sound, network, bluetooth
-//! resources = ["foot", "-e", "btop"]
+//! resources = ["foot", "-e", "btop"]                        # right click on the resources, and the popup's Monitor…
 //! [resources]
 //! interval = 2                                              # seconds between readings, 1 to 60
 //! graph = 20                                                # accepted, 0 to 60, and ignored (the sparkline is gone)
@@ -271,7 +271,8 @@ pub struct ActionsConfig {
     /// opens the TUI in a floating terminal, or closes it if already open —
     /// not a neutral default yet: see the portability step (CLAUDE.md).
     pub open_tab: Vec<String>,
-    /// Left click on the resources: a system monitor. Default: btop in
+    /// Right click on the resources, and the popup's `Monitor…` row (the left click opens the
+    /// popup): a system monitor. Default: btop in
     /// foot (Mae's decision, 2026-10-05: lightness — foot measures ≈ 9.9 MB
     /// PSS against ≈ 92.6 MB for alacritty, for the same TUI).
     pub resources: Vec<String>,

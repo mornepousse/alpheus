@@ -5151,6 +5151,105 @@ fn power_escape_closes_it_with_its_question_and_nothing_stays_awake() {
     assert_eq!(d.count("power menu shown"), 2, "closed, not reopened by the same click: {:?}", d.log());
 }
 
+// ---- The resources popup (resources popup plan). The daemon reads the host's real /proc and
+// /sys, so only the memory graph is looked for: it has a point on any machine. ----
+
+/// The resources module's bar (catppuccin dark): the module alone, a reading every second, a fake
+/// monitor recording its calls first on the daemon's PATH (never the real btop or foot).
+fn resources_daemon(name: &str) -> (Sway, FakeHyprland, Daemon) {
+    let sway = Sway::start(name, 1);
+    let hypr = FakeHyprland::start_on_headless(&sway.runtime, SIGNATURE);
+    let config = sway.runtime.join("config/alpheus");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("theme.toml"), "theme = \"catppuccin\"\nmode = \"dark\"\n").unwrap();
+    fake_recorder(&sway, "fake-monitor");
+    let bar = "modules = [\"resources\"]\n[resources]\ninterval = 1\n[actions]\nresources = [\"fake-monitor\", \"--x\"]\n";
+    let d = start_daemon_with(&sway, &DaemonOptions { bar_toml: Some(bar), ..DaemonOptions::default() });
+    assert!(d.wait_for("bar placed on HEADLESS-1", DELAY), "{:?}", d.log());
+    thread::sleep(Duration::from_millis(300)); // configured and drawn
+    (sway, hypr, d)
+}
+
+/// Waits until the resources popup is on screen: its background fills a good part of the area under
+/// the module ("resources popup shown" comes before the configure and the first buffer).
+fn resources_drawn(sway: &Sway, d: &Daemon) {
+    let bg = rgb(preset("catppuccin").unwrap().dark.popup_bg);
+    let filled = |s: &Ppm| (29..80).flat_map(|y| (14..60).map(move |x| (x, y))).filter(|&(x, y)| s.at(x, y) == Some(bg)).count() > 300;
+    assert!(sway.wait_for_screen("HEADLESS-1", filled), "the resources popup drawn: {:?}", d.log());
+}
+
+/// The resources popup opened by a click on the module, and drawn.
+fn resources_open(sway: &Sway, d: &Daemon, n: usize) {
+    sway.click(POWER_AT.0, POWER_AT.1, "button1");
+    assert!(d.wait_for_count("resources popup shown (cpu memory temperature)", n, DELAY), "{:?}", d.log());
+    resources_drawn(sway, d);
+}
+
+/// Resources popup spec §§ 1, 5: a left click opens the popup; after a few readings the memory
+/// graph (its row, two cell rows under the Memory line) holds the yellow hue's body and line; a
+/// second click closes it.
+#[test]
+#[ignore = "headless sway and grim (nix develop)"]
+fn resources_a_click_opens_the_popup_with_graphs() {
+    let (sway, _hypr, d) = resources_daemon("resources-open");
+    resources_open(&sway, &d, 1);
+    let dark = preset("catppuccin").unwrap().dark;
+    let (yellow, bg) = (dark.hues.yellow, dark.popup_bg);
+    // The painter's body: the hue at 40 % over the popup background, per channel, rounded.
+    let mix = |c: u8, b: u8| ((u32::from(c) * 40 + u32::from(b) * 60 + 50) / 100) as u8;
+    let (line, body) = (rgb(yellow), [mix(yellow.0, bg.0), mix(yellow.1, bg.1), mix(yellow.2, bg.2)]);
+    // Rows 5 and 6 of the box (22 px each, under the 22 px bar and the frame's ≈ 7 px): the columns
+    // holding the graph's ink, so a graph that stopped repainting shows as no growth.
+    let columns = |s: &Ppm| (0..400).filter(|&x| (143..180).any(|y| matches!(s.at(x, y), Some(c) if c == line || c == body))).count();
+    let inked = |s: &Ppm| {
+        (143..180)
+            .flat_map(|y| (0..400).map(move |x| (x, y)))
+            .filter(|&(x, y)| matches!(s.at(x, y), Some(c) if c == line || c == body))
+            .count()
+            > 60
+    };
+    assert!(sway.wait_for_screen("HEADLESS-1", inked), "the memory graph's ink: {:?}", d.log());
+    let at_open = columns(&sway.screenshot("HEADLESS-1").expect("a screenshot"));
+    // Interval 1: three more readings push the newest point further left of the right edge.
+    thread::sleep(Duration::from_secs(3));
+    let later = columns(&sway.screenshot("HEADLESS-1").expect("a screenshot"));
+    assert!(later > at_open, "the graph did not grow: {at_open} inked columns at open, {later} 3 s later: {:?}", d.log());
+    sway.click(POWER_AT.0, POWER_AT.1, "button1");
+    assert!(d.wait_for("popup closed (outside click)", DELAY), "{:?}", d.log());
+}
+
+/// Resources popup spec § 6: ↓ selects `Monitor…`, Enter runs the command through the fake and
+/// closes the popup; the log names the monitor, never its command.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn resources_down_enter_runs_the_monitor() {
+    let (sway, _hypr, d) = resources_daemon("resources-enter");
+    resources_open(&sway, &d, 1);
+    keys(&sway, &["Down", "Return"]);
+    assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
+    assert!(d.wait_for("resources: monitor", DELAY), "{:?}", d.log());
+    assert!(d.wait_for("popup closed (activated)", DELAY), "{:?}", d.log());
+    assert!(!d.log().iter().any(|l| l.contains("fake-monitor")), "the command never reaches the log: {:?}", d.log());
+}
+
+/// Resources popup spec § 1: Escape closes the popup; a right click on the module then runs the
+/// monitor once and opens no popup.
+#[test]
+#[ignore = "headless sway, grim and wtype (nix develop)"]
+fn resources_escape_closes_and_right_click_runs_the_monitor() {
+    let (sway, _hypr, d) = resources_daemon("resources-right");
+    resources_open(&sway, &d, 1);
+    keys(&sway, &["Escape"]);
+    assert!(d.wait_for("popup closed (escape)", DELAY), "{:?}", d.log());
+    assert!(d.wait_for_count("keyboard released", 1, DELAY), "{:?}", d.log());
+    assert!(recorded(&sway, "fake-monitor").is_empty(), "the left click ran nothing");
+    sway.click(POWER_AT.0, POWER_AT.1, "button3");
+    assert!(wait_for_call(&sway, "fake-monitor", "fake-monitor --x"), "{:?} {:?}", recorded(&sway, "fake-monitor"), d.log());
+    thread::sleep(Duration::from_millis(500));
+    assert_eq!(recorded(&sway, "fake-monitor").len(), 1, "one call");
+    assert_eq!(d.count("resources popup shown"), 1, "no popup for the right click: {:?}", d.log());
+}
+
 // ---- The privacy indicators (privacy plan). The fake pw-dump is `Fifo`, the batches
 // synthetic (`capture_delta`); wpctl a fake recorder; the compositor the fake Hyprland. ----
 

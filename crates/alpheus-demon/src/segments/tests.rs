@@ -485,7 +485,7 @@ fn coarse_visibility_always_low_never() {
 }
 
 fn resources_with(last: Sample) -> Resources {
-    Resources { last: Some(last) }
+    Resources { last: Some(last), ..Resources::default() }
 }
 
 #[test]
@@ -896,6 +896,7 @@ fn resources_extra_items_in_the_order_written() {
         net: Some(NetRate { down: 1_258_291, up: 81_920 }),
         disk: Some(62),
         gpu: Some(54),
+        ..Sample::default()
     };
     let (t, _) = items(&resources_with(s), &[Gpu, Net, Disk, Cpu], ModuleColors::None).unwrap();
     assert_eq!(t, "\u{f08ae} 54\u{b0}   \u{f01da} 1.2M \u{f0552} 80K   \u{f02ca} 62%   \u{f061a} 12%");

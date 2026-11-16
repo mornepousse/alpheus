@@ -8,7 +8,7 @@
 //! `Grid::write`, so controls never reach a cell and wide characters are
 //! never cut.
 
-use crate::grid::{Grid, Style, text_width, truncate};
+use crate::grid::{Grid, Style, Tint, text_width, truncate};
 
 /// Most cells a right-aligned kind takes (the launcher's KIND_MAX).
 pub const RIGHT_MAX: u16 = 20;
@@ -26,6 +26,28 @@ pub struct Boxed {
     pub separators: Vec<usize>,
     /// A column drawn as a 1 px vertical line through the box (the launcher's preview divider).
     pub divider: Option<u16>,
+    /// Graphs drawn in pixels over rectangles of cells (their cells stay blank).
+    pub graphs: Vec<Graph>,
+}
+
+/// A graph over a rectangle of cells of a `Boxed` (in its own coordinates, after `boxed` drops
+/// the ring: set it after calling `boxed`), drawn in pixels by the painter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Graph {
+    pub row: usize,
+    pub col: u16,
+    pub width: u16,
+    pub rows: u16,
+    pub series: Vec<Series>,
+}
+
+/// Points in permille (0..=1000), `points.len()` columns, oldest first: the last one at the right
+/// edge, the width split evenly over the columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Series {
+    pub points: Vec<Option<u16>>,
+    pub ink: Tint,
+    pub fill: bool,
 }
 
 impl Boxed {
@@ -47,6 +69,7 @@ pub fn boxed(rows: &[Grid], separators: &[usize], divider: Option<u16>) -> Boxed
         rows,
         separators: separators.iter().filter_map(|r| r.checked_sub(1)).filter(|r| *r < inner).collect(),
         divider: divider.and_then(|c| c.checked_sub(1)),
+        graphs: Vec::new(),
     }
 }
 
@@ -69,7 +92,7 @@ pub fn padded(content: &[Grid]) -> Boxed {
             g
         })
         .collect();
-    Boxed { rows, separators: Vec::new(), divider: None }
+    Boxed { rows, separators: Vec::new(), divider: None, graphs: Vec::new() }
 }
 
 /// One list row's content.

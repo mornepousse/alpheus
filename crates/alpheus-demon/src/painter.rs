@@ -23,7 +23,7 @@ use crate::background::{self, MaskCache};
 pub use crate::background::{Background, BarGeometry, Rect, opaque_rects};
 use crate::config::FontConfig;
 use crate::grid::{CONT, Grid, Group, Hue, Style, Tint};
-use crate::list::Boxed;
+use crate::list::{Boxed, Graph};
 use crate::placement::FLOAT_SHADOW;
 use alpheus_commun::theme::settings::BarStyle;
 use alpheus_commun::theme::{Rgb, Roles};
@@ -285,6 +285,59 @@ fn rect(px: &mut [u8], width: u32, height: u32, x: (u32, u32), y: (u32, u32), Rg
         for xx in x.0..x.1.min(width) {
             let o = (yy as usize * width as usize + xx as usize) * 4;
             px[o..o + 4].copy_from_slice(&[b, g, r, 0xff]);
+        }
+    }
+}
+
+/// Share of a graph's ink (percent) in the body under its line.
+pub(crate) const BODY_ALPHA: u16 = 40;
+
+/// `c` at `alpha` % over `base`, per channel, rounded.
+pub(crate) fn mix(c: Rgb, base: Rgb, alpha: u16) -> Rgb {
+    let a = u32::from(alpha.min(100));
+    let m = |c: u8, b: u8| ((u32::from(c) * a + u32::from(b) * (100 - a) + 50) / 100) as u8;
+    Rgb(m(c.0, base.0), m(c.1, base.1), m(c.2, base.2))
+}
+
+/// Draws `g`'s series in the physical-pixel rectangle `area` = (x0, y0, x1, y1) of `px`
+/// (`width` x `height`), clipped to the buffer. The baseline takes the bottom `stroke` rows of the
+/// area and the bodies stand on it. Point `i` of `n` covers `[W*i/n, W*(i+1)/n)` columns, so the
+/// blocks tile the width exactly; only exact colours are written (crisp at any scale).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plot(
+    px: &mut [u8],
+    width: u32,
+    height: u32,
+    area: (u32, u32, u32, u32),
+    g: &Graph,
+    roles: &Roles,
+    base: Rgb,
+    stroke: u32,
+    scale: i32,
+) {
+    let (x0, y0, x1, y1) = area;
+    if x1 <= x0 || y1 <= y0 || px.len() < width as usize * height as usize * 4 {
+        return;
+    }
+    let bottom = y1.saturating_sub(stroke).max(y0);
+    rect(px, width, height, (x0, x1), (bottom, y1), roles.border_over(base));
+    let (w, full, tick) = (u64::from(x1 - x0), u64::from(bottom - y0), scale.max(1) as u32);
+    // The filled series first, then the lines, over them.
+    for fill in [true, false] {
+        for s in g.series.iter().filter(|s| s.fill == fill) {
+            let n = s.points.len() as u64;
+            let ink = color(roles, base, s.ink);
+            for (i, v) in s.points.iter().enumerate() {
+                let Some(v) = v.filter(|v| *v > 0) else { continue };
+                let (i, v) = (i as u64, u64::from(v.min(1000)));
+                let (a, b) = (x0 + (w * i / n) as u32, x0 + (w * (i + 1) / n) as u32);
+                let h = ((v * full / 1000) as u32).max(tick).min(bottom - y0);
+                let top = bottom - h;
+                if fill {
+                    rect(px, width, height, (a, b), (top, bottom), mix(ink, base, BODY_ALPHA));
+                }
+                rect(px, width, height, (a, b), (top, (top + tick).min(bottom)), ink);
+            }
         }
     }
 }
@@ -792,6 +845,15 @@ impl Fonts {
             let (left, right) = (self.edge(usize::from(c)), self.edge(usize::from(c) + 1));
             let x = frame.side + left + (right - left).saturating_sub(s) / 2;
             rect(px, w, h, (x, x + s), (s, h.saturating_sub(s)), ink);
+        }
+        let inset = 2 * scale.max(1) as u32;
+        for g in &b.graphs {
+            let x = (frame.side + self.edge(usize::from(g.col)), frame.side + self.edge(usize::from(g.col) + usize::from(g.width)));
+            let y = (
+                (frame.top + g.row as u32 * row_height + inset),
+                (frame.top + (g.row as u32 + u32::from(g.rows)) * row_height).saturating_sub(inset),
+            );
+            plot(px, w, h, (x.0, y.0, x.1, y.1), g, roles, base, s, scale);
         }
         let edge = match frame_ink {
             FrameInk::Border => ink,

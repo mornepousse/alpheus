@@ -84,7 +84,7 @@ fn a_bar_is_painted_on_bar_bg_and_a_box_on_popup_bg() {
     let mut px = vec![0u8; (w * h * 4) as usize];
     p.paint(&Grid::empty(4), &r, &mut px, w, h, 1);
     assert_eq!(&px[..4], &[r.bar_bg.2, r.bar_bg.1, r.bar_bg.0, 0xff], "a bar: bar_bg");
-    let b = Boxed { rows: vec![text_row(6, ""), text_row(6, "")], separators: vec![], divider: None };
+    let b = Boxed { rows: vec![text_row(6, ""), text_row(6, "")], separators: vec![], divider: None, ..Boxed::default() };
     let frame = p.frame(1);
     let (bw, bh) = ((6.0 * av).ceil() as u32 + frame.extra().0, 2 * DEFAULT_HEIGHT + frame.extra().1);
     let mut bpx = vec![0u8; (bw * bh * 4) as usize];
@@ -103,7 +103,7 @@ fn a_critical_box_takes_the_urgent_frame() {
     let r = distinct();
     let mut p = fonts();
     let av = p.advance(1);
-    let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![1], divider: None };
+    let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![1], divider: None, ..Boxed::default() };
     let frame = p.frame(1);
     let (bw, bh) = ((6.0 * av).ceil() as u32 + frame.extra().0, 3 * DEFAULT_HEIGHT + frame.extra().1);
     let stroke = ((bh / 2 * bw) * 4) as usize; // the left stroke, mid-height
@@ -280,7 +280,7 @@ fn the_selection_band_is_at_an_even_distance_from_the_frame() {
         for c in 0..6 {
             inv.write(c, c + 1, " ", Style::SELECTED);
         }
-        let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
+        let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None, ..Boxed::default() };
         let s = Surface::paint(&mut p, &b, scale);
         let accent = Surface::opaque(Roles::default().selection);
         let (mx, my) = (s.w / 2, s.h / 2);
@@ -305,7 +305,7 @@ fn a_surface_bigger_than_its_cells_shares_the_room_evenly() {
         for c in 0..6 {
             inv.write(c, c + 1, " ", Style::SELECTED);
         }
-        let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None };
+        let b = Boxed { rows: vec![inv.clone(), text_row(6, ""), inv], separators: vec![], divider: None, ..Boxed::default() };
         let (advance, frame) = (p.advance(scale), p.frame(scale));
         let rh = DEFAULT_HEIGHT * scale as u32;
         let (w, h) = ((6.0 * advance).ceil() as u32 + frame.extra().0 + 14 * scale as u32, 3 * rh + frame.extra().1 + 31 * scale as u32);
@@ -383,7 +383,12 @@ fn text_row(columns: u16, text: &str) -> Grid {
 fn the_text_sits_at_an_even_distance_from_the_frame() {
     for scale in [1, 2] {
         let mut p = fonts();
-        let b = Boxed { rows: vec![text_row(6, " E"), text_row(6, ""), text_row(6, " E")], separators: vec![], divider: None };
+        let b = Boxed {
+            rows: vec![text_row(6, " E"), text_row(6, ""), text_row(6, " E")],
+            separators: vec![],
+            divider: None,
+            ..Boxed::default()
+        };
         let s = Surface::paint(&mut p, &b, scale);
         let bg = Surface::opaque(Roles::default().popup_bg);
         let (r, st) = (s.frame.radius, s.frame.stroke);
@@ -408,7 +413,8 @@ fn the_text_sits_at_an_even_distance_from_the_frame() {
 fn the_frame_is_a_stroke_at_the_surface_edge_with_rounded_corners() {
     for scale in [1, 2] {
         let mut p = fonts();
-        let b = Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![], divider: None };
+        let b =
+            Boxed { rows: vec![text_row(6, ""), text_row(6, ""), text_row(6, "")], separators: vec![], divider: None, ..Boxed::default() };
         let s = Surface::paint(&mut p, &b, scale);
         let pal = Roles::default();
         let (border, bg) = (Surface::opaque(pal.border_over(pal.popup_bg)), Surface::opaque(pal.popup_bg));
@@ -444,6 +450,7 @@ fn separators_and_the_divider_are_lines_of_one_stroke_across_the_box() {
             rows: vec![text_row(8, " E"), text_row(8, ""), text_row(8, " E"), text_row(8, " E")],
             separators: vec![1],
             divider: Some(5),
+            ..Boxed::default()
         };
         let s = Surface::paint(&mut p, &b, scale);
         let pal = Roles::default();
@@ -474,7 +481,7 @@ fn separators_and_the_divider_are_lines_of_one_stroke_across_the_box() {
 #[test]
 fn paint_boxed_with_a_short_buffer_paints_nothing_and_never_panics() {
     let mut p = fonts();
-    let b = Boxed { rows: vec![Grid::empty(4), Grid::empty(4)], separators: vec![0], divider: Some(1) };
+    let b = Boxed { rows: vec![Grid::empty(4), Grid::empty(4)], separators: vec![0], divider: Some(1), ..Boxed::default() };
     let mut px = vec![0x11u8; 100];
     p.paint_boxed(&b, &Roles::default(), &mut px, 60, 40, DEFAULT_HEIGHT, 1, FrameInk::Border);
     assert!(px.iter().all(|b| *b == 0x11), "an inconsistent buffer is left alone");
@@ -1076,5 +1083,208 @@ fn paint_bar_with_a_short_buffer_paints_nothing_and_never_panics() {
         let bg = Background { style, opacity: 0.8, module_colors: ModuleColors::Pills, groups: &groups };
         p.paint_bar(&grid, &distinct(), &bg, &mut px, 100, 22, 1);
         assert_eq!(px, vec![7u8; 16], "{style:?}");
+    }
+}
+
+mod graphs {
+    use super::*;
+    use crate::list::Series;
+
+    const BG: Rgb = Rgb(10, 20, 30);
+
+    fn px(w: u32, h: u32) -> Vec<u8> {
+        let mut v = vec![0u8; (w * h * 4) as usize];
+        rect(&mut v, w, h, (0, w), (0, h), BG);
+        v
+    }
+
+    fn get(v: &[u8], w: u32, x: u32, y: u32) -> Rgb {
+        let o = ((y * w + x) * 4) as usize;
+        Rgb(v[o + 2], v[o + 1], v[o])
+    }
+
+    fn graph(points: Vec<Option<u16>>, ink: Tint, fill: bool) -> Graph {
+        Graph { row: 0, col: 0, width: 0, rows: 0, series: vec![Series { points, ink, fill }] }
+    }
+
+    /// Body rows of a column: the first row (from the top of the area) holding something else than `BG`
+    /// and the baseline, or None.
+    fn top_of(v: &[u8], w: u32, x: u32, y0: u32, bottom: u32) -> Option<u32> {
+        (y0..bottom).find(|&y| get(v, w, x, y) != BG)
+    }
+
+    #[test]
+    fn mix_is_rounded_per_channel() {
+        assert_eq!(mix(Rgb(255, 0, 100), Rgb(0, 0, 0), 40), Rgb(102, 0, 40));
+        assert_eq!(mix(Rgb(255, 0, 100), Rgb(0, 0, 0), 0), Rgb(0, 0, 0));
+        assert_eq!(mix(Rgb(1, 0, 0), Rgb(0, 0, 0), 50), Rgb(1, 0, 0), "half rounds up");
+        assert_eq!(mix(Rgb(0, 0, 0), Rgb(1, 1, 1), 40), Rgb(1, 1, 1), "0.6 rounds up");
+        assert_eq!(mix(Rgb(255, 0, 100), Rgb(1, 1, 1), 100), Rgb(255, 0, 100));
+    }
+
+    /// 60 points over fewer than 60 px: some blocks are empty, the others tile the width exactly.
+    #[test]
+    fn plot_tiles_columns_exactly_at_every_scale() {
+        let roles = distinct();
+        let ink = color(&roles, BG, Tint::Hue(Hue::Cyan));
+        for scale in 1..=3u32 {
+            let (w, h) = (80 * scale, 40 * scale);
+            let (x0, x1, y0, y1) = (10 * scale, 10 * scale + 37 * scale, 4 * scale, 4 * scale + 20 * scale + scale);
+            let g = graph(vec![Some(1000); 60], Tint::Hue(Hue::Cyan), true);
+            let mut v = px(w, h);
+            plot(&mut v, w, h, (x0, y0, x1, y1), &g, &roles, BG, scale, scale as i32);
+            let bottom = y1 - scale;
+            for x in 0..w {
+                let inside = (x0..x1).contains(&x);
+                assert_eq!(get(&v, w, x, y0) == ink, inside, "scale {scale}, column {x}: ink at the area's top row");
+                for y in y0 + scale..bottom {
+                    assert_eq!(get(&v, w, x, y) != BG, inside, "scale {scale}, column {x}, row {y}: body");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn plot_heights_and_gaps() {
+        let roles = distinct();
+        let (w, h, stroke) = (40, 30, 1);
+        let (y0, y1) = (2, 2 + 20 + stroke); // H = 20, bottom = 22
+        let bottom = y1 - stroke;
+        let g = graph(vec![None, Some(0), Some(500), Some(1000)], Tint::Hue(Hue::Cyan), true);
+        let mut v = px(w, h);
+        plot(&mut v, w, h, (0, y0, 40, y1), &g, &roles, BG, stroke, 1);
+        let line = roles.border_over(BG);
+        for x in [0, 5, 9, 10, 15, 19] {
+            assert_eq!(top_of(&v, w, x, y0, bottom), None, "block 0 or 1 at {x}: only the baseline");
+        }
+        for x in 0..40 {
+            assert_eq!(get(&v, w, x, bottom), line, "the baseline under every column");
+        }
+        assert_eq!(top_of(&v, w, 20, y0, bottom), Some(bottom - 10));
+        assert_eq!(top_of(&v, w, 29, y0, bottom), Some(bottom - 10));
+        assert_eq!(top_of(&v, w, 30, y0, bottom), Some(y0));
+        assert_eq!(top_of(&v, w, 39, y0, bottom), Some(y0));
+        // The minimum stroke: a tiny value is `scale` px tall, at any scale.
+        for scale in 1..=3u32 {
+            let g = graph(vec![Some(1)], Tint::Hue(Hue::Cyan), true);
+            let mut v = px(w, h);
+            plot(&mut v, w, h, (0, 0, 10, 20 + scale), &g, &roles, BG, scale, scale as i32);
+            let bottom = 20;
+            assert_eq!(top_of(&v, w, 3, 0, bottom), Some(bottom - scale), "scale {scale}");
+        }
+    }
+
+    #[test]
+    fn plot_writes_only_exact_colours() {
+        let roles = distinct();
+        let (w, h, stroke) = (47, 30, 2);
+        let g = Graph {
+            row: 0,
+            col: 0,
+            width: 0,
+            rows: 0,
+            series: vec![
+                Series { points: (0..60).map(|i| Some(i * 16)).collect(), ink: Tint::Hue(Hue::Cyan), fill: true },
+                Series { points: (0..60).map(|i| (i % 7 != 0).then_some(1000 - i * 10)).collect(), ink: Tint::FgDim, fill: false },
+            ],
+        };
+        let mut v = px(w, h);
+        plot(&mut v, w, h, (3, 2, 44, 28), &g, &roles, BG, stroke, 1);
+        let cyan = color(&roles, BG, Tint::Hue(Hue::Cyan));
+        let allowed = [BG, roles.border_over(BG), mix(cyan, BG, BODY_ALPHA), cyan, roles.fg_dim];
+        for y in 0..h {
+            for x in 0..w {
+                let c = get(&v, w, x, y);
+                assert!(allowed.contains(&c), "({x}, {y}) is {c:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn plot_line_series_draws_only_its_top() {
+        let roles = distinct();
+        let (w, h) = (40, 30);
+        let g = graph(vec![Some(500); 10], Tint::Hue(Hue::Cyan), false);
+        let mut v = px(w, h);
+        plot(&mut v, w, h, (0, 0, 40, 21), &g, &roles, BG, 1, 1);
+        let cyan = color(&roles, BG, Tint::Hue(Hue::Cyan));
+        assert_eq!(get(&v, w, 5, 10), cyan, "the line at bottom (20) - 10");
+        for y in (0..10).chain(11..20) {
+            assert_eq!(get(&v, w, 5, y), BG, "row {y}");
+        }
+    }
+
+    #[test]
+    fn plot_draws_lines_over_the_fills() {
+        let roles = distinct();
+        let (w, h) = (20, 30);
+        let g = Graph {
+            row: 0,
+            col: 0,
+            width: 0,
+            rows: 0,
+            series: vec![
+                Series { points: vec![Some(500); 4], ink: Tint::FgDim, fill: false },
+                Series { points: vec![Some(1000); 4], ink: Tint::Hue(Hue::Cyan), fill: true },
+            ],
+        };
+        let mut v = px(w, h);
+        plot(&mut v, w, h, (0, 0, 20, 21), &g, &roles, BG, 1, 1);
+        assert_eq!(get(&v, w, 5, 10), roles.fg_dim, "the line wins over the body, whatever the order written");
+    }
+
+    #[test]
+    fn plot_clips_to_the_buffer() {
+        let roles = distinct();
+        let (w, h) = (20, 12);
+        let g = graph(vec![Some(1000); 7], Tint::Hue(Hue::Cyan), true);
+        let mut v = px(w, h);
+        let len = v.len();
+        plot(&mut v, w, h, (10, 4, 50, 40), &g, &roles, BG, 1, 1);
+        assert_eq!(v.len(), len);
+        assert_ne!(get(&v, w, 19, 4), BG, "the visible part is drawn");
+        assert_eq!(get(&v, w, 9, 6), BG, "left of the area: untouched");
+        let mut v = px(w, h);
+        plot(&mut v, w, h, (30, 20, 60, 50), &g, &roles, BG, 1, 1);
+        assert_eq!(v, px(w, h), "wholly outside: nothing written");
+        plot(&mut v, w, h, (5, 5, 5, 9), &g, &roles, BG, 1, 1);
+        plot(&mut v, w, h, (5, 9, 9, 5), &g, &roles, BG, 1, 1);
+        plot(&mut v, w, h, (0, 0, 10, 1), &g, &roles, BG, 3, 1);
+    }
+
+    #[test]
+    fn paint_boxed_draws_a_graph_where_its_cells_are() {
+        let mut p = fonts();
+        let roles = Roles::default(); // what `Surface::paint` uses
+        let mut b = Boxed { rows: (0..6).map(|_| text_row(12, "")).collect(), ..Boxed::default() };
+        b.graphs.push(Graph {
+            row: 2,
+            col: 2,
+            width: 8,
+            rows: 2,
+            series: vec![Series { points: vec![Some(1000); 8], ink: Tint::Hue(Hue::Cyan), fill: false }],
+        });
+        let scale = 1;
+        let s = Surface::paint(&mut p, &b, scale);
+        let cyan = Surface::opaque(roles.hues.cyan);
+        let (f, rh) = (&s.frame, s.rh);
+        let inset = 2 * scale as u32;
+        let (x0, x1) = (f.side + p.edge(2), f.side + p.edge(10));
+        let (y0, y1) = (f.top + 2 * rh + inset, f.top + 4 * rh - inset);
+        let mut seen = 0;
+        for y in 0..s.h {
+            for x in 0..s.w {
+                if s.at(x, y) == cyan {
+                    seen += 1;
+                    assert!((x0..x1).contains(&x) && (y0..y1).contains(&y), "cyan at ({x}, {y}) outside {x0}..{x1} x {y0}..{y1}");
+                }
+            }
+        }
+        assert!(seen >= (x1 - x0) as usize - 8, "the line is drawn: {seen}");
+        assert_eq!(
+            (s.at(x0 + 1, y0), s.at(x0 + 1, y0 - 1)),
+            (cyan, Surface::opaque(Roles::default().popup_bg)),
+            "the line sits on the area's first row"
+        );
     }
 }

@@ -597,7 +597,7 @@ fn insert_core_sources(handle: &LoopHandle<'static, App>, rx: channel::Channel<M
         );
         let period = resources_period(&plan.resources_config);
         let r = handle.insert_source(Timer::immediate(), move |_, _, state: &mut App| {
-            on_message(state, Msg::Resources(reader.sample()), || LocalTime::now().0);
+            state.resources_tick(reader.sample());
             TimeoutAction::ToDuration(period)
         });
         if r.is_err() {

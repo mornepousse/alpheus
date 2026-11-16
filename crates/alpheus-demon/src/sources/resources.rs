@@ -57,7 +57,7 @@ const GIB_KB: u64 = 1024 * 1024;
 /// SReclaimable or Shmem absent (old kernels) count as 0. Without Buffers or
 /// Cached, MemTotal − MemAvailable, then MemTotal − MemFree (pre-3.14).
 pub fn parse_meminfo(text: &str) -> Option<u16> {
-    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+    let field = |k: &str| field(text, k);
     let total = field("MemTotal:").filter(|t| *t > 0)?;
     let free_style = || {
         let reclaimable = (field("Cached:")? + field("SReclaimable:").unwrap_or(0)).saturating_sub(field("Shmem:").unwrap_or(0));
@@ -66,6 +66,17 @@ pub fn parse_meminfo(text: &str) -> Option<u16> {
     let available = free_style().or_else(|| field("MemAvailable:")).or_else(|| field("MemFree:"))?;
     let used = total.saturating_sub(available);
     u16::try_from((used * 10 + GIB_KB / 2) / GIB_KB).ok()
+}
+
+/// The kB figure of a `/proc/meminfo` line.
+fn field(text: &str, key: &str) -> Option<u64> {
+    text.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
+}
+
+/// Installed memory, in tenths of GiB, rounded.
+pub fn parse_mem_total(text: &str) -> Option<u16> {
+    let total = field(text, "MemTotal:").filter(|t| *t > 0)?;
+    u16::try_from((total * 10 + GIB_KB / 2) / GIB_KB).ok()
 }
 
 fn first_line(path: &Path) -> Option<String> {
@@ -399,7 +410,10 @@ impl Reader {
             self.previous = now;
         }
         if self.shows(ResourceItem::Memory) {
-            sample.memory = std::fs::read_to_string(self.roots.root.join("proc/meminfo")).ok().and_then(|t| parse_meminfo(&t));
+            if let Ok(text) = std::fs::read_to_string(self.roots.root.join("proc/meminfo")) {
+                sample.memory = parse_meminfo(&text);
+                sample.memory_total = parse_mem_total(&text);
+            }
         }
         if self.shows(ResourceItem::Temperature) {
             sample.temperature = self.cpu_sensor.as_mut().and_then(|s| s.read(&self.roots.root));
@@ -510,6 +524,17 @@ mod tests {
     }
 
     #[test]
+    fn mem_total_in_tenths_of_gib() {
+        let kb: u64 = MEMINFO.lines().find_map(|l| l.strip_prefix("MemTotal:")?.trim().strip_suffix("kB")?.trim().parse().ok()).unwrap();
+        let expected = ((kb as f64 / (1024.0 * 1024.0)) * 10.0).round() as u16;
+        assert_eq!(parse_mem_total(MEMINFO), Some(expected));
+        assert_eq!(parse_mem_total("MemTotal: 1781760 kB\n"), Some(17), "1.70 GiB");
+        assert_eq!(parse_mem_total("MemTotal: 1730151 kB\n"), Some(17), "1.65 GiB rounds up");
+        assert_eq!(parse_mem_total("MemTotal: 0 kB\n"), None);
+        assert_eq!(parse_mem_total(""), None);
+    }
+
+    #[test]
     fn memory_in_use_like_htop_without_cache() {
         // Mae (2026-10-06): RAM only, like htop: MemTotal − MemFree − Buffers
         // − (Cached + SReclaimable − Shmem) = 10574668 kB on the workstation
@@ -611,9 +636,15 @@ mod tests {
     fn the_reader_first_without_cpu_then_38() {
         let t = workstation("reader");
         let mut r = default_reader(&t.0, "");
-        assert_eq!(r.sample(), Sample { cpu: None, memory: Some(101), temperature: Some(66), ..Sample::default() });
+        assert_eq!(
+            r.sample(),
+            Sample { cpu: None, memory: Some(101), memory_total: Some(467), temperature: Some(66), ..Sample::default() }
+        );
         put(&t.0, "proc/stat", STAT_B);
-        assert_eq!(r.sample(), Sample { cpu: Some(38), memory: Some(101), temperature: Some(66), ..Sample::default() });
+        assert_eq!(
+            r.sample(),
+            Sample { cpu: Some(38), memory: Some(101), memory_total: Some(467), temperature: Some(66), ..Sample::default() }
+        );
         put(&t.0, "sys/class/hwmon/hwmon9/temp1_input", "-5000\n");
         assert_eq!(r.sample().temperature, Some(-5));
     }
@@ -740,6 +771,17 @@ mod tests {
         let mut d = Reader::new(roots(&t.0, Some("/fictional/home"), refuse), &ResourcesConfig::default());
         d.sample();
         assert_eq!(d.sample().disk, None);
+    }
+
+    #[test]
+    fn the_reader_reads_the_total_with_memory_only() {
+        let t = workstation("memtotal");
+        let expected = parse_mem_total(MEMINFO);
+        assert!(expected.is_some());
+        assert_eq!(default_reader(&t.0, "").sample().memory_total, expected);
+        let config = ResourcesConfig { show: vec![ResourceItem::Cpu], ..ResourcesConfig::default() };
+        let mut r = Reader::new(roots(&t.0, None, refuse), &config);
+        assert_eq!(r.sample().memory_total, None);
     }
 
     const NET_A: &str = include_str!("../../tests/fixtures/proc-net-dev-a.txt");

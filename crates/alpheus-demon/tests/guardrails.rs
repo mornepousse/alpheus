@@ -1428,6 +1428,7 @@ const NO_THREAD_NOR_COMMAND: [&str; 52] = [
     "launcher/prefix.rs",
     "launcher/emoji.rs",
     "launcher/emoji/",
+    "resources_popup.rs",
 ];
 
 #[test]
@@ -2091,6 +2092,17 @@ fn the_osd_has_no_panicking_path() {
         for p in [".expect(", ".unwrap()", "panic!("] {
             assert!(!production.contains(p), "{p} in {name}'s production code");
         }
+    }
+}
+
+/// Resources popup: no panic in the model's production code.
+#[test]
+fn the_resources_popup_has_no_panicking_path() {
+    let files = source_files();
+    let t = &files.iter().find(|(p, _)| relative_path(p) == "resources_popup.rs").expect("resources_popup.rs").1;
+    let production = production_code(t);
+    for p in [".expect(", ".unwrap()", "panic!("] {
+        assert!(!production.contains(p), "{p} in resources_popup.rs's production code");
     }
 }
 
@@ -2861,6 +2873,27 @@ fn the_privacy_timer_is_bar_level_and_fired_before_due() {
     let startup = src("startup.rs");
     let (fed, kept) = (startup.find("self.privacy_feed(&m)"), startup.find("on_message(self, m,"));
     assert!(matches!((fed, kept), (Some(f), Some(k)) if f < k), "privacy_feed, then on_message");
+}
+
+/// Resources popup spec § 6: a tick applies the reading before it repaints, and repaints only
+/// while the popup is the open one (`App` cannot be built without Wayland: a source guardrail, as
+/// for the privacy feed). The timer in `startup.rs` goes through it.
+#[test]
+fn a_resources_tick_repaints_only_an_open_popup_after_applying_the_reading() {
+    let files = source_files();
+    let src = |name: &str| production_code(&files.iter().find(|(p, _)| relative_path(p) == name).unwrap_or_else(|| panic!("{name}")).1);
+    let app = src("resources_app.rs");
+    let tick = function_body(&app, "pub(crate) fn resources_tick(");
+    let (applied, shown, painted) = (tick.find("on_message("), tick.find("self.resources_shown()"), tick.find("self.resources_refresh()"));
+    assert!(
+        matches!((applied, shown, painted), (Some(a), Some(s), Some(p)) if a < s && s < p),
+        "on_message, then the open check, then the repaint: {tick}"
+    );
+    let refresh = function_body(&app, "fn resources_refresh(");
+    assert!(refresh.contains("popup_paint("), "{refresh}");
+    let startup = src("startup.rs");
+    assert!(startup.contains("state.resources_tick(reader.sample())"), "the timer goes through resources_tick");
+    assert!(!startup.contains("Msg::Resources(reader.sample())"), "no bypass of the repaint");
 }
 
 fn camera_sources() -> Vec<(&'static str, String)> {

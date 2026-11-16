@@ -221,7 +221,7 @@ fn a_middle_click_on_privacy_toggles_the_source_mute() {
 }
 
 #[test]
-fn indicators_open_their_tab_resources_open_the_monitor() {
+fn indicators_open_their_tab() {
     let b = without_quick(full());
     for (m, tab) in [(ModuleId::Network, "network"), (ModuleId::Bluetooth, "bluetooth"), (ModuleId::Battery, "home")] {
         let t = Target::Module(m);
@@ -230,9 +230,23 @@ fn indicators_open_their_tab_resources_open_the_monitor() {
             assert_eq!(command(&b, "eDP-1", &t, other), None, "{m:?} {other:?}");
         }
     }
+}
+
+/// Resources popup spec § 1: the left click opens the popup (no command), the right click runs
+/// `[actions] resources`; the other buttons do nothing.
+#[test]
+fn resources_left_opens_the_popup_right_runs_the_monitor() {
+    use crate::popup::ModulePopup;
+    let mut b = without_quick(full());
+    b.config.actions.resources = vec!["foot".into(), "htop".into()];
     let r = Target::Module(ModuleId::Resources);
-    assert_eq!(command(&b, "eDP-1", &r, Button::Left), argv(&["foot", "-e", "btop"]));
-    assert_eq!(command(&b, "eDP-1", &r, Button::Right), None);
+    assert_eq!(command(&b, "eDP-1", &r, Button::Left), None);
+    assert_eq!(command(&b, "eDP-1", &r, Button::Right), argv(&["foot", "htop"]));
+    for other in [Button::Middle, Button::WheelUp, Button::WheelDown] {
+        assert_eq!(command(&b, "eDP-1", &r, other), None, "{other:?}");
+    }
+    assert_eq!(ModulePopup::of(&r, Button::Left, false), Some(ModulePopup::Resources));
+    assert_eq!(ModulePopup::of(&r, Button::Right, false), None);
 }
 
 #[test]
@@ -245,7 +259,7 @@ fn click_commands_configurable_in_bar_toml() {
         argv(&["my-panel", "--tab=sound", "{output}"]),
         "only {{tab}} is a placeholder here"
     );
-    assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Left), argv(&["foot", "htop"]));
+    assert_eq!(command(&b, "eDP-1", &Target::Module(ModuleId::Resources), Button::Right), argv(&["foot", "htop"]));
 }
 
 /// Quick spec § 1: with the panel, the left click is its popup's (no command), the right click
